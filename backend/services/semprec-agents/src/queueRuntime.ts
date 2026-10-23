@@ -1,0 +1,75 @@
+import type { Pool } from "pg";
+import { ensureQueueSchema, grantQueueSchemaPrivileges, runWorker } from "@semprec/queue";
+import {
+  assertTaskListMatchesAffinity,
+  createAgentTaskList,
+  mergeModuleTaskListForAffinity,
+  resolveTaskAffinitySets,
+  type AgentQueueTaskHandler,
+  type RunAgentFn,
+} from "@semprec/data";
+import type { ModuleRegistry } from "@semprec/module-registry";
+import { createAgentsActionRegistry, unwiredRunAgent } from "./actionRegistryComposition.js";
+
+export interface AgentsQueueRuntime {
+  /** Idempotent: awaits `runner.stop()` exactly once. Never closes `pool` — the caller (`serve.ts`) owns that. */
+  stop(): Promise<void>;
+}
+
+/**
+ * The agent session wiring `serve.ts` composes (issue #647). Each one left out keeps its
+ * placeholder: `core.agentRun` closes its run as `error`, and `agentRun`/`delegatedAgentRun` jobs
+ * complete without doing anything.
+ */
+export interface AgentsQueueRuntimeOptions {
+  runAgent?: RunAgentFn;
+  agentRunTask?: AgentQueueTaskHandler;
+  delegatedAgentRunTask?: AgentQueueTaskHandler;
+}
+
+/**
+ * Issue #91's `agents` composition root: the second long-lived graphile-worker runner over the
+ * same queue as `services/semprec-api`'s. Hosts every `queueAffinity: 'agents'` handler —
+ * `heartbeatFireAgent`, `agentRun`, `delegatedAgentRun`, plus active modules' agents-affinity
+ * tasks — and installs no crontab: `semprec-api`'s runtime is the queue's one scheduler, this
+ * one is a plain consumer.
+ */
+export async function createAgentsQueueRuntime(
+  pool: Pool,
+  moduleRegistry: ModuleRegistry,
+  options: AgentsQueueRuntimeOptions = {},
+): Promise<AgentsQueueRuntime> {
+  // Idempotent (graphile-worker's own migration runner and this GRANT block are both re-runnable)
+  // — this runtime starts independently of, and possibly before, the API runtime's own install.
+  await ensureQueueSchema(pool);
+  await grantQueueSchemaPrivileges(pool);
+
+  const actionRegistry = createAgentsActionRegistry(pool, options.runAgent ?? unwiredRunAgent);
+  const coreTaskList = createAgentTaskList(
+    pool,
+    actionRegistry,
+    moduleRegistry,
+    options.agentRunTask,
+    options.delegatedAgentRunTask,
+  );
+  const taskList = await mergeModuleTaskListForAffinity(coreTaskList, moduleRegistry, "agents");
+
+  // Before this runner reports readiness (returns from `run()` below), prove its registered
+  // handler set matches exactly what the shared affinity resolution says the agents runtime owns.
+  const affinitySets = await resolveTaskAffinitySets(moduleRegistry);
+  assertTaskListMatchesAffinity(taskList, affinitySets.agents, "agents");
+
+  const runner = await runWorker({
+    pgPool: pool,
+    taskList,
+    noHandleSignals: true,
+  });
+
+  let stopped: Promise<void> | null = null;
+  return {
+    stop(): Promise<void> {
+      stopped ??= runner.stop();
+      return stopped;
+    },
+  };
+}

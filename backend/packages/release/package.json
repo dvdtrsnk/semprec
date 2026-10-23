@@ -1,0 +1,13 @@
+{
+  "name": "@semprec/release",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "release-tag": "tsc -p tsconfig.json && node dist/cli.js"
+  },
+  "dependencies": {
+    "zod": "^4.1.11"
+  }
+}

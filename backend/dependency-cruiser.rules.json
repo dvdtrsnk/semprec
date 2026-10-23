@@ -1,0 +1,214 @@
+{
+  "forbidden": [
+    {
+      "name": "no-service-to-service",
+      "severity": "error",
+      "comment": "Issue #173: the deployable processes under services/ talk to each other only through Postgres, never by importing one another's code — not even through a public entry point, since importing a service's module bundles its runtime dependency stack into the caller and defeats independent deployability.",
+      "from": {
+        "path": "^services/([^/]+)/src/"
+      },
+      "to": {
+        "path": "^(?!services/$1/)services/[^/]+/src/"
+      }
+    },
+    {
+      "name": "core-knows-nobody",
+      "severity": "error",
+      "comment": "Issue #173: packages/* are the neutral core the rest of the system depends on; they import no service code, so a core package can never end up coupled to one process.",
+      "from": {
+        "path": "^packages/[^/]+/src/"
+      },
+      "to": {
+        "path": "^services/[^/]+/src/"
+      }
+    },
+    {
+      "name": "pi-only-in-agent-runtime",
+      "severity": "error",
+      "comment": "Issue #173: pi-agent-core (the pinned @earendil-works/pi-agent-core package) is opaque outside the runtime that wraps it — only packages/agent-runtime and services/semprec-agents may import it directly. Issue #647: services/semprec-agents is the composition root that owns process startup, so it is the second sanctioned importer — it constructs the pi Agent that packages/agent-runtime only declares ports for (see no-agent-runtime-provider-internals).",
+      "from": {
+        "path": "^(?!packages/agent-runtime/|services/semprec-agents/)"
+      },
+      "to": {
+        "path": "node_modules/@earendil-works/pi-agent-core"
+      }
+    },
+    {
+      "name": "agent-runtime-only-in-agents",
+      "severity": "error",
+      "comment": "Issue #173: packages/agent-runtime drives the agent loop; only services/semprec-agents (its composition root, issue #91) may import it. In particular, services/semprec-api never runs the agent loop itself.",
+      "from": {
+        "path": "^(?!packages/agent-runtime/)(?!services/semprec-agents/)"
+      },
+      "to": {
+        "path": "^packages/agent-runtime/src/"
+      }
+    },
+    {
+      "name": "no-deep-imports",
+      "severity": "error",
+      "comment": "Issue #173: a package is imported only through its entry point (src/index.ts) or the hardcoded testSupport/ secondary entry path (matching what @semprec/data's package.json `exports` separately declares as its public testSupport surface — this rule does not read package.json itself). Reaching past that into another package's internals is forbidden even for a different package under packages/.",
+      "from": {
+        "path": "^packages/([^/]+)/"
+      },
+      "to": {
+        "path": "^(?!packages/$1/)packages/[^/]+/src/(?!index\\.ts$|testSupport/)"
+      }
+    },
+    {
+      "name": "no-deep-imports",
+      "severity": "error",
+      "comment": "Issue #173: same entry-point-only rule as above (index.ts or the hardcoded testSupport/ path), for services reaching into a package's internals instead of its declared entry points.",
+      "from": {
+        "path": "^services/[^/]+/src/"
+      },
+      "to": {
+        "path": "^packages/[^/]+/src/(?!index\\.ts$|testSupport/)"
+      }
+    },
+    {
+      "name": "no-agent-runtime-internal-cross-import",
+      "severity": "error",
+      "comment": "SRP/ISP boundary (issue #137): agent-runtime's lifecycle/audit internals are reached only through its published port (src/index.ts) — never a caller reaching past it into lifecycleAdapter.ts, delegationRegistry.ts, sempConversation.ts, etc. directly.",
+      "from": {
+        "path": "^(?!packages/agent-runtime/)"
+      },
+      "to": {
+        "path": "^packages/agent-runtime/src/(?!index\\.ts$)"
+      }
+    },
+    {
+      "name": "no-agent-runtime-provider-internals",
+      "severity": "error",
+      "comment": "DIP boundary (issue #137): agent-runtime depends only on the CreateAgentSession/AgentSession/CompactionAdapter/PiProviderRegistry ports it declares itself, never on the pinned pi-agent-core packages or a model provider's own package directly. src/__tests__/ is exempt: issue #134's piRuntimeContract.unit.test.ts is the one sanctioned direct import, pinning the exact shape those ports are written against.",
+      "from": {
+        "path": "^packages/agent-runtime/src/(?!__tests__/)"
+      },
+      "to": {
+        "path": "node_modules/(@earendil-works/pi-|@anthropic-ai/)"
+      }
+    },
+    {
+      "name": "no-agent-runtime-guidance-database-import",
+      "severity": "error",
+      "comment": "Issue #214: the project-agent-guidance systemPromptOverride adapter receives an injected loadProjectAgentGuidance port and must never import pg, a pool singleton, or @semprec/data's concrete store directly.",
+      "from": {
+        "path": "^packages/agent-runtime/src/projectAgentGuidanceSystemPrompt\\.ts$"
+      },
+      "to": {
+        "path": "(node_modules/pg/|^packages/data/)"
+      }
+    },
+    {
+      "name": "no-application-into-services-or-agent-runtime",
+      "severity": "error",
+      "comment": "Issue #214: packages/application/src/projectAgentGuidance is a neutral application service — it may depend on packages/shared's generic ports, never on services/* (its composition-root consumers) or packages/agent-runtime (a different consumer).",
+      "from": {
+        "path": "^packages/application/"
+      },
+      "to": {
+        "path": "^(services/|packages/agent-runtime/)"
+      }
+    },
+    {
+      "name": "no-application-gateway-implementation-import",
+      "severity": "error",
+      "comment": "Issue #215: packages/application imports only @semprec/shared's AiGatewayClientPort — never packages/ai-gateway-client's HTTP implementation nor packages/ai-gateway itself — so it stays ignorant of how a structured completion actually reaches a provider.",
+      "from": {
+        "path": "^packages/application/"
+      },
+      "to": {
+        "path": "^packages/(ai-gateway-client|ai-gateway)/"
+      }
+    },
+    {
+      "name": "no-model-provider-dependency-outside-gateway",
+      "severity": "error",
+      "comment": "Issue #215 acceptance criterion: no direct model-provider dependency exists outside semprec-ai-gateway. Only services/semprec-ai-gateway/src may import a model-provider SDK package directly.",
+      "from": {
+        "path": "^(?!services/semprec-ai-gateway/)"
+      },
+      "to": {
+        "path": "node_modules/(@anthropic-ai/|openai/)"
+      }
+    },
+    {
+      "name": "no-core-table-write-outside-choke-point",
+      "severity": "error",
+      "comment": "Issue #154 / docs/adr/2026-09-10-choke-point-api-for-state-writes.md: only packages/data (the choke-point package) may write the core tables items/databases/properties. A route handler, adapter, or module anywhere else must go through the choke-point's exported service calls (@semprec/data's createChokePoint and friends), never chokePoint/itemsStore.ts, chokePoint/databasesStore.ts, or chokePoint/propertiesStore.ts directly.",
+      "from": {
+        "path": "^(?!packages/data/)"
+      },
+      "to": {
+        "path": "^packages/data/src/chokePoint/(itemsStore|databasesStore|propertiesStore)\\.ts$"
+      }
+    },
+    {
+      "name": "no-shared-services-import",
+      "severity": "error",
+      "comment": "Issue #252: packages/shared/src/genericOperations is the transport-independent operation catalog — its schemas, port, and bindings must stay importable by every consumer (REST in #219, AgentTool/MCP in #220) without pulling in a concrete implementation. packages/shared as a whole must never import a services/* composition root.",
+      "from": {
+        "path": "^packages/shared/"
+      },
+      "to": {
+        "path": "^services/"
+      }
+    },
+    {
+      "name": "no-shared-data-import",
+      "severity": "error",
+      "comment": "Issue #252 / docs/adr/2026-09-17-shared-package-mirrors-rather-than-imports-data-row-types.md: packages/shared/src/genericOperations mirrors packages/data's row shapes (PROPERTY_TYPES, Database/Property/View/Item/...) by hand instead of importing them, so the transport-independent catalog never depends on a concrete implementation package. This rule makes that constraint mechanical instead of comment-only. packages/data's declared testSupport/ entry point (used only from tests) is exempt, matching the no-deep-imports exemption elsewhere in this file.",
+      "from": {
+        "path": "^packages/shared/"
+      },
+      "to": {
+        "path": "^packages/data/src/(?!testSupport/)"
+      }
+    },
+    {
+      "name": "items-store-private",
+      "severity": "error",
+      "comment": "Issue #173 / #243: the item store is the privileged SQL layer for the choke-point's most sensitive table — visible only inside packages/data. This is the static (CI) half of the choke-point write control; the runtime half is the semprec_data/semprec_side least-privilege Postgres roles delivered by #243.",
+      "from": {
+        "path": "^(?!packages/data/)"
+      },
+      "to": {
+        "path": "^packages/data/src/chokePoint/itemsStore\\.ts$"
+      }
+    },
+    {
+      "name": "no-choke-point-domain-cross-import",
+      "severity": "error",
+      "comment": "Issue #496 (choke-point-split batch): chokePoint.ts is split into per-domain modules under packages/data/src/chokePoint/, and a domain module never imports another domain module — otherwise the split quietly collapses back into one tangled unit. Domain modules may still import the shared modules (authorization.ts, databaseGuards.ts, computedKeyRegistry.ts, relationEdgeContext.ts, chokePointDeps.ts, mergeOps.ts, viewTypeRegistry.ts), the *Store.ts files, and anything outside chokePoint/. The domain modules are listed explicitly, so a new one must be added here to be covered.",
+      "from": {
+        "path": "^packages/data/src/chokePoint/(databaseOps|propertyOps|relationPropertyOps|relationOps|itemWrites|itemReads|itemTrash|viewOps|viewQueryOps|destructiveProjection)\\.ts$"
+      },
+      "to": {
+        "path": "^packages/data/src/chokePoint/(databaseOps|propertyOps|relationPropertyOps|relationOps|itemWrites|itemReads|itemTrash|viewOps|viewQueryOps|destructiveProjection)\\.ts$"
+      }
+    },
+    {
+      "name": "chokepoint-knows-no-domain",
+      "severity": "error",
+      "comment": "Issue #659 (pre-tenancy-groundwork batch): docs/adr/2026-09-24-choke-point-composed-from-domain-modules.md forbids a choke-point domain module importing another one, but nothing previously stopped a choke-point module from importing a domain folder directly. A domain's own transactional side effect reaches the choke point through chokePoint/hooks.ts's per-process registry (registered by domainWriteHooks.ts), never a direct import back the other way. The domain list is explicit, so a new domain folder must be added here to be covered. schemaCoreModuleManifest.ts is exempt because it legitimately wires domain route handlers and tools; itemTrash.ts is exempt because its cascade delete/restore/purge imports of blobs/docs/library are the itemDeleteWithClient path, which this issue deliberately leaves without a hook (no domain needs a delete hook today). scheduler/, rollup/, views/, seed/, tasks/, migrationJob/ and the root-level systemSettings.ts/timezone.ts/realtimeHook.ts are deliberately not listed — they are imported by several choke-point modules today and are not this issue's concern.",
+      "from": {
+        "path": "^packages/data/src/chokePoint/",
+        "pathNot": "^packages/data/src/chokePoint/(schemaCoreModuleManifest|itemTrash)\\.ts$"
+      },
+      "to": {
+        "path": "^packages/data/src/(mail|transcription|inbox|journal|library|docs|push|notifications|mcp|blobs|agentRuns|auth|credentials|aiGateway|observability|health|guidanceDrift|trash)/"
+      }
+    },
+    {
+      "name": "no-choke-point-rollup-cycle",
+      "severity": "error",
+      "comment": "Issue #497 (choke-point-split batch): the batch moves rollup helpers out of chokePoint.ts into packages/data/src/rollup/ and splits the choke point into modules under packages/data/src/chokePoint/. Code moving between two directories that import each other is how import cycles appear, and a cycle there would make module initialization order-dependent. This rule forbids any circular dependency that involves a module in either directory.",
+      "from": {
+        "path": "^packages/data/src/(chokePoint|rollup)/"
+      },
+      "to": {
+        "circular": true
+      }
+    }
+  ]
+}

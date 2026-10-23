@@ -1,0 +1,303 @@
+#!/usr/bin/env bash
+# Hermetic behavior test for deploy/deploy.sh.
+set -euo pipefail
+
+readonly REPOSITORY_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly TEST_ROOT="$(mktemp -d)"
+readonly TEST_BIN="$TEST_ROOT/bin"
+readonly TEST_STATE="$TEST_ROOT/state"
+readonly TEST_SEMPREC_ROOT="$TEST_ROOT/opt/semprec"
+readonly ORIGIN="$TEST_ROOT/origin.git"
+readonly AUTHOR="$TEST_ROOT/author"
+readonly OPERATOR="$TEST_ROOT/operator"
+export TEST_STATE TEST_SEMPREC_ROOT
+export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid
+export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
+
+cleanup() {
+  rm -rf "$TEST_ROOT"
+}
+trap cleanup EXIT
+
+mkdir -p "$TEST_BIN" "$TEST_STATE/proc" "$TEST_STATE/pids" "$TEST_SEMPREC_ROOT/releases" "$TEST_SEMPREC_ROOT/shared/env"
+printf 'SEMPREC_MIGRATE_DATABASE_URL=postgres://migrate-secret-value\n' > "$TEST_SEMPREC_ROOT/shared/env/migrate.env"
+printf 'SEMPREC_API_DATABASE_URL=postgres://data-role-value\n' > "$TEST_SEMPREC_ROOT/shared/env/data-role.env"
+readonly MIGRATE_ENV_CHECKSUM="$(sha256sum "$TEST_SEMPREC_ROOT/shared/env/migrate.env" | awk '{print $1}')"
+
+# ---- Repositories: origin holds main and the tags; the operator checkout runs deploy.sh. ----
+
+git init --quiet --bare --initial-branch=main "$ORIGIN"
+git clone --quiet "$ORIGIN" "$AUTHOR" 2>/dev/null
+commit_release_content() {
+  local marker="$1"
+  mkdir -p "$AUTHOR/backend" "$AUTHOR/web"
+  printf '{"name":"semprec","private":true}\n' > "$AUTHOR/backend/package.json"
+  printf '%s\n' "$marker" > "$AUTHOR/backend/marker"
+  printf '{"name":"@semprec/web","private":true}\n' > "$AUTHOR/web/package.json"
+  git -C "$AUTHOR" add -A
+  git -C "$AUTHOR" commit --quiet -m "$marker"
+}
+commit_release_content one
+git -C "$AUTHOR" tag -a v1.0.0 -m v1.0.0
+commit_release_content two
+git -C "$AUTHOR" tag -a v1.1.0 -m v1.1.0
+git -C "$AUTHOR" tag v1.2.0
+commit_release_content three
+git -C "$AUTHOR" tag -a v1.3.0 -m v1.3.0
+git -C "$AUTHOR" push --quiet origin main v1.0.0 v1.1.0 v1.2.0 v1.3.0
+git -C "$AUTHOR" checkout --quiet -b feature
+commit_release_content off-main
+git -C "$AUTHOR" tag -a v9.0.0 -m v9.0.0
+git -C "$AUTHOR" push --quiet origin feature v9.0.0
+
+git clone --quiet "$ORIGIN" "$OPERATOR"
+mkdir -p "$OPERATOR/deploy"
+cp "$REPOSITORY_ROOT/deploy/deploy.sh" "$OPERATOR/deploy/deploy.sh"
+sed -i "s|readonly SEMPREC_ROOT=/opt/semprec|readonly SEMPREC_ROOT=$TEST_SEMPREC_ROOT|" "$OPERATOR/deploy/deploy.sh"
+sed -i "s|readonly PROC_ROOT=/proc|readonly PROC_ROOT=$TEST_STATE/proc|" "$OPERATOR/deploy/deploy.sh"
+
+# ---- Mocks ----
+
+write_mock() {
+  local name="$1"
+  local body="$2"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\n%s\n' "$body" > "$TEST_BIN/$name"
+  chmod +x "$TEST_BIN/$name"
+}
+
+# Records a violation, checked at the end, when `current` names the release still being prepared.
+write_mock assert-not-current '
+if [[ -L "$TEST_SEMPREC_ROOT/current" && "$(readlink -f "$TEST_SEMPREC_ROOT/current")" == "$(readlink -f "$1")" ]]; then
+  echo "current targets a release that is still being prepared: $1" >> "$TEST_STATE/violations"
+fi'
+write_mock id 'if [[ "${1:-}" == "-u" ]]; then echo 0; fi'
+write_mock pnpm '
+assert-not-current "$(dirname "$PWD")"
+echo "pnpm $*" >> "$TEST_STATE/commands"
+if [[ "$1" == "install" && -f "$TEST_STATE/fail-build" ]]; then exit 1; fi
+if [[ "$1" == "install" && -f "$TEST_STATE/fail-web-build" && "$PWD" == */web ]]; then exit 1; fi
+if [[ "$1" == "-r" ]]; then touch "$PWD/built"; fi
+if [[ "$1" == "run" && "$2" == "build" ]]; then mkdir -p "$PWD/dist" && printf "<!doctype html>\n" > "$PWD/dist/index.html"; fi'
+write_mock systemd-run '
+working_directory=""
+for arg in "$@"; do
+  case "$arg" in
+    --working-directory=*) working_directory="${arg#--working-directory=}" ;;
+  esac
+done
+assert-not-current "$(dirname "$working_directory")"
+test -f "$working_directory/built"
+grep -qx "APP_VERSION=v[0-9.]*" "$(dirname "$working_directory")/release.env"
+echo "systemd-run $*" >> "$TEST_STATE/commands"
+if [[ -f "$TEST_STATE/fail-migrate" ]]; then exit 1; fi
+if [[ -f "$TEST_STATE/fail-seed" && "$*" == *runSeedCli.js* ]]; then exit 1; fi
+if [[ -f "$TEST_STATE/fail-verify" && "$*" == *verifyTenancyCli.js* ]]; then exit 1; fi'
+# `restart` simulates systemd: the new process gets a service group file (never migrate.env) plus current/release.env.
+write_mock systemctl '
+case "$1" in
+  restart)
+    echo "systemctl restart $2" >> "$TEST_STATE/commands"
+    pid=$(( $(cat "$TEST_STATE/next-pid" 2>/dev/null || echo 100) + 1 ))
+    echo "$pid" > "$TEST_STATE/next-pid"
+    mkdir -p "$TEST_STATE/proc/$pid"
+    cat "$TEST_SEMPREC_ROOT/shared/env/data-role.env" "$TEST_SEMPREC_ROOT/current/release.env" | tr "\n" "\0" > "$TEST_STATE/proc/$pid/environ"
+    echo "$pid" > "$TEST_STATE/pids/$2"
+    ;;
+  show)
+    cat "$TEST_STATE/pids/$4" 2>/dev/null || echo 0
+    ;;
+  *) exit 1 ;;
+esac'
+
+run_deploy() {
+  PATH="$TEST_BIN:$PATH" bash "$OPERATOR/deploy/deploy.sh" "$@"
+}
+
+expect_refused() {
+  local expected_message="$1"
+  shift
+  if run_deploy "$@" > "$TEST_STATE/refused.out" 2>&1; then
+    echo "deploy.sh $* unexpectedly succeeded" >&2
+    exit 1
+  fi
+  grep -q "$expected_message" "$TEST_STATE/refused.out"
+}
+
+assert_no_partial_releases() {
+  if compgen -G "$TEST_SEMPREC_ROOT/releases/.*.partial.*" > /dev/null; then
+    echo "a partial release was left behind" >&2
+    exit 1
+  fi
+}
+
+assert_current() {
+  test "$(readlink "$TEST_SEMPREC_ROOT/current")" == "$TEST_SEMPREC_ROOT/releases/$1"
+}
+
+# A successful deploy runs migrate, seed and verify once each, in that order, before any restart.
+# The seed and the tenancy verification use the migrate URL; the verification also uses the same
+# unit properties as the migrations. Reads the commands of exactly one deploy.
+assert_pre_activation_order() {
+  grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runMigrationsCli.js' "$TEST_STATE/commands" \
+    | cut -d: -f1 > "$TEST_STATE/migrate.line"
+  grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runSeedCli.js' "$TEST_STATE/commands" \
+    | cut -d: -f1 > "$TEST_STATE/seed.line"
+  grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/verifyTenancyCli.js' "$TEST_STATE/commands" \
+    | cut -d: -f1 > "$TEST_STATE/verify.line"
+  test "$(wc -l < "$TEST_STATE/migrate.line")" -eq 1
+  test "$(wc -l < "$TEST_STATE/seed.line")" -eq 1
+  test "$(wc -l < "$TEST_STATE/verify.line")" -eq 1
+  test "$(grep -c 'verifyTenancyCli.js' "$TEST_STATE/commands")" -eq 1
+  test "$(cat "$TEST_STATE/migrate.line")" -lt "$(cat "$TEST_STATE/seed.line")"
+  test "$(cat "$TEST_STATE/seed.line")" -lt "$(cat "$TEST_STATE/verify.line")"
+  test "$(grep 'runMigrationsCli.js' "$TEST_STATE/commands" | sed 's/runMigrationsCli/CLI/')" \
+    == "$(grep 'verifyTenancyCli.js' "$TEST_STATE/commands" | sed 's/verifyTenancyCli/CLI/')"
+  grep -n '^systemctl restart ' "$TEST_STATE/commands" | head -n 1 | cut -d: -f1 > "$TEST_STATE/first-restart.line"
+  test -s "$TEST_STATE/first-restart.line"
+  test "$(cat "$TEST_STATE/verify.line")" -lt "$(cat "$TEST_STATE/first-restart.line")"
+}
+
+# ---- A malformed tag is refused before anything happens. ----
+
+for bad_tag in 1.0.0 v1.0 v01.0.0 v1.0.0-rc.1 main; do
+  expect_refused 'invalid release tag' "$bad_tag"
+done
+test ! -e "$TEST_SEMPREC_ROOT/current"
+test ! -e "$TEST_STATE/commands"
+
+# ---- First deploy: every process type restarts and reports the one version. ----
+
+run_deploy v1.0.0 > "$TEST_STATE/deploy.out"
+assert_current v1.0.0
+grep -qx one "$TEST_SEMPREC_ROOT/releases/v1.0.0/backend/marker"
+grep -qx 'APP_VERSION=v1.0.0' "$TEST_SEMPREC_ROOT/releases/v1.0.0/release.env"
+for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe; do
+  grep -qx "systemctl restart $unit.service" "$TEST_STATE/commands"
+  grep -qx "$unit.service: v1.0.0" "$TEST_STATE/deploy.out"
+done
+test "$(grep -c '^systemctl restart ' "$TEST_STATE/commands")" -eq 4
+grep -q 'pnpm install --frozen-lockfile' "$TEST_STATE/commands"
+test "$(grep -c '^systemd-run ' "$TEST_STATE/commands")" -eq 3
+test "$(grep -c "EnvironmentFile=$TEST_SEMPREC_ROOT/shared/env/migrate.env " "$TEST_STATE/commands")" -eq 3
+test "$(grep -c 'EnvironmentFile=' "$TEST_STATE/commands")" -eq 3
+assert_pre_activation_order
+test -f "$TEST_SEMPREC_ROOT/releases/v1.0.0/web/dist/index.html"
+grep -qx 'pnpm run build' "$TEST_STATE/commands"
+if grep -q 'migrate-secret-value' "$TEST_STATE/deploy.out"; then
+  echo 'deploy output exposed the migrate secret' >&2
+  exit 1
+fi
+test -z "$(find "$TEST_SEMPREC_ROOT/releases" -name .env)"
+assert_no_partial_releases
+
+# ---- Pre-activation failures leave current and the services unchanged. ----
+
+rm "$TEST_STATE/commands"
+touch "$TEST_STATE/fail-build"
+expect_refused 'build of the staged release failed' v1.1.0
+rm "$TEST_STATE/fail-build"
+touch "$TEST_STATE/fail-web-build"
+expect_refused 'build of the staged web client failed' v1.1.0
+rm "$TEST_STATE/fail-web-build"
+touch "$TEST_STATE/fail-migrate"
+expect_refused 'migrations failed' v1.1.0
+rm "$TEST_STATE/fail-migrate"
+touch "$TEST_STATE/fail-seed"
+expect_refused 'seed failed' v1.1.0
+grep -q 'runSeedCli.js' "$TEST_STATE/commands"
+rm "$TEST_STATE/fail-seed"
+touch "$TEST_STATE/fail-verify"
+expect_refused 'tenancy verification failed' v1.1.0
+grep -q 'verifyTenancyCli.js' "$TEST_STATE/commands"
+rm "$TEST_STATE/fail-verify"
+assert_current v1.0.0
+test ! -e "$TEST_SEMPREC_ROOT/releases/v1.1.0"
+assert_no_partial_releases
+if grep -q 'systemctl restart' "$TEST_STATE/commands"; then
+  echo 'a failed deploy restarted a service' >&2
+  exit 1
+fi
+
+# ---- Ineligible tags are refused. ----
+
+expect_refused 'not an annotated release tag' v1.2.0
+expect_refused 'not on main' v9.0.0
+expect_refused 'cannot fetch tag' v7.7.7
+expect_refused 'already exists; releases are immutable' v1.0.0
+assert_current v1.0.0
+assert_no_partial_releases
+
+# ---- A second deploy swaps current and leaves the previous release intact. ----
+
+rm "$TEST_STATE/commands"
+run_deploy v1.1.0 > "$TEST_STATE/deploy.out"
+assert_current v1.1.0
+assert_pre_activation_order
+grep -qx two "$TEST_SEMPREC_ROOT/releases/v1.1.0/backend/marker"
+grep -qx one "$TEST_SEMPREC_ROOT/releases/v1.0.0/backend/marker"
+for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe; do
+  grep -qx "$unit.service: v1.1.0" "$TEST_STATE/deploy.out"
+done
+assert_no_partial_releases
+
+# ---- Rollback (issue #191): only to the release before the newest, with no build or migration. ----
+
+rm "$TEST_STATE/commands"
+run_deploy v1.3.0 > "$TEST_STATE/deploy.out"
+assert_current v1.3.0
+assert_pre_activation_order
+rm "$TEST_STATE/commands"
+# A staging directory left by an interrupted deploy is not a release and must not count as the newest.
+mkdir "$TEST_SEMPREC_ROOT/releases/.v1.4.0.partial.test"
+releases_before="$(ls -a "$TEST_SEMPREC_ROOT/releases")"
+previous_release_inode="$(stat -c %i "$TEST_SEMPREC_ROOT/releases/v1.1.0")"
+
+expect_refused 'invalid release tag' --rollback v1.1
+expect_refused 'Usage' --rollback
+expect_refused 'Usage' --rollback v1.1.0 extra
+expect_refused 'is not a deployed release' --rollback v1.2.0
+expect_refused 'can only roll back to v1.1.0' --rollback v1.0.0
+expect_refused 'can only roll back to v1.1.0' --rollback v1.3.0
+cp "$TEST_SEMPREC_ROOT/releases/v1.1.0/release.env" "$TEST_STATE/release.env.saved"
+printf 'APP_VERSION=v1.0.0\n' > "$TEST_SEMPREC_ROOT/releases/v1.1.0/release.env"
+expect_refused 'does not declare APP_VERSION=v1.1.0' --rollback v1.1.0
+cp "$TEST_STATE/release.env.saved" "$TEST_SEMPREC_ROOT/releases/v1.1.0/release.env"
+assert_current v1.3.0
+test ! -e "$TEST_STATE/commands"
+
+readonly ROLLBACK_OUTPUT="$TEST_STATE/rollback.out"
+run_deploy --rollback v1.1.0 > "$ROLLBACK_OUTPUT"
+assert_current v1.1.0
+grep -qx 'Rolled back to v1.1.0; the database schema was not changed' "$ROLLBACK_OUTPUT"
+for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe; do
+  grep -qx "systemctl restart $unit.service" "$TEST_STATE/commands"
+  grep -qx "$unit.service: v1.1.0" "$ROLLBACK_OUTPUT"
+done
+# No build and no migration: the only commands issued are the restarts.
+if grep -v '^systemctl restart ' "$TEST_STATE/commands"; then
+  echo 'a rollback ran something other than service restarts' >&2
+  exit 1
+fi
+test "$(ls -a "$TEST_SEMPREC_ROOT/releases")" == "$releases_before"
+test "$(stat -c %i "$TEST_SEMPREC_ROOT/releases/v1.1.0")" == "$previous_release_inode"
+grep -qx two "$TEST_SEMPREC_ROOT/releases/v1.1.0/backend/marker"
+rm -r "$TEST_SEMPREC_ROOT/releases/.v1.4.0.partial.test"
+
+# Two releases back is refused: the schema is already the newest release's.
+rm "$TEST_STATE/commands"
+expect_refused 'not at the newest release v1.3.0' --rollback v1.1.0
+expect_refused 'can only roll back to v1.1.0' --rollback v1.0.0
+assert_current v1.1.0
+test ! -e "$TEST_STATE/commands"
+
+# Without the migrate group file deploy.sh stops before building anything.
+mv "$TEST_SEMPREC_ROOT/shared/env/migrate.env" "$TEST_STATE/migrate.env.moved"
+rm -f "$TEST_STATE/commands"
+expect_refused 'run provision.sh first' v1.4.0
+test ! -e "$TEST_STATE/commands"
+mv "$TEST_STATE/migrate.env.moved" "$TEST_SEMPREC_ROOT/shared/env/migrate.env"
+
+test "$(sha256sum "$TEST_SEMPREC_ROOT/shared/env/migrate.env" | awk '{print $1}')" == "$MIGRATE_ENV_CHECKSUM"
+test ! -e "$TEST_STATE/violations"
+
+echo 'deploy.sh behavior test passed'

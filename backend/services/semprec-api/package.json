@@ -1,0 +1,34 @@
+{
+  "name": "@semprec/semprec-api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@semprec/ai-gateway-client": "workspace:*",
+    "@semprec/application": "workspace:*",
+    "@semprec/data": "workspace:*",
+    "@semprec/module-registry": "workspace:*",
+    "@semprec/notifications": "workspace:*",
+    "@semprec/queue": "workspace:*",
+    "@semprec/realtime": "workspace:*",
+    "@semprec/shared": "workspace:*",
+    "nodemailer": "^9.0.6",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@semprec/credentials": "workspace:*",
+    "@semprec/module-boundaries": "workspace:*",
+    "@semprec/realtime-client": "workspace:*",
+    "@types/nodemailer": "^8.0.1",
+    "@types/pg": "^8.23.1",
+    "@types/ws": "^8.5.13",
+    "vitest": "^4.1.11",
+    "ws": "^8.18.0",
+    "yjs": "^13.6.32"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "database.books.name": "Knihy",
+  "property.books.name.name": "Název",
+  "property.books.author.name": "Autor",
+  "property.books.cover.name": "Obálka",
+  "property.books.rating.name": "Hodnocení",
+  "property.books.status.name": "Stav",
+  "property.books.status.option.toRead": "K přečtení",
+  "property.books.status.option.reading": "Čtu",
+  "property.books.status.option.read": "Přečteno",
+
+  "database.movies.name": "Filmy/seriály",
+  "property.movies.name.name": "Název",
+  "property.movies.year.name": "Rok",
+  "property.movies.type.name": "Typ",
+  "property.movies.type.option.movie": "Film",
+  "property.movies.type.option.series": "Seriál",
+  "property.movies.cover.name": "Obálka",
+  "property.movies.rating.name": "Hodnocení",
+  "property.movies.secondaryRating.name": "Hodnocení kritiků",
+  "property.movies.sourceUrl.name": "Zdroj",
+  "property.movies.status.name": "Stav",
+  "property.movies.status.option.planned": "Plánováno",
+  "property.movies.status.option.watching": "Sleduji",
+  "property.movies.status.option.watched": "Zhlédnuto",
+  "property.movies.notes.name": "Poznámky",
+  "property.movies.watchedWith.name": "Sledováno s",
+
+  "viewType.library-grid.name": "Mřížka"
+}

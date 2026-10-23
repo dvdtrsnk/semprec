@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Semprec daily trash-purge skeleton
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+Unit=semprec-trash-purge.service
+
+[Install]
+WantedBy=timers.target

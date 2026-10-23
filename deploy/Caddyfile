@@ -1,0 +1,71 @@
+# Issue #174: the single public entry point for the whole deployment — one domain, one proxy
+# point, no subdomains. Automatic TLS (Let's Encrypt) and HTTP/2 are Caddy defaults for a site
+# address that is a bare domain, so neither needs an explicit directive here.
+#
+# `semprec-api` (configured via /opt/semprec/shared/env/api.env's PORT, see deploy/shared/env/api.env.example,
+# to listen on the same port this reverse_proxy targets) serves `/api/*` (including the
+# `/api/sync` WebSocket upgrade and the Graph webhook — Caddy's reverse_proxy forwards WebSocket
+# upgrades transparently, so no separate handling is needed), `/mcp` and `/healthz`. Caddy serves
+# everything else itself: the web client's static files from the current release, falling back to
+# its index.html for any path it does not have a file for (every client route is a query
+# parameter on `/`).
+{$SEMPREC_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		# No includeSubDomains/preload: this deployment intentionally keeps HSTS scoped to
+		# exactly the one domain it terminates TLS for.
+		Strict-Transport-Security "max-age=31536000"
+	}
+
+	# Two mutually exclusive request-body ceilings: everything except `POST /api/files` is
+	# capped at the 16 MB default; only `POST /api/files` (issue #158's streamed upload route)
+	# is allowed up to 2 GB.
+	@files {
+		method POST
+		path /api/files
+	}
+	request_body @files {
+		max_size 2GB
+	}
+
+	@notfiles {
+		not {
+			method POST
+			path /api/files
+		}
+	}
+	request_body @notfiles {
+		max_size 16MB
+	}
+
+	# Backend-owned URL space — the same prefixes web/vite.config.ts proxies in development.
+	@backend path /api/* /mcp /healthz
+	handle @backend {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# Everything else is the web client: static files from the current release, and the SPA's
+	# index.html for any path it does not have a file for (every client route is a query
+	# parameter on /).
+	handle {
+		root * /opt/semprec/current/web/dist
+		try_files {path} /index.html
+		file_server
+	}
+
+	# Two secrets travel in URLs Caddy serves itself: the first-account setup link
+	# (`/?page=setup&token=…`) and the password-reset link (`/reset-password?token=…`). The query
+	# string is therefore cut from the logged URI, and `Referer` is dropped because every asset
+	# the browser loads after either page repeats the full page URL in it.
+	log {
+		output stderr
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp "[?].*" ""
+				request>headers>Referer delete
+			}
+		}
+	}
+}

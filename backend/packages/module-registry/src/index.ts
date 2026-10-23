@@ -1,1 +1,35 @@
-export {};
+export { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalog, type ModuleCatalogs } from "./catalog.js";
+export type {
+  ModuleManifest,
+  ModuleDatabaseDescriptor,
+  ModuleAgentToolDescriptor,
+  ModuleTaskDescriptor,
+  ModuleTaskAffinity,
+  ModuleWorkerDescriptor,
+  ModuleHeartbeatRuleKindDescriptor,
+  ModuleDataMigrationDescriptor,
+  ModuleCustomRouteDescriptor,
+  CustomRouteMethod,
+  CustomRouteJustification,
+} from "./manifest.js";
+export {
+  moduleManifestSchema,
+  CUSTOM_ROUTE_METHODS,
+  CUSTOM_ROUTE_JUSTIFICATIONS,
+  MODULE_TASK_AFFINITIES,
+} from "./manifest.js";
+export {
+  ModuleRegistry,
+  type ActiveModuleIdsSource,
+  type ModuleRegistryOptions,
+  type ModuleDatabaseProjection,
+  type ModuleAgentToolProjection,
+  type ModuleTaskProjection,
+  type ModuleWorkerProjection,
+  type ModuleMigrationProjection,
+  type ModuleDataMigrationProjection,
+  type ModuleTaskDefinition,
+  type ModuleHeartbeatRuleKindDefinition,
+  type ModuleDataMigrationDefinition,
+  type ModuleCustomRouteDefinition,
+} from "./registry.js";

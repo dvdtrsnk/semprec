@@ -1,0 +1,130 @@
+import type { Queryable } from "../db/pool.js";
+import { getAgentRunsByIds } from "../agentRuns/agentRunsStore.js";
+import { getItemsByIds } from "../chokePoint/itemsStore.js";
+import {
+  isGenericOperationApprovalRequestPayload,
+  listPendingApprovalRequests,
+  type ApprovalRequest,
+} from "./approvalRequestsStore.js";
+
+/**
+ * A payload summary safe to send to the client: which target and which argument *names* the
+ * deferred call carries, never the argument *values* — those are exactly where a credential
+ * or other sensitive value would live (issue #132's "sensitive credential values are never
+ * rendered" criterion). A reviewer who needs the actual values still has the audit trail
+ * (`approval_requests.payload` in the database); this queue is a triage list, not that trail.
+ *
+ * A discriminated union, not all-optional fields: `mcpToolRegistrationId`/`mcpServerItemId` are
+ * only ever present together (an MCP-invoke-originated request), `operationName` only for a
+ * generic-operation-originated request (issue #220) — the two payload shapes never mix on the
+ * same entry, and the `kind` tag lets a client narrow to the right one instead of every field
+ * reading `string | undefined` regardless of the entry's actual origin.
+ */
+export type ApprovalRequestSafeSummary =
+  | { kind: "mcpInvoke"; mcpToolRegistrationId: string; mcpServerItemId: string; argKeys: string[] }
+  | { kind: "genericOperation"; operationName: string; argKeys: string[] };
+
+export interface ApprovalRequestQueueEntry {
+  id: string;
+  toolName: string;
+  riskClass: string;
+  requestedAt: string;
+  safeSummary: ApprovalRequestSafeSummary;
+  agentRunId: string;
+  /** `null` when the run itself is not tied to any project (e.g. Semp's own supervisor run). */
+  projectItemId: string | null;
+  /** `null` alongside `projectItemId` when there is no project, or when the project item has since been deleted. */
+  projectName: string | null;
+}
+
+function safeSummaryOf(payload: ApprovalRequest["payload"]): ApprovalRequestSafeSummary {
+  if (isGenericOperationApprovalRequestPayload(payload)) {
+    const canonicalInput = payload.canonicalInput;
+    return {
+      kind: "genericOperation",
+      operationName: payload.operationName,
+      argKeys: canonicalInput && typeof canonicalInput === "object" ? Object.keys(canonicalInput) : [],
+    };
+  }
+  return {
+    kind: "mcpInvoke",
+    mcpToolRegistrationId: payload.mcpToolRegistrationId,
+    mcpServerItemId: payload.mcpServerItemId,
+    argKeys: Object.keys(payload.args),
+  };
+}
+
+/**
+ * What `PATCH /api/approval-requests/:id` returns for a decided (or already-decided) request: the
+ * decision's outcome plus the same triage fields the queue shows, with the payload reduced to
+ * `safeSummary` for the same reason as there. `payload`, `resourceSnapshot` and the execution
+ * outcome fields (`executionResult`, `executionError`, `executedAt`) are deliberately absent.
+ */
+export interface ApprovalRequestDecisionView {
+  id: string;
+  status: ApprovalRequest["status"];
+  decidedAt: string | null;
+  decidedBy: string | null;
+  executionStatus: ApprovalRequest["executionStatus"];
+  toolName: string;
+  riskClass: string;
+  requestedAt: string;
+  agentRunId: string;
+  safeSummary: ApprovalRequestSafeSummary;
+}
+
+export function toApprovalRequestDecisionView(request: ApprovalRequest): ApprovalRequestDecisionView {
+  return {
+    id: request.id,
+    status: request.status,
+    decidedAt: request.decidedAt,
+    decidedBy: request.decidedBy,
+    executionStatus: request.executionStatus,
+    toolName: request.toolName,
+    riskClass: request.riskClass,
+    requestedAt: request.requestedAt,
+    agentRunId: request.agentRunId,
+    safeSummary: safeSummaryOf(request.payload),
+  };
+}
+
+/**
+ * The approval queue's read model (issue #132): every pending request of `ownerUserId`'s runs
+ * across every project, each joined with its source project's display name and agent-run id so the UI can
+ * show "where this came from" without a per-project detour. `agent_runs.project_item_id` and
+ * `items.id` carry no Postgres FK to each other (see `0001_core_schema.sql`'s header note on
+ * partitioned `items`), so both joins are done here as two batched follow-up reads instead of
+ * one SQL join.
+ */
+export async function listApprovalRequestsQueue(
+  client: Queryable,
+  ownerUserId: string,
+): Promise<ApprovalRequestQueueEntry[]> {
+  const pending = await listPendingApprovalRequests(client, ownerUserId);
+  if (pending.length === 0) return [];
+
+  const agentRunIds = [...new Set(pending.map((request) => request.agentRunId))];
+  const runs = await getAgentRunsByIds(client, agentRunIds);
+  const runById = new Map(runs.map((run) => [run.id, run]));
+
+  const projectItemIds = [...new Set(runs.flatMap((run) => (run.projectItemId ? [run.projectItemId] : [])))];
+  const projectItems = await getItemsByIds(client, projectItemIds);
+  const projectNameById = new Map(
+    projectItems.map((item) => [item.id, typeof item.properties.name === "string" ? item.properties.name : null]),
+  );
+
+  return pending.map((request) => {
+    const run = runById.get(request.agentRunId);
+    const projectItemId = run?.projectItemId ?? null;
+    return {
+      id: request.id,
+      toolName: request.toolName,
+      riskClass: request.riskClass,
+      requestedAt: request.requestedAt,
+      safeSummary: safeSummaryOf(request.payload),
+      agentRunId: request.agentRunId,
+      projectItemId,
+      projectName: projectItemId ? (projectNameById.get(projectItemId) ?? null) : null,
+    };
+  });
+}

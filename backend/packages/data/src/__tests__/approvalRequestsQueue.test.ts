@@ -1,0 +1,170 @@
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import type { Pool } from "pg";
+import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { createAgentRun } from "../agentRuns/agentRunsStore.js";
+import { createPendingApprovalRequest, decideApprovalRequest } from "../mcp/approvalRequestsStore.js";
+import { listApprovalRequestsQueue } from "../mcp/approvalRequestsQueue.js";
+
+let pool: Pool;
+let chokePoint: ChokePoint;
+let ownerId: string;
+
+async function createUser(): Promise<string> {
+  return (await createTenantZeroUser(pool)).id;
+}
+
+describe("listApprovalRequestsQueue (issue #132)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    ownerId = await createUser();
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+  });
+
+  it("returns pending requests joined with their source project's name and agent run", async () => {
+    const projects = await chokePoint.createDatabase({ name: "Projects" });
+    await chokePoint.createProperty({ databaseId: projects.id, key: "name", name: "Name", type: "title" });
+    const projectItem = await chokePoint.createItem({
+      databaseId: projects.id,
+      properties: { name: "Renovate the kitchen" },
+    });
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", projectItemId: projectItem.id });
+
+    const payload = {
+      mcpToolRegistrationId: randomUUID(),
+      mcpServerItemId: randomUUID(),
+      args: { to: "a@b.com", apiKey: "secret" },
+    };
+    const created = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "send_email",
+      riskClass: "moderate",
+      payload,
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+
+    const rows = await listApprovalRequestsQueue(pool, ownerId);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({
+      id: created.id,
+      toolName: "send_email",
+      riskClass: "moderate",
+      requestedAt: created.requestedAt,
+      safeSummary: {
+        kind: "mcpInvoke",
+        mcpToolRegistrationId: payload.mcpToolRegistrationId,
+        mcpServerItemId: payload.mcpServerItemId,
+        argKeys: ["to", "apiKey"],
+      },
+      agentRunId: run.id,
+      projectItemId: projectItem.id,
+      projectName: "Renovate the kitchen",
+    });
+  });
+
+  it("summarizes a generic-operation-originated request with its operationName, never mcp fields (issue #220)", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const payload = {
+      operationName: "item.delete",
+      canonicalInput: { itemId: randomUUID() },
+      actor: { runId: run.id, agentProjectItemId: randomUUID(), userId: run.actorUserId },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    };
+    await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "item.delete",
+      riskClass: "destructive",
+      payload,
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+
+    const rows = await listApprovalRequestsQueue(pool, ownerId);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.safeSummary).toEqual({
+      kind: "genericOperation",
+      operationName: "item.delete",
+      argKeys: ["itemId"],
+    });
+  });
+
+  it("never includes argument values, only their keys", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const payload = {
+      mcpToolRegistrationId: randomUUID(),
+      mcpServerItemId: randomUUID(),
+      args: { password: "hunter2" },
+    };
+    await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "login",
+      riskClass: "high",
+      payload,
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+
+    const rows = await listApprovalRequestsQueue(pool, ownerId);
+
+    expect(JSON.stringify(rows)).not.toContain("hunter2");
+    expect(rows[0]!.safeSummary.argKeys).toEqual(["password"]);
+  });
+
+  it("returns null project fields for a run with no project (e.g. the supervisor's own run)", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "supervisor", task: "test" });
+    const payload = { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} };
+    await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "noop",
+      riskClass: "low",
+      payload,
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+
+    const rows = await listApprovalRequestsQueue(pool, ownerId);
+
+    expect(rows[0]!.projectItemId).toBeNull();
+    expect(rows[0]!.projectName).toBeNull();
+  });
+
+  it("orders oldest request first and excludes decided requests", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const payload = { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} };
+    const first = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "first",
+      riskClass: "low",
+      payload,
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    const second = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "second",
+      riskClass: "low",
+      payload,
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    const decided = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "third",
+      riskClass: "low",
+      payload,
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    await decideApprovalRequest(pool, decided.id, "approved", ownerId);
+
+    const rows = await listApprovalRequestsQueue(pool, ownerId);
+
+    expect(rows.map((row) => row.id)).toEqual([first.id, second.id]);
+  });
+
+  it("returns an empty array when there are no pending requests", async () => {
+    expect(await listApprovalRequestsQueue(pool, ownerId)).toEqual([]);
+  });
+});

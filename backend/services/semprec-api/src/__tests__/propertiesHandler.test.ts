@@ -1,0 +1,448 @@
+import { createServer, type Server } from "node:http";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { Pool } from "pg";
+import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
+import {
+  createChokePoint,
+  createUser,
+  createViewTypeRegistry,
+  hashPassword,
+  loadFullModuleRegistry,
+  LocalFsBlobStorageWriter,
+  login,
+  seedSystem,
+  type ChokePoint,
+  type PasswordResetMailer,
+  type PropertyRow,
+} from "@semprec/data";
+import { createDispatcher } from "../app.js";
+
+const PASSWORD = "s3cret-password";
+const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
+
+const noopMailer: PasswordResetMailer = {
+  async sendPasswordResetEmail() {},
+};
+
+let pool: Pool;
+let chokePoint: ChokePoint;
+const moduleRegistry = await loadFullModuleRegistry();
+
+async function authHeader(): Promise<{ Authorization: string }> {
+  const user = await createUser(pool, {
+    tenantId: await tenantForNextTestUser(pool),
+    email: `${randomUUID()}@example.com`,
+    passwordHash: await hashPassword(PASSWORD),
+  });
+  const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+  return { Authorization: `Bearer ${token}` };
+}
+
+/**
+ * `graphile_worker.jobs` (000017's view) no longer projects `payload` — this reads the
+ * underlying `_private_jobs` table it's built on, joined to `_private_tasks` for the identifier.
+ */
+async function countPropertyTypeMigrationJobs(propertyId: string): Promise<number> {
+  const { rows } = await pool.query<{ count: string }>(
+    `SELECT count(*)::text AS count
+     FROM graphile_worker._private_jobs jobs
+     JOIN graphile_worker._private_tasks tasks ON tasks.id = jobs.task_id
+     WHERE tasks.identifier = 'propertyTypeMigration' AND jobs.payload->'payload'->>'propertyId' = $1`,
+    [propertyId],
+  );
+  return Number(rows[0]!.count);
+}
+
+interface PropertyBody {
+  id: string;
+  key: string;
+  name: string;
+  type: string;
+  locked: boolean;
+  migrationStatus: string;
+}
+
+describe("property routes (issue #240)", () => {
+  let server: Server;
+  let baseUrl: string;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool, createViewTypeRegistry());
+
+    const dispatch = await createDispatcher(pool, {
+      passwordResetMailer: noopMailer,
+      appBaseUrl: "http://localhost",
+      setupToken: "unused-setup-token",
+      moduleRegistry,
+      blobStorage: new LocalFsBlobStorageWriter(tmpBlobDir),
+      maxFileSizeBytes: 10 * 1024 * 1024,
+    });
+    server = createServer(dispatch);
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+  });
+
+  it("rejects an unauthenticated request", async () => {
+    const res = await fetch(`${baseUrl}/api/properties/${randomUUID()}`, { method: "PATCH" });
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 404 for an unknown property id", async () => {
+    const headers = await authHeader();
+    const res = await fetch(`${baseUrl}/api/properties/${randomUUID()}`, { method: "PATCH", headers });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 400 validation_failed naming 'id' for a non-UUID property id", async () => {
+    const headers = await authHeader();
+    const res = await fetch(`${baseUrl}/api/properties/foo`, { headers });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string; details?: unknown } };
+    expect(body.error.code).toBe("validation_failed");
+    expect(body.error.details).toEqual({ field: "id" });
+  });
+
+  it("renames a property (200, not 204)", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const database = await chokePoint.createDatabase({ name: "D" });
+    const property = await chokePoint.createProperty({
+      databaseId: database.id,
+      key: "title",
+      name: "Title",
+      type: "text",
+    });
+
+    const res = await fetch(`${baseUrl}/api/properties/${property.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ name: "New Title" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as PropertyBody;
+    expect(body.name).toBe("New Title");
+  });
+
+  it("changing type returns 200 (property.patch's canonical output has no typeChanged status) and enqueues exactly one migration_status job", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const database = await chokePoint.createDatabase({ name: "D" });
+    const property: PropertyRow = await chokePoint.createProperty({
+      databaseId: database.id,
+      key: "score",
+      name: "Score",
+      type: "text",
+    });
+
+    const res = await fetch(`${baseUrl}/api/properties/${property.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ type: "number" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as PropertyBody;
+    expect(body.type).toBe("number");
+    expect(body.migrationStatus).toBe("pending");
+
+    expect(await countPropertyTypeMigrationJobs(property.id)).toBe(1);
+  });
+
+  it("returns 200, not 202, when no type change is requested", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const database = await chokePoint.createDatabase({ name: "D" });
+    const property = await chokePoint.createProperty({
+      databaseId: database.id,
+      key: "title",
+      name: "Title",
+      type: "text",
+    });
+
+    const res = await fetch(`${baseUrl}/api/properties/${property.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ type: "text" }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("returns 400 for an unknown property type", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const database = await chokePoint.createDatabase({ name: "D" });
+    const property = await chokePoint.createProperty({
+      databaseId: database.id,
+      key: "title",
+      name: "Title",
+      type: "text",
+    });
+
+    const res = await fetch(`${baseUrl}/api/properties/${property.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ type: "bogus" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string; details?: { field?: string } } };
+    expect(body.error.details?.field).toBe("patch.type");
+  });
+
+  it("returns 403 property_locked when changing the type of a locked property", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const database = await chokePoint.createDatabase({ name: "D" });
+    const property = await chokePoint.createProperty({
+      databaseId: database.id,
+      key: "title",
+      name: "Title",
+      type: "text",
+    });
+    await pool.query(`UPDATE properties SET locked = true WHERE id = $1`, [property.id]);
+
+    const res = await fetch(`${baseUrl}/api/properties/${property.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ type: "number" }),
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("property_locked");
+  });
+
+  it("returns 403 schema_locked when changing the config of a property in a schema-locked database", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const database = await chokePoint.createDatabase({ name: "D" });
+    const property = await chokePoint.createProperty({
+      databaseId: database.id,
+      key: "title",
+      name: "Title",
+      type: "text",
+    });
+    await pool.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [database.id]);
+
+    const res = await fetch(`${baseUrl}/api/properties/${property.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ config: { note: "x" } }),
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("schema_locked");
+  });
+
+  it("deletes a property (200 with its prior representation, not 204)", async () => {
+    const headers = await authHeader();
+    const database = await chokePoint.createDatabase({ name: "D" });
+    const property = await chokePoint.createProperty({
+      databaseId: database.id,
+      key: "title",
+      name: "Title",
+      type: "text",
+    });
+
+    const res = await fetch(`${baseUrl}/api/properties/${property.id}`, { method: "DELETE", headers });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as PropertyBody;
+    expect(body.id).toBe(property.id);
+
+    expect(await chokePoint.getProperty(property.id)).toBeNull();
+  });
+
+  it("returns 403 property_locked when deleting a locked property", async () => {
+    const headers = await authHeader();
+    const database = await chokePoint.createDatabase({ name: "D" });
+    const property = await chokePoint.createProperty({
+      databaseId: database.id,
+      key: "title",
+      name: "Title",
+      type: "text",
+      locked: true,
+    });
+
+    const res = await fetch(`${baseUrl}/api/properties/${property.id}`, { method: "DELETE", headers });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("property_locked");
+  });
+
+  it("returns 403 schema_locked when deleting a property in a schema-locked database", async () => {
+    const headers = await authHeader();
+    const database = await chokePoint.createDatabase({ name: "D" });
+    const property = await chokePoint.createProperty({
+      databaseId: database.id,
+      key: "title",
+      name: "Title",
+      type: "text",
+    });
+    await pool.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [database.id]);
+
+    const res = await fetch(`${baseUrl}/api/properties/${property.id}`, { method: "DELETE", headers });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("schema_locked");
+  });
+
+  it("returns 400 validation_failed empty_patch for an empty patch body (issue #219)", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const database = await chokePoint.createDatabase({ name: "D" });
+    const property = await chokePoint.createProperty({
+      databaseId: database.id,
+      key: "title",
+      name: "Title",
+      type: "text",
+    });
+
+    const res = await fetch(`${baseUrl}/api/properties/${property.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string; details?: { reason?: string } } };
+    expect(body.error.code).toBe("validation_failed");
+    expect(body.error.details?.reason).toBe("empty_patch");
+  });
+
+  it("rejects patch.type on a relation property with 400 validation_failed relation_definition_required (issue #219)", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const source = await chokePoint.createDatabase({ name: "Source" });
+    const target = await chokePoint.createDatabase({ name: "Target" });
+    const { property } = await chokePoint.createRelationProperty({
+      sourceDatabaseId: source.id,
+      key: "assignedTo",
+      name: "Assigned To",
+      targetDatabaseId: target.id,
+      cardinality: "one_to_many",
+      owner: "user",
+    });
+
+    const res = await fetch(`${baseUrl}/api/properties/${property.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ type: "text" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string; details?: { field?: string; reason?: string } } };
+    expect(body.error.code).toBe("validation_failed");
+    expect(body.error.details?.field).toBe("type");
+    expect(body.error.details?.reason).toBe("relation_definition_required");
+  });
+
+  it("rejects patch.config on a relation property with 400 validation_failed relation_definition_required (issue #219)", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const source = await chokePoint.createDatabase({ name: "Source" });
+    const target = await chokePoint.createDatabase({ name: "Target" });
+    const { property } = await chokePoint.createRelationProperty({
+      sourceDatabaseId: source.id,
+      key: "assignedTo",
+      name: "Assigned To",
+      targetDatabaseId: target.id,
+      cardinality: "one_to_many",
+      owner: "user",
+    });
+
+    const res = await fetch(`${baseUrl}/api/properties/${property.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ config: { note: "x" } }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string; details?: { field?: string; reason?: string } } };
+    expect(body.error.code).toBe("validation_failed");
+    expect(body.error.details?.field).toBe("config");
+    expect(body.error.details?.reason).toBe("relation_definition_required");
+  });
+
+  it("still allows renaming a relation property (issue #219)", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const source = await chokePoint.createDatabase({ name: "Source" });
+    const target = await chokePoint.createDatabase({ name: "Target" });
+    const { property } = await chokePoint.createRelationProperty({
+      sourceDatabaseId: source.id,
+      key: "assignedTo",
+      name: "Assigned To",
+      targetDatabaseId: target.id,
+      cardinality: "one_to_many",
+      owner: "user",
+    });
+
+    const res = await fetch(`${baseUrl}/api/properties/${property.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ name: "Owner" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as PropertyBody;
+    expect(body.name).toBe("Owner");
+  });
+
+  it("GET /api/properties/:id returns the raw property row, including config (issue #219)", async () => {
+    const headers = await authHeader();
+    const database = await chokePoint.createDatabase({ name: "D" });
+    const property = await chokePoint.createProperty({
+      databaseId: database.id,
+      key: "title",
+      name: "Title",
+      type: "text",
+      config: { note: "raw" },
+    });
+
+    const res = await fetch(`${baseUrl}/api/properties/${property.id}`, { headers });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; key: string; config: Record<string, unknown> };
+    expect(body.id).toBe(property.id);
+    expect(body.key).toBe("title");
+    expect(body.config).toEqual({ note: "raw" });
+  });
+
+  it("GET /api/properties?databaseId= returns the raw Property[] rows, including config (issue #219)", async () => {
+    const headers = await authHeader();
+    const database = await chokePoint.createDatabase({ name: "D" });
+    const property = await chokePoint.createProperty({
+      databaseId: database.id,
+      key: "title",
+      name: "Title",
+      type: "text",
+      config: { note: "raw" },
+    });
+
+    const res = await fetch(`${baseUrl}/api/properties?databaseId=${database.id}`, { headers });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { properties: { id: string; config: Record<string, unknown> }[] };
+    const found = body.properties.find((p) => p.id === property.id);
+    expect(found).toBeDefined();
+    expect(found?.config).toEqual({ note: "raw" });
+  });
+
+  it("GET /api/properties requires a databaseId query parameter", async () => {
+    const headers = await authHeader();
+    const res = await fetch(`${baseUrl}/api/properties`, { headers });
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 409 version_conflict naming 'key' when creating a property with a duplicate key (issue #672)", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const database = await chokePoint.createDatabase({ name: "D" });
+    await chokePoint.createProperty({ databaseId: database.id, key: "title", name: "Title", type: "text" });
+
+    const res = await fetch(`${baseUrl}/api/databases/${database.id}/properties`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ key: "title", name: "Other Title", type: "text" }),
+    });
+    expect(res.status).toBe(409);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ error: { code: "version_conflict", details: { field: "key" } } });
+  });
+});

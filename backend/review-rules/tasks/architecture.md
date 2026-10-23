@@ -18,3 +18,7 @@ Check for architecture and ownership violations:
 7. AI/agent code writing persisted state directly instead of producing a proposal
    that goes through the approval queue / `confirm` flow — high severity, even if the
    write itself is correct.
+8. A genuinely new architectural pattern (not covered by an existing rule or an
+   ADR under `docs/adr/`) introduced with no ADR added for it — medium severity,
+   flag it as a missing decision record, not a style nitpick. See
+   `docs/adr/README.md` for when an ADR is warranted and its format.

@@ -2,7 +2,16 @@ name: Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    # `ready_for_review`: Relay keeps a pull request in draft while it works on it
+    # and flips it to ready only after its `review:ready` label is on, so this
+    # workflow's `!draft` job condition never races Relay's own review pipeline.
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: Pull request number to review
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -11,37 +20,196 @@ permissions:
   checks: write
 
 concurrency:
-  group: code-review-${{ github.event.pull_request.number }}
+  # Draft and ready runs of one pull request use separate groups. Relay pushes a
+  # new head while the pull request is a draft and marks it ready right after, so
+  # the `synchronize` (draft) and `ready_for_review` events start two runs in the
+  # same second. In one shared group, whichever started second cancelled the
+  # other, and when the draft run won, its job was skipped and the real review
+  # was cancelled, leaving the required `review` check failed (PR #534, twice).
+  # A newer ready run still cancels an older ready run of the same pull request.
+  group: code-review-${{ inputs.pull_request || github.event.pull_request.number }}-${{ github.event.pull_request.draft && 'draft' || 'ready' }}
   cancel-in-progress: true
 
 jobs:
+  # This job id is a required status check context on `develop` — renaming it
+  # or splitting it into several jobs would leave `review` permanently pending
+  # on every pull request. Keep the workflow's review lifecycle in this one job.
   review:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Drafts are not reviewed: Relay works on a pull request in draft and marks
+    # it ready only once it is labelled for Relay's own review (see the
+    # "Relay delegation" step below). A manual dispatch has no pull_request
+    # payload, so it always runs.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    # A Relay-managed pull request answers every agent through the Relay broker.
+    # First-review platform angles use three independent admitted broker turns,
+    # each with one third of the configured platform deadline. Acceptance
+    # criteria runs concurrently; summary follows. The model budget remains
+    # two 60-minute phases. Four independent calls each retain a 5-minute queue
+    # bound and 2-minute margin: 120 + 4 * 7 = 148 minutes. The 150-minute
+    # ceiling is unchanged. bb-plugin-relay's firstReviewCiTimeoutMinutes test
+    # pins this derivation; session expiry also covers the full pipeline.
+    #
+    # This is a ceiling, not a duration: a review that finds nothing still
+    # returns in minutes, and a non-Relay review finishes well inside it.
+    timeout-minutes: 150
     steps:
+      # Relay reviews the pull requests it labels `review:ready` / `review:in-progress`
+      # with the same pinned bot through its own pipeline, and produces the
+      # `code-review` Check Run itself. Running this job as well would review the
+      # same head twice and race Relay for that Check Run. The labels are read
+      # from the API rather than the event payload: the payload is a snapshot
+      # taken when the event fired, and Relay labels the pull request before it
+      # marks it ready, so a stale snapshot must not decide this.
+      #
+      # `review:in-progress` delegates on every event but `synchronize`: a push
+      # while Relay is reviewing moves the head, which ends Relay's run (its
+      # runs are bound to one head) without anyone re-labelling the pull
+      # request — so the new head would be reviewed by nobody. A human push to
+      # a Relay-managed pull request is reviewed here, as the plan requires;
+      # `review:ready` still delegates on any event, since Relay's own trigger
+      # picks that head up. When the label lookup itself fails, the review
+      # runs — a duplicate review is recoverable, a skipped one is not. Every
+      # later step is conditioned on this output so the required `review`
+      # context stays green when delegated.
+      - name: Relay delegation
+        id: relay
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ inputs.pull_request || github.event.pull_request.number }}
+          EVENT_ACTION: ${{ github.event.action }}
+        run: |
+          set -uo pipefail
+          if ! labels="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" --paginate --jq '.[].name')"; then
+            echo "::warning::Could not read the labels of #${PR_NUMBER}; reviewing here."
+            echo "delegated=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if printf '%s\n' "$labels" | grep -qx 'review:ready'; then
+            echo "delegated to Relay (review:ready)"
+            echo "delegated=true" >> "$GITHUB_OUTPUT"
+          elif printf '%s\n' "$labels" | grep -qx 'review:in-progress' && [ "${EVENT_ACTION}" != "synchronize" ]; then
+            echo "delegated to Relay (review:in-progress)"
+            echo "delegated=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "delegated=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout semprec
+        if: steps.relay.outputs.delegated != 'true'
         uses: actions/checkout@v4
+        with:
+          # Deliberately review the PR head in both trigger modes, rather than the
+          # pull_request merge ref. The bot gets changed files from the PR API and
+          # anchors its Check Run to that head, so agents must read the same tree.
+          ref: ${{ github.event.pull_request.head.sha || format('refs/pull/{0}/head', inputs.pull_request) }}
 
       - name: Checkout code-review-bot (private)
+        if: steps.relay.outputs.delegated != 'true'
         uses: actions/checkout@v4
         with:
           repository: dvdtrsnk/code-review-bot
+          # The code-review Check Run is required on `develop`; keep its producer
+          # stable so a bot default-branch change cannot rename that context.
+          ref: 06b0e1b23ee886191bd8ade8ac61118cce3cbb86
           token: ${{ secrets.CODE_REVIEW_BOT_TOKEN }}
           path: .code-review-bot
 
       - name: Install Claude Code CLI
+        if: steps.relay.outputs.delegated != 'true'
         run: |
-          curl -fsSL https://claude.ai/install.sh | bash
+          # A pipeline reports its LAST command's status, so `curl | bash` is green
+          # whenever bash is — including when curl downloaded nothing at all. That is
+          # not hypothetical: `curl: (28) SSL connection timeout` left this step green
+          # with no `claude` on PATH, and the run then failed five minutes later as
+          # "Claude pre-flight call failed: no response from Claude", which points at
+          # the credential rather than at the download that actually failed. The
+          # default shell here is `bash -e`, without pipefail.
+          set -o pipefail
+          curl -fsSL --connect-timeout 10 --max-time 60 https://claude.ai/install.sh | bash
+          # GITHUB_PATH only affects LATER steps, so verify the binary by its own path.
+          if ! "$HOME/.local/bin/claude" --version >/dev/null 2>&1; then
+            echo "::error::the Claude CLI installer ran but left no usable binary at $HOME/.local/bin/claude"
+            exit 1
+          fi
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Run review
+        if: steps.relay.outputs.delegated != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ inputs.pull_request || github.event.pull_request.number }}
+          # Keep the required Check Run name under this repository's control even
+          # if the bot changes its default in a later pinned revision.
+          GH_CHECK_NAME: code-review
+          # The default GITHUB_TOKEN cannot call resolveReviewThread ("Resource not
+          # accessible by integration"), so a finding the bot has already fixed
+          # replies "Fixed." but never actually closes the thread — which silently
+          # defeats required_conversation_resolution below. CODE_REVIEW_BOT_TOKEN
+          # (a classic PAT scoped to the whole account) hits the same restriction
+          # under a different error ("by personal access token") because it wasn't
+          # granted the Pull requests scope. PR_RESOLVE_TOKEN is a fine-grained PAT
+          # scoped only to this repo with Pull requests: read/write, dedicated to
+          # this one mutation. Secret names can't start with GITHUB_, hence the
+          # differing names either side of this mapping.
+          GITHUB_RESOLVE_TOKEN: ${{ secrets.PR_RESOLVE_TOKEN }}
+          # ANTHROPIC_API_KEY stores the Claude Code OAuth token used by the CLI;
+          # the secret name predates this workflow and cannot be renamed here.
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Relay-managed PRs obtain their provider and model from the short-lived
+          # broker session, rather than this fallback Claude credential.
+          RELAY_BROKER_URL: ${{ secrets.RELAY_BROKER_URL }}
+          RELAY_BROKER_SECRET: ${{ secrets.RELAY_BROKER_SECRET }}
+          RELAY_REAL_CLAUDE_BIN: claude
           # develop -> main is a release promotion, not a feature review: switch
           # to the bot's release-readiness rules (migrations/config/rollback/
           # security) instead of re-running the standard per-platform review
           # over the whole accumulated diff.
           PROMOTION_SOURCE: develop
           PROMOTION_TARGET: main
+          # Block the merge on medium findings, not just critical/high. The
+          # bot's default verdict for a medium finding is `comments`, which it
+          # reports as a `neutral` Check Run conclusion — and GitHub counts
+          # `neutral` as satisfied for a required status check. That is how 39
+          # findings across 42 merged pull requests ended up in summary comments
+          # nobody was obliged to act on.
+          REVIEW_BLOCK_SEVERITY: medium
         run: bash "${GITHUB_WORKSPACE}/.code-review-bot/scripts/run-review-github.sh"
+
+      - name: Finalize interrupted code-review check
+        if: always() && steps.relay.outputs.delegated != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${CODE_REVIEW_CHECK_RUN_ID:-}" ]; then
+            echo "No Check Run ID was exported; nothing to finalize."
+            exit 0
+          fi
+
+          if ! status="$(gh api "repos/${GITHUB_REPOSITORY}/check-runs/${CODE_REVIEW_CHECK_RUN_ID}" --jq '.status')"; then
+            echo "::warning::Could not read Check Run ${CODE_REVIEW_CHECK_RUN_ID}; leaving it unchanged."
+            exit 0
+          fi
+          if [ "$status" = "completed" ]; then
+            echo "Check Run ${CODE_REVIEW_CHECK_RUN_ID} was completed by the review bot."
+            exit 0
+          fi
+
+          # The trailing marker is the contract an orchestrator reads to tell a
+          # reviewer-side breakage from real findings. Without it, Relay sees a
+          # failing check with no outcome class and sends the implementer back to
+          # rewrite code against a review that never produced a single finding.
+          summary=$(printf '%s\n\n%s' \
+            "The review workflow ended before the review bot completed this Check Run. Re-run the Code Review workflow for a fresh verdict." \
+            "<!-- crb-outcome:v1:infra-failure -->")
+
+          if ! jq -n \
+            --arg summary "$summary" \
+            '{status: "completed", conclusion: "cancelled", output: {title: "AI Review — Cancelled", summary: $summary}}' \
+            | gh api --method PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${CODE_REVIEW_CHECK_RUN_ID}" --input - > /dev/null; then
+            echo "::warning::Could not finalize Check Run ${CODE_REVIEW_CHECK_RUN_ID}; leaving it unchanged."
+            exit 0
+          fi
+          echo "Finalized interrupted Check Run ${CODE_REVIEW_CHECK_RUN_ID}."

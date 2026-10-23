@@ -1,0 +1,566 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type { Pool } from "pg";
+import { runOnce } from "@semprec/queue";
+import { runInTenant } from "@semprec/shared";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  inTenantZero,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
+import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { withTransaction } from "../db/pool.js";
+import { ForbiddenError } from "../errors.js";
+import { createActionRegistry } from "../scheduler/actions.js";
+import { sweepDueHeartbeats } from "../scheduler/schedulerStore.js";
+import { createCoreTaskList } from "../worker.js";
+import {
+  createLibraryMetadataTriggerAction,
+  createLibraryMetadataRetrySweepAction,
+  LIBRARY_METADATA_TRIGGER_ACTION_ID,
+  LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID,
+} from "../library/libraryMetadataActions.js";
+import {
+  ensureItemAutomation,
+  getItemAutomation,
+  markItemAutomationDone,
+  recordItemAutomationFailure,
+  setItemAutomationLocked,
+  startItemAutomationAttempt,
+} from "../library/itemAutomationStore.js";
+import {
+  enqueueLibraryMetadataProcessing,
+  handleProcessLibraryMetadataTask,
+  type LibraryMetadataFetcher,
+} from "../library/libraryMetadataJob.js";
+import { createUser } from "../auth/usersStore.js";
+import { hashPassword } from "../auth/passwordHash.js";
+import { LIBRARY_GRID_VIEW_TYPE, registerLibraryGridViewType } from "../views/libraryGridViewType.js";
+
+let pool: Pool;
+let chokePoint: ChokePoint;
+
+function libraryRegistry() {
+  const registry = createActionRegistry();
+  registry.set(LIBRARY_METADATA_TRIGGER_ACTION_ID, createLibraryMetadataTriggerAction(pool));
+  registry.set(LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID, createLibraryMetadataRetrySweepAction(pool));
+  return registry;
+}
+
+async function drainQueue(registry = libraryRegistry(), fetcher?: LibraryMetadataFetcher) {
+  await runOnce({ pgPool: pool, taskList: createCoreTaskList(pool, registry, fetcher) });
+}
+
+async function getDatabaseIdByModule(moduleId: string): Promise<string> {
+  const { rows } = await pool.query("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
+  return rows[0].id;
+}
+
+describe("library module (issue #25)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+  });
+
+  it("seeds Books and Movies/TV as concrete instantiations of the generic contract", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const moviesId = await getDatabaseIdByModule("movies");
+    const books = await chokePoint.listProperties(booksId);
+    const movies = await chokePoint.listProperties(moviesId);
+
+    expect(books.map((p) => p.key).sort()).toEqual(["author", "cover", "name", "rating", "status"]);
+    expect(movies.map((p) => p.key).sort()).toEqual(
+      [
+        "cover",
+        "name",
+        "notes",
+        "rating",
+        "secondaryRating",
+        "sourceUrl",
+        "status",
+        "type",
+        "watchedWith",
+        "year",
+      ].sort(),
+    );
+
+    expect(books.find((p) => p.key === "cover")).toMatchObject({ type: "image", owner: "system" });
+    expect(movies.find((p) => p.key === "year")).toMatchObject({ type: "number", owner: "user" });
+    expect(movies.find((p) => p.key === "secondaryRating")).toMatchObject({ type: "number", owner: "system" });
+    expect(movies.find((p) => p.key === "sourceUrl")).toMatchObject({ type: "url", owner: "system" });
+
+    const booksViews = await chokePoint.listViewsByDatabase(booksId);
+    expect(booksViews).toHaveLength(1);
+    expect(booksViews[0]!.type).toBe("library-grid");
+    expect(booksViews[0]!.config).toMatchObject({ coverKey: "cover", subtitleKey: "author", statusKey: "status" });
+    expect(booksViews[0]!.config).not.toHaveProperty("secondaryRatingLabel");
+
+    const moviesViews = await chokePoint.listViewsByDatabase(moviesId);
+    expect(moviesViews[0]!.config).toMatchObject({
+      coverKey: "cover",
+      subtitleKey: "year",
+      ratingKey: "rating",
+      secondaryRatingKey: "secondaryRating",
+      secondaryRatingLabel: "property.movies.secondaryRating.name",
+      sourceUrlKey: "sourceUrl",
+      statusKey: "status",
+      coverGlyph: "🎬",
+    });
+  });
+
+  it("runtime-validates every library-grid contract field", () => {
+    const registry = createViewTypeRegistry();
+    const definition = registry.get(LIBRARY_GRID_VIEW_TYPE);
+    expect(definition).toBeUndefined();
+
+    // Registration is the runtime boundary for persisted view configs.
+    registerLibraryGridViewType(registry);
+    const schema = registry.get(LIBRARY_GRID_VIEW_TYPE)?.configSchema;
+    expect(
+      schema?.safeParse({
+        coverKey: "cover",
+        subtitleKey: "year",
+        ratingKey: "rating",
+        secondaryRatingKey: "secondaryRating",
+        secondaryRatingLabel: "property.movies.secondaryRating.name",
+        sourceUrlKey: "sourceUrl",
+        statusKey: "status",
+        coverGlyph: "🎬",
+      }).success,
+    ).toBe(true);
+    expect(schema?.safeParse({ coverKey: "cover", subtitleKey: "year", ratingKey: "rating" }).success).toBe(false);
+    expect(
+      schema?.safeParse({ coverKey: "cover", subtitleKey: "year", ratingKey: "rating", statusKey: 1 }).success,
+    ).toBe(false);
+  });
+
+  it("rejects writing owner:'system' library fields through the generic create/update path", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    await expect(
+      inTenantZero(() =>
+        chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune", cover: { blobId: "x" } } }),
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
+    await expect(
+      chokePoint.updateItem({ databaseId: booksId, itemId: item.id, propertiesPatch: { cover: { blobId: "x" } } }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("creating a library item drives processLibraryMetadata end to end, storing a real blob as the cover", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const registry = libraryRegistry();
+    const item = await inTenantZero(() =>
+      chokePoint.createItem({
+        databaseId: booksId,
+        properties: { name: "Dune", author: "Frank Herbert" },
+      }),
+    );
+
+    // `runOnce` drains cascading enqueues within one call: the choke-point's onItemEvent
+    // trigger -> heartbeatFireCore -> our trigger action (seeds item_automation, enqueues the
+    // real job) -> processLibraryMetadata itself, using an injected fetcher (the real
+    // metadata source is out of this issue's scope).
+    const fetcher: LibraryMetadataFetcher = async () => ({
+      cover: { mimeType: "image/jpeg", byteSize: 12345, storageKey: "covers/dune.jpg" },
+    });
+    await drainQueue(registry, fetcher);
+
+    const updated = await chokePoint.getItem(booksId, item.id);
+    expect(updated?.properties.cover).toMatchObject({ blobId: expect.any(String) });
+
+    const done = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    expect(done?.status).toBe("done");
+  });
+
+  it("a failed fetch records the error and increments attempts, leaving the row in 'error'", async () => {
+    const moviesId = await getDatabaseIdByModule("movies");
+    const registry = libraryRegistry();
+    const item = await inTenantZero(() =>
+      chokePoint.createItem({ databaseId: moviesId, properties: { name: "Sicario", year: 2015 } }),
+    );
+
+    const failingFetcher: LibraryMetadataFetcher = async () => {
+      throw new Error("source unavailable");
+    };
+    await drainQueue(registry, failingFetcher);
+
+    const automation = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    expect(automation?.status).toBe("error");
+    expect(automation?.error).toBe("source unavailable");
+    expect(automation?.attempts).toBe(1);
+  });
+
+  it("writes an automation_error notification on failure, deduped by job id but not across distinct failing jobs (issue #149)", async () => {
+    const moviesId = await getDatabaseIdByModule("movies");
+    const item = await inTenantZero(() =>
+      chokePoint.createItem({ databaseId: moviesId, properties: { name: "Sicario", year: 2015 } }),
+    );
+    const passwordHash = await hashPassword("s3cret-password");
+    const user = await createUser(pool, {
+      email: "owner@example.test",
+      passwordHash,
+      locale: "en",
+      tenantId: getTenantZeroId(),
+    });
+
+    const failingFetcher: LibraryMetadataFetcher = async () => {
+      throw new Error("source unavailable");
+    };
+    const payload = { itemId: item.id, databaseId: moviesId, config: { source: "test", coverKey: "cover" } };
+
+    await expect(
+      handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: "job-1" } }),
+    ).rejects.toThrow("source unavailable");
+
+    const { rows: afterFirst } = await pool.query(
+      `SELECT user_id, kind, title, link_href, source_table, source_id, transition_instance FROM notifications WHERE source_id = $1`,
+      [item.id],
+    );
+    expect(afterFirst).toMatchObject([
+      {
+        user_id: user.id,
+        kind: "automation_error",
+        title: "Item automation failed",
+        link_href: `?page=library-item&id=${item.id}`,
+        source_table: "item_automation",
+        transition_instance: "job-1",
+      },
+    ]);
+
+    // Redelivery of the same job must not duplicate the notification.
+    await expect(
+      handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: "job-1" } }),
+    ).rejects.toThrow("source unavailable");
+    const { rows: afterReplay } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [item.id]);
+    expect(afterReplay).toHaveLength(1);
+
+    // A later, independent failure (a new job) is a different transition and does insert.
+    await expect(
+      handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: "job-2" } }),
+    ).rejects.toThrow("source unavailable");
+    const { rows: afterNewTransition } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [
+      item.id,
+    ]);
+    expect(afterNewTransition).toHaveLength(2);
+  });
+
+  it("skips the automation_error notification (but still records the failure) before any user account exists (issue #149)", async () => {
+    const moviesId = await getDatabaseIdByModule("movies");
+    const item = await inTenantZero(() =>
+      chokePoint.createItem({ databaseId: moviesId, properties: { name: "Sicario", year: 2015 } }),
+    );
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+
+    const failingFetcher: LibraryMetadataFetcher = async () => {
+      throw new Error("source unavailable");
+    };
+    const payload = { itemId: item.id, databaseId: moviesId, config: { source: "test", coverKey: "cover" } };
+
+    await expect(
+      handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: "job-1" } }),
+    ).rejects.toThrow("source unavailable");
+
+    const { rows } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [item.id]);
+    expect(rows).toHaveLength(0);
+    const automation = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    expect(automation?.status).toBe("error");
+  });
+
+  it("a locked item_automation row is never touched by the heartbeat", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const registry = libraryRegistry();
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
+
+    // Pre-seed and lock the row before anything drains — `runOnce` cascades the trigger
+    // and the processing job through in one call, so locking "mid-flight" between them
+    // isn't observable from a test; pre-locking exercises the same guard in the job itself
+    // (`ensureItemAutomation` is a no-op once the row already exists).
+    await withTransaction(pool, async (client) => {
+      await ensureItemAutomation(client, item.id);
+      await setItemAutomationLocked(client, item.id, true);
+    });
+
+    let called = false;
+    const fetcher: LibraryMetadataFetcher = async () => {
+      called = true;
+      return {};
+    };
+    await drainQueue(registry, fetcher);
+    expect(called).toBe(false);
+
+    const automation = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    expect(automation?.status).toBe("locked");
+  });
+
+  it("the daily retry sweep re-enqueues rows left in 'error' for that database", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const registry = libraryRegistry();
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
+
+    await drainQueue(registry, async () => {
+      throw new Error("boom");
+    });
+    expect((await withTransaction(pool, (client) => getItemAutomation(client, item.id)))?.status).toBe("error");
+
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM project_heartbeats WHERE action_id = $1 AND action_config ->> 'databaseId' = $2`,
+      [LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID, booksId],
+    );
+    expect(rows).toHaveLength(1);
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      rows[0]!.id,
+    ]);
+    await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+
+    await drainQueue(registry); // heartbeatFireCore -> retry sweep action -> re-enqueues processLibraryMetadata
+    await drainQueue(registry, async () => ({})); // the re-enqueued job itself, now succeeding
+
+    const recovered = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    expect(recovered?.status).toBe("done");
+    expect(recovered?.attempts).toBe(1); // unchanged by the successful retry, only failures increment it
+  });
+
+  it("stores a per-relation rating on the Movies -> People edge, not on either item", async () => {
+    const moviesId = await getDatabaseIdByModule("movies");
+    const peopleId = await getDatabaseIdByModule("people");
+
+    const movie = await inTenantZero(() =>
+      chokePoint.createItem({ databaseId: moviesId, properties: { name: "Arrival", year: 2016 } }),
+    );
+    const person = await inTenantZero(() =>
+      chokePoint.createItem({ databaseId: peopleId, properties: { name: "Alex" } }),
+    );
+
+    const watchedWith = (await chokePoint.listProperties(moviesId)).find((p) => p.key === "watchedWith")!;
+    await chokePoint.createRelation({
+      relationPropertyId: watchedWith.id,
+      callerItemId: movie.id,
+      targetItemId: person.id,
+      metadata: { rating: 4 },
+    });
+
+    const { rows } = await pool.query<{ metadata: Record<string, unknown> }>(
+      `SELECT metadata FROM item_relations WHERE item_a = $1 OR item_b = $1`,
+      [movie.id],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.metadata).toEqual({ rating: 4 });
+
+    // Not a property on either side.
+    expect((await chokePoint.getItem(moviesId, movie.id))?.properties.rating).toBeUndefined();
+  });
+
+  it("excludes a soft-deleted item's errored row from the daily retry sweep's re-enqueue", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const registry = libraryRegistry();
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
+
+    await drainQueue(registry, async () => {
+      throw new Error("boom");
+    });
+    expect((await withTransaction(pool, (client) => getItemAutomation(client, item.id)))?.status).toBe("error");
+
+    await chokePoint.softDeleteItem(booksId, item.id);
+
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM project_heartbeats WHERE action_id = $1 AND action_config ->> 'databaseId' = $2`,
+      [LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID, booksId],
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      rows[0]!.id,
+    ]);
+    await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+
+    let called = false;
+    await drainQueue(registry, async () => {
+      called = true;
+      return {};
+    });
+    expect(called).toBe(false);
+
+    const settled = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    expect(settled?.status).toBe("error"); // untouched — never re-enqueued in the first place
+  });
+
+  it("settles item_automation to 'done' for a job that runs against an already-deleted item", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const registry = libraryRegistry();
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
+    await chokePoint.softDeleteItem(booksId, item.id);
+
+    // A job enqueued directly (e.g. one already in flight when the delete happened),
+    // bypassing the retry sweep's exclusion filter entirely.
+    let called = false;
+    await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        enqueueLibraryMetadataProcessing(client, {
+          itemId: item.id,
+          databaseId: booksId,
+          config: { source: "none", coverKey: "cover" },
+        }),
+      ),
+    );
+    await drainQueue(registry, async () => {
+      called = true;
+      return {};
+    });
+    expect(called).toBe(false); // the job returns before ever calling the fetcher
+
+    const settled = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    expect(settled?.status).toBe("done");
+  });
+
+  it("startItemAutomationAttempt reopens a row as pending and counts the attempt, keeping the earlier error (issue #248)", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+    await withTransaction(pool, (client) => recordItemAutomationFailure(client, item.id, "earlier failure", "error"));
+
+    const started = await withTransaction(pool, (client) => startItemAutomationAttempt(client, item.id));
+    expect(started).toMatchObject({ itemId: item.id, status: "pending", error: "earlier failure", attempts: 1 });
+    expect(started?.lastAttemptAt).not.toBeNull();
+
+    const again = await withTransaction(pool, (client) => startItemAutomationAttempt(client, item.id));
+    expect(again?.attempts).toBe(2);
+  });
+
+  it("startItemAutomationAttempt returns null and changes nothing on a locked or absent row (issue #248)", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+    await withTransaction(pool, (client) => setItemAutomationLocked(client, item.id, true));
+
+    expect(await withTransaction(pool, (client) => startItemAutomationAttempt(client, item.id))).toBeNull();
+    const locked = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    expect(locked).toMatchObject({ status: "locked", attempts: 0, lastAttemptAt: null });
+
+    const absentId = "00000000-0000-4000-8000-000000000000";
+    expect(await withTransaction(pool, (client) => startItemAutomationAttempt(client, absentId))).toBeNull();
+  });
+
+  it("recordItemAutomationFailure writes the error and status without counting an attempt, and never touches a locked row (issue #248)", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+
+    expect(
+      await withTransaction(pool, (client) => recordItemAutomationFailure(client, item.id, "transient", "pending")),
+    ).toBe(true);
+    expect(await withTransaction(pool, (client) => getItemAutomation(client, item.id))).toMatchObject({
+      status: "pending",
+      error: "transient",
+      attempts: 0,
+    });
+
+    expect(
+      await withTransaction(pool, (client) => recordItemAutomationFailure(client, item.id, "permanent", "error")),
+    ).toBe(true);
+    expect(await withTransaction(pool, (client) => getItemAutomation(client, item.id))).toMatchObject({
+      status: "error",
+      error: "permanent",
+      attempts: 0,
+    });
+
+    await withTransaction(pool, (client) => setItemAutomationLocked(client, item.id, true));
+    expect(
+      await withTransaction(pool, (client) => recordItemAutomationFailure(client, item.id, "ignored", "error")),
+    ).toBe(false);
+    expect(await withTransaction(pool, (client) => getItemAutomation(client, item.id))).toMatchObject({
+      status: "locked",
+      error: "permanent",
+    });
+  });
+
+  it("unlocking a row only transitions it if it was actually locked, never clobbering 'done'/'error'", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
+
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+    await withTransaction(pool, (client) => markItemAutomationDone(client, item.id));
+
+    // Unlocking a row that was never locked (already 'done') is a no-op, not a reset to 'pending'.
+    const unlocked = await withTransaction(pool, (client) => setItemAutomationLocked(client, item.id, false));
+    expect(unlocked.status).toBe("done");
+
+    // Locking then unlocking does reach 'pending' — the one real lock/unlock transition.
+    await withTransaction(pool, (client) => setItemAutomationLocked(client, item.id, true));
+    const relocked = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    expect(relocked?.status).toBe("locked");
+    const reunlocked = await withTransaction(pool, (client) => setItemAutomationLocked(client, item.id, false));
+    expect(reunlocked.status).toBe("pending");
+  });
+});
+
+describe("library automation_error recipient in a tenant (issue #1018)", () => {
+  let runtimePool: Pool;
+
+  // The first describe's `afterAll` ended the shared pool, so this block opens and closes its own.
+  beforeAll(async () => {
+    pool = getTestPool();
+    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "semprec_data"));
+  });
+
+  beforeEach(async () => {
+    await runInTenant(getTenantZeroId(), () => resetDatabase(pool));
+  });
+
+  afterAll(async () => {
+    await runtimePool?.end();
+    await pool?.end();
+  });
+
+  it("notifies the user of the tenant the fetch fails in, never the earlier-created account", async () => {
+    const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(pool));
+    const userA = await runInTenant(getTenantZeroId(), () =>
+      createUser(pool, { email: "a@example.test", passwordHash: "x", tenantId: getTenantZeroId() }),
+    );
+    const userB = await runInTenant(tenantB, () =>
+      createUser(pool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB }),
+    );
+    const { itemId, moviesId } = await runInTenant(tenantB, async () => {
+      await seedSystem(runtimePool);
+      const { rows } = await runtimePool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [
+        "movies",
+      ]);
+      const databaseId = rows[0]!.id;
+      const item = await createChokePoint(runtimePool).createItem({
+        databaseId,
+        properties: { name: "Sicario", year: 2015 },
+      });
+      return { itemId: item.id, moviesId: databaseId };
+    });
+    const failingFetcher: LibraryMetadataFetcher = async () => {
+      throw new Error("source unavailable");
+    };
+
+    await expect(
+      runInTenant(tenantB, () =>
+        handleProcessLibraryMetadataTask(
+          runtimePool,
+          { itemId, databaseId: moviesId, config: { source: "test", coverKey: "cover" } },
+          failingFetcher,
+          { job: { id: "job-b" } },
+        ),
+      ),
+    ).rejects.toThrow("source unavailable");
+
+    const { rows } = await pool.query<{ user_id: string; kind: string; tenant_id: string }>(
+      `SELECT user_id, kind, tenant_id FROM notifications WHERE source_id = $1`,
+      [itemId],
+    );
+    expect(rows).toEqual([{ user_id: userB.id, kind: "automation_error", tenant_id: tenantB }]);
+    expect(rows[0]?.user_id).not.toBe(userA.id);
+  });
+});

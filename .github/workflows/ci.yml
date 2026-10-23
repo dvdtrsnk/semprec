@@ -1,0 +1,365 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  # A merge lands as a push. Running on it gives every commit on `develop` and `main`
+  # its own `ci` result, which #189's tag eligibility checks for the exact SHA.
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+# One group per pull request, or per pushed branch: a push run and a pull-request run
+# never share a group, so neither cancels the other. Only a pull request's superseded
+# runs are cancelled — every pushed commit keeps its run, because a cancelled run
+# would leave that commit without the green result a release tag requires.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # `main` holds released versions only and is reached exclusively through a
+  # `develop -> main` promotion pull request
+  # (docs/adr/2026-09-10-develop-main-branching-with-release-promotion.md). This job
+  # is a required check on `main` only; on every other pull request and on every
+  # push it passes without checking anything. The head ref is read through `env`,
+  # never interpolated into the script, because it is chosen by whoever opens the
+  # pull request.
+  promotion-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: A pull request into main comes from this repository's develop
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$EVENT" != "pull_request" ] || [ "$BASE_REF" != "main" ]; then
+            echo "Not a pull request into main; nothing to check."
+            exit 0
+          fi
+          if [ "$HEAD_REPO" = "$REPO" ] && [ "$HEAD_REF" = "develop" ]; then
+            echo "Promotion pull request from develop."
+            exit 0
+          fi
+          echo "::error::main is reached only by a develop -> main promotion pull request; this one comes from ${HEAD_REPO}:${HEAD_REF}."
+          exit 1
+
+  # The job id is a required status check context on both `develop` and `main`
+  # (docs/operations/required-checks.md) — renaming it would leave `ci` permanently
+  # pending on every pull request. It carries every check that is not one of the named
+  # tiers below: repository scans, lint, format, the build and the web workspace.
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The protected-paths check (Relay may never change its own flows) is NOT here:
+      # this workflow runs on `pull_request`, i.e. from the pull request's own tree,
+      # so the very pull request it would catch could edit the step or the script
+      # away. It lives in protected-paths.yml on `pull_request_target`, which always
+      # runs the base branch's copy of both.
+
+      # The review bot reads every `review-rules/scope.md` as literal glob patterns and
+      # silently skips whatever they don't match, so a corrupted scope file turns the
+      # required `code-review` check into a green light that reviewed nothing — which is
+      # how 14 pull requests merged unreviewed. Cheap enough to run before anything else.
+      - name: Review-rules scope sanity
+        run: node .github/scripts/check-review-scope.mjs
+
+      # Regression gate for two write-safety shapes (an unchecked DELETE/UPDATE result, a
+      # pool.connect() outside db/pool.ts) found on PRs #380 and #386. Fails only on a
+      # violation absent from the committed baseline — see the script's header comment.
+      # No dependency on `node_modules`, so it runs before install alongside the other
+      # dependency-free repo scan above.
+      - name: Backend — check write safety
+        working-directory: backend
+        run: pnpm run check:write-safety
+
+      # Runs the `node:test` suites under `.github/scripts/` through
+      # run-repo-script-tests.mjs, which fails when it finds no test file (a bare
+      # `node --test` glob matching nothing exits 0). No dependency on `node_modules`,
+      # so it runs before install alongside the other dependency-free scripts above.
+      - name: Repo scripts — tests
+        working-directory: backend
+        run: pnpm run test:repo-scripts
+
+      # Backend static checks and the build. Every test tier and the boundary check
+      # run as their own jobs below.
+      - name: Backend — install
+        working-directory: backend
+        run: pnpm install --frozen-lockfile
+
+      - name: Backend — lint
+        working-directory: backend
+        run: pnpm run lint
+
+      - name: Backend — format check
+        working-directory: backend
+        run: pnpm run format:check
+
+      - name: Backend — build
+        working-directory: backend
+        run: pnpm -r run build
+
+      # Catches two independently-created branches each picking the same
+      # next migration ordinal (e.g. two branches both adding 0011_*.sql).
+      # The migration runner keys applied migrations by full filename, so a
+      # collision like this never fails at the database layer or as a git
+      # merge conflict — it silently applies both in alphabetical order.
+      - name: Backend — check migration numbering
+        working-directory: backend
+        run: pnpm --filter @semprec/data run check-migration-numbering
+
+      - name: Web — install
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Web — lint
+        working-directory: web
+        run: pnpm run lint
+
+      - name: Web — format check
+        working-directory: web
+        run: pnpm run format:check
+
+      - name: Web — build
+        working-directory: web
+        run: pnpm run build
+
+      - name: Web — test
+        working-directory: web
+        run: pnpm test
+
+  # The named test tiers (#250, #188). Each tier's job id — for the integration tier, its
+  # fan-in job `integration` — is a required status check context on
+  # `develop` and `main` and a stable identifier in docs/operations/required-checks.md:
+  # renaming one is a contract change that must update branch protection and that
+  # document together. They run alongside `ci`, not after it, so a failing tier is
+  # reported without waiting for the rest of the gate.
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Backend — install
+        working-directory: backend
+        run: pnpm install --frozen-lockfile
+
+      # No PostgreSQL and no build needed: the unit tier (including the pi-runtime
+      # contract suite in packages/agent-runtime) never imports anything that touches a
+      # real database, and vitest resolves workspace packages from their sources.
+      - name: Backend — test:unit
+        working-directory: backend
+        run: pnpm run test:unit
+
+  # The integration tier runs as three vitest shards (`--shard=<n>/3`), one per
+  # matrix runner. Every shard is its own vitest process, so
+  # `packages/data/src/testSupport/globalSetup.ts` gives each its own ephemeral
+  # PostgreSQL; the shards share nothing. The matrix reports one context per shard
+  # (`integration-shard (1)`, …) — the required `integration` context comes from the
+  # fan-in job below.
+  #
+  # The job timeout is the sum of its step budgets plus about a minute for checkout,
+  # toolchain setup and `pnpm install`: 13 minutes for ffmpeg (the slowest uncached
+  # install seen took 12.5) and 9 for the shard's tests (a shard takes 2–5 minutes; the
+  # whole tier took about 13 serially). The two slow steps carry their own
+  # `timeout-minutes`, so a stalled package mirror and a stalled test run each fail
+  # under their own step name instead of both surfacing as the job being cancelled,
+  # and time the mirror takes never comes out of the tests' budget.
+  integration-shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 23
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Backend — install
+        working-directory: backend
+        run: pnpm install --frozen-lockfile
+
+      # `semprec-transcribe` shells out to ffmpeg/ffprobe (#246), and the integration
+      # tier exercises that for real rather than mocking the binaries away. They are a
+      # system dependency, not an npm one, and the GitHub-hosted runner image does not
+      # carry them — without this step the tier fails with `spawn ffmpeg ENOENT`.
+      #
+      # ffmpeg pulls in about 63 MB of packages, and the runner's Ubuntu mirror has
+      # served them at under 100 kB/s: 18 of 599 installs on 2026-09-30/10-01 took over
+      # 4 minutes and 7 over 10 (run 36871665352: 11 min 39 s). The downloaded `.deb`
+      # files are therefore cached per runner image and architecture
+      # (`ImageOS`/`ImageVersion`/`RUNNER_ARCH`, so a new image or architecture starts a
+      # fresh cache) and apt reads them from there; only a package the mirror has
+      # updated since is downloaded again. The cache is saved right after the install,
+      # not at the end of the job, so a shard whose tests fail still fills it. GitHub
+      # scopes a cache to the ref that saved it: what push runs on `develop` (the default
+      # branch) save, every pull request restores; what a pull request saves, only that
+      # pull request does.
+      - name: Backend — ffmpeg package cache key
+        id: ffmpeg-cache-key
+        run: echo "key=ffmpeg-debs-${ImageOS}-${ImageVersion}-${RUNNER_ARCH}" >> "$GITHUB_OUTPUT"
+
+      - name: Backend — restore ffmpeg packages
+        id: ffmpeg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.ffmpeg-cache-key.outputs.key }}
+
+      - name: Backend — install ffmpeg
+        timeout-minutes: 13
+        run: |
+          mkdir -p ~/apt-archives/partial
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-archives" ffmpeg
+          sudo chown -R "$(id -u):$(id -g)" ~/apt-archives
+
+      - name: Backend — save ffmpeg packages
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.ffmpeg-cache-key.outputs.key }}
+
+      # The ephemeral PostgreSQL is created for this shard and removed after it by
+      # `packages/data/src/testSupport/globalSetup.ts` (an embedded server, no service
+      # container and no external database).
+      - name: Backend — test:integration (shard ${{ matrix.shard }}/3)
+        timeout-minutes: 9
+        working-directory: backend
+        run: pnpm run test:integration --shard=${{ matrix.shard }}/3
+
+  # Exists so the required context keeps the name `integration` while the work runs in
+  # the `integration-shard` matrix above; renaming it is a branch-protection contract
+  # change (docs/operations/required-checks.md). `always()` makes it report even when a
+  # shard fails or is cancelled, so the context turns red instead of being skipped —
+  # and it is green only when every shard succeeded.
+  integration:
+    needs: integration-shard
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Every integration shard succeeded
+        env:
+          SHARDS_RESULT: ${{ needs.integration-shard.result }}
+        run: |
+          if [ "$SHARDS_RESULT" = "success" ]; then
+            echo "All integration shards succeeded."
+            exit 0
+          fi
+          echo "::error::The integration-shard matrix finished with result '${SHARDS_RESULT}'; every shard must succeed."
+          exit 1
+
+  dependency-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Backend — install
+        working-directory: backend
+        run: pnpm install --frozen-lockfile
+
+      # Import-boundary rules from #173 (dependency-cruiser.rules.json). Reads the
+      # sources directly, so it needs the install but no build.
+      - name: Backend — module boundaries
+        working-directory: backend
+        run: pnpm run check:boundaries
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Backend — install
+        working-directory: backend
+        run: pnpm install --frozen-lockfile
+
+      # Provisions its own ephemeral PostgreSQL through
+      # `packages/data/src/testSupport/globalSetup.ts` — no service container needed.
+      - name: Backend — test:e2e
+        working-directory: backend
+        run: pnpm run test:e2e
+
+  # The pinned pi runtime's contract (#134): the one `piRuntimeContract` suite file,
+  # which the full unit tier also includes, run here under a required name of its own
+  # so a pi upgrade that breaks it is reported as exactly that.
+  pi-agent-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Backend — install
+        working-directory: backend
+        run: pnpm install --frozen-lockfile
+
+      # Guards the suite's premise: production code (and the suite itself) may only
+      # reach pi through its documented package-root exports, never an internal or
+      # example path that pi could change without a version bump.
+      - name: Backend — check pi import paths
+        working-directory: backend
+        run: pnpm run check:pi-import-paths
+
+      - name: Backend — pi runtime contract suite
+        working-directory: backend
+        run: pnpm exec vitest run --config vitest.unit.config.ts packages/agent-runtime/src/__tests__/piRuntimeContract.unit.test.ts

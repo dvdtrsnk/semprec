@@ -1,0 +1,149 @@
+import type { PoolClient } from "pg";
+import { requireSingleRow } from "../db/pool.js";
+import { ValidationError } from "../errors.js";
+import type { ViewItemRow } from "../types.js";
+import { visibleDatabaseIds } from "./itemsStore.js";
+
+/** The raw `view_items` row shape this module reads back from Postgres. */
+type ViewItemDbRow = { view_id: string; item_id: string; position: number };
+
+function mapViewItemRow(row: ViewItemDbRow): ViewItemRow {
+  return { viewId: row.view_id, itemId: row.item_id, position: row.position };
+}
+
+export async function listViewItems(client: PoolClient, viewId: string): Promise<ViewItemRow[]> {
+  const { rows } = await client.query<ViewItemDbRow>(
+    `SELECT view_id, item_id, position FROM view_items WHERE view_id = $1 ORDER BY position ASC`,
+    [viewId],
+  );
+  return rows.map(mapViewItemRow);
+}
+
+/**
+ * `listViewItems` filtered to live (non-trashed) members and paged by `position` — used to
+ * page a curated view's default listing, where a page must fill with `limit` live items
+ * rather than come back short whenever memberships happen to point at trashed items. The
+ * join also binds the caller's visible database ids (`visibleDatabaseIds`), so the planner
+ * prunes `items` to those partitions instead of scanning every tenant's partition.
+ */
+export async function listLiveViewItemsAfter(
+  client: PoolClient,
+  viewId: string,
+  input: { afterPosition: number | null; limit: number },
+): Promise<ViewItemRow[]> {
+  const databaseIds = await visibleDatabaseIds(client);
+  const conditions = ["m.view_id = $1", "i.deleted_at IS NULL"];
+  const params: unknown[] = [viewId, input.limit, databaseIds];
+  if (input.afterPosition !== null) {
+    params.push(input.afterPosition);
+    conditions.push(`m.position > $${params.length}`);
+  }
+  const { rows } = await client.query<ViewItemDbRow>(
+    `SELECT m.view_id, m.item_id, m.position FROM view_items m
+     JOIN items i ON i.id = m.item_id AND i.database_id = ANY($3::uuid[])
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY m.position ASC
+     LIMIT $2`,
+    params,
+  );
+  return rows.map(mapViewItemRow);
+}
+
+/**
+ * Adding an already-present item is a move, not a duplicate insert: it delegates to
+ * `reorderViewItem`, whose position-shifting logic is what keeps `position` values
+ * unique. A brand-new member inserted at an explicit position likewise shifts every
+ * row at or after it up by one first, so it can never land on (or collide with) an
+ * existing position.
+ */
+export async function addViewItem(
+  client: PoolClient,
+  viewId: string,
+  itemId: string,
+  position?: number,
+): Promise<ViewItemRow> {
+  // Serializes concurrent addViewItem calls on the same view: without this, two calls
+  // for different items can both read the same MAX(position) (or both match the same
+  // `position >= $2` shift) and race to the same position, tying it — there is no
+  // UNIQUE (view_id, position) constraint to catch that at the DB level.
+  await client.query(`SELECT id FROM views WHERE id = $1 FOR UPDATE`, [viewId]);
+
+  const { rows: existingRows } = await client.query<{ position: number }>(
+    `SELECT position FROM view_items WHERE view_id = $1 AND item_id = $2 FOR UPDATE`,
+    [viewId, itemId],
+  );
+  if (existingRows[0]) {
+    if (position === undefined)
+      return mapViewItemRow({ view_id: viewId, item_id: itemId, position: existingRows[0].position });
+    return reorderViewItem(client, viewId, itemId, position);
+  }
+
+  let pos = position;
+  if (pos === undefined) {
+    const { rows } = await client.query<{ next: number }>(
+      `SELECT COALESCE(MAX(position), -1) + 1 AS next FROM view_items WHERE view_id = $1`,
+      [viewId],
+    );
+    pos = requireSingleRow(rows, "view_items next position").next;
+  } else {
+    await client.query(`UPDATE view_items SET position = position + 1 WHERE view_id = $1 AND position >= $2`, [
+      viewId,
+      pos,
+    ]);
+  }
+
+  const { rows } = await client.query<ViewItemDbRow>(
+    `INSERT INTO view_items (view_id, item_id, position) VALUES ($1, $2, $3) RETURNING view_id, item_id, position`,
+    [viewId, itemId, pos],
+  );
+  return mapViewItemRow(requireSingleRow(rows, "view_items row"));
+}
+
+/** Returns whether a row was actually removed, so the choke-point can distinguish a real removal from a no-op on a non-member `itemId`. */
+export async function removeViewItem(client: PoolClient, viewId: string, itemId: string): Promise<boolean> {
+  const result = await client.query(`DELETE FROM view_items WHERE view_id = $1 AND item_id = $2`, [viewId, itemId]);
+  return result.rowCount !== null && result.rowCount > 0;
+}
+
+/**
+ * Moves `itemId` to `position`, shifting every row strictly between its old and new
+ * position by one — a bare `UPDATE ... SET position = $N` would leave two rows tied on
+ * the same position, making `ORDER BY position` non-deterministic between them.
+ */
+export async function reorderViewItem(
+  client: PoolClient,
+  viewId: string,
+  itemId: string,
+  position: number,
+): Promise<ViewItemRow> {
+  // Serializes concurrent reorderViewItem calls on the same view: without this, two calls
+  // for different items can both read the same `position` shift window and race to the
+  // same position, tying it — there is no UNIQUE (view_id, position) constraint to catch
+  // that at the DB level.
+  await client.query(`SELECT id FROM views WHERE id = $1 FOR UPDATE`, [viewId]);
+
+  const { rows: currentRows } = await client.query<{ position: number }>(
+    `SELECT position FROM view_items WHERE view_id = $1 AND item_id = $2 FOR UPDATE`,
+    [viewId, itemId],
+  );
+  const current = currentRows[0];
+  if (!current) throw new ValidationError(`Item ${itemId} is not a member of view ${viewId}`, { field: "itemId" });
+
+  if (position > current.position) {
+    await client.query(
+      `UPDATE view_items SET position = position - 1 WHERE view_id = $1 AND position > $2 AND position <= $3`,
+      [viewId, current.position, position],
+    );
+  } else if (position < current.position) {
+    await client.query(
+      `UPDATE view_items SET position = position + 1 WHERE view_id = $1 AND position >= $2 AND position < $3`,
+      [viewId, position, current.position],
+    );
+  }
+
+  const { rows } = await client.query<ViewItemDbRow>(
+    `UPDATE view_items SET position = $3 WHERE view_id = $1 AND item_id = $2 RETURNING view_id, item_id, position`,
+    [viewId, itemId, position],
+  );
+  return mapViewItemRow(requireSingleRow(rows, "view_items row"));
+}

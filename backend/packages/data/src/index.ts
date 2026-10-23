@@ -1,1 +1,416 @@
-export {};
+import "./domainWriteHooks.js";
+
+export { createPool, withTransaction, withClient, requireAffectedRows, type Queryable } from "./db/pool.js";
+export { assertRuntimeRole, RuntimeRoleAssertionError } from "./db/runtimeRoleAssertion.js";
+export { runMigrations } from "./db/migrate.js";
+export * from "./errors.js";
+export * from "./types.js";
+
+export { createChokePoint, type ChokePoint } from "./chokePoint/chokePoint.js";
+export type { Actor } from "./chokePoint/authorization.js";
+export {
+  createItemWithClient,
+  updateItemWithClient,
+  writeComputedAndAnnounce,
+  type CreateItemInput,
+  type UpdateItemInput,
+  type UpdateItemWithClientOptions,
+} from "./chokePoint/itemWrites.js";
+export {
+  deleteRelationWithClient,
+  type CreateRelationInput,
+  type UpdateRelationInput,
+  type DeleteRelationInput,
+  type RelationEdge,
+} from "./chokePoint/relationOps.js";
+export {
+  computeDestructiveResourceProjection,
+  type ResourceSnapshot,
+  type ResourceSnapshotKind,
+  type DestructiveResourceProjection,
+  type DestructiveOperationCheck,
+} from "./chokePoint/destructiveProjection.js";
+export { databaseArchiveWithClient } from "./chokePoint/databaseOps.js";
+export { propertyDeleteWithClient } from "./chokePoint/propertyOps.js";
+export { viewDeleteWithClient } from "./chokePoint/viewOps.js";
+export { itemDeleteWithClient } from "./chokePoint/itemTrash.js";
+export type { CreateDatabaseInput } from "./chokePoint/databasesStore.js";
+export { getDatabaseByModuleId } from "./chokePoint/databasesStore.js";
+export type { CreatePropertyInput } from "./chokePoint/propertiesStore.js";
+export type { ListItemsOptions } from "./chokePoint/itemsStore.js";
+export { getItemById, getItemsByIds, lockItemById } from "./chokePoint/itemsStore.js";
+export { writeComputed } from "./chokePoint/itemsStore.js";
+export type { CreateViewInput, PatchViewInput } from "./chokePoint/viewsStore.js";
+export * from "./chokePoint/viewTypeRegistry.js";
+export { manifest as schemaCoreModuleManifest } from "./chokePoint/schemaCoreModuleManifest.js";
+
+export * from "./views/filterTree.js";
+export { compileFilterNode } from "./views/filterCompiler.js";
+export * from "./views/sortSpec.js";
+export { compileSort } from "./views/sortCompiler.js";
+export * from "./views/viewConfig.js";
+export * from "./views/mailboxClientViewType.js";
+export type { FilterProperty, FilterProperties } from "./views/filterCompiler.js";
+export { buildFilterProperties } from "./views/filterProperties.js";
+export type { QueryViewOptions, QueryViewResult, DatabaseQueryInput, ViewQueryInput } from "./views/viewQuery.js";
+export { manifest as viewsModuleManifest } from "./views/viewsModuleManifest.js";
+
+export * from "./scheduler/rule.js";
+export { computeNextFireAt } from "./scheduler/nextFireAt.js";
+export * from "./scheduler/schedulerStore.js";
+export * from "./scheduler/actions.js";
+export * from "./scheduler/heartbeatAgentTools.js";
+export {
+  handleHeartbeatSweepTask,
+  createHeartbeatFireCoreTask,
+  createHeartbeatFireAgentTask,
+} from "./scheduler/sweep.js";
+export { runHeartbeatFireQueueSplitMigration } from "./scheduler/heartbeatFireQueueSplitMigration.js";
+
+export {
+  ROLLUP_AGGREGATIONS,
+  parseRollupConfig,
+  validateRollupConfig,
+  assertAggregationCompatibleWithType,
+  type RollupAggregation,
+  type RollupConfig,
+  type ValidatedRollupConfig,
+} from "./rollup/config.js";
+export * from "./rollup/dependencies.js";
+export {
+  enqueueRollupRecompute,
+  enqueueRollupBackfill,
+  recomputeRollupCell,
+  backfillRollup,
+  handleRollupRecomputeTask,
+  handleRollupRecomputeFullTask,
+} from "./rollup/recompute.js";
+export { assertRelationDeletable, assertSourceRetypeAllowed } from "./rollup/mirror.js";
+
+export {
+  isConversionSupported,
+  enqueuePropertyTypeMigration,
+  runPropertyTypeMigrationJob,
+  handlePropertyTypeMigrationTask,
+} from "./migrationJob/propertyTypeMigration.js";
+export { runModuleDataMigration, runModuleDataMigrations } from "./migrationJob/moduleDataMigration.js";
+
+export * from "./manifest/permissionManifest.js";
+export * from "./manifest/driftCheck.js";
+export * from "./manifest/moduleRegistryDriftCheck.js";
+export * from "./manifest/knownActionIds.js";
+export {
+  createCatalogResolver,
+  resolveDatabaseName,
+  resolveProperty,
+  toManifestLocale,
+  type CatalogResolver,
+  type ManifestLocale,
+  type ResolvedOption,
+  type ResolvedProperty,
+} from "./manifest/catalogResolution.js";
+export * from "./manifest/schemaProjection.js";
+export * from "./manifest/fullModuleRegistry.js";
+export * from "./notifications/findings.js";
+export * from "./notifications/notificationKinds.js";
+export * from "./notifications/notify.js";
+export * from "./notifications/notificationsStore.js";
+export * from "./notifications/notificationFanoutJob.js";
+
+export * from "./agentRuns/agentRunsStore.js";
+export * from "./agentRuns/agentRunEventsStore.js";
+export {
+  AGENT_RUN_EVENTS_RETENTION_DAYS,
+  handleAgentRunEventsRetentionTask,
+} from "./agentRuns/agentRunEventsRetention.js";
+export * from "./aiGateway/aiGatewayCallsStore.js";
+export * from "./aiGateway/aiUsageReport.js";
+export * from "./aiGateway/tenantAiBudgetsStore.js";
+export * from "./health/processHeartbeats.js";
+export * from "./observability/observabilityChecksStore.js";
+export * from "./observability/observabilityCheckSystem.js";
+export {
+  FAILED_JOB_RETENTION_MS,
+  pruneQueueFailedJobs,
+  handleQueueFailedJobsPruneTask,
+} from "./observability/queueFailedJobsPrune.js";
+export * from "./observability/systemHealthReport.js";
+export { seedSystem } from "./seed/seedSystem.js";
+export * from "./seed/tenDatabaseKeys.js";
+export {
+  enqueueTranscriptionJob,
+  transcriptionJobPayloadSchema,
+  transcriptionSourceLink,
+  TRANSCRIPTION_OWNER_PROCESS,
+  type TranscriptionJobPayload,
+} from "./transcription/transcriptionJob.js";
+export {
+  TRANSCRIPTION_CREATE_COMPUTED_KEY,
+  TRANSCRIPTION_PREPARE_COMPUTED_KEY,
+  TRANSCRIPTION_DIARIZE_COMPUTED_KEY,
+  TRANSCRIPTION_ASR_COMPUTED_KEY,
+  TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
+  TRANSCRIPT_LANGUAGE_COMPUTED_KEY,
+  TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
+  TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY,
+} from "./transcription/transcriptionComputedKeys.js";
+export {
+  FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
+  TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
+  createFilesTranscriptionTriggerAction,
+  createTranscriptionRequeueSweepAction,
+  readBlobId,
+} from "./transcription/transcriptionActions.js";
+export * from "./library/libraryMetadataActions.js";
+export * from "./mail/personLinkingActions.js";
+export { createRerunTranscriptionRouteHandler } from "./transcription/transcriptionRouteHandlers.js";
+export { matchTranscriptToEvent } from "./transcription/transcriptEventMatch.js";
+export {
+  proposeSpeakerMappings,
+  readSpeakerSuggestionContext,
+  type SpeakerMappingSuggestion,
+  type SpeakerSuggestionContext,
+} from "./transcription/transcriptSpeakerSuggestion.js";
+export {
+  ensureItemAutomation,
+  getItemAutomation,
+  lockItemAutomation,
+  markItemAutomationDone,
+  recordItemAutomationFailure,
+  startItemAutomationAttempt,
+} from "./library/itemAutomationStore.js";
+export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTenDatabases.js";
+export { manifest as systemDatabasesModuleManifest } from "./seed/systemDatabasesModuleManifest.js";
+export * from "./systemSettings.js";
+export { createCoreTaskList, createApiCoreTaskList, CORE_CRONTAB } from "./worker.js";
+export { createAgentTaskList, noopAgentQueueTask, type AgentQueueTaskHandler } from "./agentWorker.js";
+export {
+  mergeModuleTaskList,
+  mergeModuleTaskListForAffinity,
+  assertTaskListMatchesAffinity,
+  CORE_TASK_NAME_SET,
+  AGENT_TASK_NAME_SET,
+  RESERVED_TASK_NAMES,
+  resolveTaskAffinitySets,
+  type TaskAffinitySets,
+} from "./moduleTasks.js";
+export {
+  deriveDesiredWorkerInstances,
+  createModuleWorkerInstanceReconciler,
+  workerInstanceId,
+  type DesiredWorkerInstance,
+  type WorkerInstanceIdentity,
+  type WorkerActiveRowIdsSource,
+  type WorkerSupervisorPort,
+  type ModuleWorkerInstanceReconciler,
+} from "./moduleWorkers.js";
+export { manifest as libraryModuleManifest } from "./library/libraryModuleManifest.js";
+export {
+  createMailLiveSyncRoot,
+  createNoopMailLiveSyncLifecycleFactory,
+  type MailAccountLifecycle,
+  type MailLiveSyncAccount,
+  type MailLiveSyncLifecycleFactory,
+  type MailLiveSyncRoot,
+  type MailLiveSyncRootOptions,
+} from "./mail/mailLiveSyncRoot.js";
+export { resolveMailModuleIds, type MailModuleIds } from "./mail/mailModuleIds.js";
+export { manifest as mailModuleManifest } from "./mail/mailModuleManifest.js";
+export {
+  createImapMailFlagWritebackAdapter,
+  createGmailMailFlagWritebackAdapter,
+  createGraphMailFlagWritebackAdapter,
+  type MailFlagWritebackAdapter,
+} from "./mail/mailFlagWriteback.js";
+export {
+  handleGraphChangeNotification,
+  type GraphChangeNotification,
+  type GraphNotificationOutcome,
+} from "./mail/graphWebhookNotifications.js";
+export * from "./realtimeHook.js";
+
+export { createDocStore, type DocStore, type DocVersion } from "./docs/docStore.js";
+export type { BlockInput, BlockData } from "./docs/blocks.js";
+export {
+  CANVAS_ELEMENT_TYPES,
+  type CanvasElementType,
+  type CanvasElementInput,
+  type CanvasElementData,
+} from "./docs/canvas.js";
+export {
+  loadDoc as loadYDoc,
+  mutateDoc as mutateYDoc,
+  getDocUpdateById,
+  DEFAULT_COMPACTION_THRESHOLD,
+  runCompactionSweep,
+  handleDocCompactionSweepTask,
+} from "./docs/docPersistence.js";
+export { getDocById } from "./docs/docsStore.js";
+export {
+  cleanupExpiredDocHistory,
+  rebaselineDocHistory,
+  runDocHistoryRetentionSweep,
+  handleDocHistoryCleanupTask,
+  openDocVersionAt,
+} from "./docs/docHistory.js";
+export {
+  DEFAULT_DOC_HISTORY_RETENTION_DAYS,
+  resolveDocHistoryRetentionDays,
+  retentionHours,
+} from "./docs/docHistoryConfig.js";
+export { runDocHistoryCutoverMigration } from "./docs/docHistoryCutoverMigration.js";
+export { manifest as docsModuleManifest } from "./docs/docsModuleManifest.js";
+
+export * from "./blobs/blobsStore.js";
+export type { IngestUploadedFileInput, IngestUploadedFileResult } from "./blobs/fileUploadStore.js";
+export { ingestUploadedFile } from "./blobs/fileUploadStore.js";
+export { findFileItemByBlobId } from "./chokePoint/itemsStore.js";
+export type { BlobStorageWriter, WriteStreamOptions } from "./mail/blobStorage.js";
+export { LocalFsBlobStorageWriter, MaxBytesExceededError, resolveBlobStorageDir } from "./mail/blobStorage.js";
+
+export * from "./tasks/taskRecurrenceRule.js";
+export { computeNextDueDate } from "./tasks/nextDueDate.js";
+export * from "./tasks/taskRecurrenceStore.js";
+export { advanceTaskRecurrence, type AdvanceTaskRecurrenceInput } from "./tasks/advanceTaskRecurrence.js";
+
+export * from "./journal/journalStore.js";
+export * from "./views/temporalSwitcherViewType.js";
+
+export * from "./inbox/inboxTickAction.js";
+export { manifest as inboxPipelineModuleManifest } from "./inbox/inboxModuleManifest.js";
+
+export * from "./auth/types.js";
+export * from "./auth/passwordHash.js";
+export * from "./auth/token.js";
+export * from "./auth/usersStore.js";
+export * from "./auth/sessionsStore.js";
+export * from "./auth/loginAttemptsStore.js";
+export * from "./auth/emailNormalization.js";
+export * from "./auth/loginLockout.js";
+export * from "./auth/authActions.js";
+export * from "./auth/nativeBridge.js";
+export * from "./auth/passwordResetStore.js";
+export * from "./auth/passwordResetMail.js";
+// Explicit so the timing-floor constant (`PASSWORD_RESET_REQUEST_MIN_DURATION_MS`) stays out of the
+// frozen public surface (`publicSurface.test.ts`); only the data package's own tests need it.
+export {
+  PASSWORD_RESET_TOKEN_TTL_SECONDS,
+  PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS,
+  PASSWORD_RESET_MAX_REQUESTS_PER_WINDOW,
+  requestPasswordReset,
+  resetPassword,
+  type RequestPasswordResetInput,
+  type ResetPasswordInput,
+} from "./auth/passwordResetActions.js";
+
+export * from "./push/types.js";
+export * from "./push/pushSubscriptionsStore.js";
+export * from "./push/pushSubscriptionActions.js";
+
+// `mcpGrantsAdminStore.ts`'s user-only grant/risk-class/approval mutations are deliberately
+// NOT exported here — see that file's header comment (issue #124).
+export type { McpToolRegistration, UpsertMcpToolRegistrationInput } from "./mcp/mcpToolRegistrationsStore.js";
+export {
+  upsertMcpToolRegistration,
+  getMcpToolRegistration,
+  listMcpToolRegistrationsForServer,
+} from "./mcp/mcpToolRegistrationsStore.js";
+export type { ProjectMcpGrant } from "./mcp/mcpProjectGrantsStore.js";
+export { listProjectMcpGrants, getProjectMcpGrant } from "./mcp/mcpProjectGrantsStore.js";
+export type { McpConnectionConfig } from "./mcp/mcpConnectionConfig.js";
+export { assertValidMcpConnectionConfig } from "./mcp/mcpConnectionConfig.js";
+export {
+  McpConnectionError,
+  MCP_CONNECTION_ERROR_REASONS,
+  type McpConnectionErrorReason,
+} from "./mcp/mcpConnectionError.js";
+export type { McpClientHandle, ConnectMcpServerOptions } from "./mcp/mcpConnectionFactory.js";
+export { connectMcpServer } from "./mcp/mcpConnectionFactory.js";
+export type { SyncMcpServerToolsOptions, SyncMcpServerToolsResult } from "./mcp/mcpSync.js";
+export { syncMcpServerTools } from "./mcp/mcpSync.js";
+export type { McpAgentToolProjection } from "./mcp/mcpAgentTools.js";
+export { getGrantedMcpAgentTools } from "./mcp/mcpAgentTools.js";
+export type { McpToolInvocationTarget } from "./mcp/mcpToolInvocation.js";
+export { resolveGrantedMcpTool } from "./mcp/mcpToolInvocation.js";
+export type { McpToolGrantForProject, ReclassifyMcpToolInput } from "./mcp/mcpAgentPageGrants.js";
+export {
+  listMcpToolGrantsForProject,
+  setProjectMcpGrantForAgentPage,
+  reclassifyMcpTool,
+} from "./mcp/mcpAgentPageGrants.js";
+export type {
+  ApprovalRequest,
+  ApprovalRequestPayload,
+  McpInvokeApprovalRequestPayload,
+  GenericOperationApprovalRequestPayload,
+  ApprovalRequestStatus,
+  ApprovalRequestDecision,
+  CreatePendingApprovalRequestInput,
+  ApprovalRequestOutcome,
+} from "./mcp/approvalRequestsStore.js";
+export {
+  createPendingApprovalRequest,
+  getApprovalRequest,
+  listPendingApprovalRequests,
+  isGenericOperationApprovalRequestPayload,
+  terminalizeApprovalRequestAsConflict,
+  markApprovalRequestExecutionSucceeded,
+} from "./mcp/approvalRequestsStore.js";
+export type {
+  ApprovalRequestQueueEntry,
+  ApprovalRequestSafeSummary,
+  ApprovalRequestDecisionView,
+} from "./mcp/approvalRequestsQueue.js";
+export { listApprovalRequestsQueue, toApprovalRequestDecisionView } from "./mcp/approvalRequestsQueue.js";
+export type { McpInvokeResult, McpInvokeArgs, McpInvokeOptions } from "./mcp/mcpToolExecution.js";
+export { executeMcpInvocation } from "./mcp/mcpToolExecution.js";
+export type { GenericOperationApprovalReplay } from "./mcp/approvalRequestExecution.js";
+// `approvalRequestsStore.ts`'s `decideApprovalRequest` is deliberately NOT exported here — see
+// that file's header comment (issue #131), same convention as `mcpGrantsAdminStore.ts`. Only
+// this wrapper (which also enqueues the reserved execution job in the same transaction) is
+// reachable from a route handler.
+export type { DecideApprovalRequestInput, DecideAndEnqueueResult } from "./mcp/approvalDecisionAction.js";
+export { decideAndEnqueueApprovalRequest } from "./mcp/approvalDecisionAction.js";
+
+// `mcpRunCredentialsStore.ts`'s raw hash-keyed lookup is deliberately NOT exported here, mirroring
+// `sessionsStore.ts`'s `getActiveSessionByTokenHash`: only the action-layer wrapper that hashes the
+// presented token internally (`resolveMcpRunCredential`) is reachable from a composition root.
+export type { ActiveMcpRunCredential } from "./mcp/mcpRunCredentialsStore.js";
+export type { MintMcpRunCredentialInput, MintMcpRunCredentialResult } from "./mcp/mcpRunCredentialAction.js";
+export {
+  mintMcpRunCredential,
+  resolveMcpRunCredential,
+  MCP_RUN_CREDENTIAL_TTL_SECONDS,
+} from "./mcp/mcpRunCredentialAction.js";
+
+export {
+  projectAgentGuidanceStore,
+  guidanceReferenceStore,
+  createPoolClientTransactionRunner,
+} from "./projectAgentGuidanceStore.js";
+
+export {
+  guidanceDriftHeartbeatStore,
+  AGENT_GUIDANCE_DRIFT_ACTION_ID,
+} from "./guidanceDrift/guidanceDriftHeartbeatStore.js";
+export { agentGuidanceDriftFindingsStore } from "./guidanceDrift/agentGuidanceDriftFindingsStore.js";
+export { createGuidanceManifestPort } from "./guidanceDrift/guidanceManifestPort.js";
+
+export { purgeExpiredTrash, handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
+export { forEachActiveTenant } from "./tenancy/forEachActiveTenant.js";
+export { provisionTenant } from "./tenancy/provisionTenant.js";
+export { getUserTenantBinding } from "./tenancy/tenantsStore.js";
+export * from "./tenancy/accountsAdminStore.js";
+export * from "./tenancy/deleteAccount.js";
+export * from "./tenancy/invites.js";
+export * from "./tenancy/inviteMail.js";
+export * from "./tenancy/tenantStatusSignal.js";
+export {
+  getDownloadableTenantExport,
+  listTenantExports,
+  requestTenantExport,
+  type DownloadableTenantExport,
+  type RequestedTenantExport,
+  type TenantExportStatus,
+  type TenantExportSummary,
+} from "./tenancy/tenantExportsStore.js";

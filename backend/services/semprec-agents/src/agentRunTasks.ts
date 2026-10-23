@@ -1,0 +1,171 @@
+import type { Pool } from "pg";
+import { currentTenantScope } from "@semprec/shared";
+import {
+  AgentRunCancelledError,
+  extractResultSnapshot,
+  pushRunStatus,
+  runAgentSessionForRun,
+  runAgentTurn,
+  type CreateAgentSession,
+} from "@semprec/agent-runtime";
+import {
+  finishAgentRunWithErrorNotification,
+  getAgentRun,
+  type AgentQueueTaskHandler,
+  type AgentRunRow,
+  type RunAgentFn,
+  withTransaction,
+} from "@semprec/data";
+import type { ModuleRegistry } from "@semprec/module-registry";
+import { createAgentSessionFactoryForRun } from "./agentSessionComposition.js";
+import type { InFlightAgentRuns } from "./inFlightAgentRuns.js";
+import type { GatewayModel } from "./modelComposition.js";
+import { logger } from "./logger.js";
+
+/** Same shape as `packages/data/src/worker.ts`'s own job-payload check. */
+function requireString(payload: unknown, field: string): string {
+  const value = (payload as Record<string, unknown> | null)?.[field];
+  if (typeof value !== "string") throw new Error(`Job payload missing string field '${field}'`);
+  return value;
+}
+
+/**
+ * Registers a fresh controller for the job's tenant, runs `fn` with its signal and unregisters on
+ * every path. The registration spans the whole job, so a deactivation during session composition
+ * is seen as an already-aborted signal when the turn starts. Throws, before `fn`, outside a tenant scope: that is a wiring bug, since every
+ * queued job runs inside its tenant.
+ */
+async function withInFlightRegistration<T>(
+  pool: Pool,
+  inFlight: InFlightAgentRuns,
+  fn: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const scope = currentTenantScope();
+  if (scope?.kind !== "tenant") throw new Error("An agent run must execute inside a tenant scope");
+  const controller = new AbortController();
+  const unregister = inFlight.register(scope.tenantId, controller);
+  try {
+    // Registration precedes the read: an earlier deactivation is visible here, and a later
+    // notification reaches this controller. The registry keeps no deactivation tombstones.
+    const { rows } = await pool.query<{ active: boolean }>(
+      "SELECT status = 'active' AS active FROM tenants WHERE id = $1",
+      [scope.tenantId],
+    );
+    if (rows[0]?.active !== true) controller.abort();
+    return await fn(controller.signal);
+  } finally {
+    unregister();
+  }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Closes a run whose session could not even be composed, so it is not left `running` until the
+ * next startup repair. The close, its notification and the `error` event commit together, and the
+ * event is written only when this call actually closed the row. Best-effort: a failure here is
+ * logged, and the composition error is what the caller rethrows.
+ */
+async function closeUncomposedRun(pool: Pool, run: AgentRunRow, cause: unknown): Promise<void> {
+  try {
+    await withTransaction(pool, async (client) => {
+      if (!(await finishAgentRunWithErrorNotification(client, run.id, errorMessage(cause)))) return;
+      await pushRunStatus(client, run.id, "error");
+    });
+  } catch (err) {
+    logger.error({ err, agentRunId: run.id }, "Failed to close an agent run whose session could not be composed");
+  }
+}
+
+/**
+ * Records the run's `running` status only if the row is still `running`, re-read under a row lock
+ * in the same transaction as that write: a concurrent close (startup repair, a duplicate job)
+ * either commits first and is seen here, or blocks until the `running` event is in. Returns
+ * whether the run was claimed.
+ */
+async function claimRunningRun(pool: Pool, agentRunId: string): Promise<boolean> {
+  return withTransaction(pool, async (client) => {
+    const locked = await getAgentRun(client, agentRunId, true);
+    if (!locked || locked.status !== "running") return false;
+    await pushRunStatus(client, agentRunId, "running");
+    return true;
+  });
+}
+
+/**
+ * The `agentRun`/`delegatedAgentRun` handler (issue #647; a delegated run is just a row with
+ * `parent_run_id` set, so both share one payload contract): runs a pi session for the
+ * `{ agentRunId }` row and closes it through `runAgentSessionForRun`. A row that is missing or no
+ * longer `running` — a redelivered job for a finished run, or one closed while its session was
+ * being composed — is a logged no-op.
+ */
+export function createAgentRunTask(
+  pool: Pool,
+  moduleRegistry: ModuleRegistry,
+  gateway: GatewayModel,
+  inFlight: InFlightAgentRuns,
+): AgentQueueTaskHandler {
+  return (payload) =>
+    withInFlightRegistration(pool, inFlight, async (signal) => {
+      const agentRunId = requireString(payload, "agentRunId");
+      const run = await getAgentRun(pool, agentRunId);
+      if (!run || run.status !== "running") {
+        logger.info({ agentRunId, status: run?.status ?? null }, "Skipping agentRun job for a run that is not running");
+        return;
+      }
+
+      let createAgentSession: CreateAgentSession;
+      try {
+        createAgentSession = await createAgentSessionFactoryForRun(pool, moduleRegistry, gateway, run);
+      } catch (err) {
+        await closeUncomposedRun(pool, run, err);
+        throw err;
+      }
+      if (!(await claimRunningRun(pool, run.id))) {
+        logger.info({ agentRunId }, "Skipping agentRun job for a run closed while its session was composed");
+        return;
+      }
+      await runAgentSessionForRun(pool, run, { createAgentSession, signal });
+    });
+}
+
+/**
+ * The `RunAgentFn` behind `core.agentRun` (issue #647). `coreAgentRunAction` already opened the
+ * row and closes it from this function's outcome — `done` with the returned `result`, or `error`
+ * plus its `agent_run_error` notification on a throw — so this only drives the session and its
+ * `run_status` events in between.
+ */
+export function createRunAgentForHeartbeats(
+  pool: Pool,
+  moduleRegistry: ModuleRegistry,
+  gateway: GatewayModel,
+  inFlight: InFlightAgentRuns,
+): RunAgentFn {
+  return ({ agentRunId }) =>
+    withInFlightRegistration(pool, inFlight, async (signal) => {
+      const run = await getAgentRun(pool, agentRunId);
+      if (!run) throw new Error(`agent run ${agentRunId} not found`);
+      return runHeartbeatSession(run, signal);
+    });
+
+  async function runHeartbeatSession(run: AgentRunRow, signal: AbortSignal): Promise<{ result: string | undefined }> {
+    try {
+      const createAgentSession = await createAgentSessionFactoryForRun(pool, moduleRegistry, gateway, run);
+      await pushRunStatus(pool, run.id, "running");
+      if (signal.aborted) throw new AgentRunCancelledError();
+      const session = createAgentSession({ task: run.task, signal });
+      const last = await runAgentTurn(pool, run.id, session.messages(), undefined, signal);
+      await pushRunStatus(pool, run.id, "done");
+      return { result: extractResultSnapshot(last) ?? undefined };
+    } catch (err) {
+      try {
+        await pushRunStatus(pool, run.id, "error");
+      } catch (statusErr) {
+        logger.error({ err: statusErr, agentRunId: run.id }, "Failed to record a failed agent run's run_status");
+      }
+      throw err;
+    }
+  }
+}

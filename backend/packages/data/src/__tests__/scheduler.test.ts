@@ -1,0 +1,1689 @@
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import type { Pool } from "pg";
+import { runOnce } from "@semprec/queue";
+import { getTraceContext, runInTenant } from "@semprec/shared";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  inTenantZero,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
+import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { withTransaction } from "../db/pool.js";
+import {
+  createHeartbeat,
+  getHeartbeat,
+  occurrenceFireJobKey,
+  recomputeAllForTimezoneChange,
+  recordHeartbeatFireSetupFailure,
+  setHeartbeatEnabled,
+  sweepDueHeartbeats,
+  updateHeartbeatRule,
+} from "../scheduler/schedulerStore.js";
+import { createActionRegistry, CORE_AGENT_RUN_ACTION_ID, coreAgentRunAction } from "../scheduler/actions.js";
+import { createCoreTaskList } from "../worker.js";
+import {
+  createHeartbeatFireCoreTask,
+  createHeartbeatFireAgentTask,
+  handleHeartbeatSweepTask,
+} from "../scheduler/sweep.js";
+import { getSystemSettingsItemId, getSystemTimezone } from "../systemSettings.js";
+import { createAgentRun, listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
+import { createHeartbeatTriggerTool } from "../scheduler/heartbeatAgentTools.js";
+import type { HeartbeatRule, HeartbeatRuleKindRegistry } from "../scheduler/rule.js";
+import { computeNextFireAt } from "../scheduler/nextFireAt.js";
+import { createUser } from "../auth/usersStore.js";
+import { hashPassword } from "../auth/passwordHash.js";
+
+let pool: Pool;
+let chokePoint: ChokePoint;
+let ownerUserId: string;
+
+async function drainQueue(registry = createActionRegistry()) {
+  await runOnce({ pgPool: pool, taskList: createCoreTaskList(pool, registry) });
+}
+
+describe("scheduler", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+    const passwordHash = await hashPassword("s3cret-password");
+    const owner = await createUser(pool, {
+      email: "owner@example.test",
+      passwordHash,
+      locale: "en",
+      tenantId: getTenantZeroId(),
+    });
+    ownerUserId = owner.id;
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+  });
+
+  async function getSemprecProjectId(): Promise<string> {
+    const { rows } = await pool.query("SELECT id FROM databases WHERE owner_module_id = 'projects'");
+    const { rows: items } = await pool.query("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [rows[0].id]);
+    return items[0].id;
+  }
+
+  it("createHeartbeat computes next_fire_at deterministically at write time", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily digest",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+    expect(heartbeat.nextFireAt).not.toBeNull();
+  });
+
+  it("onItemEvent heartbeats have no next_fire_at and are invisible to the sweep", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const db = await chokePoint.createDatabase({ name: "Watched" });
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "On create",
+        rule: { kind: "onItemEvent", databaseId: db.id, event: "create" },
+        actionId: "noop",
+      }),
+    );
+    expect(heartbeat.nextFireAt).toBeNull();
+
+    const { fired } = await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+    expect(fired).toHaveLength(0);
+  });
+
+  it("the choke-point's write path triggers onItemEvent heartbeats", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const db = await chokePoint.createDatabase({ name: "Watched2" });
+    let ran = 0;
+    const registry = createActionRegistry();
+    registry.set("markRan", async () => {
+      ran += 1;
+    });
+    await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "On create",
+        rule: { kind: "onItemEvent", databaseId: db.id, event: "create" },
+        actionId: "markRan",
+      }),
+    );
+
+    await inTenantZero(() => chokePoint.createItem({ databaseId: db.id, properties: {} }));
+    await drainQueue(registry);
+    expect(ran).toBe(1);
+  });
+
+  it("sweepDueHeartbeats fires a due heartbeat exactly once", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    registry.set("noop", async () => {});
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Every minute-ish",
+        rule: { kind: "interval", minutes: 1 },
+        actionId: "noop",
+      }),
+    );
+    // Force it due "now" (simulating either a normal tick or catch-up after downtime).
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+
+    const { fired } = await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+    expect(fired.map((f) => f.id)).toEqual([heartbeat.id]);
+
+    await drainQueue(registry);
+    const after = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    expect(after!.lastFiredAt).not.toBeNull();
+    expect(new Date(after!.nextFireAt!).getTime()).toBeGreaterThan(Date.now());
+
+    // A second sweep right away finds nothing due.
+    const { fired: fired2 } = await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+    expect(fired2).toHaveLength(0);
+  });
+
+  it("a floating (interval/everyNDays) heartbeat leaves next_fire_at and last_fired_at unset at sweep time, and schedules its next occurrence from the first attempt's actual start, not enqueue time", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    registry.set("noop", async () => {});
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Every minute-ish",
+        rule: { kind: "interval", minutes: 1 },
+        actionId: "noop",
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+
+    await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+    const afterSweep = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    expect(afterSweep!.nextFireAt).toBeNull();
+    expect(afterSweep!.lastFiredAt).toBeNull();
+
+    const beforeFire = Date.now();
+    await drainQueue(registry);
+
+    const afterFire = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    expect(new Date(afterFire!.lastFiredAt!).getTime()).toBeGreaterThanOrEqual(beforeFire);
+    expect(new Date(afterFire!.nextFireAt!).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("a fixed (dailyTime/weekly) heartbeat advances next_fire_at immediately at sweep time, unaffected by queue delay before the fire task actually runs", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    registry.set("noop", async () => {});
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+
+    await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+    const afterSweep = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    expect(afterSweep!.nextFireAt).not.toBeNull();
+    expect(afterSweep!.lastFiredAt).toBeNull();
+    const calendarNextFireAt = afterSweep!.nextFireAt;
+
+    await drainQueue(registry);
+
+    const afterFire = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    expect(afterFire!.lastFiredAt).not.toBeNull();
+    // The fire task's own start time never shifts a fixed rule's calendar-anchored schedule.
+    expect(afterFire!.nextFireAt).toBe(calendarNextFireAt);
+  });
+
+  it("disabling clears the schedule; re-enabling recomputes from now (no catch-up of missed occurrences)", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+    const disabled = await withTransaction(pool, (client) => setHeartbeatEnabled(client, heartbeat.id, false));
+    expect(disabled.nextFireAt).toBeNull();
+
+    const reenabled = await withTransaction(pool, (client) => setHeartbeatEnabled(client, heartbeat.id, true));
+    expect(reenabled.nextFireAt).not.toBeNull();
+  });
+
+  it("changing the system timezone recomputes next_fire_at for enabled time-based heartbeats", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+    const before = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id)))!.nextFireAt;
+
+    const settingsItemId = await withTransaction(pool, (client) => getSystemSettingsItemId(client));
+    const { rows: settingsRows } = await pool.query("SELECT database_id FROM items WHERE id = $1", [settingsItemId]);
+    await chokePoint.updateItem({
+      databaseId: settingsRows[0].database_id,
+      itemId: settingsItemId,
+      propertiesPatch: { timezone: "Pacific/Kiritimati" }, // UTC+14, far from Europe/Prague
+    });
+
+    const after = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id)))!.nextFireAt;
+    expect(after).not.toBe(before);
+  });
+
+  it("core.agentRun creates an agent_runs row, calls the injected runner, and records the delegation trail", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async ({ task }) => ({ result: `handled: ${task}` })),
+    );
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Process inbox",
+        rule: { kind: "interval", minutes: 1 },
+        actionId: CORE_AGENT_RUN_ACTION_ID,
+        actionConfig: { task: "process the inbox" },
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+    await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+    await drainQueue(registry);
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.status).toBe("done");
+    expect(runs[0]!.result).toBe("handled: process the inbox");
+    expect(runs[0]!.triggeredBy).toBe("heartbeat");
+  });
+
+  it("core.agentRun binds the new run's id into the trace context the injected runner executes under (#167)", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    const observed: { traceId: string | undefined; agentRunId: string | undefined }[] = [];
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async ({ task, agentRunId }) => {
+        const ctx = getTraceContext();
+        observed.push({ traceId: ctx?.traceId, agentRunId: ctx?.agentRunId });
+        return { result: `handled: ${task}, run=${agentRunId}` };
+      }),
+    );
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Process inbox",
+        rule: { kind: "interval", minutes: 1 },
+        actionId: CORE_AGENT_RUN_ACTION_ID,
+        actionConfig: { task: "process the inbox" },
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+    await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+    await drainQueue(registry);
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
+    expect(runs).toHaveLength(1);
+    expect(observed).toHaveLength(1);
+    expect(observed[0]!.agentRunId).toBe(runs[0]!.id);
+    expect(observed[0]!.traceId).toMatch(/^[0-9a-f-]{36}$/i);
+  });
+
+  it("heartbeat.trigger's manual fire attributes the child run's parent_run_id to the invoking run, without touching next_fire_at/last_fired_at", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async ({ task }) => ({ result: `handled: ${task}` })),
+    );
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Process inbox",
+        rule: { kind: "interval", minutes: 5 },
+        actionId: CORE_AGENT_RUN_ACTION_ID,
+        actionConfig: { task: "process the inbox" },
+      }),
+    );
+    const before = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+
+    const invokingRun = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "trigger it" });
+    const heartbeatTrigger = createHeartbeatTriggerTool(pool);
+    const outcome = await inTenantZero(() => heartbeatTrigger(invokingRun.id, { heartbeatId: heartbeat.id }));
+    expect(outcome.error).toBe(false);
+
+    await drainQueue(registry);
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.triggeredBy).toBe("heartbeat");
+    expect(runs[0]!.parentRunId).toBe(invokingRun.id);
+
+    const after = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    expect(after!.nextFireAt).toBe(before!.nextFireAt);
+    expect(after!.lastFiredAt).toBe(before!.lastFiredAt);
+  });
+
+  it("an occurrence insert conflicting on (heartbeat_id, scheduled_for) is an idempotent no-op: no second job, no second next_fire_at advance", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+    const dueAt = new Date(Date.now() - 60_000);
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = $2 WHERE id = $1", [heartbeat.id, dueAt]);
+
+    // Simulate another sweep (or the sweep's own defense-in-depth guard) having already recorded
+    // the occurrence for this exact due time, without having advanced next_fire_at off of it yet.
+    await pool.query(
+      `INSERT INTO heartbeat_occurrences (heartbeat_id, scheduled_for, rule_snapshot, status)
+       VALUES ($1, $2, $3::jsonb, 'queued')`,
+      [heartbeat.id, dueAt, JSON.stringify(heartbeat.rule)],
+    );
+
+    const { fired } = await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+    expect(fired).toHaveLength(0); // conflicting insert returned no id: not treated as newly fired
+
+    const { rows: occurrences } = await pool.query("SELECT id FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
+      heartbeat.id,
+    ]);
+    expect(occurrences).toHaveLength(1); // still exactly one row, not a duplicate
+
+    const after = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    // The no-op branch never reaches the next_fire_at update: still the due time from before this call.
+    expect(new Date(after!.nextFireAt!).getTime()).toBe(dueAt.getTime());
+  });
+
+  it("a retried fire attempt reuses the persisted occurrenceId and first_started_at, and never advances next_fire_at a second time", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Every minute-ish",
+        rule: { kind: "interval", minutes: 1 },
+        actionId: "noop",
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+    const { fired } = await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+    expect(fired).toHaveLength(1);
+    const { rows: occRows } = await pool.query("SELECT id FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
+      heartbeat.id,
+    ]);
+    const occurrenceId: string = occRows[0].id;
+
+    const { prepareHeartbeatOccurrenceFire } = await import("../scheduler/schedulerStore.js");
+    const first = await prepareHeartbeatOccurrenceFire(pool, heartbeat.id, occurrenceId, 1);
+    expect(first.outcome).toBe("proceed");
+    const afterFirst = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    const firstNextFireAt = afterFirst!.nextFireAt;
+    const firstLastFiredAt = afterFirst!.lastFiredAt;
+    expect(firstNextFireAt).not.toBeNull();
+    expect(firstLastFiredAt).not.toBeNull();
+
+    // Simulate the job being retried (e.g. the handler threw on the first attempt): the same
+    // occurrenceId is reused, and the "genuine first attempt" branch must not fire again.
+    const retry = await prepareHeartbeatOccurrenceFire(pool, heartbeat.id, occurrenceId, 1);
+    expect(retry.outcome).toBe("proceed");
+    const afterRetry = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    expect(afterRetry!.nextFireAt).toBe(firstNextFireAt);
+    expect(afterRetry!.lastFiredAt).toBe(firstLastFiredAt);
+  });
+
+  it("cancels the occurrence without executing or touching heartbeat scheduling when the heartbeat was disabled after the occurrence was enqueued", async () => {
+    const projectItemId = await getSemprecProjectId();
+    let ran = 0;
+    const registry = createActionRegistry();
+    registry.set("markRan", async () => {
+      ran += 1;
+    });
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "markRan",
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+    await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+
+    await withTransaction(pool, (client) => setHeartbeatEnabled(client, heartbeat.id, false));
+
+    await drainQueue(registry);
+    expect(ran).toBe(0);
+
+    const { rows } = await pool.query("SELECT status FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
+      heartbeat.id,
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("cancelled");
+
+    // Disabling already cleared next_fire_at; the fire task must not have touched it further.
+    const after = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    expect(after!.nextFireAt).toBeNull();
+    expect(after!.lastFiredAt).toBeNull();
+  });
+
+  it("cancels the occurrence without executing when the heartbeat's rule was edited after the occurrence was enqueued", async () => {
+    const projectItemId = await getSemprecProjectId();
+    let ran = 0;
+    const registry = createActionRegistry();
+    registry.set("markRan", async () => {
+      ran += 1;
+    });
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "markRan",
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+    await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+
+    await withTransaction(pool, (client) =>
+      updateHeartbeatRule(client, heartbeat.id, { kind: "dailyTime", at: "10:30" }),
+    );
+
+    await drainQueue(registry);
+    expect(ran).toBe(0);
+
+    const { rows } = await pool.query("SELECT status FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
+      heartbeat.id,
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("cancelled");
+  });
+
+  it("reactivates a cancelled occurrence when disable/re-enable recomputes the schedule back onto its exact timestamp, firing exactly once under the new generation instead of staying cancelled", async () => {
+    const projectItemId = await getSemprecProjectId();
+    let ran = 0;
+    const registry = createActionRegistry();
+    registry.set("markRan", async () => {
+      ran += 1;
+    });
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "markRan",
+      }),
+    );
+    const dueAt = new Date(Date.now() - 60_000);
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = $2 WHERE id = $1", [heartbeat.id, dueAt]);
+    await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+
+    // Disabled before the fire task ran: it cancels the occurrence instead of executing it.
+    await withTransaction(pool, (client) => setHeartbeatEnabled(client, heartbeat.id, false));
+    await drainQueue(registry);
+    expect(ran).toBe(0);
+
+    const { rows: cancelledRows } = await pool.query<{ id: string; generation: number; status: string }>(
+      "SELECT id, generation, status FROM heartbeat_occurrences WHERE heartbeat_id = $1",
+      [heartbeat.id],
+    );
+    expect(cancelledRows).toHaveLength(1);
+    expect(cancelledRows[0]!.status).toBe("cancelled");
+    expect(cancelledRows[0]!.generation).toBe(1);
+    const occurrenceId = cancelledRows[0]!.id;
+
+    // Re-enable and force the recomputed schedule back onto the exact same timestamp the
+    // cancelled occurrence was for — simulating edit-away/edit-back (or disable/re-enable)
+    // landing on the same instant.
+    await withTransaction(pool, (client) => setHeartbeatEnabled(client, heartbeat.id, true));
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = $2 WHERE id = $1", [heartbeat.id, dueAt]);
+
+    const { fired } = await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+    expect(fired.map((f) => f.id)).toEqual([heartbeat.id]);
+
+    const { rows: reactivatedRows } = await pool.query<{ id: string; generation: number; status: string }>(
+      "SELECT id, generation, status FROM heartbeat_occurrences WHERE heartbeat_id = $1",
+      [heartbeat.id],
+    );
+    expect(reactivatedRows).toHaveLength(1); // the same row was reactivated, not a second occurrence
+    expect(reactivatedRows[0]!.id).toBe(occurrenceId);
+    expect(reactivatedRows[0]!.generation).toBe(2);
+    expect(reactivatedRows[0]!.status).toBe("queued");
+
+    // A stale (generation 1) delivery arriving after the reactivation must still be a no-op: it
+    // can never consume or cancel the reactivated occurrence.
+    const { prepareHeartbeatOccurrenceFire } = await import("../scheduler/schedulerStore.js");
+    const staleAfterReactivation = await prepareHeartbeatOccurrenceFire(pool, heartbeat.id, occurrenceId, 1);
+    expect(staleAfterReactivation.outcome).toBe("stale");
+    const stillQueued = await pool.query<{ status: string }>("SELECT status FROM heartbeat_occurrences WHERE id = $1", [
+      occurrenceId,
+    ]);
+    expect(stillQueued.rows[0]!.status).toBe("queued");
+
+    // The new generation's job (the only one actually enqueued by the reactivating sweep) fires
+    // the current, valid rule exactly once.
+    await drainQueue(registry);
+    expect(ran).toBe(1);
+
+    const { rows: finalRows } = await pool.query<{ status: string }>(
+      "SELECT status FROM heartbeat_occurrences WHERE id = $1",
+      [occurrenceId],
+    );
+    expect(finalRows[0]!.status).toBe("succeeded");
+  });
+
+  it("replaces a queued occurrence's stale rule_snapshot in place (preserving its id/status) when a re-edit recomputes the schedule back onto the same still-pending timestamp, and the new generation fires exactly once", async () => {
+    const projectItemId = await getSemprecProjectId();
+    let ran = 0;
+    const registry = createActionRegistry();
+    registry.set("noop", async () => {
+      ran += 1;
+    });
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+    const dueAt = new Date(Date.now() - 60_000);
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = $2 WHERE id = $1", [heartbeat.id, dueAt]);
+    await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+
+    const { rows: queuedRows } = await pool.query<{
+      id: string;
+      generation: number;
+      status: string;
+      rule_snapshot: unknown;
+    }>("SELECT id, generation, status, rule_snapshot FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
+      heartbeat.id,
+    ]);
+    expect(queuedRows).toHaveLength(1);
+    expect(queuedRows[0]!.status).toBe("queued");
+    expect(queuedRows[0]!.generation).toBe(1);
+    expect(queuedRows[0]!.rule_snapshot).toEqual({ kind: "dailyTime", at: "09:00" });
+    const occurrenceId = queuedRows[0]!.id;
+
+    // Edit the rule while the occurrence is still queued (handler hasn't started), then force the
+    // recomputed schedule back onto the same still-pending timestamp — a narrow race, but one the
+    // unique (heartbeat_id, scheduled_for) index can still surface.
+    await withTransaction(pool, (client) =>
+      updateHeartbeatRule(client, heartbeat.id, { kind: "dailyTime", at: "10:30" }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = $2 WHERE id = $1", [heartbeat.id, dueAt]);
+
+    const { fired } = await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+    expect(fired.map((f) => f.id)).toEqual([heartbeat.id]);
+
+    const { rows: replacedRows } = await pool.query<{
+      id: string;
+      generation: number;
+      status: string;
+      rule_snapshot: unknown;
+    }>("SELECT id, generation, status, rule_snapshot FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
+      heartbeat.id,
+    ]);
+    expect(replacedRows).toHaveLength(1); // preserved occurrence id/status, not a second row
+    expect(replacedRows[0]!.id).toBe(occurrenceId);
+    expect(replacedRows[0]!.status).toBe("queued");
+    expect(replacedRows[0]!.generation).toBe(2);
+    expect(replacedRows[0]!.rule_snapshot).toEqual({ kind: "dailyTime", at: "10:30" });
+
+    // A concurrently starting handler for the stale (generation 1) job sees the fresh snapshot
+    // once it acquires the lock, and simply proceeds as a first attempt for the current rule.
+    await drainQueue(registry);
+    expect(ran).toBe(1);
+
+    const { rows: finalRows } = await pool.query<{ status: string }>(
+      "SELECT status FROM heartbeat_occurrences WHERE id = $1",
+      [occurrenceId],
+    );
+    expect(finalRows[0]!.status).toBe("succeeded");
+  });
+
+  it("distinct scheduled occurrences for the same heartbeat get distinct job keys", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+    await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+    await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+
+    const { rows: occRows } = await pool.query(
+      "SELECT id, generation FROM heartbeat_occurrences WHERE heartbeat_id = $1 ORDER BY scheduled_for",
+      [heartbeat.id],
+    );
+    expect(occRows).toHaveLength(2);
+    const keys = occRows.map((r) => occurrenceFireJobKey(heartbeat.id, r.id, r.generation));
+    expect(new Set(keys).size).toBe(2);
+  });
+
+  it("two overlapping sweeps still fire a due heartbeat exactly once", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    let ran = 0;
+    registry.set("noop", async () => {
+      ran += 1;
+    });
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+
+    // `FOR UPDATE SKIP LOCKED` inside sweepDueHeartbeats means two concurrent sweep transactions
+    // never both select this row: run them concurrently against the same pool to exercise that.
+    const [resultA, resultB] = await Promise.all([
+      inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client))),
+      inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client))),
+    ]);
+    const totalFired = resultA.fired.length + resultB.fired.length;
+    expect(totalFired).toBe(1);
+
+    const { rows: occRows } = await pool.query("SELECT id FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
+      heartbeat.id,
+    ]);
+    expect(occRows).toHaveLength(1);
+
+    await drainQueue(registry);
+    expect(ran).toBe(1);
+  });
+
+  it("createHeartbeatFireCoreTask rejects a payload carrying zero or more than one of occurrenceId/itemId/triggeredByRunId with validation_failed", async () => {
+    const registry = createActionRegistry();
+    const task = createHeartbeatFireCoreTask(pool, registry);
+    const helpers = { job: { attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
+
+    await expect(task({ heartbeatId: "h1" }, helpers)).rejects.toMatchObject({ code: "validation_failed" });
+    await expect(task({ heartbeatId: "h1", occurrenceId: "o1", itemId: "i1" }, helpers)).rejects.toMatchObject({
+      code: "validation_failed",
+    });
+    await expect(
+      task({ heartbeatId: "h1", occurrenceId: "o1", triggeredByRunId: "r1" }, helpers),
+    ).rejects.toMatchObject({ code: "validation_failed" });
+  });
+
+  it("createHeartbeatFireAgentTask rejects a payload carrying zero or more than one of occurrenceId/itemId/triggeredByRunId with validation_failed", async () => {
+    const registry = createActionRegistry();
+    const task = createHeartbeatFireAgentTask(pool, registry);
+    const helpers = { job: { attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
+
+    await expect(task({ heartbeatId: "h1" }, helpers)).rejects.toMatchObject({ code: "validation_failed" });
+    await expect(task({ heartbeatId: "h1", occurrenceId: "o1", itemId: "i1" }, helpers)).rejects.toMatchObject({
+      code: "validation_failed",
+    });
+  });
+
+  it("createHeartbeatFireAgentTask runs the core.agentRun handler for an agent-session heartbeat", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async ({ task }) => ({ result: `handled: ${task}` })),
+    );
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Process inbox",
+        rule: { kind: "interval", minutes: 1 },
+        actionId: CORE_AGENT_RUN_ACTION_ID,
+        actionConfig: { task: "process the inbox" },
+      }),
+    );
+
+    const task = createHeartbeatFireAgentTask(pool, registry);
+    const helpers = { job: { id: "job-1", attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
+    await task({ heartbeatId: heartbeat.id, itemId: "unused" }, helpers);
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.status).toBe("done");
+    expect(runs[0]!.result).toBe("handled: process the inbox");
+  });
+
+  it("createHeartbeatFireCoreTask rejects a core.agentRun heartbeat with an affinity-mismatch error instead of running it", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async ({ task }) => ({ result: `handled: ${task}` })),
+    );
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Process inbox",
+        rule: { kind: "interval", minutes: 1 },
+        actionId: CORE_AGENT_RUN_ACTION_ID,
+        actionConfig: { task: "process the inbox" },
+      }),
+    );
+
+    const task = createHeartbeatFireCoreTask(pool, registry);
+    const helpers = { job: { id: "job-1", attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
+    await expect(task({ heartbeatId: heartbeat.id, itemId: "unused" }, helpers)).rejects.toThrow(
+      /resolves to 'heartbeatFireAgent'.*dispatched to the 'api' runtime/,
+    );
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
+    expect(runs).toHaveLength(0); // never ran — rejected before the handler was even looked up
+  });
+
+  it("createHeartbeatFireAgentTask rejects a deterministic heartbeat with an affinity-mismatch error instead of running it", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    let ran = 0;
+    registry.set("noop", async () => {
+      ran += 1;
+    });
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Deterministic",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+
+    const task = createHeartbeatFireAgentTask(pool, registry);
+    const helpers = { job: { id: "job-1", attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
+    await expect(task({ heartbeatId: heartbeat.id, itemId: "unused" }, helpers)).rejects.toThrow(
+      /resolves to 'heartbeatFireCore'.*dispatched to the 'agents' runtime/,
+    );
+    expect(ran).toBe(0);
+  });
+
+  it("createHeartbeatFireCoreTask rejects a scheduled (occurrenceId) fire of a core.agentRun heartbeat with an affinity-mismatch error instead of running it", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async ({ task }) => ({ result: `handled: ${task}` })),
+    );
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Scheduled agent session",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: CORE_AGENT_RUN_ACTION_ID,
+        actionConfig: { task: "process the inbox" },
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+    const { fired } = await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+    expect(fired).toHaveLength(1);
+    const { rows: occRows } = await pool.query("SELECT id FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
+      heartbeat.id,
+    ]);
+    const occurrenceId: string = occRows[0].id;
+
+    const task = createHeartbeatFireCoreTask(pool, registry);
+    const helpers = { job: { id: "job-1", attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
+    await expect(task({ heartbeatId: heartbeat.id, occurrenceId, generation: 1 }, helpers)).rejects.toThrow(
+      /resolves to 'heartbeatFireAgent'.*dispatched to the 'api' runtime/,
+    );
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
+    expect(runs).toHaveLength(0); // never ran — rejected before the handler was even looked up
+  });
+
+  it("writes a heartbeat_error notification on the final retry attempt, deduped by job id but not across distinct failing jobs (issue #237)", async () => {
+    const projectItemId = await getSemprecProjectId();
+
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Always fails",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "alwaysFails",
+      }),
+    );
+
+    const registry = createActionRegistry();
+    registry.set("alwaysFails", async () => {
+      throw new Error("boom");
+    });
+
+    const task = createHeartbeatFireCoreTask(pool, registry);
+    const finalAttemptHelpers = (jobId: string) =>
+      ({ job: { id: jobId, attempts: 3, max_attempts: 3 } }) as Parameters<typeof task>[1];
+
+    await expect(task({ heartbeatId: heartbeat.id, itemId: "unused" }, finalAttemptHelpers("job-1"))).rejects.toThrow(
+      "boom",
+    );
+
+    const { rows: afterFirst } = await pool.query(
+      `SELECT user_id, kind, title, source_table, source_id, transition_instance FROM notifications WHERE source_id = $1`,
+      [heartbeat.id],
+    );
+    expect(afterFirst).toMatchObject([
+      {
+        user_id: ownerUserId,
+        kind: "heartbeat_error",
+        title: `Heartbeat "Always fails" failed`,
+        source_table: "project_heartbeats",
+        transition_instance: "job-1",
+      },
+    ]);
+
+    // Redelivery of the same job (e.g. a crash after this insert but before the job's own
+    // terminal failure is recorded) must not duplicate the notification.
+    await expect(task({ heartbeatId: heartbeat.id, itemId: "unused" }, finalAttemptHelpers("job-1"))).rejects.toThrow(
+      "boom",
+    );
+    const { rows: afterReplay } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [heartbeat.id]);
+    expect(afterReplay).toHaveLength(1);
+
+    // A later, independent failure (a new job) is a different transition and does insert.
+    await expect(task({ heartbeatId: heartbeat.id, itemId: "unused" }, finalAttemptHelpers("job-2"))).rejects.toThrow(
+      "boom",
+    );
+    const { rows: afterNewTransition } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [
+      heartbeat.id,
+    ]);
+    expect(afterNewTransition).toHaveLength(2);
+  });
+
+  describe("fire failures before the action handler runs", () => {
+    /** Wraps the real pool so its first `connect()` calls reject with `errors`, in order; later calls delegate. */
+    function poolWithFailingConnects(errors: Error[]): Pool {
+      const remaining = [...errors];
+      return new Proxy(pool, {
+        get(target, prop, receiver) {
+          if (prop === "connect") {
+            return () => {
+              const next = remaining.shift();
+              return next ? Promise.reject(next) : target.connect();
+            };
+          }
+          const value: unknown = Reflect.get(target, prop, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    }
+
+    async function sweepFloatingHeartbeat(): Promise<{ heartbeatId: string; occurrenceId: string }> {
+      const projectItemId = await getSemprecProjectId();
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(client, {
+          projectItemId,
+          name: "Floating",
+          rule: { kind: "interval", minutes: 30 },
+          actionId: "noop",
+        }),
+      );
+      await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+        heartbeat.id,
+      ]);
+      await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+      const { rows } = await pool.query<{ id: string; status: string }>(
+        "SELECT id, status FROM heartbeat_occurrences WHERE heartbeat_id = $1",
+        [heartbeat.id],
+      );
+      expect(rows).toMatchObject([{ status: "queued" }]);
+      return { heartbeatId: heartbeat.id, occurrenceId: rows[0]!.id };
+    }
+
+    async function readState(heartbeatId: string, occurrenceId: string) {
+      const { rows: heartbeatRows } = await pool.query<{
+        next_fire_at: Date | null;
+        last_error: string | null;
+        in_future: boolean | null;
+      }>("SELECT next_fire_at, last_error, next_fire_at > now() AS in_future FROM project_heartbeats WHERE id = $1", [
+        heartbeatId,
+      ]);
+      const { rows: occurrenceRows } = await pool.query<{ status: string; last_error: string | null }>(
+        "SELECT status, last_error FROM heartbeat_occurrences WHERE id = $1",
+        [occurrenceId],
+      );
+      const { rows: notificationRows } = await pool.query<{ kind: string }>(
+        "SELECT kind FROM notifications WHERE source_id = $1",
+        [heartbeatId],
+      );
+      return { heartbeat: heartbeatRows[0]!, occurrence: occurrenceRows[0]!, notifications: notificationRows };
+    }
+
+    it("on the final attempt, restores a floating heartbeat's next_fire_at and records the failure when preparation throws", async () => {
+      const { heartbeatId, occurrenceId } = await sweepFloatingHeartbeat();
+      const registry = createActionRegistry();
+      registry.set("noop", async () => {});
+      const task = createHeartbeatFireCoreTask(
+        poolWithFailingConnects([new Error("simulated database outage")]),
+        registry,
+      );
+      const helpers = { job: { id: "job-1", attempts: 3, max_attempts: 3 } } as Parameters<typeof task>[1];
+
+      await expect(task({ heartbeatId, occurrenceId, generation: 1 }, helpers)).rejects.toThrow(
+        "simulated database outage",
+      );
+
+      const state = await readState(heartbeatId, occurrenceId);
+      expect(state.heartbeat.next_fire_at).not.toBeNull();
+      expect(state.heartbeat.in_future).toBe(true);
+      expect(state.heartbeat.last_error).toBe("simulated database outage");
+      expect(state.occurrence).toEqual({ status: "failed", last_error: "simulated database outage" });
+      expect(state.notifications).toEqual([{ kind: "heartbeat_error" }]);
+    });
+
+    it("records nothing when a non-final attempt's preparation throws", async () => {
+      const { heartbeatId, occurrenceId } = await sweepFloatingHeartbeat();
+      const registry = createActionRegistry();
+      registry.set("noop", async () => {});
+      const task = createHeartbeatFireCoreTask(
+        poolWithFailingConnects([new Error("simulated database outage")]),
+        registry,
+      );
+      const helpers = { job: { id: "job-1", attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
+
+      await expect(task({ heartbeatId, occurrenceId, generation: 1 }, helpers)).rejects.toThrow(
+        "simulated database outage",
+      );
+
+      const state = await readState(heartbeatId, occurrenceId);
+      expect(state.heartbeat.next_fire_at).toBeNull();
+      expect(state.heartbeat.last_error).toBeNull();
+      expect(state.occurrence).toEqual({ status: "queued", last_error: null });
+      expect(state.notifications).toEqual([]);
+    });
+
+    it("rethrows the original error, not the close-out's, when recording the setup failure fails too", async () => {
+      const { heartbeatId, occurrenceId } = await sweepFloatingHeartbeat();
+      const task = createHeartbeatFireCoreTask(
+        poolWithFailingConnects([new Error("simulated database outage"), new Error("close-out outage")]),
+        createActionRegistry(),
+      );
+      const helpers = { job: { id: "job-1", attempts: 3, max_attempts: 3 } } as Parameters<typeof task>[1];
+
+      await expect(task({ heartbeatId, occurrenceId, generation: 1 }, helpers)).rejects.toThrow(
+        "simulated database outage",
+      );
+
+      const state = await readState(heartbeatId, occurrenceId);
+      expect(state.heartbeat.last_error).toBeNull();
+      expect(state.occurrence.status).toBe("queued");
+    });
+
+    it("fails a scheduled occurrence with no registered handler on the final attempt without moving a fixed rule's next_fire_at", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(client, {
+          projectItemId,
+          name: "Unhandled",
+          rule: { kind: "dailyTime", at: "09:00" },
+          actionId: "unregistered",
+        }),
+      );
+      await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+        heartbeat.id,
+      ]);
+      await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+      const { rows: occRows } = await pool.query<{ id: string }>(
+        "SELECT id FROM heartbeat_occurrences WHERE heartbeat_id = $1",
+        [heartbeat.id],
+      );
+      const occurrenceId = occRows[0]!.id;
+      const before = await readState(heartbeat.id, occurrenceId);
+      expect(before.heartbeat.next_fire_at).not.toBeNull();
+
+      const task = createHeartbeatFireCoreTask(pool, createActionRegistry());
+      const helpers = { job: { id: "job-1", attempts: 3, max_attempts: 3 } } as Parameters<typeof task>[1];
+      await expect(task({ heartbeatId: heartbeat.id, occurrenceId, generation: 1 }, helpers)).rejects.toThrow(
+        "No handler registered for heartbeat action 'unregistered'",
+      );
+
+      const after = await readState(heartbeat.id, occurrenceId);
+      expect(after.heartbeat.next_fire_at).toEqual(before.heartbeat.next_fire_at);
+      expect(after.heartbeat.last_error).toBe("No handler registered for heartbeat action 'unregistered'");
+      expect(after.occurrence).toEqual({
+        status: "failed",
+        last_error: "No handler registered for heartbeat action 'unregistered'",
+      });
+      expect(after.notifications).toEqual([{ kind: "heartbeat_error" }]);
+    });
+
+    it("records last_error and a notification for a manual fire with no registered handler on the final attempt", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(client, {
+          projectItemId,
+          name: "Unhandled manual",
+          rule: { kind: "dailyTime", at: "09:00" },
+          actionId: "unregistered",
+        }),
+      );
+
+      const task = createHeartbeatFireCoreTask(pool, createActionRegistry());
+      const helpers = { job: { id: "job-1", attempts: 3, max_attempts: 3 } } as Parameters<typeof task>[1];
+      await expect(
+        task({ heartbeatId: heartbeat.id, triggeredByRunId: "00000000-0000-0000-0000-000000000001" }, helpers),
+      ).rejects.toThrow("No handler registered for heartbeat action 'unregistered'");
+
+      const after = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+      expect(after!.lastError).toBe("No handler registered for heartbeat action 'unregistered'");
+      const { rows: notifications } = await pool.query("SELECT kind FROM notifications WHERE source_id = $1", [
+        heartbeat.id,
+      ]);
+      expect(notifications).toEqual([{ kind: "heartbeat_error" }]);
+    });
+
+    it("recordHeartbeatFireSetupFailure still records last_error when the unscheduled rule can no longer be parsed", async () => {
+      const { heartbeatId, occurrenceId } = await sweepFloatingHeartbeat();
+      await pool.query(`UPDATE project_heartbeats SET rule = '{"kind":"retiredKind"}'::jsonb WHERE id = $1`, [
+        heartbeatId,
+      ]);
+
+      const failed = await withTransaction(pool, (client) =>
+        recordHeartbeatFireSetupFailure(client, heartbeatId, occurrenceId, "boom"),
+      );
+      expect(failed).toEqual({ id: heartbeatId, name: "Floating" });
+
+      const state = await readState(heartbeatId, occurrenceId);
+      expect(state.heartbeat.next_fire_at).toBeNull();
+      expect(state.heartbeat.last_error).toMatch(/^boom; schedule could not be restored: .+/);
+      expect(state.occurrence).toEqual({ status: "failed", last_error: "boom" });
+    });
+
+    it("recordHeartbeatFireSetupFailure leaves a terminal occurrence alone and returns null for a deleted heartbeat", async () => {
+      const { heartbeatId, occurrenceId } = await sweepFloatingHeartbeat();
+      await pool.query("UPDATE heartbeat_occurrences SET status = 'succeeded' WHERE id = $1", [occurrenceId]);
+
+      await withTransaction(pool, (client) =>
+        recordHeartbeatFireSetupFailure(client, heartbeatId, occurrenceId, "boom"),
+      );
+      const state = await readState(heartbeatId, occurrenceId);
+      expect(state.occurrence).toEqual({ status: "succeeded", last_error: null });
+      expect(state.heartbeat.last_error).toBe("boom");
+
+      await pool.query("DELETE FROM project_heartbeats WHERE id = $1", [heartbeatId]);
+      const failed = await withTransaction(pool, (client) =>
+        recordHeartbeatFireSetupFailure(client, heartbeatId, undefined, "boom"),
+      );
+      expect(failed).toBeNull();
+    });
+  });
+
+  describe("module-declared heartbeat rule kinds", () => {
+    function fixtureModuleRuleKinds(
+      nextFireAt: (rule: unknown, timezone: string, after: Date) => Date | null,
+    ): HeartbeatRuleKindRegistry {
+      return new Map([
+        [
+          "fixtureModule.onWidgetTick",
+          {
+            schema: { safeParse: (raw: unknown) => ({ success: true, data: raw }) },
+            nextFireAt,
+          },
+        ],
+      ]);
+    }
+
+    it("creates and schedules a heartbeat using an active module's rule kind, dispatched through its nextFireAtExport", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          },
+          moduleRuleKinds,
+        ),
+      );
+      expect(heartbeat.nextFireAt).not.toBeNull();
+      expect(heartbeat.rule).toEqual({ kind: "fixtureModule.onWidgetTick", every: 5 });
+    });
+
+    it("rejects creating a heartbeat for a rule kind whose module isn't active", async () => {
+      const projectItemId = await getSemprecProjectId();
+      await expect(
+        withTransaction(pool, (client) =>
+          createHeartbeat(client, {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          }),
+        ),
+      ).rejects.toThrow(/Unknown heartbeat rule kind/);
+    });
+
+    it("sweep dispatches a due module-kind heartbeat via its nextFireAtExport", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          },
+          moduleRuleKinds,
+        ),
+      );
+      await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+        heartbeat.id,
+      ]);
+
+      const { fired } = await inTenantZero(() =>
+        withTransaction(pool, (client) => sweepDueHeartbeats(client, moduleRuleKinds)),
+      );
+      expect(fired.map((f) => f.id)).toEqual([heartbeat.id]);
+
+      // A module-declared rule kind is treated like a core fixed rule (only `everyNDays`/
+      // `interval` are floating): the sweep advances next_fire_at via the fixture's own
+      // nextFireAtExport immediately, without waiting for the fire task's first attempt.
+      const after = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id, moduleRuleKinds));
+      expect(after!.nextFireAt).not.toBeNull();
+      expect(after!.lastFiredAt).toBeNull();
+    });
+
+    it("a heartbeat whose module rule kind became inactive is skipped by the sweep, not dispatched", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          },
+          moduleRuleKinds,
+        ),
+      );
+      await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+        heartbeat.id,
+      ]);
+
+      // The module is now deactivated: the sweep is run with no module rule kinds registered.
+      const { fired } = await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+      expect(fired).toHaveLength(0);
+
+      const { rows } = await pool.query("SELECT last_error, next_fire_at FROM project_heartbeats WHERE id = $1", [
+        heartbeat.id,
+      ]);
+      expect(rows[0].last_error).toMatch(/Unknown heartbeat rule kind/);
+      expect(rows[0].next_fire_at).not.toBeNull(); // left due, so reactivating the module lets the next sweep pick it up
+    });
+
+    it("a heartbeat whose module rule kind became inactive can still be disabled", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          },
+          moduleRuleKinds,
+        ),
+      );
+
+      // The module is now deactivated: disabling is called with no module rule kinds registered.
+      const disabled = await withTransaction(pool, (client) => setHeartbeatEnabled(client, heartbeat.id, false));
+      expect(disabled.enabled).toBe(false);
+      expect(disabled.nextFireAt).toBeNull();
+      expect(disabled.rule).toEqual({ kind: "fixtureModule.onWidgetTick", every: 5 });
+    });
+
+    it("re-enabling a heartbeat whose module rule kind is still inactive fails (there is no calculator to schedule it with)", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          },
+          moduleRuleKinds,
+        ),
+      );
+      await withTransaction(pool, (client) => setHeartbeatEnabled(client, heartbeat.id, false));
+
+      await expect(withTransaction(pool, (client) => setHeartbeatEnabled(client, heartbeat.id, true))).rejects.toThrow(
+        /Unknown heartbeat rule kind/,
+      );
+    });
+
+    it("a heartbeat whose module rule kind became inactive can be updated to a new (core) rule", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          },
+          moduleRuleKinds,
+        ),
+      );
+
+      // The module is now deactivated: updateHeartbeatRule is called with no module rule kinds
+      // registered, replacing the now-unparseable rule with a working core one.
+      const updated = await withTransaction(pool, (client) =>
+        updateHeartbeatRule(client, heartbeat.id, { kind: "dailyTime", at: "09:00" }),
+      );
+      expect(updated.rule).toEqual({ kind: "dailyTime", at: "09:00" });
+      expect(updated.nextFireAt).not.toBeNull();
+    });
+
+    it("the fire job degrades gracefully when its module rule kind is deactivated between sweep and fire, instead of retrying and losing the run", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+      let ran = 0;
+      const registry = createActionRegistry();
+      registry.set("markRan", async () => {
+        ran += 1;
+      });
+
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "markRan",
+          },
+          moduleRuleKinds,
+        ),
+      );
+      await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+        heartbeat.id,
+      ]);
+
+      // Sweep while the module is still active: enqueues the fire job and advances next_fire_at.
+      const { fired } = await inTenantZero(() =>
+        withTransaction(pool, (client) => sweepDueHeartbeats(client, moduleRuleKinds)),
+      );
+      expect(fired.map((f) => f.id)).toEqual([heartbeat.id]);
+
+      // The module is deactivated by the time the fire job actually runs: drainQueue's
+      // createCoreTaskList carries no moduleRegistry, so the fire task sees no active module
+      // rule kinds. This must not throw (and thus retry/dead-letter) — it should record the
+      // failure and skip firing.
+      await expect(drainQueue(registry)).resolves.not.toThrow();
+      expect(ran).toBe(0);
+
+      const { rows } = await pool.query("SELECT last_error FROM project_heartbeats WHERE id = $1", [heartbeat.id]);
+      expect(rows[0].last_error).toMatch(/Unknown heartbeat rule kind/);
+    });
+
+    it("recomputeAllForTimezoneChange recomputes a heartbeat using an active module's rule kind", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          },
+          moduleRuleKinds,
+        ),
+      );
+      const before = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id, moduleRuleKinds)))!
+        .nextFireAt;
+
+      await withTransaction(pool, (client) =>
+        recomputeAllForTimezoneChange(client, "Pacific/Kiritimati", moduleRuleKinds),
+      );
+
+      const after = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id, moduleRuleKinds)))!
+        .nextFireAt;
+      expect(after).not.toBeNull();
+      expect(after).not.toBe(before);
+    });
+
+    it("recomputeAllForTimezoneChange skips a heartbeat whose module rule kind became inactive, without aborting the batch", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+      const moduleHeartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          },
+          moduleRuleKinds,
+        ),
+      );
+      const coreHeartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(client, {
+          projectItemId,
+          name: "Daily",
+          rule: { kind: "dailyTime", at: "09:00" },
+          actionId: "noop",
+        }),
+      );
+      const coreBefore = (await withTransaction(pool, (client) => getHeartbeat(client, coreHeartbeat.id)))!.nextFireAt;
+
+      // The module is now deactivated: recompute runs with no module rule kinds registered.
+      await expect(
+        withTransaction(pool, (client) => recomputeAllForTimezoneChange(client, "Pacific/Kiritimati")),
+      ).resolves.toBeUndefined();
+
+      const { rows } = await pool.query("SELECT last_error FROM project_heartbeats WHERE id = $1", [
+        moduleHeartbeat.id,
+      ]);
+      expect(rows[0].last_error).toMatch(/Unknown heartbeat rule kind/);
+
+      // The core heartbeat after it in the same batch still gets recomputed.
+      const coreAfter = (await withTransaction(pool, (client) => getHeartbeat(client, coreHeartbeat.id)))!.nextFireAt;
+      expect(coreAfter).not.toBe(coreBefore);
+    });
+  });
+
+  describe("chunked sweep (issue #688)", () => {
+    /** Wraps the real pool, counting every `connect()` call it makes. */
+    function poolCountingConnects(): { pool: Pool; count: () => number } {
+      let calls = 0;
+      const wrapped = new Proxy(pool, {
+        get(target, prop, receiver) {
+          if (prop === "connect") {
+            return () => {
+              calls += 1;
+              return target.connect();
+            };
+          }
+          const value: unknown = Reflect.get(target, prop, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      return { pool: wrapped, count: () => calls };
+    }
+
+    /** Wraps the real pool so its `callIndex`-th (1-based) `connect()` call rejects with `error`; every other call delegates. */
+    function poolWithFailingConnectAt(callIndex: number, error: Error): Pool {
+      let calls = 0;
+      return new Proxy(pool, {
+        get(target, prop, receiver) {
+          if (prop === "connect") {
+            return () => {
+              calls += 1;
+              return calls === callIndex ? Promise.reject(error) : target.connect();
+            };
+          }
+          const value: unknown = Reflect.get(target, prop, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    }
+
+    async function insertDueDailyHeartbeats(count: number): Promise<string[]> {
+      const projectItemId = await getSemprecProjectId();
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO project_heartbeats (project_item_id, name, rule, action_id, enabled, next_fire_at)
+         SELECT $1, 'Bulk heartbeat ' || gs, $2::jsonb, 'noop', true, now() - interval '1 minute'
+         FROM generate_series(1, $3) AS gs
+         RETURNING id`,
+        [projectItemId, JSON.stringify({ kind: "dailyTime", at: "09:00" }), count],
+      );
+      return rows.map((row) => row.id);
+    }
+
+    async function countFireJobs(): Promise<number> {
+      const { rows } = await pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count
+         FROM graphile_worker._private_jobs j
+         JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+         WHERE t.identifier = 'heartbeatFireCore'`,
+      );
+      return rows[0]!.count;
+    }
+
+    it("fires every due heartbeat exactly once, in ceil(n/100) chunk transactions", async () => {
+      const ids = await insertDueDailyHeartbeats(250);
+      const { pool: countingPool, count } = poolCountingConnects();
+
+      await handleHeartbeatSweepTask(countingPool);
+
+      expect(count()).toBe(3); // 100 + 100 + 50
+
+      const { rows: occRows } = await pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM heartbeat_occurrences WHERE heartbeat_id = ANY($1)`,
+        [ids],
+      );
+      expect(occRows[0]!.count).toBe(250);
+      expect(await countFireJobs()).toBe(250);
+
+      const { rows: dueRows } = await pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM project_heartbeats WHERE id = ANY($1) AND next_fire_at > now()`,
+        [ids],
+      );
+      expect(dueRows[0]!.count).toBe(250);
+    });
+
+    it("leaves earlier chunks committed when a later chunk's transaction fails to start", async () => {
+      const ids = await insertDueDailyHeartbeats(150);
+      const failingPool = poolWithFailingConnectAt(2, new Error("simulated outage"));
+
+      const err: unknown = await handleHeartbeatSweepTask(failingPool).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(AggregateError);
+      expect((err as AggregateError).errors[0]).toEqual(expect.objectContaining({ message: "simulated outage" }));
+
+      const { rows: firedRows } = await pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM project_heartbeats WHERE id = ANY($1) AND next_fire_at > now()`,
+        [ids],
+      );
+      expect(firedRows[0]!.count).toBe(100);
+      expect(await countFireJobs()).toBe(100);
+
+      const { rows: stillDueRows } = await pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM project_heartbeats WHERE id = ANY($1) AND next_fire_at <= now()`,
+        [ids],
+      );
+      expect(stillDueRows[0]!.count).toBe(50);
+
+      // A second sweep against the real pool picks up exactly the untouched 50.
+      await handleHeartbeatSweepTask(pool);
+      expect(await countFireJobs()).toBe(150);
+      const { rows: allFiredRows } = await pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM project_heartbeats WHERE id = ANY($1) AND next_fire_at > now()`,
+        [ids],
+      );
+      expect(allFiredRows[0]!.count).toBe(150);
+    });
+
+    describe("clock skew between the application and the database", () => {
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it("computes the next fire from the database clock, not a lagging application clock", async () => {
+        const projectItemId = await getSemprecProjectId();
+        const rule: HeartbeatRule = { kind: "dailyTime", at: "09:00" };
+        const heartbeat = await withTransaction(pool, (client) =>
+          createHeartbeat(client, {
+            projectItemId,
+            name: "Daily",
+            rule,
+            actionId: "noop",
+          }),
+        );
+        await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+          heartbeat.id,
+        ]);
+
+        // Capture the DB clock immediately before sweeping, and the timezone sweepDueHeartbeats
+        // itself resolves the rule against, so the expectation below is derived the same way
+        // production code derives `calendarNextFireAt` — no assumption about what time of day
+        // the suite happens to run at.
+        const { rows: dbNowRows } = await pool.query<{ db_now: Date }>("SELECT now() AS db_now");
+        const dbNowBeforeSweep = dbNowRows[0]!.db_now;
+        const timezone = await withTransaction(pool, (client) => getSystemTimezone(client));
+
+        // The application clock lags the (real) database clock by 26 hours. A buggy sweep that
+        // computes the next occurrence from `new Date()` instead of the row's own `db_now` would
+        // resolve the rule against this lagging clock instead. 26h (more than a full day plus the
+        // rule's own 24h period) guarantees `expectedFromDbClock` and `expectedFromLaggingAppClock`
+        // below land on different calendar days no matter what time of day the suite runs at — a
+        // shorter, more "realistic" lag (e.g. 2h) only diverges from the correct result for a ~2h
+        // window each day, which is exactly why this test previously gave almost no regression
+        // coverage.
+        vi.useFakeTimers({ toFake: ["Date"] });
+        const appClockDuringSweep = new Date(dbNowBeforeSweep.getTime() - 26 * 60 * 60 * 1000);
+        vi.setSystemTime(appClockDuringSweep);
+
+        await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+
+        vi.useRealTimers();
+
+        const expectedFromDbClock = computeNextFireAt(rule, timezone, dbNowBeforeSweep);
+        const expectedFromLaggingAppClock = computeNextFireAt(rule, timezone, appClockDuringSweep);
+        // Sanity check the scenario itself is discriminating, independent of wall-clock time.
+        expect(expectedFromDbClock).not.toEqual(expectedFromLaggingAppClock);
+
+        const { rows } = await pool.query<{ next_fire_at: Date }>(
+          "SELECT next_fire_at FROM project_heartbeats WHERE id = $1",
+          [heartbeat.id],
+        );
+        expect(rows[0]!.next_fire_at).toEqual(expectedFromDbClock);
+
+        const { fired } = await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+        expect(fired.map((f) => f.id)).not.toContain(heartbeat.id);
+      });
+    });
+  });
+
+  describe("project_heartbeats_on_item_event_idx (issue #673)", () => {
+    // Verbatim copy of triggerOnItemEventHeartbeats's query (scheduler/schedulerStore.ts).
+    const ON_ITEM_EVENT_HEARTBEATS_QUERY = `SELECT id, action_id FROM project_heartbeats
+     WHERE enabled
+       AND rule ->> 'kind' = 'onItemEvent'
+       AND rule ->> 'databaseId' = $1
+       AND rule ->> 'event' = $2`;
+
+    function collectIndexScanNames(plan: Record<string, unknown>, acc: Set<string>): void {
+      const nodeType = plan["Node Type"];
+      const indexName = plan["Index Name"];
+      if ((nodeType === "Index Scan" || nodeType === "Bitmap Index Scan") && typeof indexName === "string") {
+        acc.add(indexName);
+      }
+      const subPlans = plan.Plans;
+      if (Array.isArray(subPlans)) {
+        for (const sub of subPlans) collectIndexScanNames(sub as Record<string, unknown>, acc);
+      }
+    }
+
+    it("exists on project_heartbeats after migrations", async () => {
+      const { rows } = await pool.query<{ tablename: string }>(
+        "SELECT tablename FROM pg_indexes WHERE indexname = 'project_heartbeats_on_item_event_idx'",
+      );
+      expect(rows).toEqual([{ tablename: "project_heartbeats" }]);
+    });
+
+    it("is used to plan the triggerOnItemEventHeartbeats query when sequential scans are off", async () => {
+      const indexNames = await withTransaction(pool, async (client) => {
+        await client.query("SET LOCAL enable_seqscan = off");
+        const { rows } = await client.query<{ "QUERY PLAN": Array<{ Plan: Record<string, unknown> }> }>(
+          `EXPLAIN (FORMAT JSON) ${ON_ITEM_EVENT_HEARTBEATS_QUERY}`,
+          ["00000000-0000-0000-0000-000000000000", "create"],
+        );
+        const acc = new Set<string>();
+        collectIndexScanNames(rows[0]!["QUERY PLAN"][0]!.Plan, acc);
+        return acc;
+      });
+      expect([...indexNames]).toEqual(["project_heartbeats_on_item_event_idx"]);
+    });
+  });
+});
+
+describe("heartbeat_error recipient in a tenant (issue #1018)", () => {
+  let adminPool: Pool;
+  let runtimePool: Pool;
+
+  beforeAll(async () => {
+    adminPool = getTestPool();
+    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(adminPool, "semprec_data"));
+  });
+
+  beforeEach(async () => {
+    await runInTenant(getTenantZeroId(), () => resetDatabase(adminPool));
+  });
+
+  afterAll(async () => {
+    await Promise.all([runtimePool?.end(), adminPool?.end()]);
+  });
+
+  it("notifies the user of the tenant the heartbeat fails in, never the earlier-created account", async () => {
+    const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(adminPool));
+    const userA = await runInTenant(getTenantZeroId(), () =>
+      createUser(adminPool, {
+        email: "a@example.test",
+        passwordHash: "x",
+        tenantId: getTenantZeroId(),
+      }),
+    );
+    const userB = await runInTenant(tenantB, () =>
+      createUser(adminPool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB }),
+    );
+    const heartbeatId = await runInTenant(tenantB, async () => {
+      const { rows } = await runtimePool.query<{ id: string }>(
+        `INSERT INTO project_heartbeats (project_item_id, name, rule, action_id, enabled, next_fire_at)
+         VALUES ($1, 'Fails in B', $2::jsonb, 'alwaysFails', true, now()) RETURNING id`,
+        [randomUUID(), JSON.stringify({ kind: "dailyTime", at: "09:00" })],
+      );
+      return rows[0]!.id;
+    });
+    const registry = createActionRegistry();
+    registry.set("alwaysFails", async () => {
+      throw new Error("boom");
+    });
+    const task = createHeartbeatFireCoreTask(runtimePool, registry);
+
+    await expect(
+      runInTenant(tenantB, () =>
+        task({ heartbeatId, itemId: "unused" }, { job: { id: "job-b", attempts: 3, max_attempts: 3 } } as Parameters<
+          typeof task
+        >[1]),
+      ),
+    ).rejects.toThrow("boom");
+
+    const { rows } = await adminPool.query<{ user_id: string; kind: string; tenant_id: string }>(
+      `SELECT user_id, kind, tenant_id FROM notifications WHERE source_id = $1`,
+      [heartbeatId],
+    );
+    expect(rows).toEqual([{ user_id: userB.id, kind: "heartbeat_error", tenant_id: tenantB }]);
+    expect(rows[0]?.user_id).not.toBe(userA.id);
+  });
+});

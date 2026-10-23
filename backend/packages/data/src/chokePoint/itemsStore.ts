@@ -1,0 +1,488 @@
+import { randomUUID } from "node:crypto";
+import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
+import { ConflictError, NotFoundError } from "../errors.js";
+import type { ItemRow } from "../types.js";
+
+/** The raw `items` row shape this module reads back from Postgres. */
+type ItemDbRow = {
+  id: string;
+  database_id: string;
+  properties: Record<string, unknown>;
+  computed: Record<string, unknown>;
+  updated_at: Date;
+  deleted_at: Date | null;
+};
+
+function mapItemRow(row: ItemDbRow): ItemRow {
+  return {
+    id: row.id,
+    databaseId: row.database_id,
+    properties: row.properties,
+    computed: row.computed,
+    updatedAt: row.updated_at.toISOString(),
+    deletedAt: row.deleted_at ? row.deleted_at.toISOString() : null,
+  };
+}
+
+/**
+ * The ids of every database visible to the current connection. Under row-level security that is
+ * exactly the current tenant's databases, archived ones included. Bound as an array parameter it
+ * lets the planner prune `items` partitions, which a `= ANY(ARRAY(SELECT ...))` sub-plan does not.
+ */
+export async function visibleDatabaseIds(client: Queryable): Promise<string[]> {
+  const { rows } = await client.query<{ ids: string[] }>(`SELECT coalesce(array_agg(id), '{}') AS ids FROM databases`);
+  return requireSingleRow(rows, "visible databases").ids;
+}
+
+export async function getItemById(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, updated_at, deleted_at
+     FROM items WHERE database_id = $1 AND id = $2`,
+    [databaseId, itemId],
+  );
+  return rows[0] ? mapItemRow(rows[0]) : null;
+}
+
+/** Row-locking read used before a mutation, inside the caller's transaction. */
+export async function lockItemById(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, updated_at, deleted_at
+     FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE`,
+    [databaseId, itemId],
+  );
+  return rows[0] ? mapItemRow(rows[0]) : null;
+}
+
+export interface InsertItemInput {
+  databaseId: string;
+  properties: Record<string, unknown>;
+  idempotencyKey?: string;
+}
+
+export interface InsertItemResult {
+  item: ItemRow;
+  /** `false` when this call returned an existing row via idempotency-key replay and wrote nothing. */
+  created: boolean;
+}
+
+/**
+ * Inserts a new item, honoring an optional Idempotency-Key: a repeat call with the
+ * same key returns the row created by the first call instead of inserting a second
+ * one. Must run inside a transaction (the reservation race is only safe because the
+ * idempotency_keys row and the items row commit atomically together). `created` tells
+ * the caller which of those two outcomes happened, so a replay can skip create-only
+ * side effects (heartbeats, invalidations) that must fire at most once per item.
+ *
+ * A reservation whose item has since been purged (row gone) or trashed (soft-deleted)
+ * is treated as free: it is released and the key is reserved again for a freshly
+ * generated item, which this call then creates and returns as `created: true`.
+ *
+ * A reservation is per tenant: row-level security confines every read and write of
+ * `idempotency_keys` to the caller's tenant, so the same key in another tenant is a
+ * different reservation. The reservation insert names no conflict target, so every
+ * unique index on `idempotency_keys` is an arbiter. The only one is the tenant-leading primary
+ * key `idempotency_keys_pkey (tenant_id, key)`, which migration 0082 (#1065) promoted.
+ */
+export async function insertItemWithReplay(client: Queryable, input: InsertItemInput): Promise<InsertItemResult> {
+  const generatedId = randomUUID();
+  const itemId: string = generatedId;
+
+  if (input.idempotencyKey) {
+    const reserve = await client.query<{ item_id: string }>(
+      `INSERT INTO idempotency_keys (key, database_id, item_id) VALUES ($1, $2, $3)
+       ON CONFLICT DO NOTHING
+       RETURNING item_id`,
+      [input.idempotencyKey, input.databaseId, generatedId],
+    );
+    if (reserve.rowCount === 0) {
+      const { rows } = await client.query<{ item_id: string; database_id: string }>(
+        `SELECT item_id, database_id FROM idempotency_keys WHERE key = $1 FOR UPDATE`,
+        [input.idempotencyKey],
+      );
+      // The INSERT above hit ON CONFLICT DO NOTHING, so the conflicting row exists and this
+      // SELECT finds it — unless a concurrent transaction deleted the reservation in between.
+      const reserved = rows[0];
+      if (reserved === undefined) {
+        throw new ConflictError(
+          `Idempotency key '${input.idempotencyKey}' was reserved and then removed concurrently`,
+          {
+            key: input.idempotencyKey,
+          },
+        );
+      }
+      if (reserved.database_id !== input.databaseId) {
+        throw new ConflictError(`Idempotency key '${input.idempotencyKey}' was already used for a different database`, {
+          key: input.idempotencyKey,
+        });
+      }
+      const existing = await getItemById(client, input.databaseId, reserved.item_id);
+      if (existing && existing.deletedAt === null) return { item: existing, created: false };
+
+      // The reserved item is gone (purged) or trashed (soft-deleted): the reservation no
+      // longer protects a live item, so release it and reserve the same key again for a
+      // fresh item below. Holding the row FOR UPDATE means a concurrent transaction racing
+      // the same key is either already blocked behind this one and will find the row gone
+      // once it commits (falling into the `reserved === undefined` branch above), or ran
+      // this same release-and-reserve first and this DELETE affects zero rows.
+      requireAffectedRows(
+        await client.query(`DELETE FROM idempotency_keys WHERE key = $1`, [input.idempotencyKey]),
+        `idempotency_keys row for key '${input.idempotencyKey}'`,
+      );
+      const reReserve = await client.query<{ item_id: string }>(
+        `INSERT INTO idempotency_keys (key, database_id, item_id) VALUES ($1, $2, $3)
+         ON CONFLICT DO NOTHING
+         RETURNING item_id`,
+        [input.idempotencyKey, input.databaseId, generatedId],
+      );
+      // Guaranteed to succeed: the DELETE above ran in this same transaction, so the key is
+      // free for this transaction's own re-insert regardless of what any other transaction is
+      // doing. Kept as a defensive guard rather than trusted silently.
+      requireAffectedRows(reReserve, `idempotency_keys row for key '${input.idempotencyKey}'`);
+    }
+  }
+
+  const { rows } = await client.query<ItemDbRow>(
+    `INSERT INTO items (id, database_id, properties) VALUES ($1, $2, $3::jsonb)
+     RETURNING id, database_id, properties, computed, updated_at, deleted_at`,
+    [itemId, input.databaseId, JSON.stringify(input.properties)],
+  );
+  return { item: mapItemRow(requireSingleRow(rows, "items row")), created: true };
+}
+
+/** `insertItemWithReplay` for the many callers (seeds, tests) that don't need to distinguish a replay from a fresh insert. */
+export async function insertItem(client: Queryable, input: InsertItemInput): Promise<ItemRow> {
+  return (await insertItemWithReplay(client, input)).item;
+}
+
+/**
+ * Looks up the item already committed for an idempotency key reserved against `databaseId`,
+ * without reserving a new key or writing anything — the read half of `insertItem`'s replay
+ * path, split out so the archived-database guard can decide whether a create is an allowed
+ * no-write replay *before* calling `insertItem` at all. Returns null when no reservation exists
+ * for this exact key+database (including a key reserved for a *different* database, which is a
+ * new key as far as this database is concerned), or when the reservation's item row is missing
+ * (purged).
+ *
+ * `requireLive: true` additionally returns null for a soft-deleted (trashed) item, matching
+ * `insertItemWithReplay`'s own treatment of that reservation as stale and due for replacement —
+ * used by the archived-database create-guard, which must not let a trashed item stand in for a
+ * satisfied replay. Other callers (a suggestion/proposal card's own idempotency key) default to
+ * `false`: a trashed card there is still the earlier run's completed work and must not be
+ * recreated, regardless of the user having since deleted it.
+ *
+ * The lookup is per tenant: row-level security confines the read to the caller's tenant, so
+ * a key reserved in another tenant is invisible here and yields null. The reservation itself is
+ * per tenant for the same reason on the write side: every unique index on `idempotency_keys`
+ * acts as the arbiter of `insertItemWithReplay`'s `ON CONFLICT DO NOTHING`, so a key collides
+ * only within the tenant that reserved it.
+ */
+export async function findIdempotentReplay(
+  client: Queryable,
+  databaseId: string,
+  idempotencyKey: string,
+  options: { requireLive?: boolean } = {},
+): Promise<ItemRow | null> {
+  const { rows } = await client.query<{ item_id: string; database_id: string }>(
+    `SELECT item_id, database_id FROM idempotency_keys WHERE key = $1`,
+    [idempotencyKey],
+  );
+  const reserved = rows[0];
+  if (!reserved || reserved.database_id !== databaseId) return null;
+  const item = await getItemById(client, databaseId, reserved.item_id);
+  if (!item) return null;
+  if (options.requireLive && item.deletedAt !== null) return null;
+  return item;
+}
+
+export interface UpdateItemInput {
+  databaseId: string;
+  itemId: string;
+  propertiesPatch: Record<string, unknown>;
+  /** the `updated_at` the client last held; a mismatch is a conflict, not a silent overwrite */
+  ifVersion?: string;
+}
+
+export async function updateItemProperties(client: Queryable, input: UpdateItemInput): Promise<ItemRow> {
+  const current = await lockItemById(client, input.databaseId, input.itemId);
+  if (!current || current.deletedAt) {
+    throw new NotFoundError(`Item ${input.itemId} not found`);
+  }
+  if (input.ifVersion !== undefined && input.ifVersion !== current.updatedAt) {
+    throw new ConflictError("Item was modified since ifVersion was read", { current });
+  }
+
+  const { rows } = await client.query<ItemDbRow>(
+    `UPDATE items SET properties = properties || $3::jsonb, updated_at = now()
+     WHERE database_id = $1 AND id = $2
+     RETURNING id, database_id, properties, computed, updated_at, deleted_at`,
+    [input.databaseId, input.itemId, JSON.stringify(input.propertiesPatch)],
+  );
+  return mapItemRow(requireSingleRow(rows, "items row"));
+}
+
+export async function softDeleteItem(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
+  const { rows } = await client.query<ItemDbRow>(
+    `UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL
+     RETURNING id, database_id, properties, computed, updated_at, deleted_at`,
+    [databaseId, itemId],
+  );
+  return rows[0] ? mapItemRow(rows[0]) : null;
+}
+
+export async function restoreItem(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
+  const { rows } = await client.query<ItemDbRow>(
+    `UPDATE items SET deleted_at = NULL WHERE database_id = $1 AND id = $2 AND deleted_at IS NOT NULL
+     RETURNING id, database_id, properties, computed, updated_at, deleted_at`,
+    [databaseId, itemId],
+  );
+  return rows[0] ? mapItemRow(rows[0]) : null;
+}
+
+/**
+ * Every row in a database regardless of `deleted_at` — the cascade traversal (issue #156's
+ * transactional trash) needs to see a live row exactly as readily as an already-trashed one,
+ * since a page's inline database can itself contain a mix of both after independent edits.
+ */
+export async function getAllItemsInDatabase(client: Queryable, databaseId: string): Promise<ItemRow[]> {
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, updated_at, deleted_at FROM items WHERE database_id = $1`,
+    [databaseId],
+  );
+  return rows.map(mapItemRow);
+}
+
+/**
+ * The lowest-id (deterministic, since item ids are random UUIDs with no creation-order meaning)
+ * live Files item whose `file` property points at `blobId` — issue #158's convergence rule for
+ * concurrent identical uploads: every caller streaming the same bytes ends up dedup'd onto one
+ * `blobs` row (`findOrCreateBlob`'s unique-index insert), and this is the query that lets a second
+ * caller reuse the Files item the first one already created for it instead of creating a
+ * duplicate. Also used to resolve a download filename for `GET /api/blobs/:id`, which only knows
+ * a blob id, not an item.
+ */
+export async function findFileItemByBlobId(
+  client: Queryable,
+  databaseId: string,
+  blobId: string,
+): Promise<ItemRow | null> {
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, updated_at, deleted_at FROM items
+     WHERE database_id = $1 AND deleted_at IS NULL AND properties -> 'file' ->> 'blobId' = $2
+     ORDER BY id ASC LIMIT 1`,
+    [databaseId, blobId],
+  );
+  return rows[0] ? mapItemRow(rows[0]) : null;
+}
+
+/**
+ * One page of items, across every database of the current tenant, trashed longer ago than
+ * `olderThan` — the 30-day purge sweep's entry point into the subtree roots it must consider.
+ * Queried against the partitioned parent table directly (same pattern as `getItemsByIds`), so it
+ * isn't scoped to one database the way most of this module's reads are; it is confined to the
+ * current tenant's partitions by a database-id list resolved under RLS. Keyset-paged on the composite primary key
+ * (issue #675): `after` is the last row of the previous page, and at most `limit` rows come back,
+ * so the sweep never holds more than one page of candidates in memory.
+ */
+export async function findItemsDeletedBefore(
+  client: Queryable,
+  olderThan: Date,
+  after?: { databaseId: string; id: string },
+  limit = 500,
+): Promise<ItemRow[]> {
+  const databaseIds = await visibleDatabaseIds(client);
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, updated_at, deleted_at
+     FROM items
+     WHERE deleted_at IS NOT NULL AND deleted_at < $1
+       AND database_id = ANY($5::uuid[])
+       AND ($2::uuid IS NULL OR (database_id, id) > ($2::uuid, $3::uuid))
+     ORDER BY database_id, id
+     LIMIT $4`,
+    [olderThan, after?.databaseId ?? null, after?.id ?? null, limit, databaseIds],
+  );
+  return rows.map(mapItemRow);
+}
+
+/**
+ * Permanently removes one row — the purge sweep's only caller; never reachable from a request
+ * handler. Guarded by `deleted_at IS NOT NULL` so a row a concurrent `restoreItem` un-deletes
+ * between the purge's eligibility scan and this call is silently skipped rather than destroyed
+ * while live — the purge's own subtree snapshot has no lock on any of these rows, so this is the
+ * only thing standing between a race and permanently losing a freshly-restored item. Returns
+ * whether a row was actually removed, so a caller counting what it purged doesn't count a row
+ * this guard skipped.
+ */
+export async function hardDeleteItem(client: Queryable, databaseId: string, itemId: string): Promise<boolean> {
+  const result = await client.query(`DELETE FROM items WHERE database_id = $1 AND id = $2 AND deleted_at IS NOT NULL`, [
+    databaseId,
+    itemId,
+  ]);
+  return (result.rowCount ?? 0) > 0;
+}
+
+export interface ListItemsOptions {
+  limit?: number;
+  cursor?: string;
+  includeDeleted?: boolean;
+  /**
+   * Views-layer pushdown hooks (issue #22): each is called with the same `params` array
+   * this function is already building, so a compiled filter/sort predicate's bind
+   * parameters land at the correct offset alongside `database_id`/`cursor`/`limit`.
+   * `cursor` pages via `id > cursor`, which only resumes correctly under the default
+   * `id ASC` order; a custom order pages through `keyset`.
+   */
+  buildFilterSql?: (params: unknown[]) => string | undefined;
+  buildOrderBySql?: (params: unknown[]) => string | undefined;
+  /**
+   * Keyset paging for a custom order (issue #664): `buildAfterSql` replaces the `id > cursor`
+   * predicate with "rows after the previous page's last row" under that order (or returns
+   * `undefined` on the first page), and `encodeCursor` turns a page's last row into the
+   * `nextCursor` that feeds it next time. When set, `cursor` is ignored.
+   */
+  keyset?: { buildAfterSql: (params: unknown[]) => string | undefined; encodeCursor: (last: ItemRow) => string };
+}
+
+export async function listItems(
+  client: Queryable,
+  databaseId: string,
+  options: ListItemsOptions = {},
+): Promise<{ items: ItemRow[]; nextCursor: string | null }> {
+  const limit = Math.min(options.limit ?? 50, 200);
+  const conditions = ["database_id = $1"];
+  const params: unknown[] = [databaseId];
+  if (!options.includeDeleted) conditions.push("deleted_at IS NULL");
+  const filterSql = options.buildFilterSql?.(params);
+  if (filterSql) conditions.push(filterSql);
+
+  let orderBySql = "id ASC";
+  const customOrderBySql = options.buildOrderBySql?.(params);
+  if (customOrderBySql) orderBySql = `${customOrderBySql}, id ASC`;
+
+  if (options.keyset) {
+    const afterSql = options.keyset.buildAfterSql(params);
+    if (afterSql) conditions.push(afterSql);
+  } else if (options.cursor) {
+    params.push(options.cursor);
+    conditions.push(`id > $${params.length}`);
+  }
+  params.push(limit + 1);
+
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, updated_at, deleted_at
+     FROM items WHERE ${conditions.join(" AND ")} ORDER BY ${orderBySql} LIMIT $${params.length}`,
+    params,
+  );
+  const hasMore = rows.length > limit;
+  const items = (hasMore ? rows.slice(0, limit) : rows).map(mapItemRow);
+  const last = items[items.length - 1];
+  let nextCursor: string | null = null;
+  if (hasMore && last) nextCursor = options.keyset ? options.keyset.encodeCursor(last) : last.id;
+  return { items, nextCursor };
+}
+
+/**
+ * Counts the items a filter matches, without paging them in. Shares `buildFilterSql` with
+ * `listItems` so a count and its list always agree on what "matching" means; used for the
+ * per-folder unread counts in issue #96, where the count is needed but the rows are not.
+ */
+export async function countItems(
+  client: Queryable,
+  databaseId: string,
+  options: Pick<ListItemsOptions, "includeDeleted" | "buildFilterSql"> = {},
+): Promise<number> {
+  const conditions = ["database_id = $1"];
+  const params: unknown[] = [databaseId];
+  if (!options.includeDeleted) conditions.push("deleted_at IS NULL");
+  const filterSql = options.buildFilterSql?.(params);
+  if (filterSql) conditions.push(filterSql);
+
+  const { rows } = await client.query<{ count: string }>(
+    `SELECT count(*)::text AS count FROM items WHERE ${conditions.join(" AND ")}`,
+    params,
+  );
+  return Number(requireSingleRow(rows, "items count").count);
+}
+
+/**
+ * Looks up items by id alone, with no `database_id` predicate — needed for curated
+ * views (`view_items`), which can mix items from multiple databases and therefore
+ * cannot supply the partition key (see the `view_items` migration's header note on why
+ * `item_id` carries no Postgres FK to pin down a single partition). The read is confined to the
+ * current tenant's partitions by a database-id list resolved under RLS.
+ */
+export async function getItemsByIds(client: Queryable, itemIds: string[]): Promise<ItemRow[]> {
+  if (itemIds.length === 0) return [];
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, updated_at, deleted_at
+     FROM items WHERE id = ANY($1::uuid[]) AND database_id = ANY($2::uuid[]) AND deleted_at IS NULL`,
+    [itemIds, await visibleDatabaseIds(client)],
+  );
+  return rows.map(mapItemRow);
+}
+
+/**
+ * `getItemsByIds`'s counterpart that doesn't filter out a trashed row — needed wherever a caller
+ * has an item id but no `database_id` to route a partition-scoped lookup through, and the item
+ * being soft-deleted is an expected, not exceptional, case: `DELETE /api/items/:id` (idempotent
+ * replay against an already-trashed item) and `POST /api/items/:id/restore` (issue #156), both of
+ * which must resolve the item's `databaseId` before calling into `softDeleteItem`/`restoreItem`.
+ * Like `getItemsByIds`, it is confined to the current tenant's partitions by a database-id list
+ * resolved under RLS.
+ */
+export async function getItemsByIdsIncludingDeleted(client: Queryable, itemIds: string[]): Promise<ItemRow[]> {
+  if (itemIds.length === 0) return [];
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, updated_at, deleted_at
+     FROM items WHERE id = ANY($1::uuid[]) AND database_id = ANY($2::uuid[])`,
+    [itemIds, await visibleDatabaseIds(client)],
+  );
+  return rows.map(mapItemRow);
+}
+
+/**
+ * The batched form of `getItemById`, scoped to a single database like it, but for a whole
+ * set of ids in one query — used where a caller would otherwise fetch one item per id in a
+ * loop (e.g. inbox/inboxTypesStore.ts's proposal-status lookups). The `IncludingDeleted` in
+ * the name is load-bearing, not decorative: unlike `getItemsByIds`, this has no `deleted_at`
+ * filter, because a soft-deleted proposal card still recorded a real `confirmed`/`rejected`
+ * outcome, and a caller judging whether that outcome locks something else must see it
+ * exactly as it would have via `getItemById`, which also never filters on `deleted_at`. Pick
+ * `getItemsByIds` instead if the caller actually wants deleted rows excluded.
+ */
+export async function getItemsByIdsInDatabaseIncludingDeleted(
+  client: Queryable,
+  databaseId: string,
+  itemIds: string[],
+): Promise<ItemRow[]> {
+  if (itemIds.length === 0) return [];
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, updated_at, deleted_at
+     FROM items WHERE database_id = $1 AND id = ANY($2::uuid[])`,
+    [databaseId, itemIds],
+  );
+  return rows.map(mapItemRow);
+}
+
+/**
+ * Writes exclusively to `items.computed`, never to `properties`, and never advances
+ * `updated_at`/the ifVersion token — a background rollup recompute must not cause a
+ * spurious 409 on the client's next properties write. Not reachable from the generic
+ * update path; only the rollup recompute worker and declared module cache writers may
+ * call this. Returns the row's `updated_at` as read back by the same statement.
+ */
+export async function writeComputed(
+  client: Queryable,
+  databaseId: string,
+  itemId: string,
+  key: string,
+  value: unknown,
+): Promise<string> {
+  const result = await client.query<{ updated_at: Date }>(
+    `UPDATE items SET computed = jsonb_set(computed, ARRAY[$3]::text[], $4::jsonb, true)
+     WHERE database_id = $1 AND id = $2
+     RETURNING updated_at`,
+    [databaseId, itemId, key, JSON.stringify(value)],
+  );
+  requireAffectedRows(result, `computed key '${key}' for item '${itemId}'`);
+  return requireSingleRow(result.rows, "items row").updated_at.toISOString();
+}

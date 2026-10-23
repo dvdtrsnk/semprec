@@ -1,0 +1,292 @@
+import type { Pool, PoolClient } from "pg";
+import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
+import { ForbiddenError } from "../errors.js";
+import { assertKnownValue } from "../dbRowValidation.js";
+import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+
+/**
+ * #620: a row is `reserved` at the caller's estimate before the provider call, then either
+ * `settled` with the real usage or `failed` at cost 0 when the call rejects.
+ */
+export type AiGatewayCallStatus = "reserved" | "settled" | "failed";
+
+const AI_GATEWAY_CALL_STATUSES: readonly AiGatewayCallStatus[] = ["reserved", "settled", "failed"];
+
+export interface AiGatewayCallRow {
+  id: string;
+  at: string;
+  provider: string;
+  model: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  audioSeconds: number | null;
+  costUsd: number;
+  agentRunId: string | null;
+  /** Set only by #215's `POST /internal/complete` route; null for every other caller. */
+  projectItemId: string | null;
+  operation: string | null;
+  status: AiGatewayCallStatus;
+}
+
+export interface RecordTokenCallInput {
+  provider: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  agentRunId?: string | null;
+  /** #215: always set together, or not at all — the structured-completion route sets both. */
+  projectItemId?: string | null;
+  operation?: string | null;
+}
+
+/** Audio calls never carry an agent_run_id — there is no agent-run attribution for transcription/diarization. */
+export interface RecordAudioCallInput {
+  provider: string;
+  model: string;
+  audioSeconds: number;
+  costUsd: number;
+}
+
+/** The raw `ai_gateway_calls` row shape this module reads back from Postgres. */
+type AiGatewayCallDbRow = {
+  id: string;
+  at: Date;
+  provider: string;
+  model: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  audio_seconds: string | null;
+  cost_usd: string;
+  agent_run_id: string | null;
+  project_item_id: string | null;
+  operation: string | null;
+  status: string;
+};
+
+function mapRow(row: AiGatewayCallDbRow): AiGatewayCallRow {
+  return {
+    id: row.id,
+    at: row.at.toISOString(),
+    provider: row.provider,
+    model: row.model,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    audioSeconds: row.audio_seconds === null ? null : Number(row.audio_seconds),
+    costUsd: Number(row.cost_usd),
+    agentRunId: row.agent_run_id,
+    projectItemId: row.project_item_id,
+    operation: row.operation,
+    status: assertKnownValue(AI_GATEWAY_CALL_STATUSES, row.status, "ai_gateway_calls status"),
+  };
+}
+
+/** complete()/embed() accounting: native unit is tokens, audio_seconds stays NULL (not 0 — no audio concept applies). */
+export async function recordTokenGatewayCall(
+  client: Pool | PoolClient,
+  input: RecordTokenCallInput,
+): Promise<AiGatewayCallRow> {
+  const { rows } = await client.query<AiGatewayCallDbRow>(
+    `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation)
+     VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8)
+     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
+    [
+      input.provider,
+      input.model,
+      input.inputTokens,
+      input.outputTokens,
+      input.costUsd,
+      input.agentRunId ?? null,
+      input.projectItemId ?? null,
+      input.operation ?? null,
+    ],
+  );
+  return mapRow(requireSingleRow(rows, "ai_gateway_calls row"));
+}
+
+/** transcribe()/diarize() accounting: native unit is audio seconds, both token columns stay NULL (not 0 — no token concept applies). */
+export async function recordAudioGatewayCall(
+  client: Pool | PoolClient,
+  input: RecordAudioCallInput,
+): Promise<AiGatewayCallRow> {
+  const { rows } = await client.query<AiGatewayCallDbRow>(
+    `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation)
+     VALUES ($1, $2, NULL, NULL, $3, $4, NULL, NULL, NULL)
+     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
+    [input.provider, input.model, input.audioSeconds, input.costUsd],
+  );
+  return mapRow(requireSingleRow(rows, "ai_gateway_calls row"));
+}
+
+export interface ReserveGatewayCallInput {
+  provider: string;
+  model: string;
+  /** The caller's upper-bound estimate; counted against the budget until the row is settled or failed. */
+  estimatedCostUsd: number;
+  agentRunId?: string | null;
+  projectItemId?: string | null;
+  operation?: string | null;
+}
+
+/** The one refusal for a call that cannot be attributed to an active tenant: no details, so no case is told apart. */
+function attributionRefused(): ForbiddenError {
+  return new ForbiddenError(
+    "AI gateway call is not attributable to the caller's tenant",
+    undefined,
+    "attribution_refused",
+  );
+}
+
+/**
+ * Refuses the ambient tenant (`app_tenant_default()`) unless it exists and is `active`, with the
+ * same `attribution_refused` error `reserveGatewayCall` throws. The gateway runs it before its
+ * budget check so that an inactive tenant and an unknown tenant get one refusal. Without it, an
+ * unknown tenant has no `tenant_ai_budgets` row and is refused as `budget_exceeded`, while a
+ * suspended tenant keeps its row, passes the budget check and is refused only by the insert, so the
+ * two answers tell a caller which tenant ids exist. `reserveGatewayCall` keeps its own
+ * `status = 'active'` predicate as the write-time guard.
+ */
+export async function assertGatewayTenantActive(client: Pool | PoolClient): Promise<void> {
+  const { rows } = await client.query<{ active: boolean }>(
+    "SELECT EXISTS (SELECT 1 FROM tenants WHERE id = app_tenant_default() AND status = 'active') AS active",
+  );
+  if (rows[0]?.active !== true) throw attributionRefused();
+}
+
+/**
+ * Inserts a `reserved` row at the estimate, with every usage column NULL until it is settled.
+ *
+ * The insert is one conditional statement, so the check and the write cannot be separated by a
+ * concurrent change: it only produces a row when the ambient tenant (`app_tenant_default()`, the
+ * scope's tenant) is `active`, any `agentRunId` is visible in that tenant, and any `projectItemId`
+ * is a visible item of that tenant's system Projects database (`owner_module_id` =
+ * `PROJECTS_MODULE_ID`); RLS makes every probe tenant-local.
+ * Otherwise it throws `ForbiddenError` `attribution_refused` with no details, so a foreign id, an
+ * unknown id and an item outside the Projects database answer identically; no row is written and
+ * the caller never reaches the provider.
+ */
+export async function reserveGatewayCall(
+  client: Pool | PoolClient,
+  input: ReserveGatewayCallInput,
+): Promise<AiGatewayCallRow> {
+  const { rows } = await client.query<AiGatewayCallDbRow>(
+    `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status)
+     SELECT $1, $2, NULL, NULL, NULL, $3, $4::uuid, $5::uuid, $6, 'reserved'
+     WHERE EXISTS (SELECT 1 FROM tenants WHERE id = app_tenant_default() AND status = 'active')
+       AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM agent_runs WHERE id = $4::uuid))
+       AND ($5::uuid IS NULL OR EXISTS (
+         SELECT 1 FROM items i JOIN databases d ON d.id = i.database_id
+         WHERE i.id = $5::uuid AND d.system AND d.owner_module_id = $7
+       ))
+     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
+    [
+      input.provider,
+      input.model,
+      input.estimatedCostUsd,
+      input.agentRunId ?? null,
+      input.projectItemId ?? null,
+      input.operation ?? null,
+      PROJECTS_MODULE_ID,
+    ],
+  );
+  const row = rows[0];
+  if (!row) throw attributionRefused();
+  return mapRow(row);
+}
+
+/**
+ * Replaces a `reserved` row's estimate with the real token usage. Returns `null` when no `reserved`
+ * row matched (already settled or failed, or gone) — the caller decides what that means.
+ */
+export async function settleTokenGatewayCall(
+  client: Pool | PoolClient,
+  id: string,
+  input: { inputTokens: number; outputTokens: number; costUsd: number },
+): Promise<AiGatewayCallRow | null> {
+  const result = await client.query<AiGatewayCallDbRow>(
+    `UPDATE ai_gateway_calls SET status = 'settled', input_tokens = $2, output_tokens = $3, cost_usd = $4
+     WHERE id = $1 AND status = 'reserved'
+     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
+    [id, input.inputTokens, input.outputTokens, input.costUsd],
+  );
+  if (!result.rowCount) return null;
+  return mapRow(requireSingleRow(result.rows, `reserved ai_gateway_calls row ${id}`));
+}
+
+/**
+ * Replaces a `reserved` row's estimate with the real audio usage; the token columns stay NULL.
+ * Returns `null` when no `reserved` row matched.
+ */
+export async function settleAudioGatewayCall(
+  client: Pool | PoolClient,
+  id: string,
+  input: { audioSeconds: number; costUsd: number },
+): Promise<AiGatewayCallRow | null> {
+  const result = await client.query<AiGatewayCallDbRow>(
+    `UPDATE ai_gateway_calls SET status = 'settled', audio_seconds = $2, cost_usd = $3
+     WHERE id = $1 AND status = 'reserved'
+     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
+    [id, input.audioSeconds, input.costUsd],
+  );
+  if (!result.rowCount) return null;
+  return mapRow(requireSingleRow(result.rows, `reserved ai_gateway_calls row ${id}`));
+}
+
+/**
+ * Marks a `reserved` row `failed` at cost 0, so every `SUM(cost_usd)` (budget, usage report)
+ * excludes it without a status filter. Throws when the row is not `reserved`. Auto-committed on
+ * the `Pool` (docs/adr/2026-09-27-auto-committed-writes-for-records-that-must-survive-a-failure.md):
+ * the failure record must survive whatever the failed call's caller rolls back, or the row would
+ * keep its estimate against the budget.
+ */
+export async function failGatewayCall(pool: Pool, id: string): Promise<void> {
+  const result = await pool.query(
+    `UPDATE ai_gateway_calls SET status = 'failed', cost_usd = 0 WHERE id = $1 AND status = 'reserved'`,
+    [id],
+  );
+  requireAffectedRows(result, `failing reserved ai_gateway_calls row ${id}`);
+}
+
+export interface GatewaySpend {
+  spentToday: number;
+  spentMonth: number;
+}
+
+/**
+ * Calendar-day and calendar-month spend in one query, per #120's budget check. Inside a tenant
+ * scope (the gateway's `semprec_side` connection under row-level security) it returns only that
+ * tenant's spend; the all-tenant total is `getGlobalGatewaySpend`. Boundaries are computed in the
+ * given `timezone` (not the Postgres session timezone, typically UTC), so a daily budget resets
+ * at local midnight rather than UTC midnight: `now() AT TIME ZONE timezone` shifts "now" onto that
+ * zone's wall clock, `date_trunc` truncates it there, and the second `AT TIME ZONE timezone`
+ * converts the local midnight back into the UTC instant that `ai_gateway_calls.at` (timestamptz)
+ * is compared against. Every row counts at its `cost_usd`:
+ * a `reserved` row at the caller's estimate (so in-flight calls count against the cap), a
+ * `settled` row at its real cost, and a `failed` row at 0.
+ */
+export async function getGatewaySpend(client: Pool | PoolClient, timezone: string): Promise<GatewaySpend> {
+  const { rows } = await client.query<{ spent_today: string; spent_month: string }>(
+    `SELECT
+       COALESCE(SUM(cost_usd) FILTER (WHERE at >= date_trunc('day', now() AT TIME ZONE $1) AT TIME ZONE $1), 0)  AS spent_today,
+       COALESCE(SUM(cost_usd), 0)                                                                               AS spent_month
+     FROM ai_gateway_calls
+     WHERE at >= date_trunc('month', now() AT TIME ZONE $1) AT TIME ZONE $1`,
+    [timezone],
+  );
+  const totals = requireSingleRow(rows, "ai_gateway_calls spend totals");
+  return { spentToday: Number(totals.spent_today), spentMonth: Number(totals.spent_month) };
+}
+
+/**
+ * Spend over every tenant, in UTC: since UTC midnight and since the first of the current UTC
+ * month. Reads through `ai_global_spend()`, the `semprec_router` function that sees past
+ * row-level security and returns only these two sums. Every row counts at its `cost_usd`, as in
+ * `getGatewaySpend`.
+ */
+export async function getGlobalGatewaySpend(client: Queryable): Promise<GatewaySpend> {
+  const { rows } = await client.query<{ spent_today: string; spent_month: string }>(
+    `SELECT spent_today, spent_month FROM ai_global_spend()`,
+  );
+  const totals = requireSingleRow(rows, "ai_global_spend totals");
+  return { spentToday: Number(totals.spent_today), spentMonth: Number(totals.spent_month) };
+}

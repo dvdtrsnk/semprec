@@ -1,0 +1,58 @@
+[Unit]
+Description=Semprec transcription worker
+Wants=network-online.target
+After=network-online.target docker.service
+StartLimitIntervalSec=15min
+StartLimitBurst=180
+OnFailure=semprec-failping@%n.service
+
+[Service]
+Type=simple
+User=semprec
+Group=semprec
+# Process containment (issue #1071), see deploy/README.md "Service sandboxing".
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027
+# ReadWritePaths must equal FILES_STORAGE_DIR in /opt/semprec/shared/env/settings.env;
+# changing that variable requires changing this line.
+ReadWritePaths=/opt/semprec/data/files
+# Not set: MemoryDenyWriteExecute=, V8 JIT needs writable-executable pages.
+# Not set: ProcSubset=pid, it hides /proc/cpuinfo and /proc/meminfo that Node os reads.
+# Not set: PrivateUsers=, it remaps the uid/gid namespace that ownership checks depend on.
+WorkingDirectory=/opt/semprec/current/backend
+EnvironmentFile=/opt/semprec/shared/env/data-role.env
+EnvironmentFile=/opt/semprec/shared/env/gateway-token.env
+EnvironmentFile=/opt/semprec/shared/env/settings.env
+EnvironmentFile=/opt/semprec/current/release.env
+SyslogIdentifier=semprec-transcribe
+ExecStart=/usr/bin/env node /opt/semprec/current/backend/services/semprec-transcribe/dist/serve.js
+Restart=on-failure
+RestartSec=5s
+# Worst-case one ASR chunk: ffmpeg extraction (5min cap) + gateway call (10min
+# cap) + checkpoint write; the task exits at its next checkpoint once
+# runner.stop() has begun.
+TimeoutStopSec=960
+
+[Install]
+WantedBy=multi-user.target

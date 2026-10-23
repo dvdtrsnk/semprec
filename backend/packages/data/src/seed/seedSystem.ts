@@ -1,0 +1,301 @@
+import type { Pool } from "pg";
+import { ModuleRegistry } from "@semprec/module-registry";
+import { withTransaction } from "../db/pool.js";
+import * as databasesStore from "../chokePoint/databasesStore.js";
+import * as propertiesStore from "../chokePoint/propertiesStore.js";
+import * as itemsStore from "../chokePoint/itemsStore.js";
+import { createComputedKeyRegistry, type ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
+import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
+import { createHeartbeat } from "../scheduler/schedulerStore.js";
+import { DRIFT_CHECK_ACTION_ID } from "../manifest/driftCheck.js";
+import { MODULE_REGISTRY_CHECK_DRIFT_ACTION_ID } from "../manifest/moduleRegistryDriftCheck.js";
+import { DEFAULT_TIMEZONE, SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
+import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewType.js";
+import { registerLibraryGridViewType } from "../views/libraryGridViewType.js";
+import { registerMailboxClientViewType } from "../views/mailboxClientViewType.js";
+import { registerJournalInboxViewType } from "../views/journalInboxViewType.js";
+import { JOURNAL_INBOX_COMPUTED_KEY } from "../inbox/journalInboxCompute.js";
+import {
+  TRANSCRIPTION_CREATE_COMPUTED_KEY,
+  TRANSCRIPTION_PREPARE_COMPUTED_KEY,
+  TRANSCRIPTION_DIARIZE_COMPUTED_KEY,
+  TRANSCRIPTION_ASR_COMPUTED_KEY,
+  TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
+  TRANSCRIPT_LANGUAGE_COMPUTED_KEY,
+  TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
+  TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY,
+} from "../transcription/transcriptionComputedKeys.js";
+import {
+  FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
+  TRANSCRIPTION_REQUEUE_HEARTBEAT,
+  TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
+} from "../transcription/transcriptionActions.js";
+import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
+import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
+import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
+import { seedInboxPipelineInTransaction } from "./seedInboxPipeline.js";
+import { seedMcpModuleInTransaction } from "./seedMcpModule.js";
+import { runModuleDataMigrations } from "../migrationJob/moduleDataMigration.js";
+
+export { PROJECTS_MODULE_ID } from "./tenDatabaseKeys.js";
+
+// Serializes concurrent seeds of one tenant (issue #644): distinct from auth's SETUP_ADVISORY_LOCK_KEY (2330n).
+// Taken as the two-key form (key, hashtext(tenant id)), so seeds of different tenants do not wait on each other.
+const SEED_ADVISORY_LOCK_KEY = 2331;
+
+/**
+ * Seeds the system records this issue's spec names directly, plus the ten hardcoded
+ * databases from issue #24 (seedTenDatabasesInTransaction): the "System settings"
+ * singleton (home) DB, holding the supervisor's name ("Semp") and the system timezone,
+ * and the "Projects" system DB (now issue #24's full Projects schema) holding the
+ * Semprec project row itself (the supervisor's home project — `agent_runs.project_item_id`
+ * for a supervisor run points here).
+ *
+ * A code-level migration with direct DB access is the one sanctioned way to write a
+ * system DB's schema (see the issue's choke-point section) — this seed uses the raw
+ * stores directly rather than the choke-point, which would otherwise reject writes to
+ * a `schema_locked`/`system` database. Idempotent: safe to call on every startup, and
+ * concurrently — an advisory lock serializes the structural seed transaction.
+ *
+ * Seeds the caller's tenant (`app_tenant_default()`): the advisory lock `(2331, hashtext(tenant id))`
+ * and the "already seeded" decision are both per tenant. It throws when no tenant resolves (no
+ * scope while several tenants exist) and when the tenant row is missing or `deleting`.
+ *
+ * `viewTypeRegistry`/`computedKeyRegistry` default to fresh, private instances for
+ * standalone/test use; a real server composition root should pass its own shared instances
+ * so the "temporal-switcher" view type and any declared computed cache keys registered here
+ * are also known to the chokePoint instance(s) it later serves requests through.
+ *
+ * Resolves to `"created"` when this call wrote the structural seed and `"already-seeded"` when
+ * it found the system databases already present — decided under the advisory lock, so of two
+ * concurrent calls on an empty database exactly one reports `"created"`.
+ */
+export async function seedSystem(
+  pool: Pool,
+  viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry(),
+  computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry(),
+): Promise<"created" | "already-seeded"> {
+  // Registered unconditionally, ahead of the idempotency-guarded block below: the DB seed
+  // itself only ever runs once (first startup), but `viewTypeRegistry` is an in-memory,
+  // per-process registry — every subsequent process start still needs "temporal-switcher"
+  // registered into *its own* registry instance for Journal's default view to remain usable,
+  // even though `seedTenDatabasesInTransaction` (the only other place that registers it)
+  // gets skipped by the early return. `registerViewType` is idempotent for a non-builtin
+  // type (a plain Map.set), so calling this on every startup is safe.
+  registerTemporalSwitcherViewType(viewTypeRegistry);
+  // Same reasoning as temporal-switcher just above (issue #25's library-grid view type):
+  // needed in *this process's* registry on every startup, not only the one-time DB seed.
+  registerLibraryGridViewType(viewTypeRegistry);
+  // Same reasoning again (issue #96's mailbox view type): the Emails default view is a
+  // 'mailbox-client' view, so every process serving it needs the type in its own registry.
+  registerMailboxClientViewType(viewTypeRegistry);
+  // Same reasoning again (issue #106's Journal Inbox-list view type).
+  registerJournalInboxViewType(viewTypeRegistry);
+  // Same reasoning as the view-type registrations above, but for the computed-key
+  // collision guard: `computedKeyRegistry` is also a per-process, in-memory instance, so
+  // 'inboxItems' must be declared here on every startup too, not only inside
+  // seedInboxPipelineInTransaction, which the idempotency early-return below skips after
+  // the first run.
+  computedKeyRegistry.add(JOURNAL_INBOX_COMPUTED_KEY);
+  // Same reasoning again (issue #180's Transcripts computed keys): reserved against
+  // collision on every startup, not only the one-time DB seed.
+  computedKeyRegistry.add(TRANSCRIPT_SEGMENTS_COMPUTED_KEY);
+  computedKeyRegistry.add(TRANSCRIPTION_CREATE_COMPUTED_KEY);
+  computedKeyRegistry.add(TRANSCRIPTION_PREPARE_COMPUTED_KEY);
+  computedKeyRegistry.add(TRANSCRIPTION_DIARIZE_COMPUTED_KEY);
+  computedKeyRegistry.add(TRANSCRIPTION_ASR_COMPUTED_KEY);
+  computedKeyRegistry.add(TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY);
+  computedKeyRegistry.add(TRANSCRIPT_LANGUAGE_COMPUTED_KEY);
+  computedKeyRegistry.add(TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY);
+
+  // The systemDatabases module is always active for this seed: it's the retrofit manifest
+  // (module-contract issue #226) describing the ten hardcoded databases this function itself
+  // creates, and `seedTenDatabasesInTransaction` reads its `defaultViewType` projection
+  // instead of a hardcoded `moduleId === JOURNAL_MODULE_ID` branch (issue #115).
+  const moduleRegistry = new ModuleRegistry(() => new Set(["systemDatabases"]));
+  await moduleRegistry.loadModule(new URL("./systemDatabasesModuleManifest.js", import.meta.url).href);
+
+  const outcome = await withTransaction(pool, async (client): Promise<"created" | "already-seeded"> => {
+    // Taken before the guard below so a concurrent seed waits here, then sees this one's rows
+    // and returns early instead of seeding a second copy.
+    const tenantRows = await client.query<{ tenant_id: string | null }>(
+      "SELECT app_tenant_default()::text AS tenant_id",
+    );
+    const tenantId = tenantRows.rows[0]?.tenant_id;
+    if (!tenantId) {
+      throw new Error("seedSystem: no tenant resolved; run it inside a tenant scope when several tenants exist");
+    }
+    await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [SEED_ADVISORY_LOCK_KEY, tenantId]);
+    const tenantStatus = await client.query<{ status: string }>("SELECT status FROM tenants WHERE id = $1 FOR SHARE", [
+      tenantId,
+    ]);
+    const status = tenantStatus.rows[0]?.status;
+    if (status === undefined || status === "deleting") {
+      throw new Error(`seedSystem: tenant ${tenantId} is ${status ?? "missing"}; refusing to seed it`);
+    }
+    const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1 AND system`, [
+      SYSTEM_SETTINGS_MODULE_ID,
+    ]);
+    if ((existingSettings.rowCount ?? 0) > 0) return "already-seeded";
+
+    const tenDatabases = await seedTenDatabasesInTransaction(
+      client,
+      viewTypeRegistry,
+      computedKeyRegistry,
+      moduleRegistry,
+    );
+    const projectsDb = tenDatabases.projects;
+
+    const semprecProject = await itemsStore.insertItem(client, {
+      databaseId: projectsDb.id,
+      properties: {
+        name: "Semprec",
+        systemActive: true,
+        agents:
+          "Purpose: supervise Semprec, the personal life-organization system, and delegate to project agents.\n" +
+          "Allowed: read the schema-derived permission manifest for any project and delegate tasks to its agent.\n" +
+          "Not allowed: write any property whose owner is 'system', or change a locked/schema_locked database.\n" +
+          "General instructions: keep delegated tasks and their results terse; the manifest is the source of truth for what is allowed.",
+      },
+    });
+
+    // Created unlocked so propertiesStore.createProperty (which itself enforces
+    // schema_locked, even for this seed's direct-store calls) will accept the schema
+    // writes below; locked via a raw UPDATE afterwards, matching "a system DB's schema
+    // can only be changed by a code-level migration with direct DB access."
+    const settingsDb = await databasesStore.createDatabase(client, {
+      name: "System settings",
+      system: true,
+      ownerModuleId: SYSTEM_SETTINGS_MODULE_ID,
+      ownerProjectItemId: semprecProject.id,
+    });
+    await propertiesStore.createProperty(client, {
+      databaseId: settingsDb.id,
+      key: "name",
+      name: "Name",
+      type: "text",
+      locked: true,
+      owner: "user",
+    });
+    await propertiesStore.createProperty(client, {
+      databaseId: settingsDb.id,
+      key: "timezone",
+      name: "Timezone",
+      type: "text",
+      locked: true,
+      owner: "user",
+    });
+
+    await itemsStore.insertItem(client, {
+      databaseId: settingsDb.id,
+      properties: {
+        name: "Semp",
+        timezone: DEFAULT_TIMEZONE,
+      },
+    });
+
+    await client.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [settingsDb.id]);
+
+    // The drift heartbeat this issue's spec requires ("watched by a separate drift
+    // heartbeat check") — reports manifest<->text/owner_process drift for the
+    // supervisor's own project. Daily is frequent enough to catch drift without
+    // competing with the minute-granularity onItemEvent heartbeats. Must come after
+    // settingsDb exists: computing next_fire_at reads the system timezone.
+    await createHeartbeat(client, {
+      projectItemId: semprecProject.id,
+      name: "Manifest drift check",
+      rule: { kind: "dailyTime", at: "03:00" },
+      actionId: DRIFT_CHECK_ACTION_ID,
+    });
+
+    // Issue #112's live mechanical drift check: load-time validation (the drift heartbeat
+    // just above) can't see manual live-DB edits made after startup, so this one re-runs
+    // periodically instead of once. Offset five minutes from the check above so the two
+    // don't compete for the same fire slot.
+    await createHeartbeat(client, {
+      projectItemId: semprecProject.id,
+      name: "Module registry drift check",
+      rule: { kind: "dailyTime", at: "03:05" },
+      actionId: MODULE_REGISTRY_CHECK_DRIFT_ACTION_ID,
+    });
+
+    // Books and Movies/TV (issue #25): the second wave, two concrete instantiations of the
+    // generic "library module" contract. Runs last: needs Projects/People (from
+    // seedTenDatabasesInTransaction above) and the system timezone (settingsDb, just above).
+    await seedLibraryModuleInTransaction(
+      client,
+      projectsDb.id,
+      tenDatabases.people.id,
+      viewTypeRegistry,
+      computedKeyRegistry,
+    );
+
+    // Mailboxes/Folders/Emails (issue #26): the IMAP sync core's schema and deterministic
+    // People-linking wiring. Order relative to the library module doesn't matter — both only
+    // depend on the ten databases above.
+    const emailModuleResult = await seedEmailModuleInTransaction(
+      client,
+      projectsDb.id,
+      tenDatabases.people.id,
+      tenDatabases.files.id,
+      computedKeyRegistry,
+      viewTypeRegistry,
+    );
+
+    // Files transcription trigger (issue #180): fires on every Files item creation, but only
+    // enqueues a transcription job for a standalone `audio/*` file with no Emails.attachments
+    // edge (see transcriptionActions.ts) — needs the attachments relation's property id, which
+    // only exists once seedEmailModuleInTransaction above has created it.
+    const attachmentsProperty = await propertiesStore.getPropertyByKey(
+      client,
+      emailModuleResult.emails.id,
+      emailModuleResult.attachmentsRelationKey,
+    );
+    if (!attachmentsProperty) {
+      throw new Error("Emails.attachments property not found after seedEmailModuleInTransaction");
+    }
+    await createHeartbeat(client, {
+      projectItemId: semprecProject.id,
+      name: "Files transcription trigger",
+      rule: { kind: "onItemEvent", databaseId: tenDatabases.files.id, event: "create" },
+      actionId: FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
+      actionConfig: {
+        filesDatabaseId: tenDatabases.files.id,
+        attachmentsRelationPropertyId: attachmentsProperty.id,
+      },
+    });
+    // Daily transcription requeue (issue #186): puts every failed Transcriptions row back into
+    // the pipeline as a fresh batch. A populated install gets it from
+    // runTranscriptionRequeueHeartbeatCutoverMigration instead.
+    await createHeartbeat(client, {
+      projectItemId: semprecProject.id,
+      ...TRANSCRIPTION_REQUEUE_HEARTBEAT,
+      actionId: TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
+      actionConfig: { transcriptsDatabaseId: tenDatabases.transcripts.id },
+    });
+
+    // Inbox / Inbox item types / Processing proposals (issue #101): the three databases
+    // issue #24's ten hardcoded databases deliberately exclude. Order relative to the
+    // library/email modules doesn't matter — only depends on the ten databases (Journal,
+    // Transcripts) and the Semprec project item, both already created above.
+    await seedInboxPipelineInTransaction(
+      client,
+      tenDatabases.journal.id,
+      tenDatabases.transcripts.id,
+      semprecProject.id,
+      computedKeyRegistry,
+      viewTypeRegistry,
+    );
+
+    // MCP servers (issue #123): a system resource similar to Mailboxes, holding non-secret
+    // connection metadata only. Order relative to the other module seeds doesn't matter —
+    // only depends on the Projects database above.
+    await seedMcpModuleInTransaction(client, projectsDb.id);
+    return "created";
+  });
+
+  // Active module data migrations are resumable and independently idempotent. Run them
+  // after the structural seed transaction so item batches never prolong its lock scope.
+  await runModuleDataMigrations(pool, moduleRegistry);
+  return outcome;
+}

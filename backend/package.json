@@ -4,6 +4,35 @@
   "version": "0.0.0",
   "packageManager": "pnpm@9.12.0",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "pnpm -r run build",
+    "test": "pnpm run test:unit && pnpm run test:integration && pnpm run test:e2e",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "check:boundaries": "depcruise --config .dependency-cruiser.cjs --output-type err services packages",
+    "check:pi-import-paths": "pnpm --filter @semprec/agent-runtime run check-pi-import-paths",
+    "check:write-safety": "node ../.github/scripts/check-write-safety.mjs",
+    "test:repo-scripts": "node ../.github/scripts/run-repo-script-tests.mjs",
+    "migrate": "pnpm --filter @semprec/data run build && node packages/data/dist/db/runMigrationsCli.js",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write . --ignore-path ../.prettierignore",
+    "format:check": "prettier --check . --ignore-path ../.prettierignore",
+    "verify": "pnpm run lint && pnpm run format:check && pnpm -r run build && pnpm run test:unit && pnpm run check:pi-import-paths && pnpm --filter @semprec/data run check-migration-numbering && pnpm run check:write-safety && pnpm run test:repo-scripts && pnpm run check:boundaries && pnpm run test:integration && pnpm run test:e2e"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.10.0",
+    "dependency-cruiser": "^18.2.0",
+    "eslint": "^10.10.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.12.0",
+    "prettier": "^3.9.6",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^4.1.11"
   }
 }

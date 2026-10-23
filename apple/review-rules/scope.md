@@ -1,5 +1,6 @@
 # Include
 **/*.swift
+review-rules/**
 
 # Exclude
 **/*.generated.swift

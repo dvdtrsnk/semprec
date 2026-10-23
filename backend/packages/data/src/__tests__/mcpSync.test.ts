@@ -1,0 +1,475 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Pool } from "pg";
+import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  DEFAULT_CONTRACT_TOOLS,
+  allowLoopbackOutboundForTests,
+  startHttpContractServer,
+  startSseContractServer,
+  startStdioContractServer,
+  type ContractServerTool,
+  type McpContractServer,
+} from "../testSupport/mcpContractServers.js";
+import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { requireSingleRow, withTransaction } from "../db/pool.js";
+import { createUser } from "../auth/usersStore.js";
+import * as itemsStore from "../chokePoint/itemsStore.js";
+import { storeCredential } from "../credentials/externalCredentialsStore.js";
+import { listAllTools, syncMcpServerTools } from "../mcp/mcpSync.js";
+import type { connectMcpServer as ConnectMcpServerFn, McpClientHandle } from "../mcp/mcpConnectionFactory.js";
+import { listMcpToolRegistrationsForServer } from "../mcp/mcpToolRegistrationsStore.js";
+import { setMcpToolRequiresApproval, setMcpToolRiskClass } from "../mcp/mcpGrantsAdminStore.js";
+import type { McpConnectionConfig } from "../mcp/mcpConnectionConfig.js";
+import { NotFoundError, ValidationError } from "../errors.js";
+import { logger } from "../mcp/logger.js";
+
+/**
+ * `connectMock.impl` is what the mocked `connectMcpServer` actually calls — defaults to the real
+ * implementation (`connectMock.actual`, captured once the real module loads) and is swapped per
+ * test to inject a connection whose `close()` rejects, without touching every other test's
+ * use of a genuine contract server. Declared via `vi.hoisted` because the `vi.mock` factory below
+ * is hoisted above this file's own top-level statements and needs this object to already exist.
+ */
+const connectMock = vi.hoisted(() => ({
+  impl: undefined as unknown as typeof ConnectMcpServerFn,
+  actual: undefined as unknown as typeof ConnectMcpServerFn,
+}));
+
+vi.mock("../mcp/mcpConnectionFactory.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../mcp/mcpConnectionFactory.js")>();
+  connectMock.actual = actual.connectMcpServer;
+  connectMock.impl = actual.connectMcpServer;
+  return {
+    ...actual,
+    connectMcpServer: ((...args: Parameters<typeof ConnectMcpServerFn>) =>
+      connectMock.impl(...args)) as typeof ConnectMcpServerFn,
+  };
+});
+
+let pool: Pool;
+let viewTypeRegistry: ViewTypeRegistry;
+let mcpServersId: string;
+
+async function databaseIdFor(moduleId: string): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
+  if (!rows[0]) throw new Error(`Database '${moduleId}' was not seeded`);
+  return rows[0].id;
+}
+
+async function createMcpServerItem(connectionConfig: McpConnectionConfig, credential?: string) {
+  const item = await withTransaction(pool, (client) =>
+    itemsStore.insertItem(client, {
+      databaseId: mcpServersId,
+      properties: { name: "Contract server", connectionConfig },
+    }),
+  );
+  if (credential !== undefined) {
+    await withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: item.id, credentialType: "api_key", plaintext: credential }),
+    );
+  }
+  return item;
+}
+
+async function getServerItem(itemId: string) {
+  const item = await withTransaction(pool, (client) => itemsStore.getItemById(client, mcpServersId, itemId));
+  if (!item) throw new Error("server item disappeared");
+  return item;
+}
+
+/** `vi.waitFor` guards against socket cleanup being asynchronous relative to when `close()` resolves — mirrors mcpConnectionFactory.test.ts's own helper. */
+async function waitFor(predicate: () => boolean, message: string): Promise<void> {
+  await vi.waitFor(
+    () => {
+      if (!predicate()) throw new Error(message);
+    },
+    { timeout: 5_000, interval: 20 },
+  );
+}
+
+describe("MCP tool sync (issue #125)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    viewTypeRegistry = createViewTypeRegistry();
+    await resetDatabase(pool);
+    await seedSystem(pool, viewTypeRegistry);
+    mcpServersId = await databaseIdFor("mcpServers");
+    // A `stdio` spawn needs an admin of the sole tenant (issue #1033).
+    const { rows } = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
+    const tenantId = requireSingleRow(rows, "sole tenant").id;
+    if (!tenantId) throw new Error("Expected a sole tenant");
+    await createUser(pool, {
+      email: "admin@example.test",
+      passwordHash: "unused",
+      tenantId,
+      role: "admin",
+    });
+    connectMock.impl = connectMock.actual;
+  });
+
+  // The sse/http contract servers listen on loopback, which the default outbound policy refuses.
+  let restoreOutboundPolicy: () => void;
+  beforeAll(() => {
+    restoreOutboundPolicy = allowLoopbackOutboundForTests();
+  });
+
+  afterAll(async () => {
+    restoreOutboundPolicy();
+    await pool?.end();
+  });
+
+  describe.each([
+    ["stdio", () => Promise.resolve(startStdioContractServer())],
+    ["sse", () => startSseContractServer()],
+    ["http", () => startHttpContractServer()],
+  ] as const)("%s transport", (_name, start) => {
+    it("materializes the advertised tools with default approval/risk values and sets syncStatus ok", async () => {
+      const contract: McpContractServer = await start();
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+
+        const result = await syncMcpServerTools(pool, item.id);
+
+        expect(result.toolCount).toBe(DEFAULT_CONTRACT_TOOLS.length);
+        const registrations = await listMcpToolRegistrationsForServer(pool, item.id);
+        expect(registrations).toHaveLength(1);
+        expect(registrations[0]).toMatchObject({
+          toolName: "search_web",
+          description: "Searches the web",
+          active: true,
+          requiresApproval: true,
+          riskClass: "unclassified",
+        });
+
+        const updated = await getServerItem(item.id);
+        expect(updated.properties.syncStatus).toBe("ok");
+        expect(updated.properties.syncError).toBeNull();
+        expect(updated.properties.lastSynced).toEqual(expect.any(String));
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it("preserves human-set risk_class/requires_approval across a re-sync while refreshing the schema/description", async () => {
+      const contract: McpContractServer = await start();
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+        await syncMcpServerTools(pool, item.id);
+        const first = (await listMcpToolRegistrationsForServer(pool, item.id))[0]!;
+        await setMcpToolRiskClass(pool, first.id, "high");
+        await setMcpToolRequiresApproval(pool, first.id, false);
+
+        contract.setTools([
+          {
+            name: "search_web",
+            description: "Updated description",
+            inputSchema: { type: "object", properties: { q: { type: "string" } } },
+          },
+        ]);
+        await syncMcpServerTools(pool, item.id);
+
+        const resynced = (await listMcpToolRegistrationsForServer(pool, item.id))[0]!;
+        expect(resynced.id).toBe(first.id);
+        expect(resynced.description).toBe("Updated description");
+        expect(resynced.toolSchema).toEqual({ type: "object", properties: { q: { type: "string" } } });
+        expect(resynced.riskClass).toBe("high");
+        expect(resynced.requiresApproval).toBe(false);
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it("deactivates a tool the server stops advertising, without deleting its row", async () => {
+      const contract: McpContractServer = await start();
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+        await syncMcpServerTools(pool, item.id);
+        const existing = (await listMcpToolRegistrationsForServer(pool, item.id))[0]!;
+
+        contract.setTools([]);
+        await syncMcpServerTools(pool, item.id);
+
+        const registrations = await listMcpToolRegistrationsForServer(pool, item.id);
+        expect(registrations).toHaveLength(1);
+        expect(registrations[0]!.id).toBe(existing.id);
+        expect(registrations[0]!.active).toBe(false);
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it("adds a newly-advertised tool on top of one already registered", async () => {
+      const contract: McpContractServer = await start();
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+        await syncMcpServerTools(pool, item.id);
+
+        const extended: ContractServerTool[] = [
+          ...DEFAULT_CONTRACT_TOOLS,
+          { name: "send_email", description: "Sends an email", inputSchema: { type: "object", properties: {} } },
+        ];
+        contract.setTools(extended);
+        await syncMcpServerTools(pool, item.id);
+
+        const registrations = await listMcpToolRegistrationsForServer(pool, item.id);
+        expect(registrations.map((r) => [r.toolName, r.active]).sort()).toEqual([
+          ["search_web", true],
+          ["send_email", true],
+        ]);
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it("rejects a response with a duplicate tool name and leaves prior registrations untouched", async () => {
+      const contract: McpContractServer = await start();
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+        await syncMcpServerTools(pool, item.id);
+        const before = await listMcpToolRegistrationsForServer(pool, item.id);
+
+        contract.setTools([
+          { name: "dup", description: "one", inputSchema: { type: "object", properties: {} } },
+          { name: "dup", description: "two", inputSchema: { type: "object", properties: {} } },
+        ]);
+
+        await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow(ValidationError);
+
+        const after = await listMcpToolRegistrationsForServer(pool, item.id);
+        expect(after).toEqual(before);
+        const updated = await getServerItem(item.id);
+        expect(updated.properties.syncStatus).toBe("error");
+        expect(typeof updated.properties.syncError).toBe("string");
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it("closes the connection after a successful sync", async () => {
+      const contract = await start();
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+        await syncMcpServerTools(pool, item.id);
+        if ("hasOpenSockets" in contract) {
+          const hasOpenSockets = () => (contract as { hasOpenSockets(): boolean }).hasOpenSockets();
+          await waitFor(() => !hasOpenSockets(), "contract server still has an open socket after a successful sync");
+        } else if ("waitForChildExit" in contract) {
+          await (contract as { waitForChildExit(): Promise<void> }).waitForChildExit();
+        }
+      } finally {
+        await contract.stop();
+      }
+    });
+  });
+
+  it("records a safe error and leaves prior registrations authoritative on a connection failure", async () => {
+    const item = await createMcpServerItem({ transport: "stdio", command: "definitely-not-a-real-binary-xyz" });
+
+    await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow();
+
+    const updated = await getServerItem(item.id);
+    expect(updated.properties.syncStatus).toBe("error");
+    expect(updated.properties.syncError).toEqual(expect.any(String));
+    expect(updated.properties.syncError).not.toMatch(/definitely-not-a-real-binary-xyz/);
+    expect(await listMcpToolRegistrationsForServer(pool, item.id)).toEqual([]);
+  });
+
+  it("closes the connection after a failed sync", async () => {
+    const contract = await startHttpContractServer();
+    const workingUrl = contract.connectionConfig;
+    await contract.stop();
+
+    const item = await createMcpServerItem(workingUrl);
+    await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow();
+    // No open-socket assertion possible once the server itself is stopped; the connection
+    // factory's own tests (mcpConnectionFactory.test.ts) already cover "no leak after a failed
+    // connect" at the transport level — this just confirms the sync path surfaces the failure.
+  });
+
+  it("keeps the original sync error when closing the connection also fails (issue #781)", async () => {
+    const contract = startStdioContractServer([
+      { name: "dup", description: "one", inputSchema: { type: "object", properties: {} } },
+      { name: "dup", description: "two", inputSchema: { type: "object", properties: {} } },
+    ]);
+    const closeErr = new Error("close failed: ECONNRESET");
+    const loggerErrorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+    try {
+      const item = await createMcpServerItem(contract.connectionConfig);
+      connectMock.impl = async (...args: Parameters<typeof ConnectMcpServerFn>) => {
+        const handle = await connectMock.actual(...args);
+        return { ...handle, close: () => Promise.reject(closeErr) };
+      };
+
+      // The duplicate tool name fails strict validation after the connection is already open,
+      // so both the sync error and the close failure are in flight when `finally` runs.
+      await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow(ValidationError);
+
+      expect(loggerErrorSpy).toHaveBeenCalledWith(
+        { err: closeErr, mcpServerItemId: item.id },
+        "syncMcpServerTools: failed to close the MCP client handle",
+      );
+    } finally {
+      loggerErrorSpy.mockRestore();
+      await contract.stop();
+    }
+  });
+
+  it("still throws the close failure when the sync itself succeeds (issue #781)", async () => {
+    const contract = startStdioContractServer();
+    const closeErr = new Error("close failed: ECONNRESET");
+    try {
+      const item = await createMcpServerItem(contract.connectionConfig);
+      connectMock.impl = async (...args: Parameters<typeof ConnectMcpServerFn>) => {
+        const handle = await connectMock.actual(...args);
+        return { ...handle, close: () => Promise.reject(closeErr) };
+      };
+
+      await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow(closeErr);
+    } finally {
+      await contract.stop();
+    }
+  });
+
+  it("throws NotFoundError for a nonexistent MCP server item", async () => {
+    await expect(syncMcpServerTools(pool, "00000000-0000-0000-0000-000000000000")).rejects.toThrow(NotFoundError);
+  });
+
+  describe("tool schema policy (issue #696)", () => {
+    it("rejects a catastrophic-backtracking pattern, records a fixed error, and writes no registration", async () => {
+      const contract = startStdioContractServer([
+        {
+          name: "search_web",
+          description: "Searches the web",
+          inputSchema: { type: "object", properties: { q: { type: "string", pattern: "(a+)+$" } } },
+        },
+      ]);
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+
+        await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow(ValidationError);
+
+        expect(await listMcpToolRegistrationsForServer(pool, item.id)).toEqual([]);
+        const updated = await getServerItem(item.id);
+        expect(updated.properties.syncStatus).toBe("error");
+        expect(typeof updated.properties.syncError).toBe("string");
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it("rejects a remote $ref and writes no registration", async () => {
+      const contract = startStdioContractServer([
+        {
+          name: "search_web",
+          description: "Searches the web",
+          inputSchema: {
+            type: "object",
+            properties: { q: { $ref: "https://evil.example/schema.json" } as unknown as Record<string, unknown> },
+          },
+        },
+      ]);
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+
+        await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow(ValidationError);
+
+        expect(await listMcpToolRegistrationsForServer(pool, item.id)).toEqual([]);
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it("rejects a schema over 64 KiB and writes no registration", async () => {
+      const contract = startStdioContractServer([
+        {
+          name: "search_web",
+          description: "Searches the web",
+          inputSchema: {
+            type: "object",
+            properties: { q: { type: "string", description: "x".repeat(70 * 1024) } },
+          },
+        },
+      ]);
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+
+        await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow(ValidationError);
+
+        expect(await listMcpToolRegistrationsForServer(pool, item.id)).toEqual([]);
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it("syncs normally when a pattern is benign", async () => {
+      const contract = startStdioContractServer([
+        {
+          name: "search_web",
+          description: "Searches the web",
+          inputSchema: { type: "object", properties: { q: { type: "string", pattern: "^[a-z]+$" } } },
+        },
+      ]);
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+
+        const result = await syncMcpServerTools(pool, item.id);
+
+        expect(result.toolCount).toBe(1);
+        const registrations = await listMcpToolRegistrationsForServer(pool, item.id);
+        expect(registrations).toHaveLength(1);
+        expect(registrations[0]!.active).toBe(true);
+      } finally {
+        await contract.stop();
+      }
+    });
+  });
+});
+
+describe("listAllTools (pagination)", () => {
+  function fakeClient(pages: { tools: { name: string; inputSchema: unknown }[]; nextCursor?: string }[]): {
+    client: McpClientHandle["client"];
+    listTools: ReturnType<typeof vi.fn>;
+  } {
+    const listTools = vi.fn(async (params?: { cursor?: string }) => {
+      const index = params?.cursor ? Number(params.cursor) : 0;
+      const page = pages[index];
+      if (!page) throw new Error(`fakeClient: no page for cursor '${params?.cursor}'`);
+      return page.nextCursor !== undefined ? { tools: page.tools, nextCursor: page.nextCursor } : { tools: page.tools };
+    });
+    // The mock is handed back alongside the client: reading `client.listTools` off a value
+    // typed as the SDK's `Client` yields an unbound method, which is exactly the mistake
+    // `unbound-method` exists to catch and not something to assert on.
+    return { client: { listTools } as unknown as McpClientHandle["client"], listTools };
+  }
+
+  it("follows nextCursor to collect tools across every page before returning", async () => {
+    const { client, listTools } = fakeClient([
+      { tools: [{ name: "a", inputSchema: {} }], nextCursor: "1" },
+      { tools: [{ name: "b", inputSchema: {} }], nextCursor: "2" },
+      { tools: [{ name: "c", inputSchema: {} }] },
+    ]);
+
+    const tools = await listAllTools(client);
+
+    expect(tools.map((t) => t.name)).toEqual(["a", "b", "c"]);
+    expect(listTools).toHaveBeenCalledTimes(3);
+  });
+
+  it("stops after a single page when the response has no nextCursor", async () => {
+    const { client, listTools } = fakeClient([{ tools: [{ name: "only", inputSchema: {} }] }]);
+
+    const tools = await listAllTools(client);
+
+    expect(tools.map((t) => t.name)).toEqual(["only"]);
+    expect(listTools).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws rather than looping forever against a server whose pagination never terminates", async () => {
+    const client = {
+      listTools: vi.fn(async () => ({ tools: [], nextCursor: "again" })),
+    } as unknown as McpClientHandle["client"];
+
+    await expect(listAllTools(client)).rejects.toThrow(ValidationError);
+  });
+});

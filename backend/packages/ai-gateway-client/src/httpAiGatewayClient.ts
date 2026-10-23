@@ -1,0 +1,141 @@
+import {
+  AiGatewayFailedError,
+  currentTenantScope,
+  getTraceId,
+  mintTraceId,
+  type AiGatewayClientPort,
+  type AiGatewayCompletionInput,
+  type AiGatewayCompletionResult,
+} from "@semprec/shared";
+
+/** Carries the caller's own tenant scope across the loopback hop; the gateway validates it and enters that tenant. */
+const TENANT_ID_HEADER = "x-semprec-tenant-id";
+
+/** #215's 60-second budget for the whole round trip to `semprec-ai-gateway`. */
+const REQUEST_TIMEOUT_MS = 60_000;
+
+/**
+ * This is a loopback round trip to a process whose own request cap (`MAX_BODY_BYTES` in
+ * `completeHandler.ts`) is 1 MiB, so the response can't legitimately exceed that either — cap it
+ * the same way rather than buffering an unbounded or malformed response into memory.
+ */
+const MAX_RESPONSE_BODY_BYTES = 1024 * 1024;
+
+export interface HttpAiGatewayClientConfig {
+  /** The port `semprec-ai-gateway` listens on; the client always addresses it over loopback. */
+  port: number;
+  /** Compared by the gateway against its own `AI_GATEWAY_INTERNAL_TOKEN`. */
+  token: string;
+}
+
+function tenantHeader(): Record<string, string> {
+  const scope = currentTenantScope();
+  return scope?.kind === "tenant" ? { [TENANT_ID_HEADER]: scope.tenantId } : {};
+}
+
+class ResponseTooLargeError extends Error {}
+
+/**
+ * Reads the response body with a hard byte cap, independent of any (absent, wrong, or
+ * adversarial) `Content-Length` header, so a malformed or oversized response can't be buffered
+ * into memory wholesale before it's even parsed.
+ */
+async function readJsonBodyWithSizeCap(res: Response, maxBytes: number): Promise<unknown> {
+  const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = res.body?.getReader();
+  if (!reader) throw new ResponseTooLargeError("Response body stream was unavailable");
+
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel();
+      throw new ResponseTooLargeError("Response body exceeded the maximum allowed size");
+    }
+    chunks.push(value);
+  }
+  const body = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+  return JSON.parse(body);
+}
+
+function isCompletionResult(value: unknown): value is AiGatewayCompletionResult {
+  if (typeof value !== "object" || value === null) return false;
+  const usage = (value as { usage?: unknown }).usage;
+  return (
+    "content" in value &&
+    typeof usage === "object" &&
+    usage !== null &&
+    typeof (usage as { inputTokens?: unknown }).inputTokens === "number" &&
+    typeof (usage as { outputTokens?: unknown }).outputTokens === "number"
+  );
+}
+
+/**
+ * Whether a non-2xx response is the gateway's own budget rejection (`403` with
+ * `code: "budget_exceeded"`, as `completeHandler.ts` sends it). A body that can't be read or
+ * parsed is just not one: the caller still reports the response as a plain `http` failure.
+ */
+async function isBudgetRejection(res: Response): Promise<boolean> {
+  if (res.status !== 403) return false;
+  let body: unknown;
+  try {
+    body = await readJsonBodyWithSizeCap(res, MAX_RESPONSE_BODY_BYTES);
+  } catch {
+    return false;
+  }
+  return typeof body === "object" && body !== null && (body as { code?: unknown }).code === "budget_exceeded";
+}
+
+/**
+ * `packages/ai-gateway-client`'s only implementation of `AiGatewayClientPort` (#215): a plain
+ * `fetch` against `semprec-ai-gateway`'s `POST /internal/complete`, with a 60s timeout and
+ * strict response validation. Every failure mode — timeout, non-2xx (`budget_exceeded` for the
+ * gateway's budget rejection), invalid JSON, schema mismatch — collapses to `AiGatewayFailedError` with only a `reason`, never the provider's own
+ * error body, a response snippet, or the bearer token.
+ */
+export function createHttpAiGatewayClient(config: HttpAiGatewayClientConfig): AiGatewayClientPort {
+  return {
+    async complete(input: AiGatewayCompletionInput): Promise<AiGatewayCompletionResult> {
+      let res: Response;
+      try {
+        res = await fetch(`http://127.0.0.1:${config.port}/internal/complete`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${config.token}`,
+            // Issue #167: carries this call's trace across the loopback hop so the gateway's own
+            // logs correlate with the caller's. Minting a fallback here (rather than requiring an
+            // active trace) keeps this client usable from a caller that hasn't set one up.
+            "x-trace-id": getTraceId() ?? mintTraceId(),
+            // Taken only from the ambient scope, never from input; no header outside a tenant scope.
+            ...tenantHeader(),
+          },
+          body: JSON.stringify(input),
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+      } catch (err) {
+        const reason = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "http";
+        throw new AiGatewayFailedError(reason);
+      }
+
+      if (!res.ok) {
+        throw new AiGatewayFailedError((await isBudgetRejection(res)) ? "budget_exceeded" : "http");
+      }
+
+      let body: unknown;
+      try {
+        body = await readJsonBodyWithSizeCap(res, MAX_RESPONSE_BODY_BYTES);
+      } catch {
+        throw new AiGatewayFailedError("invalid_response");
+      }
+
+      if (!isCompletionResult(body)) {
+        throw new AiGatewayFailedError("invalid_response");
+      }
+
+      return body;
+    },
+  };
+}

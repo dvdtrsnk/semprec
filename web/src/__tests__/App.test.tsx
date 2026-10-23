@@ -1,0 +1,388 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { OperationError, type GenericOperations } from "../api/genericOperations.js";
+import type { AuthOperations, SessionUser } from "../api/authOperations.js";
+import type { SetupOperations } from "../api/setupOperations.js";
+import type { AdminOperations } from "../api/adminOperations.js";
+import type { AccountOperations } from "../api/accountOperations.js";
+import { createFakeOperations } from "../test/fakeOperations.js";
+import { App } from "../App.js";
+
+const USER: SessionUser = {
+  id: "user-1",
+  email: "operator@example.com",
+  locale: "en",
+  createdAt: "2026-09-01T12:00:00.000Z",
+  role: "member",
+};
+
+const CONTENT_MARKER_STATUS = 599;
+const CONTENT_MARKER = `The server answered with status ${CONTENT_MARKER_STATUS}`;
+
+/** Generic operations whose view load fails with a recognizable status, so the routed content's presence is observable. */
+function contentOperations(): GenericOperations & { getView: ReturnType<typeof vi.fn> } {
+  const getView = vi.fn(async () => {
+    throw new OperationError("unavailable", "routed content marker", CONTENT_MARKER_STATUS);
+  });
+  return { ...createFakeOperations({ items: [], relations: [], views: [] }), getView };
+}
+
+function stubAuth(overrides: Partial<AuthOperations> = {}): AuthOperations {
+  return {
+    login: vi.fn(async () => USER),
+    getSession: vi.fn(async (): Promise<SessionUser | null> => USER),
+    logout: vi.fn(async () => undefined),
+    requestPasswordReset: vi.fn(async () => undefined),
+    resetPassword: vi.fn(async () => undefined),
+    ...overrides,
+  };
+}
+
+function renderApp({
+  auth,
+  operations = contentOperations(),
+  sessionEvents = new EventTarget(),
+  setup,
+  passwordReset,
+  admin,
+  account,
+  login,
+  languages = ["en"],
+}: {
+  auth: AuthOperations;
+  operations?: GenericOperations;
+  sessionEvents?: EventTarget;
+  setup?: { token: string; operations: SetupOperations };
+  passwordReset?: { token: string | null };
+  admin?: { operations: AdminOperations };
+  account?: { operations: AccountOperations };
+  login?: true;
+  languages?: readonly string[];
+}) {
+  render(
+    <App
+      viewId="view-1"
+      operations={operations}
+      auth={auth}
+      sessionEvents={sessionEvents}
+      setup={setup}
+      passwordReset={passwordReset}
+      admin={admin}
+      account={account}
+      login={login}
+      languages={languages}
+    />,
+  );
+  return { operations, sessionEvents };
+}
+
+describe("App session lifecycle", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("renders the login page and no content when there is no session", async () => {
+    const operations = contentOperations();
+    renderApp({ auth: stubAuth({ getSession: vi.fn(async () => null) }), operations });
+
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.queryByText(CONTENT_MARKER)).not.toBeInTheDocument();
+    expect(screen.queryByRole("banner")).not.toBeInTheDocument();
+    expect(operations.getView).not.toHaveBeenCalled();
+  });
+
+  it("renders the header and the routed content for an authenticated session", async () => {
+    renderApp({ auth: stubAuth() });
+
+    expect(await screen.findByText("Signed in as operator@example.com")).toBeInTheDocument();
+    expect(await screen.findByText(CONTENT_MARKER)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+  });
+
+  it("shows the content after a successful login from the login page", async () => {
+    renderApp({ auth: stubAuth({ getSession: vi.fn(async () => null) }) });
+
+    await userEvent.type(await screen.findByLabelText("Email"), "operator@example.com");
+    await userEvent.type(screen.getByLabelText("Password"), "correct horse");
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(await screen.findByText("Signed in as operator@example.com")).toBeInTheDocument();
+    expect(await screen.findByText(CONTENT_MARKER)).toBeInTheDocument();
+  });
+
+  it("reloads to a clean URL when an unauthorized event fires mid-session", async () => {
+    const replace = vi.fn();
+    vi.stubGlobal("location", { ...window.location, replace });
+    const { sessionEvents } = renderApp({ auth: stubAuth() });
+    await screen.findByText(CONTENT_MARKER);
+
+    act(() => {
+      sessionEvents.dispatchEvent(new Event("unauthorized"));
+    });
+
+    await vi.waitFor(() => expect(replace).toHaveBeenCalledWith("/"));
+    expect(screen.queryByText(CONTENT_MARKER)).not.toBeInTheDocument();
+    expect(screen.queryByText("Signed in as operator@example.com")).not.toBeInTheDocument();
+  });
+
+  it("does not navigate when an unauthorized event fires on the login page", async () => {
+    const replace = vi.fn();
+    vi.stubGlobal("location", { ...window.location, replace });
+    const { sessionEvents } = renderApp({ auth: stubAuth({ getSession: vi.fn(async () => null) }) });
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+
+    act(() => {
+      sessionEvents.dispatchEvent(new Event("unauthorized"));
+    });
+
+    expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("logs out once and reloads to a clean URL", async () => {
+    const replace = vi.fn();
+    vi.stubGlobal("location", { ...window.location, replace });
+    const logout = vi.fn(async () => undefined);
+    renderApp({ auth: stubAuth({ logout }) });
+
+    await userEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+
+    await vi.waitFor(() => expect(replace).toHaveBeenCalledWith("/"));
+    expect(replace).toHaveBeenCalledTimes(1);
+    expect(logout).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(CONTENT_MARKER)).not.toBeInTheDocument();
+    expect(screen.queryByRole("banner")).not.toBeInTheDocument();
+  });
+
+  it("keeps the session and shows the failure when logout is rejected", async () => {
+    const replace = vi.fn();
+    vi.stubGlobal("location", { ...window.location, replace });
+    const logout = vi.fn(async () => {
+      throw new OperationError("retryable", "Request to /auth/logout failed with 500", 500);
+    });
+    renderApp({ auth: stubAuth({ logout }) });
+
+    await userEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+
+    expect(await screen.findByText("Signing out failed: Request to /auth/logout failed with 500")).toHaveAttribute(
+      "role",
+      "alert",
+    );
+    expect(screen.getByText("Signed in as operator@example.com")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Sign in" })).not.toBeInTheDocument();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("renders a failed bootstrap as an error with a retry that re-runs it", async () => {
+    const getSession = vi
+      .fn<AuthOperations["getSession"]>()
+      .mockRejectedValueOnce(new OperationError("retryable", "Request to /auth/session failed with 503", 503))
+      .mockResolvedValueOnce(USER);
+    renderApp({ auth: stubAuth({ getSession }) });
+
+    expect(await screen.findByText("The server answered with status 503")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByText("Signed in as operator@example.com")).toBeInTheDocument();
+    expect(getSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("follows the browser language for the login page, before a session is known", async () => {
+    renderApp({ auth: stubAuth({ getSession: vi.fn(async () => null) }), languages: ["cs"] });
+
+    expect(await screen.findByRole("heading", { name: "Přihlášení" })).toBeInTheDocument();
+  });
+
+  it("follows the session user's locale once authenticated, even when it differs from the browser's", async () => {
+    renderApp({ auth: stubAuth({ getSession: vi.fn(async () => ({ ...USER, locale: "en" })) }), languages: ["cs"] });
+
+    expect(await screen.findByText("Signed in as operator@example.com")).toBeInTheDocument();
+  });
+
+  it("navigates to / when an authenticated user opens the login route", async () => {
+    const replace = vi.fn();
+    vi.stubGlobal("location", { ...window.location, replace });
+    renderApp({ auth: stubAuth(), login: true });
+
+    await vi.waitFor(() => expect(replace).toHaveBeenCalledWith("/"));
+  });
+
+  it("renders the setup wizard without a header and never asks for the session", async () => {
+    const replace = vi.fn();
+    vi.stubGlobal("location", { ...window.location, replace });
+    const getSession = vi.fn(async () => USER);
+    const { sessionEvents } = renderApp({
+      auth: stubAuth({ getSession }),
+      setup: { token: "bootstrap-token", operations: { setupAccount: vi.fn(async () => USER) } },
+    });
+
+    expect(await screen.findByRole("heading", { name: "Set up your account" })).toBeInTheDocument();
+    expect(screen.queryByRole("banner")).not.toBeInTheDocument();
+    act(() => {
+      sessionEvents.dispatchEvent(new Event("unauthorized"));
+    });
+    expect(replace).not.toHaveBeenCalled();
+    expect(getSession).not.toHaveBeenCalled();
+  });
+
+  it("renders the password-reset page without the header and never reads the session", async () => {
+    const auth = stubAuth();
+    renderApp({ auth, passwordReset: { token: null } });
+
+    expect(await screen.findByRole("heading", { name: "Reset password" })).toBeInTheDocument();
+    expect(screen.queryByRole("banner")).not.toBeInTheDocument();
+    expect(screen.queryByText(CONTENT_MARKER)).not.toBeInTheDocument();
+    expect(auth.getSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("App admin page", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  const ADMIN_USER: SessionUser = { ...USER, role: "admin" };
+
+  function stubAdmin(): AdminOperations {
+    return {
+      listAccounts: vi.fn(async () => []),
+      suspendAccount: vi.fn(async () => {
+        throw new OperationError("retryable", "unused");
+      }),
+      reactivateAccount: vi.fn(async () => {
+        throw new OperationError("retryable", "unused");
+      }),
+      deleteAccount: vi.fn(async () => {
+        throw new Error("unused");
+      }),
+      changeRole: vi.fn(async () => {
+        throw new OperationError("retryable", "unused");
+      }),
+      listInvites: vi.fn(async () => []),
+      createInvite: vi.fn(async () => {
+        throw new OperationError("retryable", "unused");
+      }),
+      revokeInvite: vi.fn(async () => {
+        throw new OperationError("retryable", "unused");
+      }),
+      listAiBudgets: vi.fn(async () => []),
+      setAiBudget: vi.fn(async () => undefined),
+      getOperationsHealth: vi.fn(async () => {
+        throw new Error("unused");
+      }),
+    };
+  }
+
+  it("shows the admin link in the header for an admin session", async () => {
+    renderApp({ auth: stubAuth({ getSession: vi.fn(async () => ADMIN_USER) }) });
+
+    const link = await screen.findByRole("link", { name: "Admin" });
+    expect(link).toHaveAttribute("href", "?page=admin");
+  });
+
+  it("hides the admin link from a member session", async () => {
+    renderApp({ auth: stubAuth() });
+
+    await screen.findByText("Signed in as operator@example.com");
+    expect(screen.queryByRole("link", { name: "Admin" })).not.toBeInTheDocument();
+  });
+
+  it("tells a member the admin page is not available and makes no admin request", async () => {
+    const admin = stubAdmin();
+    renderApp({ auth: stubAuth(), admin: { operations: admin } });
+
+    expect(await screen.findByText("This page is only available to administrators")).toBeInTheDocument();
+    expect(admin.listAccounts).not.toHaveBeenCalled();
+    expect(screen.queryByRole("heading", { name: "Admin" })).not.toBeInTheDocument();
+  });
+
+  it("shows the admin page with the accounts panel to an admin", async () => {
+    const admin = stubAdmin();
+    vi.mocked(admin.listAccounts).mockResolvedValue([]);
+    renderApp({ auth: stubAuth({ getSession: vi.fn(async () => ADMIN_USER) }), admin: { operations: admin } });
+
+    expect(await screen.findByRole("heading", { name: "Admin" })).toBeInTheDocument();
+    expect(await screen.findByText("No accounts yet")).toBeInTheDocument();
+    expect(admin.listAccounts).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the session user's id to the accounts panel, so the admin's own row offers no Delete", async () => {
+    const admin = stubAdmin();
+    vi.mocked(admin.listAccounts).mockResolvedValue([
+      {
+        userId: ADMIN_USER.id,
+        email: ADMIN_USER.email,
+        role: "admin",
+        status: "active",
+        createdAt: "2026-09-01T12:00:00.000Z",
+        lastSeenAt: null,
+      },
+      {
+        userId: "user-2",
+        email: "member@example.com",
+        role: "member",
+        status: "active",
+        createdAt: "2026-09-01T12:00:00.000Z",
+        lastSeenAt: null,
+      },
+    ]);
+    renderApp({ auth: stubAuth({ getSession: vi.fn(async () => ADMIN_USER) }), admin: { operations: admin } });
+
+    const ownRow = await screen.findByRole("row", { name: new RegExp(ADMIN_USER.email) });
+    expect(within(ownRow).queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    expect(
+      within(screen.getByRole("row", { name: /member@example.com/ })).getByRole("button", { name: "Delete" }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("App account page", () => {
+  function stubAccount(): AccountOperations {
+    return {
+      listExports: vi.fn(async () => []),
+      requestExport: vi.fn(async () => {
+        throw new Error("not used");
+      }),
+      exportDownloadUrl: vi.fn((id: string) => `/api/account/exports/${id}/download`),
+      deleteAccount: vi.fn(async () => undefined),
+    };
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("shows the account link in the header of a member session", async () => {
+    renderApp({ auth: stubAuth() });
+
+    const link = await screen.findByRole("link", { name: "Account" });
+    expect(link).toHaveAttribute("href", "?page=account");
+  });
+
+  it("renders the account page when routed to it", async () => {
+    const account = stubAccount();
+    renderApp({ auth: stubAuth(), account: { operations: account } });
+
+    expect(await screen.findByRole("heading", { name: "Data export" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Delete account" })).toBeInTheDocument();
+    await vi.waitFor(() => expect(account.listExports).toHaveBeenCalledTimes(1));
+  });
+
+  it("reloads to a clean URL once the account is deleted", async () => {
+    const replace = vi.fn();
+    vi.stubGlobal("location", { ...window.location, replace });
+    const account = stubAccount();
+    renderApp({ auth: stubAuth(), account: { operations: account } });
+
+    await userEvent.type(await screen.findByLabelText("Password"), "correct horse");
+    await userEvent.click(screen.getByRole("button", { name: "Delete my account" }));
+
+    await vi.waitFor(() => expect(replace).toHaveBeenCalledTimes(1));
+    expect(replace).toHaveBeenCalledWith("/");
+    expect(account.deleteAccount).toHaveBeenCalledWith("correct horse");
+    expect(screen.queryByRole("heading", { name: "Delete account" })).not.toBeInTheDocument();
+  });
+});

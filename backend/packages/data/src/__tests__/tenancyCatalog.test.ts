@@ -1,0 +1,723 @@
+import { randomBytes } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { Pool, PoolClient } from "pg";
+import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createChokePoint } from "../chokePoint/chokePoint.js";
+import { seedSystem } from "../seed/seedSystem.js";
+
+/**
+ * Issue #971: every ordinary or partitioned table in `public` (partitions are classified through
+ * their parent) carries exactly one `semprec:tenancy=tenant|global` comment, written by the
+ * migration that creates it. Later tenancy issues append their catalog assertions to this file.
+ */
+const GLOBAL_TABLES = [
+  "users",
+  "sessions",
+  "login_attempts",
+  "password_reset_tokens",
+  "push_subscriptions",
+  "agent_run_mcp_credentials",
+  "process_heartbeats",
+  "observability_checks",
+  "schema_migrations",
+  "tenants",
+];
+
+const TENANT_TABLES = [
+  "databases",
+  "properties",
+  "relation_definitions",
+  "items",
+  "item_relations",
+  "views",
+  "view_items",
+  "idempotency_keys",
+  "rollup_dependencies",
+  "task_recurrence",
+  "item_automation",
+  "item_search_index",
+  "blobs",
+  "docs",
+  "doc_snapshots",
+  "doc_updates",
+  "doc_snapshot_history",
+  "doc_history_updates",
+  "project_heartbeats",
+  "heartbeat_occurrences",
+  "agent_runs",
+  "agent_run_events",
+  "approval_requests",
+  "mcp_tool_registrations",
+  "project_mcp_grants",
+  "project_agent_guidance",
+  "agent_guidance_drift_findings",
+  "manifest_drift_findings",
+  "notifications",
+  "push_deliveries",
+  "mail_account_sync_state",
+  "mail_folder_sync_state",
+  "mail_threads",
+  "mail_message_meta",
+  "mail_attachments",
+  "mail_message_flag_sync_state",
+  "person_email_index",
+  "external_credentials",
+  "credential_access_log",
+  "ai_gateway_calls",
+  "module_migrations",
+  "module_migration_progress",
+  "tenant_keys",
+  "tenant_observability_checks",
+  "tenant_exports",
+];
+
+type Queryable = Pick<Pool | PoolClient, "query">;
+
+async function listUnclassifiedTables(db: Queryable): Promise<string[]> {
+  const { rows } = await db.query<{ relname: string }>(
+    `SELECT c.relname
+       FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND c.relkind IN ('r', 'p')
+        AND NOT c.relispartition
+        AND COALESCE(obj_description(c.oid, 'pg_class'), '') NOT IN ('semprec:tenancy=tenant', 'semprec:tenancy=global')
+      ORDER BY c.relname`,
+  );
+  return rows.map((row) => row.relname);
+}
+
+async function readClassifications(db: Queryable, tables: string[]): Promise<Map<string, string | null>> {
+  const { rows } = await db.query<{ relname: string; comment: string | null }>(
+    `SELECT c.relname, obj_description(c.oid, 'pg_class') AS comment
+       FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relname = ANY($1::text[])`,
+    [tables],
+  );
+  return new Map(rows.map((row) => [row.relname, row.comment]));
+}
+
+/** Issue #974: parent-scoped keys and the provider-assigned id kept global by decision; each entry says why it needs no tenant_id. */
+const PERMANENT_EXCEPTIONS: { table: string; columns: string[]; reason: string }[] = [
+  { table: "properties", columns: ["database_id", "key"], reason: "scoped by the server-generated database id" },
+  { table: "relation_definitions", columns: ["property_id_a"], reason: "scoped by the server-generated property id" },
+  { table: "relation_definitions", columns: ["property_id_b"], reason: "scoped by the server-generated property id" },
+  { table: "items", columns: ["database_id", "id"], reason: "partition key of items, scoped by the database id" },
+  {
+    table: "item_relations",
+    columns: ["relation_definition_id", "item_a", "item_b"],
+    reason: "scoped by the relation definition id",
+  },
+  { table: "project_heartbeats", columns: ["project_item_id", "action_id"], reason: "scoped by the project item id" },
+  {
+    table: "rollup_dependencies",
+    columns: ["rollup_property_id"],
+    reason: "scoped by the server-generated property id",
+  },
+  { table: "views", columns: ["database_id"], reason: "scoped by the server-generated database id" },
+  { table: "view_items", columns: ["view_id", "item_id"], reason: "scoped by the server-generated view id" },
+  { table: "doc_snapshots", columns: ["doc_id"], reason: "scoped by the server-generated doc id" },
+  { table: "doc_history_updates", columns: ["update_id"], reason: "scoped by the server-generated update id" },
+  { table: "task_recurrence", columns: ["item_id"], reason: "scoped by the server-generated item id" },
+  { table: "item_automation", columns: ["item_id"], reason: "scoped by the server-generated item id" },
+  { table: "mail_account_sync_state", columns: ["item_id"], reason: "scoped by the server-generated item id" },
+  { table: "mail_folder_sync_state", columns: ["item_id"], reason: "scoped by the server-generated item id" },
+  { table: "mail_message_meta", columns: ["item_id"], reason: "scoped by the server-generated item id" },
+  { table: "external_credentials", columns: ["item_id"], reason: "scoped by the server-generated item id" },
+  { table: "item_search_index", columns: ["item_id"], reason: "scoped by the server-generated item id" },
+  {
+    table: "mail_message_meta",
+    columns: ["message_id", "mailbox_item_id"],
+    reason: "scoped by the server-generated mailbox item id",
+  },
+  {
+    table: "mcp_tool_registrations",
+    columns: ["mcp_server_item_id", "tool_name"],
+    reason: "scoped by the server-generated MCP server item id",
+  },
+  {
+    table: "project_mcp_grants",
+    columns: ["project_item_id", "mcp_tool_registration_id"],
+    reason: "scoped by the server-generated project item id",
+  },
+  {
+    table: "project_agent_guidance",
+    columns: ["project_item_id"],
+    reason: "scoped by the server-generated project item id",
+  },
+  {
+    table: "agent_guidance_drift_findings",
+    columns: ["project_item_id", "fingerprint"],
+    reason: "scoped by the server-generated project item id",
+  },
+  {
+    table: "heartbeat_occurrences",
+    columns: ["heartbeat_id", "scheduled_for"],
+    reason: "scoped by the server-generated heartbeat id",
+  },
+  {
+    table: "push_deliveries",
+    columns: ["notification_id", "push_subscription_id"],
+    reason: "scoped by the server-generated notification id",
+  },
+  {
+    table: "mail_message_flag_sync_state",
+    columns: ["message_item_id", "property_key"],
+    reason: "scoped by the server-generated message item id",
+  },
+  {
+    table: "mail_account_sync_state",
+    columns: ["graph_subscription_id"],
+    reason: "provider-assigned id that a router function resolves to its tenant (0041)",
+  },
+];
+
+const NEW_UNIQUE_INDEXES: { name: string; table: string; columns: string[]; predicate: string | null }[] = [
+  { name: "databases_key_unique", table: "databases", columns: ["tenant_id", "key"], predicate: null },
+  {
+    name: "databases_tenant_system_module_uq",
+    table: "databases",
+    columns: ["tenant_id", "owner_module_id"],
+    predicate: "system",
+  },
+  { name: "idempotency_keys_pkey", table: "idempotency_keys", columns: ["tenant_id", "key"], predicate: null },
+  {
+    name: "person_email_index_pkey",
+    table: "person_email_index",
+    columns: ["tenant_id", "email"],
+    predicate: null,
+  },
+  {
+    name: "mail_message_meta_tenant_provider_msg_uq",
+    table: "mail_message_meta",
+    columns: ["tenant_id", "provider_message_id"],
+    predicate: "provider_message_id IS NOT NULL",
+  },
+  {
+    name: "blobs_tenant_content_hash_uq",
+    table: "blobs",
+    columns: ["tenant_id", "content_hash"],
+    predicate: "content_hash IS NOT NULL",
+  },
+  {
+    name: "notifications_tenant_dedupe_idx",
+    table: "notifications",
+    columns: ["tenant_id", "user_id", "source_table", "source_id", "kind", "transition_instance"],
+    predicate: null,
+  },
+  {
+    name: "manifest_drift_findings_tenant_active_idx",
+    table: "manifest_drift_findings",
+    columns: ["tenant_id", "kind", "dedupe_key"],
+    predicate: "resolved_at IS NULL AND dedupe_key IS NOT NULL",
+  },
+  {
+    name: "module_migrations_pkey",
+    table: "module_migrations",
+    columns: ["tenant_id", "module_id", "database_key", "from_version", "to_version"],
+    predicate: null,
+  },
+  {
+    name: "module_migration_progress_pkey",
+    table: "module_migration_progress",
+    columns: ["tenant_id", "module_id", "database_key", "from_version", "to_version"],
+    predicate: null,
+  },
+  { name: "docs_tenant_item_id_uq", table: "docs", columns: ["tenant_id", "item_id"], predicate: null },
+  ...[
+    "databases",
+    "properties",
+    "relation_definitions",
+    "agent_runs",
+    "project_heartbeats",
+    "views",
+    "docs",
+    "notifications",
+    "mcp_tool_registrations",
+    "mail_threads",
+    "blobs",
+  ].map((table) => ({ name: `${table}_tenant_id_id_uq`, table, columns: ["tenant_id", "id"], predicate: null })),
+];
+
+interface UniqueIndexRow {
+  index_name: string;
+  table_name: string;
+  columns: string[];
+  default_expr: string | null;
+  predicate: string | null;
+}
+
+async function listUniqueIndexes(db: Queryable): Promise<UniqueIndexRow[]> {
+  const { rows } = await db.query<UniqueIndexRow>(
+    `SELECT ic.relname::text AS index_name, c.relname::text AS table_name,
+            ARRAY(SELECT a.attname::text FROM unnest(i.indkey::int2[]) WITH ORDINALITY k(attnum, ord)
+                    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+                   ORDER BY k.ord) AS columns,
+            (SELECT pg_get_expr(d.adbin, d.adrelid) FROM pg_attrdef d
+              WHERE d.adrelid = c.oid AND d.adnum = i.indkey[0]) AS default_expr,
+            pg_get_expr(i.indpred, i.indrelid) AS predicate
+       FROM pg_index i
+       JOIN pg_class ic ON ic.oid = i.indexrelid
+       JOIN pg_class c ON c.oid = i.indrelid
+      WHERE i.indisunique
+        AND c.relnamespace = 'public'::regnamespace
+        AND c.relkind IN ('r', 'p')
+        AND NOT c.relispartition
+        AND obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'
+      ORDER BY c.relname, ic.relname`,
+  );
+  return rows;
+}
+
+function sameKey(
+  row: Pick<UniqueIndexRow, "table_name" | "columns">,
+  entry: { table: string; columns: string[] },
+): boolean {
+  return row.table_name === entry.table && row.columns.join(",") === entry.columns.join(",");
+}
+
+/** Names every unique index on a tenant table that neither leads with tenant_id nor is a surrogate key or a listed exception. */
+async function listUniquenessViolations(db: Queryable): Promise<string[]> {
+  const rows = await listUniqueIndexes(db);
+  return rows
+    .filter((row) => {
+      if (row.columns[0] === "tenant_id") return false;
+      const surrogate =
+        row.columns.length === 1 &&
+        row.default_expr !== null &&
+        (row.default_expr.startsWith("gen_random_uuid()") || row.default_expr.startsWith("nextval("));
+      if (surrogate) return false;
+      return !PERMANENT_EXCEPTIONS.some((entry) => sameKey(row, entry));
+    })
+    .map((row) => `${row.index_name} on ${row.table_name} (${row.columns.join(", ")})`);
+}
+
+/**
+ * Issue #1066: foreign keys whose own tenant_id mapping is exempt from the composite-FK rule, by
+ * table and columns. tenant_ai_budgets.updated_by names the admin who changed a tenant's budget,
+ * and an admin of any tenant writes it (#1039).
+ */
+const COMPOSITE_FK_EXCEPTIONS: { table: string; columns: string[]; reason: string }[] = [
+  { table: "tenant_ai_budgets", columns: ["updated_by"], reason: "written by an admin of any tenant (#1039)" },
+];
+
+interface ForeignKeyRow {
+  table_name: string;
+  parent_oid: number;
+  columns: string[];
+  parent_columns: string[];
+  validated: boolean;
+}
+
+/**
+ * Names, as `<table>.<columns>`, every foreign key from a tenant table (or a table carrying
+ * tenant_id) to a tenant table or users that neither maps tenant_id to tenant_id itself nor has a
+ * validated twin on the same table and parent over (tenant_id, <same columns>). Foreign-key checks
+ * ignore row-level security, so a key without the twin is satisfied by another tenant's parent.
+ */
+async function listCompositeForeignKeyViolations(db: Queryable): Promise<string[]> {
+  const { rows } = await db.query<ForeignKeyRow>(
+    `SELECT c.relname::text AS table_name, k.confrelid::int AS parent_oid,
+            ARRAY(SELECT a.attname::text FROM unnest(k.conkey) WITH ORDINALITY u(attnum, ord)
+                    JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = u.attnum
+                   ORDER BY u.ord) AS columns,
+            ARRAY(SELECT a.attname::text FROM unnest(k.confkey) WITH ORDINALITY u(attnum, ord)
+                    JOIN pg_attribute a ON a.attrelid = k.confrelid AND a.attnum = u.attnum
+                   ORDER BY u.ord) AS parent_columns,
+            k.convalidated AS validated
+       FROM pg_constraint k
+       JOIN pg_class c ON c.oid = k.conrelid
+       JOIN pg_class p ON p.oid = k.confrelid
+      WHERE k.contype = 'f'
+        AND c.relnamespace = 'public'::regnamespace
+        AND NOT c.relispartition
+        AND (obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'
+             OR EXISTS (SELECT 1 FROM pg_attribute ta
+                         WHERE ta.attrelid = c.oid AND ta.attname = 'tenant_id' AND NOT ta.attisdropped))
+        AND p.relnamespace = 'public'::regnamespace
+        AND (obj_description(p.oid, 'pg_class') = 'semprec:tenancy=tenant' OR p.relname = 'users')
+      ORDER BY c.relname, k.conname`,
+  );
+  const mapsTenantId = (row: ForeignKeyRow): boolean =>
+    row.columns.some((column, index) => column === "tenant_id" && row.parent_columns[index] === "tenant_id");
+  return rows
+    .filter((row) => {
+      if (mapsTenantId(row)) return false;
+      if (COMPOSITE_FK_EXCEPTIONS.some((entry) => sameKey({ table_name: row.table_name, columns: row.columns }, entry)))
+        return false;
+      return !rows.some(
+        (twin) =>
+          twin.validated &&
+          twin.table_name === row.table_name &&
+          twin.parent_oid === row.parent_oid &&
+          twin.columns.join(",") === ["tenant_id", ...row.columns].join(",") &&
+          twin.parent_columns.join(",") === ["tenant_id", ...row.parent_columns].join(","),
+      );
+    })
+    .map((row) => `${row.table_name}.${row.columns.join(",")}`);
+}
+
+let pool: Pool;
+
+describe("tenancy classification catalog", () => {
+  beforeAll(() => {
+    pool = getTestPool();
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+  });
+
+  it("classifies every non-partition table in public", async () => {
+    const offenders = await listUnclassifiedTables(pool);
+    expect(
+      offenders,
+      `Tables without a tenancy classification: ${offenders.join(", ")}. ` +
+        `Fix: add COMMENT ON TABLE <table> IS 'semprec:tenancy=tenant' (or 'semprec:tenancy=global') in the migration that creates it.`,
+    ).toEqual([]);
+  });
+
+  it("names an unclassified table", async () => {
+    const probe = `tenancy_catalog_probe_${randomBytes(4).toString("hex")}`;
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      try {
+        await client.query(`CREATE TABLE ${probe} (id int)`);
+        expect(await listUnclassifiedTables(client)).toEqual([probe]);
+      } finally {
+        await client.query("ROLLBACK");
+      }
+    } finally {
+      client.release();
+    }
+    expect(await listUnclassifiedTables(pool)).toEqual([]);
+  });
+
+  it("does not report items partitions", async () => {
+    await resetDatabase(pool);
+    const db = await createChokePoint(pool).createDatabase({ name: "Tenancy catalog partition" });
+    const { rows } = await pool.query<{ relname: string }>(
+      `SELECT relname FROM pg_class WHERE relname = $1 AND relispartition`,
+      [`items_p_${db.id.replaceAll("-", "")}`],
+    );
+    expect(rows).toHaveLength(1);
+    expect(await listUnclassifiedTables(pool)).toEqual([]);
+  });
+
+  it("pins the global tables", async () => {
+    const comments = await readClassifications(pool, GLOBAL_TABLES);
+    for (const table of GLOBAL_TABLES) {
+      expect(comments.get(table), table).toBe("semprec:tenancy=global");
+    }
+  });
+
+  it("pins the tenant tables", async () => {
+    const comments = await readClassifications(pool, TENANT_TABLES);
+    for (const table of TENANT_TABLES) {
+      expect(comments.get(table), table).toBe("semprec:tenancy=tenant");
+    }
+  });
+
+  /** Issue #972: `tenant_id uuid NOT NULL DEFAULT app_tenant_default()` referencing tenants(id). */
+  it("gives every tenant table and items partition a defaulted, foreign-keyed tenant_id", async () => {
+    await resetDatabase(pool);
+    await createChokePoint(pool).createDatabase({ name: "Tenancy catalog tenant_id" });
+    const { rows } = await pool.query<{
+      relname: string;
+      typname: string | null;
+      attnotnull: boolean | null;
+      default_expr: string | null;
+      fk_targets: string[];
+    }>(
+      `SELECT c.relname, t.typname, a.attnotnull, pg_get_expr(d.adbin, d.adrelid) AS default_expr,
+              COALESCE((SELECT array_agg(cf.relname::text)
+                          FROM pg_constraint k
+                          JOIN pg_class cf ON cf.oid = k.confrelid
+                         WHERE k.conrelid = c.oid AND k.contype = 'f'
+                           AND k.conkey = ARRAY[a.attnum] AND k.confkey = (
+                             SELECT ARRAY[ta.attnum] FROM pg_attribute ta
+                              WHERE ta.attrelid = cf.oid AND ta.attname = 'id')), '{}') AS fk_targets
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped
+         LEFT JOIN pg_type t ON t.oid = a.atttypid
+         LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
+        WHERE n.nspname = 'public'
+          AND (obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'
+               OR (c.relkind = 'r' AND c.relispartition AND c.relname LIKE 'items\\_p\\_%'))
+        ORDER BY c.relname`,
+    );
+    const byTable = new Map(rows.map((row) => [row.relname, row]));
+    for (const table of TENANT_TABLES) {
+      expect(byTable.has(table), `${table} is missing from the catalog`).toBe(true);
+    }
+    expect(rows.filter((row) => row.relname.startsWith("items_p_")).length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.typname, `${row.relname}.tenant_id type`).toBe("uuid");
+      expect(row.attnotnull, `${row.relname}.tenant_id NOT NULL`).toBe(true);
+      expect(row.default_expr, `${row.relname}.tenant_id default`).toBe("app_tenant_default()");
+      expect(row.fk_targets, `${row.relname}.tenant_id foreign key`).toEqual(["tenants"]);
+    }
+  });
+
+  /** Issue #973: RLS enabled and not forced, with exactly the restrictive and the permissive policy. */
+  it("enables row-level security without forcing it on every tenant table", async () => {
+    const { rows } = await pool.query<{ relname: string; relrowsecurity: boolean; relforcerowsecurity: boolean }>(
+      `SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class
+        WHERE relnamespace = 'public'::regnamespace AND relname = ANY($1::text[])`,
+      [TENANT_TABLES],
+    );
+    expect(rows.map((row) => row.relname).sort()).toEqual([...TENANT_TABLES].sort());
+    for (const row of rows) {
+      expect(row.relrowsecurity, `${row.relname} relrowsecurity`).toBe(true);
+      expect(row.relforcerowsecurity, `${row.relname} relforcerowsecurity`).toBe(false);
+    }
+  });
+
+  it("gives every tenant table exactly the tenant_isolation and tenant_rows policies", async () => {
+    const { rows } = await pool.query<{
+      tablename: string;
+      policyname: string;
+      permissive: string;
+      roles: string[];
+      cmd: string;
+      qual: string | null;
+      with_check: string | null;
+    }>(
+      `SELECT tablename::text, policyname::text, permissive, roles::text[] AS roles, cmd, qual, with_check
+         FROM pg_policies
+        WHERE schemaname = 'public'
+        ORDER BY tablename, policyname`,
+    );
+    const byTable = new Map<string, typeof rows>();
+    for (const row of rows) byTable.set(row.tablename, [...(byTable.get(row.tablename) ?? []), row]);
+    expect([...byTable.keys()].sort(), "tables carrying policies").toEqual([...TENANT_TABLES].sort());
+    for (const table of TENANT_TABLES) {
+      const policies = byTable.get(table) ?? [];
+      expect(
+        policies.map((policy) => policy.policyname),
+        `${table} policy names`,
+      ).toEqual(["tenant_isolation", "tenant_rows"]);
+      const [isolation, permissiveRows] = policies;
+      expect(isolation?.permissive, `${table} tenant_isolation`).toBe("RESTRICTIVE");
+      expect(isolation?.cmd).toBe("ALL");
+      expect(isolation?.roles).toEqual(["public"]);
+      expect(isolation?.qual).not.toBeNull();
+      expect(isolation?.with_check, `${table} qual and with_check`).toBe(isolation?.qual);
+      expect(isolation?.qual).toContain("tenant_id");
+      expect(isolation?.qual).toContain("app_tenant_default()");
+      expect(permissiveRows?.permissive, `${table} tenant_rows`).toBe("PERMISSIVE");
+      expect(permissiveRows?.cmd).toBe("ALL");
+      expect(permissiveRows?.roles).toEqual(["public"]);
+      expect(permissiveRows?.qual).toBe("true");
+      expect(permissiveRows?.with_check).toBe("true");
+    }
+  });
+
+  it("keeps the runtime roles non-privileged, table-less owners with no grant on any items partition", async () => {
+    await resetDatabase(pool);
+    await createChokePoint(pool).createDatabase({ name: "Tenancy catalog runtime roles" });
+    for (const role of ["semprec_data", "semprec_side"]) {
+      const attrs = await pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = $1`,
+        [role],
+      );
+      expect(attrs.rows, role).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+
+      const owned = await pool.query<{ relname: string }>(
+        `SELECT c.relname FROM pg_class c
+          WHERE c.relnamespace = 'public'::regnamespace AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname = $1)`,
+        [role],
+      );
+      expect(owned.rows, `${role} owned relations`).toEqual([]);
+
+      const partitions = await pool.query<{ relname: string; granted: boolean }>(
+        `SELECT c.relname,
+                has_table_privilege($1, c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') AS granted
+           FROM pg_class c
+          WHERE c.relnamespace = 'public'::regnamespace AND c.relispartition AND c.relname LIKE 'items\\_p\\_%'`,
+        [role],
+      );
+      expect(partitions.rows.length, "items partitions exist").toBeGreaterThan(0);
+      expect(
+        partitions.rows.filter((row) => row.granted).map((row) => row.relname),
+        `${role} privileges on items partitions`,
+      ).toEqual([]);
+    }
+  });
+
+  /** Issue #974: unique checks ignore RLS, so every unique key on a tenant table leads with tenant_id. */
+  it("gives every unique index on a tenant table a tenant-leading, surrogate or listed shape", async () => {
+    const offenders = await listUniquenessViolations(pool);
+    expect(
+      offenders,
+      `Unique indexes on tenant tables without a leading tenant_id: ${offenders.join("; ")}. ` +
+        `Fix: lead the index with tenant_id, or list it in PERMANENT_EXCEPTIONS with a reason.`,
+    ).toEqual([]);
+  });
+
+  it("names a unique index that lacks tenant_id", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      try {
+        await client.query("CREATE UNIQUE INDEX tenancy_catalog_probe_uq ON databases (id, key)");
+        expect(await listUniquenessViolations(client)).toEqual(["tenancy_catalog_probe_uq on databases (id, key)"]);
+      } finally {
+        await client.query("ROLLBACK");
+      }
+    } finally {
+      client.release();
+    }
+    expect(await listUniquenessViolations(pool)).toEqual([]);
+  });
+
+  it("creates the tenant-leading and parent unique indexes with the listed columns and predicate", async () => {
+    await resetDatabase(pool);
+    await seedSystem(pool);
+    const rows = await listUniqueIndexes(pool);
+    for (const expected of NEW_UNIQUE_INDEXES) {
+      const row = rows.find((candidate) => candidate.index_name === expected.name);
+      expect(row, `${expected.name} exists`).toBeDefined();
+      expect(row?.table_name, `${expected.name} table`).toBe(expected.table);
+      expect(row?.columns, `${expected.name} columns`).toEqual(expected.columns);
+      // pg_get_expr parenthesizes a compound predicate but not a bare column, so compare without parentheses.
+      expect(row?.predicate?.replaceAll(/[()]/g, "") ?? null, `${expected.name} predicate`).toBe(expected.predicate);
+    }
+    expect(NEW_UNIQUE_INDEXES).toHaveLength(22);
+  });
+
+  /** Issue #1065: the contract step dropped every legacy global key and the dormant resource_grants table. */
+  it("drops the legacy global unique keys and resource_grants", async () => {
+    const legacy = await pool.query<{ name: string }>(
+      `SELECT c.relname::text AS name FROM pg_class c
+        WHERE c.relnamespace = 'public'::regnamespace AND c.relname = ANY($1::text[])`,
+      [
+        [
+          "blobs_content_hash_uq",
+          "mail_message_meta_provider_msg_uq",
+          "notifications_dedupe_idx",
+          "manifest_drift_findings_active_idx",
+          "docs_item_id_idx",
+          "resource_grants",
+        ],
+      ],
+    );
+    expect(legacy.rows.map((row) => row.name)).toEqual([]);
+  });
+
+  it("leads the primary key of every formerly globally keyed table with tenant_id", async () => {
+    const { rows } = await pool.query<{ table_name: string; constraint_name: string; first_column: string }>(
+      `SELECT c.relname::text AS table_name, con.conname::text AS constraint_name, a.attname::text AS first_column
+         FROM pg_constraint con
+         JOIN pg_class c ON c.oid = con.conrelid
+         JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = con.conkey[1]
+        WHERE con.contype = 'p'
+          AND c.relnamespace = 'public'::regnamespace
+          AND c.relname = ANY($1::text[])
+        ORDER BY c.relname`,
+      [["idempotency_keys", "person_email_index", "module_migrations", "module_migration_progress"]],
+    );
+    expect(rows).toEqual([
+      { table_name: "idempotency_keys", constraint_name: "idempotency_keys_pkey", first_column: "tenant_id" },
+      {
+        table_name: "module_migration_progress",
+        constraint_name: "module_migration_progress_pkey",
+        first_column: "tenant_id",
+      },
+      { table_name: "module_migrations", constraint_name: "module_migrations_pkey", first_column: "tenant_id" },
+      { table_name: "person_email_index", constraint_name: "person_email_index_pkey", first_column: "tenant_id" },
+    ]);
+  });
+
+  /** Issue #1066: foreign-key checks ignore RLS, so every reference between tenant rows has a tenant-consistent twin. */
+  it("gives every foreign key between tenant rows a validated (tenant_id, ...) twin", async () => {
+    const offenders = await listCompositeForeignKeyViolations(pool);
+    expect(
+      offenders,
+      `Foreign keys between tenant rows without a validated tenant_id twin: ${offenders.join("; ")}. ` +
+        `Fix: add (tenant_id, <column>) REFERENCES <parent>(tenant_id, id) beside it and validate it.`,
+    ).toEqual([]);
+  });
+
+  it("names the table and column of every foreign key whose twin is removed", async () => {
+    const { rows: twins } = await pool.query<{ table_name: string; constraint_name: string; column_name: string }>(
+      `SELECT c.relname::text AS table_name, k.conname::text AS constraint_name, a.attname::text AS column_name
+         FROM pg_constraint k
+         JOIN pg_class c ON c.oid = k.conrelid
+         JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = k.conkey[2]
+        WHERE k.contype = 'f' AND k.conname LIKE '%\\_tenant\\_fkey'
+          AND c.relnamespace = 'public'::regnamespace AND NOT c.relispartition
+        ORDER BY k.conname`,
+    );
+    expect(twins).toHaveLength(31);
+    for (const twin of twins) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        try {
+          // Identifiers come from pg_constraint, never from input; ALTER TABLE accepts no bind parameters.
+          await client.query(`ALTER TABLE ${twin.table_name} DROP CONSTRAINT ${twin.constraint_name}`);
+          expect(await listCompositeForeignKeyViolations(client), twin.constraint_name).toEqual([
+            `${twin.table_name}.${twin.column_name}`,
+          ]);
+        } finally {
+          await client.query("ROLLBACK");
+        }
+      } finally {
+        client.release();
+      }
+    }
+    expect(await listCompositeForeignKeyViolations(pool)).toEqual([]);
+  });
+
+  it("does not accept an unvalidated twin", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      try {
+        await client.query("ALTER TABLE views DROP CONSTRAINT views_database_id_tenant_fkey");
+        await client.query(
+          `ALTER TABLE views ADD CONSTRAINT views_database_id_tenant_fkey FOREIGN KEY (tenant_id, database_id)
+             REFERENCES databases (tenant_id, id) ON DELETE CASCADE NOT VALID`,
+        );
+        expect(await listCompositeForeignKeyViolations(client)).toEqual(["views.database_id"]);
+      } finally {
+        await client.query("ROLLBACK");
+      }
+    } finally {
+      client.release();
+    }
+  });
+
+  it("rejects a second system database for one module in a tenant but accepts a second non-system one", async () => {
+    await resetDatabase(pool);
+    const chokePoint = createChokePoint(pool);
+    await chokePoint.createDatabase({ name: "System one", ownerModuleId: "tenancyProbe", system: true });
+    await chokePoint.createDatabase({ name: "Plain one", ownerModuleId: "tenancyProbe" });
+    await chokePoint.createDatabase({ name: "Plain two", ownerModuleId: "tenancyProbe" });
+    await expect(
+      chokePoint.createDatabase({ name: "System two", ownerModuleId: "tenancyProbe", system: true }),
+    ).rejects.toMatchObject({ code: "23505", constraint: "databases_tenant_system_module_uq" });
+  });
+
+  /** Issue #1067: the strict switch. */
+  it("defines app_tenant_default() through app_current_tenant() alone", async () => {
+    const { rows } = await pool.query<{ definition: string }>(
+      "SELECT pg_get_functiondef('public.app_tenant_default()'::regprocedure) AS definition",
+    );
+    const definition = rows[0]?.definition ?? "";
+    expect(definition).toContain("app_current_tenant");
+    expect(definition).not.toContain("app_sole_tenant");
+  });
+
+  it("makes users.tenant_id NOT NULL", async () => {
+    const { rows } = await pool.query<{ attnotnull: boolean }>(
+      `SELECT attnotnull FROM pg_attribute
+        WHERE attrelid = 'public.users'::regclass AND attname = 'tenant_id' AND NOT attisdropped`,
+    );
+    expect(rows).toEqual([{ attnotnull: true }]);
+  });
+});

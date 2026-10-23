@@ -1,0 +1,30 @@
+{
+  "database.books.name": "Books",
+  "property.books.name.name": "Name",
+  "property.books.author.name": "Author",
+  "property.books.cover.name": "Cover",
+  "property.books.rating.name": "Rating",
+  "property.books.status.name": "Status",
+  "property.books.status.option.toRead": "To read",
+  "property.books.status.option.reading": "Reading",
+  "property.books.status.option.read": "Read",
+
+  "database.movies.name": "Movies/TV",
+  "property.movies.name.name": "Name",
+  "property.movies.year.name": "Year",
+  "property.movies.type.name": "Type",
+  "property.movies.type.option.movie": "Movie",
+  "property.movies.type.option.series": "Series",
+  "property.movies.cover.name": "Cover",
+  "property.movies.rating.name": "Rating",
+  "property.movies.secondaryRating.name": "Critics' rating",
+  "property.movies.sourceUrl.name": "Source",
+  "property.movies.status.name": "Status",
+  "property.movies.status.option.planned": "Planned",
+  "property.movies.status.option.watching": "Watching",
+  "property.movies.status.option.watched": "Watched",
+  "property.movies.notes.name": "Notes",
+  "property.movies.watchedWith.name": "Watched with",
+
+  "viewType.library-grid.name": "Grid"
+}

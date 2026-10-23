@@ -1,0 +1,210 @@
+import type { PoolClient } from "pg";
+import { requireAffectedRows, type Queryable } from "../db/pool.js";
+import type { ItemUpdateHook } from "../chokePoint/hooks.js";
+import { visibleDatabaseIds } from "../chokePoint/itemsStore.js";
+import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
+import { FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY, type WritableImapFlag } from "./messageFlags.js";
+
+export type MailMessageFlagKey = typeof READ_PROPERTY_KEY | typeof FLAGGED_PROPERTY_KEY;
+
+export interface PendingImapFlagWrite {
+  messageItemId: string;
+  propertyKey: MailMessageFlagKey;
+  desiredState: boolean;
+  folderPath: string;
+  uid: number;
+}
+
+export interface PendingProviderFlagWrite {
+  messageItemId: string;
+  providerMessageId: string;
+  propertyKey: MailMessageFlagKey;
+  desiredState: boolean;
+}
+
+function isMailMessageFlagKey(value: string): value is MailMessageFlagKey {
+  return value === READ_PROPERTY_KEY || value === FLAGGED_PROPERTY_KEY;
+}
+
+/** Records a user/agent-originated desired state inside the generic item's transaction. */
+export async function recordDesiredMailMessageFlags(
+  client: PoolClient,
+  messageItemId: string,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  for (const [propertyKey, value] of Object.entries(patch)) {
+    if (!isMailMessageFlagKey(propertyKey) || typeof value !== "boolean") continue;
+    await client.query(
+      `INSERT INTO mail_message_flag_sync_state (message_item_id, property_key, desired_state)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (message_item_id, property_key) DO UPDATE
+       SET desired_state = EXCLUDED.desired_state, updated_at = now()`,
+      [messageItemId, propertyKey, value],
+    );
+  }
+}
+
+/**
+ * The choke point's item-update hook for Emails (registered by `../domainWriteHooks.ts`): the
+ * generic item mutation is the sole origin for user/agent triage intent, so this persists it in
+ * the same transaction as the Email patch — a crash cannot leave UI state committed without a
+ * restart-safe provider write to perform.
+ */
+export const mailMessageFlagsItemUpdateHook: ItemUpdateHook = async ({
+  client,
+  database,
+  item,
+  propertiesPatch,
+  skipMailDesiredStateRecording,
+}) => {
+  if (database.ownerModuleId !== EMAILS_MODULE_ID || skipMailDesiredStateRecording) return;
+  await recordDesiredMailMessageFlags(client, item.id, propertiesPatch);
+};
+
+/**
+ * Records flags observed from a provider. `current_state` always takes the observed value.
+ * `desired_state` follows it too, but only when the row was converged going into this call
+ * (`current_state IS NOT DISTINCT FROM desired_state`, evaluated against the row as it stood
+ * before this statement) — a converged pair has no pending user intent to protect, so the
+ * observation becomes the new desired state as well as the new current state. A row with a
+ * pending write (`current` differs from `desired`) keeps its existing `desired_state`
+ * untouched, so the write-back that resolves it still runs — this is the ADR's "never replace
+ * a *differing* desired value" (docs/adr/2026-09-20-desired-current-state-sync-for-provider-writebacks.md),
+ * which a converged pair is not.
+ */
+export async function recordObservedMailMessageFlags(
+  client: PoolClient,
+  messageItemId: string,
+  flags: Readonly<Record<MailMessageFlagKey, boolean>>,
+): Promise<void> {
+  for (const [propertyKey, value] of Object.entries(flags)) {
+    if (!isMailMessageFlagKey(propertyKey)) continue;
+    await client.query(
+      `INSERT INTO mail_message_flag_sync_state (message_item_id, property_key, desired_state, current_state)
+       VALUES ($1, $2, $3, $3)
+       ON CONFLICT (message_item_id, property_key) DO UPDATE
+       SET current_state = EXCLUDED.current_state,
+           desired_state = CASE
+             WHEN mail_message_flag_sync_state.current_state IS NOT DISTINCT FROM mail_message_flag_sync_state.desired_state
+             THEN EXCLUDED.current_state
+             ELSE mail_message_flag_sync_state.desired_state
+           END,
+           updated_at = now()`,
+      [messageItemId, propertyKey, value],
+    );
+  }
+}
+
+/** Maps an IMAP flag-state write back to the persisted provider-confirmed state. */
+export async function recordConfirmedMailMessageFlag(
+  client: PoolClient,
+  messageItemId: string,
+  propertyKey: MailMessageFlagKey,
+  currentState: boolean,
+): Promise<void> {
+  const result = await client.query(
+    `UPDATE mail_message_flag_sync_state
+     SET current_state = $3, updated_at = now()
+     WHERE message_item_id = $1 AND property_key = $2`,
+    [messageItemId, propertyKey, currentState],
+  );
+  requireAffectedRows(result, "mail message flag confirmation");
+}
+
+/** Pending IMAP writes are resolved through every folder edge carrying the message's UID. */
+export async function listPendingImapFlagWrites(
+  client: Queryable,
+  input: { folderRelationDefinitionId: string; mailboxFolderRelationDefinitionId: string; mailboxItemId: string },
+): Promise<PendingImapFlagWrite[]> {
+  const { rows } = await client.query<{
+    message_item_id: string;
+    property_key: string;
+    desired_state: boolean;
+    folder_path: string;
+    uid: string;
+  }>(
+    `SELECT state.message_item_id, state.property_key, state.desired_state,
+       folder.properties ->> 'providerId' AS folder_path, email_folder.metadata ->> 'uid' AS uid
+     FROM mail_message_flag_sync_state state
+     JOIN item_relations email_folder
+       ON email_folder.relation_definition_id = $1
+      AND (email_folder.item_a = state.message_item_id OR email_folder.item_b = state.message_item_id)
+     JOIN items folder
+       ON folder.id = CASE WHEN email_folder.item_a = state.message_item_id THEN email_folder.item_b ELSE email_folder.item_a END
+      AND folder.database_id = ANY($4::uuid[])
+     JOIN item_relations mailbox_folder
+       ON mailbox_folder.relation_definition_id = $2
+      AND (mailbox_folder.item_a = folder.id OR mailbox_folder.item_b = folder.id)
+      AND (mailbox_folder.item_a = $3 OR mailbox_folder.item_b = $3)
+     WHERE state.current_state IS DISTINCT FROM state.desired_state
+       AND folder.deleted_at IS NULL
+       AND email_folder.metadata ->> 'uid' ~ '^[0-9]+$'
+       AND folder.properties ->> 'providerId' IS NOT NULL
+     ORDER BY state.message_item_id, state.property_key, folder.id`,
+    [
+      input.folderRelationDefinitionId,
+      input.mailboxFolderRelationDefinitionId,
+      input.mailboxItemId,
+      await visibleDatabaseIds(client),
+    ],
+  );
+  return rows.flatMap((row) => {
+    if (!isMailMessageFlagKey(row.property_key)) return [];
+    const uid = Number(row.uid);
+    if (!Number.isSafeInteger(uid) || uid < 1) return [];
+    return [
+      {
+        messageItemId: row.message_item_id,
+        propertyKey: row.property_key,
+        desiredState: row.desired_state,
+        folderPath: row.folder_path,
+        uid,
+      },
+    ];
+  });
+}
+
+/** Pending Gmail/Graph writes are scoped through the message's Folder -> Mailbox membership. */
+export async function listPendingProviderFlagWrites(
+  client: Queryable,
+  input: { folderRelationDefinitionId: string; mailboxFolderRelationDefinitionId: string; mailboxItemId: string },
+): Promise<PendingProviderFlagWrite[]> {
+  const { rows } = await client.query<{
+    message_item_id: string;
+    provider_message_id: string;
+    property_key: string;
+    desired_state: boolean;
+  }>(
+    `SELECT DISTINCT state.message_item_id, meta.provider_message_id, state.property_key, state.desired_state
+     FROM mail_message_flag_sync_state state
+     JOIN mail_message_meta meta ON meta.item_id = state.message_item_id
+     JOIN item_relations email_folder
+       ON email_folder.relation_definition_id = $1
+      AND (email_folder.item_a = state.message_item_id OR email_folder.item_b = state.message_item_id)
+     JOIN item_relations mailbox_folder
+       ON mailbox_folder.relation_definition_id = $2
+      AND (mailbox_folder.item_a = CASE WHEN email_folder.item_a = state.message_item_id THEN email_folder.item_b ELSE email_folder.item_a END
+        OR mailbox_folder.item_b = CASE WHEN email_folder.item_a = state.message_item_id THEN email_folder.item_b ELSE email_folder.item_a END)
+      AND (mailbox_folder.item_a = $3 OR mailbox_folder.item_b = $3)
+     WHERE state.current_state IS DISTINCT FROM state.desired_state
+       AND meta.provider_message_id IS NOT NULL
+     ORDER BY state.message_item_id, state.property_key`,
+    [input.folderRelationDefinitionId, input.mailboxFolderRelationDefinitionId, input.mailboxItemId],
+  );
+  return rows.flatMap((row) =>
+    isMailMessageFlagKey(row.property_key)
+      ? [
+          {
+            messageItemId: row.message_item_id,
+            providerMessageId: row.provider_message_id,
+            propertyKey: row.property_key,
+            desiredState: row.desired_state,
+          },
+        ]
+      : [],
+  );
+}
+
+export function imapFlagForProperty(propertyKey: MailMessageFlagKey): WritableImapFlag {
+  return propertyKey === READ_PROPERTY_KEY ? "\\Seen" : "\\Flagged";
+}

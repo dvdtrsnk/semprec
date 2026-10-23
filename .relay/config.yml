@@ -1,0 +1,42 @@
+version: 1
+protected-paths: [".relay/**", ".github/workflows/**", ".github/scripts/check-protected-paths.mjs"]
+defaults:
+  worker: any                 # any preset in project.workerIds, or a preset name
+  model-tier: medium          # provider-neutral ability class; workflow overrides below
+  max-concurrent: 3           # per workflow (runs of this one workflow), unless it overrides it;
+                              # the cross-workflow cap on issues in flight is the project's
+                              # maxConcurrent in the plugin
+  timeout-minutes: 120        # per command step
+review:
+  # dvdtrsnk/code-review-bot#24 (feat/relay-out-of-actions) merged to main as
+  # 96a0439137f4424700ff3c76209f146498f101d1: the out-of-Actions contract
+  # (CRB_TMP_DIR/TMPDIR scratch isolation, BOT_USERNAME in both spellings the
+  # bot reads) is now what this pin runs. `max-concurrent: 1` was dropped from
+  # workflows/review-pull-request.md accordingly.
+  # dvdtrsnk/code-review-bot#27 merged to main as
+  # 9e732e791c6bcdbfa4683d6ad93ed1f7441a3d61: fixes cheap reuse-after-rebase
+  # never firing for a PR whose review found zero issues (the common case) —
+  # a clean PR's recorded verdict was silently dropped instead of persisted,
+  # so a rebase always fell through to a full review.
+  # dvdtrsnk/code-review-bot#28 merged to main as
+  # aa7d7e07f3bc3552887708a49dc319a3f4a2f640: verdict reuse keys on a
+  # line-number-free diff identity, so a rebase onto a develop that changed the
+  # same file elsewhere no longer forces a full review. The checkout ref in
+  # .github/workflows/code-review.yml pins the same commit (#548).
+  # dvdtrsnk/code-review-bot#29 merged to main as
+  # 967a0c8472d2b9144a88635c5d5a9c1336a18aeb: a `**/` in a scope glob matches
+  # zero directories too, so `**/*.json` and `dir/**/*.ts` no longer silently
+  # skip files such as backend/package.json or top-level web/*.ts.
+  # dvdtrsnk/code-review-bot#31 binds model calls and review cache identity to
+  # the admitted execution snapshot and preserves three first-review angles.
+  # Keep the Actions fallback pin identical.
+  # dvdtrsnk/code-review-bot#34 requires platform results in the final assistant
+  # response and preserves invalid-result failures without cost-table crashes.
+  bot: { repo: dvdtrsnk/code-review-bot, ref: 06b0e1b23ee886191bd8ade8ac61118cce3cbb86 }
+  check-name: code-review
+  env: { REVIEW_BLOCK_SEVERITY: medium, PROMOTION_SOURCE: develop, PROMOTION_TARGET: main }
+merge:
+  method: rebase              # the only method Relay implements
+labels:                       # names the shipped workflows use; free to rename
+  blocked: agent:blocked
+  needs-human-action: agent:needs-human-action

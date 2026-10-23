@@ -1,0 +1,288 @@
+import { Pool, type PoolClient } from "pg";
+import {
+  createAgentRun,
+  finishAgentRun,
+  finishAgentRunWithErrorNotification,
+  getAgentRun,
+  insertAndNotifyAgentRunEvent,
+  type AgentRunEventKind,
+  type AgentRunRow,
+  type AgentRunUnit,
+  type TriggeredBy,
+  withTransaction,
+} from "@semprec/data";
+import { publishAgentRunDelta } from "@semprec/realtime";
+import { withTraceContext } from "@semprec/shared";
+import type { AgentMessage, CreateAgentSession } from "./types.js";
+import { logger } from "./logger.js";
+
+const PERSISTED_EVENT_KINDS: ReadonlySet<string> = new Set<AgentRunEventKind>([
+  "turn_start",
+  "message",
+  "tool_use",
+  "tool_result",
+  "turn_end",
+  "run_status",
+]);
+
+/** Resolves the abort race in `runAgentTurn`. */
+const ABORTED = Symbol("aborted");
+
+export interface RunAgentSessionInput {
+  /** Seam for the real `pi-agent-core` `createAgentSession` (or a fake, in tests). */
+  createAgentSession: CreateAgentSession;
+  task: string;
+  triggeredBy: TriggeredBy;
+  /** Defaults to 'invocation'; #118 passes 'session' for managed conversations. */
+  unit?: AgentRunUnit;
+  projectItemId?: string | null;
+  parentRunId?: string | null;
+  heartbeatId?: string | null;
+  systemPromptOverride?: (defaultPrompt: string) => string;
+  /** Extra observer for every message, persisted or not (e.g. #118's session bookkeeping). */
+  onEvent?: (message: AgentMessage) => void;
+  /** Aborting it stops the turn and closes the run as `error` with an `AgentRunCancelledError`. */
+  signal?: AbortSignal;
+}
+
+/** Thrown by `runAgentTurn` once its signal aborts; the run then closes as `error` like any failed turn. */
+export class AgentRunCancelledError extends Error {
+  constructor() {
+    super("account deactivated");
+    this.name = "AgentRunCancelledError";
+  }
+}
+
+export function extractResultSnapshot(lastMessage: AgentMessage | null): string | null {
+  if (!lastMessage) return null;
+  const { text } = lastMessage as { text?: unknown };
+  return typeof text === "string" ? text : JSON.stringify(lastMessage);
+}
+
+/**
+ * Appends a recovery event first, then delegates its post-commit thin-reference announcement to
+ * the data layer that owns both the row and the after-commit hook.
+ */
+async function recordPersistentEvent(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  kind: AgentRunEventKind,
+  payload: unknown,
+): Promise<void> {
+  await insertAndNotifyAgentRunEvent(client, agentRunId, kind, payload);
+}
+
+/** Best-effort: a lost typing delta affects animation only; the completed message is durable. */
+async function pushLiveDelta(client: Pool | PoolClient, agentRunId: string, delta: AgentMessage): Promise<void> {
+  try {
+    await publishAgentRunDelta(client, agentRunId, delta);
+  } catch (err) {
+    logger.error({ err, agentRunId, kind: delta.kind }, "Failed to publish agent_run_delta realtime message");
+  }
+}
+
+export function pushRunStatus(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  status: "running" | "done" | "error",
+): Promise<void> {
+  return recordPersistentEvent(client, agentRunId, "run_status", { kind: "run_status", status });
+}
+
+/**
+ * Drives one turn's message stream to completion against an already-open `agent_runs` row:
+ * pushes `message_update` deltas through the ephemeral stream (never persisted) and appends the
+ * persisted-kind ones to `agent_run_events` in arrival order before announcing thin references.
+ * Returns the turn's last
+ * `message`-kind event, or null if it never produced one. An aborted `signal` (already aborted, or
+ * aborting while the loop waits for or records a message) ends the session through its iterator's
+ * `return()` and throws `AgentRunCancelledError`.
+ *
+ * Shared by `runAgentSession` (one turn, closing the run immediately after) and the
+ * delegation registry (#229: many turns reusing one long-lived `agent_runs` row that only
+ * closes on TTL expiry) — both need identical event bookkeeping, just different lifecycle
+ * bookends around it.
+ */
+export async function runAgentTurn(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  messages: AsyncIterable<AgentMessage>,
+  onEvent?: (message: AgentMessage) => void,
+  signal?: AbortSignal,
+): Promise<AgentMessage | null> {
+  let lastMessage: AgentMessage | null = null;
+  const iterator = messages[Symbol.asyncIterator]();
+  let finished = false;
+  let cancelled = false;
+  let onAbort: (() => void) | undefined;
+  const aborted = signal
+    ? new Promise<typeof ABORTED>((resolve) => {
+        onAbort = () => resolve(ABORTED);
+        signal.addEventListener("abort", onAbort, { once: true });
+      })
+    : null;
+
+  try {
+    if (signal?.aborted) {
+      cancelled = true;
+      throw new AgentRunCancelledError();
+    }
+    for (;;) {
+      let step: IteratorResult<AgentMessage> | typeof ABORTED;
+      try {
+        const pending = iterator.next();
+        // Promise.race observes the pending next() even when cancellation wins.
+        step = aborted ? await Promise.race([pending, aborted]) : await pending;
+      } catch (err) {
+        // Like for-await, a rejected next() propagates without calling return().
+        finished = true;
+        throw err;
+      }
+      if (step === ABORTED) {
+        cancelled = true;
+        throw new AgentRunCancelledError();
+      }
+      if (step.done) {
+        finished = true;
+        break;
+      }
+      const { value: message } = step;
+      onEvent?.(message);
+
+      // A watcher missing a live update for a persisted kind catches up from `agent_run_events`;
+      // a missed message_update is deliberately lost, same as a dropped WS typing frame.
+      if (message.kind === "message_update") {
+        await pushLiveDelta(client, agentRunId, message);
+      } else {
+        if (PERSISTED_EVENT_KINDS.has(message.kind)) {
+          await recordPersistentEvent(client, agentRunId, message.kind, message);
+        }
+        if (message.kind === "message") lastMessage = message;
+      }
+
+      // An abort that landed while the message above was being recorded stops before the next one.
+      if (signal?.aborted) {
+        cancelled = true;
+        throw new AgentRunCancelledError();
+      }
+    }
+  } finally {
+    if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+    if (!finished) await closeSession(iterator, agentRunId, cancelled);
+  }
+
+  return lastMessage;
+}
+
+/**
+ * Ends an unfinished session through the iterator's `return()`, as leaving a `for await` early
+ * would. A generator queues `return()` behind a `next()` it is still awaiting, so on cancellation
+ * it is not awaited: the run must close now, and the session ends when its pending step settles.
+ * A failing `return()` is logged and never replaces the turn's own outcome.
+ */
+async function closeSession(
+  iterator: AsyncIterator<AgentMessage>,
+  agentRunId: string,
+  cancelled: boolean,
+): Promise<void> {
+  const logFailure = (err: unknown): void => {
+    logger.error(
+      { errorName: err instanceof Error ? err.name : typeof err, agentRunId },
+      "Failed to close an agent session iterator",
+    );
+  };
+  try {
+    const closing = iterator.return?.();
+    if (!closing) return;
+    if (cancelled) closing.catch(logFailure);
+    else await closing;
+  } catch (err) {
+    logFailure(err);
+  }
+}
+
+/**
+ * Runs one agent session end to end, mapping pi-agent-core's lifecycle onto `agent_runs`
+ * (`agent_start`/`agent_end`) and the turn-level `agent_run_events` log (everything between).
+ * Durable events are announced as thin post-commit references; `message_update` typing deltas
+ * use the separate ephemeral stream and are never persisted to Postgres.
+ */
+export async function runAgentSession(client: Pool | PoolClient, input: RunAgentSessionInput): Promise<AgentRunRow> {
+  const run = await createAgentRun(client, {
+    projectItemId: input.projectItemId,
+    parentRunId: input.parentRunId,
+    heartbeatId: input.heartbeatId,
+    triggeredBy: input.triggeredBy,
+    unit: input.unit,
+    task: input.task,
+  });
+  return withTraceContext({ agentRunId: run.id }, async () => {
+    await pushRunStatus(client, run.id, "running");
+    return runAgentSessionForRun(client, run, input);
+  });
+}
+
+/**
+ * Runs `close` atomically: a bare `Pool` gets one transaction for the whole close, while a
+ * caller-supplied `PoolClient` is reused as is, so the caller's own transaction decides.
+ */
+function closeAtomically(client: Pool | PoolClient, close: (c: PoolClient) => Promise<void>): Promise<void> {
+  if (client instanceof Pool) return withTransaction(client, close);
+  return close(client);
+}
+
+/**
+ * `runAgentSession` without the `createAgentRun`: drives one session for an `agent_runs` row
+ * someone else already opened (issue #647's queued `agentRun`/`delegatedAgentRun` jobs), with the
+ * row's own `task`, and closes it exactly as `runAgentSession` does. The caller records the run's
+ * `running` status first, so it can do that in the same transaction as its own check that the row
+ * is still `running`.
+ */
+export async function runAgentSessionForRun(
+  client: Pool | PoolClient,
+  run: AgentRunRow,
+  input: Omit<RunAgentSessionInput, "task" | "triggeredBy" | "unit" | "projectItemId" | "parentRunId" | "heartbeatId">,
+): Promise<AgentRunRow> {
+  return withTraceContext({ agentRunId: run.id }, async () => {
+    try {
+      if (input.signal?.aborted) throw new AgentRunCancelledError();
+      const session = input.createAgentSession({
+        task: run.task,
+        systemPromptOverride: input.systemPromptOverride,
+        signal: input.signal,
+      });
+      const lastMessage = await runAgentTurn(client, run.id, session.messages(), input.onEvent, input.signal);
+      // The row's terminal status and its `run_status` event commit together, so a poller never
+      // sees the row closed before the event exists, and a failed close leaves neither behind —
+      // the catch below then writes the only terminal state, `error`.
+      await closeAtomically(client, async (c) => {
+        if (!(await finishAgentRun(c, run.id, "done", extractResultSnapshot(lastMessage)))) return;
+        await pushRunStatus(c, run.id, "done");
+      });
+    } catch (err) {
+      try {
+        // Issue #149: same client as the status write, so a caller-supplied transaction rolls
+        // both back together. A `false` close means another closer already decided the outcome,
+        // so this session writes no terminal event of its own.
+        await closeAtomically(client, async (c) => {
+          const closed = await finishAgentRunWithErrorNotification(
+            c,
+            run.id,
+            err instanceof Error ? err.message : String(err),
+          );
+          if (!closed) return;
+          await pushRunStatus(c, run.id, "error");
+        });
+      } catch (finishErr) {
+        // Preserve the session failure for the caller, but do not erase evidence that the
+        // secondary lifecycle close failed and left the row running.
+        logger.error({ err: finishErr, agentRunId: run.id }, "Failed to record failed agent run lifecycle");
+      }
+      throw err;
+    }
+
+    const finished = await getAgentRun(client, run.id);
+    if (!finished) throw new Error(`agent run ${run.id} vanished after finishing`);
+    return finished;
+  });
+}

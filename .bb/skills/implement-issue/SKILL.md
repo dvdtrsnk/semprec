@@ -1,0 +1,190 @@
+---
+name: implement-issue
+description: "The execution contract for implementing one Semprec issue end to end - read the issue, check the ADRs, load the topic skills the Task touches, build exactly the Task, self-review the diff against review-rules, and verify locally before pushing. Load this FIRST in any issue-driven change in this repository, before reading the code, whether the issue was dispatched automatically by relay or started by hand. Triggers on: an issue number, a Task section, Acceptance criteria, Out of scope, a relay dispatch prompt, or any instruction to implement, fix or extend something in this repository."
+---
+
+# Implementing one issue
+
+The issue body is your source of truth. It is written to be self-contained:
+everything you need is in it, plus the hand-over context from the work this one
+builds on — for each issue named in its `Blocked by:` line, that context lives in
+the pull request that closed it, not in a comment on the issue itself:
+Access Hub: discover the repository grant with `access_hub_context` and inspect
+each operation with `access_hub_schema` before calling it through
+`access_hub_call`. Read the blocker with `issue_get`, list its merged closing
+pull requests with `issue_closed_by_reviews_list`, then read each returned pull
+request's body with `review_get` — the listing alone is not the hand-over.
+This preserves GitHub's authoritative closing references without requiring a
+global GitHub CLI login. Never infer the closing PR from a branch name or
+restore global authentication. If the scoped operation is denied, report the
+specific denial rather than substituting an account or native CLI.
+
+## Model-tier contract
+
+Read `.github/ISSUE_FORMAT.md` for the canonical metadata grammar and difficulty
+rubric. Every implementation issue/draft has physical first-line Blocked by,
+physical second-line `**Model tier:** low|medium|high` and an English Context
+`Model tier rationale:`. Epics and harvest payloads are exempt.
+
+Validate the issue body with `.github/scripts/validate-issue-model-tier.mjs`
+before implementation. Preserve its classification; do not change your own tier.
+If the assigned model cannot complete the specified work, explain the concrete
+reason and escalate through the existing Relay step contract for a maintainer to
+reassess and start a new run. Do not invoke another model outside Relay.
+
+## 1. Read before you write
+
+Read the whole issue — `## Context`, `## Task`, `## Scope`, `## Acceptance
+criteria` — before touching a file. Then, for anything that is not a straight
+application of an existing convention, check `docs/adr/` (`ls docs/adr/`, grep
+the `area` frontmatter). Contradicting a recorded decision by accident is
+expensive; finding it takes seconds.
+
+For a large or unfamiliar area, map the relevant code before editing. A wrong
+first attempt costs more than the reading would have.
+
+Then write yourself a trace: every item of `## Task` and every Acceptance
+criterion, each mapped to the file that delivers it and the test that proves
+it. Check an exhaustive list in the issue ("every X", a table of fields) item
+by item. Trace a new behaviour into the production composition root that runs it,
+not only into the test harness. Setup wired only into `globalSetup` passes every
+test and is absent in production. Why: unmet criteria found by the review
+were usually a list item skipped or a piece wired only where the tests could see
+it.
+
+## 2. Load the skills this Task touches
+
+Do this before you write anything, and say in one line which you loaded and why
+— or that none apply. It is a deliberate decision, not a formality: the rules
+below are the ones this repository's review actually reports, and an agent that
+means to "remember them as it goes" reliably does not.
+
+| Load | When the Task involves |
+|---|---|
+| `state-writes` | creating, updating or deleting persisted state — items, relations, blocks, rows in any table, or a `NOTIFY` that follows one |
+| `io-hardening` | a new HTTP route, handler, WebSocket upgrade, `LISTEN` consumer, pooled-connection consumer, or any network call |
+| `error-handling` | a `catch`, an error mapping, a rollback path, or any decision about what happens on failure |
+| `db-migrations` | a schema change, constraint, index, or backfill |
+| `canonical-keys` | a stored key, option value, view type, or any string a user will see |
+| `ai-gateway` | any model call, provider SDK, or provider credential |
+| `adr-conventions` | introducing a cross-cutting pattern that no rule and no ADR covers — or adding, editing, superseding or narrowing an ADR |
+| `testing` | writing or changing any test, or claiming a change is covered |
+| `fix-review-findings` | addressing review-bot findings on a pull request |
+
+Most issues match more than one. Load all that apply — they are short, and the
+cost of reading one is far below the cost of the finding it prevents.
+
+## 3. Build exactly the Task
+
+Everything in `## Task` must be delivered. Nothing under `### Out of scope` may
+be built, even when it is two lines and you are already in the file — the
+out-of-scope list usually names the issue that picks it up, and building it
+early creates a conflict with that issue rather than saving it work.
+
+The same restraint applies to things nobody asked for: a config flag "for
+later", an exported helper with one caller, an interface field a future issue
+might use, a type alias anticipating a union that does not exist yet. Each of
+those is a finding, recorded as such in
+`docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md`.
+
+A bug, a flaky test or a cleanup you discover along the way does not go into
+this pull request either, even when it blocks your local verify. Describe it in
+the pull request description as a proposed follow-up and leave the code alone.
+If a flaky test unrelated to your diff blocks verify, report it with the
+failing output and do not change it on this branch; in a Relay run, end with
+`Relay-Step-Status: fail` and name the test. Why: unrelated fixes folded into an
+issue's pull request were the most frequently re-opened finding here. They collide with the issue that owns the
+code, and reverting them half-way costs another round.
+
+When the issue contradicts itself, or contradicts the code it must change,
+implement the reading closest to `## Task` and name the conflict in the pull
+request description. Do not resolve it silently, and do not deviate from an
+explicit instruction because it is hard to implement — say what made it hard.
+Why: a conflict named up front is decided once by the reviewer; a conflict
+resolved silently comes back as a review finding in either direction.
+
+The conventions are law, not suggestions: choke-point writes, single-writer
+ownership, expand/contract migrations, AI calls only through the gateway,
+English camelCase canonical keys, labels through i18n, typed boundaries. You
+loaded the skills covering them in step 2 — apply what they say rather than
+reconstructing a rule from memory.
+
+Commit as soon as the work reaches a self-consistent state, and again after
+each round of fixes. Uncommitted work does not survive a run that ends early.
+
+## 4. Self-review, then verify
+
+Steps 1–4 in this order, because each is cheaper than the one after it; step 5
+comes last because anything committed after it can make it stale again:
+
+1. **Read your own diff** (`git diff origin/develop`) in the role of a strict
+   reviewer applying `review-rules/rules.md` and `review-rules/tasks/*.md` of
+   every platform the diff touches. Ask specifically: does anything cross a
+   boundary untyped? does any `catch` swallow or re-label an error it did not
+   cause? does any new route or outbound call lack auth, a timeout, or a size
+   cap? does any docstring claim something the code does not do? is there a
+   branch the Acceptance criteria promises and no test covers?
+2. **Audit every claim you wrote.** Search the diff's comments, docstrings,
+   ADRs, log messages and the pull request description for absolute or
+   mechanism words, and check each against the code and configuration:
+   - absolute words: *only*, *never*, *all*, *every*, *cannot*, *guarantee*;
+   - mechanism words: *atomic*, *serialized*, *same transaction*, *locked*;
+   - concrete references: a file path, an env variable, a command;
+   - the tense of what the text describes.
+
+   Describe a planned artifact in the future tense with its issue number,
+   never as if it exists. After changing behaviour, re-read the docstrings of
+   the function and its callers. Why: a claim the code does not make true is
+   this repository's third most common finding. Agents follow these documents
+   literally, so a false sentence is executed.
+3. **Sweep for leftovers** — debug prints, commented-out code, files unrelated
+   to this issue.
+4. **Run the pipeline**: `pnpm run verify` in `backend/`, then in `web/`. This
+   is the same sequence CI runs, in the same order. The host is shared — read
+   `.bb/AGENTS.md` before you wait on, kill or log a process. In a Relay
+   `implement-issue` run, run a partial check instead, because Relay reviews
+   the draft pull request first and then runs the full verify itself, so a
+   full run here would be paid twice
+   (`docs/adr/2026-10-17-pre-review-draft-pull-requests-before-verify.md`). In
+   each of `backend/` and `web/` that your diff changes, run `pnpm run lint`,
+   `pnpm run format:check` and `pnpm run build`. Then run the test files that
+   cover the code you changed, whether or not you edited a test file:
+   `npx vitest run --config <tier config> <test files>` in `backend/`, with
+   the config matching each file's tier (`vitest.unit.config.ts` for
+   `*.unit.test.ts`, `vitest.e2e.config.ts` for `*.e2e.test.ts`, and
+   `vitest.integration.config.ts` for every other `*.test.ts`, which is the
+   set that config includes once it excludes the other two tiers), and
+   `npx vitest run <test files>` in `web/`. A source change with no test file
+   run is not a partial check.
+5. **Take the migration ordinal last.** If the diff adds a migration, run
+   `git fetch origin` and compare your number against
+   `backend/packages/data/src/db/migrations/` on `origin/develop` after the
+   pipeline and any fixes it led to, right before your final commit. Renumber
+   only your own file if it collides, then re-run
+   `pnpm --filter @semprec/data run check-migration-numbering` in `backend/`. Why: parallel
+   issues pick the same next number, and the collision surfaces only after the
+   other pull request merges (see `db-migrations`).
+
+Fix what each step finds and commit it before moving on.
+
+## 5. When the review bot comes back
+
+Load the `fix-review-findings` skill before changing any code. It covers how
+to verify a finding, check it against the issue, and fix every sibling instance
+in one round.
+
+Findings at `medium` and above block the merge. Triage each one against the
+`review-rules/` of the platform it touches:
+
+- **Right** → fix it, re-run the verification for what you touched, commit, push.
+- **Cheap and clearly right, but `low`** → fix it.
+- **Wrong** → reply on the thread with the concrete reason. Do not edit correct
+  code to make a mistaken finding go away; the next reader inherits both the
+  change and the confusion.
+
+## 6. When you cannot finish
+
+Do not merge a broken pull request and do not close the issue. Commit and push
+what you have so a human can inspect or resume it, then say precisely what
+stopped you and what decision is needed. An issue left open is a correct
+outcome — a pipeline that halts for attention is working as designed.
