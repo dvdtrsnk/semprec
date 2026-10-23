@@ -1,5 +1,6 @@
 import { decryptSecret, openSecret, resolveMasterKeyFromEnv, sealSecret } from "@semprec/credentials";
-import type { Queryable } from "../db/pool.js";
+import type { PoolClient } from "pg";
+import { requireAffectedRows, type Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { getOrCreateTenantDataKey, getTenantDataKey } from "./tenantKeysStore.js";
 
@@ -67,6 +68,50 @@ export async function storeCredential(client: Queryable, input: StoreCredentialI
      ON CONFLICT (item_id) DO UPDATE SET credential_type = EXCLUDED.credential_type, ciphertext = EXCLUDED.ciphertext, nonce = EXCLUDED.nonce, key_version = EXCLUDED.key_version, scheme = EXCLUDED.scheme`,
     [key.tenantId, input.itemId, input.credentialType, ciphertext, nonce],
   );
+}
+
+/**
+ * Re-seals one `master` credential of the current tenant under that tenant's data key, bound to
+ * `tenant_id‖item_id`, and marks it `tenant` (issue #1062). Runs inside the caller's transaction: the
+ * row is read with `FOR UPDATE` and stays locked until that transaction ends, so the update rewrites
+ * the ciphertext that was decrypted, and a newly created tenant key rolls back with the caller.
+ * Returns `false` when the current tenant has no `master` row for `itemId` (already re-sealed,
+ * replaced or deleted), `true` once the row was rewritten. The explicit `app_tenant_default()` filter sits on top of row-level
+ * security so a superuser connection cannot select another tenant's row either.
+ *
+ * It writes no `credential_access_log` row: that log records uses of a secret, and here the
+ * plaintext never leaves this function and no connection is made with it.
+ */
+export async function reencryptCredentialUnderTenantKey(client: PoolClient, itemId: string): Promise<boolean> {
+  const { rows } = await client.query<{ tenant_id: string; ciphertext: Buffer; nonce: Buffer; key_version: number }>(
+    `SELECT tenant_id, ciphertext, nonce, key_version FROM external_credentials
+      WHERE item_id = $1 AND scheme = 'master' AND tenant_id = app_tenant_default()
+      FOR UPDATE`,
+    [itemId],
+  );
+  const row = rows[0];
+  if (!row) return false;
+
+  const plaintext = await decryptSecret(
+    { ciphertext: row.ciphertext, nonce: row.nonce },
+    resolveMasterKeyFromEnv(row.key_version),
+  );
+  const key = await getOrCreateTenantDataKey(client);
+  if (key.tenantId !== row.tenant_id) {
+    throw new Error("Tenant data key does not belong to the credential's tenant");
+  }
+  const { ciphertext, nonce } = await sealSecret(
+    plaintext,
+    key.dataKey,
+    credentialAssociatedData(row.tenant_id, itemId),
+  );
+  const result = await client.query(
+    `UPDATE external_credentials SET ciphertext = $2, nonce = $3, scheme = 'tenant', key_version = 1
+      WHERE item_id = $1 AND scheme = 'master'`,
+    [itemId, ciphertext, nonce],
+  );
+  requireAffectedRows(result, "re-sealing a locked master credential");
+  return true;
 }
 
 export async function deleteCredential(client: Queryable, itemId: string): Promise<void> {
