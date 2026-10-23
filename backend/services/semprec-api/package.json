@@ -21,6 +21,7 @@
     "pg": "^8.23.0"
   },
   "devDependencies": {
+    "@semprec/credentials": "workspace:*",
     "@semprec/module-boundaries": "workspace:*",
     "@semprec/realtime-client": "workspace:*",
     "@types/nodemailer": "^8.0.1",
