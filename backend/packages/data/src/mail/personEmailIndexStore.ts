@@ -27,8 +27,8 @@ export interface ReindexPersonEmailsResult {
  * that isn't already owned by a different Person, and reports the ones it couldn't claim.
  * "One address never belongs to two people" holds within a tenant (row-level security
  * confines the reads and the release to the caller's tenant). It is enforced by the
- * tenant-leading unique index `person_email_index_tenant_email_uq`, not by the global primary
- * key, which makes it a real fact rather than a race-prone read-then-write. The claim uses
+ * tenant-leading primary key `(tenant_id, email)`, which makes it a real fact rather than a
+ * race-prone read-then-write. The claim uses
  * `ON CONFLICT DO NOTHING` with no target so every unique index arbitrates: two concurrent
  * claims of one address leave the first writer's row and neither rejects.
  */

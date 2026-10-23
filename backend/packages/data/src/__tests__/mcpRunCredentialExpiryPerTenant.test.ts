@@ -17,7 +17,22 @@ import {
 
 let adminPool: Pool;
 let pool: Pool;
-let userId: string;
+/**
+ * Each tenant's own user, created on first use. A run's actor must be its own tenant's user
+ * (`agent_runs_actor_user_id_tenant_fkey`, issue #1066), so one account cannot act in two tenants.
+ */
+const usersByTenant = new Map<string, string>();
+async function userOf(tenantId: string): Promise<string> {
+  const existing = usersByTenant.get(tenantId);
+  if (existing) return existing;
+  const { rows } = await adminPool.query<{ id: string }>(
+    "INSERT INTO users (email, password_hash, tenant_id) VALUES ($1, 'unused', $2) RETURNING id",
+    [`${randomUUID()}@example.com`, tenantId],
+  );
+  const id = rows[0]!.id;
+  usersByTenant.set(tenantId, id);
+  return id;
+}
 
 describe("handleMcpRunCredentialExpirySweepTask runs per tenant (issue #987)", () => {
   let tenantZero: string;
@@ -38,15 +53,12 @@ describe("handleMcpRunCredentialExpirySweepTask runs per tenant (issue #987)", (
     tenantZero = getTenantZeroId();
     tenantB = await createTestTenant(adminPool);
     vi.spyOn(logger, "error").mockImplementation(() => {});
-    const { rows } = await adminPool.query<{ id: string }>(
-      "INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id",
-      [`${randomUUID()}@example.com`],
-    );
-    userId = rows[0]!.id;
+    usersByTenant.clear();
   });
 
   /** Mints a run + credential in `tenantId`; expired credentials are backdated. Returns the run id. */
   async function mint(tenantId: string, expired: boolean): Promise<string> {
+    const userId = await userOf(tenantId);
     return runInTenant(tenantId, async () => {
       const projectItemId = await createTestProjectItem(pool);
       const minted = await withTransaction(pool, (client) =>

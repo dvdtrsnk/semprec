@@ -72,10 +72,11 @@ async function relfilenodes(pool: Pool, tables: string[]): Promise<Record<string
   return Object.fromEntries(rows.map((row) => [row.relname, row.relfilenode]));
 }
 
-async function insertUser(db: Pick<Pool | PoolClient, "query">): Promise<string> {
+/** A notification may only name its own tenant's user (`notifications_user_id_tenant_fkey`, #1066), hence `tenantId`. */
+async function insertUser(db: Pick<Pool | PoolClient, "query">, tenantId: string | null = null): Promise<string> {
   const { rows } = await db.query<{ id: string }>(
-    `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
-    [`tenant-id-${randomUUID()}@example.com`],
+    `INSERT INTO users (email, password_hash, tenant_id) VALUES ($1, 'unused', $2) RETURNING id`,
+    [`tenant-id-${randomUUID()}@example.com`, tenantId],
   );
   const row = rows[0];
   if (!row) throw new Error("user insert returned no row");
@@ -176,7 +177,7 @@ describe("tenant_id on every tenant-owned table", () => {
       expect(dbRows.map((r) => r.tenant_id)).toEqual([zero]);
       expect(itemRows.map((r) => r.tenant_id)).toEqual([zero]);
 
-      const { rows } = await pool.query<{ id: string }>(...notificationInsert(await insertUser(pool)));
+      const { rows } = await pool.query<{ id: string }>(...notificationInsert(await insertUser(pool, zero)));
       const { rows: stored } = await pool.query<{ tenant_id: string }>(
         "SELECT tenant_id FROM notifications WHERE id = $1",
         [rows[0]?.id],
@@ -211,7 +212,7 @@ describe("tenant_id on every tenant-owned table", () => {
         const { rows: second } = await client.query<{ id: string }>("INSERT INTO tenants DEFAULT VALUES RETURNING id");
         const secondId = second[0]?.id;
         if (!secondId) throw new Error("second tenant insert returned no row");
-        const userId = await insertUser(client);
+        const userId = await insertUser(client, secondId);
 
         const [text, values] = notificationInsert(userId);
         expect(await sqlState(client, text, values)).toBe("23502");

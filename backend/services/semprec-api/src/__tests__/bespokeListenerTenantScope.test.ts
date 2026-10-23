@@ -262,9 +262,11 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
 
   describe("POST /mcp with a restricted run credential", () => {
     it("answers as before, looking the credential up in a system scope and serving in its owner's tenant", async () => {
+      // The run's actor must be its own tenant's user (agent_runs_actor_user_id_tenant_fkey, issue #1066).
       const user = await createUser(pool, {
         email: `${randomUUID()}@example.com`,
         passwordHash: await hashPassword(PASSWORD),
+        tenantId: getTenantZeroId(),
       });
       const projectItemId = await createTestProjectItem(pool);
       const minted = await withTransaction(pool, (client) =>
