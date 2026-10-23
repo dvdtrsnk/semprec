@@ -88,7 +88,11 @@ In order, it:
    `SEMPREC_MIGRATE_DATABASE_URL`, then runs the
    seed CLI (`runSeedCli.js`) right after it the same way, under the same URL — it creates the
    system databases on a fresh install and is a no-op once they exist (see
-   [`docs/operations/seeding.md`](../docs/operations/seeding.md));
+   [`docs/operations/seeding.md`](../docs/operations/seeding.md)), and then runs the tenancy
+   verification CLI (`verifyTenancyCli.js`) the same way, under the same URL — it checks the
+   tenancy invariants of the migrated database's catalog (issue #1085) and refuses the release,
+   printing `tenancy violation [<invariant>] <object>: <detail>` per broken invariant and failing
+   with "tenancy verification failed", when any of them does not hold;
 4. renames the staging directory to `releases/<tag>`, then replaces `current` with one
    `rename(2)`;
 5. restarts `semprec-ai-gateway`, `semprec-api` (which also hosts mail live-sync),
