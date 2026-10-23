@@ -458,9 +458,7 @@ describe("tenancy classification catalog", () => {
       expect(row.typname, `${row.relname}.tenant_id type`).toBe("uuid");
       expect(row.attnotnull, `${row.relname}.tenant_id NOT NULL`).toBe(true);
       expect(row.default_expr, `${row.relname}.tenant_id default`).toBe("app_tenant_default()");
-      if (!row.relname.startsWith("items_p_")) {
-        expect(row.fk_targets, `${row.relname}.tenant_id foreign key`).toEqual(["tenants"]);
-      }
+      expect(row.fk_targets, `${row.relname}.tenant_id foreign key`).toEqual(["tenants"]);
     }
   });
 

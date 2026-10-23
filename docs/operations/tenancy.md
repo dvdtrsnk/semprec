@@ -1,7 +1,7 @@
 # Tenancy
 
-Issue #1058. The production checkpoints of the multi-tenancy rollout (epic #960) and their
-outcome.
+Issues #1058 and #1068. The production checkpoints of the multi-tenancy rollout (epic #960) and
+their outcome.
 
 ## Release checkpoint
 
@@ -36,3 +36,26 @@ What this means for each checklist item of #1058:
 
 The first production deployment will therefore already contain the contract and strict steps,
 with no earlier production release that `deploy/deploy.sh --rollback` could return to.
+
+## Strict release checkpoint
+
+**Waived on 2026-10-22 by the repository owner. Nothing below was observed in production.**
+
+Issue #1068 asks for the strict release (#1059, #1060, #1062, #1067) to run in production for
+seven days before the contract steps whose rollback target must already be strict, in
+particular retiring the master-key-only credential scheme (#1069). It is waived for the same
+reason as the release checkpoint above: no production deployment exists, so there is no strict
+release to observe and none for a rollback from #1069 to return to.
+
+What this means for each checklist item of #1068:
+
+| Checklist item                                                                                        | Result                              |
+| ----------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| Promote `develop` to `main`, tag and deploy                                                           | Not done: no tag, no deploy         |
+| No service sets `SEMPREC_TENANT_SCOPE` other than `strict`                                            | Not done: no service runs           |
+| `app_tenant_default()` strict and `users.tenant_id` not nullable in production                        | Not checked: no production database |
+| No `external_credentials` row with `scheme = 'master'`                                                | Not checked: no production database |
+| Seven days without `TenantScopeMissingError`, `tenant_scope_missing` and `tenant_task_without_tenant` | Not observed                        |
+| Background work kept running under strict mode for the window                                         | Not observed                        |
+
+The go-live security gate #1086, which follows this checkpoint, is not waived.
