@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createTenantZeroUser,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+  withTenantTransaction,
+} from "../testSupport/testDb.js";
+import { createUser as createRawUser } from "../auth/usersStore.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
@@ -200,14 +207,23 @@ describe("approvalRequestsStore (issue #130)", () => {
 
     it("listPendingApprovalRequests returns only the owner's pending requests (issue #1028)", async () => {
       const ownRequestId = await createPendingRequest();
-      const foreignUser = await createUser();
-      const foreignRun = await createAgentRun(pool, { triggeredBy: "user", task: "other", userId: foreignUser });
-      await createPendingApprovalRequest(pool, {
-        agentRunId: foreignRun.id,
-        toolName: "search_web",
-        riskClass: "unclassified",
-        payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
-        resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      // Another account's run lives in that account's own tenant: a run's actor must be its own
+      // tenant's user (agent_runs_actor_user_id_tenant_fkey, issue #1066).
+      const foreignTenant = await createTestTenant(pool);
+      const foreignUser = await createRawUser(pool, {
+        email: `${randomUUID()}@example.com`,
+        passwordHash: "unused",
+        tenantId: foreignTenant,
+      });
+      await withTenantTransaction(pool, foreignTenant, async (client) => {
+        const foreignRun = await createAgentRun(client, { triggeredBy: "user", task: "other", userId: foreignUser.id });
+        await createPendingApprovalRequest(client, {
+          agentRunId: foreignRun.id,
+          toolName: "search_web",
+          riskClass: "unclassified",
+          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+        });
       });
 
       const ids = (await listPendingApprovalRequests(pool, ownerId)).map((request) => request.id);

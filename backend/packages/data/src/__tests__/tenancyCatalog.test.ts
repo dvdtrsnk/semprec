@@ -270,7 +270,10 @@ async function listUniqueIndexes(db: Queryable): Promise<UniqueIndexRow[]> {
   return rows;
 }
 
-function sameKey(row: UniqueIndexRow, entry: { table: string; columns: string[] }): boolean {
+function sameKey(
+  row: Pick<UniqueIndexRow, "table_name" | "columns">,
+  entry: { table: string; columns: string[] },
+): boolean {
   return row.table_name === entry.table && row.columns.join(",") === entry.columns.join(",");
 }
 
@@ -288,6 +291,71 @@ async function listUniquenessViolations(db: Queryable): Promise<string[]> {
       return !PERMANENT_EXCEPTIONS.some((entry) => sameKey(row, entry));
     })
     .map((row) => `${row.index_name} on ${row.table_name} (${row.columns.join(", ")})`);
+}
+
+/**
+ * Issue #1066: foreign keys whose own tenant_id mapping is exempt from the composite-FK rule, by
+ * table and columns. tenant_ai_budgets.updated_by names the admin who changed a tenant's budget,
+ * and an admin of any tenant writes it (#1039).
+ */
+const COMPOSITE_FK_EXCEPTIONS: { table: string; columns: string[]; reason: string }[] = [
+  { table: "tenant_ai_budgets", columns: ["updated_by"], reason: "written by an admin of any tenant (#1039)" },
+];
+
+interface ForeignKeyRow {
+  table_name: string;
+  parent_oid: number;
+  columns: string[];
+  parent_columns: string[];
+  validated: boolean;
+}
+
+/**
+ * Names, as `<table>.<columns>`, every foreign key from a tenant table (or a table carrying
+ * tenant_id) to a tenant table or users that neither maps tenant_id to tenant_id itself nor has a
+ * validated twin on the same table and parent over (tenant_id, <same columns>). Foreign-key checks
+ * ignore row-level security, so a key without the twin is satisfied by another tenant's parent.
+ */
+async function listCompositeForeignKeyViolations(db: Queryable): Promise<string[]> {
+  const { rows } = await db.query<ForeignKeyRow>(
+    `SELECT c.relname::text AS table_name, k.confrelid::int AS parent_oid,
+            ARRAY(SELECT a.attname::text FROM unnest(k.conkey) WITH ORDINALITY u(attnum, ord)
+                    JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = u.attnum
+                   ORDER BY u.ord) AS columns,
+            ARRAY(SELECT a.attname::text FROM unnest(k.confkey) WITH ORDINALITY u(attnum, ord)
+                    JOIN pg_attribute a ON a.attrelid = k.confrelid AND a.attnum = u.attnum
+                   ORDER BY u.ord) AS parent_columns,
+            k.convalidated AS validated
+       FROM pg_constraint k
+       JOIN pg_class c ON c.oid = k.conrelid
+       JOIN pg_class p ON p.oid = k.confrelid
+      WHERE k.contype = 'f'
+        AND c.relnamespace = 'public'::regnamespace
+        AND NOT c.relispartition
+        AND (obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'
+             OR EXISTS (SELECT 1 FROM pg_attribute ta
+                         WHERE ta.attrelid = c.oid AND ta.attname = 'tenant_id' AND NOT ta.attisdropped))
+        AND p.relnamespace = 'public'::regnamespace
+        AND (obj_description(p.oid, 'pg_class') = 'semprec:tenancy=tenant' OR p.relname = 'users')
+      ORDER BY c.relname, k.conname`,
+  );
+  const mapsTenantId = (row: ForeignKeyRow): boolean =>
+    row.columns.some((column, index) => column === "tenant_id" && row.parent_columns[index] === "tenant_id");
+  return rows
+    .filter((row) => {
+      if (mapsTenantId(row)) return false;
+      if (COMPOSITE_FK_EXCEPTIONS.some((entry) => sameKey({ table_name: row.table_name, columns: row.columns }, entry)))
+        return false;
+      return !rows.some(
+        (twin) =>
+          twin.validated &&
+          twin.table_name === row.table_name &&
+          twin.parent_oid === row.parent_oid &&
+          twin.columns.join(",") === ["tenant_id", ...row.columns].join(",") &&
+          twin.parent_columns.join(",") === ["tenant_id", ...row.parent_columns].join(","),
+      );
+    })
+    .map((row) => `${row.table_name}.${row.columns.join(",")}`);
 }
 
 let pool: Pool;
@@ -564,6 +632,66 @@ describe("tenancy classification catalog", () => {
       { table_name: "module_migrations", constraint_name: "module_migrations_pkey", first_column: "tenant_id" },
       { table_name: "person_email_index", constraint_name: "person_email_index_pkey", first_column: "tenant_id" },
     ]);
+  });
+
+  /** Issue #1066: foreign-key checks ignore RLS, so every reference between tenant rows has a tenant-consistent twin. */
+  it("gives every foreign key between tenant rows a validated (tenant_id, ...) twin", async () => {
+    const offenders = await listCompositeForeignKeyViolations(pool);
+    expect(
+      offenders,
+      `Foreign keys between tenant rows without a validated tenant_id twin: ${offenders.join("; ")}. ` +
+        `Fix: add (tenant_id, <column>) REFERENCES <parent>(tenant_id, id) beside it and validate it.`,
+    ).toEqual([]);
+  });
+
+  it("names the table and column of every foreign key whose twin is removed", async () => {
+    const { rows: twins } = await pool.query<{ table_name: string; constraint_name: string; column_name: string }>(
+      `SELECT c.relname::text AS table_name, k.conname::text AS constraint_name, a.attname::text AS column_name
+         FROM pg_constraint k
+         JOIN pg_class c ON c.oid = k.conrelid
+         JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = k.conkey[2]
+        WHERE k.contype = 'f' AND k.conname LIKE '%\\_tenant\\_fkey'
+          AND c.relnamespace = 'public'::regnamespace AND NOT c.relispartition
+        ORDER BY k.conname`,
+    );
+    expect(twins).toHaveLength(31);
+    for (const twin of twins) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        try {
+          // Identifiers come from pg_constraint, never from input; ALTER TABLE accepts no bind parameters.
+          await client.query(`ALTER TABLE ${twin.table_name} DROP CONSTRAINT ${twin.constraint_name}`);
+          expect(await listCompositeForeignKeyViolations(client), twin.constraint_name).toEqual([
+            `${twin.table_name}.${twin.column_name}`,
+          ]);
+        } finally {
+          await client.query("ROLLBACK");
+        }
+      } finally {
+        client.release();
+      }
+    }
+    expect(await listCompositeForeignKeyViolations(pool)).toEqual([]);
+  });
+
+  it("does not accept an unvalidated twin", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      try {
+        await client.query("ALTER TABLE views DROP CONSTRAINT views_database_id_tenant_fkey");
+        await client.query(
+          `ALTER TABLE views ADD CONSTRAINT views_database_id_tenant_fkey FOREIGN KEY (tenant_id, database_id)
+             REFERENCES databases (tenant_id, id) ON DELETE CASCADE NOT VALID`,
+        );
+        expect(await listCompositeForeignKeyViolations(client)).toEqual(["views.database_id"]);
+      } finally {
+        await client.query("ROLLBACK");
+      }
+    } finally {
+      client.release();
+    }
   });
 
   it("rejects a second system database for one module in a tenant but accepts a second non-system one", async () => {

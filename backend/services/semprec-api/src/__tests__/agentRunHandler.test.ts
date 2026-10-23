@@ -20,12 +20,20 @@ const PASSWORD = "s3cret-password";
 
 let pool: Pool;
 
+/** Tenant zero's user, which `beforeEach` creates. */
+let tenantUser: { id: string; email: string };
+
+/**
+ * Signs in tenant zero's user: a minted run's actor is the session user, and a run's actor must be
+ * its own tenant's user (`agent_runs_actor_user_id_tenant_fkey`, issue #1066).
+ */
 async function authHeader(): Promise<{ Authorization: string }> {
-  const user = await createUser(pool, {
-    email: `${randomUUID()}@example.com`,
-    passwordHash: await hashPassword(PASSWORD),
+  const { token } = await login(pool, {
+    email: tenantUser.email,
+    password: PASSWORD,
+    platform: "ios",
+    ip: "127.0.0.1",
   });
-  const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
   return { Authorization: `Bearer ${token}` };
 }
 
@@ -37,7 +45,7 @@ describe("createAgentRunRequestListener", () => {
     pool ??= getTestPool();
     const viewTypeRegistry = createViewTypeRegistry();
     await resetDatabase(pool);
-    await createUser(pool, {
+    tenantUser = await createUser(pool, {
       email: `${randomUUID()}@example.com`,
       passwordHash: await hashPassword(PASSWORD),
       tenantId: getTenantZeroId(),
@@ -196,32 +204,22 @@ describe("createAgentRunRequestListener", () => {
       expect(run).toMatchObject({ id: body.runId, projectItemId, triggeredBy: "mcp", status: "running" });
     });
 
-    it("attributes the minted run's actor_user_id to the authenticated session user, not the tenant's user (issue #220, AC11)", async () => {
-      // `beforeEach` already bound a different account as the tenant's user — `getTenantUserId`'s
-      // fallback would resolve to that one, not to the session below, if the session's own
-      // identity weren't threaded into `mintMcpRunCredential`.
-      const sessionUser = await createUser(pool, {
-        email: `${randomUUID()}@example.com`,
-        passwordHash: await hashPassword(PASSWORD),
-      });
-      const { token } = await login(pool, {
-        email: sessionUser.email,
-        password: PASSWORD,
-        platform: "ios",
-        ip: "127.0.0.1",
-      });
+    // Issue #1066: a run's actor must be its own tenant's user, and a tenant has exactly one user, so
+    // the session user and the `getTenantUserId` fallback can no longer differ. The test pins that
+    // the session's identity is what the run records.
+    it("attributes the minted run's actor_user_id to the authenticated session user (issue #220, AC11)", async () => {
       const projectItemId = await createTestProjectItem(pool);
 
       const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
         body: JSON.stringify({ projectItemId, capabilities: ["core.item.read"] }),
       });
 
       expect(res.status).toBe(201);
       const body = (await res.json()) as { runId: string };
       const run = await withTransaction(pool, (client) => getAgentRun(client, body.runId));
-      expect(run?.actorUserId).toBe(sessionUser.id);
+      expect(run?.actorUserId).toBe(tenantUser.id);
     });
 
     describe("project guard", () => {

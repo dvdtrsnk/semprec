@@ -44,17 +44,37 @@ async function isNullable(): Promise<boolean> {
 }
 
 /**
- * Makes the column nullable for the case, then restores NOT NULL in `finally` after deleting the
- * rows the case inserted, so a failing case cannot leave the shared test database nullable.
+ * The tenant-consistent twins of issue #1066, which did not exist before the cutover: with them, a
+ * run's actor and parent must belong to the run's own tenant, so the cross-tenant states the
+ * cutover has to handle could not be stored.
+ */
+const PRE_CUTOVER_ABSENT_CONSTRAINTS = ["agent_runs_actor_user_id_tenant_fkey", "agent_runs_parent_run_id_tenant_fkey"];
+
+/**
+ * Recreates the pre-cutover schema for the case: the column is nullable and the #1066 twins are
+ * absent. `finally` deletes the rows the case inserted, then restores NOT NULL and re-adds each
+ * twin from its own catalog definition, so a failing case cannot leave the shared test database
+ * weakened.
  */
 async function withNullableActorColumn(run: () => Promise<void>): Promise<void> {
-  // Owner-pool DDL: the cutover's pre-condition is a nullable column, which only a test can set up.
+  // Owner-pool DDL: the cutover's pre-condition is the pre-cutover schema, which only a test can set up.
+  const { rows: twins } = await adminPool.query<{ name: string; definition: string }>(
+    `SELECT conname::text AS name, pg_get_constraintdef(oid) AS definition FROM pg_constraint
+      WHERE conrelid = 'agent_runs'::regclass AND conname = ANY($1::text[]) ORDER BY conname`,
+    [PRE_CUTOVER_ABSENT_CONSTRAINTS],
+  );
+  expect(twins.map((twin) => twin.name)).toEqual([...PRE_CUTOVER_ABSENT_CONSTRAINTS].sort());
   await adminPool.query(`ALTER TABLE agent_runs ALTER COLUMN actor_user_id DROP NOT NULL`);
+  // Names and definitions come from pg_constraint, never from input; ALTER TABLE takes no bind parameters.
+  for (const twin of twins) await adminPool.query(`ALTER TABLE agent_runs DROP CONSTRAINT ${twin.name}`);
   try {
     await run();
   } finally {
     await adminPool.query(`DELETE FROM agent_runs WHERE task = $1`, [TASK]);
     await adminPool.query(`ALTER TABLE agent_runs ALTER COLUMN actor_user_id SET NOT NULL`);
+    for (const twin of twins) {
+      await adminPool.query(`ALTER TABLE agent_runs ADD CONSTRAINT ${twin.name} ${twin.definition}`);
+    }
   }
 }
 
@@ -171,8 +191,8 @@ describe("agent_runs.actor_user_id cutover (per-tenant backfill)", () => {
         tenantId: tenantC,
       });
 
-      // `parent_run_id` carries no tenant in its foreign key, so a parent in another tenant is
-      // storable; the parent-chain pass must not hand tenant C's user to tenant B's child.
+      // Before #1066 `parent_run_id` carried no tenant in its foreign key, so a parent in another
+      // tenant was storable; the parent-chain pass must not hand tenant C's user to tenant B's child.
       const foreignParent = await insertRun(tenantC, cUser.id, null);
       const child = await insertRun(tenantB, null, foreignParent);
 

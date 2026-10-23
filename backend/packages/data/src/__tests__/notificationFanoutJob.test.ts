@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
@@ -11,9 +11,14 @@ import type { PushSenders } from "../push/pushSenders.js";
 
 let pool: Pool;
 
+/** Tenant zero's user: a tenant-zero notification may only name its own tenant's user (issue #1066). */
 async function createTestUser(): Promise<string> {
   const passwordHash = await hashPassword("s3cret-password");
-  const user = await createUser(pool, { email: `${Math.random()}@example.test`, passwordHash });
+  const user = await createUser(pool, {
+    email: `${Math.random()}@example.test`,
+    passwordHash,
+    tenantId: getTenantZeroId(),
+  });
   return user.id;
 }
 
