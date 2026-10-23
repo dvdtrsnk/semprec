@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTestPool, resetDatabase, tenantForNextTestUser } from "../testSupport/testDb.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { createUser } from "../auth/usersStore.js";
 import { login, logout, revokeUserSession } from "../auth/authActions.js";
@@ -18,7 +18,11 @@ import { withTransaction } from "../db/pool.js";
 let pool: Pool;
 
 async function makeUser(email = "person@example.com") {
-  return createUser(pool, { email, passwordHash: await hashPassword("s3cret-password") });
+  return createUser(pool, {
+    tenantId: await tenantForNextTestUser(pool),
+    email,
+    passwordHash: await hashPassword("s3cret-password"),
+  });
 }
 
 async function makeSession(email: string, platform: "web" | "ios" | "macos" = "web") {

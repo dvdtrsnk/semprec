@@ -118,27 +118,28 @@ describe("enforceTenantScope", () => {
     else process.env.SEMPREC_TENANT_SCOPE = original;
   });
 
-  it.each([undefined, "", "warn"])("warns once per call site with SEMPREC_TENANT_SCOPE=%j", async (mode) => {
-    // A fresh module per case: the once-per-stack memory is process-wide and these cases share a call site.
-    vi.resetModules();
-    const fresh = await import("../tenantScope.js");
-    if (mode !== undefined) process.env.SEMPREC_TENANT_SCOPE = mode;
+  it("warns once per call site with SEMPREC_TENANT_SCOPE=warn", () => {
+    process.env.SEMPREC_TENANT_SCOPE = "warn";
     for (let i = 0; i < 2; i += 1) {
-      expect(fresh.enforceTenantScope(`site-${String(mode)}`)).toBeUndefined();
+      expect(enforceTenantScope("site-warn")).toBeUndefined();
     }
     expect(warn).toHaveBeenCalledOnce();
     expect(warn).toHaveBeenCalledWith(
-      { site: `site-${String(mode)}`, stack: expect.stringContaining("tenantScope") as string },
+      { site: "site-warn", stack: expect.stringContaining("tenantScope") as string },
       "tenant_scope_missing",
     );
   });
 
-  it("throws TenantScopeMissingError naming the site in strict mode", () => {
-    process.env.SEMPREC_TENANT_SCOPE = "strict";
-    expect(() => enforceTenantScope("the-site")).toThrow(TenantScopeMissingError);
-    expect(() => enforceTenantScope("the-site")).toThrow(/the-site/);
-    expect(warn).not.toHaveBeenCalled();
-  });
+  // Unset and empty default to strict (issue #1067); only an explicit `warn` keeps warn mode.
+  it.each([undefined, "", "strict"])(
+    "throws TenantScopeMissingError naming the site with SEMPREC_TENANT_SCOPE=%j",
+    (mode) => {
+      if (mode !== undefined) process.env.SEMPREC_TENANT_SCOPE = mode;
+      expect(() => enforceTenantScope("the-site")).toThrow(TenantScopeMissingError);
+      expect(() => enforceTenantScope("the-site")).toThrow(/the-site/);
+      expect(warn).not.toHaveBeenCalled();
+    },
+  );
 
   it("throws an Error naming an unknown mode", () => {
     process.env.SEMPREC_TENANT_SCOPE = "bogus";
@@ -153,6 +154,7 @@ describe("enforceTenantScope", () => {
   });
 
   it("still logs every novel stack once the remembered set is full", () => {
+    process.env.SEMPREC_TENANT_SCOPE = "warn";
     // Two distinct frames, chosen by the bits of `path`, make 2^11 distinct stacks of bounded depth.
     const viaA = (path: number, depth: number): void => walk(path, depth);
     const viaB = (path: number, depth: number): void => walk(path, depth);

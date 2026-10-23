@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTestPool, resetDatabase, tenantForNextTestUser } from "../testSupport/testDb.js";
 import { createTenantZeroUser, createTestTenant, getTenantZeroId } from "../testSupport/tenantFixtures.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
@@ -36,7 +36,11 @@ async function createProjectItem(): Promise<string> {
 }
 
 async function createTestUser(): Promise<string> {
-  const user = await createUser(pool, { email: `${randomUUID()}@example.com`, passwordHash: "hash" });
+  const user = await createUser(pool, {
+    tenantId: await tenantForNextTestUser(pool),
+    email: `${randomUUID()}@example.com`,
+    passwordHash: "hash",
+  });
   return user.id;
 }
 
@@ -125,7 +129,6 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
         markdown: "# Guidance",
       }),
     );
-    // Created after the upsert: a second tenant ends the sole-tenant default the upsert relies on.
     const otherTenantUser = await createUser(pool, {
       email: `${randomUUID()}@example.com`,
       passwordHash: "hash",

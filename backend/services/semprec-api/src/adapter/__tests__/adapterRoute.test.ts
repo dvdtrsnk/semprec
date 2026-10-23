@@ -7,6 +7,7 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
+  tenantForNextTestUser,
 } from "@semprec/data/testSupport";
 import { currentTenantScope, runInTenant, type TenantScope } from "@semprec/shared";
 import {
@@ -35,7 +36,12 @@ const SAMPLE_ITEM: ItemRow = {
 };
 
 async function tokenFor(email: string, role?: "admin" | "member", tenantId?: string): Promise<string> {
-  await createUser(pool, { email, passwordHash: await hashPassword(PASSWORD), role, tenantId });
+  await createUser(pool, {
+    email,
+    passwordHash: await hashPassword(PASSWORD),
+    role,
+    tenantId: tenantId ?? (await tenantForNextTestUser(pool)),
+  });
   const result = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "1.2.3.4" });
   return result.token;
 }

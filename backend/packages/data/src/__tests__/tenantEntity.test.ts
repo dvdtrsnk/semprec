@@ -7,7 +7,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runMigrations } from "../db/migrate.js";
 import { createPool, withTransaction } from "../db/pool.js";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createUser } from "../auth/usersStore.js";
 import { bootstrapFirstAccount } from "../auth/authActions.js";
 import { getSoleTenantId } from "../tenancy/tenantsStore.js";
@@ -215,20 +215,27 @@ describe("tenant entity (issue #968)", () => {
       expect(await getSoleTenantId(pool)).toMatch(/^[0-9a-f-]{36}$/);
     });
 
-    it("createUser stores NULL/member by default and the given tenant and role when passed", async () => {
-      const a = await createUser(pool, { email: "a@example.com", passwordHash: "x" });
-      const b = await createUser(pool, { email: "b@example.com", passwordHash: "x" });
+    it("createUser stores member by default and the given tenant and role when passed", async () => {
       const tenantId = await getSoleTenantId(pool);
+      const otherTenantId = await createTestTenant(pool);
+      const a = await createUser(pool, { email: "a@example.com", passwordHash: "x", tenantId: otherTenantId });
       const c = await createUser(pool, { email: "c@example.com", passwordHash: "x", tenantId, role: "admin" });
 
       const { rows } = await pool.query<{ id: string; tenant_id: string | null; role: string }>(
         "SELECT id, tenant_id, role FROM users WHERE id = ANY($1)",
-        [[a.id, b.id, c.id]],
+        [[a.id, c.id]],
       );
       const byId = new Map(rows.map((r) => [r.id, r]));
-      expect(byId.get(a.id)).toMatchObject({ tenant_id: null, role: "member" });
-      expect(byId.get(b.id)).toMatchObject({ tenant_id: null, role: "member" });
+      expect(byId.get(a.id)).toMatchObject({ tenant_id: otherTenantId, role: "member" });
       expect(byId.get(c.id)).toMatchObject({ tenant_id: tenantId, role: "admin" });
+    });
+
+    it("createUser without a tenant is refused by users.tenant_id NOT NULL (issue #1067)", async () => {
+      await expect(createUser(pool, { email: "a@example.com", passwordHash: "x" })).rejects.toMatchObject({
+        code: "23502",
+      });
+      const { rows } = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM users");
+      expect(rows).toEqual([{ count: "0" }]);
     });
   });
 });

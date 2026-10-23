@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { runInTenant } from "@semprec/shared";
 import { runMigrations } from "../db/migrate.js";
 import { createPool, withTransaction } from "../db/pool.js";
 import { activateCzechHunspellSearch } from "../mail/czechHunspellSearch.js";
@@ -112,13 +113,19 @@ async function czechHunspellDictionaryCount(pool: Pool): Promise<number> {
 
 /** Seeds the Emails database and indexes one message through the production write path. */
 async function indexEmail(pool: Pool, text: string): Promise<{ emailsId: string; itemId: string }> {
-  await seedSystem(pool);
-  const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'emails'");
-  const emailsId = rows[0]?.id;
-  if (!emailsId) throw new Error("Database 'emails' was not seeded");
-  const itemId = randomUUID();
-  await withTransaction(pool, (client) => reindexItemSearch(client, { itemId, databaseId: emailsId, text }));
-  return { emailsId, itemId };
+  // The scratch database's own tenant zero: strict `app_tenant_default()` (#1067) needs a scope.
+  const { rows: tenants } = await pool.query<{ id: string }>("SELECT id FROM tenants");
+  const tenantId = tenants[0]?.id;
+  if (!tenantId) throw new Error("The scratch database has no tenant");
+  return runInTenant(tenantId, async () => {
+    await seedSystem(pool);
+    const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'emails'");
+    const emailsId = rows[0]?.id;
+    if (!emailsId) throw new Error("Database 'emails' was not seeded");
+    const itemId = randomUUID();
+    await withTransaction(pool, (client) => reindexItemSearch(client, { itemId, databaseId: emailsId, text }));
+    return { emailsId, itemId };
+  });
 }
 
 async function searchHits(pool: Pool, emailsId: string, query: string): Promise<string[]> {

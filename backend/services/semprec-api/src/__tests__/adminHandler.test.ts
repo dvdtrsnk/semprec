@@ -487,27 +487,6 @@ describe("admin routes (issue #1037)", () => {
       expect(await auditRowsFor("tenantAiBudgetSet")).toEqual([]);
       expect(await budgetRowCount(tenantId)).toBe(0);
     });
-
-    it("refuses an account bound to no tenant as validation_failed on userId, writing no budget and no audit row", async () => {
-      const tenantId = await createTestTenant(pool);
-      const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantId, "admin");
-      const unbound = await createUser(pool, {
-        email: `unbound-${randomUUID()}@example.test`,
-        passwordHash: await hashPassword(PASSWORD),
-        role: "member",
-      });
-
-      const res = await fetch(`${baseUrl}/api/admin/accounts/${unbound.id}/ai-budget`, {
-        method: "PUT",
-        headers: { Authorization: `Bearer ${admin.token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ dailyCapUsd: 5, monthlyCapUsd: 40 }),
-      });
-      expect(res.status).toBe(400);
-      expect(await res.json()).toMatchObject({ error: { code: "validation_failed", details: { field: "userId" } } });
-      const { rows } = await pool.query<{ count: string }>("SELECT count(*) AS count FROM tenant_ai_budgets");
-      expect(rows).toEqual([{ count: "0" }]);
-      expect(await auditRowsFor("tenantAiBudgetSet")).toEqual([]);
-    });
   });
 
   describe("invitations (issue #1040)", () => {

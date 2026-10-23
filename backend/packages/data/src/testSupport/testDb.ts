@@ -1,5 +1,5 @@
 import { Pool } from "pg";
-import { getTenantZeroId } from "./tenantFixtures.js";
+import { getTenantZeroId, tenantZeroSessionOptions } from "./tenantFixtures.js";
 
 // Test-only: lets a composition-root test outside this package make a Mailbox syncable (a stored
 // credential plus its sync-state row) without adding either writer to the production entry point.
@@ -13,16 +13,26 @@ export {
   getTenantZeroId,
   inTenantZero,
   setTenantAiBudget,
+  tenantForNextTestUser,
+  tenantZeroSessionOptions,
   withTenantTransaction,
 } from "./tenantFixtures.js";
 export { createTestModuleItem, createTestProjectItem } from "./projectFixtures.js";
 
-export function getTestPool(): Pool {
+/**
+ * The superuser pool existing suites seed and assert through. Superusers bypass row-level security,
+ * so only the `tenant_id` defaults read `app.tenant_id` here; since the strict switch (#1067) they
+ * no longer fall back to the sole tenant, so every connection of this pool starts with the
+ * session-level setting `app.tenant_id` = tenant zero. A test's transaction-local `set_config`
+ * (`withTenantTransaction`) still overrides it, and pools built from `TEST_DATABASE_URL` itself
+ * (`createPool`, `createRuntimeRolePool`) carry no such setting.
+ */
+export function getTestPool(config: { max?: number } = {}): Pool {
   const connectionString = process.env.TEST_DATABASE_URL;
   if (!connectionString) {
     throw new Error("TEST_DATABASE_URL is not set — is vitest.config.ts's globalSetup wired up?");
   }
-  return new Pool({ connectionString });
+  return new Pool({ connectionString, ...config, options: tenantZeroSessionOptions() });
 }
 
 /**

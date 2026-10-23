@@ -9,5 +9,8 @@ export default defineConfig({
   test: {
     include: ["packages/*/src/**/*.unit.test.ts", "services/*/src/**/*.unit.test.ts"],
     environment: "node",
+    // Unit tests such as `traceEnvelope.unit.test.ts` call data-layer functions (`enqueueJob`)
+    // without a tenant scope, and an unset mode is strict since issue #1067.
+    env: { SEMPREC_TENANT_SCOPE: "warn" },
   },
 });

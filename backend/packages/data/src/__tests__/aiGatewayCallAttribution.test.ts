@@ -97,12 +97,10 @@ describe("reserveGatewayCall attribution guard", () => {
     expect(rows).toEqual([{ tenant_id: tenantZero }]);
   });
 
-  it("reserves with no ids, and with no scope at all (falling to the sole tenant)", async () => {
-    const row = await reserveGatewayCall(pool, RESERVATION);
-
-    expect(row).toMatchObject({ status: "reserved", agentRunId: null, projectItemId: null });
-    const { rows } = await adminPool.query<{ tenant_id: string }>("SELECT tenant_id FROM ai_gateway_calls");
-    expect(rows).toEqual([{ tenant_id: tenantZero }]);
+  // Strict `app_tenant_default()` (#1067): no fallback to the sole tenant.
+  it("refuses a reservation with no scope at all, even while tenant zero is the only tenant, writing no row", async () => {
+    await expectRefused(reserveGatewayCall(pool, RESERVATION));
+    expect(await rowCount()).toBe(0);
   });
 
   it("refuses a tenant that does not exist, writing no row", async () => {

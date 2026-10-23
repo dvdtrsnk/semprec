@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase, tenantForNextTestUser } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
 import { hashPassword, verifyPassword } from "../auth/passwordHash.js";
 import { createUser, getUserByEmail } from "../auth/usersStore.js";
@@ -30,7 +30,11 @@ const OLD_PASSWORD = "s3cret-password";
 const APP_BASE_URL = "https://app.example.test";
 
 async function makeUser(email = "person@example.com") {
-  return createUser(pool, { email, passwordHash: await hashPassword(OLD_PASSWORD) });
+  return createUser(pool, {
+    tenantId: await tenantForNextTestUser(pool),
+    email,
+    passwordHash: await hashPassword(OLD_PASSWORD),
+  });
 }
 
 function fakeMailer(): PasswordResetMailer & { sent: SendPasswordResetEmailInput[] } {
@@ -650,31 +654,6 @@ describe("password reset actions (issue #142)", () => {
       expect(rows[0]!.consumed_at).toBeNull();
       const after = await getUserByEmail(pool, user.email);
       expect(after!.passwordHash).toBe(before!.passwordHash);
-    });
-  });
-
-  describe("a user with no tenant binding (issue #1041)", () => {
-    it("treats a reset request like an unknown email and refuses a token issued while still bound", async () => {
-      const user = await makeUser();
-      const mailer = fakeMailer();
-      await requestPasswordReset(pool, mailer, { email: user.email, appBaseUrl: APP_BASE_URL });
-      const token = tokenFromUrl(mailer.sent[0]!.resetUrl);
-      await createTestTenant(pool);
-
-      await requestPasswordReset(pool, mailer, { email: user.email, appBaseUrl: APP_BASE_URL });
-      expect(mailer.sent).toHaveLength(1);
-
-      const failure = await resetPasswordInTransaction(pool, { token, newPassword: "a-brand-new-password" }).then(
-        () => null,
-        (err: unknown) => err,
-      );
-      expect(failure).toBeInstanceOf(PasswordResetTokenError);
-      expect((failure as PasswordResetTokenError).reason).toBe("invalid");
-      const { rows } = await pool.query<{ consumed_at: Date | null }>(
-        "SELECT consumed_at FROM password_reset_tokens WHERE token_hash = $1",
-        [hashToken(token)],
-      );
-      expect(rows[0]!.consumed_at).toBeNull();
     });
   });
 });

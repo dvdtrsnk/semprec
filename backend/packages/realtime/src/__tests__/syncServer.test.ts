@@ -26,6 +26,7 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
+  tenantForNextTestUser,
 } from "@semprec/data/testSupport";
 import { randomUUID } from "node:crypto";
 import { runInTenant } from "@semprec/shared";
@@ -380,15 +381,15 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
   /**
    * Only the first account is bound to tenant zero (`users.tenant_id` is unique): it is the tenant's
    * user, and the only one a tenant-zero notification may name (`notifications_user_id_tenant_fkey`).
+   * Every later account gets a fresh tenant of its own.
    */
   async function createTestUser(): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
-    const { rowCount } = await pool.query("SELECT 1 FROM users WHERE tenant_id = $1", [getTenantZeroId()]);
     const user = await createUser(pool, {
       email: `sync-${Math.random()}@example.test`,
       passwordHash,
       locale: "en",
-      tenantId: rowCount === 0 ? getTenantZeroId() : undefined,
+      tenantId: await tenantForNextTestUser(pool),
     });
     return user.id;
   }
@@ -905,7 +906,12 @@ describe("createSyncServer doc sync (issue #162)", () => {
 
   async function createTestUser(): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
-    const user = await createUser(pool, { email: `docsync-${Math.random()}@example.test`, passwordHash, locale: "en" });
+    const user = await createUser(pool, {
+      tenantId: await tenantForNextTestUser(pool),
+      email: `docsync-${Math.random()}@example.test`,
+      passwordHash,
+      locale: "en",
+    });
     return user.id;
   }
 
@@ -1665,17 +1671,17 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
   let port: number;
   let identityByToken: Map<string, SyncIdentity>;
 
-  /** Only the first account is bound to tenant zero (`users.tenant_id` is unique): it is the tenant's user. */
+  /**
+   * Only the first account is bound to tenant zero (`users.tenant_id` is unique): it is the tenant's
+   * user. Every later account gets a fresh tenant of its own.
+   */
   async function createTestUser(): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
-    const { rowCount } = await pool.query<{ bound: number }>("SELECT 1 AS bound FROM users WHERE tenant_id = $1", [
-      getTenantZeroId(),
-    ]);
     const user = await createUser(pool, {
       email: `agent-watch-${Math.random()}@example.test`,
       passwordHash,
       locale: "en",
-      tenantId: rowCount === 0 ? getTenantZeroId() : undefined,
+      tenantId: await tenantForNextTestUser(pool),
     });
     return user.id;
   }
@@ -1944,7 +1950,12 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
 
   async function createTestUser(): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
-    const user = await createUser(pool, { email: `limits-${Math.random()}@example.test`, passwordHash, locale: "en" });
+    const user = await createUser(pool, {
+      tenantId: await tenantForNextTestUser(pool),
+      email: `limits-${Math.random()}@example.test`,
+      passwordHash,
+      locale: "en",
+    });
     return user.id;
   }
 

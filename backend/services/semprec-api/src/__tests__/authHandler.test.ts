@@ -1,7 +1,7 @@
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import pg, { type Pool } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
 import { createUser, hashPassword, LOCKOUT_THRESHOLD, type PasswordResetMailer, type UserRow } from "@semprec/data";
 import { createAuthRequestListener, SESSION_COOKIE_NAME } from "../authHandler.js";
 import { createClientIpThrottle } from "../clientIpThrottle.js";
@@ -12,7 +12,11 @@ const PASSWORD = "s3cret-password";
 const APP_BASE_URL = "https://app.example.test";
 
 async function makeUser(email = "person@example.com"): Promise<UserRow> {
-  return createUser(pool, { email, passwordHash: await hashPassword(PASSWORD) });
+  return createUser(pool, {
+    tenantId: await tenantForNextTestUser(pool),
+    email,
+    passwordHash: await hashPassword(PASSWORD),
+  });
 }
 
 function sessionCookieFrom(res: Response): string {
@@ -227,6 +231,7 @@ describe("createAuthRequestListener", () => {
 
     it("returns the user's role", async () => {
       const user = await createUser(pool, {
+        tenantId: await tenantForNextTestUser(pool),
         email: "admin@example.com",
         passwordHash: await hashPassword(PASSWORD),
         role: "admin",
