@@ -13,10 +13,7 @@ export interface PublishFindingInput {
  * `tenant_id` column default fills the tenant from the scope. The partial unique index
  * `manifest_drift_findings_tenant_active_idx` (migration 0064) is the conflict arbiter and what
  * makes two concurrent callers reporting the same drift race safely: the loser's insert is a
- * no-op instead of a duplicate active finding. While the legacy global
- * `manifest_drift_findings_active_idx` (migration 0030) still exists, a second tenant reporting
- * a key another tenant has active collides with it only and raises `unique_violation` (`23505`)
- * rather than silently doing nothing.
+ * no-op instead of a duplicate active finding.
  */
 export async function publishFinding(client: PoolClient, input: PublishFindingInput): Promise<void> {
   await client.query(

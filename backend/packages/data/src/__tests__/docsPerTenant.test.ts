@@ -49,9 +49,8 @@ async function countDocs(client: PoolClient, itemId: string): Promise<number> {
   return rows[0]?.n ?? 0;
 }
 
-/** Drops the legacy index, adds a second tenant with one database each, and runs as `semprec_data`. */
+/** Adds a second tenant with one database each, and runs as `semprec_data`. */
 async function twoTenants(client: PoolClient) {
-  await client.query("DROP INDEX docs_item_id_idx");
   await client.query("DROP INDEX IF EXISTS tenants_single_tenant_guard");
   const { rows } = await client.query<{ id: string }>("SELECT id FROM tenants");
   const tenantA = rows[0]?.id;
@@ -147,7 +146,7 @@ describe("docs are per tenant", () => {
     await pool?.end();
   });
 
-  it("converges concurrent first writes on one doc while both unique indexes exist", async () => {
+  it("converges concurrent first writes on one doc on the tenant-leading index alone", async () => {
     await resetDatabase(pool);
     const db = await createChokePoint(pool).createDatabase({ name: "Pages" });
     const item = await insertItem(pool, { databaseId: db.id, properties: {} });
@@ -155,7 +154,7 @@ describe("docs are per tenant", () => {
     const { rows: indexes } = await pool.query<{ indexname: string }>(
       "SELECT indexname FROM pg_indexes WHERE tablename = 'docs' AND indexname IN ('docs_item_id_idx', 'docs_tenant_item_id_uq')",
     );
-    expect(indexes.map((r) => r.indexname).sort()).toEqual(["docs_item_id_idx", "docs_tenant_item_id_uq"]);
+    expect(indexes.map((r) => r.indexname)).toEqual(["docs_tenant_item_id_uq"]);
 
     const first = await pool.connect();
     const second = await pool.connect();
@@ -297,12 +296,11 @@ describe("docs are per tenant", () => {
     }
   });
 
-  it("works without the legacy index: repeat write is idempotent, a different kind conflicts", async () => {
+  it("repeat write is idempotent, a different kind conflicts", async () => {
     await resetDatabase(pool);
     const db = await createChokePoint(pool).createDatabase({ name: "Pages" });
     const item = await insertItem(pool, { databaseId: db.id, properties: {} });
     await inRolledBackTransaction(async (client) => {
-      await client.query("DROP INDEX docs_item_id_idx");
       const first = await getOrCreateDoc(client, item.id, "page");
       const again = await getOrCreateDoc(client, item.id, "page");
       expect(again.id).toBe(first.id);

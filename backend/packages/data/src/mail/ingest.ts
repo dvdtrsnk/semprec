@@ -103,7 +103,7 @@ export async function ingestEmailMessage(
     itemId = existing.itemId;
   } else {
     // Concurrency-safe arbiter for the partial-unique, non-null `provider_message_id` index
-    // (mail_message_meta_provider_msg_uq): two sync passes can race to ingest distinct
+    // (mail_message_meta_tenant_provider_msg_uq): two sync passes can race to ingest distinct
     // Message-IDs (the `existing` check above found neither) that turn out to name the same
     // provider message. Rather than let the loser's INSERT surface a raw Postgres unique-
     // violation, its item/thread/meta writes run under a SAVEPOINT and get rolled back on

@@ -251,8 +251,6 @@ describe("writeNotification", () => {
 
     it("gives each recipient of the same transition its own row and replays to its own id", async () => {
       await inTwoTenants(async (client, { userZero, userB, tenantB }) => {
-        await client.query("DROP INDEX notifications_dedupe_idx");
-
         await scope(client, getTenantZeroId());
         const idZero = await write(client, userZero);
         await scope(client, tenantB);
@@ -270,18 +268,6 @@ describe("writeNotification", () => {
         expect(await write(client, userB)).toBe(idB);
         await scope(client, getTenantZeroId());
         expect(await write(client, userZero)).toBe(idZero);
-      });
-    });
-
-    it("rejects a collision with the legacy index instead of returning another recipient's id", async () => {
-      await inTwoTenants(async (client, { userZero, userB, tenantB }) => {
-        await scope(client, getTenantZeroId());
-        await write(client, userZero);
-        await scope(client, tenantB);
-        await expect(write(client, userB)).rejects.toMatchObject({
-          code: "23505",
-          constraint: "notifications_dedupe_idx",
-        });
       });
     });
   });

@@ -17,7 +17,7 @@ export { createSystemHealthRouteHandler } from "../observability/systemHealthRou
  * Retrofit manifest (module-contract issue #226) for the schema/data core: the choke point
  * (this directory) plus the system tables it writes through (`0001_core_schema.sql` — users,
  * databases, properties, relation_definitions, items, item_relations, project_heartbeats,
- * agent_runs, resource_grants, rollup_dependencies, notifications, idempotency_keys). This is
+ * agent_runs, rollup_dependencies, notifications, idempotency_keys). This is
  * the generic engine every other module builds on, not a business database of its own — it
  * declares no `databases` entries. Authoring this manifest changes no behavior: the choke point
  * continues to be called directly everywhere it already is, this only makes its existence
