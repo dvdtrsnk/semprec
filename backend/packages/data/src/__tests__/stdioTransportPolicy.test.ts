@@ -38,16 +38,6 @@ describe("tenantAllowsStdio (issue #1030)", () => {
     expect(await tenantAllowsStdio(pool, user.id)).toBe(false);
   });
 
-  it("is false for an admin bound to no tenant", async () => {
-    await createTenantZeroUser(pool);
-    const unbound = await createUser(pool, {
-      email: "unbound@example.com",
-      passwordHash: "unused",
-      role: "admin",
-    });
-    expect(await tenantAllowsStdio(pool, unbound.id)).toBe(false);
-  });
-
   it("is false for an admin bound to another tenant", async () => {
     // With a second tenant present `app_tenant_default()` no longer falls back to the sole tenant,
     // so the current tenant is set explicitly; the tenant-zero admin is the positive control.

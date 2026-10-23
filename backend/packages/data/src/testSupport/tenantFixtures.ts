@@ -11,11 +11,12 @@ import { createPool, withTransaction } from "../db/pool.js";
  * Rules:
  * - Isolation assertions use a runtime-role pool (`createRuntimeRolePool`), never the superuser
  *   pool: superusers and table owners bypass row-level security, so such a test proves nothing.
- * - While a second tenant exists, `app_sole_tenant()` is NULL, so a scope-less read under a runtime
- *   role sees nothing and a scope-less insert is refused by the RLS `WITH CHECK` (SQLSTATE 42501, which Postgres
- *   evaluates before the `NOT NULL` constraint, 23502). That is the intended fail-closed
- *   behaviour; every write to a tenant table therefore runs inside a tenant (`withTenantTransaction`)
- *   or names `tenant_id`.
+ * - `app_tenant_default()` is strict (#1067), so a scope-less read under a runtime role sees
+ *   nothing and a scope-less insert is refused by the RLS `WITH CHECK` (SQLSTATE 42501, which Postgres
+ *   evaluates before the `NOT NULL` constraint, 23502), however many tenants exist. That is the
+ *   intended fail-closed behaviour; every write to a tenant table therefore runs inside a tenant
+ *   (`withTenantTransaction`) or names `tenant_id`. Only the superuser pool from `getTestPool`
+ *   starts its connections in tenant zero.
  * - `resetDatabase` removes every tenant except tenant zero, which keeps its id for the whole run.
  */
 
@@ -33,6 +34,21 @@ export function getTenantZeroId(): string {
     throw new Error("TEST_TENANT_ZERO_ID is not set — is vitest's globalSetup wired up?");
   }
   return id;
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * The libpq `options` string that starts every connection of a pool in tenant zero
+ * (`-c app.tenant_id=<id>`). The id is interpolated, so it is checked against the UUID shape first:
+ * a value with a space or a backslash could otherwise smuggle another `-c` option into the string.
+ */
+export function tenantZeroSessionOptions(): string {
+  const id = getTenantZeroId();
+  if (!UUID_PATTERN.test(id)) {
+    throw new Error(`TEST_TENANT_ZERO_ID is not a lowercase UUID: ${JSON.stringify(id)}`);
+  }
+  return `-c app.tenant_id=${id}`;
 }
 
 /**
@@ -120,20 +136,23 @@ export async function withTenantTransaction<T>(
 }
 
 /**
- * Creates a test account through `createUser` with `tenantId: getTenantZeroId()`, which makes it
- * tenant zero's user — the recipient of tenant zero's events and the actor of its root runs.
- * `users.tenant_id` is unique, so once tenant zero has its user every later account is created
- * unbound.
+ * The tenant the next test account binds to: tenant zero while it has no user, otherwise a fresh
+ * tenant (`createTestTenant`). `users.tenant_id` is unique and NOT NULL (#1067), so every test
+ * account needs a tenant of its own; the first one becomes tenant zero's user.
  */
-export async function createTenantZeroUser(pool: Pool, email = `${randomUUID()}@example.com`): Promise<UserRow> {
+export async function tenantForNextTestUser(pool: Pool): Promise<string> {
   const { rows } = await pool.query<{ bound: boolean }>(
     "SELECT EXISTS (SELECT 1 FROM users WHERE tenant_id = $1) AS bound",
     [getTenantZeroId()],
   );
-  const bound = rows[0]?.bound ?? false;
-  return createUser(pool, {
-    email,
-    passwordHash: "unused",
-    ...(bound ? {} : { tenantId: getTenantZeroId() }),
-  });
+  return (rows[0]?.bound ?? false) ? createTestTenant(pool) : getTenantZeroId();
+}
+
+/**
+ * Creates a test account bound to `tenantForNextTestUser`, so only the first call creates tenant
+ * zero's user (the recipient of tenant zero's events and the actor of its root runs); every later
+ * call creates a fresh tenant (`createTestTenant`) and binds the account to it.
+ */
+export async function createTenantZeroUser(pool: Pool, email = `${randomUUID()}@example.com`): Promise<UserRow> {
+  return createUser(pool, { email, passwordHash: "unused", tenantId: await tenantForNextTestUser(pool) });
 }

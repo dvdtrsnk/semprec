@@ -61,12 +61,16 @@ describe("tenant-checked partition functions (issue #1021)", () => {
     await resetDatabase(adminPool);
   });
 
-  it("creates a partition without a tenant scope while tenant zero is the only tenant", async () => {
-    const database = await withTenantTransaction(dataPool, getTenantZeroId(), async (client) => {
-      await client.query("SELECT set_config('app.tenant_id', '', true)");
-      return createDatabase(client, { name: "scope-less" });
-    });
-    expect(await partitionExists(database.id)).toBe(true);
+  // Strict `app_tenant_default()` (#1067): no fallback to the sole tenant.
+  it("refuses a partition without a tenant scope even while tenant zero is the only tenant", async () => {
+    const databaseId = await insertDatabase(getTenantZeroId());
+    await expectRefused(() =>
+      withTenantTransaction(dataPool, getTenantZeroId(), async (client) => {
+        await client.query("SELECT set_config('app.tenant_id', '', true)");
+        return client.query("SELECT create_items_partition($1::uuid)", [databaseId]);
+      }),
+    );
+    expect(await partitionExists(databaseId)).toBe(false);
   });
 
   it("creates and drops the partition in the own tenant", async () => {

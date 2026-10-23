@@ -20,7 +20,7 @@ export interface CreateUserInput {
   passwordHash: string;
   /** Defaults to the `users.locale` column default (`cs`) when omitted. */
   locale?: string;
-  /** Defaults to NULL (no tenant) when omitted. */
+  /** Required by `users.tenant_id NOT NULL` (#1067): an insert without it fails with `23502`. */
   tenantId?: string;
   /** Defaults to the `users.role` column default (`member`) when omitted. */
   role?: UserRole;
@@ -73,9 +73,8 @@ export async function anyUserExists(client: Pool | PoolClient): Promise<boolean>
 
 /**
  * The recipient of a tenant event is the user of the scope's tenant: the account whose
- * `users.tenant_id` is `app_tenant_default()` (the scope's tenant, or the sole tenant when no
- * scope is set and only one tenant exists). Returns `null` when the tenant has no bound user,
- * and in a system scope once more than one tenant exists — the same visibility tenant rows have.
+ * `users.tenant_id` is `app_tenant_default()` (the scope's tenant). Returns `null` when the tenant
+ * has no bound user, and outside a tenant scope — the same visibility tenant rows have.
  */
 export async function getTenantUserId(client: Pool | PoolClient): Promise<string | null> {
   const { rows } = await client.query<{ id: string }>(
@@ -103,8 +102,8 @@ export async function listAdminRecipients(
 
 /**
  * Locale of the tenant's user — the recipient rule of `getTenantUserId`: the user of the scope's
- * tenant. Returns `null` when the tenant has no bound user, and in a system scope once more
- * than one tenant exists.
+ * tenant. Returns `null` when the tenant has no bound user, and outside a tenant scope — the same
+ * visibility tenant rows have.
  */
 export async function getTenantUserLocale(client: Pool | PoolClient): Promise<string | null> {
   const { rows } = await client.query<{ locale: string }>(

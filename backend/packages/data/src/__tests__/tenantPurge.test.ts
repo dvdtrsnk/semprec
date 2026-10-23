@@ -92,7 +92,11 @@ async function provisionedTenant(): Promise<string> {
 async function seedTenant(tenantId: string): Promise<SeededTenant> {
   const email = `${randomUUID()}@example.com`;
   // The invite is addressed to the account's email; the API cannot create it once the account exists.
-  const placeholder = await createUser(adminPool, { email: `${randomUUID()}@example.com`, passwordHash: "unused" });
+  const placeholder = await createUser(adminPool, {
+    email: `${randomUUID()}@example.com`,
+    passwordHash: "unused",
+    tenantId: await createTestTenant(adminPool),
+  });
   await adminPool.query("INSERT INTO invites (email, token_hash, invited_by, expires_at) VALUES ($1, $2, $3, $4)", [
     email,
     `hash-${randomUUID()}`,

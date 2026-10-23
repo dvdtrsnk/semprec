@@ -704,4 +704,22 @@ describe("tenancy classification catalog", () => {
       chokePoint.createDatabase({ name: "System two", ownerModuleId: "tenancyProbe", system: true }),
     ).rejects.toMatchObject({ code: "23505", constraint: "databases_tenant_system_module_uq" });
   });
+
+  /** Issue #1067: the strict switch. */
+  it("defines app_tenant_default() through app_current_tenant() alone", async () => {
+    const { rows } = await pool.query<{ definition: string }>(
+      "SELECT pg_get_functiondef('public.app_tenant_default()'::regprocedure) AS definition",
+    );
+    const definition = rows[0]?.definition ?? "";
+    expect(definition).toContain("app_current_tenant");
+    expect(definition).not.toContain("app_sole_tenant");
+  });
+
+  it("makes users.tenant_id NOT NULL", async () => {
+    const { rows } = await pool.query<{ attnotnull: boolean }>(
+      `SELECT attnotnull FROM pg_attribute
+        WHERE attrelid = 'public.users'::regclass AND attname = 'tenant_id' AND NOT attisdropped`,
+    );
+    expect(rows).toEqual([{ attnotnull: true }]);
+  });
 });

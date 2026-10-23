@@ -77,7 +77,7 @@ describe("tenant scope on the three pool paths", () => {
   });
 
   it("runs the three paths unchanged without a scope in warn mode", async () => {
-    delete process.env.SEMPREC_TENANT_SCOPE;
+    process.env.SEMPREC_TENANT_SCOPE = "warn";
     const readings = await readAllPaths(pool);
     for (const reading of readings) expect(reading.setting).not.toBe(T);
     // No set_config ran: the setting is unset (NULL) or '' left by an earlier session, never a tenant.
@@ -184,7 +184,7 @@ describe("no leak between checkouts", () => {
 describe("strict mode", () => {
   it("rejects all three paths with TenantScopeMissingError and takes no connection", async () => {
     const strict = newPool();
-    await strict.query("SELECT 1"); // opens one idle connection (warn mode: no env set yet)
+    await strict.query("SELECT 1"); // opens one idle connection (warn mode, pinned by globalSetup)
     process.env.SEMPREC_TENANT_SCOPE = "strict";
     const total = strict.totalCount;
 
