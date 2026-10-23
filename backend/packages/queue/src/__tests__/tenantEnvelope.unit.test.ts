@@ -36,18 +36,17 @@ const SYSTEM_TASKS = [
   "queueFailedJobsPrune",
   "tenantExportExpirySweep",
   "tenantPurge",
+  "credentialReencryptSweep",
 ];
 
 interface FakeHelperOptions {
   status?: string | null;
-  soleTenant?: string | null;
   key?: string | null;
 }
 
-/** Fake graphile helpers: `status: null` means no `tenants` row; `soleTenant` is `app_sole_tenant()`'s answer. */
+/** Fake graphile helpers: `status: null` means no `tenants` row. */
 function fakeHelpers(options: FakeHelperOptions = {}) {
   const query = vi.fn(async (sql: string) => {
-    if (sql.includes("app_sole_tenant")) return { rows: [{ app_sole_tenant: options.soleTenant ?? null }] };
     if (sql.includes("FROM tenants")) {
       return { rows: options.status === null ? [] : [{ status: options.status ?? "active" }] };
     }
@@ -121,10 +120,7 @@ describe("registerTask tenant tasks", () => {
   beforeEach(() => {
     log.warn.mockClear();
     log.info.mockClear();
-  });
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
+    log.error.mockClear();
   });
 
   function observingTask(name: string) {
@@ -157,38 +153,24 @@ describe("registerTask tenant tasks", () => {
   });
 
   it.each([
-    ["a legacy envelope", { traceId: TRACE_ID, payload: { a: 1 } }, { a: 1 }],
-    ["a null tenantId", { traceId: TRACE_ID, tenantId: null, payload: { a: 1 } }, { a: 1 }],
-    ["a raw payload", { raw: true }, { raw: true }],
-  ])("falls back to the sole tenant for %s when opted in", async (_label, raw, expectedPayload) => {
-    vi.stubEnv("SEMPREC_LEGACY_ENVELOPE_FALLBACK", "1");
+    ["a legacy envelope", { traceId: TRACE_ID, payload: { a: 1 } }, TRACE_ID],
+    ["a null tenantId", { traceId: TRACE_ID, tenantId: null, payload: { a: 1 } }, TRACE_ID],
+    ["a raw payload", { raw: true }, undefined],
+  ])("refuses %s without querying or calling the handler", async (_label, raw, expectedTraceId) => {
     const { task, seen } = observingTask("someTask");
-    await task(raw, fakeHelpers({ soleTenant: T }) as never);
-    expect(seen).toEqual([{ scope: { kind: "tenant", tenantId: T }, payload: expectedPayload }]);
-    const warned = log.warn.mock.calls.filter((call) => call[1] === "tenant_task_without_tenant");
-    expect(warned).toHaveLength(1);
-    expect(warned[0]?.[0]).toEqual({ jobName: "someTask", jobId: "9" });
-  });
-
-  it.each([[undefined], ["0"], [""]])(
-    "rejects an envelope without a tenant and never looks up the sole tenant when the opt-in is %j",
-    async (value) => {
-      if (value !== undefined) vi.stubEnv("SEMPREC_LEGACY_ENVELOPE_FALLBACK", value);
-      const { task, seen } = observingTask("someTask");
-      const helpers = fakeHelpers({ soleTenant: T });
-      await expect(task({ traceId: TRACE_ID, payload: {} }, helpers as never)).rejects.toThrow(/no tenant/);
-      expect(seen).toEqual([]);
-      expect(helpers.query).not.toHaveBeenCalled();
-    },
-  );
-
-  it("rejects when opted in but there is no sole tenant", async () => {
-    vi.stubEnv("SEMPREC_LEGACY_ENVELOPE_FALLBACK", "1");
-    const { task, seen } = observingTask("someTask");
-    await expect(task({ traceId: TRACE_ID, payload: {} }, fakeHelpers({ soleTenant: null }) as never)).rejects.toThrow(
-      /no tenant/,
-    );
+    const helpers = fakeHelpers();
+    await expect(task(raw, helpers as never)).rejects.toBeInstanceOf(TenantScopeMissingError);
     expect(seen).toEqual([]);
+    expect(helpers.query).not.toHaveBeenCalled();
+    const refused = log.error.mock.calls.filter((call) => call[1] === "tenant_task_without_tenant");
+    expect(refused).toHaveLength(1);
+    const fields = refused[0]?.[0] as Record<string, unknown>;
+    expect(Object.keys(fields).sort()).toEqual(["jobId", "jobName", "traceId"]);
+    expect(fields).toMatchObject({ jobName: "someTask", jobId: "9" });
+    // A raw payload has no trace to restore, so registerTask mints a fresh one for the tick.
+    if (expectedTraceId === undefined) expect(fields.traceId).toEqual(expect.any(String));
+    else expect(fields.traceId).toBe(expectedTraceId);
+    expect(log.warn.mock.calls.filter((call) => call[1] === "tenant_task_without_tenant")).toEqual([]);
   });
 
   it("treats a module task name outside the catalog as a tenant task", async () => {
@@ -199,6 +181,10 @@ describe("registerTask tenant tasks", () => {
 });
 
 describe("registerTask system tasks", () => {
+  beforeEach(() => {
+    log.error.mockClear();
+  });
+
   it("runs a system task in a system scope even when the envelope carries a tenantId", async () => {
     let scope: unknown;
     const task = registerTask("heartbeatSweep", async () => {
@@ -208,6 +194,18 @@ describe("registerTask system tasks", () => {
     await task({ traceId: TRACE_ID, tenantId: T, payload: {} }, helpers as never);
     expect(scope).toEqual({ kind: "system", reason: "task:heartbeatSweep" });
     expect(helpers.query).not.toHaveBeenCalled();
+  });
+
+  it("runs a system task with a legacy envelope in a system scope", async () => {
+    let seen: { scope: unknown; payload: unknown } | undefined;
+    const task = registerTask("heartbeatSweep", async (payload) => {
+      seen = { scope: currentTenantScope(), payload };
+    });
+    const helpers = fakeHelpers();
+    await task({ traceId: TRACE_ID, payload: { a: 1 } }, helpers as never);
+    expect(seen).toEqual({ scope: { kind: "system", reason: "task:heartbeatSweep" }, payload: { a: 1 } });
+    expect(helpers.query).not.toHaveBeenCalled();
+    expect(log.error).not.toHaveBeenCalled();
   });
 });
 
@@ -230,7 +228,7 @@ describe("registerTask supersession", () => {
 });
 
 describe("TASK_TENANCY", () => {
-  it("has an entry for every core and agent task name, with exactly the 13 sweeps as system", () => {
+  it("has an entry for every core and agent task name, with exactly the 14 sweeps as system", () => {
     const names = [...Object.values(CORE_TASK_NAMES), ...Object.values(AGENT_TASK_NAMES)];
     expect(Object.keys(TASK_TENANCY).sort()).toEqual([...names].sort());
     const system = names.filter((name) => TASK_TENANCY[name] === "system");

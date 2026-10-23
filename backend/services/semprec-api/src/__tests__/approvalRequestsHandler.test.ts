@@ -35,15 +35,20 @@ let tenantUserEmail: string;
 let tenantUserSignedIn: boolean;
 
 /**
- * Signs in tenant zero's user on the first call of a test and a fresh, unbound account after it. A
- * run's actor must be its own tenant's user (`agent_runs_actor_user_id_tenant_fkey`, issue #1066),
- * so only the first session can own a request; a later one is the non-owner.
+ * Signs in tenant zero's user on the first call of a test, and after it the user of a fresh tenant of
+ * its own. A run's actor must be its own tenant's user (`agent_runs_actor_user_id_tenant_fkey`, issue
+ * #1066) and a tenant has one user, so only the first session can own a request; a later one is the
+ * non-owner, in another tenant as every other account is.
  */
 async function authSession(): Promise<{ headers: { Authorization: string }; userId: string }> {
   let email = tenantUserEmail;
   if (tenantUserSignedIn) {
     email = `${randomUUID()}@example.com`;
-    await pool.query(`INSERT INTO users (email, password_hash) VALUES ($1, $2)`, [email, await hashPassword(PASSWORD)]);
+    await createUser(pool, {
+      email,
+      passwordHash: await hashPassword(PASSWORD),
+      tenantId: await createTestTenant(pool),
+    });
   }
   tenantUserSignedIn = true;
   const { token, user } = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
@@ -249,8 +254,9 @@ describe("createApprovalRequestsRequestListener", () => {
 
   it("answers a non-owner's PATCH with the same 404 as a random id, before and after the owner decides (issue #1028)", async () => {
     const owner = await authSession();
-    const other = await authSession();
     const id = await createPendingRequest(owner.userId);
+    // Signed in after the request exists: the second tenant ends the sole-tenant default it relies on.
+    const other = await authSession();
     const patch = (requestId: string, headers: { Authorization: string }, decision: string) =>
       fetch(`${baseUrl}/api/approval-requests/${requestId}`, {
         method: "PATCH",

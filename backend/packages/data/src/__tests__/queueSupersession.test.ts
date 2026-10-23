@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { enqueueJob, registerTask, runWorker, type Runner, type TaskList } from "@semprec/queue";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 
 let pool: Pool;
 let runner: Runner | undefined;
@@ -61,10 +61,10 @@ describe("registerTask supersession handling (issue #700)", () => {
 
     runner = await runWorker({ pgPool: pool, taskList, noHandleSignals: true, concurrency: 1 });
 
-    await enqueueJob(pool, "supersedeProbe", {}, { jobKey: "k", maxAttempts: 3 });
+    await inTenantZero(() => enqueueJob(pool, "supersedeProbe", {}, { jobKey: "k", maxAttempts: 3 }));
     await waitFor(() => started, "first invocation never started");
 
-    await enqueueJob(pool, "supersedeProbe", {}, { jobKey: "k", maxAttempts: 3 });
+    await inTenantZero(() => enqueueJob(pool, "supersedeProbe", {}, { jobKey: "k", maxAttempts: 3 }));
     releaseGate!();
 
     await waitFor(() => invocationCount >= 2, "replacement job never ran");
@@ -87,7 +87,7 @@ describe("registerTask supersession handling (issue #700)", () => {
 
     runner = await runWorker({ pgPool: pool, taskList, noHandleSignals: true, concurrency: 1 });
 
-    await enqueueJob(pool, "supersedeProbe", {}, { jobKey: "k", maxAttempts: 3 });
+    await inTenantZero(() => enqueueJob(pool, "supersedeProbe", {}, { jobKey: "k", maxAttempts: 3 }));
 
     await vi.waitFor(
       async () => {

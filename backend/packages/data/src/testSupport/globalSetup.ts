@@ -11,6 +11,7 @@ import { runDocHistoryCutoverMigration } from "../docs/docHistoryCutoverMigratio
 import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsActorUserIdCutoverMigration.js";
 import { runApprovalRequestExecutionStatusCutoverMigration } from "../mcp/approvalRequestExecutionStatusCutoverMigration.js";
 import { runHeartbeatFireQueueSplitMigration } from "../scheduler/heartbeatFireQueueSplitMigration.js";
+import { runLegacyJobEnvelopeStampMigration } from "../tenancy/legacyJobEnvelopeStampMigration.js";
 import { createPool } from "../db/pool.js";
 import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { activateCzechHunspellSearch } from "../mail/czechHunspellSearch.js";
@@ -121,6 +122,7 @@ export default async function setup(): Promise<() => Promise<void>> {
         await ensureQueueSchema(pool);
         await grantQueueSchemaPrivileges(pool);
         await runHeartbeatFireQueueSplitMigration(pool);
+        await runLegacyJobEnvelopeStampMigration(pool);
       });
     } finally {
       // Logged and swallowed, as runMigrationsCli's endPool does: a throw here would replace the
@@ -139,9 +141,6 @@ export default async function setup(): Promise<() => Promise<void>> {
       throw new Error("globalSetup: app_sole_tenant() returned NULL after the migrations — tenant zero is missing");
     }
     process.env.TEST_TENANT_ZERO_ID = tenantZeroId;
-    // Tests enqueue jobs outside any tenant scope; the queue only runs those in the sole tenant on
-    // this opt-in. Removed together with the fallback by #1061.
-    process.env.SEMPREC_LEGACY_ENVELOPE_FALLBACK ??= "1";
     // Test database only: the guard makes a second tenant impossible, and the two-tenant harness
     // needs one. IF EXISTS keeps this working once the go-live migration removes the guard itself.
     await pool.query("DROP INDEX IF EXISTS tenants_single_tenant_guard");

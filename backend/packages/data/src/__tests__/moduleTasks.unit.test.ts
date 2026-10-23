@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ModuleRegistry, ModuleTaskDefinition, ModuleTaskProjection } from "@semprec/module-registry";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, type TaskList } from "@semprec/queue";
 import {
@@ -15,14 +15,19 @@ function fakeRegistry(definitions: ModuleTaskDefinition[]): ModuleRegistry {
   return { getTaskDefinitions: async () => definitions } as unknown as ModuleRegistry;
 }
 
-/** Answers the tenant task wrapper's sole-tenant and status lookups with one active tenant. */
+/** Answers the tenant task wrapper's status lookup with an active tenant. */
 const fakeHelpers = {
-  query: async (sql: string) => ({
-    rows: sql.includes("app_sole_tenant")
-      ? [{ app_sole_tenant: "6f1d2c3e-1a2b-4c5d-8e9f-0a1b2c3d4e5f" }]
-      : [{ status: "active" }],
-  }),
+  query: async () => ({ rows: [{ status: "active" }] }),
 } as never;
+
+/** A queue envelope stamped with a tenant, as `enqueueJob` sends one from inside `runInTenant`. */
+function tenantEnvelope(payload: Record<string, unknown>) {
+  return {
+    traceId: "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    tenantId: "6f1d2c3e-1a2b-4c5d-8e9f-0a1b2c3d4e5f",
+    payload,
+  };
+}
 
 function fakeTaskRegistry(tasks: ModuleTaskProjection[]): ModuleRegistry {
   return { getTasks: async () => tasks } as unknown as ModuleRegistry;
@@ -95,13 +100,6 @@ describe("resolveTaskAffinitySets", () => {
 });
 
 describe("mergeModuleTaskList", () => {
-  beforeEach(() => {
-    vi.stubEnv("SEMPREC_LEGACY_ENVELOPE_FALLBACK", "1");
-  });
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
   const coreTaskList: TaskList = {
     [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {},
   };
@@ -123,7 +121,7 @@ describe("mergeModuleTaskList", () => {
     const merged = await mergeModuleTaskList(coreTaskList, registry);
     expect(Object.keys(merged).sort()).toEqual([CORE_TASK_NAMES.HEARTBEAT_SWEEP, "fixtureModule.processThing"].sort());
 
-    await merged["fixtureModule.processThing"]!({ itemId: "abc" }, fakeHelpers);
+    await merged["fixtureModule.processThing"]!(tenantEnvelope({ itemId: "abc" }), fakeHelpers);
     expect(calls).toEqual([{ itemId: "abc", validated: true }]);
   });
 
@@ -152,7 +150,9 @@ describe("mergeModuleTaskList", () => {
     ]);
 
     const merged = await mergeModuleTaskList(coreTaskList, registry);
-    await expect(merged["fixtureModule.processThing"]!({}, fakeHelpers)).rejects.toThrow("invalid payload");
+    await expect(merged["fixtureModule.processThing"]!(tenantEnvelope({}), fakeHelpers)).rejects.toThrow(
+      "invalid payload",
+    );
     expect(ran).toBe(false);
   });
 
