@@ -36,7 +36,6 @@ const SYSTEM_TASKS = [
   "queueFailedJobsPrune",
   "tenantExportExpirySweep",
   "tenantPurge",
-  "credentialReencryptSweep",
 ];
 
 interface FakeHelperOptions {

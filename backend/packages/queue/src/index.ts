@@ -101,8 +101,6 @@ export const CORE_TASK_NAMES = {
   TENANT_EXPORT_EXPIRY_SWEEP: "tenantExportExpirySweep",
   // Issue #1055: the per-minute sweep that erases every `deleting` tenant and records a tombstone.
   TENANT_PURGE: "tenantPurge",
-  // Issue #1062: the hourly sweep that re-seals every `master` credential under its tenant's data key.
-  CREDENTIAL_REENCRYPT_SWEEP: "credentialReencryptSweep",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
@@ -142,7 +140,6 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.TENANT_EXPORT]: "api",
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: "api",
   [CORE_TASK_NAMES.TENANT_PURGE]: "api",
-  [CORE_TASK_NAMES.CREDENTIAL_REENCRYPT_SWEEP]: "api",
 };
 
 /**
@@ -193,7 +190,6 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.TENANT_EXPORT]: "tenant",
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: "system",
   [CORE_TASK_NAMES.TENANT_PURGE]: "system",
-  [CORE_TASK_NAMES.CREDENTIAL_REENCRYPT_SWEEP]: "system",
   [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: "tenant",
   [AGENT_TASK_NAMES.AGENT_RUN]: "tenant",
   [AGENT_TASK_NAMES.DELEGATED_AGENT_RUN]: "tenant",
