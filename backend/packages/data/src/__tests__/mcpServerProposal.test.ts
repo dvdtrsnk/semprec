@@ -216,6 +216,11 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
 
     const stored = await withTransaction(pool, (client) => hasCredential(client, serverId));
     expect(stored).toBe(true);
+    const { rows: schemes } = await pool.query<{ scheme: string }>(
+      "SELECT scheme FROM external_credentials WHERE item_id = $1",
+      [serverId],
+    );
+    expect(schemes).toEqual([{ scheme: "tenant" }]);
 
     const decrypted = await withTransaction(pool, (client) =>
       getDecryptedCredential(client, { itemId: serverId, actorType: "mcp_connection_manager", purpose: "test" }),

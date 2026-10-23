@@ -35,9 +35,10 @@ let tenantUserEmail: string;
 let tenantUserSignedIn: boolean;
 
 /**
- * Signs in tenant zero's user on the first call of a test and a fresh account in a fresh tenant after it. A
- * run's actor must be its own tenant's user (`agent_runs_actor_user_id_tenant_fkey`, issue #1066),
- * so only the first session can own a request; a later one is the non-owner.
+ * Signs in tenant zero's user on the first call of a test, and after it the user of a fresh tenant of
+ * its own. A run's actor must be its own tenant's user (`agent_runs_actor_user_id_tenant_fkey`, issue
+ * #1066) and a tenant has one user, so only the first session can own a request; a later one is the
+ * non-owner, in another tenant as every other account is.
  */
 async function authSession(): Promise<{ headers: { Authorization: string }; userId: string }> {
   let email = tenantUserEmail;
@@ -253,8 +254,8 @@ describe("createApprovalRequestsRequestListener", () => {
 
   it("answers a non-owner's PATCH with the same 404 as a random id, before and after the owner decides (issue #1028)", async () => {
     const owner = await authSession();
-    const other = await authSession();
     const id = await createPendingRequest(owner.userId);
+    const other = await authSession();
     const patch = (requestId: string, headers: { Authorization: string }, decision: string) =>
       fetch(`${baseUrl}/api/approval-requests/${requestId}`, {
         method: "PATCH",

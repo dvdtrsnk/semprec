@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_TASK_NAMES, CORE_TASK_AFFINITY, CORE_TASK_NAMES, TASK_AFFINITIES } from "../index.js";
+import { AGENT_TASK_NAMES, CORE_TASK_AFFINITY, CORE_TASK_NAMES, TASK_AFFINITIES, TASK_TENANCY } from "../index.js";
 
 describe("CORE_TASK_AFFINITY", () => {
   it("carries an affinity for every CORE_TASK_NAMES entry, and only valid affinities", () => {
@@ -39,6 +39,12 @@ describe("CORE_TASK_AFFINITY", () => {
   it("declares queueFailedJobsPrune in the exhaustive API set", () => {
     expect(CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE).toBe("queueFailedJobsPrune");
     expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]).toBe("api");
+  });
+
+  it("declares credentialReencryptSweep in the exhaustive API set as a system task", () => {
+    expect(CORE_TASK_NAMES.CREDENTIAL_REENCRYPT_SWEEP).toBe("credentialReencryptSweep");
+    expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.CREDENTIAL_REENCRYPT_SWEEP]).toBe("api");
+    expect(TASK_TENANCY[CORE_TASK_NAMES.CREDENTIAL_REENCRYPT_SWEEP]).toBe("system");
   });
 });
 
