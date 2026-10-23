@@ -261,14 +261,15 @@ describe("realtime", () => {
       }
     });
 
-    it("falls back to the sole tenant when a hook fires with no scope", async () => {
+    // Strict `app_tenant_default()` (#1067) no longer falls back to the sole tenant.
+    it("stamps no tenant when a hook fires with no scope, even while tenant zero is the only tenant", async () => {
       wireRealtimeHooks(scopedPool);
       const listenClient = await pool.connect();
       try {
         const payload = await listen(listenClient);
         notifyInvalidation({ scope: "schema", databaseId: "db-1" });
         expect(await payload()).toEqual({
-          tenantId: getTenantZeroId(),
+          tenantId: null,
           message: { type: "invalidation", scope: "schema", databaseId: "db-1" },
         });
       } finally {

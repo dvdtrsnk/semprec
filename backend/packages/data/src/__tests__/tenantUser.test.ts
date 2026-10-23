@@ -28,7 +28,7 @@ describe("getTenantUserId / getTenantUserLocale (issue #1018)", () => {
     await runInTenant(getTenantZeroId(), () => resetDatabase(adminPool));
   });
 
-  it("returns the sole tenant's user with no scope while only tenant zero exists", async () => {
+  it("returns null with no scope even while tenant zero is the only tenant and has a user (strict, issue #1067)", async () => {
     const user = await runInTenant(getTenantZeroId(), () =>
       createUser(adminPool, {
         email: "zero@example.com",
@@ -37,8 +37,9 @@ describe("getTenantUserId / getTenantUserLocale (issue #1018)", () => {
         tenantId: getTenantZeroId(),
       }),
     );
-    expect(await getTenantUserId(pool)).toBe(user.id);
-    expect(await getTenantUserLocale(pool)).toBe("en");
+    expect(await getTenantUserId(pool)).toBeNull();
+    expect(await getTenantUserLocale(pool)).toBeNull();
+    expect(await runInTenant(getTenantZeroId(), () => getTenantUserId(pool))).toBe(user.id);
   });
 
   it("returns each tenant's own user and locale inside its scope, and null in a system scope", async () => {
@@ -76,13 +77,5 @@ describe("getTenantUserId / getTenantUserLocale (issue #1018)", () => {
 
     expect(await runInTenant(tenantB, () => getTenantUserId(pool))).toBeNull();
     expect(await runInTenant(tenantB, () => getTenantUserLocale(pool))).toBeNull();
-  });
-
-  it("returns null for an account whose tenant binding is NULL", async () => {
-    await runInTenant(getTenantZeroId(), () =>
-      createUser(adminPool, { email: "unbound@example.com", passwordHash: "x" }),
-    );
-    expect(await getTenantUserId(pool)).toBeNull();
-    expect(await getTenantUserLocale(pool)).toBeNull();
   });
 });

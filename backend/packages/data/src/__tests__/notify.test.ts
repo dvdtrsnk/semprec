@@ -278,7 +278,8 @@ describe("writeNotification", () => {
     });
   });
 
-  it("stamps tenant zero on a write made without a tenant scope", async () => {
+  // `getTestPool` connections start in tenant zero (session-level `app.tenant_id`, #1067).
+  it("stamps the connection's tenant zero on a write made without a process scope", async () => {
     const userId = await createTestUser();
     const id = await withTransaction(pool, (client) =>
       writeNotification(client, {

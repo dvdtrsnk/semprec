@@ -70,7 +70,7 @@ describe("enqueueJob tenant stamping", () => {
 
   beforeEach(() => {
     log.warn.mockClear();
-    delete process.env.SEMPREC_TENANT_SCOPE;
+    process.env.SEMPREC_TENANT_SCOPE = "warn";
   });
 
   afterEach(() => {

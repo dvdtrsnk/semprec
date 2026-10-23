@@ -110,7 +110,11 @@ async function listen(): Promise<void> {
 function post(path: string, body: unknown, token = "test-internal-token", signal?: AbortSignal): Promise<Response> {
   return fetch(`${baseUrl}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      "x-semprec-tenant-id": getTenantZeroId(),
+    },
     body: JSON.stringify(body),
     signal,
   });

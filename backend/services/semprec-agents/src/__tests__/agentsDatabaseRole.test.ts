@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createTenantZeroUser, getTestPool, resetDatabase, tenantZeroSessionOptions } from "@semprec/data/testSupport";
 import {
   createAgentRun,
   createChokePoint,
@@ -59,8 +59,11 @@ describe("semprec-agents database role", () => {
     // It must stay derived from a source limited to SQL-safe characters (randomUUID(): [0-9a-f-]).
     await adminPool.query(`ALTER ROLE semprec_data WITH PASSWORD '${TEST_ROLE_PASSWORD}'`);
     await adminPool.query(`ALTER ROLE semprec_side WITH PASSWORD '${TEST_ROLE_PASSWORD}'`);
-    dataPool = new Pool({ connectionString: roleConnectionString("semprec_data") });
-    sidePool = new Pool({ connectionString: roleConnectionString("semprec_side") });
+    // This suite checks grants, not isolation: like `getTestPool`'s, every connection starts in
+    // tenant zero, which strict `app_tenant_default()` (#1067) no longer falls back to.
+    const inTenantZeroOptions = tenantZeroSessionOptions();
+    dataPool = new Pool({ connectionString: roleConnectionString("semprec_data"), options: inTenantZeroOptions });
+    sidePool = new Pool({ connectionString: roleConnectionString("semprec_side"), options: inTenantZeroOptions });
   });
 
   beforeEach(async () => {

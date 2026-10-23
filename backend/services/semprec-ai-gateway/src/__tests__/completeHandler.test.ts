@@ -118,6 +118,8 @@ function post(
     headers: {
       "content-type": "application/json",
       ...(token ? { authorization: `Bearer ${token}` } : {}),
+      // Every caller names its tenant: since the strict switch (#1067) a header-less call has none.
+      "x-semprec-tenant-id": getTenantZeroId(),
       ...extraHeaders,
     },
     body: JSON.stringify(body),
@@ -387,7 +389,11 @@ describe("POST /internal/complete", () => {
         const client = new AbortController();
         const pending = fetch(`${baseUrl}/internal/complete`, {
           method: "POST",
-          headers: { "content-type": "application/json", authorization: "Bearer test-internal-token" },
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer test-internal-token",
+            "x-semprec-tenant-id": getTenantZeroId(),
+          },
           body: JSON.stringify(VALID_BODY),
           signal: client.signal,
         });
@@ -470,13 +476,15 @@ describe("POST /internal/complete", () => {
 
   describe("budget enforcement", () => {
     beforeEach(async () => {
-      await seedSystem(pool);
+      await runInTenant(getTenantZeroId(), () => seedSystem(pool));
     });
 
     it("returns 403 budget_exceeded, never invokes the provider, and writes no row once the daily cap is reached", async () => {
       await setTenantAiBudget(pool, getTenantZeroId(), { dailyCapUsd: 1, monthlyCapUsd: null });
-      await pool.query(
-        `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, cost_usd) VALUES ('anthropic', 'claude-sonnet-5', 10, 10, 1)`,
+      await runInTenant(getTenantZeroId(), () =>
+        pool.query(
+          `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, cost_usd) VALUES ('anthropic', 'claude-sonnet-5', 10, 10, 1)`,
+        ),
       );
 
       const provider = new FakeProvider();
