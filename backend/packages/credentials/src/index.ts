@@ -92,8 +92,14 @@ function dataKeyWrapAssociatedData(tenantId: string): Uint8Array {
   return new TextEncoder().encode(`semprec:tenant-key:v1:${tenantId}`);
 }
 
-/** Wraps a tenant's data key under the master key, bound to `tenantId` (lowercase canonical UUID text). */
+/**
+ * Wraps a tenant's data key under the master key, bound to `tenantId` (lowercase canonical UUID text).
+ * Rejects a `dataKey` that is not 32 bytes, so it never wraps a value `unwrapDataKey` would refuse.
+ */
 export async function wrapDataKey(dataKey: Buffer, masterKey: Buffer, tenantId: string): Promise<EncryptedSecret> {
+  if (dataKey.length !== DATA_KEY_BYTES) {
+    throw new Error(`Data key to wrap must be ${DATA_KEY_BYTES} bytes, got ${dataKey.length}`);
+  }
   return sealSecret(dataKey, masterKey, dataKeyWrapAssociatedData(tenantId));
 }
 
