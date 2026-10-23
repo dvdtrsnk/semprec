@@ -129,7 +129,6 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
         markdown: "# Guidance",
       }),
     );
-    // Created after the upsert: a second tenant ends the sole-tenant default the upsert relies on.
     const otherTenantUser = await createUser(pool, {
       email: `${randomUUID()}@example.com`,
       passwordHash: "hash",

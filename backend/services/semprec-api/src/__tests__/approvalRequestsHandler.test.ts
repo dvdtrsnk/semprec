@@ -255,7 +255,6 @@ describe("createApprovalRequestsRequestListener", () => {
   it("answers a non-owner's PATCH with the same 404 as a random id, before and after the owner decides (issue #1028)", async () => {
     const owner = await authSession();
     const id = await createPendingRequest(owner.userId);
-    // Signed in after the request exists: the second tenant ends the sole-tenant default it relies on.
     const other = await authSession();
     const patch = (requestId: string, headers: { Authorization: string }, decision: string) =>
       fetch(`${baseUrl}/api/approval-requests/${requestId}`, {
