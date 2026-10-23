@@ -602,16 +602,22 @@ describe("MCP connection factory (issue #231)", () => {
       const item = await withTransaction(pool, (client) =>
         itemsStore.insertItem(client, {
           databaseId: mcpServersId,
-          properties: { name: "Bad key version", connectionConfig: { transport: "stdio", command: "irrelevant" } },
+          properties: { name: "Corrupt ciphertext", connectionConfig: { transport: "stdio", command: "irrelevant" } },
         }),
       );
-      // Encrypt under the real (version 1) key, then bump the stored key_version to one with no
-      // corresponding `CREDENTIALS_MASTER_KEY_V2` in the test environment, so decryption fails
-      // deterministically without needing an actually-corrupt ciphertext.
+      // Seal under the tenant key, then flip one ciphertext byte so the AEAD tag check fails
+      // deterministically. Raw SQL: a corrupted ciphertext is a state no writer produces.
       await withTransaction(pool, (client) =>
         storeCredential(client, { itemId: item.id, credentialType: "api_key", plaintext: "sk-unreachable" }),
       );
-      await pool.query(`UPDATE external_credentials SET key_version = 2 WHERE item_id = $1`, [item.id]);
+      const { rows: stored } = await pool.query<{ scheme: string }>(
+        `UPDATE external_credentials
+            SET ciphertext = set_byte(ciphertext, 0, get_byte(ciphertext, 0) # 255)
+          WHERE item_id = $1
+          RETURNING scheme`,
+        [item.id],
+      );
+      expect(stored).toEqual([{ scheme: "tenant" }]);
 
       const err = await connectMcpServer(pool, item).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(McpConnectionError);

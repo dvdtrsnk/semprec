@@ -1,18 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { getTraceContext, withTraceContext } from "@semprec/shared";
 import { enqueueJob, queueJobEnvelopeSchema, registerTask } from "../index.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const SOLE_TENANT = "6f1d2c3e-1a2b-4c5d-8e9f-0a1b2c3d4e5f";
+const TENANT = "6f1d2c3e-1a2b-4c5d-8e9f-0a1b2c3d4e5f";
 
-/** Answers the tenant task wrapper's sole-tenant and status lookups with one active tenant. */
+/** Answers the tenant task wrapper's status lookup with an active tenant. */
 function fakeHelpers(jobId: string | number): { job: { id: string | number }; query: unknown } {
   return {
     job: { id: jobId },
-    query: async (sql: string) => ({
-      rows: sql.includes("app_sole_tenant") ? [{ app_sole_tenant: SOLE_TENANT }] : [{ status: "active" }],
-    }),
+    query: async () => ({ rows: [{ status: "active" }] }),
   };
 }
 
@@ -37,13 +35,6 @@ describe("queueJobEnvelopeSchema", () => {
 });
 
 describe("registerTask", () => {
-  beforeEach(() => {
-    vi.stubEnv("SEMPREC_LEGACY_ENVELOPE_FALLBACK", "1");
-  });
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
   it("restores the producer's traceId and unwraps the business payload for the handler", async () => {
     let observed: { payload: unknown; context: unknown } | undefined;
     const handler = registerTask("someTask", async (payload) => {
@@ -51,7 +42,7 @@ describe("registerTask", () => {
     });
 
     await handler(
-      { traceId: "3fa85f64-5717-4562-b3fc-2c963f66afa6", payload: { itemId: "abc" } },
+      { traceId: "3fa85f64-5717-4562-b3fc-2c963f66afa6", tenantId: TENANT, payload: { itemId: "abc" } },
       fakeHelpers("42") as never,
     );
 
@@ -77,7 +68,8 @@ describe("registerTask", () => {
 
   it("tolerates helpers missing job.id (a raw unit-test call, not a real graphile-worker run)", async () => {
     let jobId: string | undefined;
-    const handler = registerTask("someTask", async () => {
+    // A system task: a tenant task refuses a raw payload, which carries no tenant.
+    const handler = registerTask("heartbeatSweep", async () => {
       jobId = getTraceContext()?.jobId;
     });
 
@@ -88,7 +80,8 @@ describe("registerTask", () => {
 
   it("extends an already-active trace instead of minting a new one when called from inside one", async () => {
     let observedTraceId: string | undefined;
-    const handler = registerTask("nestedTask", async () => {
+    // A system task: a tenant task refuses a raw payload, which carries no tenant.
+    const handler = registerTask("docCompactionSweep", async () => {
       observedTraceId = getTraceContext()?.traceId;
     });
 

@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
 import { runInTenant } from "@semprec/shared";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -145,11 +145,17 @@ describe("Inbox item event dispatch (issue #103)", () => {
   it("rapid pending updates on the same item collapse into a single job that reads the latest state", async () => {
     const inboxId = await databaseIdFor("inbox");
     const journalId = await databaseIdFor("journal");
-    const item = await createItem(inboxId, journalId);
+    const item = await inTenantZero(() => createItem(inboxId, journalId));
 
-    await chokePoint.updateItem({ databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "first edit" } });
-    await chokePoint.updateItem({ databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "second edit" } });
-    await chokePoint.updateItem({ databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "third edit" } });
+    await inTenantZero(() =>
+      chokePoint.updateItem({ databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "first edit" } }),
+    );
+    await inTenantZero(() =>
+      chokePoint.updateItem({ databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "second edit" } }),
+    );
+    await inTenantZero(() =>
+      chokePoint.updateItem({ databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "third edit" } }),
+    );
 
     // Exactly one create job + one update job pending, never three separate update jobs.
     const jobs = await pendingTickJobs();
@@ -166,8 +172,8 @@ describe("Inbox item event dispatch (issue #103)", () => {
   it("different Inbox items never deduplicate each other", async () => {
     const inboxId = await databaseIdFor("inbox");
     const journalId = await databaseIdFor("journal");
-    const itemA = await createItem(inboxId, journalId);
-    const itemB = await createItem(inboxId, journalId);
+    const itemA = await inTenantZero(() => createItem(inboxId, journalId));
+    const itemB = await inTenantZero(() => createItem(inboxId, journalId));
 
     const jobs = await pendingTickJobs();
     expect(jobs).toHaveLength(2);

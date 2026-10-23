@@ -6,10 +6,12 @@ import { getTenantZeroId } from "./tenantFixtures.js";
 export { storeCredential } from "../credentials/externalCredentialsStore.js";
 export { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 export {
+  bindToTenantZero,
   createRuntimeRolePool,
   createTenantZeroUser,
   createTestTenant,
   getTenantZeroId,
+  inTenantZero,
   setTenantAiBudget,
   withTenantTransaction,
 } from "./tenantFixtures.js";

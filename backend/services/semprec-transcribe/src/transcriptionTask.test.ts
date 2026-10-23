@@ -38,6 +38,7 @@ import {
   createTenantZeroUser,
   createTestTenant,
   getTenantZeroId,
+  inTenantZero,
   getTestPool,
   resetDatabase,
 } from "@semprec/data/testSupport";
@@ -1663,7 +1664,9 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
         ),
       };
       const jobKey = `transcription-job:${file.id}`;
-      await enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey, maxAttempts: 3 });
+      await inTenantZero(() =>
+        enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey, maxAttempts: 3 }),
+      );
 
       async function runDueJob(): Promise<{ attempts: number; delaySeconds: number }> {
         await pool.query("UPDATE graphile_worker._private_jobs SET run_at = now() WHERE key = $1", [jobKey]);
@@ -1717,9 +1720,11 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       async function runSweep(): Promise<void> {
         const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
         if (!transcripts) throw new Error("Transcripts database was not seeded");
-        await createTranscriptionRequeueSweepAction(pool)(
-          { transcriptsDatabaseId: transcripts.id },
-          { heartbeatId: randomUUID(), projectItemId: randomUUID() },
+        await inTenantZero(() =>
+          createTranscriptionRequeueSweepAction(pool)(
+            { transcriptsDatabaseId: transcripts.id },
+            { heartbeatId: randomUUID(), projectItemId: randomUUID() },
+          ),
         );
       }
 
@@ -1742,7 +1747,9 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       async function failPermanently(fileItemId: string): Promise<string> {
         summaryClient.failure = new Error("simulated summary outage");
         const jobKey = `transcription-job:${fileItemId}`;
-        await enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId }, { jobKey, maxAttempts: 3 });
+        await inTenantZero(() =>
+          enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId }, { jobKey, maxAttempts: 3 }),
+        );
         for (let attempt = 0; attempt < 3; attempt += 1) await runDueJobs();
         const transcript = await readTranscript(fileItemId);
         expect(await readAutomation(transcript.id)).toMatchObject({ status: "error", attempts: 3 });
@@ -1789,10 +1796,12 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
           summaryClient.calls.length,
         ];
 
-        const result = await createRerunTranscriptionRouteHandler(pool)({
-          params: { id: transcript.id },
-          body: undefined,
-        });
+        const result = await inTenantZero(() =>
+          createRerunTranscriptionRouteHandler(pool)({
+            params: { id: transcript.id },
+            body: undefined,
+          }),
+        );
         expect(result.status).toBe(202);
         expect(await readRunnableJobs()).toEqual([{ key: `transcription-job:${file.id}`, attempts: 0 }]);
         await runDueJobs();
@@ -1813,7 +1822,9 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
         await createUser();
         const transcriptId = await failPermanently(file.id);
 
-        await createRerunTranscriptionRouteHandler(pool)({ params: { id: transcriptId }, body: undefined });
+        await inTenantZero(() =>
+          createRerunTranscriptionRouteHandler(pool)({ params: { id: transcriptId }, body: undefined }),
+        );
         await runDueJobs();
 
         expect((await readTranscript(file.id)).properties.status).toBe("done");
@@ -1831,7 +1842,9 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
 
         await runSweep();
         await expect(
-          createRerunTranscriptionRouteHandler(pool)({ params: { id: transcriptId }, body: undefined }),
+          inTenantZero(() =>
+            createRerunTranscriptionRouteHandler(pool)({ params: { id: transcriptId }, body: undefined }),
+          ),
         ).rejects.toMatchObject({ status: 403, code: "transcription_locked" });
         await runDueJobs();
 

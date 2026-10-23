@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createTenantZeroUser, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import {
   startStdioContractServer,
   type ContractServerTool,
@@ -123,12 +123,14 @@ describe("approval request decide+execute (issue #131)", () => {
     });
     const userId = run.actorUserId;
 
-    const decided = await withTransaction(pool, (client) =>
-      decideAndEnqueueApprovalRequest(client, {
-        approvalRequestId: request.id,
-        decision: "approved",
-        decidedByUserId: userId,
-      }),
+    const decided = await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: request.id,
+          decision: "approved",
+          decidedByUserId: userId,
+        }),
+      ),
     );
     expect(decided!.request.status).toBe("approved");
     expect(contractServer.getHandshakeCount()).toBe(0);
@@ -160,12 +162,14 @@ describe("approval request decide+execute (issue #131)", () => {
     });
     const userId = run.actorUserId;
 
-    await withTransaction(pool, (client) =>
-      decideAndEnqueueApprovalRequest(client, {
-        approvalRequestId: request.id,
-        decision: "rejected",
-        decidedByUserId: userId,
-      }),
+    await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: request.id,
+          decision: "rejected",
+          decidedByUserId: userId,
+        }),
+      ),
     );
     await drainQueue();
 
@@ -190,20 +194,24 @@ describe("approval request decide+execute (issue #131)", () => {
     const userId = run.actorUserId;
     const otherUser = await createUser();
 
-    const first = await withTransaction(pool, (client) =>
-      decideAndEnqueueApprovalRequest(client, {
-        approvalRequestId: request.id,
-        decision: "approved",
-        decidedByUserId: userId,
-      }),
+    const first = await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: request.id,
+          decision: "approved",
+          decidedByUserId: userId,
+        }),
+      ),
     );
     expect(first!.outcome).toBe("decided");
-    const retry = await withTransaction(pool, (client) =>
-      decideAndEnqueueApprovalRequest(client, {
-        approvalRequestId: request.id,
-        decision: "rejected",
-        decidedByUserId: userId,
-      }),
+    const retry = await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: request.id,
+          decision: "rejected",
+          decidedByUserId: userId,
+        }),
+      ),
     );
     expect(retry!.outcome).toBe("unchanged");
     expect(retry!.request.status).toBe("approved");
@@ -217,12 +225,14 @@ describe("approval request decide+execute (issue #131)", () => {
     );
     expect(jobs[0]!.count).toBe(1);
 
-    const foreignRetry = await withTransaction(pool, (client) =>
-      decideAndEnqueueApprovalRequest(client, {
-        approvalRequestId: request.id,
-        decision: "rejected",
-        decidedByUserId: otherUser,
-      }),
+    const foreignRetry = await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: request.id,
+          decision: "rejected",
+          decidedByUserId: otherUser,
+        }),
+      ),
     );
     expect(foreignRetry).toBeNull();
 
@@ -248,12 +258,14 @@ describe("approval request decide+execute (issue #131)", () => {
     });
     const userId = run.actorUserId;
 
-    await withTransaction(pool, (client) =>
-      decideAndEnqueueApprovalRequest(client, {
-        approvalRequestId: request.id,
-        decision: "approved",
-        decidedByUserId: userId,
-      }),
+    await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: request.id,
+          decision: "approved",
+          decidedByUserId: userId,
+        }),
+      ),
     );
     // Simulate an earlier delivery that claimed the request and then died before recording an
     // outcome, then age the claim past the 10-minute staleness threshold.
@@ -287,12 +299,14 @@ describe("approval request decide+execute (issue #131)", () => {
     });
     const userId = run.actorUserId;
 
-    await withTransaction(pool, (client) =>
-      decideAndEnqueueApprovalRequest(client, {
-        approvalRequestId: request.id,
-        decision: "approved",
-        decidedByUserId: userId,
-      }),
+    await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: request.id,
+          decision: "approved",
+          decidedByUserId: userId,
+        }),
+      ),
     );
     const claimed = await withTransaction(pool, (client) => claimApprovalRequestExecution(client, request.id));
 
@@ -319,12 +333,14 @@ describe("approval request decide+execute (issue #131)", () => {
     });
     const userId = run.actorUserId;
 
-    await withTransaction(pool, (client) =>
-      decideAndEnqueueApprovalRequest(client, {
-        approvalRequestId: request.id,
-        decision: "approved",
-        decidedByUserId: userId,
-      }),
+    await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: request.id,
+          decision: "approved",
+          decidedByUserId: userId,
+        }),
+      ),
     );
     await withTransaction(pool, (client) => claimApprovalRequestExecution(client, request.id));
     await withTransaction(pool, (client) =>
@@ -359,12 +375,14 @@ describe("approval request decide+execute (issue #131)", () => {
     });
     const userId = run.actorUserId;
 
-    await withTransaction(pool, (client) =>
-      decideAndEnqueueApprovalRequest(client, {
-        approvalRequestId: request.id,
-        decision: "approved",
-        decidedByUserId: userId,
-      }),
+    await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: request.id,
+          decision: "approved",
+          decidedByUserId: userId,
+        }),
+      ),
     );
 
     return { contractServer, server, registration, projectItemId, request };

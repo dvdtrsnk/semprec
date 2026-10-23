@@ -9,6 +9,7 @@ import {
   mintTraceId,
   runAsSystem,
   runInTenant,
+  TenantScopeMissingError,
   withTraceContext,
 } from "@semprec/shared";
 import { logger } from "./logger.js";
@@ -100,6 +101,8 @@ export const CORE_TASK_NAMES = {
   TENANT_EXPORT_EXPIRY_SWEEP: "tenantExportExpirySweep",
   // Issue #1055: the per-minute sweep that erases every `deleting` tenant and records a tombstone.
   TENANT_PURGE: "tenantPurge",
+  // Issue #1062: the hourly sweep that re-seals every `master` credential under its tenant's data key.
+  CREDENTIAL_REENCRYPT_SWEEP: "credentialReencryptSweep",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
@@ -139,6 +142,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.TENANT_EXPORT]: "api",
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: "api",
   [CORE_TASK_NAMES.TENANT_PURGE]: "api",
+  [CORE_TASK_NAMES.CREDENTIAL_REENCRYPT_SWEEP]: "api",
 };
 
 /**
@@ -189,6 +193,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.TENANT_EXPORT]: "tenant",
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: "system",
   [CORE_TASK_NAMES.TENANT_PURGE]: "system",
+  [CORE_TASK_NAMES.CREDENTIAL_REENCRYPT_SWEEP]: "system",
   [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: "tenant",
   [AGENT_TASK_NAMES.AGENT_RUN]: "tenant",
   [AGENT_TASK_NAMES.DELEGATED_AGENT_RUN]: "tenant",
@@ -322,20 +327,19 @@ async function jobKeyWasCleared(helpers: JobHelpers): Promise<boolean> {
 }
 
 const tenantStatusRowSchema = z.object({ status: z.enum(["provisioning", "active", "suspended", "deleting"]) });
-/** Opt-in (`1`) to run envelope-less tenant tasks in the sole tenant; read on every call. Removed by #1061. */
-export const LEGACY_ENVELOPE_FALLBACK_ENV = "SEMPREC_LEGACY_ENVELOPE_FALLBACK";
-const soleTenantRowSchema = z.object({ app_sole_tenant: z.string().uuid().nullable() });
 
 /**
  * Runs `handler` in the scope its task's tenancy calls for. A system task runs as system whatever
  * the envelope says. A tenant task runs in the envelope's tenant and is a completed no-op when
  * that tenant is missing, suspended or deleting.
  *
- * An envelope with no tenant (enqueued before the tenant stamp existed) is a thrown error — the job
- * fails and is retried — unless `LEGACY_ENVELOPE_FALLBACK_ENV` is `1`. Then it runs in the sole
- * tenant, which is only correct while exactly one tenant exists; with none or several the job
- * still throws. The opt-in, the lookup and the `tenant_task_without_tenant` warning are removed
- * together with the single-tenant window by #1061.
+ * A tenant task whose envelope has no string `tenantId` (a legacy envelope from before the tenant
+ * stamp, a `null`, or a raw payload) is refused: it logs `tenant_task_without_tenant` at error
+ * level with the job name, id and trace id (never the payload) and throws
+ * `TenantScopeMissingError`, without a query and without calling the handler. graphile-worker
+ * records the failure and retries until the job is permanently failed, where
+ * `observabilityCheckSystem`'s failed-jobs check reports it. Legacy jobs still queued at deploy
+ * time are stamped beforehand by `runLegacyJobEnvelopeStampMigration` in `@semprec/data`.
  */
 async function runInTaskScope(
   name: string,
@@ -351,23 +355,11 @@ async function runInTaskScope(
     return;
   }
 
-  let tenantId: string;
-  if (typeof envelopeTenantId === "string") {
-    tenantId = envelopeTenantId;
-  } else {
-    if (process.env[LEGACY_ENVELOPE_FALLBACK_ENV] !== "1") {
-      throw new Error(
-        `Tenant task ${name} has no tenant and ${LEGACY_ENVELOPE_FALLBACK_ENV}=1 is not set to run it in the sole tenant`,
-      );
-    }
-    const { rows } = await helpers.query<Record<string, unknown>>("SELECT app_sole_tenant()");
-    const sole = soleTenantRowSchema.parse(rows[0]).app_sole_tenant;
-    logger.warn({ jobName: name, jobId }, "tenant_task_without_tenant");
-    if (sole === null) {
-      throw new Error(`Tenant task ${name} has no tenant and there is not exactly one tenant to fall back to`);
-    }
-    tenantId = sole;
+  if (typeof envelopeTenantId !== "string") {
+    logger.error({ jobName: name, jobId, traceId: getTraceId() }, "tenant_task_without_tenant");
+    throw new TenantScopeMissingError(`Tenant task ${name} has no tenant in its job envelope`);
   }
+  const tenantId = envelopeTenantId;
 
   const { rows } = await helpers.query<Record<string, unknown>>("SELECT status FROM tenants WHERE id = $1", [tenantId]);
   const status = rows[0] === undefined ? undefined : tenantStatusRowSchema.parse(rows[0]).status;

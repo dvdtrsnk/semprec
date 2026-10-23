@@ -139,8 +139,9 @@ async function getAlertingChecks(client: Queryable): Promise<AlertingCheck[]> {
  * neither takes caller input.
  *
  * A legacy job whose envelope carries no `tenantId` (enqueued before `enqueueJob` stamped it) is
- * counted in no tenant's report, even though `runInTaskScope` may still run it in the sole tenant
- * under the legacy-envelope fallback. It appears only in the operator report's global counts.
+ * counted in no tenant's report: `runInTaskScope` refuses such a tenant-task job, and the
+ * deploy-time `runLegacyJobEnvelopeStampMigration` stamps the sole tenant onto any still queued.
+ * It appears only in the operator report's global counts.
  */
 async function getQueueHealthCounts(client: Queryable, tenantOnly: boolean): Promise<QueueHealthCounts> {
   const jobSource = tenantOnly

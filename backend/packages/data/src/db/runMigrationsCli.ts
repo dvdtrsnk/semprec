@@ -8,6 +8,7 @@ import { runDocHistoryCutoverMigration } from "../docs/docHistoryCutoverMigratio
 import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsActorUserIdCutoverMigration.js";
 import { runApprovalRequestExecutionStatusCutoverMigration } from "../mcp/approvalRequestExecutionStatusCutoverMigration.js";
 import { runHeartbeatFireQueueSplitMigration } from "../scheduler/heartbeatFireQueueSplitMigration.js";
+import { runLegacyJobEnvelopeStampMigration } from "../tenancy/legacyJobEnvelopeStampMigration.js";
 import { runTenantCutoverMigrations } from "./tenantCutoverMigrations.js";
 import { activateCzechHunspellSearch } from "../mail/czechHunspellSearch.js";
 
@@ -47,6 +48,7 @@ try {
     // Issue #222: needs graphile_worker's own schema/functions, which don't exist until the two
     // calls above create them — unlike the cutover migrations above, which run before them.
     await runHeartbeatFireQueueSplitMigration(pool);
+    await runLegacyJobEnvelopeStampMigration(pool);
   });
 } finally {
   await endPool(pool, "owner");
