@@ -1,6 +1,7 @@
 This is the `web/` platform of the Semprec monorepo (the other platforms,
-`backend/` and `apple/`, have their own review-rules and are reviewed
-independently). `web/` is the Semprec web frontend.
+`backend/` and the three mobile platforms `mobile/`, `mobile/android/` and
+`mobile/apple/`, have their own review-rules and are reviewed independently).
+`web/` is the Semprec web frontend.
 
 The stack is React + TypeScript on Vite, with Vitest/Testing Library for
 unit tests and pnpm as the package manager (issue #96 picked it, building

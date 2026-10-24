@@ -1,7 +1,8 @@
 This is the repository-root platform of the Semprec monorepo: cross-cutting
 documentation and AI-agent workflow files that don't belong to `backend/`,
-`apple/`, or `web/` specifically — those three have their own review-rules
-and are reviewed independently.
+`web/`, or the three mobile platforms (`mobile/`, `mobile/android/`,
+`mobile/apple/`) specifically — those have their own review-rules and are
+reviewed independently.
 
 In scope here: Architecture Decision Records (`docs/adr/`), the
 autonomous-workflow skills (`.claude/skills/`), the agent instructions and
@@ -9,13 +10,14 @@ convention skills BB injects into every thread (`.bb/AGENTS.md`,
 `.bb/skills/`), the root `README.md`, the GitHub Actions workflows
 (`.github/workflows/`), the repository scripts (`.github/scripts/`), and this
 platform's own `review-rules/`.
-The `review-rules/` of `backend/`, `apple/` and `web/` are reviewed by those
-platforms, not here: the review bot assigns each file to the platform whose
-directory is the longest prefix of its path.
+The `review-rules/` of `backend/`, `web/`, `mobile/`, `mobile/android/` and
+`mobile/apple/` are reviewed by those platforms, not here: the review bot
+assigns each file to the platform whose directory is the longest prefix of its
+path.
 This platform reviews the quality and internal consistency of those
 documents themselves (ADR format, convention discipline, skill
 correctness), the merge gate the workflows define, and changes to the rules
-the review itself enforces — it does not have visibility into `backend/`/`apple`/`web`
+the review itself enforces — it does not have visibility into `backend/`/`web/`/`mobile/`
 diffs in the same PR, so it cannot judge whether a code change elsewhere
 needed a new ADR; that check is each platform's own responsibility (see
 their `review-rules/rules.md`), using their own repo access to look at
