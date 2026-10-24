@@ -1,6 +1,6 @@
 ---
 name: finish
-description: Finish a feature branch of dvdtrsnk/semprec end to end - bring it up to date with develop by merging (never rebasing), run the full CI pipeline locally, push, open the pull request against develop, drive all required checks and the code-review-bot to green, resolve review threads, merge, then clean up the worktree and branch. Use when the user says the feature is done, asks to finish, land, merge or ship the branch, or invokes /finish.
+description: Finish a feature branch of dvdtrsnk/semprec end to end - bring it up to date with develop by merging (never rebasing), run the full CI pipeline locally (and mobile/scripts/verify when the branch changes mobile/), push, open the pull request against develop, drive all required checks and the code-review-bot to green, resolve review threads, merge, then clean up the worktree and branch. Use when the user says the feature is done, asks to finish, land, merge or ship the branch, or invokes /finish.
 ---
 
 # Finish a feature branch
@@ -100,9 +100,31 @@ Notes:
 - If a test is flaky rather than failing, do not retry until it passes and move
   on — a test that fails under load will fail in CI. Diagnose it.
 
+If the branch changes anything under `mobile/`
+(`git diff --name-only origin/develop... -- mobile/` prints a path), also run
+the mobile pipeline from the repository root, with an iOS simulator and an
+Android emulator reserved through `bb device-lab` (the `mobile-verify` skill in
+`.bb/skills/` explains each step), and release them afterwards:
+
+```
+bb device-lab reserve --platform ios
+bb device-lab reserve --platform android
+mobile/scripts/verify --ios-simulator <UDID> --android-serial <serial>
+bb device-lab release --all
+```
+
+`bb device-lab list --json` shows the `udid` and adb `serial` of each device.
+No CI job builds or tests `mobile/`, so this run is the only check the mobile
+change gets before it merges. Put its summary into the pull request body, each
+step as PASS, FAIL or NOT RUN; a device step whose flag is missing reports NOT
+RUN.
+
 Then read your own diff (`git diff origin/develop`) as a strict reviewer
 applying `backend/review-rules/rules.md`, `backend/review-rules/tasks/*.md` and
-the matching `web/review-rules/` for frontend changes, plus the conventions in
+the matching `web/review-rules/` for frontend changes, `mobile/review-rules/`,
+`mobile/android/review-rules/` and `mobile/apple/review-rules/` for mobile
+changes (a file belongs to the platform whose directory is the longest prefix
+of its path), plus the conventions in
 `.bb/skills/` (choke-point writes, single-writer ownership,
 expand/contract migrations, AI calls only through the gateway, English
 camelCase canonical keys, labels via i18n). Sweep for debug prints,

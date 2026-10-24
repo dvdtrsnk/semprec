@@ -1,6 +1,6 @@
 ---
 name: implement-issue
-description: "The execution contract for implementing one Semprec issue end to end - read the issue, check the ADRs, load the topic skills the Task touches, build exactly the Task, self-review the diff against review-rules, and verify locally before pushing. Load this FIRST in any issue-driven change in this repository, before reading the code, whether the issue was dispatched automatically by relay or started by hand. Triggers on: an issue number, a Task section, Acceptance criteria, Out of scope, a relay dispatch prompt, or any instruction to implement, fix or extend something in this repository."
+description: "The execution contract for implementing one Semprec issue end to end - read the issue, check the ADRs, load the topic skills the Task touches, build exactly the Task, self-review the diff against the review-rules of every platform it touches (the three mobile platforms included), and verify locally before pushing, with mobile/scripts/verify for any change under mobile/. Load this FIRST in any issue-driven change in this repository, before reading the code, whether the issue was dispatched automatically by relay or started by hand. Triggers on: an issue number, a Task section, Acceptance criteria, Out of scope, a relay dispatch prompt, or any instruction to implement, fix or extend something in this repository, in backend/, web/ or mobile/."
 ---
 
 # Implementing one issue
@@ -70,6 +70,13 @@ means to "remember them as it goes" reliably does not.
 | `adr-conventions` | introducing a cross-cutting pattern that no rule and no ADR covers — or adding, editing, superseding or narrowing an ADR |
 | `testing` | writing or changing any test, or claiming a change is covered |
 | `fix-review-findings` | addressing review-bot findings on a pull request |
+| `shared-viewmodel` | a shared screen ViewModel — its state, actions or effects — or how Android or Apple hosts one |
+| `kmp-shared` | any change under `mobile/shared/`, a shared module dependency, or what the `SharedSDK` framework exports |
+| `android-compose` | Compose code, a string resource or a test tag under `mobile/android/` |
+| `apple-swiftui` | Swift, a String Catalog, an accessibility identifier or a Tuist manifest under `mobile/apple/` |
+| `mobile-navigation` | a feature router, a tab, a navigation stack, a sheet or a destination on either mobile platform |
+| `mobile-feature-create` | a new mobile screen or feature, or moving or restructuring an existing screen |
+| `mobile-verify` | building, testing or linting anything under `mobile/`, or claiming it works |
 
 Most issues match more than one. Load all that apply — they are short, and the
 cost of reading one is far below the cost of the finding it prevents.
@@ -119,8 +126,12 @@ comes last because anything committed after it can make it stale again:
 
 1. **Read your own diff** (`git diff origin/develop`) in the role of a strict
    reviewer applying `review-rules/rules.md` and `review-rules/tasks/*.md` of
-   every platform the diff touches. Ask specifically: does anything cross a
-   boundary untyped? does any `catch` swallow or re-label an error it did not
+   every platform the diff touches: `backend/`, `web/`, the repository root,
+   and for mobile `mobile/review-rules/` (the shared Kotlin layer, the Gradle
+   build, `scripts/`, `docs/`), `mobile/android/review-rules/` and
+   `mobile/apple/review-rules/`. A file belongs to the platform whose
+   directory is the longest prefix of its path. Ask specifically: does
+   anything cross a boundary untyped? does any `catch` swallow or re-label an error it did not
    cause? does any new route or outbound call lack auth, a timeout, or a size
    cap? does any docstring claim something the code does not do? is there a
    branch the Acceptance criteria promises and no test covers?
@@ -156,6 +167,15 @@ comes last because anything committed after it can make it stale again:
    set that config includes once it excludes the other two tiers), and
    `npx vitest run <test files>` in `web/`. A source change with no test file
    run is not a partial check.
+
+   When the diff touches `mobile/`, also run its pipeline from the repository
+   root, with an iOS simulator and an Android emulator you reserved through
+   `bb device-lab` (load `mobile-verify`):
+   `mobile/scripts/verify --ios-simulator <UDID> --android-serial <serial>`.
+   Run it in full in a Relay run too: the partial check above covers
+   `backend/` and `web/` only, because neither CI nor a Relay verify step
+   builds `mobile/`, so this run is the only evidence the change builds and
+   passes its tests. Report a device step you could not run as NOT RUN.
 5. **Take the migration ordinal last.** If the diff adds a migration, run
    `git fetch origin` and compare your number against
    `backend/packages/data/src/db/migrations/` on `origin/develop` after the

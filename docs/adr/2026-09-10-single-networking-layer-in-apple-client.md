@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-10
 area: [apple]
 supersedes: []
-superseded-by: null
+superseded-by: 2026-10-24-mobile-backend-calls-through-shared-data-layer
 ---
 
 # All backend calls in the Apple client go through one networking/API layer

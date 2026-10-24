@@ -1,6 +1,6 @@
 ---
 name: testing
-description: "How tests are written in this repository so they actually fail when the code is wrong - one test per branch you add, both sides of every permission check, the harness the issue names, fixtures through production writes, real multi-tenant isolation, and no test that passes by accident. Load this BEFORE writing or changing any test, and before claiming a change is covered. Triggers on: *.test.ts, *.unit.test.ts, *.e2e.test.ts, describe(, it(, test(, expect(, beforeEach, afterAll, vitest, globalSetup, testSupport, fixture, createTestTenant, createRuntimeRolePool, withTenantTransaction, getTestPool, resetDatabase, an Acceptance criterion that names a test, and a review finding about test coverage or test correctness. Skip only when the change adds no behaviour and touches no test."
+description: "How tests are written in this repository so they actually fail when the code is wrong - one test per branch you add, both sides of every permission check, the harness the issue names, fixtures through production writes, real multi-tenant isolation, and no test that passes by accident. Load this BEFORE writing or changing any test, and before claiming a change is covered. Triggers on: *.test.ts, *.unit.test.ts, *.e2e.test.ts, describe(, it(, test(, expect(, beforeEach, afterAll, vitest, globalSetup, testSupport, fixture, createTestTenant, createRuntimeRolePool, withTenantTransaction, getTestPool, resetDatabase, an Acceptance criterion that names a test, a review finding about test coverage or test correctness, and the mobile tests: commonTest, *Test.kt, src/androidTest, *Tests.swift and XCTestCase. Skip only when the change adds no behaviour and touches no test."
 ---
 
 # Tests that fail when the code is wrong
@@ -12,8 +12,16 @@ test", "the test passes even with the code removed", or "the test does not use
 the harness the issue asked for". Each rule below exists because it was missed
 repeatedly.
 
-The three test tiers and which one a file belongs to are defined in
+The three `backend/` test tiers and which one a file belongs to are defined in
 `.bb/AGENTS.md` (`## Tests`).
+
+Mobile tests (Kotlin `commonTest`, Android `src/test` and `src/androidTest`,
+the Swift XCTest bundles under `mobile/apple/`) follow sections 1–4, 7–9 and
+the typed-boundary rule of section 10. The vitest tiers, sections 5 and 6 and
+the SQL rule of section 10 do not apply there: `mobile/` has no database and no
+vitest. Which layer tests what is in `shared-viewmodel` (§3), `kmp-shared`,
+`android-compose`, `apple-swiftui` and `mobile-navigation`, and `mobile-verify`
+runs them.
 
 ## 1. One named test for every branch you add
 
@@ -144,10 +152,18 @@ the other proves nothing about a race.
 
 ## 10. Repository rules apply to tests too
 
-Rule 6 of `.bb/AGENTS.md` (typed boundaries) and the SQL rules in the
-`state-writes` skill do not stop at `__tests__/`. Give every `query` a row
-type, parse `unknown` instead of casting it, and never interpolate values into
-SQL or DDL, a test trigger body included.
+- **Typed boundaries, in every test, mobile included.** Rule 6 of
+  `.bb/AGENTS.md` does not stop at `__tests__/`, `commonTest`, `src/test`,
+  `src/androidTest` or an XCTest bundle: test code is copied into production
+  code, so it is typed the same way. Parse `unknown` instead of casting it. In
+  Kotlin, no `!!` and no unchecked `as` or `get<T>` on a value that did not
+  come from the code's own types (a saved-state value, a navigation argument,
+  a decoded payload): read it as `Any?` and narrow it, as `SceneNavigation`
+  and its tests do. In Swift, no force-unwrap, `try!` or `as!` on such a value;
+  use `XCTUnwrap` and a checked cast.
+- **SQL, in `backend/` tests.** The SQL rules in the `state-writes` skill apply
+  to tests too: give every `query` a row type, and never interpolate values
+  into SQL or DDL, a test trigger body included.
 
 ## Before committing, check
 
@@ -160,3 +176,9 @@ SQL or DDL, a test trigger body included.
 - [ ] Fixtures use production writes; any raw SQL has a reason comment.
 - [ ] Failure-path tests assert the absence of side effects.
 - [ ] No test depends on time, order, shared mutable state or private internals.
+- [ ] No test casts a boundary value unchecked: no `as` from `unknown`, no
+      Kotlin `!!`, unchecked `as` or `get<T>`, no Swift force-unwrap, `try!`
+      or `as!` on a value from outside the code's own types; mobile tests
+      included.
+- [ ] A mobile test sits on the layer the mobile skills name for what it proves,
+      and it ran on every platform it targets.

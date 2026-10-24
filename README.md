@@ -23,8 +23,10 @@ This repo is a monorepo for the whole product, not just the backend:
 
 - `backend/` — a pnpm workspace for the API, agent runtime, sync services,
   and shared packages. This is where all current implementation work lives.
-- `apple/` — a single shared Swift codebase for the iOS and macOS app (one
-  app, both platforms — not two separate projects). Scaffold only for now.
+- `mobile/` — the native apps: Kotlin Multiplatform shares everything from the
+  screen ViewModels down, Jetpack Compose renders them on Android, and one
+  SwiftUI codebase renders them in both the iOS and the macOS app (one set of
+  targets, not two separate projects). Placeholder screens only for now.
 - `web/` — the web frontend. Scaffold only for now.
 
 ## Where work comes from
@@ -47,9 +49,13 @@ may be worked in parallel.
   `semprec-agents`, `semprec-transcribe`, `semprec-ai-gateway`) — created
   incrementally as the issue queue progresses; mail live-sync runs inside
   `semprec-api`.
-- `apple/` — empty until the issue queue reaches it; `web/` is a React +
-  TypeScript (Vite) app, currently holding the view registry, the generic
-  operations client, and the mailbox view renderer.
+- `web/` — a React + TypeScript (Vite) app, currently holding the view
+  registry, the generic operations client, and the mailbox view renderer.
+- `mobile/` — one Gradle build for the shared Kotlin modules
+  (`mobile/shared/`) and the Android app (`mobile/android/`), and a Tuist
+  workspace for the Apple app (`mobile/apple/`) — see
+  [`mobile/README.md`](mobile/README.md) and
+  [`mobile/docs/architecture.md`](mobile/docs/architecture.md).
 - `deploy/` — host-level operational configuration (Caddy, firewall, the
   database/object-storage compose file) for the single-server production
   deployment — see [`deploy/README.md`](deploy/README.md).
@@ -58,7 +64,9 @@ may be worked in parallel.
 
 Backend: Node LTS, TypeScript, pnpm workspace, Postgres (+ Prisma),
 `graphile-worker`. Web frontend: React + TypeScript on Vite, tested with
-Vitest. Apple app: stack to be decided when its first issue lands.
+Vitest. Mobile: Kotlin Multiplatform with SKIE for the Swift API, built with
+Gradle; Android with Jetpack Compose, Navigation Compose and Koin; iOS and
+macOS with SwiftUI, Tuist, Factory and NavigatorUI; detekt and SwiftLint.
 
 ## Branching and releases
 

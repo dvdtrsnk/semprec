@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-10
 area: [cross-cutting]
 supersedes: []
-superseded-by: null
+superseded-by: 2026-10-24-monorepo-holds-backend-web-and-mobile
 ---
 
 # One repo holds backend, Apple, and web, not one repo per platform
