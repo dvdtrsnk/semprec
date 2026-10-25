@@ -66,7 +66,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { isEntryScript } from "../is-entry-script.mjs";
 
 import { validateIssueModelMetadata } from "../model-tier.mjs";
 import { parseInputFile } from "./input-file.mjs";
@@ -553,6 +553,6 @@ export function main(argv) {
   return 0;
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryScript(import.meta.url)) {
   process.exitCode = main(process.argv.slice(2));
 }
