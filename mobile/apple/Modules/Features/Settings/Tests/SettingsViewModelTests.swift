@@ -7,6 +7,30 @@ final class SettingsViewModelTests: XCTestCase {
 
     // MARK: - Tests
     @MainActor
+    func testStartsFromTheCurrentStateAndRepublishesChanges() async throws {
+        let initial = SettingsState(rows: [.about])
+        let empty = SettingsState(rows: [])
+        let model = ScriptedSettingsScreenModel(state: initial)
+        let viewModel = SettingsViewModel(model: model, router: RouterSpy())
+        XCTAssertEqual(viewModel.state, initial)
+        let ended = expectation(description: "The observation ended")
+        let observer = Task {
+            await viewModel.observe()
+            ended.fulfill()
+        }
+        defer { observer.cancel() }
+        model.publish(empty)
+        try await eventually { viewModel.state == empty }
+        XCTAssertEqual(viewModel.state, empty)
+        // The second update must travel through the active subscription, not the initial snapshot.
+        model.publish(initial)
+        try await eventually { viewModel.state == initial }
+        XCTAssertEqual(viewModel.state, initial)
+        observer.cancel()
+        await fulfillment(of: [ended], timeout: 5)
+    }
+
+    @MainActor
     func testSelectingARowIsForwardedAndShowAboutReachesTheRouter() async throws {
         let model = ScriptedSettingsScreenModel(state: SettingsState(rows: [.about]))
         let router = RouterSpy()

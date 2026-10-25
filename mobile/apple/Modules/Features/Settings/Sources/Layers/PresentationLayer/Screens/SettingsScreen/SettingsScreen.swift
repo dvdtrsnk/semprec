@@ -15,20 +15,24 @@ struct SettingsScreen: View {
 
     // MARK: - Body
     var body: some View {
-        List(viewModel.state.rows, id: \.self) { row in
-            Button { viewModel.select(row) } label: { label(for: row) }
-                .listRowButton()
-                .accessibilityIdentifier(identifier(for: row))
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(SettingsIdentifiers.screen)
-        .navigationTitle(Text("settings.title", bundle: .module))
-        .task { await viewModel.observe() }
+        rows
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier(SettingsIdentifiers.screen)
+            .navigationTitle(Text("settings.title", bundle: .module))
+            .task { await viewModel.observe() }
     }
 }
 
 // MARK: - Subviews
 private extension SettingsScreen {
+
+    var rows: some View {
+        List(viewModel.state.rows, id: \.self) { row in
+            Button { viewModel.select(row) } label: { label(for: row) }
+                .listRowButton()
+                .accessibilityIdentifier(identifier(for: row))
+        }
+    }
 
     @ViewBuilder
     func label(for row: SettingsRow) -> some View {

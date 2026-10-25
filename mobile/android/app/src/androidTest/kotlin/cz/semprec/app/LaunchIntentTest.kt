@@ -115,6 +115,25 @@ class LaunchIntentTest {
     }
 
     @Test
+    fun aMimeTypeWithoutDataIsNotHandedOn() {
+        val intent = Intent(context, MainActivity::class.java).setType("text/plain")
+        startInNewTask(intent) { activity ->
+            assertShowsTheListOnly()
+            assertCarriesNoLaunchContent(activity.intent)
+        }
+    }
+
+    @Test
+    fun aMimeTypeWithDataIsNotHandedOn() {
+        val intent = Intent(context, MainActivity::class.java)
+            .setDataAndType(Uri.parse(FOREIGN_URI), "text/plain")
+        startInNewTask(intent) { activity ->
+            assertShowsTheListOnly()
+            assertCarriesNoLaunchContent(activity.intent)
+        }
+    }
+
+    @Test
     fun anIntentDeliveredToTheRunningActivityIsHandedOnWithoutItsContent() {
         val home = readHomeGraph()
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
@@ -123,7 +142,7 @@ class LaunchIntentTest {
 
             // FLAG_ACTIVITY_SINGLE_TOP delivers the intent to the running activity, whatever its launch mode.
             val foreign = deepLinkToTheDetail(home, Bundle(), bundleOf(home.itemIdArgument to "item-2"))
-                .setData(Uri.parse(FOREIGN_URI))
+                .setDataAndType(Uri.parse(FOREIGN_URI), "text/plain")
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             context.startActivity(foreign)
 
