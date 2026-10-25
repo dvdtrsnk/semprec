@@ -41,12 +41,27 @@ Relay's `merge-pull-request` workflow waits for these same contexts before it me
 required context without adding it there makes Relay attempt the merge while that check is
 still running, and GitHub refuses it.
 
-Every job in `ci.yml` runs on every pull-request update and on every push to `develop` and
-`main`, so every commit on either branch carries its own result.
+The required jobs in `ci.yml` run on every pull-request update and on every push to
+`develop` and `main`, so every commit on either branch carries its required results.
 
 The release command checks those per-commit results before it tags a `main` commit
 ([releases](releases.md)); renaming a `ci.yml` job also updates its list of required jobs in
 `backend/packages/release/src/releaseTag.ts`.
+
+## Mobile checks (reported, not required)
+
+| Context | Runs when `mobile/` changes | Required on |
+| --- | --- | --- |
+| `mobile-android` | `mobile/scripts/verify architecture android` on Ubuntu | neither branch |
+| `mobile-apple` | `mobile/scripts/verify shared apple` on an Apple-silicon macOS runner | neither branch |
+
+Both jobs omit device flags: the shared iOS simulator tests, Android instrumented tests,
+Swift simulator tests and XCUITest execution report NOT RUN. Apple UI tests still compile.
+A failure uploads `mobile/build/verify/`. A `mobile-changes` job compares the pull request
+with its merge base, or a push with its `before` commit; an initial push compares with
+an empty tree. Without a mobile change the two build jobs are skipped. These jobs are
+not added to branch protection, Relay's `wait-checks` or the release command's required
+checks.
 
 ## Why there is no separate "is this head up to date" check
 

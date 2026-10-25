@@ -10,8 +10,10 @@ Trunk for feature work is `develop` (the repository's default branch).
 `develop -> main` promotion PR — **promotion is not part of this skill and you
 must never open, merge or push toward `main` here.**
 
-The main checkout is `/home/node/projects/semprec`. Work happens in a separate
-worktree on a feature branch.
+Find the main checkout with `git worktree list --porcelain` and confirm it
+belongs to this repository. On the Mac mini it normally lives at
+`~/Developer/Projects/semprec`. Work happens in a separate worktree on a feature
+branch.
 
 ## Absolute rules — history is never rewritten
 
@@ -114,8 +116,10 @@ bb device-lab release --all
 ```
 
 `bb device-lab list --json` shows the `udid` and adb `serial` of each device.
-No CI job builds or tests `mobile/`, so this run is the only check the mobile
-change gets before it merges. Put its summary into the pull request body, each
+CI reports the non-required `mobile-android` and `mobile-apple` jobs for
+changes under `mobile/`; Relay runs `verify-mobile` after `verify-web`. Both
+omit device steps (NOT RUN), so this local run supplies device-test evidence
+before the change merges. Put its summary into the pull request body, each
 step as PASS, FAIL or NOT RUN; a device step whose flag is missing reports NOT
 RUN.
 
@@ -249,8 +253,8 @@ If GitHub refuses the merge:
 
 ## 7. Local cleanup
 
-Run everything with `git -C /home/node/projects/semprec ...`; never `cd` into a
-directory that is about to be removed.
+Use the main checkout resolved above for every `git -C <main> ...` command;
+never `cd` into a directory that is about to be removed.
 
 1. Inspect the main checkout: `git -C <main> status --short` and
    `git -C <main> branch --show-current`. If it sits on another feature branch

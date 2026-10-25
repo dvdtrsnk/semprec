@@ -172,10 +172,12 @@ comes last because anything committed after it can make it stale again:
    root, with an iOS simulator and an Android emulator you reserved through
    `bb device-lab` (load `mobile-verify`):
    `mobile/scripts/verify --ios-simulator <UDID> --android-serial <serial>`.
-   Run it in full in a Relay run too: the partial check above covers
-   `backend/` and `web/` only, because neither CI nor a Relay verify step
-   builds `mobile/`, so this run is the only evidence the change builds and
-   passes its tests. Report a device step you could not run as NOT RUN.
+   CI reports the non-required `mobile-android` and `mobile-apple` jobs for
+   changes under `mobile/`. Relay runs `verify-mobile` after `verify-web`,
+   with the full mobile pipeline but without devices. In a Relay worker,
+   leave that device-free run to Relay instead of duplicating it. Before a
+   manual pull request, run the full pipeline with reserved devices as above.
+   Report any device step you could not run as NOT RUN.
 5. **Take the migration ordinal last.** If the diff adds a migration, run
    `git fetch origin` and compare your number against
    `backend/packages/data/src/db/migrations/` on `origin/develop` after the

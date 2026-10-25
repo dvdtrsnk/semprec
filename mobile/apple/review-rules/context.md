@@ -145,9 +145,11 @@ macOS, builds the iOS-only `SemprecUITests` target for the iOS Simulator
 (`build-for-testing`, no device needed), and runs the `Semprec` scheme's tests on
 macOS; only when the caller passes an iOS simulator does it run them there and
 then the `SemprecUITests` scheme, so without one the UI tests compile but do not
-run. No CI job runs
-`mobile/scripts/verify` — `.github/workflows/ci.yml` has no mobile step — so
-these checks hold only where the author ran them. The tasks here therefore do
+run. For changes under `mobile/`, CI reports the non-required `mobile-android`
+(architecture and Android) and `mobile-apple` (shared Kotlin and Apple) jobs.
+Relay also runs `verify-mobile` after `verify-web`. These runs omit device
+steps, which report NOT RUN; simulator and instrumented tests need a local
+run with reserved devices. The tasks here therefore do
 not re-derive across the tree what the checks enforce, but a violation the diff
 itself shows is still reported under the task item that covers it, with the
 check's rule ID.

@@ -76,6 +76,5 @@
   unchecked cast (detekt `UnsafeCallOnNullableType`, `UnsafeCast`), a string
   without its Czech translation (lint `MissingTranslation`) or an unused import
   or resource (`NoUnusedImports`, `UnusedResources`) is still reported under
-  its task item, naming the tool's rule. No CI job runs detekt, lint or
-  `mobile/scripts/verify`, so a tool also reporting a rated defect does not
-  make it a non-finding.
+  its task item, naming the tool's rule. CI runs these tools on changes under `mobile/`; a tool also
+  reporting a rated defect does not make it a non-finding.

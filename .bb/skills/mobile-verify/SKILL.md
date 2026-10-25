@@ -5,12 +5,12 @@ description: "How a change under mobile/ is built, tested, linted and reported -
 
 # One command verifies mobile/. Report exactly what it ran.
 
-No job in `.github/workflows/ci.yml` builds or tests `mobile/`, and Relay's
-verify steps run `pnpm run verify` in `backend/` and `web/` only. A local run
-of `mobile/scripts/verify` is therefore the only build and test of a mobile
-change before it is reviewed and merged. Why honest reporting matters here: an
-agent that writes "tests pass" for a step that did not run leaves nobody else
-to notice.
+For changes under `mobile/`, CI reports the non-required `mobile-android`
+(architecture and Android) and `mobile-apple` (shared Kotlin and Apple) jobs.
+Relay's `verify-mobile` step runs the full pipeline after `verify-web`.
+Neither reserves devices: their device steps report NOT RUN. A local run with
+reserved devices supplies the simulator and instrumented-test evidence.
+Report each command as it ran; a step that did not run is never a pass.
 
 ## 1. The entry point
 

@@ -92,9 +92,11 @@ of Koin either; the review does (`tasks/architecture.md`). Its
 `android` step builds the debug and release APKs and runs the unit tests and
 lint; detekt with the formatting and Compose rules runs in the `shared` step.
 The instrumented tests run only on a running device the caller passes in
-(`--android-serial`). No CI job runs `mobile/scripts/verify` —
-`.github/workflows/ci.yml` has no mobile step — so these checks hold only where
-the author ran them. The tasks here therefore do not re-derive across the tree
+(`--android-serial`). For changes under `mobile/`, CI reports the non-required `mobile-android`
+(architecture and Android) and `mobile-apple` (shared Kotlin and Apple) jobs.
+Relay also runs `verify-mobile` after `verify-web`. These runs omit device
+steps, which report NOT RUN; simulator and instrumented tests need a local
+run with reserved devices. The tasks here therefore do not re-derive across the tree
 what the checks enforce, but a violation the diff itself shows is still
 reported under the task item that covers it, with the check's rule ID.
 

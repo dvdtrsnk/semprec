@@ -88,6 +88,5 @@
   rates: a force unwrap, force try or force cast (`force_unwrapping`,
   `force_try`, `force_cast`) or an import of `SharedSDK` outside CoreKit
   (`kmp_framework_outside_corekit`) is still reported under its task item,
-  naming the SwiftLint rule. No CI job runs SwiftLint or
-  `mobile/scripts/verify`, so a tool also reporting a rated defect does not
-  make it a non-finding.
+  naming the SwiftLint rule. CI runs these tools on changes under `mobile/`; a tool also
+  reporting a rated defect does not make it a non-finding.

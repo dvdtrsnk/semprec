@@ -176,9 +176,12 @@ cd ../web
 pnpm run verify
 ```
 
-CI does not build `mobile/` yet, so when your diff touches it, run its pipeline
-yourself, from the repository root, with an iOS simulator and an Android
-emulator you reserved (`bb device-lab reserve --platform ios`, then
+For changes under `mobile/`, CI reports the non-required `mobile-android`
+(architecture and Android) and `mobile-apple` (shared Kotlin and Apple) jobs.
+Relay enforces the same pipeline through `verify-mobile`. Both omit device
+steps, which report NOT RUN. Before opening a pull request that touches mobile,
+run its full pipeline from the repository root with an iOS simulator and an
+Android emulator you reserved (`bb device-lab reserve --platform ios`, then
 `--platform android`) and release afterwards (`bb device-lab release --all`):
 
 ```

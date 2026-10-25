@@ -2,9 +2,10 @@ Check the build and the checks this platform owns: the Gradle root
 (`settings.gradle.kts`, `build.gradle.kts`, `gradle.properties`, `gradle/`), the
 convention plugins in `build-logic/`, `config/detekt/detekt.yml`, the scripts
 under `scripts/` and their tests, and the documentation (`README.md`, `docs/`).
-These are what every mobile pull request is built and judged with, and no CI
-job runs them, so a gate that quietly passes here passes for every later
-change. Report nothing for shared Kotlin sources; the other tasks cover them.
+These are what every mobile pull request is built and judged with, locally,
+in the `mobile-android` and `mobile-apple` CI jobs and in Relay's `verify-mobile`
+step. A gate that quietly passes here passes for every later change. Report
+nothing for shared Kotlin sources; the other tasks cover them.
 
 1. A step that can end in success without having checked — in `scripts/`, in a
    root aggregate task (`sharedJvmTest`, `sharedAppleTest`, `androidUnitTest`,

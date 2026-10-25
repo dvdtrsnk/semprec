@@ -18,6 +18,22 @@ steps:
   # addressed and never the failing command's output, so every round ends "nothing left to fix" (#798, #822)
   - { id: verify, uses: command, run: "pnpm install --frozen-lockfile && pnpm run verify", cwd: backend, on-failure: { goto: fix-verify, max-rounds: 3 } }
   - { id: verify-web, uses: command, run: "pnpm install --frozen-lockfile && pnpm run verify", cwd: web, on-failure: { goto: fix-verify, max-rounds: 3 } }
+  - id: verify-mobile
+    uses: command
+    # Cold project builds on Mini: 4m23s (2026-10-25, shared download caches retained).
+    # Keep 120 minutes for uncached dependency downloads and a cold host.
+    timeout-minutes: 120
+    run: |
+      set -eu
+      git fetch origin +refs/heads/develop:refs/remotes/origin/develop
+      base=$(git merge-base HEAD refs/remotes/origin/develop)
+      paths=$(git diff --name-only "$base" HEAD -- mobile/)
+      if [ -z "$paths" ]; then
+        echo 'No mobile/ change found; mobile verification is not needed.'
+      else
+        mobile/scripts/verify architecture shared android apple
+      fi
+    on-failure: { goto: fix-verify, max-rounds: 3 }
   - { id: guard, uses: guard-paths }
   - { id: draft, uses: pull-request-draft }
   - { id: relabel, uses: labels, remove: [review:changes-requested, relay:needs-human-action], add: [review:ready] }
@@ -43,6 +59,8 @@ You are Relay, an automated fix worker for pull request #{{prNumber}} in {{repo}
 Load the `fix-review-findings` skill first and follow it, and load the topic skills it names for the files each finding touches. Address every finding: fix the code, or reply with the concrete reason when the finding is wrong or conflicts with the issue, reply to each review thread with what you changed, and resolve the threads you addressed. Use `access_hub_context`, `access_hub_schema` and `access_hub_call` for all GitHub reads and review responses; use the explicit grant `semprec-relay-github-review` and repository `{{repo}}`. Summary replies use `review_summary_reply`; inline replies use `review_comment_reply`; list/resolve review threads with `review_threads_list` and `review_thread_resolve`. Supply the current remote PR head as `expectedSha` for summary replies and resolves, and only resolve findings you actually addressed. Do not use raw `gh`, direct GitHub HTTP or restore global authentication. If discovery denies an operation, fail with that concrete denial. Keep the change scoped to the findings and the pull request's own intent. Never change anything under `.relay/` or `.github/workflows/` — those paths are protected and a change there blocks the run. Commit locally as you go; do not push — Relay's own steps run `pnpm run verify` in `backend/` and in `web/`, push this branch and relabel the pull request after this turn, so re-running a full verify yourself only doubles the round's wall-clock. If a verify command fails, its output comes back to you as a further message in this same conversation, so you keep full context. Run every command in the foreground and wait for its exit status; **never end your turn waiting to be notified that something finished**. End your final answer with `Relay-Step-Status: pass` once every finding is addressed, `Relay-Step-Status: fail` with the reason if you cannot, or `Relay-Step-Status: blocked` if a finding needs a decision only a human can make. Answer in English — it is posted directly to GitHub.
 
 ## prompt: fix-verify
+
+If `verify-mobile` failed, load the `mobile-verify` skill and read the failing command log in `mobile/build/verify/<run>/`. Re-run `mobile/scripts/verify architecture shared android apple` from the worktree root after fixing it. Do not reserve devices; device steps must report NOT RUN.
 
 `{{steps.failed.id}}` failed with exit code {{steps.failed.exitCode}}. Its output (last 200 lines):
 

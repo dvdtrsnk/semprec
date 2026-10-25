@@ -70,6 +70,5 @@
   That exclusion covers style only, never a defect a task item rates: a `!!` or
   unchecked cast (`UnsafeCallOnNullableType`, `UnsafeCast`), a swallowed
   exception (`SwallowedException`) or an unused import (`NoUnusedImports`) is
-  still reported under its task item, naming the detekt rule. No CI job runs
-  detekt or `mobile/scripts/verify`, so a tool also reporting a rated defect
-  does not make it a non-finding.
+  still reported under its task item, naming the detekt rule. CI runs these tools on changes under `mobile/`; a tool also
+  reporting a rated defect does not make it a non-finding.
