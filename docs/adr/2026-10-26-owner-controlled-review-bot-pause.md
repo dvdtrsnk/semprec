@@ -55,5 +55,8 @@ returns. Merely reaching the quota reset time does not change policy.
 
 The policy takes effect for future Relay runs once it reaches the base branch;
 already captured workflow runs retain their own graph. Actions picks it up on the
-next PR update. Restoring it requires fresh checks on open PRs (push or dispatch the
-Code Review workflow); historical neutral checks remain historical.
+next PR update. Restoring it requires updating open PR branches onto the restored base policy and
+running fresh checks (push or dispatch the Code Review workflow). Dispatching a PR
+head that still contains enabled=false keeps its pause; strict branch protection
+requires that branch to be updated before merging. Historical neutral checks remain
+historical.

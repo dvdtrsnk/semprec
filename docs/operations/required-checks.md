@@ -93,8 +93,9 @@ before its existing `review:passed` routing label. That label denotes the waiver
 while paused. Captured runs keep their existing workflow graph.
 
 To restore: set `enabled` to `true` and update `reason` in the policy, then commit,
-verify and merge. New runs invoke the original bot path. Refresh open PR review
-checks with a new push or a Code Review dispatch; a previous neutral result is not a
-new review. Missing or malformed policy fails closed. No branch-protection edits or
+verify and merge. New runs invoke the original bot path. Update open PR branches onto the restored base (including its enabled policy), then
+refresh review checks with a push or a Code Review dispatch. Actions reads the PR
+head policy, so dispatching an old branch that still has enabled=false keeps the
+pause. A previous neutral result is not a new review. Missing or malformed policy fails closed. No branch-protection edits or
 provider-account changes are needed. See
 [decision](../adr/2026-10-26-owner-controlled-review-bot-pause.md).
