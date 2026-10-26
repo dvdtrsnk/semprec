@@ -10,9 +10,8 @@
  * noticed. A green `code-review` check meant "nothing was reviewed", which is exactly
  * the failure a required check exists to prevent.
  *
- * Structural corruption fails the run. Matching zero files only warns: `apple/` is an
- * empty scaffold whose rules deliberately apply from its first implementation PR onward,
- * and a platform waiting for its first file is a legitimate state.
+ * Structural corruption fails the run. Matching zero files only warns: rules that land
+ * before their platform's first file are a legitimate state.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";

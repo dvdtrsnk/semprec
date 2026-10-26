@@ -3,10 +3,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { readFile, writeFile, rename, mkdtemp, rm, stat } from "node:fs/promises";
-import { resolve, join } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { isEntryScript } from "./is-entry-script.mjs";
 import { parseIssueModelTier, validateIssueModelMetadata } from "./model-tier.mjs";
 
 const run = promisify(execFile);
@@ -167,6 +167,6 @@ async function main(argv) {
   if (conflicts) throw new Error(`${conflicts} issue conflicts; nothing was overwritten on those issues`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryScript(import.meta.url)) {
   main(process.argv.slice(2)).catch(error => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });
 }

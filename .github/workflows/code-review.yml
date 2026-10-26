@@ -54,6 +54,37 @@ jobs:
     # returns in minutes, and a non-Relay review finishes well inside it.
     timeout-minutes: 150
     steps:
+      - name: Checkout semprec
+        uses: actions/checkout@v4
+        with:
+          # Deliberately review the PR head in both trigger modes, rather than the
+          # pull_request merge ref. The bot gets changed files from the PR API and
+          # anchors its Check Run to that head, so agents must read the same tree.
+          ref: ${{ github.event.pull_request.head.sha || format('refs/pull/{0}/head', inputs.pull_request) }}
+
+      - name: Read owner review policy
+        id: policy
+        run: |
+          set -euo pipefail
+          disabled=$(node .github/scripts/review-bot-disabled.mjs)
+          echo "disabled=$disabled" >> "$GITHUB_OUTPUT"
+
+      - name: Report owner-authorized review pause
+        if: steps.policy.outputs.disabled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ inputs.pull_request || github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          head=$(git rev-parse HEAD)
+          current=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha')
+          test "$head" = "$current"
+          summary='Automated code review is paused by the repository owner in .relay/review-policy.json because provider quota is exhausted. No automated review verdict was produced. Build/test checks and conversation resolution remain required. Set enabled to true in that file to restore the bot.'
+          jq -n --arg sha "$head" --arg summary "$summary" \
+            '{name: "code-review", head_sha: $sha, status: "completed", conclusion: "neutral", output: {title: "Automated review paused by owner", summary: $summary}}' \
+            | gh api --method POST "repos/${GITHUB_REPOSITORY}/check-runs" --input - > /dev/null
+          echo "$summary" >> "$GITHUB_STEP_SUMMARY"
+
       # Relay reviews the pull requests it labels `review:ready` / `review:in-progress`
       # with the same pinned bot through its own pipeline, and produces the
       # `code-review` Check Run itself. Running this job as well would review the
@@ -73,6 +104,7 @@ jobs:
       # later step is conditioned on this output so the required `review`
       # context stays green when delegated.
       - name: Relay delegation
+        if: steps.policy.outputs.disabled == 'false'
         id: relay
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -95,17 +127,8 @@ jobs:
             echo "delegated=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Checkout semprec
-        if: steps.relay.outputs.delegated != 'true'
-        uses: actions/checkout@v4
-        with:
-          # Deliberately review the PR head in both trigger modes, rather than the
-          # pull_request merge ref. The bot gets changed files from the PR API and
-          # anchors its Check Run to that head, so agents must read the same tree.
-          ref: ${{ github.event.pull_request.head.sha || format('refs/pull/{0}/head', inputs.pull_request) }}
-
       - name: Checkout code-review-bot (private)
-        if: steps.relay.outputs.delegated != 'true'
+        if: steps.policy.outputs.disabled == 'false' && steps.relay.outputs.delegated != 'true'
         uses: actions/checkout@v4
         with:
           repository: dvdtrsnk/code-review-bot
@@ -116,7 +139,7 @@ jobs:
           path: .code-review-bot
 
       - name: Install Claude Code CLI
-        if: steps.relay.outputs.delegated != 'true'
+        if: steps.policy.outputs.disabled == 'false' && steps.relay.outputs.delegated != 'true'
         run: |
           # A pipeline reports its LAST command's status, so `curl | bash` is green
           # whenever bash is — including when curl downloaded nothing at all. That is
@@ -135,7 +158,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Run review
-        if: steps.relay.outputs.delegated != 'true'
+        if: steps.policy.outputs.disabled == 'false' && steps.relay.outputs.delegated != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ inputs.pull_request || github.event.pull_request.number }}
@@ -177,7 +200,7 @@ jobs:
         run: bash "${GITHUB_WORKSPACE}/.code-review-bot/scripts/run-review-github.sh"
 
       - name: Finalize interrupted code-review check
-        if: always() && steps.relay.outputs.delegated != 'true'
+        if: always() && steps.policy.outputs.disabled == 'false' && steps.relay.outputs.delegated != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

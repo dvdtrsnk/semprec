@@ -3,8 +3,11 @@
 Semprec is a personal life-organization system: a Postgres data layer behind a
 generic choke-point API, Yjs CRDT blocks/canvas, an IMAP inbox pipeline, and an
 agent runtime. `backend/` is a pnpm workspace (`packages/`, `services/`),
-`web/` is React + TypeScript on Vite, `apple/` is one shared Swift
-codebase for iOS and macOS (scaffold for now).
+`web/` is React + TypeScript on Vite, and `mobile/` holds the native apps
+(placeholder screens for now): Kotlin Multiplatform in `mobile/shared/` owns
+everything from the screen ViewModels down, `mobile/android/` renders them with
+Jetpack Compose, and `mobile/apple/` is one SwiftUI codebase that builds both
+the iOS and the native macOS app (`mobile/docs/architecture.md`).
 
 ## The issue is the law
 
@@ -24,9 +27,14 @@ the failure mode that rule exists to prevent.
 - **`docs/adr/`** — why the architecture is shaped the way it is. `ls docs/adr/`
   and grep the `area` frontmatter before introducing a pattern: a past decision
   may already cover it, for or against.
-- **`review-rules/`** of every platform you touch (`backend/`, `web/`, `apple/`,
-  and the repository root) — these are the rules the review bot enforces on your
-  pull request, so reading them first is strictly cheaper than being told.
+- **`review-rules/`** of every platform you touch (`backend/`, `web/`,
+  `mobile/`, `mobile/android/`, `mobile/apple/`, and the repository root) —
+  these are the rules the review bot enforces on your pull request, so reading
+  them first is strictly cheaper than being told. A file belongs to the platform
+  whose directory is the longest prefix of its path: `mobile/android/` and
+  `mobile/apple/` review their apps, and `mobile/` reviews everything else under
+  it — the shared Kotlin layer, the Gradle build, `mobile/scripts/` and
+  `mobile/docs/`.
   Changes to `.github/workflows/` and `.github/scripts/` are reviewed by the
   repository-root platform,
   and changes to a `review-rules/` directory by the platform that owns it.
@@ -46,6 +54,13 @@ the failure mode that rule exists to prevent.
 | `error-handling` | a `catch`, an error mapping, a rollback path, or any decision about what happens on failure |
 | `testing` | writing or changing any test, or claiming a change is covered |
 | `fix-review-findings` | addressing review-bot findings on a pull request |
+| `shared-viewmodel` | creating or changing a shared screen ViewModel, its state, actions or effects, or the code that hosts one on Android (`koinViewModel`, `CollectEffects`) or Apple (a CoreKit bridge, `SharedViewModelLease`, `@StateObject`) |
+| `kmp-shared` | anything under `mobile/shared/`, or what the `SharedSDK` framework exports to Swift |
+| `android-compose` | a composable, string resource, test tag or Android module build file under `mobile/android/` |
+| `apple-swiftui` | Swift, a Tuist manifest, a String Catalog or a SwiftLint rule under `mobile/apple/`, including any `#if os(...)` |
+| `mobile-navigation` | a route, router method, tab, sheet, back behavior or navigation command, on either mobile platform |
+| `mobile-feature-create` | adding a screen, feature module, tab or destination under `mobile/`, or moving or restructuring an existing screen |
+| `mobile-verify` | running or claiming any build, test or lint under `mobile/`, and before a pull request that touches it |
 
 ## What the review actually reports
 
@@ -112,12 +127,34 @@ errors (`error-handling`) follow close behind.
 
 ## Tests
 
-Three tiers, selected by filename, and a file belongs to exactly one:
+`backend/` has three tiers, selected by filename, and a file belongs to exactly
+one:
 
 - `*.unit.test.ts` — must not import anything that touches Postgres.
 - `*.test.ts` — integration tier; runs against a real ephemeral Postgres that
   `globalSetup` provisions for the whole run.
 - `*.e2e.test.ts` — end-to-end tier.
+
+`web/` runs every `*.test.ts` and `*.test.tsx` file with Vitest. `mobile/` has
+no filename tiers; its tests sit next to the code they test:
+
+- Kotlin `commonTest` in the `mobile/shared/` modules — runs on the JVM
+  (`sharedJvmTest`), natively on macOS (`sharedAppleTest`) and on an iOS
+  simulator you reserved (`sharedAppleTest -Pmobile.iosSimulatorId=<UDID>`).
+- Android JVM unit tests in `src/test/` of the `mobile/android/` modules
+  (`androidUnitTest`), and instrumented Compose tests in
+  `mobile/android/app/src/androidTest/` (`connectedDebugAndroidTest`, on an
+  emulator you reserved).
+- Swift XCTest bundles (`CoreKitTests`, `HomeFeatureTests`,
+  `SettingsFeatureTests`, `SemprecTests`, each from its target's `Tests/`), all
+  hosted in the app and run by the `Semprec` scheme on macOS and on a reserved
+  iOS simulator. `CoreKitTests` drive the real Kotlin ViewModels and check
+  every mapping branch of the bridges with Kotlin values; the feature tests
+  use `ScriptedScreenModel`; `SemprecTests` show the real `AppScene` in a
+  window and drive its NavigatorUI stacks.
+- The XCUITest bundle `SemprecUITests` (`mobile/apple/Projects/App/UITests/`),
+  run by its own `SemprecUITests` scheme on a reserved iOS simulator only,
+  walks the app's flows by the same identifiers as Android's `SmokeFlowTest`.
 
 Write the test list from the issue's Acceptance criteria, plus every branch you
 claim exists in a docstring, plus the failure paths (no user, provider refused,
@@ -139,6 +176,21 @@ cd ../web
 pnpm run verify
 ```
 
+For changes under `mobile/`, CI reports the non-required `mobile-android`
+(architecture and Android) and `mobile-apple` (shared Kotlin and Apple) jobs.
+Relay enforces the same pipeline through `verify-mobile`. Both omit device
+steps, which report NOT RUN. Before opening a pull request that touches mobile,
+run its full pipeline from the repository root with an iOS simulator and an
+Android emulator you reserved (`bb device-lab reserve --platform ios`, then
+`--platform android`) and release afterwards (`bb device-lab release --all`):
+
+```
+mobile/scripts/verify --ios-simulator <UDID> --android-serial <serial>
+```
+
+A device step whose flag is missing reports NOT RUN; nothing else is skipped.
+`mobile/docs/verify.md` lists every step.
+
 Then read your own diff as a strict reviewer applying the `review-rules/` of
 every platform you touched, and sweep it for debug prints, commented-out code
 and files unrelated to this issue. Every claim you write in a docstring is a
@@ -156,6 +208,11 @@ at the same time, so every process you did not start belongs to someone else:
   never a fixed `/tmp/<name>.log`.
 
 ## Review findings
+
+Owner-controlled exception: `.relay/review-policy.json` can explicitly pause the bot.
+During a pause, required review checks report an explained neutral waiver and manual
+merges require local review; build/test and conversation-resolution gates remain.
+Set `enabled` to `true` to restore the bot. See `docs/operations/required-checks.md`.
 
 Load the `fix-review-findings` skill before changing code in response to a
 review. The code-review bot blocks the merge at `medium` severity and above. Fix what it

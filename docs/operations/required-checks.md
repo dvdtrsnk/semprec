@@ -41,12 +41,27 @@ Relay's `merge-pull-request` workflow waits for these same contexts before it me
 required context without adding it there makes Relay attempt the merge while that check is
 still running, and GitHub refuses it.
 
-Every job in `ci.yml` runs on every pull-request update and on every push to `develop` and
-`main`, so every commit on either branch carries its own result.
+The required jobs in `ci.yml` run on every pull-request update and on every push to
+`develop` and `main`, so every commit on either branch carries its required results.
 
 The release command checks those per-commit results before it tags a `main` commit
 ([releases](releases.md)); renaming a `ci.yml` job also updates its list of required jobs in
 `backend/packages/release/src/releaseTag.ts`.
+
+## Mobile checks (reported, not required)
+
+| Context | Runs when `mobile/` changes | Required on |
+| --- | --- | --- |
+| `mobile-android` | `mobile/scripts/verify architecture android` on Ubuntu | neither branch |
+| `mobile-apple` | `mobile/scripts/verify shared apple` on an Apple-silicon macOS runner | neither branch |
+
+Both jobs omit device flags: the shared iOS simulator tests, Android instrumented tests,
+Swift simulator tests and XCUITest execution report NOT RUN. Apple UI tests still compile.
+A failure uploads `mobile/build/verify/`. A `mobile-changes` job compares the pull request
+with its merge base, or a push with its `before` commit; an initial push compares with
+an empty tree. Without a mobile change the two build jobs are skipped. These jobs are
+not added to branch protection, Relay's `wait-checks` or the release command's required
+checks.
 
 ## Why there is no separate "is this head up to date" check
 
@@ -62,3 +77,25 @@ result is an ancestor-clean fast-forward before ever attempting the merge. A los
 pull request in the race simply gets rebased and re-reviewed on its next
 `merge-pull-request` run; adding a redundant "is this branch current" job would only
 duplicate a guarantee GitHub and this workflow already enforce.
+
+## Owner-controlled review pause
+
+The owner has temporarily paused automated code review in
+[`.relay/review-policy.json`](../../.relay/review-policy.json) because provider quota
+is exhausted. `review` and `code-review` stay required. Actions completes `review`
+and publishes an explicitly labelled **neutral** `code-review` result; this is a
+waiver, not a successful bot verdict. Builds, tests and conversation resolution are
+still enforced. Manual merges require a local review.
+
+Relay reads the same policy: implementation skips pre-review and continues to
+verification; the review workflow reads base policy and publishes a neutral check
+before its existing `review:passed` routing label. That label denotes the waiver
+while paused. Captured runs keep their existing workflow graph.
+
+To restore: set `enabled` to `true` and update `reason` in the policy, then commit,
+verify and merge. New runs invoke the original bot path. Update open PR branches onto the restored base (including its enabled policy), then
+refresh review checks with a push or a Code Review dispatch. Actions reads the PR
+head policy, so dispatching an old branch that still has enabled=false keeps the
+pause. A previous neutral result is not a new review. Missing or malformed policy fails closed. No branch-protection edits or
+provider-account changes are needed. See
+[decision](../adr/2026-10-26-owner-controlled-review-bot-pause.md).

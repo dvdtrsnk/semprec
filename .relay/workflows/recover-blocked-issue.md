@@ -62,6 +62,22 @@ steps:
   # a fresh BB worktree carries no node_modules, so each verify installs its own workspace first
   - { id: verify, uses: command, run: "pnpm install --frozen-lockfile && pnpm run verify", cwd: backend, on-failure: { goto: fix, max-rounds: 3 } }
   - { id: verify-web, uses: command, run: "pnpm install --frozen-lockfile && pnpm run verify", cwd: web, on-failure: { goto: fix, max-rounds: 3 } }
+  - id: verify-mobile
+    uses: command
+    # Cold project builds on Mini: 4m23s (2026-10-25, shared download caches retained).
+    # Keep 120 minutes for uncached dependency downloads and a cold host.
+    timeout-minutes: 120
+    run: |
+      set -eu
+      git fetch origin +refs/heads/develop:refs/remotes/origin/develop
+      base=$(git merge-base HEAD refs/remotes/origin/develop)
+      paths=$(git diff --name-only "$base" HEAD -- mobile/)
+      if [ -z "$paths" ]; then
+        echo 'No mobile/ change found; mobile verification is not needed.'
+      else
+        mobile/scripts/verify architecture shared android apple
+      fi
+    on-failure: { goto: fix, max-rounds: 3 }
   - { id: guard, uses: guard-paths }
   - { id: draft, uses: pull-request-draft }
   - { id: push, uses: push, force-with-lease: true }   # before the relabel: a rejected push leaves agent:blocked in place, and on-failure lifts the draft, so the retry is eligible
@@ -107,6 +123,8 @@ Diagnose the actual blocker and fix it yourself: rebase onto `origin/{{baseBranc
 End your final answer with exactly one of: `Relay-Step-Status: pass` once the fix is committed and the pull request is ready to be re-evaluated; `Relay-Step-Status: escalate` if (and only if) the one case above applies, stating precisely what action is needed and why no credential you have can perform it; or `Relay-Step-Status: fail` with the reason if your turn itself failed for reasons unrelated to a judgment call (e.g. a tool crashed).
 
 ## prompt: fix-verify
+
+If `verify-mobile` failed, load the `mobile-verify` skill and read the failing command log in `mobile/build/verify/<run>/`. Re-run `mobile/scripts/verify architecture shared android apple` from the worktree root after fixing it. Do not reserve devices; device steps must report NOT RUN.
 
 `{{steps.failed.id}}` failed with exit code {{steps.failed.exitCode}}. Its output (last 200 lines):
 

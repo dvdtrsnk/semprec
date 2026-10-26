@@ -20,6 +20,115 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  mobile-changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      changed: ${{ steps.paths.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect mobile changes
+        id: paths
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+          PUSH_HEAD: ${{ github.sha }}
+        run: |
+          set -eu
+          if [ "$EVENT" = pull_request ]; then
+            base=$(git merge-base "$PR_BASE" "$PR_HEAD")
+            head=$PR_HEAD
+          else
+            base=$PUSH_BASE
+            head=$PUSH_HEAD
+            if [ "$base" = 0000000000000000000000000000000000000000 ]; then
+              base=$(git hash-object -t tree /dev/null)
+            fi
+          fi
+          paths=$(git diff --name-only "$base" "$head" -- mobile/)
+          if [ -n "$paths" ]; then
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          fi
+
+  # Reported but not required; device tests remain a local, reserved-device run.
+  mobile-android:
+    needs: mobile-changes
+    if: needs.mobile-changes.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Verify mobile architecture and Android
+        run: mobile/scripts/verify architecture android
+      - name: Upload mobile failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-android-verify
+          path: mobile/build/verify/
+          if-no-files-found: warn
+
+  mobile-apple:
+    needs: mobile-changes
+    if: needs.mobile-changes.outputs.changed == 'true'
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Check Apple runner
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          version=$(xcodebuild -version | awk '/^Xcode / { print $2 }')
+          test "${version%%.*}" -ge 26
+      - name: Install repository-pinned Apple tools
+        run: |
+          set -euo pipefail
+          tuist_version=$(tr -d '[:space:]' < mobile/apple/.tuist-version)
+          swiftlint_version=$(awk '/^swiftlint_version:/ { print $2 }' mobile/apple/.swiftlint.yml)
+          [[ "$tuist_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$swiftlint_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          tools_dir=$(mktemp -d "$RUNNER_TEMP/mobile-tools.XXXXXX")
+          curl --fail --location --retry 3 --connect-timeout 30 --max-time 300 \
+            "https://github.com/tuist/tuist/releases/download/$tuist_version/tuist.zip" -o "$tools_dir/tuist.zip"
+          curl --fail --location --retry 3 --connect-timeout 30 --max-time 300 \
+            "https://github.com/realm/SwiftLint/releases/download/$swiftlint_version/portable_swiftlint.zip" -o "$tools_dir/swiftlint.zip"
+          unzip -q "$tools_dir/tuist.zip" -d "$tools_dir/tuist"
+          unzip -q "$tools_dir/swiftlint.zip" -d "$tools_dir/swiftlint"
+          echo "$tools_dir/tuist" >> "$GITHUB_PATH"
+          echo "$tools_dir/swiftlint" >> "$GITHUB_PATH"
+      - name: Verify shared Kotlin and Apple apps
+        run: mobile/scripts/verify shared apple
+      - name: Upload mobile failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-apple-verify
+          path: mobile/build/verify/
+          if-no-files-found: warn
+
   # `main` holds released versions only and is reached exclusively through a
   # `develop -> main` promotion pull request
   # (docs/adr/2026-09-10-develop-main-branching-with-release-promotion.md). This job

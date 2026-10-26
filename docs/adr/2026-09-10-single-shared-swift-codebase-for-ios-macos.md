@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-10
 area: [apple]
 supersedes: []
-superseded-by: null
+superseded-by: 2026-10-24-kotlin-multiplatform-below-native-mobile-ui
 ---
 
 # One Swift codebase serves both iOS and macOS, not two separate projects

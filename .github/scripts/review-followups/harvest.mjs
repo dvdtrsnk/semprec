@@ -52,7 +52,7 @@
 
 import { appendFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-import { pathToFileURL } from "node:url";
+import { isEntryScript } from "../is-entry-script.mjs";
 
 import {
   addLabels,
@@ -353,7 +353,7 @@ export async function main(env, api) {
   return report;
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryScript(import.meta.url)) {
   main(process.env).catch((error) => {
     console.error(error);
     process.exit(1);

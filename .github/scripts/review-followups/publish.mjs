@@ -48,8 +48,7 @@
  */
 
 import { readFile } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { isEntryScript } from "../is-entry-script.mjs";
 
 import {
   addSubIssue,
@@ -285,7 +284,7 @@ export async function main(argv, api) {
   }
 }
 
-if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryScript(import.meta.url)) {
   main(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
   });

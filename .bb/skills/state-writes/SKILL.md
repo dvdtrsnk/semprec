@@ -1,9 +1,13 @@
 ---
 name: state-writes
-description: "How every write to persisted Semprec state must be built - through the choke point, by the single owner, with side effects after the commit, and an affected-row check on every targeted write. Load this BEFORE writing the first line of a function that mutates data, not while reviewing it afterwards. Triggers on: DELETE FROM, UPDATE ... SET, INSERT INTO, rowCount, requireAffectedRows, withTransaction, runAfterCommit, chokePoint., createItem, patchItem, addViewItem, removeViewItem, notifyInvalidation, pg_notify, NOTIFY, any *Store.ts file, a seed or backfill, an agent tool that writes, any handler whose verb is POST, PATCH, PUT or DELETE, registerItemUpdateHook, registerRelationEdgeWriteHook, domainWriteHooks, tenant_id, app.tenant_id, runInTenant, runAsSystem, SELECT ... FOR UPDATE, a guard read before a write, another module's table, SQL text built with a template literal, format('%I'), a DO block, CREATE TRIGGER or CREATE FUNCTION in a test, and a test fixture that writes rows. Skip only when nothing in the change can reach the database."
+description: "Build persisted-state writes through the generic choke point with one owner, transactional guards, checked affected rows and side effects after commit. Load before database mutations, item/relation/block writes, NOTIFY, seeds, backfills, write hooks, tenant-scoped writes or tests that write rows; also for locking, ownership and SQL construction decisions. Skip changes that cannot reach the database."
 ---
 
 # State writes: choke-point, ownership, approval
+
+## When to load
+
+Triggers on: DELETE FROM, UPDATE ... SET, INSERT INTO, rowCount, requireAffectedRows, withTransaction, runAfterCommit, chokePoint., createItem, patchItem, addViewItem, removeViewItem, notifyInvalidation, pg_notify, NOTIFY, any *Store.ts file, a seed or backfill, an agent tool that writes, any handler whose verb is POST, PATCH, PUT or DELETE, registerItemUpdateHook, registerRelationEdgeWriteHook, domainWriteHooks, tenant_id, app.tenant_id, runInTenant, runAsSystem, SELECT ... FOR UPDATE, a guard read before a write, another module's table, SQL text built with a template literal, format('%I'), a DO block, CREATE TRIGGER or CREATE FUNCTION in a test, and a test fixture that writes rows. Skip only when nothing in the change can reach the database.
 
 Three laws govern every write to persisted state in the Semprec backend. They exist
 because the whole system's auditability, undo, realtime sync, and AI-safety story

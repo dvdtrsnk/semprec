@@ -94,7 +94,7 @@ of how correct the inserted text is.
 ---
 status: accepted        # proposed | accepted | superseded | deprecated
 date: 2026-09-10         # creation date, matches the filename, never edited
-area: [backend]          # one or more of: backend, apple, web, cross-cutting
+area: [backend]          # one or more of: backend, web, mobile, cross-cutting (apple: only ADRs dated before 2026-10-24)
 supersedes: []           # slugs of ADRs this one replaces
 superseded-by: null      # slug of the ADR that replaced this one, if any
 ---

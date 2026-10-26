@@ -23,5 +23,5 @@ Check the Architecture Decision Records this pull request touches, against
    flag that it belongs in a platform's `review-rules/rules.md` instead.
 7. An ADR that states a decision the diff visible to this platform
    contradicts — for example a filename or `area` its own body disagrees
-   with. Medium. This platform cannot see `backend/`/`apple/`/`web` diffs, so
+   with. Medium. This platform cannot see `backend/`/`web/`/`mobile/` diffs, so
    do not infer anything about code from their absence.

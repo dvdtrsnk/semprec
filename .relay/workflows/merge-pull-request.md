@@ -48,6 +48,22 @@ steps:
   # a fresh BB worktree carries no node_modules, so each verify installs its own workspace first
   - { id: verify, uses: command, run: "pnpm install --frozen-lockfile && pnpm run verify", cwd: backend, on-failure: { goto: fix, max-rounds: 3 } }
   - { id: verify-web, uses: command, run: "pnpm install --frozen-lockfile && pnpm run verify", cwd: web, on-failure: { goto: fix, max-rounds: 3 } }
+  - id: verify-mobile
+    uses: command
+    # Cold project builds on Mini: 4m23s (2026-10-25, shared download caches retained).
+    # Keep 120 minutes for uncached dependency downloads and a cold host.
+    timeout-minutes: 120
+    run: |
+      set -eu
+      git fetch origin +refs/heads/develop:refs/remotes/origin/develop
+      base=$(git merge-base HEAD refs/remotes/origin/develop)
+      paths=$(git diff --name-only "$base" HEAD -- mobile/)
+      if [ -z "$paths" ]; then
+        echo 'No mobile/ change found; mobile verification is not needed.'
+      else
+        mobile/scripts/verify architecture shared android apple
+      fi
+    on-failure: { goto: fix, max-rounds: 3 }
   - { id: rebased-check, uses: command, run: "git fetch origin {{baseBranch}} && git merge-base --is-ancestor origin/{{baseBranch}} HEAD", on-failure: blocked }
   - { id: guard2, uses: guard-paths }
   - { id: draft, uses: pull-request-draft }
@@ -77,6 +93,8 @@ You are Relay, an automated merge worker for pull request #{{prNumber}} in {{rep
 Rebase this branch onto `origin/{{baseBranch}}` yourself (`git fetch origin {{baseBranch}}` then `git rebase origin/{{baseBranch}}`). For every conflict, read both sides and the commits that introduced them; keep the intent of both — this branch's change *and* what landed on the base — and resolve logically, never by taking one side wholesale. If this branch adds a migration file under `backend/packages/data/src/db/migrations/` and the rebase lands another migration with the same leading ordinal, renumber only this branch's migration to the next free ordinal — never renumber a migration that already merged into `{{baseBranch}}` (`.bb/skills/db-migrations/SKILL.md`, "Ordinal collisions between parallel issues"). Continue the rebase until it completes. Never merge the base branch into this one, never create, switch or rename branches, and never change anything under `.relay/` or `.github/workflows/`. Do not push. Run every command in the foreground and wait for its exit status; never end your turn waiting to be notified that something finished. End your final answer with `Relay-Step-Status: pass` only when `git status` is clean and `git merge-base --is-ancestor origin/{{baseBranch}} HEAD` holds, or `Relay-Step-Status: fail` with the reason if you cannot complete the rebase. Answer in English — it is posted directly to GitHub.
 
 ## prompt: fix
+
+If `verify-mobile` failed, load the `mobile-verify` skill and read the failing command log in `mobile/build/verify/<run>/`. Re-run `mobile/scripts/verify architecture shared android apple` from the worktree root after fixing it. Do not reserve devices; device steps must report NOT RUN.
 
 You are Relay, an automated merge worker for pull request #{{prNumber}} in {{repo}}. Your workspace is a BB-managed git worktree checked out on this pull request's branch; stay on it. Step `{{steps.failed.id}}` failed:
 

@@ -10,6 +10,18 @@ on:
 steps:
   - { id: claim, uses: labels, remove: [review:ready, relay:needs-human-action], add: [review:in-progress] }   # drops a stale park label from a prior failed round
   - { id: guard, uses: guard-paths }
+  - id: review-policy
+    uses: command
+    in: checkout
+    ref: base
+    run: node .github/scripts/review-bot-disabled.mjs
+  - id: review-paused
+    uses: check-run
+    if: "{{steps.review-policy.output}}"
+    name: code-review
+    conclusion: neutral
+    summary: "Automated review is paused by the repository owner (.relay/review-policy.json). No bot verdict was produced. Build/test gates remain required. Set enabled to true in the policy to restore automated review."
+    on-success: { goto: passed }
   - id: review
     uses: review-pipeline             # bot pin, check name and env come from config.yml's `review:` — one place to bump
     max-reruns: 2                     # timeout-minutes defaults to 150 for this step
@@ -27,3 +39,5 @@ Runs the pinned code-review-bot revision against a pull request labelled
 `review:ready`, exactly as CI would, and leaves one of `review:passed` or
 `review:changes-requested` behind. It has no prompt sections: every model
 call is made by the bot itself, through Relay's review broker.
+
+While the owner pause is active, `review:passed` means the review gate was explicitly waived, not that the bot reviewed the code. The policy is read from the base branch; malformed or missing policy blocks this workflow.
