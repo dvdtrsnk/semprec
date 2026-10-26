@@ -77,3 +77,24 @@ result is an ancestor-clean fast-forward before ever attempting the merge. A los
 pull request in the race simply gets rebased and re-reviewed on its next
 `merge-pull-request` run; adding a redundant "is this branch current" job would only
 duplicate a guarantee GitHub and this workflow already enforce.
+
+## Owner-controlled review pause
+
+The owner has temporarily paused automated code review in
+[`.relay/review-policy.json`](../../.relay/review-policy.json) because provider quota
+is exhausted. `review` and `code-review` stay required. Actions completes `review`
+and publishes an explicitly labelled **neutral** `code-review` result; this is a
+waiver, not a successful bot verdict. Builds, tests and conversation resolution are
+still enforced. Manual merges require a local review.
+
+Relay reads the same policy: implementation skips pre-review and continues to
+verification; the review workflow reads base policy and publishes a neutral check
+before its existing `review:passed` routing label. That label denotes the waiver
+while paused. Captured runs keep their existing workflow graph.
+
+To restore: set `enabled` to `true` and update `reason` in the policy, then commit,
+verify and merge. New runs invoke the original bot path. Refresh open PR review
+checks with a new push or a Code Review dispatch; a previous neutral result is not a
+new review. Missing or malformed policy fails closed. No branch-protection edits or
+provider-account changes are needed. See
+[decision](../adr/2026-10-26-owner-controlled-review-bot-pause.md).

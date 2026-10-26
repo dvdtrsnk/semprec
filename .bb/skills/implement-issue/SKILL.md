@@ -191,6 +191,11 @@ Fix what each step finds and commit it before moving on.
 
 ## 5. When the review bot comes back
 
+The owner may explicitly pause automated review through `.relay/review-policy.json`.
+Actions and Relay report that pause as a neutral waiver, not a bot verdict; the
+normal build/test gates still run. Manual merges during a pause require local
+review. Restoration and refresh steps are in `docs/operations/required-checks.md`.
+
 Load the `fix-review-findings` skill before changing any code. It covers how
 to verify a finding, check it against the issue, and fix every sibling instance
 in one round.

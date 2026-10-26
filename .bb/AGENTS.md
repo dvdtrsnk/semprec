@@ -209,6 +209,11 @@ at the same time, so every process you did not start belongs to someone else:
 
 ## Review findings
 
+Owner-controlled exception: `.relay/review-policy.json` can explicitly pause the bot.
+During a pause, required review checks report an explained neutral waiver and manual
+merges require local review; build/test and conversation-resolution gates remain.
+Set `enabled` to `true` to restore the bot. See `docs/operations/required-checks.md`.
+
 Load the `fix-review-findings` skill before changing code in response to a
 review. The code-review bot blocks the merge at `medium` severity and above. Fix what it
 gets right, and fix a cheap `low` finding when it is clearly correct. A finding

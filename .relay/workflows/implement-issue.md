@@ -35,6 +35,14 @@ steps:
     draft: true                       # a draft is not reviewed by the Actions code-review job
     title: "{{issueTitle}} (#{{issueNumber}})"
     body: "Closes #{{issueNumber}}\n\n{{steps.implement.output}}"
+  - id: review-policy
+    uses: command
+    run: node .github/scripts/review-bot-disabled.mjs
+  - id: review-paused
+    uses: comment
+    if: "{{steps.review-policy.output}}"
+    body: "Automated pre-review is paused by the repository owner (.relay/review-policy.json). Continuing to build and test verification; no bot verdict was produced."
+    on-success: { goto: verify-backend }
   - id: pre-review-1
     uses: review-pipeline
     on-success: { goto: verify-backend }
