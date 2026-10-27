@@ -1,6 +1,7 @@
 # Include
 
 docs/adr/*.md
+docs/operations/repository-issues-cutover.md
 issues/**
 .claude/skills/**/*.md
 .bb/skills/**/*.md

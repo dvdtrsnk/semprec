@@ -27,7 +27,7 @@ worktree based on `develop`. Your input is `.followups/input.json`, whose format
 defined in the header of `.github/scripts/review-followups/input-file.mjs`. Your only
 output is `.followups/proposal.json`, whose format and every mechanical rule on it are
 defined in the header of `.github/scripts/review-followups/validate.mjs`; the workflow
-runs that validator on your proposal before anything reaches GitHub. Why the pipeline
+runs that validator on your proposal before any proposed records reach the canonical repository. Why the pipeline
 exists is recorded in
 `docs/adr/2026-09-26-merged-review-findings-become-proposed-follow-up-issues.md`.
 
@@ -114,7 +114,7 @@ what is specific to this pipeline.
   acceptance criterion.
 - With two or more drafts, write an epic. What follows replaces Phase 4 step 6's epic
   content for this pipeline — there is no approved spec to copy — except that the epic
-  body still does not list the batch's issues, since `publish` links them as sub-issues.
+  body still does not list the batch's issues, since `publish` records their parent metadata.
   Its body holds a summary specification of
   what the batch fixes, a `## Decisions` section (the clustering and verdict calls a
   reader would question, each with its reason), a link to the harvest issue `#<H>`, a

@@ -57,3 +57,23 @@ JSON bundles are capped at 20 MB, individual attachments at 64 MB, and total
 import payload at 200 MB. Exceeding a bound requires an explicit design update,
 not silent truncation. Asset links remain in the original Markdown; local
 copies and exceptions are recorded separately.
+
+## Collection checkpoints
+
+The scoped Access Hub adapter exposes stable all-state issue pages, complete
+bounded history batches, paged fallbacks for large discussions and batched
+authoritative closing-PR descriptions. The collector stores original issue
+pages and explicit terminal-page evidence in its export cache. No GitHub token
+is returned to the collector or placed in the repository.
+
+`assemble-export.mjs <cache-directory> <export-directory> <exported-at>` verifies
+the cache before creating the import envelope. It requires closing-reference
+coverage for every issue, complete history, comment/child count agreement and
+explicit attachment coverage. The source pagination evidence and the exact
+export manifest checksum are retained in the repository migration manifest.
+
+Timeline cross-reference events contain duplicate **current** issue and
+repository snapshots. Their references retain identity, title, URL, state and
+`bodySha256`; full issue bodies are stored separately in the issue catalog.
+Comment bodies and other event payloads remain intact. Both batched normalized
+events and raw paged fallbacks are normalized identically during assembly.

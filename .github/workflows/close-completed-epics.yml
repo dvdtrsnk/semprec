@@ -1,39 +1,9 @@
 name: Close completed epics
 
-# Closes a parent issue once GitHub reports every one of its sub-issues closed.
-# GitHub has no such behaviour of its own — its documented auto-close covers only
-# "a merged pull request closes the issue it names" — so a finished epic stays open
-# until someone notices.
-#
-# Runs on every issue close, plus hourly as a fallback. A sub-issue closing is exactly
-# the moment an epic can become finished, so that run announces it; a later one closes
-# it once the announcement is GRACE_HOURS old — the next issue close past that age, or
-# the hourly run, whichever comes first.
-# The issue trigger exists because GitHub drops scheduled runs freely: on 2026-10-01
-# the hourly cron fired twice in 13 hours, and the one-hour grace period stretched
-# into half a day. While the pipeline is active, issues close every few tens of
-# minutes, so the sweep runs on time even when the schedule does not.
-# The schedule is still essential: the work is repository housekeeping, not part of
-# implementing anything, so it must keep running when no agent is and no issue closes
-# — it is what closes an epic whose last sub-issue was the final close of the day.
-# Relay cannot host it for two reasons: its workflows trigger on an issue or
-# pull-request label and have no schedule, and its tick only runs for an *enabled*
-# project — the sweep would stop the moment the project is paused, which is exactly
-# when stale epics pile up.
-#
-# No feedback loop: the epics this workflow closes are closed with GITHUB_TOKEN, and
-# events caused by GITHUB_TOKEN never start a new workflow run.
-#
-# The run is cheap on purpose. `sub_issues_summary` rides along on the issues
-# listing, so one request per hundred open issues answers it for every epic; only an
-# epic that already looks complete costs a second request for its comments.
-#
-# `workflow_dispatch` takes `dry_run` (default true) so a manual run reports what it
-# would do and writes nothing.
+# Repository issue maintenance proposes local changes through a reviewed PR.
+# A pending maintenance PR applies backpressure until it is merged or closed.
 
 on:
-  issues:
-    types: [closed]
   schedule:
     # The fallback. :15 past every hour — off the hour, so it does not join the
     # stampede of jobs that every cron scheduler fires at :00.
@@ -50,18 +20,11 @@ on:
         default: "1"
 
 permissions:
-  contents: read
-  # Posts the announcement, withdraws it, and closes the epic.
-  issues: write
+  contents: write
+  pull-requests: write
 
-# One sweep at a time. The script is not safe to overlap: two runs that both find a
-# complete epic with no announcement would both post one, and two past the grace
-# period would both post the closing comment. A burst of closes (a merge closing
-# several issues) therefore queues instead of fanning out: GitHub keeps at most one
-# running and one pending run in the group, and a newer pending run replaces the
-# older one — harmless, because every run sweeps the whole repository's current state.
 concurrency:
-  group: close-completed-epics
+  group: repository-issue-maintenance
   cancel-in-progress: false
 
 jobs:
@@ -70,11 +33,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: .github/scripts
-          sparse-checkout-cone-mode: false
+          ref: develop
+          fetch-depth: 0
 
       - name: Close epics whose sub-issues are all done
-        run: node .github/scripts/close-completed-epics.mjs
+        run: node .github/scripts/issues/maintenance.mjs epics
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # A scheduled or issue-triggered run always writes (`inputs` is empty outside

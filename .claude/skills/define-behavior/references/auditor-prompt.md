@@ -16,7 +16,7 @@ finding here turns into an edit to a specification that is already correct.
 ## What you read
 
 1. `.github/ISSUE_FORMAT.md` — the structural contract every issue must satisfy.
-2. The audit target: `gh issue view <N> --json title,body,labels` for each issue,
+2. The audit target: `node .github/scripts/issues.mjs show <id>` for each issue,
    plus the epic when the target is a batch. In dry-run, read the draft files you
    were pointed at instead, and treat `#TBD-NN` in-batch placeholders as valid
    references — you still check the chain's shape.

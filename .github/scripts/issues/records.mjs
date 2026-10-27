@@ -31,6 +31,24 @@ export function identifier(value) {
   return value;
 }
 
+/** Numeric compatibility for Relay; the Markdown id remains the canonical identity. */
+export function relayNumber(id) {
+  identifier(id);
+  const value = id.startsWith("gh-") ? Number(id.slice(3)) : 1_000_000_000 + Number.parseInt(digest(id).slice(0, 8), 16) % 1_000_000_000;
+  if (value > 2_147_483_647) throw new Error("Issue identity exceeds Relay's numeric compatibility range");
+  return value;
+}
+
+export function relayIndex(catalog) {
+  const result = new Map();
+  for (const [id, issue] of catalog) {
+    const number = relayNumber(id);
+    if (result.has(number)) throw new Error(`Relay identity collision between ${result.get(number).metadata.id} and ${id}`);
+    result.set(number, issue);
+  }
+  return result;
+}
+
 export function digest(text) { return createHash("sha256").update(text).digest("hex"); }
 
 function strings(value, label) {
@@ -98,7 +116,7 @@ export function validateMetadata(value) {
     exactKeys(resolution, ["pullRequests", "commit", "at"], "resolution");
     if (!Array.isArray(resolution.pullRequests) || resolution.pullRequests.length > 100) throw new Error("Invalid resolution PRs");
     resolution.pullRequests.forEach(number => integer(number, "resolution PR"));
-    if (!/^[a-f0-9]{40,64}$/.test(string(resolution.commit, "resolution.commit", 64))) throw new Error("Invalid merge commit");
+    if (!/^[a-f0-9]{40,64}$/.test(string(resolution.commit, "resolution.commit", 64))) throw new Error("Invalid implementation commit");
     timestamp(resolution.at, "resolution.at");
     if (meta.state !== "closed" || meta.stateReason !== "completed") throw new Error("Resolution requires completed state");
   }
@@ -195,7 +213,7 @@ export function validateSpecification(issue) {
 
 export function touchesProtectedPaths(issue) {
   const touches = issue.body.split(/^## Touches\s*$/m)[1]?.split(/^## /m)[0] ?? "";
-  return /\.relay\/|\.github\/workflows\/|\.github\/scripts\/(?:check-protected-paths|review-bot-disabled)\.mjs/.test(touches);
+  return /\.relay\/|\.github\/workflows\/|\.github\/scripts\/(?:(?:check-protected-paths|review-bot-disabled|issues)\.mjs|issues\/)/.test(touches);
 }
 
 /** Imported completed dependencies need an exported handover before they unblock new work. */

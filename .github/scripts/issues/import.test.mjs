@@ -82,6 +82,7 @@ test("comments, events, source metadata, hierarchy and merged PR handovers survi
   const converted = parseRecord(await readFile(join(setup.destination, "issues/items/gh-2.md"), "utf8"));
   assert.equal(converted.metadata.parent, "gh-1");
   assert.ok((await readFile(join(setup.destination, "issues/history/gh-2/comments/99.md"), "utf8")).endsWith(child.comments[0].body));
+  assert.deepEqual(JSON.parse(await readFile(join(setup.destination, "issues/history/gh-2/comments.json"), "utf8")), child.comments);
   assert.deepEqual(JSON.parse(await readFile(join(setup.destination, "issues/history/gh-2/events.json"), "utf8")), child.events);
   assert.match(await readFile(join(setup.destination, "issues/handovers/gh-2.md"), "utf8"), /Follow-up context/);
 });
@@ -143,4 +144,16 @@ test("duplicate attachment destinations and unknown statuses are refused before 
     await assert.rejects(importExport(setup.input, setup.destination), status === "duplicate" ? /Duplicate import destination/ : /Unknown attachment status/);
     await assert.rejects(readFile(join(setup.destination, "issues/items/gh-1.md")), { code: "ENOENT" });
   }
+});
+
+test("import preserves checked source pagination and export manifest provenance", async t => {
+  const setup = await fixture(t);
+  setup.manifest.sourcePagination = [{ page: 1, count: 1 }];
+  const text = JSON.stringify(setup.manifest); await writeFile(join(setup.input, "manifest.json"), text);
+  const report = await prepareImport(setup.input);
+  assert.equal(report.report.exportManifestSha256, digest(text));
+  assert.deepEqual(report.report.sourcePagination, [{ page: 1, apiPage: 1, perPage: 10, count: 1 }]);
+  setup.manifest.sourcePagination = [{ page: 1, apiPage: 2, perPage: 10, count: 1 }];
+  await writeFile(join(setup.input, "manifest.json"), JSON.stringify(setup.manifest));
+  await assert.rejects(prepareImport(setup.input), /Incomplete source pagination/);
 });

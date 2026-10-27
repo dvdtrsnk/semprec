@@ -46,8 +46,9 @@ Approving does not queue work. Queueing refuses protected paths declared in
 performs no network calls, claims no work and does not dispatch Relay. Missing
 dependencies, invalid specs, stale approvals, park labels, cancelled dependencies
 and completed dependencies without handovers exclude an issue. `validate`
-reports specification diagnostics and exits unsuccessfully if any are present;
-import preserves such historical records rather than silently rewriting them.
+reports specification diagnostics and fails on new or edited invalid records.
+Import diagnostics remain visible as historical debt only while the original
+record checksum matches the migration manifest; import never silently rewrites specs.
 
 ## Record format
 
@@ -87,6 +88,7 @@ credentials, make API calls or bypass Access Hub.
 
 `history/<id>/source.json` is the immutable imported source, not the editable
 spec. `history/<id>/comments/<comment-id>.md` preserves comment metadata and body;
+`comments.json` additionally retains the complete imported comment payloads;
 `events.json` preserves available events. A handover contains the descriptions
 of the verified merged closing PRs. Attachments keep original links in issue
 bodies and local copies under `attachments/<id>/`; the migration report lists
@@ -103,3 +105,38 @@ cutover; rerunning the initial import over edited records is deliberately refuse
 CLI writers reserve `items/.<id>.lock`. If a process crashes, inspect the owning
 operation before removing its lock; never clear another agent's active lock.
 Direct edits and independent worktrees are outside this reservation protocol.
+
+## Completion and automation
+
+A worker completes an approved issue on its feature branch:
+
+```sh
+node .github/scripts/issues.mjs complete <id> <expected-file-sha256> <handover.md> <implementation-commit> [pr-number]
+```
+
+Commit the issue and handover with the implementation. The completion guard compares
+its specification against the frozen dispatch revision. The CLI checks proposal
+commit ancestry when first completing the issue; a later rebase preserves that
+original proposal identity. `resolution.commit` identifies the original implementation
+proposal; a future
+squash merge commit cannot be known before review. The record becomes canonical when
+the branch merges. PR descriptions begin with `Repository-Issue: <id>`.
+
+Relay obtains immutable base checkouts on the host and reads the credential-free
+`issues/relay.mjs` protocol. A run seals the canonical id, Git revision, file checksum
+and body checksum in its execution snapshot. Its numeric issue address is only a
+compatibility key; collisions fail closed. Operational logs and temporary park labels
+live in Relay's durable journal, keyed by canonical issue and intent checksum. Editing
+a canonical record creates new intent; progress logs never edit the specification.
+PR conversations continue through the GitHub provider.
+
+The review bot reads the approved specification from the PR base Git blob, without
+executing repository code. Missing records, invalid linkage and stale approval are
+errors after cutover. PR-only maintenance remains unlinked.
+
+Scheduled epic maintenance and review harvesting propose Git changes through an
+issue-maintenance PR. A pending maintenance PR applies backpressure. The epic sweep
+uses a versioned observation and preserves the grace period and `epic:wip` opt-out.
+Follow-up triage creates proposed local records and publishes its ledger through a PR;
+it never approves or queues its own specifications. Local harvest markers replace
+remote issue labels as its durable ledger.

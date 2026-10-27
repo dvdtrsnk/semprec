@@ -1,6 +1,6 @@
 ---
 name: define-behavior
-description: Turn a feature idea into a user-approved behavior specification and a batch of dependency-ordered, self-contained GitHub issues (epic + implementation issues) in dvdtrsnk/semprec, finishing with a bounded, consensus-gated two-agent audit and automatic spec:approved labeling. Invoked explicitly as /define-behavior <idea>; supports a dry-run mode.
+description: Turn a feature idea into a user-approved behavior specification and a batch of dependency-ordered, self-contained repository issues (epic + implementation issues) in dvdtrsnk/semprec, finishing with a bounded, consensus-gated two-agent audit and automatic spec:approved labeling. Invoked explicitly as /define-behavior <idea>; supports a dry-run mode.
 disable-model-invocation: true
 ---
 
@@ -30,7 +30,7 @@ closed it (see "Hand-over context" in `.github/ISSUE_FORMAT.md`). That is why
 this skill is deliberately slow and thorough up front — every ambiguity you
 leave in an issue becomes a wrong guess made by an unsupervised agent at 3 a.m.
 
-Converse with the user in the language they use. Everything written to GitHub is
+Converse with the user in the language they use. Everything written to the repository or GitHub is
 English. The issue structure contract is `.github/ISSUE_FORMAT.md` — read it
 before Phase 4 and follow it exactly.
 
@@ -57,7 +57,7 @@ contained feature):
 - What parts of the codebase does this behavior touch? What patterns already
   exist there (choke-point endpoints, view types, heartbeats, modules)?
 - Which existing issues (open or closed) overlap or border this idea?
-  (`gh issue list -R dvdtrsnk/semprec --state all`)
+  (`node .github/scripts/issues.mjs list`)
 
 Their findings shape your questions and later the decomposition. Do not skip
 this: a question the codebase can answer must never be asked to the user.
@@ -143,8 +143,8 @@ in the spec, go back to the user — do not fill it silently.
 6. Write the epic per the same document: approved spec and a `## Decisions`
    section preserving the grilling Q&A (question → adopted answer → reason — the
    decision log would otherwise die with this conversation). Do not list the
-   batch's issues in the epic body — they are tracked only as its GitHub
-   sub-issues (step 9), which GitHub renders with their live open/closed state.
+   batch's issues in the epic body — derive them from the child records'
+   `parent` metadata (step 9) and their local state.
    Nothing updates a hand-written copy, so it goes stale as soon as the first
    issue closes.
 7. **Decomposition size gate — mechanical self-check, before anything is
@@ -180,23 +180,16 @@ in the spec, go back to the user — do not fill it silently.
    earlier issue both then depend on. Re-run this check after every split
    from step 7 — extracting a shared change can itself need its own issue,
    which changes the DAG.
-9. **Real mode:** create the epic first, then the issues **in topological
-   order** (every issue after every issue named on its own `Blocked by:`
-   line; `gh issue create -R dvdtrsnk/semprec`) — creating in that order means
-   every backward reference already has its real `#N` at write time.
-   Immediately after creating each implementation issue, link it to the epic as
-   a GitHub sub-issue:
-   `gh api -X POST repos/dvdtrsnk/semprec/issues/<epic-number>/sub_issues -F sub_issue_id=<child-id>`,
-   where `<child-id>` is the child's numeric `id` (`gh api
-   repos/dvdtrsnk/semprec/issues/<n> --jq .id`), not its issue number. This is
-   what lets `.github/workflows/close-completed-epics.yml` close the epic once
-   the batch is done — a batch created without it never self-closes — and it
-   is the epic's only list of its issues. Then do one substitution pass: edit
-   any issue that used a forward reference, replacing placeholders with real
-   numbers. No `#TBD` may survive — Relay only parses `#N`.
-   **dry-run:** write epic + issues as separate files into the scratchpad
-   directory, using `#TBD-NN` for in-batch references (real cross-batch
-   blockers keep their real `#N`). No gh calls, no sub-issue links, no labels.
+9. **Real mode:** create the epic locally with `node .github/scripts/issues.mjs
+   create <title> <body-file> --kind epic`, then create implementation records
+   in topological order with `--parent <epic-id>`. Use their returned canonical
+   `sp-<UUIDv4>` ids in `Blocked by`; imported records retain `gh-N` ids.
+   No placeholder may survive publication. Store hierarchy only in the child's
+   parent field. Commit the batch through a reviewed PR; do not create, read or
+   label GitHub Issues. Human-approved behavior permits the audit below; it
+   does not allow an agent to approve unrelated proposals or silently expand scope.
+   **dry-run:** write separate draft files into the scratchpad using `#TBD-NN`
+   for in-batch placeholders. Do not mutate the canonical `issues/` directory.
 
 ## Phase 5 — Bounded audit, then arm the pipeline
 
@@ -251,8 +244,7 @@ not rewrite a section to answer a finding, and do not fix an advisory finding by
 adding prose that explains itself.
 
 **Growth check.** Run this per issue, after that issue's fixes. Length means
-characters, counted the same way before and after: `gh issue view <N> --json body
---jq '.body | length'` in real mode, `wc -m` on the draft file in dry-run. An
+characters, counted the same way before and after: the `body` returned by `node .github/scripts/issues.mjs show <id>` in real mode, `wc -m` on the draft file in dry-run. An
 issue over 1.5× its pre-audit character count is being healed with prose, which is
 the failure this phase is bounded to prevent.
 
@@ -320,3 +312,13 @@ same consensus gate, same two-round bound, same terminal states. Judge coverage
 against the issue's own Context and Task rather than an epic spec, and tell the
 auditors there is deliberately no epic. Do not improvise a fresh audit prompt for these; the
 whole point of the prompt file is that the bar does not move between runs.
+
+## Repository publication
+
+All references to issue numbers in the audit mean canonical repository ids.
+Read and edit `issues/items/<id>.md`; never use GitHub Issues operations.
+After the authorized audit, approve each eligible record with
+`node .github/scripts/issues.mjs approve <id> <expected-file-sha256> <actor>`.
+Read its new checksum before a separate `queue` command. Protected-path work
+remains maintainer-implemented. Publish these changes through a reviewed PR;
+no proposed follow-up becomes approved without the owner's authorization.

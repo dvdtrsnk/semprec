@@ -321,10 +321,8 @@ findings and its own decision. See
 
 ## Hand-over context
 
-An issue's `Blocked by:` line names the issues its implementer needs context
-from. That context is not a comment on the blocker: `merge-pull-request` leaves
-only a short run-log comment there ("Resolved by #N, merged into develop"). The
-actual hand-over — what was implemented, notes for what comes next — is the
-**pull request description** of the PR that closed the blocker:
-`gh issue view <blocker> --json closedByPullRequestsReferences`, then read that
-pull request's body.
+An issue's `Blocked by:` line names local records. Read each dependency's
+`issues/handovers/<id>.md`; the importer preserves the descriptions of verified
+merged closing PRs there. New implementation branches carry a local handover
+and completion record together, so dependent work sees them after merge.
+Missing local context blocks dispatch; do not query GitHub Issues to fill it.

@@ -1,5 +1,5 @@
 version: 1
-protected-paths: [".relay/**", ".github/workflows/**", ".github/scripts/check-protected-paths.mjs", ".github/scripts/review-bot-disabled.mjs"]
+protected-paths: [".relay/**", ".github/workflows/**", ".github/scripts/check-protected-paths.mjs", ".github/scripts/review-bot-disabled.mjs", ".github/scripts/issues.mjs", ".github/scripts/issues/**"]
 defaults:
   worker: any                 # any preset in project.workerIds, or a preset name
   model-tier: medium          # provider-neutral ability class; workflow overrides below

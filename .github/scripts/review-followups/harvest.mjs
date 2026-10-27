@@ -7,6 +7,10 @@
  * labelled `followups:ready`, which Relay's `triage-review-followups` workflow then
  * picks up.
  *
+ * After repository cutover, issue records and the harvest ledger are local; the
+ * scheduled wrapper publishes their changes through a reviewed metadata PR.
+ * Remote PR labels are replaced by the versioned harvest markers in that mode.
+ *
  * It is deterministic and uses no AI. Every decision lives in the modules it calls
  * (markers, records, memory, select, hints); this script fetches, calls them, renders
  * and writes. A run, in order:
@@ -103,7 +107,7 @@ async function readLedgerIssues(api) {
 /** The pull request's parsed memory findings, or null without a memory; any failure names the pull request. */
 async function readMemoryFindings(api, pr) {
   try {
-    const memory = selectMemoryComment(await api.listIssueComments(pr));
+    const memory = selectMemoryComment(await api.listIssueComments(pr, "pull-request"));
     return memory === null ? null : parseMemory(decodeMemory(memory.body), pr).findings;
   } catch (error) {
     throw new Error(`cannot read the review memory of pull request #${pr}: ${error.message}`, { cause: error });
@@ -284,7 +288,7 @@ export async function runHarvest(api, { minPr, dryRun }) {
 function apiFromClient(client) {
   return {
     listIssuesWithLabel: (label, state) => listIssuesWithLabel(client, label, state),
-    listIssueComments: (number) => listIssueComments(client, number),
+    listIssueComments: (number, target) => listIssueComments(client, number, target),
     listMergedPullRequests: (base) => listMergedPullRequests(client, base),
     listReviewThreads: (pr) => listReviewThreads(client, pr),
     listTreePaths: (ref) => listTreePaths(client, ref),

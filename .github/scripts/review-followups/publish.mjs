@@ -4,7 +4,8 @@
  *
  *   node publish.mjs --input <input.json> --proposal <proposal.json>
  *
- * Turns a triage proposal (validate.mjs) for harvest issue H into GitHub state, through
+ * Turns a triage proposal (validate.mjs) for harvest issue H into local repository
+ * records after cutover (GitHub state before cutover), through
  * github.mjs (`clientFromEnv`: GITHUB_API_URL, GITHUB_GRAPHQL_URL, GITHUB_TOKEN,
  * GITHUB_REPOSITORY). It writes nothing until every check has passed:
  *

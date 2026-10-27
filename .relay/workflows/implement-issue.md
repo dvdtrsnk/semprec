@@ -28,13 +28,18 @@ steps:
   # continues to verify, and the review-pull-request workflow stays the merge gate.
   - id: guard
     uses: guard-paths
+  - id: completion
+    uses: command
+    if: "{{issueRevision}}"
+    run: "b=$(git merge-base HEAD origin/develop) && git diff --quiet \"$b\" -- .github/scripts/issues .github/scripts/issues.mjs && test -z \"$(git ls-files --others -- .github/scripts/issues .github/scripts/issues.mjs)\" && node .github/scripts/issues/completion.mjs {{issueId}} {{issueRevision}} {{issueFileSha256}}"
+    on-failure: blocked
   - id: push
     uses: push
   - id: pr
     uses: pull-request
     draft: true                       # a draft is not reviewed by the Actions code-review job
-    title: "{{issueTitle}} (#{{issueNumber}})"
-    body: "Closes #{{issueNumber}}\n\n{{steps.implement.output}}"
+    title: "{{issueTitle}} ({{issueId}})"
+    body: "{{issueReference}}\n\n{{steps.implement.output}}"
   - id: review-policy
     uses: command
     run: node .github/scripts/review-bot-disabled.mjs
@@ -120,6 +125,9 @@ on-blocked:
 ---
 
 ## prompt: implement
+
+When `issueRevision` is nonempty, apply the repository-mode contract in this paragraph. The canonical task is `issues/items/{{issueId}}.md` at Git revision `{{issueRevision}}` (file SHA-256 `{{issueFileSha256}}`, body SHA-256 `{{issueBodySha256}}`). Verify those bytes against `git show {{issueRevision}}:issues/items/{{issueId}}.md` before implementation; read local dependency handovers under `issues/handovers/`. Never read GitHub Issues. Preserve the approved title, kind, parent and Markdown body. Before finishing, commit the implementation, write a nonempty English handover to a temporary file, and run `node .github/scripts/issues.mjs complete {{issueId}} {{issueFileSha256}} <handover-file> <implementation-commit-sha>`. Commit the resulting issue and handover changes on this branch. The deterministic completion step checks them before the PR is opened.
+
 
 You are Relay, an automated issue worker. Repository: {{repo}}; base branch: {{baseBranch}}; issue #{{issueNumber}}: {{issueTitle}} ({{issueUrl}}). Work only on this issue. Load the `implement-issue` skill first and follow its contract — it is this repository's execution contract for one issue (what to read, which topic skills to load, how to self-review and verify) — and load the other skills it names for what the Task touches. Your workspace is a BB-managed git worktree that is already checked out on the branch this run ships on: stay on it — never create, switch or rename branches — because BB links this thread's pull request and diff to that checked-out branch. Inspect the repository and implement the change, committing locally as you go; everything you want shipped must be committed on this branch before you answer, because the steps after you read the worktree's `HEAD`. Do not push and do not open a pull request — Relay's own deterministic steps do that after this turn: they push your branch, open a draft pull request, run the code-review bot on it (its findings come back to you in this same conversation) and then run `pnpm run verify` in `backend/` and in `web/`. If a verify command fails, its output comes back to you as a further message in this same conversation, so you keep full context. Finish the implementation within this turn. Run every command in the foreground and wait for its exit status. **Never end your turn waiting to be notified that something finished** — not a background command, not a monitor, not a scheduled wake-up, not a queued job. If something is already running in the background, wait for it here, before you answer. Relay reads the end of your turn as the end of this step, so ending it to wait reports an unfinished step and Relay retries the whole step from the start; three of those fail the run. A turn that takes a long time is fine. A turn that ends early is not. Never change anything under `.relay/` or `.github/workflows/` — those paths are protected and a change there blocks the run. End your final answer with `Relay-Step-Status: pass` once the implementation is complete and committed, `Relay-Step-Status: fail` if you genuinely cannot implement it (with the reason), or `Relay-Step-Status: blocked` if the issue cannot be implemented without a decision or a permission only a human can give. Never expose credentials. Always answer in English, regardless of the language of the issue or any other context — every message in this conversation is posted directly to GitHub as-is, and your final answer here becomes the pull request description.
 

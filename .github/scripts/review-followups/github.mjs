@@ -1,3 +1,4 @@
+import { localFollowups } from "../issues/followups.mjs";
 /**
  * GitHub access layer shared by the review follow-ups scripts (harvest, triage
  * `prepare` and triage `publish`): one `fetch`-based transport plus thin endpoint
@@ -181,7 +182,7 @@ export function clientFromEnv(env = process.env) {
   if (!/^[^/\s]+\/[^/\s]+$/.test(repository)) {
     throw new Error(`GITHUB_REPOSITORY must be "owner/name", got "${repository}"`);
   }
-  return createGitHubClient({ apiUrl, graphqlUrl, token, repository });
+  return { ...createGitHubClient({ apiUrl, graphqlUrl, token, repository }), issueRoot: env.ISSUES_ROOT || process.cwd() };
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +202,7 @@ function toIssue(raw, what) {
 
 /** Issues carrying `label`, pull requests excluded (they share the issues endpoint). */
 export async function listIssuesWithLabel(client, label, state) {
+  const local = await localFollowups(client); if (local) return local.list(label, state);
   if (state !== "open" && state !== "all") throw new Error(`state must be "open" or "all", got "${state}"`);
   const query = new URLSearchParams({ labels: nonEmpty(label, "label"), state, per_page: "100" });
   const raw = await client.paginate(`/repos/${client.repository}/issues?${query}`);
@@ -210,6 +212,7 @@ export async function listIssuesWithLabel(client, label, state) {
 }
 
 export async function getIssue(client, number) {
+  const local = await localFollowups(client); if (local) return local.get(number);
   issueNumber(number, "number");
   return toIssue(await client.request("GET", `/repos/${client.repository}/issues/${number}`), `issue #${number}`);
 }
@@ -219,7 +222,9 @@ function restAuthor(user, what) {
   return user === null ? "ghost" : string(object(user, what).login, `${what}.login`);
 }
 
-export async function listIssueComments(client, number) {
+export async function listIssueComments(client, number, target = "issue") {
+  if (!["issue", "pull-request"].includes(target)) throw new Error("Invalid comment target");
+  const local = await localFollowups(client); if (local && target === "issue") return local.comments(number);
   issueNumber(number, "number");
   const raw = await client.paginate(`/repos/${client.repository}/issues/${number}/comments?per_page=100`);
   return raw.map((entry, i) => {
@@ -379,6 +384,7 @@ export async function listPullRequestsForCommit(client, sha) {
 // Write endpoints.
 
 export async function createIssue(client, { title, body, labels }) {
+  const local = await localFollowups(client); if (local) return local.create({ title, body, labels });
   const issue = object(
     await client.request("POST", `/repos/${client.repository}/issues`, { body: { title, body, labels } }),
     "created issue",
@@ -387,6 +393,8 @@ export async function createIssue(client, { title, body, labels }) {
 }
 
 export async function addLabels(client, number, labels) {
+  // Local harvest markers are the ledger; no remote issue label is used after cutover.
+  const local = await localFollowups(client); if (local) return;
   issueNumber(number, "number");
   await client.request("POST", `/repos/${client.repository}/issues/${number}/labels`, { body: { labels } });
 }
@@ -398,6 +406,7 @@ export async function addLabels(client, number, labels) {
  * non-2xx this module does not throw on; every other failure propagates.
  */
 export async function removeLabel(client, number, label) {
+  const local = await localFollowups(client); if (local) return local.removeLabel(number, label);
   issueNumber(number, "number");
   const path = `/repos/${client.repository}/issues/${number}/labels/${encodeURIComponent(nonEmpty(label, "label"))}`;
   try {
@@ -408,6 +417,7 @@ export async function removeLabel(client, number, label) {
 }
 
 export async function closeIssue(client, number) {
+  const local = await localFollowups(client); if (local) return local.close(number);
   issueNumber(number, "number");
   await client.request("PATCH", `/repos/${client.repository}/issues/${number}`, {
     body: { state: "closed", state_reason: "completed" },
@@ -415,6 +425,7 @@ export async function closeIssue(client, number) {
 }
 
 export async function createComment(client, number, body) {
+  const local = await localFollowups(client); if (local) return local.comment(number, body);
   issueNumber(number, "number");
   const comment = object(
     await client.request("POST", `/repos/${client.repository}/issues/${number}/comments`, { body: { body } }),
@@ -425,6 +436,7 @@ export async function createComment(client, number, body) {
 
 /** Links `childId` — the child issue's numeric `id`, not its number — as a sub-issue of `parentNumber`. */
 export async function addSubIssue(client, parentNumber, childId) {
+  const local = await localFollowups(client); if (local) return local.child(parentNumber, childId);
   issueNumber(parentNumber, "parentNumber");
   issueNumber(childId, "childId");
   await client.request("POST", `/repos/${client.repository}/issues/${parentNumber}/sub_issues`, {

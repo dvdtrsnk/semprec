@@ -2,6 +2,11 @@
   "schemaVersion": 1,
   "authority": "github",
   "targetAuthority": "repository",
-  "phase": "preparing",
-  "repository": "dvdtrsnk/semprec"
+  "phase": "exported-awaiting-review-integration",
+  "repository": "dvdtrsnk/semprec",
+  "importedIssueCount": 1375,
+  "verification": "issues/migration/verification.json",
+  "relayAdapterCommit": "f5d95655ad571b551fa82aae0d87f9fdfb345ce1",
+  "pendingReviewBotCommit": "eeb88558a9b6d65b0fc06e624c69c32d2794e6df",
+  "reviewBotPublished": false
 }

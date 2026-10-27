@@ -48,7 +48,7 @@ const DEFAULT_RELAY_BOT_LOGIN = "bb-agent-relay[bot]";
  * script itself is on the list so that Relay cannot weaken it and have a human merge
  * that unnoticed. Keep this list in step with `protected-paths` in `.relay/config.yml`.
  */
-const PROTECTED_PATTERNS = [".relay/**", ".github/workflows/**", ".github/scripts/check-protected-paths.mjs"];
+const PROTECTED_PATTERNS = [".relay/**", ".github/workflows/**", ".github/scripts/check-protected-paths.mjs", ".github/scripts/review-bot-disabled.mjs", ".github/scripts/issues.mjs", ".github/scripts/issues/**"];
 
 const PER_PAGE = 100;
 

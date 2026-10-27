@@ -13,19 +13,19 @@ missing local context blocks implementation. GitHub remains the PR/review/CI
 host. If authority is still `github`, the existing instructions below remain
 the active contract. See `issues/README.md` and the guarded-cutover ADR.
 
-The issue body is your source of truth. It is written to be self-contained:
-everything you need is in it, plus the hand-over context from the work this one
-builds on — for each issue named in its `Blocked by:` line, that context lives in
-the pull request that closed it, not in a comment on the issue itself:
-Access Hub: discover the repository grant with `access_hub_context` and inspect
-each operation with `access_hub_schema` before calling it through
-`access_hub_call`. Read the blocker with `issue_get`, list its merged closing
-pull requests with `issue_closed_by_reviews_list`, then read each returned pull
-request's body with `review_get` — the listing alone is not the hand-over.
-This preserves GitHub's authoritative closing references without requiring a
-global GitHub CLI login. Never infer the closing PR from a branch name or
-restore global authentication. If the scoped operation is denied, report the
-specific denial rather than substituting an account or native CLI.
+The issue body is your source of truth. Read its full Task, scope and acceptance
+criteria, and each local dependency handover. A Relay run freezes the canonical
+id, Git revision, exact file SHA-256 and body SHA-256 in its execution snapshot.
+Verify the supplied bytes against that revision; a changed working copy is not
+new task authority. GitHub service access is used only for PR/review/CI context.
+If migration authority is still `github`, the authorized exporter and legacy
+Relay installation remain responsible for issue access until cutover.
+
+On completion, use `node .github/scripts/issues.mjs complete` to close the local
+record and add the handover on the implementation branch, preserving the approved
+specification. Commit these files with the code. See `issues/README.md` for the
+CLI arguments. The PR's first line is `Repository-Issue: <id>`; never emit a
+GitHub closing instruction for a synthetic numeric compatibility address.
 
 ## Model-tier contract
 
