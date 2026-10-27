@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "repository": "dvdtrsnk/semprec",
+  "exportedAt": "2026-10-27T14:51:08Z",
+  "verifiedAt": "2026-10-27T14:53:59.282Z",
+  "counts": {
+    "issues": 1375,
+    "open": 734,
+    "closed": 641,
+    "comments": 1308,
+    "events": 17493,
+    "parentIssues": 109,
+    "childRelationships": 1193,
+    "handovers": 544,
+    "attachments": 0
+  },
+  "reconciliation": {
+    "allExistingIssueFingerprintsMatch": true,
+    "comparedIssueCount": 1375,
+    "finalListingPageCount": 15,
+    "sourceListingPageCount": 114
+  },
+  "coverage": {
+    "allStates": true,
+    "pullRequestsExcluded": true,
+    "commentCountsMatch": true,
+    "nativeChildCountsMatch": true,
+    "terminalPaginationVerified": true,
+    "closingPullRequestReferencesVerified": true,
+    "originalBodiesPreserved": true,
+    "unavailableAttachments": []
+  },
+  "historicalDiagnostics": 473
+}
