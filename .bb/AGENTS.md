@@ -11,7 +11,15 @@ the iOS and the native macOS app (`mobile/docs/architecture.md`).
 
 ## The issue is the law
 
-Work arrives as a fully self-contained GitHub issue. Implement exactly its
+Repository issue migration is tracked in `issues/migration/state.json`.
+When its authority is `repository`, read `issues/items/<id>.md` and local
+`issues/handovers/<dependency-id>.md`; use
+`node .github/scripts/issues.mjs show <id>` to extract the body and metadata.
+Do not fall back to GitHub issue reads after cutover. While authority is
+`github`, local files are preparation/shadow data and existing Relay workflows
+remain authoritative. See `issues/README.md` for rollout and validation.
+
+Work arrives as a fully self-contained repository issue. Implement exactly its
 `## Task` — nothing from `### Out of scope`, even when it looks trivial or
 you are already in the file. Its `## Acceptance criteria` is the list your
 tests are written against. Speculative generality is treated as a defect here,
@@ -27,6 +35,11 @@ the failure mode that rule exists to prevent.
 - **`docs/adr/`** — why the architecture is shaped the way it is. `ls docs/adr/`
   and grep the `area` frontmatter before introducing a pattern: a past decision
   may already cover it, for or against.
+  For platform discovery, run `node .github/scripts/adr.mjs --platform <platform>`
+  from the repository root (`backend`, `web`, `mobile`, `shared`, `android`,
+  `apple`, `ios`, `macos`). This includes repository-wide and historical mobile
+  candidates; read each decision's actual scope. Use `--all` for superseded and
+  proposed records. ADRs keep their permanent central paths.
 - **`review-rules/`** of every platform you touch (`backend/`, `web/`,
   `mobile/`, `mobile/android/`, `mobile/apple/`, and the repository root) —
   these are the rules the review bot enforces on your pull request, so reading
@@ -229,13 +242,13 @@ direct conversation with the user follows the user's own language.
 
 ## GitHub service access in Relay workers
 
-Service authorization lives in Access Hub. For GitHub issue, PR, review and check
+Service authorization lives in Access Hub. For GitHub PR, review and check
 reads or review responses, discover the current repository grant with
 `access_hub_context`, inspect its named operation with `access_hub_schema`, then
 use `access_hub_call` with an explicit access ID and exact repository arguments.
-Use `issue_get` to read an issue, `issue_closed_by_reviews_list` for a
-blocker's authoritative merged closing PRs, and `review_get` to read each of
-those PRs' bodies, which carry the hand-over context.
+Read issues and dependency handovers from `issues/` after repository cutover.
+Never use a GitHub issue operation as a fallback. PR bodies, review threads and
+CI checks remain on GitHub and use the granted PR/review/check operations.
 Raw `gh`, direct GitHub HTTP and restoring a global CLI login are not fallbacks:
 they caused repair workers to fail after server-wide logins were removed.
 Report an unavailable or denied scoped operation instead of substituting another

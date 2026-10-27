@@ -8,7 +8,8 @@
  * input-file.mjs, so the triage agent has everything it needs without touching GitHub.
  * `<dir>` is created when missing.
  *
- * Inputs, all read from GitHub through github.mjs (`clientFromEnv`: GITHUB_API_URL,
+ * Issue inputs come from the local catalog after cutover; PR review data stays on GitHub.
+ * Before cutover, inputs are read from GitHub through github.mjs (`clientFromEnv`: GITHUB_API_URL,
  * GITHUB_GRAPHQL_URL, GITHUB_TOKEN, GITHUB_REPOSITORY):
  *   - the harvest issue, which must be open and labelled `followups:harvest`, and its
  *     data block (records.mjs, `parseHarvestBlock`);
@@ -156,7 +157,7 @@ async function buildInput(api, harvestIssue) {
 
   const prSummaries = [];
   for (const pr of new Set(kept.map((finding) => finding.pr))) {
-    const summary = newestSummary(await api.listIssueComments(pr));
+    const summary = newestSummary(await api.listIssueComments(pr, "pull-request"));
     if (summary !== null) prSummaries.push({ pr, body: summary.body });
   }
 
@@ -185,7 +186,7 @@ function apiFromClient(client) {
   return {
     getIssue: (number) => getIssue(client, number),
     listIssuesWithLabel: (label, state) => listIssuesWithLabel(client, label, state),
-    listIssueComments: (number) => listIssueComments(client, number),
+    listIssueComments: (number, target) => listIssueComments(client, number, target),
     listReviewThreads: (prNumber) => listReviewThreads(client, prNumber),
   };
 }

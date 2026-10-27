@@ -168,6 +168,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - uses: pnpm/action-setup@v4
         with:
@@ -198,6 +200,12 @@ jobs:
       - name: Backend — check write safety
         working-directory: backend
         run: pnpm run check:write-safety
+
+      - name: Repository issues and ADR catalog — validate
+        run: |
+          node .github/scripts/issues.mjs validate
+          node .github/scripts/issues/check-pr-completion.mjs
+          node .github/scripts/adr.mjs --platform backend > /dev/null
 
       # Runs the `node:test` suites under `.github/scripts/` through
       # run-repo-script-tests.mjs, which fails when it finds no test file (a bare

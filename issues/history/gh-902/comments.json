@@ -1,0 +1,49 @@
+[
+  {
+    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5940569746",
+    "html_url": "https://github.com/dvdtrsnk/semprec/issues/902#issuecomment-5940569746",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/902",
+    "id": 5940569746,
+    "node_id": "IC_kwDOUFuQ4c8AAAABYhXmkg",
+    "user": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-01T21:06:47Z",
+    "updated_at": "2026-10-01T21:06:47Z",
+    "body": "Rejecting this follow-up after a spec audit against `origin/develop`:\n\n- The problem it describes does not occur. When the test that uses the pool is filtered out, the pool is never created and `afterAll` has nothing to end, which is the correct behaviour.\n- The Task cannot be implemented as written. Declaring `let pool: Pool | undefined` and assigning it in `beforeAll` makes `createChokePoint(pool)` inside `it()` fail with TS2345 (checked with `tsc`). Test files are compiled by `pnpm -r run build` (`include: [\"src\"]`), so \"change nothing else\" cannot hold.\n\nClosing retires this finding, as described in `.github/ISSUE_FORMAT.md`.",
+    "author_association": "OWNER",
+    "pin": null,
+    "reactions": {
+      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5940569746/reactions",
+      "total_count": 0,
+      "+1": 0,
+      "-1": 0,
+      "laugh": 0,
+      "hooray": 0,
+      "confused": 0,
+      "heart": 0,
+      "rocket": 0,
+      "eyes": 0
+    },
+    "performed_via_github_app": null,
+    "minimized": null
+  }
+]

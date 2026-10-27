@@ -1,3 +1,5 @@
+import { readBounded } from "./issues/records.mjs";
+import { sweepLocalEpics } from "./issues/epics.mjs";
 #!/usr/bin/env node
 /**
  * Closes a parent issue once every one of its sub-issues is closed.
@@ -120,6 +122,12 @@ function closingBody(summary) {
 }
 
 async function main() {
+  const authority = JSON.parse(await readBounded("issues/migration/state.json", 100000));
+  if (authority.authority === "repository") {
+    console.log(JSON.stringify(await sweepLocalEpics(process.cwd(), { dryRun: process.env.DRY_RUN !== "false", graceHours: Number(process.env.GRACE_HOURS || "1") })));
+    return;
+  }
+  if (authority.authority !== "github") throw new Error("Invalid issue authority");
   const ctx = {
     apiUrl: process.env.GITHUB_API_URL || "https://api.github.com",
     token: requireEnv("GITHUB_TOKEN"),

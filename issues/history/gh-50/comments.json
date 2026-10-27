@@ -1,0 +1,49 @@
+[
+  {
+    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5465854481",
+    "html_url": "https://github.com/dvdtrsnk/semprec/issues/50#issuecomment-5465854481",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/50",
+    "id": 5465854481,
+    "node_id": "IC_kwDOUFuQ4c8AAAABRcpSEQ",
+    "user": {
+      "login": "dvdtrsnk",
+      "id": 122625462,
+      "node_id": "U_kgDOB08dtg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/122625462?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dvdtrsnk",
+      "html_url": "https://github.com/dvdtrsnk",
+      "followers_url": "https://api.github.com/users/dvdtrsnk/followers",
+      "following_url": "https://api.github.com/users/dvdtrsnk/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dvdtrsnk/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dvdtrsnk/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dvdtrsnk/subscriptions",
+      "organizations_url": "https://api.github.com/users/dvdtrsnk/orgs",
+      "repos_url": "https://api.github.com/users/dvdtrsnk/repos",
+      "events_url": "https://api.github.com/users/dvdtrsnk/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dvdtrsnk/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-08-30T00:54:26Z",
+    "updated_at": "2026-08-30T00:54:26Z",
+    "body": "Superseded by the independently audited, lossless decomposition in epic #187: #188, #189, #190, #191. The complete original specification is inlined in that epic. Both clean-context audits passed coverage, self-containment, format, and the global blocking graph.",
+    "author_association": "OWNER",
+    "pin": null,
+    "reactions": {
+      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5465854481/reactions",
+      "total_count": 0,
+      "+1": 0,
+      "-1": 0,
+      "laugh": 0,
+      "hooray": 0,
+      "confused": 0,
+      "heart": 0,
+      "rocket": 0,
+      "eyes": 0
+    },
+    "performed_via_github_app": null,
+    "minimized": null
+  }
+]

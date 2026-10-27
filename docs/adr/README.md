@@ -39,6 +39,26 @@ superseded-by: null      # slug of the ADR that replaced this one, if any
 ---
 ```
 
+## Platform discovery
+
+From the repository root, run:
+
+```sh
+node .github/scripts/adr.mjs --platform backend
+node .github/scripts/adr.mjs --platform web
+node .github/scripts/adr.mjs --platform android
+node .github/scripts/adr.mjs --platform apple
+node .github/scripts/adr.mjs --all --json
+```
+
+The default output contains accepted decisions. Each platform includes
+`cross-cutting`; mobile, shared, Android, Apple, iOS and macOS selections also
+include historical `apple` tags alongside `mobile`. These are candidates to
+read, not an assertion that an Apple-specific rule governs Android. `--all`
+includes historical and proposed records. The command validates metadata and
+generates no stored index. See
+[[2026-10-27-platform-discovery-in-the-shared-adr-catalog]].
+
 ## Superseding a decision
 
 Reversing or replacing a decision never edits the old file's body. Instead:

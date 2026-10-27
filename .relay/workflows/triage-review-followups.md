@@ -9,7 +9,7 @@ on:
     label: followups:ready
     exclude-labels: [agent:blocked, agent:needs-human-action]
     respect-blocked-by: false          # a harvest issue's findings may contain "blocked by", which would hold the issue on an unrelated number
-    skip-if-open-pull-request: false   # triage opens no pull request, so there is no duplicate to guard against
+    skip-if-open-pull-request: true    # the canonical harvest stays open until its ledger PR merges
 # Integrity check, repeated at the head of every deterministic step: the agent steps can
 # edit any file of the worktree, so each such step refuses to run unless
 # .github/scripts/review-followups/ is exactly the develop fork point's copy — no
@@ -23,12 +23,12 @@ steps:
     prompt: "#orient"
   - id: integrity
     uses: command
-    run: "b=$(git merge-base HEAD origin/develop) && git diff --quiet \"$b\" -- .github/scripts/review-followups && test -z \"$(git ls-files --others -- .github/scripts/review-followups)\" || { echo 'integrity: .github/scripts/review-followups differs from the develop fork point'; exit 1; }"
+    run: "b=$(git merge-base HEAD origin/develop) && git diff --quiet \"$b\" -- .github/scripts/review-followups .github/scripts/issues && test -z \"$(git ls-files --others -- .github/scripts/review-followups .github/scripts/issues)\" || { echo 'integrity: .github/scripts/review-followups differs from the develop fork point'; exit 1; }"
     on-failure: blocked
   - id: prepare
     uses: command
     github-api: true
-    run: "{ b=$(git merge-base HEAD origin/develop) && git diff --quiet \"$b\" -- .github/scripts/review-followups && test -z \"$(git ls-files --others -- .github/scripts/review-followups)\" || { echo 'integrity: .github/scripts/review-followups differs from the develop fork point'; exit 1; }; } && node .github/scripts/review-followups/prepare.mjs --harvest-issue {{issueNumber}} --out .followups"
+    run: "{ b=$(git merge-base HEAD origin/develop) && git diff --quiet \"$b\" -- .github/scripts/review-followups .github/scripts/issues && test -z \"$(git ls-files --others -- .github/scripts/review-followups .github/scripts/issues)\" || { echo 'integrity: .github/scripts/review-followups differs from the develop fork point'; exit 1; }; } && node .github/scripts/review-followups/prepare.mjs --harvest-issue {{issueNumber}} --out .followups"
   - id: verify
     uses: agent
     prompt: "#verify"
@@ -40,13 +40,22 @@ steps:
     prompt: "#audit"
   - id: validate
     uses: command
-    run: "{ b=$(git merge-base HEAD origin/develop) && git diff --quiet \"$b\" -- .github/scripts/review-followups && test -z \"$(git ls-files --others -- .github/scripts/review-followups)\" || { echo 'integrity: .github/scripts/review-followups differs from the develop fork point'; exit 1; }; } && node .github/scripts/review-followups/validate.mjs --input .followups/input.json --proposal .followups/proposal.json"
+    run: "{ b=$(git merge-base HEAD origin/develop) && git diff --quiet \"$b\" -- .github/scripts/review-followups .github/scripts/issues && test -z \"$(git ls-files --others -- .github/scripts/review-followups .github/scripts/issues)\" || { echo 'integrity: .github/scripts/review-followups differs from the develop fork point'; exit 1; }; } && node .github/scripts/review-followups/validate.mjs --input .followups/input.json --proposal .followups/proposal.json"
     on-failure: { goto: fix }
   - id: publish
     uses: command
     github-api: true
-    run: "{ b=$(git merge-base HEAD origin/develop) && git diff --quiet \"$b\" -- .github/scripts/review-followups && test -z \"$(git ls-files --others -- .github/scripts/review-followups)\" || { echo 'integrity: .github/scripts/review-followups differs from the develop fork point'; exit 1; }; } && node .github/scripts/review-followups/publish.mjs --input .followups/input.json --proposal .followups/proposal.json"
+    run: "{ b=$(git merge-base HEAD origin/develop) && git diff --quiet \"$b\" -- .github/scripts/review-followups .github/scripts/issues && test -z \"$(git ls-files --others -- .github/scripts/review-followups .github/scripts/issues)\" || { echo 'integrity: .github/scripts/review-followups differs from the develop fork point'; exit 1; }; } && node .github/scripts/review-followups/publish.mjs --input .followups/input.json --proposal .followups/proposal.json"
     on-failure: blocked
+  - id: commit-ledger
+    uses: command
+    run: "git add -- issues && git -c user.name=Relay -c user.email=relay@localhost commit -m 'Propose review follow-up issues'"
+  - id: push-ledger
+    uses: push
+  - id: ledger-pr
+    uses: pull-request
+    title: "Propose review follow-up issues ({{issueId}})"
+    body: "Repository-Harvest: {{issueId}}\n\nPublishes proposed follow-up specifications and the local harvest ledger. These issues require explicit specification approval before implementation."
     on-success: end
   # Relay turns a spent max-rounds budget after a failing command into a failed run
   # (retried from scratch), not a blocked one, so the fix loop is unrolled: two fix
@@ -56,7 +65,7 @@ steps:
     prompt: "#fix"
   - id: validate-2
     uses: command
-    run: "{ b=$(git merge-base HEAD origin/develop) && git diff --quiet \"$b\" -- .github/scripts/review-followups && test -z \"$(git ls-files --others -- .github/scripts/review-followups)\" || { echo 'integrity: .github/scripts/review-followups differs from the develop fork point'; exit 1; }; } && node .github/scripts/review-followups/validate.mjs --input .followups/input.json --proposal .followups/proposal.json"
+    run: "{ b=$(git merge-base HEAD origin/develop) && git diff --quiet \"$b\" -- .github/scripts/review-followups .github/scripts/issues && test -z \"$(git ls-files --others -- .github/scripts/review-followups .github/scripts/issues)\" || { echo 'integrity: .github/scripts/review-followups differs from the develop fork point'; exit 1; }; } && node .github/scripts/review-followups/validate.mjs --input .followups/input.json --proposal .followups/proposal.json"
     on-success: { goto: publish }
     on-failure: { goto: fix-2 }
   - id: fix-2
@@ -64,14 +73,14 @@ steps:
     prompt: "#fix-2"
   - id: validate-3
     uses: command
-    run: "{ b=$(git merge-base HEAD origin/develop) && git diff --quiet \"$b\" -- .github/scripts/review-followups && test -z \"$(git ls-files --others -- .github/scripts/review-followups)\" || { echo 'integrity: .github/scripts/review-followups differs from the develop fork point'; exit 1; }; } && node .github/scripts/review-followups/validate.mjs --input .followups/input.json --proposal .followups/proposal.json"
+    run: "{ b=$(git merge-base HEAD origin/develop) && git diff --quiet \"$b\" -- .github/scripts/review-followups .github/scripts/issues && test -z \"$(git ls-files --others -- .github/scripts/review-followups .github/scripts/issues)\" || { echo 'integrity: .github/scripts/review-followups differs from the develop fork point'; exit 1; }; } && node .github/scripts/review-followups/validate.mjs --input .followups/input.json --proposal .followups/proposal.json"
     on-success: { goto: publish }
     on-failure: blocked
 on-failure:
   - { uses: comment, body: "Relay's triage run failed; Relay retries it after a back-off.{{errorLine}}" }
 on-blocked:
   - { uses: labels, add: [agent:blocked] }
-  - { uses: comment, body: "Relay's triage run is blocked and will not be retried automatically.{{errorLine}}\n\nRemove the `agent:blocked` label from this issue once the cause is addressed to re-run triage. A re-run prepares its input again from GitHub, so it never re-proposes a finding that is already published." }
+  - { uses: comment, body: "Relay's triage run is blocked and will not be retried automatically.{{errorLine}}\n\nRemove the `agent:blocked` label from this issue once the cause is addressed to re-run triage. A re-run prepares its input again from the repository, so it never re-proposes a finding that is already published." }
 ---
 
 ## What this workflow does
@@ -82,9 +91,10 @@ an open issue labelled `followups:ready`, created by the daily harvest, whose
 findings become proposed follow-up issues (`followups:issue` + `spec:proposed`,
 under an epic when there are two or more) or reasoned rejections. The agent steps
 follow `.claude/skills/triage-review-followups/SKILL.md`, write only
-`.followups/proposal.json` and working files, and never touch GitHub; only the
-deterministic `prepare` and `publish` steps do, through Relay's GitHub proxy
-(`github-api: true`), as `bb-agent-relay[bot]`.
+`.followups/proposal.json` and working files. The deterministic preparation step
+reads issues and the ledger locally and PR review context through Relay's proxy.
+Publication writes proposed local records, then commits and opens a metadata PR.
+The harvest remains canonically open until those changes merge.
 
 - `pickup` leaves a pickup note on the harvest issue.
 - `orient` has the agent read the skill and the issue-writing rules. It exists
