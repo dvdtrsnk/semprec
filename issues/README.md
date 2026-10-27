@@ -90,7 +90,9 @@ spec. `history/<id>/comments/<comment-id>.md` preserves comment metadata and bod
 `events.json` preserves available events. A handover contains the descriptions
 of the verified merged closing PRs. Attachments keep original links in issue
 bodies and local copies under `attachments/<id>/`; the migration report lists
-missing assets. Downloading assets does not imply executing or trusting them.
+missing assets. `history/<id>/attachments.json` maps original asset URLs to local
+paths and checksums, so offline readers can resolve them without rewriting the
+original issue body. Downloading assets does not imply executing or trusting them.
 
 Imports refuse changed destination files. Identical retries are safe, including
 after interruption. The final `migration/manifest.json` records imported file

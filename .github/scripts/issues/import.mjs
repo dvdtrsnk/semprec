@@ -132,19 +132,25 @@ export async function prepareImport(exportRoot) {
       });
       output.push({ path: `issues/handovers/${id}.md`, content: `# Handover for ${id}\n\n${sections.join("\n\n")}\n` });
     }
+    const attachments = [];
     for (const value of array(bundle.attachments, "attachments")) {
       const attachment = object(value, "attachment");
       string(attachment.url, "attachment URL", 10000);
       if (attachment.status === "unavailable") {
-        unavailableAttachments.push({ issue: id, url: attachment.url, reason: string(attachment.reason, "attachment reason", 1000) });
+        const missing = { issue: id, url: attachment.url, reason: string(attachment.reason, "attachment reason", 1000) };
+        unavailableAttachments.push(missing);
+        attachments.push({ url: missing.url, status: "unavailable", reason: missing.reason });
       } else if (attachment.status === "downloaded") {
         if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(string(attachment.filename, "attachment filename", 200))) throw new Error("Unsafe attachment filename");
         const bytes = await exportedFile(exportRoot, attachment.path, attachment.sha256, 64_000_000, true);
         totalBytes += bytes.length;
         if (totalBytes > 200_000_000) throw new Error("Export exceeds import memory budget");
-        output.push({ path: `issues/attachments/${id}/${attachment.filename}`, content: bytes });
+        const path = `issues/attachments/${id}/${attachment.filename}`;
+        output.push({ path, content: bytes });
+        attachments.push({ url: attachment.url, status: "downloaded", path, sha256: attachment.sha256 });
       } else throw new Error("Unknown attachment status");
     }
+    if (attachments.length) output.push({ path: `issues/history/${id}/attachments.json`, content: `${JSON.stringify(attachments, null, 2)}\n` });
   }
   if (manifest.openCount !== openCount || manifest.closedCount !== catalog.size - openCount) throw new Error("Export open/closed totals mismatch");
   if (new Set(output.map(file => file.path)).size !== output.length) throw new Error("Duplicate import destination path");

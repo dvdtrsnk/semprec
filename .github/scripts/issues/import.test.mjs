@@ -129,4 +129,18 @@ test("binary attachments are checksum verified and unavailable attachments are e
   const report = await importExport(setup.input, setup.destination);
   assert.deepEqual(await readFile(join(setup.destination, "issues/attachments/gh-1/file.bin")), bytes);
   assert.equal(report.unavailableAttachments[0].issue, "gh-1");
+  const index = JSON.parse(await readFile(join(setup.destination, "issues/history/gh-1/attachments.json"), "utf8"));
+  assert.deepEqual(index[0], { url: "https://example.com/file.bin", status: "downloaded", path: "issues/attachments/gh-1/file.bin", sha256: digest(bytes) });
+  assert.equal(index[1].status, "unavailable");
+});
+
+test("duplicate attachment destinations and unknown statuses are refused before import writes", async t => {
+  for (const status of ["duplicate", "unknown"]) {
+    const value = bundle();
+    const asset = { url: "https://example.com/file.bin", status: "downloaded", filename: "file.bin", path: "asset.bin", sha256: digest("asset") };
+    value.attachments = status === "duplicate" ? [asset, { ...asset, url: "https://example.com/other.bin" }] : [{ ...asset, status: "unknown" }];
+    const setup = await fixture(t, [value]); await writeFile(join(setup.input, "asset.bin"), "asset");
+    await assert.rejects(importExport(setup.input, setup.destination), status === "duplicate" ? /Duplicate import destination/ : /Unknown attachment status/);
+    await assert.rejects(readFile(join(setup.destination, "issues/items/gh-1.md")), { code: "ENOENT" });
+  }
 });
