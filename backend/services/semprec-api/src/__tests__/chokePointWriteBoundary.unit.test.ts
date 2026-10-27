@@ -14,6 +14,7 @@ const backendRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), ".."
  * test below — the mapping cannot silently drift out of date the way a route-count check could.
  */
 const ROUTE_HANDLER_FILES: Record<string, string> = {
+  "server identity": "services/semprec-api/src/serverInfoHandler.ts",
   "shallow health check": "services/semprec-api/src/healthzHandler.ts",
   login: "services/semprec-api/src/authHandler.ts",
   "password-reset request": "services/semprec-api/src/authHandler.ts",
