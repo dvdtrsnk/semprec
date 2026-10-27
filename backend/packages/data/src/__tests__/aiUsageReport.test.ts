@@ -298,7 +298,17 @@ describe("getAiUsageReport across tenants (issue #1048)", () => {
     const report = await runInTenant(tenantA, () => getAiUsageReport(runtimePool, rangeAround(new Date())));
 
     expect(Object.keys(report).sort()).toEqual(
-      ["budgets", "dailyCostUsd", "dailyTokenUsage", "from", "rows", "to", "totalCostUsd"].sort(),
+      [
+        "accountStartedAt",
+        "timezone",
+        "budgets",
+        "dailyCostUsd",
+        "dailyTokenUsage",
+        "from",
+        "rows",
+        "to",
+        "totalCostUsd",
+      ].sort(),
     );
     expect(Object.keys(report.budgets).sort()).toEqual(["dailyBudgetUsd", "monthlyBudgetUsd"]);
   });

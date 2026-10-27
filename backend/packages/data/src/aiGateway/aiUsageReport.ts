@@ -1,4 +1,4 @@
-import type { Queryable } from "../db/pool.js";
+import { requireSingleRow, type Queryable } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import type { AgentRunUnit } from "../agentRuns/agentRunsStore.js";
@@ -56,6 +56,8 @@ export interface DailyTokenPoint {
 }
 
 export interface AiUsageReport {
+  accountStartedAt: string;
+  timezone: string;
   from: string;
   to: string;
   /** One row per (provider, model, nativeUnit, runUnit) combination — kept as separate axes because they're not comparable: audio seconds can't be summed with tokens, and an 'invocation' run's spend isn't 1:1 with a long-lived 'session' run's. */
@@ -111,6 +113,13 @@ interface DailyRow {
 export async function getAiUsageReport(client: Queryable, input: AiUsageReportInput): Promise<AiUsageReport> {
   const { fromDate, toDate } = assertBoundedRange(input.from, input.to);
   const timezone = await getSystemTimezone(client);
+  const { rows: accountRows } = await client.query<{ account_started_at: Date | null }>(
+    `SELECT LEAST(
+       (SELECT MIN(created_at) FROM users WHERE tenant_id = app_tenant_default()),
+       (SELECT MIN(at) FROM ai_gateway_calls)
+     ) AS account_started_at`,
+  );
+  const accountStartedAt = requireSingleRow(accountRows, "AI usage account start").account_started_at;
 
   const { rows } = await client.query<UsageRow>(
     `SELECT
@@ -186,6 +195,8 @@ export async function getAiUsageReport(client: Queryable, input: AiUsageReportIn
     : { dailyBudgetUsd: 0, monthlyBudgetUsd: 0 };
 
   return {
+    accountStartedAt: accountStartedAt?.toISOString() ?? fromDate.toISOString(),
+    timezone,
     from: fromDate.toISOString(),
     to: toDate.toISOString(),
     rows: reportRows,
