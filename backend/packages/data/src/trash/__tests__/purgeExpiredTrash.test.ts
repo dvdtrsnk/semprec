@@ -330,11 +330,8 @@ describe("purgeExpiredTrash (issue #156)", () => {
         [page.id, inlineRow.id],
       );
       await pool.query("INSERT INTO item_automation (item_id) VALUES ($1)", [page.id]);
-      await pool.query(
-        `INSERT INTO item_search_index (item_id, database_id, search_vector)
-         VALUES ($1, $2, to_tsvector('simple', 'page')), ($3, $4, to_tsvector('simple', 'row'))`,
-        [page.id, db.id, inlineRow.id, inlineDb.id],
-      );
+      // The create hooks already indexed both items; assert the purge starts with real dependent rows.
+      expect(await countRows("item_search_index WHERE item_id = ANY($1)", [[page.id, inlineRow.id]])).toBe(2);
 
       await chokePoint.softDeleteItem(db.id, page.id);
       await ageDeletion(page.id, 31, db.id);
@@ -354,6 +351,7 @@ describe("purgeExpiredTrash (issue #156)", () => {
       expect(await countRows("task_recurrence WHERE item_id = ANY($1)", [purged])).toBe(0);
       expect(await countRows("item_automation WHERE item_id = ANY($1)", [purged])).toBe(0);
       expect(await countRows("item_search_index WHERE item_id = ANY($1)", [purged])).toBe(0);
+      expect(await countRows("item_search_index WHERE item_id = $1", [other.id])).toBe(1);
       // The surviving item's own curated-view membership is untouched.
       const { rows: keptViewItems } = await pool.query<{ item_id: string }>("SELECT item_id FROM view_items");
       expect(keptViewItems.map((row) => row.item_id)).toEqual([other.id]);
