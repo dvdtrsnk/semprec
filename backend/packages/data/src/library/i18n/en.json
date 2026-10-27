@@ -17,7 +17,7 @@
   "property.movies.type.option.series": "Series",
   "property.movies.cover.name": "Cover",
   "property.movies.rating.name": "Rating",
-  "property.movies.secondaryRating.name": "Critics' rating",
+  "property.movies.secondaryRating.name": "Source rating",
   "property.movies.sourceUrl.name": "Source",
   "property.movies.status.name": "Status",
   "property.movies.status.option.planned": "Planned",
