@@ -1,4 +1,8 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { Settings } from "luxon";
+import { runInTenant } from "@semprec/shared";
+import { getTenantZeroId } from "../testSupport/testDb.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import type { Pool } from "pg";
 import { CORE_TASK_NAMES } from "@semprec/queue";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -290,6 +294,197 @@ describe("choke-point itemWrites", () => {
       expect(replay.id).toBe(first.id);
       expect(await countHeartbeatFireJobs(heartbeat.id)).toBe(1);
       expect(events).toHaveLength(1);
+    });
+  });
+});
+
+describe("property defaults on real item writes", () => {
+  beforeAll(() => {
+    pool = getTestPool();
+    chokePoint = createChokePoint(pool);
+  });
+  afterAll(async () => {
+    await pool.end();
+  });
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await runInTenant(getTenantZeroId(), () => seedSystem(pool));
+  });
+
+  async function database(moduleId: string): Promise<string> {
+    const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [
+      moduleId,
+    ]);
+    if (!rows[0]) throw new Error("Missing seeded database");
+    return rows[0].id;
+  }
+
+  it.each([undefined, "done", null])("creates Projects with absent or explicit status %j", async (status) => {
+    await runInTenant(getTenantZeroId(), async () => {
+      const databaseId = await database("projects");
+      const properties = status === undefined ? { name: "Project" } : { name: "Project", status };
+      const item = await chokePoint.createItem({ databaseId, properties });
+      expect(item.properties.status).toBe(status === undefined ? "inProgress" : status);
+      const { rows } = await pool.query<{ properties: Record<string, unknown> }>(
+        "SELECT properties FROM items WHERE id = $1",
+        [item.id],
+      );
+      expect(rows[0]?.properties.status).toBe(item.properties.status);
+    });
+  });
+
+  it.each([
+    ["books", "status", "toRead"],
+    ["movies", "status", "planned"],
+    ["areas", "active", true],
+  ] as const)("applies the seeded %s default", async (moduleId, key, value) => {
+    await runInTenant(getTenantZeroId(), async () => {
+      const item = await chokePoint.createItem({ databaseId: await database(moduleId) });
+      expect(item.properties).toEqual({ [key]: value });
+    });
+  });
+
+  it("applies Tasks defaults through the internal transaction creator and preserves explicit status", async () => {
+    await runInTenant(getTenantZeroId(), async () => {
+      const databaseId = await database("tasks");
+      const item = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId }));
+      expect(item.properties.status).toBe("notDone");
+      const explicit = await withTransaction(pool, (client) =>
+        createItemWithClient(client, { databaseId, properties: { status: "done" } }),
+      );
+      expect(explicit.properties.status).toBe("done");
+    });
+  });
+
+  it("resolves Files today near midnight in the tenant timezone, preserving an explicit date or null", async () => {
+    await runInTenant(getTenantZeroId(), async () => {
+      const settingsId = await database("systemSettings");
+      const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [settingsId]);
+      if (!rows[0]) throw new Error("Missing settings item");
+      await chokePoint.updateItem({
+        databaseId: settingsId,
+        itemId: rows[0].id,
+        propertiesPatch: { timezone: "America/Los_Angeles" },
+      });
+      const now = Settings.now;
+      Settings.now = () => Date.parse("2026-10-27T00:30:00Z");
+      try {
+        const databaseId = await database("files");
+        const item = await chokePoint.createItem({ databaseId });
+        expect(item.properties.date).toBe("2026-10-26");
+        for (const date of [null, "2026-01-01"]) {
+          const explicit = await chokePoint.createItem({ databaseId, properties: { date } });
+          expect(explicit.properties.date).toBe(date);
+        }
+      } finally {
+        Settings.now = now;
+      }
+    });
+  });
+
+  it("does not apply defaults on patch or re-evaluate them on replay", async () => {
+    await runInTenant(getTenantZeroId(), async () => {
+      const databaseId = await database("files");
+      const first = await chokePoint.createItem({ databaseId, idempotencyKey: "default-replay" });
+      const now = Settings.now;
+      // A replay must return before date resolution, even when resolving the date would fail.
+      Settings.now = () => {
+        throw new Error("Replay evaluated today");
+      };
+      try {
+        const replay = await chokePoint.createItem({ databaseId, idempotencyKey: "default-replay" });
+        expect(replay).toEqual(first);
+      } finally {
+        Settings.now = now;
+      }
+      const patched = await chokePoint.updateItem({ databaseId, itemId: first.id, propertiesPatch: { date: null } });
+      expect(patched.properties.date).toBeNull();
+      const again = await chokePoint.updateItem({ databaseId, itemId: first.id, propertiesPatch: { name: "Renamed" } });
+      expect(again.properties.date).toBeNull();
+    });
+  });
+
+  it("does not fill a formerly absent key on patch or replay after a default is added", async () => {
+    await runInTenant(getTenantZeroId(), async () => {
+      const db = await chokePoint.createDatabase({ name: "Custom" });
+      const prop = await chokePoint.createProperty({ databaseId: db.id, key: "note", name: "Note", type: "text" });
+      const first = await chokePoint.createItem({ databaseId: db.id, idempotencyKey: "before-default" });
+      await chokePoint.updatePropertyConfig(prop.id, { default: "starting" });
+      expect((await chokePoint.createItem({ databaseId: db.id, idempotencyKey: "before-default" })).properties).toEqual(
+        {},
+      );
+      expect(
+        (await chokePoint.updateItem({ databaseId: db.id, itemId: first.id, propertiesPatch: {} })).properties,
+      ).toEqual({});
+      expect((await chokePoint.createItem({ databaseId: db.id })).properties).toEqual({ note: "starting" });
+    });
+  });
+
+  it("resolves multiple date defaults in one create with the same tenant date", async () => {
+    await runInTenant(getTenantZeroId(), async () => {
+      const db = await chokePoint.createDatabase({ name: "Dates" });
+      for (const key of ["start", "end"])
+        await chokePoint.createProperty({
+          databaseId: db.id,
+          key,
+          name: key,
+          type: "date",
+          config: { default: "today" },
+        });
+      const now = Settings.now;
+      Settings.now = () => Date.parse("2026-10-27T12:00:00Z");
+      try {
+        expect((await chokePoint.createItem({ databaseId: db.id })).properties).toEqual({
+          start: "2026-10-27",
+          end: "2026-10-27",
+        });
+      } finally {
+        Settings.now = now;
+      }
+    });
+  });
+
+  it("applies false, zero, empty text and a multi_select option without mutating input", async () => {
+    await runInTenant(getTenantZeroId(), async () => {
+      const db = await chokePoint.createDatabase({ name: "Custom" });
+      for (const spec of [
+        { key: "active", type: "checkbox", config: { default: false } },
+        { key: "count", type: "number", config: { default: 0 } },
+        { key: "note", type: "text", config: { default: "" } },
+        { key: "tags", type: "multi_select", config: { default: "one", options: [{ key: "one" }] } },
+      ] as const)
+        await chokePoint.createProperty({ databaseId: db.id, name: spec.key, ...spec });
+      const properties = {};
+      const item = await chokePoint.createItem({ databaseId: db.id, properties });
+      expect(item.properties).toEqual({ active: false, count: 0, note: "", tags: "one" });
+      expect(properties).toEqual({});
+    });
+  });
+
+  it("validates config defaults through both property create and patch without persisting invalid config", async () => {
+    await runInTenant(getTenantZeroId(), async () => {
+      const db = await chokePoint.createDatabase({ name: "Custom" });
+      for (const [type, config] of [
+        ["checkbox", { default: "true" }],
+        ["select", { options: [{ key: "one" }], default: "missing" }],
+        ["date", { default: "today", includeTime: true }],
+      ] as const) {
+        await expect(
+          chokePoint.createProperty({ databaseId: db.id, key: type, name: type, type, config }),
+        ).rejects.toMatchObject({ code: "validation_failed", details: { field: "config" } });
+        const prop = await chokePoint.createProperty({ databaseId: db.id, key: type, name: type, type });
+        await expect(chokePoint.updateProperty(prop.id, { config })).rejects.toMatchObject({
+          code: "validation_failed",
+          details: { field: "config" },
+        });
+        const { rows } = await pool.query<{ config: Record<string, unknown> }>(
+          "SELECT config FROM properties WHERE id = $1",
+          [prop.id],
+        );
+        expect(rows[0]?.config).toEqual({});
+      }
     });
   });
 });

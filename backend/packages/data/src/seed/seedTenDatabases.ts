@@ -106,7 +106,7 @@ export async function seedTenDatabasesInTransaction(
   const areas = await createDb(client, AREAS_MODULE_ID);
   await createProps(client, areas.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
-    { key: "active", name: "Active", type: "checkbox", owner: "user" },
+    { key: "active", name: "Active", type: "checkbox", owner: "user", config: { default: true } },
     { key: "note", name: "Note", type: "text", owner: "user" },
   ]);
 
@@ -119,7 +119,7 @@ export async function seedTenDatabasesInTransaction(
       name: "Status",
       type: "select",
       owner: "user",
-      config: selectConfig(["inProgress", "done", "archived", "longTerm"]),
+      config: { ...selectConfig(["inProgress", "done", "archived", "longTerm"]), default: "inProgress" },
     },
     { key: "date", name: "Date", type: "date", owner: "user" },
     { key: "color", name: "Color", type: "color", owner: "user" },
@@ -146,7 +146,7 @@ export async function seedTenDatabasesInTransaction(
       name: "Status",
       type: "select",
       owner: "user",
-      config: selectConfig(["notDone", "done", "wontDo"]),
+      config: { ...selectConfig(["notDone", "done", "wontDo"]), default: "notDone" },
     },
     { key: "date", name: "Date", type: "date", owner: "user" },
     { key: "timeFrom", name: "Time from", type: "time", owner: "user" },
@@ -178,7 +178,7 @@ export async function seedTenDatabasesInTransaction(
   await createProps(client, files.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "type", name: "Type", type: "select", owner: "user", config: selectConfig(["pdf", "xlsx", "docx", "jpg"]) },
-    { key: "date", name: "Date", type: "date", owner: "user" },
+    { key: "date", name: "Date", type: "date", owner: "user", config: { default: "today" } },
     // { blobId } over the shared `blobs` table (0004_ten_databases.sql).
     { key: "file", name: "File", type: "file", owner: "user" },
   ]);

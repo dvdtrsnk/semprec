@@ -227,3 +227,87 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
     expect(await snapshot()).toEqual(before);
   });
 });
+
+describe("property defaults tenant cutover", () => {
+  beforeAll(() => {
+    adminPool = getTestPool();
+    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+  });
+  afterAll(async () => {
+    await dataPool.end();
+    await adminPool.end();
+  });
+
+  it("upgrades the six properties per tenant, preserves config and existing defaults, and is idempotent", async () => {
+    await resetDatabase(adminPool);
+    const zero = getTenantZeroId();
+    const other = await createTestTenant(adminPool);
+    for (const tenant of [zero, other]) {
+      await runInTenant(tenant, async () => {
+        await seedSystem(dataPool, createViewTypeRegistry());
+        // Simulates a schema-locked catalog created before defaults existed; unavailable via the public writer.
+        await dataPool.query(`UPDATE properties SET config = config - 'default'`);
+        await dataPool.query(`UPDATE properties SET config = config || '{"includeTime":false}'::jsonb
+          WHERE key = 'date' AND database_id IN (SELECT id FROM databases WHERE owner_module_id = 'files')`);
+      });
+    }
+    await runInTenant(other, async () => {
+      // A pre-existing explicit config default, including null, must not be replaced by the cutover.
+      await dataPool.query(`UPDATE properties SET config = config || '{"default":null}'::jsonb
+        WHERE key = 'status' AND database_id IN (SELECT id FROM databases WHERE owner_module_id = 'projects')`);
+    });
+
+    const defaults = (tenant: string) =>
+      runInTenant(tenant, async () => {
+        const { rows } = await dataPool.query<{ module_id: string; key: string; config: Record<string, unknown> }>(
+          `SELECT d.owner_module_id AS module_id, p.key, p.config FROM properties p JOIN databases d ON d.id = p.database_id
+         WHERE p.config ? 'default' ORDER BY module_id, p.key`,
+        );
+        return rows;
+      });
+    await runCutovers(dataPool);
+    const expected = [
+      { module_id: "areas", key: "active", value: true },
+      { module_id: "books", key: "status", value: "toRead" },
+      { module_id: "files", key: "date", value: "today" },
+      { module_id: "movies", key: "status", value: "planned" },
+      { module_id: "projects", key: "status", value: "inProgress" },
+      { module_id: "tasks", key: "status", value: "notDone" },
+    ];
+    for (const tenant of [zero, other]) {
+      const rows = await defaults(tenant);
+      expect(rows.map((r) => ({ module_id: r.module_id, key: r.key, value: r.config.default }))).toEqual(
+        expected.map((r) => (tenant === other && r.module_id === "projects" ? { ...r, value: null } : r)),
+      );
+      expect(rows.find((r) => r.module_id === "files")?.config.includeTime).toBe(false);
+      expect(rows.find((r) => r.module_id === "tasks")?.config.options).toEqual([
+        { key: "notDone" },
+        { key: "done" },
+        { key: "wontDo" },
+      ]);
+    }
+    const before = await snapshot();
+    await runCutovers(dataPool);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("skips a missing database and a missing property", async () => {
+    await resetDatabase(adminPool);
+    const zero = getTenantZeroId();
+    await runInTenant(zero, async () => {
+      await seedSystem(dataPool, createViewTypeRegistry());
+      // Simulate incomplete legacy schema; locked properties/databases cannot be removed through the public writer.
+      await dataPool.query(`UPDATE properties SET config = config - 'default'`);
+      await dataPool.query(`DELETE FROM properties WHERE key = 'active'
+        AND database_id IN (SELECT id FROM databases WHERE owner_module_id = 'areas')`);
+      await dataPool.query(`UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'books'`);
+    });
+    await runCutovers(dataPool);
+    await runInTenant(zero, async () => {
+      const { rows } = await dataPool.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM properties WHERE config ? 'default'`,
+      );
+      expect(rows[0]?.n).toBe(4);
+    });
+  });
+});
