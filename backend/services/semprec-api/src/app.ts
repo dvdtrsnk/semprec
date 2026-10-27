@@ -19,6 +19,7 @@ import { createAuthRequestListener } from "./authHandler.js";
 import { createNotificationsRequestListener } from "./notificationsHandler.js";
 import { createSetupRequestListener } from "./setupHandler.js";
 import { createHealthzRequestListener } from "./healthzHandler.js";
+import { createServerInfoRequestListener } from "./serverInfoHandler.js";
 import { createSchemaRequestListener } from "./schemaHandler.js";
 import { createFilesRequestListener } from "./filesHandler.js";
 import { createBlobsRequestListener } from "./blobsHandler.js";
@@ -101,6 +102,7 @@ export async function createDispatcher(
   const notificationsListener = createNotificationsRequestListener(pool);
   const setupListener = createSetupRequestListener(pool, { setupToken: options.setupToken });
   const healthzListener = createHealthzRequestListener(pool);
+  const serverInfoListener = createServerInfoRequestListener();
   const schemaListener = createSchemaRequestListener(pool, options.moduleRegistry);
   const filesListener = createFilesRequestListener(pool, {
     storage: options.blobStorage,
@@ -133,6 +135,10 @@ export async function createDispatcher(
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
     if (pathname === "/healthz") {
       void healthzListener(req, res);
+      return;
+    }
+    if (pathname === "/api/server-info") {
+      serverInfoListener(req, res);
       return;
     }
     if (pathname === "/api/schema") {

@@ -741,6 +741,14 @@ async function createInviteAsAdmin(): Promise<string> {
 }
 
 const ROUTE_CASES: Record<string, RouteCase> = {
+  "server identity": async () => {
+    const answer = await send(null, { method: "GET", path: "/api/server-info" });
+    expect(answer.status).toBe(200);
+    expect(answer.text).toBe('{"product":"semprec"}');
+    expectNoneOf(answer.text, a.ids, "server identity");
+    const refused = await send(null, { method: "POST", path: "/api/server-info" });
+    expect(refused.status).toBe(404);
+  },
   // --- anonymous ---------------------------------------------------------------------------
   "shallow health check": async () => {
     // No `api` heartbeat runs here, so the probe answers 503; either way it names nothing of A.

@@ -68,6 +68,16 @@ const EXAMPLE_ID = "00000000-0000-0000-0000-000000000000";
 
 export const ROUTE_MATRIX: RouteMatrixEntry[] = [
   {
+    name: "server identity",
+    method: "GET",
+    path: "/api/server-info",
+    surface: "api",
+    public: true,
+    tenancy: "anonymous",
+    publicReason:
+      "Issue #1355: clients must confirm a server address before they have a session; the body contains only the product name.",
+  },
+  {
     name: "shallow health check",
     method: "GET",
     path: "/healthz",
