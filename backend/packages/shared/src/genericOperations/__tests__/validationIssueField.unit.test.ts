@@ -44,6 +44,33 @@ describe("validationIssueField", () => {
     ).toBe("limit");
   });
 
+  it("recognizes a later marker on the first issue's condition", () => {
+    expect(
+      validationIssueField([
+        { code: "too_small", path: ["filter", "nodes", 0, "path", 1] },
+        { code: "custom", path: ["filter", "nodes", 0], params: { relationPathFilter: true } },
+      ]),
+    ).toBe("filter");
+  });
+
+  it("does not replace an earlier sibling condition's field", () => {
+    expect(
+      validationIssueField([
+        { code: "invalid_format", path: ["filter", "nodes", 0, "value"] },
+        { code: "custom", path: ["filter", "nodes", 1], params: { relationPathFilter: true } },
+      ]),
+    ).toBe("filter.nodes.0.value");
+  });
+
+  it("does not match a marker below the first issue's path", () => {
+    expect(
+      validationIssueField([
+        { code: "custom", path: ["other"] },
+        { code: "custom", path: ["other", "nodes", 0], params: { relationPathFilter: true } },
+      ]),
+    ).toBe("other");
+  });
+
   it("resolves an invalid_union through the member with the fewest issues", () => {
     const issue = union(
       [

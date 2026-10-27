@@ -51,28 +51,25 @@ const filterScalarValue = z.union([z.string(), z.number(), z.boolean()]);
 const relationPathConditionSchema = z
   .object({
     type: z.literal("relation_path_contains"),
-    path: z.tuple([filterProperty, filterProperty]),
+    // Explicit length also supplies minItems/maxItems to the input JSON Schema.
+    path: z.tuple([filterProperty, filterProperty]).check(z.length(2)),
     value: z.uuid(),
   })
   .strict();
 
-// Keep malformed relation paths attributable to the whole filter at operation boundaries,
-// including when a tuple's aborting issue is nested inside a Zod union (issue #1363, AC5).
-const relationPathCondition = z
-  .object({ type: z.literal("relation_path_contains") })
-  .loose()
-  .transform((raw, ctx) => {
-    const parsed = relationPathConditionSchema.safeParse(raw);
-    if (!parsed.success) {
-      ctx.addIssue({
-        code: "custom",
-        message: "Invalid relation path filter",
-        params: { relationPathFilter: true },
-      });
-      return z.NEVER;
-    }
-    return parsed.data;
-  });
+// Keep the strict input visible to JSON Schema generation while attributing malformed
+// paths to filter. `when` also runs the marker check after aborting tuple/type issues,
+// but only for this condition, preserving other union members' error fields (AC5).
+const relationPathCondition = relationPathConditionSchema.refine(() => false, {
+  when: ({ value, issues }) =>
+    issues.length > 0 &&
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === "relation_path_contains",
+  message: "Invalid relation path filter",
+  params: { relationPathFilter: true },
+});
 
 const filterConditionSchema = z.union([
   z.object({ type: z.enum(["equals", "not_equals"]), property: filterProperty, value: filterScalarValue }).strict(),
