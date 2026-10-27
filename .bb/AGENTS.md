@@ -11,6 +11,14 @@ the iOS and the native macOS app (`mobile/docs/architecture.md`).
 
 ## The issue is the law
 
+Repository issue migration is tracked in `issues/migration/state.json`.
+When its authority is `repository`, read `issues/items/<id>.md` and local
+`issues/handovers/<dependency-id>.md`; use
+`node .github/scripts/issues.mjs show <id>` to extract the body and metadata.
+Do not fall back to GitHub issue reads after cutover. While authority is
+`github`, local files are preparation/shadow data and existing Relay workflows
+remain authoritative. See `issues/README.md` for rollout and validation.
+
 Work arrives as a fully self-contained GitHub issue. Implement exactly its
 `## Task` — nothing from `### Out of scope`, even when it looks trivial or
 you are already in the file. Its `## Acceptance criteria` is the list your
@@ -27,6 +35,11 @@ the failure mode that rule exists to prevent.
 - **`docs/adr/`** — why the architecture is shaped the way it is. `ls docs/adr/`
   and grep the `area` frontmatter before introducing a pattern: a past decision
   may already cover it, for or against.
+  For platform discovery, run `node .github/scripts/adr.mjs --platform <platform>`
+  from the repository root (`backend`, `web`, `mobile`, `shared`, `android`,
+  `apple`, `ios`, `macos`). This includes repository-wide and historical mobile
+  candidates; read each decision's actual scope. Use `--all` for superseded and
+  proposed records. ADRs keep their permanent central paths.
 - **`review-rules/`** of every platform you touch (`backend/`, `web/`,
   `mobile/`, `mobile/android/`, `mobile/apple/`, and the repository root) —
   these are the rules the review bot enforces on your pull request, so reading

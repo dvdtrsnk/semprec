@@ -7,6 +7,13 @@ description: "When a decision needs an Architecture Decision Record, and the app
 
 Full format reference: `docs/adr/README.md`. This skill is the "do I need one, and how do I not break the old ones" checklist.
 
+Discover platform candidates with `node .github/scripts/adr.mjs --platform
+<backend|web|mobile|shared|android|apple|ios|macos>` from the repository root.
+The filter includes `cross-cutting` and historical `apple` for mobile platforms;
+read each candidate's scope before applying it. `--all` includes superseded and
+proposed decisions. Keep the central permanent paths; do not create platform
+copies or indexes. See `2026-10-27-platform-discovery-in-the-shared-adr-catalog`.
+
 ## When to write one
 
 Write an ADR for a decision that shapes how future code gets written and had a

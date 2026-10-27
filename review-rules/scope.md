@@ -1,6 +1,7 @@
 # Include
 
 docs/adr/*.md
+issues/**
 .claude/skills/**/*.md
 .bb/skills/**/*.md
 .bb/AGENTS.md

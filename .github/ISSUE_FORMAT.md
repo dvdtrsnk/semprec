@@ -1,5 +1,22 @@
 # Canonical issue format
 
+## Repository-record envelope during migration
+
+The same self-contained body is used inside `issues/items/<id>.md`; see
+`issues/README.md` for its metadata schema and local commands. Physical first-
+and second-line requirements below refer to the **body after frontmatter**,
+not the beginning of the wrapped file. The local parser extracts the body
+before model-tier validation. Imported `#N` blockers resolve to `gh-N`; local
+bodies may also use complete `gh-N` and `sp-<UUIDv4>` identities.
+
+Check `issues/migration/state.json` before choosing the authoritative source.
+While `authority` remains `github`, the GitHub publication and Relay behavior
+documented below remain active. After a verified cutover to `repository`, read
+the local record, history and dependency handovers without GitHub issue reads;
+GitHub still hosts PRs, reviews and CI. Initial file preparation alone does not
+activate that cutover. The cutover contract is
+`docs/adr/2026-10-27-repository-markdown-issues-with-a-guarded-cutover.md`.
+
 Every implementation issue in this repository follows this exact structure. It is
 the contract between the planning side (`/define-behavior`) and the execution side
 (Relay's `implement-issue` workflow — `.relay/workflows/implement-issue.md` — which

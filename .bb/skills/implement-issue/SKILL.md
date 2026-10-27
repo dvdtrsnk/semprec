@@ -5,6 +5,14 @@ description: "The execution contract for implementing one Semprec issue end to e
 
 # Implementing one issue
 
+Check `issues/migration/state.json` first. If authority is `repository`, read
+the local record with `node .github/scripts/issues.mjs show <id>`, and read
+each blocker's `issues/handovers/<id>.md`. Its file SHA and spec approval are
+part of the task identity. Never fall back to GitHub issue reads after cutover;
+missing local context blocks implementation. GitHub remains the PR/review/CI
+host. If authority is still `github`, the existing instructions below remain
+the active contract. See `issues/README.md` and the guarded-cutover ADR.
+
 The issue body is your source of truth. It is written to be self-contained:
 everything you need is in it, plus the hand-over context from the work this one
 builds on — for each issue named in its `Blocked by:` line, that context lives in

@@ -31,6 +31,11 @@ This repo is a monorepo for the whole product, not just the backend:
 
 ## Where work comes from
 
+The migration to repository Markdown issues is documented in
+[`issues/README.md`](issues/README.md); its live authority and rollout phase
+are explicit in [`issues/migration/state.json`](issues/migration/state.json).
+The existing GitHub workflow below stays active until the guarded cutover.
+
 This repo does **not** follow `backend.html` directly. Each unit of work has
 its own fully self-contained GitHub Issue — context, task, and scope are
 written directly in the issue, with no need to open the planning repo.
@@ -43,6 +48,8 @@ may be worked in parallel.
 
 - `backend/packages/` — shared core: `data`, `module-registry`,
   `agent-runtime`, `queue`, `realtime`, `credentials`, `shared`.
+- `issues/` — repository issue records, history, dependency handovers and
+  migration evidence; see its README for local CLI commands and rollout state.
 - Vertical slices (Emails, Semprec, later Books/Films) live under
   `backend/packages/data/src/<domain>/`, each with its own `*ModuleManifest.ts`.
 - `backend/services/` — standalone processes (`semprec-api`,
@@ -87,3 +94,8 @@ ownership model, the AI gateway, migration discipline, and other
 cross-cutting calls — is recorded as Architecture Decision Records under
 [`docs/adr/`](docs/adr/README.md). Check there before introducing a new
 architectural pattern.
+
+Find accepted decisions for a platform with
+`node .github/scripts/adr.mjs --platform backend` (also `web`, `mobile`,
+`shared`, `android`, `apple`, `ios`, `macos`). The shared catalog includes
+cross-cutting and historical mobile candidates without moving ADR files.
