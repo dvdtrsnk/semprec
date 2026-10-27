@@ -1,3 +1,4 @@
+import { htmlToPlainText, buildMailPreview } from "./mailPlainText.js";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
@@ -220,6 +221,8 @@ export async function sendDraftEmail(
         envelope,
         inReplyTo: input.inReplyTo,
         references: input.references,
+        previewText: buildMailPreview(input.bodyText ?? htmlToPlainText(input.bodyHtml ?? "")),
+        ingestedAt: new Date(),
       }),
     );
   } catch (err) {

@@ -23,6 +23,7 @@ const U = randomUUID();
 const TRACE_ID = randomUUID();
 
 const SYSTEM_TASKS = [
+  "mailMessagePreviewBackfill",
   "heartbeatSweep",
   "docCompactionSweep",
   "docHistoryCleanup",
@@ -227,7 +228,7 @@ describe("registerTask supersession", () => {
 });
 
 describe("TASK_TENANCY", () => {
-  it("has an entry for every core and agent task name, with exactly the 14 sweeps as system", () => {
+  it("has an entry for every core and agent task name, with the declared maintenance tasks as system", () => {
     const names = [...Object.values(CORE_TASK_NAMES), ...Object.values(AGENT_TASK_NAMES)];
     expect(Object.keys(TASK_TENANCY).sort()).toEqual([...names].sort());
     const system = names.filter((name) => TASK_TENANCY[name] === "system");

@@ -416,3 +416,5 @@ export {
   type TenantExportStatus,
   type TenantExportSummary,
 } from "./tenancy/tenantExportsStore.js";
+
+export { htmlToPlainText, buildMailPreview } from "./mail/mailPlainText.js";

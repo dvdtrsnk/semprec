@@ -42,6 +42,7 @@ export type QueueJobEnvelope = z.infer<typeof queueJobEnvelopeSchema>;
  * module-manifest task names happens in the module-system issue (#29), not here.
  */
 export const CORE_TASK_NAMES = {
+  MAIL_MESSAGE_PREVIEW_BACKFILL: "mailMessagePreviewBackfill",
   ITEM_SEARCH_BACKFILL: "itemSearchBackfill",
   HEARTBEAT_SWEEP: "heartbeatSweep",
   // Issue #222: the API-runtime half of `heartbeatFire`'s split for every deterministic
@@ -115,6 +116,7 @@ export type TaskAffinity = (typeof TASK_AFFINITIES)[number];
  * existing `CORE_TASK_NAMES.X` reference across the codebase keeps working unchanged.
  */
 export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
+  [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "api",
   [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: "api",
   [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: "api",
   [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: "api",
@@ -166,6 +168,7 @@ export type TaskTenancy = "tenant" | "system";
  * outside this catalog (a module task), is a `tenant` task.
  */
 export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
+  [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "system",
   [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: "tenant",
   [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: "system",
   [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: "tenant",

@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import sanitizeHtml from "sanitize-html";
+import { htmlToPlainText, buildMailPreview } from "./mailPlainText.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
@@ -27,11 +27,6 @@ export function formatAddress(address: MailEnvelopeAddress): string {
 
 export function formatAddressList(list: MailEnvelopeAddress[] | undefined): string {
   return (list ?? []).map(formatAddress).join(", ");
-}
-
-/** Plain-text approximation of an HTML-only body for the search index (search.ts) — an HTML-only message has no `bodyText` at all, so indexing only the subject would silently miss every word that's only in the visible body. */
-function htmlToSearchText(html: string): string {
-  return sanitizeHtml(html, { allowedTags: [], allowedAttributes: {} });
 }
 
 /** The Emails properties the sync worker mirrors from the real mailbox are `owner: 'system'` (see seedEmailModule.ts) — not user-editable, hence written through this escape hatch. `read`/`flagged` are deliberately absent: those two are owner:'user' (issue #97) and need no exemption. */
@@ -172,6 +167,8 @@ export async function ingestEmailMessage(
         deliveredToAddress: deliveredToAddress ?? null,
         messageKind: input.isDsn ? "dsn" : "message",
         dsnOriginalMessageId,
+        previewText: buildMailPreview(input.bodyText ?? htmlToPlainText(input.bodyHtml ?? "")),
+        ingestedAt: new Date(),
       });
 
       const { extractedTexts } = await ingestAttachments(client, {
@@ -187,7 +184,7 @@ export async function ingestEmailMessage(
       // folded into the owning message's own search text rather than indexed as a separate
       // item — there is no per-attachment search surface in this issue's scope, only "search my
       // mail," which a PDF invoice's contents should still match.
-      const bodyForSearch = input.bodyText ?? (input.bodyHtml ? htmlToSearchText(input.bodyHtml) : "");
+      const bodyForSearch = input.bodyText ?? (input.bodyHtml ? htmlToPlainText(input.bodyHtml) : "");
       await reindexItemSearch(client, {
         itemId,
         databaseId: input.emailsDatabaseId,

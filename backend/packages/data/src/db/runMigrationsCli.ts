@@ -1,3 +1,4 @@
+import { enqueueMailMessagePreviewBackfill } from "../mail/mailMessagePreviewBackfillJob.js";
 import { ensureQueueSchema, grantQueueSchemaPrivileges } from "@semprec/queue";
 import type { Pool } from "pg";
 import { runAsSystem } from "@semprec/shared";
@@ -46,6 +47,7 @@ try {
     // invocation point, matching testSupport/globalSetup.ts's test-time call to the same two functions.
     await ensureQueueSchema(pool);
     await grantQueueSchemaPrivileges(pool);
+    await enqueueMailMessagePreviewBackfill(pool);
     await runItemSearchBackfillCutover(tenantPool);
     // Issue #222: needs graphile_worker's own schema/functions, which don't exist until the two
     // calls above create them — unlike the cutover migrations above, which run before them.

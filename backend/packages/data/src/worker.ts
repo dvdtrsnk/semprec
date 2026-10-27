@@ -1,3 +1,4 @@
+import { handleMailMessagePreviewBackfillTask } from "./mail/mailMessagePreviewBackfillJob.js";
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
 import { withTransaction } from "./db/pool.js";
@@ -124,6 +125,9 @@ export function createCoreTaskList(
   },
 ): TaskList {
   const handlers: TaskList = {
+    [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: async () => {
+      await handleMailMessagePreviewBackfillTask(pool);
+    },
     [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: async (payload) => {
       await handleItemSearchBackfillTask(pool, payload);
     },
