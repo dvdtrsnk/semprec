@@ -25,37 +25,29 @@ scope; decisions remain append-only.
   commit `f5d95655ad571b551fa82aae0d87f9fdfb345ce1` is deployed. It retains the
   existing account-pool and workspace recovery fixes. Both projects remain disabled,
   and the pre-reload run list was an empty JSON array.
-- The review bot change is committed locally on `feat/repository-issue-source` as
-  `eeb88558a9b6d65b0fc06e624c69c32d2794e6df`, based on the current repository pin
-  `06b0e1b23ee886191bd8ade8ac61118cce3cbb86`. Its 103 targeted tests pass.
-- The review bot commit is not published. Access Hub rejected cross-repository Git
-  delivery from the Semprec context (`TARGET_DENIED`: branch delivery must target
-  the approved source repository). No alternate account or direct GitHub transport
-  was used. Its approved source revision was recovered from Relay's local checkout.
-- Repository workflow changes prepare local issue completion, follow-up publication
-  and scheduled maintenance through reviewed PRs. The whole workflow catalog parses
-  and compiles against the deployed Relay implementation.
+- The review bot commit `eeb88558a9b6d65b0fc06e624c69c32d2794e6df` is published
+  on `feat/repository-issue-source` and pinned in both consumer configurations.
+  [Review bot PR #35](https://github.com/dvdtrsnk/code-review-bot/pull/35) remains
+  open and unmerged, as requested. Its 103 targeted tests pass.
+- Publication used the same dvdtrsnk account and a one-time grant restricted to the
+  exact approved dependency binding, branch and commit SHA. The grant was deleted
+  immediately afterward, and the original strict Hub source confinement restored.
+- All six repository workflow definitions compile. Completion metadata is checked
+  on every implementation PR revision, including fix/rebase rounds. Scheduled
+  maintenance and follow-up publication write local records through reviewed PRs.
 
-**Authority remains `github` until the review dependency is available to CI.**
-Local files are already readable without a service credential. Do not claim the
-runtime cutover is complete or enable dispatch from this preparation state.
+The cutover commit declares **repository authority**. Local readers must not fall
+back to GitHub Issues. The final reconciliation at 2026-10-27T15:37:04Z found no
+source changes across all 1,375 issues, and all 6,580 imported files passed their
+checksums. PR, review and CI operations remain on GitHub.
 
-## Final activation
+## Deployment boundary
 
-1. Publish the prepared review bot branch through a repository-authorized Access Hub
-   operation. Keep the change on a reviewable branch; publication does not authorize
-   merging that PR.
-2. Pin its immutable published commit in `.relay/config.yml` and
-   `.github/workflows/code-review.yml` together.
-3. Reconcile GitHub source changes again immediately before cutover. The current
-   export is a snapshot, not a continuing synchronization service. Preserve new
-   comments/events and original provenance; do not overwrite edited local records.
-4. Verify `issues.mjs validate`, the script tests, the complete workflow catalog and
-   representative local reads. Seal the final report, then set migration authority
-   to `repository` in the reviewed cutover commit. Never fall back to GitHub Issues
-   afterward. PR, review and CI service operations remain available.
-5. Enable Semprec dispatch only when the cutover has reached its canonical base and
-   all local consumers are in place. Preserve the operator's current pause otherwise.
+The source cutover is complete in this feature branch. Live Relay follows the
+canonical `develop` tree; it takes up the new authority when the reviewed cutover
+reaches that branch. Both projects remain paused, and this change does not enable
+dispatch or merge the review bot PR. Preserve that operator pause until explicitly
+resumed. New specification approval remains a human decision.
 
 ## Validation evidence
 

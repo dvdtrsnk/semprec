@@ -30,5 +30,21 @@
     "originalBodiesPreserved": true,
     "unavailableAttachments": []
   },
-  "historicalDiagnostics": 473
+  "historicalDiagnostics": 473,
+  "finalReconciliation": {
+    "startedAt": "2026-10-27T15:35:32.308Z",
+    "verifiedAt": "2026-10-27T15:37:04.264Z",
+    "issueCount": 1375,
+    "differences": 0,
+    "finalPageCount": 15,
+    "expectedFinalPageCount": 15
+  },
+  "importedFilesVerified": 6580,
+  "reviewBot": {
+    "commit": "eeb88558a9b6d65b0fc06e624c69c32d2794e6df",
+    "published": true,
+    "pullRequest": 35,
+    "merged": false
+  },
+  "cutoverAt": "2026-10-27T15:39:11.460Z"
 }

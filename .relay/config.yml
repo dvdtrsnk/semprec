@@ -32,7 +32,9 @@ review:
   # Keep the Actions fallback pin identical.
   # dvdtrsnk/code-review-bot#34 requires platform results in the final assistant
   # response and preserves invalid-result failures without cost-table crashes.
-  bot: { repo: dvdtrsnk/code-review-bot, ref: 06b0e1b23ee886191bd8ade8ac61118cce3cbb86 }
+  # PR #35 reads approved repository specifications from the PR base without
+  # querying GitHub Issues. The published commit is pinned before that PR merges.
+  bot: { repo: dvdtrsnk/code-review-bot, ref: eeb88558a9b6d65b0fc06e624c69c32d2794e6df }
   check-name: code-review
   env: { REVIEW_BLOCK_SEVERITY: medium, PROMOTION_SOURCE: develop, PROMOTION_TARGET: main }
 merge:
