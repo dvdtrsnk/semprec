@@ -11,6 +11,7 @@ export interface ModuleDatabaseProjection {
   key: string;
   name: string;
   defaultViewType?: string;
+  searchFields?: string[];
 }
 
 export interface ModuleAgentToolProjection {
@@ -428,6 +429,7 @@ export class ModuleRegistry {
         key: db.key,
         name: db.name,
         ...(db.defaultViewType !== undefined ? { defaultViewType: db.defaultViewType } : {}),
+        ...(db.searchFields !== undefined ? { searchFields: [...db.searchFields] } : {}),
       })),
     );
   }

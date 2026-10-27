@@ -11,6 +11,7 @@ import { runHeartbeatFireQueueSplitMigration } from "../scheduler/heartbeatFireQ
 import { runLegacyJobEnvelopeStampMigration } from "../tenancy/legacyJobEnvelopeStampMigration.js";
 import { runTenantCutoverMigrations } from "./tenantCutoverMigrations.js";
 import { activateCzechHunspellSearch } from "../mail/czechHunspellSearch.js";
+import { runItemSearchBackfillCutover } from "../search/itemSearchBackfill.js";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -45,6 +46,7 @@ try {
     // invocation point, matching testSupport/globalSetup.ts's test-time call to the same two functions.
     await ensureQueueSchema(pool);
     await grantQueueSchemaPrivileges(pool);
+    await runItemSearchBackfillCutover(tenantPool);
     // Issue #222: needs graphile_worker's own schema/functions, which don't exist until the two
     // calls above create them — unlike the cutover migrations above, which run before them.
     await runHeartbeatFireQueueSplitMigration(pool);

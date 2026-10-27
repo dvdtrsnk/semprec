@@ -548,6 +548,35 @@ const cases: Record<string, TaskCase> = {
       ).toEqual([{ last_error: null }]);
     },
   },
+  [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      return inTenant(tenant, async () => {
+        const database = await chokePoint.createDatabase({ name: `Search ${randomUUID()}` });
+        await chokePoint.createProperty({ databaseId: database.id, key: "title", name: "Title", type: "title" });
+        const item = await chokePoint.createItem({
+          databaseId: database.id,
+          properties: { title: "Legacy searchable" },
+        });
+        // Simulate an item predating indexing; production writes now create this row automatically.
+        const removed = await pool.query("DELETE FROM item_search_index WHERE item_id = $1", [item.id]);
+        expect(removed.rowCount).toBe(1);
+        return { databaseId: database.id, onlyMissing: true };
+      });
+    },
+    async expectDone(tenant, payload) {
+      expect(
+        await rows<{ title: string; matches: boolean }>(
+          tenant,
+          `SELECT i.properties ->> 'title' AS title,
+             s.search_vector @@ plainto_tsquery('czech', 'Legacy searchable') AS matches
+           FROM items i JOIN item_search_index s ON s.item_id = i.id
+           WHERE i.database_id = $1`,
+          [requirePayloadString(payload, "databaseId")],
+        ),
+      ).toEqual([{ title: "Legacy searchable", matches: true }]);
+    },
+  },
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: {
     tenancy: "tenant",
     async seed(tenant) {
