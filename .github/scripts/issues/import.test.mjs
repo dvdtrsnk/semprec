@@ -34,7 +34,7 @@ async function fixture(t, bundles = [bundle()]) {
 }
 
 test("conversion preserves body bytes, source identity and labels without fabricating approval actor", () => {
-  const original = raw(); original.body += "\r\nčeský text 😀\r\n";
+  const original = raw(); original.body += "\r\nUnicode \u010d text 😀\r\n";
   const issue = convertIssue(original, now);
   assert.equal(issue.body, original.body);
   assert.equal(issue.metadata.source.bodySha256, digest(original.body));

@@ -22,7 +22,7 @@ async function fixture(t) {
 }
 
 test("frontmatter roundtrip preserves Markdown bytes including CRLF, unicode and delimiter lines", () => {
-  const value = issue(); value.body += "\r\n---\r\nPříloha 😀\r\n";
+  const value = issue(); value.body += "\r\n---\r\nAttachment \u010d 😀\r\n";
   assert.deepEqual(parseRecord(serializeRecord(value)), value);
 });
 test("frontmatter refuses malformed, duplicate, unknown and implicit-YAML fields", () => {
