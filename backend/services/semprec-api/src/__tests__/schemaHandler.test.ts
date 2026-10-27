@@ -60,6 +60,26 @@ describe("createSchemaRequestListener (issue #147)", () => {
     await pool?.end();
   });
 
+  it("projects stored defaults including the unresolved today token", async () => {
+    const res = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader("en") });
+    expect(res.status).toBe(200);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({
+      databases: expect.arrayContaining([
+        expect.objectContaining({
+          key: "projects",
+          properties: expect.arrayContaining([
+            expect.objectContaining({ key: "status", config: { default: "inProgress" } }),
+          ]),
+        }),
+        expect.objectContaining({
+          key: "files",
+          properties: expect.arrayContaining([expect.objectContaining({ key: "date", config: { default: "today" } })]),
+        }),
+      ]),
+    });
+  });
+
   it("rejects a request with no credentials", async () => {
     const res = await fetch(`${baseUrl}/api/schema`);
     expect(res.status).toBe(401);

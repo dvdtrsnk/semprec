@@ -15,6 +15,7 @@
 // - docs/adr/2026-09-10-choke-point-api-for-state-writes.md
 // - docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
 // - docs/adr/2026-09-10-single-writer-ownership-model.md
+import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
@@ -32,7 +33,7 @@ import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import { assertDatabaseNotArchived } from "./databaseGuards.js";
 import { assertValidTimezone } from "../timezone.js";
-import { getSystemSettingsItemId } from "../systemSettings.js";
+import { getSystemTimezone, getSystemSettingsItemId } from "../systemSettings.js";
 import { deriveTaskTime } from "../tasks/deriveTaskTime.js";
 import { runItemCreateHooks, runItemUpdateHooks } from "./hooks.js";
 
@@ -170,7 +171,7 @@ export async function createItemWithClient(
   const inputProperties = input.properties ?? {};
   // Ownership-keyed derived property, distinct from the allowedSystemKeys escape hatch above —
   // see docs/adr/2026-09-19-derived-system-properties-computed-inline-at-choke-point.md.
-  const itemProperties =
+  let itemProperties =
     database.ownerModuleId === TASKS_MODULE_ID
       ? {
           ...inputProperties,
@@ -181,11 +182,29 @@ export async function createItemWithClient(
         }
       : inputProperties;
 
-  const { item, created } = await itemsStore.insertItemWithReplay(client, {
-    databaseId: input.databaseId,
-    properties: itemProperties,
-    idempotencyKey: input.idempotencyKey,
-  });
+  const { item, created } = await itemsStore.insertItemWithReplay(
+    client,
+    { databaseId: input.databaseId, properties: itemProperties, idempotencyKey: input.idempotencyKey },
+    async () => {
+      itemProperties = { ...itemProperties };
+      let today: string | undefined;
+      for (const property of properties) {
+        if (Object.hasOwn(inputProperties, property.key) || !Object.hasOwn(property.config, "default")) continue;
+        const value = property.config.default;
+        if (property.type === "date" && value === "today") {
+          if (today === undefined) {
+            const timezone = await getSystemTimezone(client);
+            assertValidTimezone(timezone);
+            today = DateTime.now().setZone(timezone).toFormat("yyyy-MM-dd");
+          }
+          itemProperties[property.key] = today;
+        } else {
+          itemProperties[property.key] = value;
+        }
+      }
+      return itemProperties;
+    },
+  );
   if (!created) return item;
 
   // Domain validation/side effects of a real insert run here, in the same transaction, so a

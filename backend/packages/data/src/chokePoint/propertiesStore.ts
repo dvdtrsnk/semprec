@@ -43,6 +43,42 @@ function assertValidSelectOptions(type: PropertyType, config: Record<string, unk
   }
 }
 
+/** Validates the optional create-time default against the property's storage type. */
+function assertValidDefault(type: PropertyType, config: Record<string, unknown> | undefined): void {
+  if (!config || !Object.hasOwn(config, "default")) return;
+  const value = config.default;
+  let valid = false;
+  switch (type) {
+    case "select":
+    case "multi_select":
+      valid =
+        typeof value === "string" &&
+        Array.isArray(config.options) &&
+        config.options.some(
+          (option: unknown) => typeof option === "object" && option !== null && "key" in option && option.key === value,
+        );
+      break;
+    case "checkbox":
+      valid = typeof value === "boolean";
+      break;
+    case "number":
+      valid = typeof value === "number" && Number.isFinite(value);
+      break;
+    case "text":
+      valid = typeof value === "string";
+      break;
+    case "date":
+      valid = value === "today" && !config.includeTime;
+      break;
+  }
+  if (!valid) throw new ValidationError("Default does not match the property type or config", { field: "config" });
+}
+
+export function assertValidPropertyConfig(type: PropertyType, config: Record<string, unknown> | undefined): void {
+  assertValidSelectOptions(type, config);
+  assertValidDefault(type, config);
+}
+
 const PROPERTY_OWNERS: readonly PropertyOwner[] = ["user", "system"];
 const MIGRATION_STATUSES: readonly PropertyRow["migrationStatus"][] = [
   "stable",
@@ -191,7 +227,7 @@ export async function createProperty(client: PoolClient, input: CreatePropertyIn
   if (!database.system && !input.name) {
     throw new ValidationError("name is required for a property of a non-system database", { field: "name" });
   }
-  assertValidSelectOptions(input.type, input.config);
+  assertValidPropertyConfig(input.type, input.config);
 
   try {
     const { rows } = await client.query<PropertyDbRow>(
@@ -303,7 +339,7 @@ export async function updatePropertyConfig(
 ): Promise<PropertyRow> {
   const property = await requireProperty(client, propertyId);
   await assertPropertySchemaMutable(client, property);
-  assertValidSelectOptions(property.type, config);
+  assertValidPropertyConfig(property.type, config);
 
   const { rows } = await client.query<PropertyDbRow>(
     `UPDATE properties SET config = $2::jsonb WHERE id = $1 RETURNING ${PROPERTY_COLUMNS}`,

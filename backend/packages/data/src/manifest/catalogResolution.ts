@@ -26,6 +26,7 @@ export interface ResolvedProperty {
   locked: boolean;
   /** Resolved select/multi_select option labels (issue #147) — absent for every other property type. */
   options?: ResolvedOption[];
+  config?: { default: unknown };
 }
 
 export interface CatalogResolver {
@@ -126,5 +127,11 @@ export function resolveProperty(
     }
   }
 
+  if (
+    ["select", "multi_select", "checkbox", "number", "text", "date"].includes(p.type) &&
+    Object.hasOwn(p.config, "default")
+  ) {
+    resolved.config = { default: p.config.default };
+  }
   return resolved;
 }

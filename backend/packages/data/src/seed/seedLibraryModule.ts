@@ -125,7 +125,7 @@ export async function seedLibraryModuleInTransaction(
       name: null,
       type: "select",
       owner: "user",
-      config: selectConfig(["toRead", "reading", "read"]),
+      config: { ...selectConfig(["toRead", "reading", "read"]), default: "toRead" },
     },
   ]);
 
@@ -158,7 +158,7 @@ export async function seedLibraryModuleInTransaction(
       name: null,
       type: "select",
       owner: "user",
-      config: selectConfig(["planned", "watching", "watched"]),
+      config: { ...selectConfig(["planned", "watching", "watched"]), default: "planned" },
     },
     // In-progress series stay free text here — no dedicated season/episode structure (out of scope).
     { key: "notes", name: null, type: "longText", owner: "user" },

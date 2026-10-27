@@ -1,3 +1,4 @@
+import { runPropertyDefaultsCutoverMigration } from "../seed/propertyDefaultsCutoverMigration.js";
 import type { Pool } from "pg";
 import { assertRowSecurityActive, forEachMaintainedTenant } from "../tenancy/provisionTenant.js";
 import { runTranscriptsCatalogCutoverMigration } from "../transcription/transcriptsCatalogCutoverMigration.js";
@@ -14,6 +15,7 @@ import { runTranscriptionRequeueHeartbeatCutoverMigration } from "../transcripti
 export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
   await assertRowSecurityActive(pool);
   await forEachMaintainedTenant(pool, async () => {
+    await runPropertyDefaultsCutoverMigration(pool);
     await runTranscriptsCatalogCutoverMigration(pool);
     await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
   });

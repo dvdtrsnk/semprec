@@ -83,7 +83,11 @@ export interface InsertItemResult {
  * unique index on `idempotency_keys` is an arbiter. The only one is the tenant-leading primary
  * key `idempotency_keys_pkey (tenant_id, key)`, which migration 0082 (#1065) promoted.
  */
-export async function insertItemWithReplay(client: Queryable, input: InsertItemInput): Promise<InsertItemResult> {
+export async function insertItemWithReplay(
+  client: Queryable,
+  input: InsertItemInput,
+  resolveCreateProperties?: () => Promise<Record<string, unknown>>,
+): Promise<InsertItemResult> {
   const generatedId = randomUUID();
   const itemId: string = generatedId;
 
@@ -141,10 +145,12 @@ export async function insertItemWithReplay(client: Queryable, input: InsertItemI
     }
   }
 
+  // Defaults may read tenant settings; defer them until the reservation has ruled out a replay.
+  const properties = resolveCreateProperties ? await resolveCreateProperties() : input.properties;
   const { rows } = await client.query<ItemDbRow>(
     `INSERT INTO items (id, database_id, properties) VALUES ($1, $2, $3::jsonb)
      RETURNING id, database_id, properties, computed, updated_at, deleted_at`,
-    [itemId, input.databaseId, JSON.stringify(input.properties)],
+    [itemId, input.databaseId, JSON.stringify(properties)],
   );
   return { item: mapItemRow(requireSingleRow(rows, "items row")), created: true };
 }
