@@ -21,6 +21,29 @@ describe("validationIssueField", () => {
     expect(validationIssueField([])).toBeUndefined();
   });
 
+  it("names filter for a relation-path issue inside nested union members", () => {
+    const issue = union(
+      [{ code: "invalid_type", path: ["filter", "property"] }],
+      [union([{ code: "custom", path: [], params: { relationPathFilter: true } }])],
+    );
+    expect(validationIssueField([issue])).toBe("filter");
+  });
+
+  it("keeps ordinary custom issues on their own field", () => {
+    expect(validationIssueField([{ code: "custom", path: ["other"], params: { relationPathFilter: false } }])).toBe(
+      "other",
+    );
+  });
+
+  it("does not replace an earlier unrelated issue's field", () => {
+    expect(
+      validationIssueField([
+        { code: "invalid_type", path: ["limit"] },
+        { code: "custom", path: ["filter"], params: { relationPathFilter: true } },
+      ]),
+    ).toBe("limit");
+  });
+
   it("resolves an invalid_union through the member with the fewest issues", () => {
     const issue = union(
       [

@@ -48,6 +48,32 @@ export type FilterNode =
 const filterProperty = z.string().min(1);
 const filterScalarValue = z.union([z.string(), z.number(), z.boolean()]);
 
+const relationPathConditionSchema = z
+  .object({
+    type: z.literal("relation_path_contains"),
+    path: z.tuple([filterProperty, filterProperty]),
+    value: z.uuid(),
+  })
+  .strict();
+
+// Keep malformed relation paths attributable to the whole filter at operation boundaries,
+// including when a tuple's aborting issue is nested inside a Zod union (issue #1363, AC5).
+const relationPathCondition = z
+  .object({ type: z.literal("relation_path_contains") })
+  .loose()
+  .transform((raw, ctx) => {
+    const parsed = relationPathConditionSchema.safeParse(raw);
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Invalid relation path filter",
+        params: { relationPathFilter: true },
+      });
+      return z.NEVER;
+    }
+    return parsed.data;
+  });
+
 const filterConditionSchema = z.union([
   z.object({ type: z.enum(["equals", "not_equals"]), property: filterProperty, value: filterScalarValue }).strict(),
   z
@@ -76,13 +102,7 @@ const filterConditionSchema = z.union([
   z
     .object({ type: z.enum(["relation_contains", "relation_not_contains"]), property: filterProperty, value: z.uuid() })
     .strict(),
-  z
-    .object({
-      type: z.literal("relation_path_contains"),
-      path: z.tuple([filterProperty, filterProperty]),
-      value: z.uuid(),
-    })
-    .strict(),
+  relationPathCondition,
 ]);
 
 /**
