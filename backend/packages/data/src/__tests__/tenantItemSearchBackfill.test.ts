@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { CORE_TASK_AFFINITY, CORE_TASK_NAMES, TASK_TENANCY, runOnce } from "@semprec/queue";
@@ -13,7 +13,7 @@ import {
   resetDatabase,
 } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { getItemById, softDeleteItem } from "../chokePoint/itemsStore.js";
@@ -102,6 +102,48 @@ async function runQueuedBackfill(): Promise<void> {
   const handler = taskList[taskName];
   if (!handler) throw new Error("Backfill handler missing from production API task list");
   await runOnce({ pgPool: admin }, { [taskName]: handler });
+}
+
+async function overlapBackfill(
+  databaseId: string,
+  onlyMissing: boolean,
+  finish: "commit" | "rollback",
+  write: (client: PoolClient) => Promise<void>,
+): Promise<void> {
+  const rollback = new Error("concurrent writer rollback probe");
+  let backfill = Promise.resolve<PromiseSettledResult<void>[]>([]);
+  try {
+    const writer = withTransaction(pool, async (client) => {
+      await client.query("SET LOCAL statement_timeout = '10s'");
+      await write(client);
+      const { rows: pids } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+      const pid = pids[0]?.pid;
+      if (pid === undefined) throw new Error("Writer backend pid missing");
+      // Observe rejection immediately; the writer must release its locks before awaiting completion.
+      backfill = Promise.allSettled([handleItemSearchBackfillTask(pool, { databaseId, onlyMissing })]);
+      await vi.waitFor(
+        async () => {
+          const { rows: blocked } = await pool.query<{ query: string }>(
+            "SELECT query FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+            [pid],
+          );
+          expect(blocked).toHaveLength(1);
+          // In missing-only mode, reaching the indexer's read proves candidate selection finished.
+          if (onlyMissing) expect(blocked[0]?.query).toContain("FROM items i JOIN databases d");
+          else expect(blocked[0]?.query).toMatch(/FROM items i JOIN databases d|INSERT INTO item_search_index/);
+        },
+        { timeout: 5_000, interval: 20 },
+      );
+      if (finish === "rollback") throw rollback;
+    });
+    if (finish === "rollback") await expect(writer).rejects.toBe(rollback);
+    else await writer;
+  } finally {
+    // withTransaction has committed/rolled back first, even if synchronization failed.
+    // allSettled cannot mask that failure or leave a query running into the next test.
+    await backfill;
+  }
+  expect(await backfill).toEqual([{ status: "fulfilled", value: undefined }]);
 }
 
 beforeAll(async () => {
@@ -469,6 +511,79 @@ describe("tenant item search backfill task", () => {
       expect(await rows()).toEqual(before);
     });
   });
+
+  it.each(["commit", "rollback"] as const)(
+    "a concurrent full rebuild follows the choke-point update's %s",
+    async (finish) => {
+      await runInTenant(tenant, async () => {
+        const item = await task("Original");
+        const before = (await rows()).find((row) => row.item_id === item.id);
+        expect(before).toBeDefined();
+        let updated: IndexRow | undefined;
+        await overlapBackfill(item.databaseId, false, finish, async (client) => {
+          await updateItemWithClient(client, {
+            databaseId: item.databaseId,
+            itemId: item.id,
+            propertiesPatch: { name: "Replacement" },
+          });
+          updated = (
+            await client.query<IndexRow>(
+              "SELECT item_id, database_id, search_vector::text AS vector, updated_at::text FROM item_search_index WHERE item_id = $1",
+              [item.id],
+            )
+          ).rows[0];
+          expect(updated).toBeDefined();
+          expect(await matches(client, item.id, "Replacement")).toBe(true);
+          // The writer is still uncommitted when the backfill starts.
+          expect((await rows()).find((row) => row.item_id === item.id)).toEqual(before);
+        });
+        const committed = (await rows()).find((row) => row.item_id === item.id);
+        expect(committed?.vector).toBe((finish === "commit" ? updated : before)?.vector);
+        expect(await has(item.id, "Replacement")).toBe(finish === "commit");
+        expect(await has(item.id, "Original")).toBe(finish === "rollback");
+        expect(
+          (await withTransaction(pool, (client) => getItemById(client, item.databaseId, item.id)))?.properties.name,
+        ).toBe(finish === "commit" ? "Replacement" : "Original");
+      });
+    },
+  );
+
+  it.each(["commit", "rollback"] as const)(
+    "onlyMissing respects the %s of an index row appearing after candidate selection",
+    async (finish) => {
+      await runInTenant(tenant, async () => {
+        const item = await task("Original");
+        const original = (await rows()).find((row) => row.item_id === item.id);
+        expect(original).toBeDefined();
+        await removeIndex([item.id]);
+        let appearing: IndexRow | undefined;
+        await overlapBackfill(item.databaseId, true, finish, async (client) => {
+          await indexItem(client, item.id);
+          // An intentionally different document makes overwriting the winning row observable
+          // independently of timestamps; the public item API cannot supply an arbitrary vector.
+          await reindexItemSearch(client, {
+            itemId: item.id,
+            databaseId: item.databaseId,
+            text: "Protected concurrent document",
+          });
+          appearing = (
+            await client.query<IndexRow>(
+              "SELECT item_id, database_id, search_vector::text AS vector, updated_at::text FROM item_search_index WHERE item_id = $1",
+              [item.id],
+            )
+          ).rows[0];
+          expect(appearing).toBeDefined();
+          // Candidate selection sees no row until this writer commits.
+          expect((await rows()).some((row) => row.item_id === item.id)).toBe(false);
+        });
+        const committed = (await rows()).find((row) => row.item_id === item.id);
+        expect(committed?.vector).toBe((finish === "commit" ? appearing : original)?.vector);
+        if (finish === "commit") expect(committed).toEqual(appearing);
+        expect(await has(item.id, "Protected concurrent document")).toBe(finish === "commit");
+        expect(await has(item.id, "Original")).toBe(finish === "rollback");
+      });
+    },
+  );
 
   it("a full rebuild refreshes existing documents and a database/cursor filter bounds selection", async () => {
     await runInTenant(tenant, async () => {
