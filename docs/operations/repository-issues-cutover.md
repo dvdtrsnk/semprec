@@ -43,7 +43,7 @@ checksums. PR, review and CI operations remain on GitHub.
 
 ## Deployment boundary
 
-The source cutover is complete in this feature branch. Live Relay follows the
+The source cutover is complete in [migration PR #2036](https://github.com/dvdtrsnk/semprec/pull/2036), published as a draft. Live Relay follows the
 canonical `develop` tree; it takes up the new authority when the reviewed cutover
 reaches that branch. Both projects remain paused, and this change does not enable
 dispatch or merge the review bot PR. Preserve that operator pause until explicitly
@@ -57,6 +57,10 @@ checks, skipped ten and failed two existing Linux-only secure artifact tests on
 macOS. Targeted review bot tests against the current pin: 103 passed. Its wider
 shell suite is not verified on this host's system Bash 3.2, which rejects associative
 arrays. These limitations are not recorded as successful checks.
+
+A real approved imported record (`gh-1087`) was read at the clean cutover commit
+through the host RPC and the pinned bot parser. Both returned identical exact body
+and file SHA-256 values without GitHub issue reads; `verification.json` seals them.
 
 No mobile source or product application behavior changed. Earlier backend/web
 verification results remain in the task logs; unrelated environment failures were

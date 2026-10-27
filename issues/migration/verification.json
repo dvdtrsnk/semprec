@@ -46,5 +46,22 @@
     "pullRequest": 35,
     "merged": false
   },
-  "cutoverAt": "2026-10-27T15:39:11.460Z"
+  "cutoverAt": "2026-10-27T15:39:11.460Z",
+  "consumerVerification": {
+    "id": "gh-1087",
+    "origin": {
+      "id": "gh-1087",
+      "revision": "3e4c11018b6460847fc94385badb58557bb75578",
+      "fileSha256": "eb302d4c61ec62e829b3664a71557d2ee233fbde7be8d9a5b9438f252362004a",
+      "bodySha256": "8f183d1468ccc13176cbb661e0a0e31b462a929f18f3f6dbade9a8df8ad973a5"
+    },
+    "relayHostProtocol": "passed",
+    "reviewBotGitBlobParser": "passed",
+    "identicalBody": true
+  },
+  "migrationPullRequest": {
+    "number": 2036,
+    "draft": true,
+    "merged": false
+  }
 }
