@@ -295,6 +295,33 @@ describe("item search create/update hooks", () => {
     });
   });
 
+  it("defaults shipped select labels to Czech when the tenant has no bound user", async () => {
+    const userlessTenant = await createTestTenant(admin);
+    await runInTenant(userlessTenant, async () => {
+      await seedSystem(pool);
+      const users = await withTransaction(pool, (client) =>
+        client.query<{ id: string }>("SELECT id FROM users WHERE tenant_id = $1", [userlessTenant]),
+      );
+      expect(users.rows).toEqual([]);
+
+      const item = await cp.createItem({
+        databaseId: await db("tasks"),
+        properties: { name: "Selected", status: "notDone" },
+      });
+      const registry = await import("../manifest/fullModuleRegistry.js").then((module) =>
+        module.loadFullModuleRegistry(),
+      );
+      const catalogs = await registry.getCatalogs("systemDatabases");
+      const czechLabel = catalogs?.cs?.["property.tasks.status.option.notDone"];
+      const englishLabel = catalogs?.en?.["property.tasks.status.option.notDone"];
+      expect(czechLabel).toBeTypeOf("string");
+      expect(englishLabel).toBeTypeOf("string");
+      expect(czechLabel).not.toBe(englishLabel);
+      expect(await has(item.id, czechLabel ?? "missing Czech label")).toBe(true);
+      expect(await has(item.id, englishLabel ?? "missing English label")).toBe(false);
+    });
+  });
+
   it.each(["cs", "en", "fr"])(
     "indexes custom text, longText, URL, select and multi-select labels in locale %s",
     async (locale) => {
