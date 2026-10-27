@@ -5,6 +5,8 @@ export { assertRuntimeRole, RuntimeRoleAssertionError } from "./db/runtimeRoleAs
 export { runMigrations } from "./db/migrate.js";
 export * from "./errors.js";
 export * from "./types.js";
+export { indexItem } from "./search/itemSearchIndexer.js";
+export { enqueueItemSearchBackfill, type ItemSearchBackfillOptions } from "./search/itemSearchBackfill.js";
 
 export { createChokePoint, type ChokePoint } from "./chokePoint/chokePoint.js";
 export type { Actor } from "./chokePoint/authorization.js";

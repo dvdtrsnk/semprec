@@ -48,6 +48,8 @@ export interface ModuleDatabaseDescriptor {
   key: string;
   name: string;
   defaultViewType?: string;
+  /** Searchable property keys; absent uses the generic text and select-label rule. Unknown keys are ignored. */
+  searchFields?: string[];
 }
 
 /**
@@ -147,6 +149,7 @@ const moduleDatabaseDescriptorSchema = z.object({
   key: z.string().min(1),
   name: z.string().min(1),
   defaultViewType: z.string().min(1).optional(),
+  searchFields: z.array(z.string().min(1)).max(1000).optional(),
 });
 
 const moduleDataMigrationDescriptorSchema = z.object({

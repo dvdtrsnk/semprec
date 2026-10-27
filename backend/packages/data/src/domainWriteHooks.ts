@@ -10,9 +10,12 @@ import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "./mcp/mcpServe
 import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.js";
 import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHook.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
+import { itemSearchCreateHook, itemSearchUpdateHook } from "./search/itemSearchIndexer.js";
 
 registerItemCreateHook(mcpServerItemCreateHook);
+registerItemCreateHook(itemSearchCreateHook);
 registerItemUpdateHook(mcpServerItemUpdateHook);
 registerItemUpdateHook(mailMessageFlagsItemUpdateHook);
 registerItemUpdateHook(taskRecurrenceItemUpdateHook);
+registerItemUpdateHook(itemSearchUpdateHook);
 registerRelationEdgeWriteHook(transcriptSpeakerEdgeWriteHook);

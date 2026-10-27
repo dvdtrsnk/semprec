@@ -11,6 +11,7 @@ import {
 } from "./scheduler/sweep.js";
 import { handleRollupRecomputeTask, handleRollupRecomputeFullTask } from "./rollup/recompute.js";
 import { handleJournalInboxRecomputeTask } from "./inbox/journalInboxCompute.js";
+import { handleItemSearchBackfillTask } from "./search/itemSearchBackfill.js";
 import { handlePropertyTypeMigrationTask } from "./migrationJob/propertyTypeMigration.js";
 import { handleDocCompactionSweepTask } from "./docs/docPersistence.js";
 import { handleDocHistoryCleanupTask } from "./docs/docHistory.js";
@@ -123,6 +124,9 @@ export function createCoreTaskList(
   },
 ): TaskList {
   const handlers: TaskList = {
+    [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: async (payload) => {
+      await handleItemSearchBackfillTask(pool, payload);
+    },
     [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {
       await handleHeartbeatSweepTask(pool, moduleRegistry);
     },
