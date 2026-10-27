@@ -196,7 +196,7 @@ describe("relation_path_contains production queries", () => {
         const spy = vi.spyOn(client, "query");
         try {
           const scalar = await property("tasks", "name");
-          expect((await buildFilterProperties(client, [scalar])).get("name")).toEqual({ type: "text" });
+          expect((await buildFilterProperties(client, [scalar])).get("name")).toEqual({ type: "title" });
           expect(spy).not.toHaveBeenCalled();
           for (const config of [{}, { targetDatabaseId: "invalid" }]) {
             const props = await buildFilterProperties(client, [{ ...taskProject, config }]);
