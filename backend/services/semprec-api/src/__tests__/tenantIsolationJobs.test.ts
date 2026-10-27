@@ -58,6 +58,7 @@ import {
   getTestPool,
   resetDatabase,
   storeCredential,
+  upsertMailMessageMeta,
 } from "@semprec/data/testSupport";
 import { createApiActionRegistry } from "../actionRegistryComposition.js";
 
@@ -889,6 +890,40 @@ const cases: Record<string, TaskCase> = {
         expect(await rows(tenant, "SELECT 1 AS present FROM item_search_index WHERE item_id = $1", [itemId])).toEqual([
           { present: 1 },
         ]);
+      });
+    },
+  },
+  [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const databaseId = await requireModuleDatabaseId(tenant, "emails");
+      const preview = `Legacy ${randomUUID()}`;
+      const item = await inTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const email = await createItemWithClient(
+            client,
+            { databaseId, properties: { name: "Legacy mail", body: `<p>${preview}</p>` } },
+            { allowedSystemKeys: ["name", "body"] },
+          );
+          await upsertMailMessageMeta(client, {
+            itemId: email.id,
+            mailboxItemId: null,
+            messageId: randomUUID(),
+            envelope: {},
+          });
+          return email;
+        }),
+      );
+      expect(
+        await rows(tenant, "SELECT preview_text, ingested_at FROM mail_message_meta WHERE item_id = $1", [item.id]),
+      ).toEqual([{ preview_text: null, ingested_at: null }]);
+      const source = await rows<{ updated_at: Date }>(tenant, "SELECT updated_at FROM items WHERE id = $1", [item.id]);
+      expect(source).toHaveLength(1);
+      return marked([item.id], async () => {
+        expect(
+          await rows(tenant, "SELECT preview_text, ingested_at FROM mail_message_meta WHERE item_id = $1", [item.id]),
+        ).toEqual([{ preview_text: preview, ingested_at: source[0]?.updated_at }]);
       });
     },
   },

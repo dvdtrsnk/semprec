@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Pool, PoolClient } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
 import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
@@ -367,3 +367,143 @@ it("commits earlier pages, rolls back a failing page, visits other tenants and r
     expect((await getMailMessageMetaByItemId(pool, lastId))?.previewText).toBe("failBackfill");
   });
 });
+
+async function overlapPreviewBackfill(
+  finish: "commit" | "rollback",
+  write: (client: PoolClient) => Promise<void>,
+): Promise<void> {
+  const rollback = new Error("preview writer rollback probe");
+  let releaseWriter: (() => void) | undefined;
+  const release = new Promise<void>((resolve) => {
+    releaseWriter = resolve;
+  });
+  let writerPid: number | undefined;
+  let backfill = Promise.resolve<PromiseSettledResult<void>[]>([]);
+  const writer = Promise.allSettled([
+    runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        await client.query("SET LOCAL statement_timeout = '10s'");
+        await write(client);
+        const result = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+        writerPid = result.rows[0]?.pid;
+        await release;
+        if (finish === "rollback") throw rollback;
+      }),
+    ),
+  ]);
+  try {
+    await vi.waitFor(() => expect(writerPid).toBeTypeOf("number"), { timeout: 5_000, interval: 20 });
+    // Start outside the writer's tenant scope: the production system handler fans out itself.
+    backfill = Promise.allSettled([handleMailMessagePreviewBackfillTask(pool)]);
+    await vi.waitFor(
+      async () => {
+        // Admin observes synchronization only; all content reads/writes use the runtime role.
+        const result = await admin.query<{ query: string }>(
+          "SELECT query FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+          [writerPid],
+        );
+        expect(result.rows).toHaveLength(1);
+        // Waiting at the candidate read, rather than its later UPDATE, proves the read guard.
+        expect(result.rows[0]?.query).toContain("SELECT m.item_id, i.properties");
+      },
+      { timeout: 5_000, interval: 20 },
+    );
+  } finally {
+    releaseWriter?.();
+    // Settle both operations even after a failed synchronization assertion, before fixture cleanup.
+    await writer;
+    await backfill;
+  }
+  expect(await writer).toEqual(
+    finish === "rollback" ? [{ status: "rejected", reason: rollback }] : [{ status: "fulfilled", value: undefined }],
+  );
+  expect(await backfill).toEqual([{ status: "fulfilled", value: undefined }]);
+}
+
+it.each(["commit", "rollback"] as const)(
+  "backfill waits for a source update %s and fills from the committed body and time",
+  async (finish) => {
+    const fixture = await runInTenant(tenant, async () => {
+      const databaseId = await db("emails");
+      return withTransaction(pool, async (client) => {
+        const item = await createItemWithClient(
+          client,
+          { databaseId, properties: { name: "Legacy", body: "old body" } },
+          { allowedSystemKeys: ["name", "body"] },
+        );
+        await upsertMailMessageMeta(client, {
+          itemId: item.id,
+          mailboxItemId: null,
+          messageId: randomUUID(),
+          envelope: {},
+        });
+        return { databaseId, itemId: item.id };
+      });
+    });
+    const before = await runInTenant(tenant, () =>
+      pool.query<{ updated_at: Date }>("SELECT updated_at FROM items WHERE id = $1", [fixture.itemId]),
+    );
+    await overlapPreviewBackfill(finish, async (client) => {
+      await updateItemWithClient(
+        client,
+        { ...fixture, propertiesPatch: { body: "new committed body" } },
+        { allowedSystemKeys: ["body"] },
+      );
+    });
+    await runInTenant(tenant, async () => {
+      const source = await pool.query<{ body: string; updated_at: Date }>(
+        "SELECT properties ->> 'body' AS body, updated_at FROM items WHERE id = $1",
+        [fixture.itemId],
+      );
+      expect(source.rows[0]?.body).toBe(finish === "commit" ? "new committed body" : "old body");
+      if (finish === "rollback") expect(source.rows[0]?.updated_at).toEqual(before.rows[0]?.updated_at);
+      expect(await getMailMessageMetaByItemId(pool, fixture.itemId)).toMatchObject({
+        previewText: source.rows[0]?.body,
+        ingestedAt: source.rows[0]?.updated_at,
+      });
+    });
+  },
+);
+
+const legacyFields = [
+  { label: "both null", previewText: null, ingestedAt: null },
+  { label: "empty preview", previewText: "", ingestedAt: null },
+  { label: "nonempty preview", previewText: "first preview", ingestedAt: null },
+  { label: "existing time", previewText: null, ingestedAt: new Date(0) },
+];
+it.each(legacyFields.flatMap((fields) => (["commit", "rollback"] as const).map((finish) => ({ ...fields, finish }))))(
+  "backfill overlaps metadata upsert $finish with $label, preserving first values and filling nulls",
+  async ({ finish, previewText, ingestedAt }) => {
+    const fixture = await runInTenant(tenant, async () => {
+      const input = await setupMail();
+      return withTransaction(pool, async (client) => {
+        const item = await createItemWithClient(
+          client,
+          { databaseId: input.emailsDatabaseId, properties: { name: "Legacy", body: "source body" } },
+          { allowedSystemKeys: ["name", "body"] },
+        );
+        const key = { itemId: item.id, mailboxItemId: input.mailboxItemId, messageId: randomUUID(), envelope: {} };
+        await upsertMailMessageMeta(client, { ...key, previewText, ingestedAt });
+        const source = await client.query<{ updated_at: Date }>("SELECT updated_at FROM items WHERE id = $1", [
+          item.id,
+        ]);
+        const updatedAt = source.rows[0]?.updated_at;
+        if (!updatedAt) throw new Error("Missing source timestamp");
+        return { key, updatedAt };
+      });
+    });
+    await overlapPreviewBackfill(finish, async (client) => {
+      await upsertMailMessageMeta(client, {
+        ...fixture.key,
+        previewText: "competing preview",
+        ingestedAt: new Date(1000),
+      });
+    });
+    await runInTenant(tenant, async () => {
+      expect(await getMailMessageMetaByItemId(pool, fixture.key.itemId)).toMatchObject({
+        previewText: previewText ?? (finish === "commit" ? "competing preview" : "source body"),
+        ingestedAt: ingestedAt ?? (finish === "commit" ? new Date(1000) : fixture.updatedAt),
+      });
+    });
+  },
+);
