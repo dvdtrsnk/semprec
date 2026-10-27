@@ -86,8 +86,9 @@ async function changePropertyTypeWithClient(
   client: PoolClient,
   id: string,
   newType: PropertyType,
+  config?: Record<string, unknown>,
 ): Promise<PropertyRow> {
-  const property = await propertiesStore.getProperty(client, id);
+  const property = await propertiesStore.getPropertyForUpdate(client, id);
   if (!property) throw new ValidationError(`Property ${id} not found`);
   const oldType = property.type;
   if (oldType === newType) return property;
@@ -104,7 +105,7 @@ async function changePropertyTypeWithClient(
     });
   }
 
-  const updated = await propertiesStore.changePropertyType(client, id, newType, "pending");
+  const updated = await propertiesStore.changePropertyType(client, id, newType, "pending", config);
   await enqueuePropertyTypeMigration(client, id, oldType);
   return updated;
 }
@@ -119,7 +120,7 @@ async function updatePropertyWithClient(
   id: string,
   input: { name?: string; config?: Record<string, unknown>; type?: PropertyType },
 ): Promise<{ property: PropertyRow; typeChanged: boolean }> {
-  let property = await propertiesStore.getProperty(client, id);
+  let property = await propertiesStore.getPropertyForUpdate(client, id);
   if (!property) throw new NotFoundError(`Property ${id} not found`);
 
   // Issue #219: checked here, inside the same transaction as the existence check above,
@@ -144,13 +145,12 @@ async function updatePropertyWithClient(
   if (input.name !== undefined) {
     property = await propertiesStore.renameProperty(client, id, input.name);
   }
-  if (input.config !== undefined) {
-    property = await updatePropertyConfigWithClient(client, id, input.config);
-  }
   let typeChanged = false;
   if (input.type !== undefined && input.type !== property.type) {
-    property = await changePropertyTypeWithClient(client, id, input.type);
+    property = await changePropertyTypeWithClient(client, id, input.type, input.config);
     typeChanged = true;
+  } else if (input.config !== undefined) {
+    property = await updatePropertyConfigWithClient(client, id, input.config);
   }
   return { property, typeChanged };
 }

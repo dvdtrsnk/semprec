@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { requireSingleRow } from "../db/pool.js";
+import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 import { ConflictError, NotFoundError, PropertyLockedError, SchemaLockedError, ValidationError } from "../errors.js";
 import { PROPERTY_TYPES, type DatabaseRow, type PropertyOwner, type PropertyRow, type PropertyType } from "../types.js";
 import { assertKnownValue } from "../dbRowValidation.js";
@@ -126,6 +126,15 @@ export async function getProperty(client: PoolClient, propertyId: string): Promi
   return rows[0] ? mapPropertyRow(rows[0]) : null;
 }
 
+/** Holds the schema snapshot until the caller's transaction ends. */
+export async function getPropertyForUpdate(client: PoolClient, propertyId: string): Promise<PropertyRow | null> {
+  const { rows } = await client.query<PropertyDbRow>(
+    `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE id = $1 FOR UPDATE`,
+    [propertyId],
+  );
+  return rows[0] ? mapPropertyRow(rows[0]) : null;
+}
+
 export async function getPropertyByKey(
   client: PoolClient,
   databaseId: string,
@@ -194,6 +203,12 @@ export async function listPropertiesByDatabases(
 
 async function requireProperty(client: PoolClient, propertyId: string): Promise<PropertyRow> {
   const property = await getProperty(client, propertyId);
+  if (!property) throw new NotFoundError(`Property ${propertyId} not found`);
+  return property;
+}
+
+async function requirePropertyForUpdate(client: PoolClient, propertyId: string): Promise<PropertyRow> {
+  const property = await getPropertyForUpdate(client, propertyId);
   if (!property) throw new NotFoundError(`Property ${propertyId} not found`);
   return property;
 }
@@ -274,28 +289,34 @@ async function assertPropertySchemaMutable(client: PoolClient, property: Propert
   await assertDatabaseSchemaUnlocked(client, property.databaseId);
 }
 
-/** Changes `type` only. Caller (the choke-point) is responsible for the mirror-dependency and conversion-path checks. */
+/** Changes the type and optional replacement config together, validating the final pair under the row lock.
+ * Caller (the choke-point) is responsible for the mirror-dependency and conversion-path checks.
+ */
 export async function changePropertyType(
   client: PoolClient,
   propertyId: string,
   newType: PropertyType,
   migrationStatus: PropertyRow["migrationStatus"],
+  config?: Record<string, unknown>,
 ): Promise<PropertyRow> {
   if (!PROPERTY_TYPES.includes(newType)) {
     throw new ValidationError(`Unknown property type '${newType}'`, { field: "type" });
   }
-  const property = await requireProperty(client, propertyId);
+  const property = await requirePropertyForUpdate(client, propertyId);
   await assertPropertySchemaMutable(client, property);
+  const finalConfig = config ?? property.config;
+  assertValidPropertyConfig(newType, finalConfig);
 
-  const { rows } = await client.query<PropertyDbRow>(
-    // `migration_dropped_values` is cleared here and only here: a fresh retype starts a new
-    // migration, so whatever a previous retype of this property discarded is no longer its
-    // result. Every other writer only ever sets the flag.
-    `UPDATE properties SET type = $2, migration_status = $3, migration_dropped_values = false
+  // `migration_dropped_values` is cleared here and only here: a fresh retype starts a new
+  // migration, so whatever a previous retype of this property discarded is no longer its
+  // result. Every other writer only ever sets the flag.
+  const result = await client.query<PropertyDbRow>(
+    `UPDATE properties SET type = $2, migration_status = $3, migration_dropped_values = false, config = $4::jsonb
      WHERE id = $1 RETURNING ${PROPERTY_COLUMNS}`,
-    [propertyId, newType, migrationStatus],
+    [propertyId, newType, migrationStatus, JSON.stringify(finalConfig)],
   );
-  return mapPropertyRow(requireSingleRow(rows, "properties row"));
+  requireAffectedRows(result, "properties row");
+  return mapPropertyRow(requireSingleRow(result.rows, "properties row"));
 }
 
 export async function setPropertyMigrationStatus(
@@ -337,7 +358,7 @@ export async function updatePropertyConfig(
   propertyId: string,
   config: Record<string, unknown>,
 ): Promise<PropertyRow> {
-  const property = await requireProperty(client, propertyId);
+  const property = await requirePropertyForUpdate(client, propertyId);
   await assertPropertySchemaMutable(client, property);
   assertValidPropertyConfig(property.type, config);
 
