@@ -1,6 +1,6 @@
 import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import type { AgentMessage, AgentSession, CreateAgentSession } from "@semprec/agent-runtime";
+import type { AgentMessage, AgentSession, CreateAgentSession, ToolEventMetadata } from "@semprec/agent-runtime";
 import { logger } from "./logger.js";
 import { toPiMessages } from "./piConversationHistory.js";
 
@@ -8,6 +8,7 @@ export interface PiAgentSessionFactoryOptions {
   model: Model<Api>;
   streamFn: StreamFn;
   tools: AgentTool[];
+  toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>;
   /** The default prompt a session's `systemPromptOverride` receives, and the one used without it. */
   systemPrompt: string;
 }
@@ -29,7 +30,11 @@ function assistantText(message: AssistantMessage): string {
  * and every non-assistant `message_end` — the prompt is already `agent_runs.task`, and a tool
  * result message duplicates the `tool_result` its `tool_execution_end` produced.
  */
-function toAgentMessage(event: AgentEvent): AgentMessage | null {
+function toAgentMessage(
+  event: AgentEvent,
+  toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>,
+  targets: Map<string, { targetDatabaseId?: string; targetItemId?: string }>,
+): AgentMessage | null {
   switch (event.type) {
     // The turn's assistant message and tool results are already their own `message`/`tool_result`
     // events; repeating them here would only double the stored payload.
@@ -55,16 +60,41 @@ function toAgentMessage(event: AgentEvent): AgentMessage | null {
         errorMessage: message.errorMessage,
       };
     }
-    case "tool_execution_start":
-      return { kind: "tool_use", toolCallId: event.toolCallId, name: event.toolName, arguments: event.args };
-    case "tool_execution_end":
+    case "tool_execution_start": {
+      const metadata = toolEventMetadata.get(event.toolName);
+      const args: unknown = event.args;
+      const target =
+        metadata && typeof args === "object" && args !== null && !Array.isArray(args)
+          ? {
+              ...("databaseId" in args && typeof args.databaseId === "string"
+                ? { targetDatabaseId: args.databaseId }
+                : {}),
+              ...("itemId" in args && typeof args.itemId === "string" ? { targetItemId: args.itemId } : {}),
+            }
+          : {};
+      if (metadata) targets.set(event.toolCallId, target);
+      return {
+        kind: "tool_use",
+        toolCallId: event.toolCallId,
+        name: event.toolName,
+        arguments: event.args,
+        ...metadata,
+        ...target,
+      };
+    }
+    case "tool_execution_end": {
+      const target = targets.get(event.toolCallId);
+      targets.delete(event.toolCallId);
       return {
         kind: "tool_result",
         toolCallId: event.toolCallId,
         name: event.toolName,
         result: event.result,
         isError: event.isError,
+        ...toolEventMetadata.get(event.toolName),
+        ...target,
       };
+    }
     default:
       return null;
   }
@@ -92,6 +122,7 @@ async function* promptMessages(
   agent: Agent,
   task: string,
   toolFailure: { error: Error | undefined },
+  toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>,
   signal?: AbortSignal,
 ): AsyncGenerator<AgentMessage> {
   signal?.throwIfAborted();
@@ -103,8 +134,9 @@ async function* promptMessages(
     wake = null;
   };
 
+  const targets = new Map<string, { targetDatabaseId?: string; targetItemId?: string }>();
   const unsubscribe = agent.subscribe((event) => {
-    const message = toAgentMessage(event);
+    const message = toAgentMessage(event, toolEventMetadata, targets);
     if (!message) return;
     queue.push(message);
     notify();
@@ -194,7 +226,7 @@ export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOption
     // second `prompt()` while one is active).
     const prompt = (task: string): AsyncIterable<AgentMessage> => {
       toolFailure.error = undefined;
-      return promptMessages(piAgent, task, toolFailure, sessionOptions.signal);
+      return promptMessages(piAgent, task, toolFailure, options.toolEventMetadata, sessionOptions.signal);
     };
     const session: AgentSession = {
       messages: () => prompt(sessionOptions.task),

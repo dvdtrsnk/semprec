@@ -7,6 +7,7 @@ import {
   createProjectAgentGuidanceSystemPromptOverride,
   listGrantedGenericOperationAgentTools,
   type CreateAgentSession,
+  type ToolEventMetadata,
 } from "@semprec/agent-runtime";
 import {
   createPoolClientTransactionRunner,
@@ -49,16 +50,19 @@ function isArgumentsObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+type ComposedAgentTool = AgentTool & { toolEventMetadata: ToolEventMetadata };
+
 async function createGenericOperationTools(
   pool: Pool,
   moduleRegistry: ModuleRegistry,
   runId: string,
-): Promise<AgentTool[]> {
+): Promise<ComposedAgentTool[]> {
   const operations = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, runId);
   const implementations = createGenericOperationAgentTools(pool, moduleRegistry);
   return operations.map((operation) => ({
     name: toModelToolName(operation),
     label: operation,
+    toolEventMetadata: { operation },
     description: `Semprec generic operation '${operation}'.`,
     parameters: Type.Unsafe(operationInputJsonSchema(operation)),
     async execute(_toolCallId, params) {
@@ -68,7 +72,7 @@ async function createGenericOperationTools(
   }));
 }
 
-async function createMcpTools(pool: Pool, runId: string, projectItemId: string): Promise<AgentTool[]> {
+async function createMcpTools(pool: Pool, runId: string, projectItemId: string): Promise<ComposedAgentTool[]> {
   const grants = await withClient(pool, (client) => listMcpToolGrantsForProject(client, projectItemId));
   return grants
     .filter((grant) => grant.granted)
@@ -77,6 +81,14 @@ async function createMcpTools(pool: Pool, runId: string, projectItemId: string):
       return {
         name: toModelToolName(`mcp_${grant.toolName}`),
         label: `${grant.mcpServerName}: ${grant.toolName}`,
+        toolEventMetadata: {
+          mcp: {
+            toolRegistrationId: grant.mcpToolRegistrationId,
+            serverItemId: grant.mcpServerItemId,
+            serverName: grant.mcpServerName,
+            toolName: grant.toolName,
+          },
+        },
         description: grant.description ?? `MCP tool '${grant.toolName}' on '${grant.mcpServerName}'.`,
         parameters: MCP_TOOL_PARAMETERS,
         async execute(_toolCallId, params, signal) {
@@ -89,7 +101,7 @@ async function createMcpTools(pool: Pool, runId: string, projectItemId: string):
           const result = await invoke(params, signal);
           return { content: [{ type: "text", text: result.result }], details: { error: result.error } };
         },
-      } satisfies AgentTool;
+      } satisfies ComposedAgentTool;
     });
 }
 
@@ -97,7 +109,7 @@ async function createMcpTools(pool: Pool, runId: string, projectItemId: string):
  * Two granted MCP servers can expose the same tool name, and a model can only address one of
  * them: the first keeps the name, and every later one is left out of this run's catalog, logged.
  */
-export function withUniqueNames(tools: AgentTool[]): AgentTool[] {
+export function withUniqueNames<T extends AgentTool>(tools: T[]): T[] {
   const seen = new Set<string>();
   return tools.filter((tool) => {
     if (!seen.has(tool.name)) {
@@ -140,5 +152,13 @@ export async function createAgentSessionFactoryForRun(
   const streamFn: StreamFn = (model, context, options) =>
     gateway.streamFn(model, context, { ...options, headers: { ...options?.headers, [AGENT_RUN_ID_HEADER]: run.id } });
 
-  return createPiAgentSessionFactory({ model: gateway.model, streamFn, tools: withUniqueNames(tools), systemPrompt });
+  const uniqueTools = withUniqueNames(tools);
+  const toolEventMetadata = new Map(uniqueTools.map((tool) => [tool.name, tool.toolEventMetadata]));
+  return createPiAgentSessionFactory({
+    model: gateway.model,
+    streamFn,
+    tools: uniqueTools,
+    toolEventMetadata,
+    systemPrompt,
+  });
 }

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
 import { Type, fauxAssistantMessage, fauxProvider, fauxToolCall, type Context } from "@earendil-works/pi-ai";
-import type { AgentMessage } from "@semprec/agent-runtime";
+import type { AgentMessage, ToolEventMetadata } from "@semprec/agent-runtime";
+import { toPiMessages } from "../piConversationHistory.js";
 import { createPiAgentSessionFactory } from "../piAgentSession.js";
 
 function fauxModel() {
@@ -39,6 +40,7 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
     ]);
     const calls: unknown[] = [];
     const createSession = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
       model,
       streamFn,
       tools: [echoTool(calls)],
@@ -98,7 +100,13 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
     const controller = new AbortController();
     const add = vi.spyOn(controller.signal, "addEventListener");
     const remove = vi.spyOn(controller.signal, "removeEventListener");
-    const session = createPiAgentSessionFactory({ model, streamFn, tools: [tool], systemPrompt: "base" })({
+    const session = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn,
+      tools: [tool],
+      systemPrompt: "base",
+    })({
       task: "t",
       signal: controller.signal,
     });
@@ -119,7 +127,13 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
     const stream = vi.fn(streamFn);
     const controller = new AbortController();
     controller.abort();
-    const session = createPiAgentSessionFactory({ model, streamFn: stream, tools: [], systemPrompt: "base" })({
+    const session = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn: stream,
+      tools: [],
+      systemPrompt: "base",
+    })({
       task: "t",
       signal: controller.signal,
     });
@@ -136,7 +150,13 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
         return fauxAssistantMessage("ok");
       },
     ]);
-    const createSession = createPiAgentSessionFactory({ model, streamFn, tools: [], systemPrompt: "base" });
+    const createSession = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn,
+      tools: [],
+      systemPrompt: "base",
+    });
 
     await collect(createSession({ task: "t", systemPromptOverride: (prompt) => `${prompt}\nextra` }).messages());
 
@@ -156,7 +176,13 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
         return fauxAssistantMessage("second");
       },
     ]);
-    const session = createPiAgentSessionFactory({ model, streamFn, tools: [], systemPrompt: "base" })({ task: "one" });
+    const session = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn,
+      tools: [],
+      systemPrompt: "base",
+    })({ task: "one" });
 
     await collect(session.messages());
     const followUp = await collect(session.send!("two"));
@@ -169,7 +195,13 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
   it("fails the session with the model's error when the model call fails", async () => {
     const { faux, model, streamFn } = fauxModel();
     faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "gateway refused: budget" })]);
-    const createSession = createPiAgentSessionFactory({ model, streamFn, tools: [], systemPrompt: "base" });
+    const createSession = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn,
+      tools: [],
+      systemPrompt: "base",
+    });
 
     await expect(collect(createSession({ task: "t" }).messages())).rejects.toThrow("gateway refused: budget");
   });
@@ -182,6 +214,7 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
     ]);
     const calls: unknown[] = [];
     const createSession = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
       model,
       streamFn,
       tools: [echoTool(calls, new Error("connection terminated"))],
@@ -201,7 +234,13 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
         return fauxAssistantMessage("resumed");
       },
     ]);
-    const createSession = createPiAgentSessionFactory({ model, streamFn, tools: [], systemPrompt: "base" });
+    const createSession = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn,
+      tools: [],
+      systemPrompt: "base",
+    });
 
     const messages = await collect(
       createSession({
@@ -238,7 +277,13 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
 
   it("refuses reconstructed history that does not convert to pi messages", () => {
     const { model, streamFn } = fauxModel();
-    const createSession = createPiAgentSessionFactory({ model, streamFn, tools: [], systemPrompt: "base" });
+    const createSession = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn,
+      tools: [],
+      systemPrompt: "base",
+    });
 
     expect(() =>
       createSession({
@@ -248,5 +293,149 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
         },
       }),
     ).toThrow("conversation entry e1 (kind 'message') is not an assistant message");
+  });
+});
+
+describe("tool event metadata", () => {
+  const mcp = {
+    toolRegistrationId: "reg-1",
+    serverItemId: "server-1",
+    serverName: "Search server",
+    toolName: "search",
+  };
+
+  it.each<{ name: string; metadata: ToolEventMetadata }>([
+    { name: "item_patch", metadata: { operation: "item.patch" } },
+    { name: "mcp_search", metadata: { mcp } },
+  ])("enriches both $name events and preserves conversation reconstruction", async ({ name, metadata }) => {
+    const { faux, model, streamFn } = fauxModel();
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall(name, { itemId: "item-1", databaseId: "db-1" }, { id: "call-1" })], {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("done"),
+    ]);
+    const tool: AgentTool = {
+      ...echoTool([]),
+      name,
+      parameters: Type.Object({ itemId: Type.String(), databaseId: Type.String() }),
+    };
+    const session = createPiAgentSessionFactory({
+      model,
+      streamFn,
+      tools: [tool],
+      toolEventMetadata: new Map([[name, metadata]]),
+      systemPrompt: "base",
+    })({ task: "run" });
+    const messages = await collect(session.messages());
+    const events = messages.filter((message) => message.kind === "tool_use" || message.kind === "tool_result");
+    expect(events).toHaveLength(2);
+    for (const event of events) {
+      expect(event).toMatchObject({
+        name,
+        toolCallId: "call-1",
+        ...metadata,
+        targetItemId: "item-1",
+        targetDatabaseId: "db-1",
+      });
+      expect(event).not.toHaveProperty("mcp" in metadata ? "operation" : "mcp");
+      expect(Buffer.byteLength(JSON.stringify(event), "utf8")).toBeLessThan(1024 * 1024);
+    }
+    const reconstructed = toPiMessages(
+      messages.map((message, seq) => ({
+        id: `e${seq}`,
+        parentId: seq ? `e${seq - 1}` : null,
+        seq,
+        timestamp: seq,
+        message,
+      })),
+      model,
+    );
+    expect(reconstructed).toContainEqual(
+      expect.objectContaining({ role: "toolResult", toolCallId: "call-1", toolName: name }),
+    );
+  });
+
+  it("matches distinct target fields by call id and never derives ids from result text", async () => {
+    const { faux, model, streamFn } = fauxModel();
+    faux.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxToolCall("echo", { itemId: "item-1" }, { id: "one" }),
+          fauxToolCall("echo", { databaseId: "db-2" }, { id: "two" }),
+          fauxToolCall("echo", {}, { id: "three" }),
+          fauxToolCall("echo", { itemId: 42, databaseId: null }, { id: "four" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("done"),
+    ]);
+    const tool: AgentTool = {
+      ...echoTool([]),
+      parameters: Type.Object({}, { additionalProperties: true }),
+      execute: async () => ({
+        content: [{ type: "text", text: '{"itemId":"fabricated","databaseId":"fabricated"}' }],
+        details: {},
+      }),
+    };
+    const messages = await collect(
+      createPiAgentSessionFactory({
+        model,
+        streamFn,
+        tools: [tool],
+        toolEventMetadata: new Map([["echo", { operation: "item.patch" }]]),
+        systemPrompt: "base",
+      })({ task: "run" }).messages(),
+    );
+    const events = messages.filter((message) => message.kind === "tool_use" || message.kind === "tool_result");
+    expect(events).toHaveLength(8);
+    for (const kind of ["tool_use", "tool_result"]) {
+      const targets = events
+        .filter((event) => event.kind === kind)
+        .map(({ toolCallId, targetItemId, targetDatabaseId }) => ({ toolCallId, targetItemId, targetDatabaseId }));
+      expect(targets).toEqual([
+        { toolCallId: "one", targetItemId: "item-1", targetDatabaseId: undefined },
+        { toolCallId: "two", targetItemId: undefined, targetDatabaseId: "db-2" },
+        { toolCallId: "three", targetItemId: undefined, targetDatabaseId: undefined },
+        { toolCallId: "four", targetItemId: undefined, targetDatabaseId: undefined },
+      ]);
+      for (const event of events.filter(
+        (event) => event.kind === kind && ["three", "four"].includes(String(event.toolCallId)),
+      )) {
+        expect(event).not.toHaveProperty("targetItemId");
+        expect(event).not.toHaveProperty("targetDatabaseId");
+      }
+    }
+  });
+
+  it("keeps the exact legacy shape for a tool missing from the metadata map", async () => {
+    const { faux, model, streamFn } = fauxModel();
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("echo", { itemId: "item-1" }, { id: "call-1" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage("done"),
+    ]);
+    const tool = { ...echoTool([]), parameters: Type.Object({ itemId: Type.String() }) };
+    const messages = await collect(
+      createPiAgentSessionFactory({
+        model,
+        streamFn,
+        tools: [tool],
+        toolEventMetadata: new Map(),
+        systemPrompt: "base",
+      })({ task: "run" }).messages(),
+    );
+    expect(messages.find((message) => message.kind === "tool_use")).toEqual({
+      kind: "tool_use",
+      name: "echo",
+      toolCallId: "call-1",
+      arguments: { itemId: "item-1" },
+    });
+    expect(messages.find((message) => message.kind === "tool_result")).toEqual({
+      kind: "tool_result",
+      name: "echo",
+      toolCallId: "call-1",
+      result: { content: [{ type: "text", text: "echoed" }], details: {} },
+      isError: false,
+    });
   });
 });
