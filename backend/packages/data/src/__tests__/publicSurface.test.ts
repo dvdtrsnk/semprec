@@ -503,6 +503,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "transitionObservabilityCheck",
   "transitionTenantObservabilityCheck",
   "triggerOnItemEventHeartbeats",
+  "unknownStoredEntityKind",
   "updateHeartbeatRule",
   "updateItemWithClient",
   "updateUserPasswordHash",

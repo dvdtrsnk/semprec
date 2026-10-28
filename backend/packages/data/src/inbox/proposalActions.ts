@@ -11,6 +11,7 @@ import {
   appendHistoryEntry,
   assertValidProposalEnvelope,
   parseStoredProposalEnvelope,
+  unknownStoredEntityKind,
   type ProposalEntityKind,
   type ProposalEnvelope,
 } from "./inboxTickAction.js";
@@ -19,7 +20,7 @@ import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { TRANSCRIPT_SPEAKERS_PROPERTY_KEY } from "../transcription/transcriptionSpeakerEdges.js";
 import { storeCredential, type CredentialType } from "../credentials/externalCredentialsStore.js";
-import { NotFoundError, ValidationError } from "../errors.js";
+import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 
 export interface ProposalActionConfig {
@@ -79,6 +80,13 @@ interface TranscriptCardEdge {
 interface EnvelopeForCard {
   transcriptCardEdge: TranscriptCardEdge | null;
   targetDatabase: DatabaseRow | null;
+}
+
+/** An unknown stored kind is displayed, never executed: this release cannot validate or run it. */
+function unsupportedEntityKindError(entityKind: string): ConflictError {
+  return new ConflictError(`Proposal entityKind '${entityKind}' is not supported by this release`, {
+    field: "entityKind",
+  });
 }
 
 function transcriptCardRole(envelope: ProposalEnvelope): TranscriptCardRole {
@@ -159,6 +167,7 @@ async function assertValidEnvelopeForCard(
 
   const role = transcriptCardRole(envelope);
   const current = parseStoredProposalEnvelope(proposal.properties.proposal, proposal.id);
+  if (current && "unknownKind" in current) throw unsupportedEntityKindError(current.entityKind);
   if (current && transcriptCardRole(current) !== role) {
     throw new ValidationError("A transcript proposal cannot switch between an Event and a speaker mapping", {
       field: "entityKind",
@@ -261,6 +270,7 @@ export async function confirmProposalWithClient(
 
   const envelope = parseStoredProposalEnvelope(proposal.properties.proposal, proposal.id);
   if (!envelope) throw new ValidationError("Proposal has no computed envelope to confirm", { field: "proposal" });
+  if ("unknownKind" in envelope) throw unsupportedEntityKindError(envelope.entityKind);
   const { transcriptCardEdge, targetDatabase } = await assertValidEnvelopeForCard(client, config, proposal, envelope);
 
   let resultItemId: string;
@@ -411,6 +421,9 @@ export async function reviseProposalWithClient(
   if (typeof status === "string" && LOCKED_PROPOSAL_STATUSES.has(status)) {
     throw new ValidationError(`Cannot revise a locked proposal (status '${status}')`, { field: "status" });
   }
+
+  const storedUnknownKind = unknownStoredEntityKind(proposal.properties.proposal);
+  if (storedUnknownKind !== null) throw unsupportedEntityKindError(storedUnknownKind);
 
   const envelope: ProposalEnvelope = {
     entityKind: input.entityKind,
