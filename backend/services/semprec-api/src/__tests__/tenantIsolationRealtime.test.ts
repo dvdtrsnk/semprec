@@ -38,6 +38,7 @@ import {
   decodeDocId,
   parseBinaryFrame,
   publishAgentRunDelta,
+  appendClientUpdateId,
   publishRealtimeMessage,
   wireRealtimeHooks,
   type AgentStreamMessage,
@@ -93,6 +94,7 @@ const OUTBOUND_TYPES = [
   "notification",
   "agent:event",
   "agent:delta",
+  "doc:ack",
 ] as const satisfies readonly OutboundFrame["type"][];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -755,6 +757,23 @@ const outboundCases = {
   notification: producedBy("notification", notifyCases.notification_created),
   "agent:event": producedBy("agent:event", notifyCases.agent_run_event),
   "agent:delta": producedBy("agent:delta", streamCases.agent_run_delta),
+  "doc:ack": {
+    scenarios: {
+      "A1's stored update is acknowledged to A1 only, never to B1": async () => {
+        await openDoc(a1, tenantA.docId);
+        const before = await countDocUpdates(tenantA, tenantA.docId);
+        a1.sendBinary(buildBinaryFrame(tenantA.docId, appendClientUpdateId(yjsUpdateMessage("acked"), "ack-1")));
+        await waitForDocUpdateCount(tenantA, tenantA.docId, before + 1);
+        const ackSeen = (frame: Frame): boolean =>
+          frame.kind === "text" && frame.type === "doc:ack" && frame.body.clientUpdateId === "ack-1";
+        await a1.drainUntil(ackSeen);
+        const sentinelB = await publishSentinel(tenantB.tenantId);
+        const receivedByB1 = await b1.drainUntil(isSentinel(sentinelB));
+        expect(receivedByB1.filter((frame) => frame.kind === "text" && frame.type === "doc:ack")).toEqual([]);
+        return ["doc:ack"];
+      },
+    },
+  },
 } satisfies Record<OutboundFrame["type"], Case>;
 
 function scenariosOf(table: Record<string, Case>): Array<[string, string, Scenario]> {
