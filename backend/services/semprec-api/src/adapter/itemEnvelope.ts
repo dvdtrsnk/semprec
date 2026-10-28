@@ -1,4 +1,4 @@
-import type { ItemRow } from "@semprec/data";
+import type { ItemRow, ItemValueLinks } from "@semprec/data";
 
 /**
  * The wire shape every successful item read or write returns (issue #238) — always the full
@@ -14,10 +14,12 @@ export interface ItemEnvelope {
   computed: Record<string, unknown>;
   updatedAt: string;
   deletedAt: string | null;
+  /** Present only when the read asked for `include=links` (issue #1403). */
+  links?: ItemValueLinks;
 }
 
 /** The one place an `ItemRow` (the choke-point's internal row shape) is projected onto the public envelope. */
-export function toItemEnvelope(item: ItemRow): ItemEnvelope {
+export function toItemEnvelope(item: ItemRow & { links?: ItemValueLinks }): ItemEnvelope {
   return {
     id: item.id,
     databaseId: item.databaseId,
@@ -25,6 +27,7 @@ export function toItemEnvelope(item: ItemRow): ItemEnvelope {
     computed: item.computed,
     updatedAt: item.updatedAt,
     deletedAt: item.deletedAt,
+    ...(item.links === undefined ? {} : { links: item.links }),
   };
 }
 

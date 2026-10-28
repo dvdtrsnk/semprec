@@ -166,7 +166,14 @@ export type ViewDeleteInput = z.infer<typeof ViewDeleteInputSchema>;
 /** Bounds sort-spec fan-out the same way `MAX_FILTER_NODES_PER_LEVEL` bounds filter fan-out. */
 const MAX_SORT_SPECS = 10;
 
+/** Opt-in extras on an item read (issue #1403); a read without `include` returns exactly what it did before. */
+const includeField = z
+  .array(z.enum(["links"]))
+  .max(1)
+  .optional();
+
 const queryFields = {
+  include: includeField,
   cursor,
   limit,
   filter: filterNodeSchema.optional(),
@@ -198,7 +205,7 @@ export const ViewItemReorderInputSchema = z
   .strict();
 export type ViewItemReorderInput = z.infer<typeof ViewItemReorderInputSchema>;
 
-export const ItemGetInputSchema = z.object({ itemId: z.string() }).strict();
+export const ItemGetInputSchema = z.object({ itemId: z.string(), include: includeField }).strict();
 export type ItemGetInput = z.infer<typeof ItemGetInputSchema>;
 
 /** Omitting `idempotencyKey` preserves #21/#37's non-retry create behavior; supplying one activates dedup. */

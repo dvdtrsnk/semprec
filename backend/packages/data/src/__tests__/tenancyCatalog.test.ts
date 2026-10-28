@@ -71,6 +71,8 @@ const TENANT_TABLES = [
   "tenant_exports",
   "semp_threads",
   "semp_messages",
+  "value_links",
+  "value_link_sources",
 ];
 
 type Queryable = Pick<Pool | PoolClient, "query">;

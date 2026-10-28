@@ -100,11 +100,15 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
       path: "/api/items/:id",
       handler: async (ctx) => {
         const id = requireUuidParam(ctx.params, "id");
-        const includePath = requestUrl(ctx.req.url).searchParams.get("include") === "path";
+        // `include` is a comma-separated list (`path,links`); tokens this route does not know are ignored, as before.
+        const includes = (requestUrl(ctx.req.url).searchParams.get("include") ?? "").split(",");
+        const includePath = includes.includes("path");
+        const includeLinks = includes.includes("links");
 
         if (!includePath) {
           const item = await dispatchGenericOperation(service, "item.get", restActor(ctx.identity.user.id), {
             itemId: id,
+            include: includeLinks ? ["links"] : undefined,
           });
           return { status: 200, body: toItemEnvelope(item) };
         }
@@ -116,7 +120,10 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
         const path = await chokePoint.getItemPath(id);
         const item = path.at(-1);
         if (!item) throw new NotFoundError(`Item ${id} not found`);
-        return { status: 200, body: toItemDetailEnvelope(item, path) };
+        const detail = toItemDetailEnvelope(item, path);
+        if (!includeLinks) return { status: 200, body: detail };
+        const links = (await chokePoint.getValueLinksForItems([id])).get(id) ?? {};
+        return { status: 200, body: { ...detail, links } };
       },
     },
     {
@@ -164,6 +171,7 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
         const body = ctx.body === undefined ? {} : requireJsonObjectBody(ctx.body);
         const result = await dispatchGenericOperation(service, "database.query", restActor(ctx.identity.user.id), {
           databaseId,
+          include: body.include,
           filter: body.filter,
           sort: body.sort,
           cursor: body.cursor,

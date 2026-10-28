@@ -10,6 +10,8 @@ export { enqueueItemSearchBackfill, type ItemSearchBackfillOptions } from "./sea
 
 export { createChokePoint, type ChokePoint } from "./chokePoint/chokePoint.js";
 export type { Actor } from "./chokePoint/authorization.js";
+export { insertValueLink, type InsertValueLinkInput } from "./chokePoint/valueLinksStore.js";
+export type { ItemValueLinks, ValueLinkEntry, ValueLinkSource } from "./chokePoint/valueLinkReads.js";
 export {
   createItemWithClient,
   updateItemWithClient,

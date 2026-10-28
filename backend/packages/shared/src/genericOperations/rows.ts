@@ -78,6 +78,19 @@ export interface ViewItem {
 }
 
 /** Fixed exactly by this issue's Task. */
+/** Mirrors `packages/data`'s `ValueLinkSource`: where an inherited value was taken from (issue #1403). */
+export type ItemLinkSource =
+  | { kind: "item"; itemId: string; databaseKey: string | null; title: string; propertyKey: string }
+  | { kind: "senderDomain"; domain: string; propertyKey: string };
+
+/** Mirrors `packages/data`'s `ValueLinkEntry`: one property's link on an item (issue #1403). */
+export interface ItemLink {
+  valueKind: "inherited" | "inheritedBroken";
+  sources: ItemLinkSource[];
+  brokenBy: "user" | "agent" | null;
+  brokenAt: string | null;
+}
+
 export interface Item {
   id: string;
   databaseId: string;
@@ -85,6 +98,8 @@ export interface Item {
   computed: Record<string, unknown>;
   updatedAt: string;
   deletedAt: string | null;
+  /** Present only when the read asked for `include: ["links"]`; keyed by property key, empty when the item has no link. */
+  links?: Record<string, ItemLink>;
 }
 
 /** Fixed by issue #82. */
