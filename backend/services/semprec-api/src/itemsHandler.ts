@@ -169,6 +169,7 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
           cursor: body.cursor,
           limit: body.limit,
           inTrash: body.inTrash,
+          includeCount: body.includeCount,
         });
         return { status: 200, body: toItemQueryEnvelope(result) };
       },

@@ -172,6 +172,7 @@ const queryFields = {
   filter: filterNodeSchema.optional(),
   sort: z.array(sortSpecSchema).max(MAX_SORT_SPECS).optional(),
   inTrash: z.boolean().optional(),
+  includeCount: z.boolean().optional(),
 };
 
 export const ViewQueryInputSchema = z.object({ viewId: z.string(), ...queryFields }).strict();

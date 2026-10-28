@@ -234,6 +234,7 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
         cursor: input.cursor,
         limit: input.limit,
         inTrash: input.inTrash,
+        includeCount: input.includeCount,
       });
     },
 
@@ -314,6 +315,7 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
         cursor: input.cursor,
         limit: input.limit,
         inTrash: input.inTrash,
+        includeCount: input.includeCount,
       });
     },
 

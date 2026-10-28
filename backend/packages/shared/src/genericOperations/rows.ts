@@ -101,4 +101,7 @@ export interface Page<T> {
   nextCursor: string | null;
 }
 
-export type ItemPage = Page<Item>;
+/** `totalCount` is present only when the query asked for it with `includeCount: true`; it ignores paging and sort. */
+export interface ItemPage extends Page<Item> {
+  totalCount?: number;
+}

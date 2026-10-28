@@ -19,6 +19,18 @@ export async function listViewItems(client: PoolClient, viewId: string): Promise
   return rows.map(mapViewItemRow);
 }
 
+/** The number of live (non-trashed) members of a curated view, counted over the same join `listLiveViewItemsAfter` pages. */
+export async function countLiveViewItems(client: PoolClient, viewId: string): Promise<number> {
+  const databaseIds = await visibleDatabaseIds(client);
+  const { rows } = await client.query<{ count: string }>(
+    `SELECT count(*)::text AS count FROM view_items m
+     JOIN items i ON i.id = m.item_id AND i.database_id = ANY($2::uuid[])
+     WHERE m.view_id = $1 AND i.deleted_at IS NULL`,
+    [viewId, databaseIds],
+  );
+  return Number(requireSingleRow(rows, "view items count").count);
+}
+
 /**
  * `listViewItems` filtered to live (non-trashed) members and paged by `position` — used to
  * page a curated view's default listing, where a page must fill with `limit` live items
