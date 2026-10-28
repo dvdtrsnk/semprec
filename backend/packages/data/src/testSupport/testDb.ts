@@ -18,6 +18,16 @@ export {
   withTenantTransaction,
 } from "./tenantFixtures.js";
 export { createTestModuleItem, createTestProjectItem } from "./projectFixtures.js";
+// Test-only: lets a composition-root test outside this package observe the write hook contexts
+// (`writer`) a transport's request reaches the choke point with.
+export {
+  registerItemCreateHook,
+  registerItemUpdateHook,
+  registerRelationEdgeWriteHook,
+  type ItemCreateHookContext,
+  type ItemUpdateHookContext,
+  type RelationEdgeWriteHookContext,
+} from "../chokePoint/hooks.js";
 
 /**
  * The superuser pool existing suites seed and assert through. Superusers bypass row-level security,

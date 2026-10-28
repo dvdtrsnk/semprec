@@ -36,6 +36,7 @@ import { assertValidTimezone } from "../timezone.js";
 import { getSystemTimezone, getSystemSettingsItemId } from "../systemSettings.js";
 import { deriveTaskTime } from "../tasks/deriveTaskTime.js";
 import { runItemCreateHooks, runItemUpdateHooks } from "./hooks.js";
+import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
 
 interface AssertWritablePropertiesOptions {
   /**
@@ -135,6 +136,8 @@ export interface CreateItemWithClientOptions extends AssertWritablePropertiesOpt
   actingUserId?: string;
   /** Set only for a human REST writer (`restSession` actor); read by domain hooks that confine a write to humans. */
   humanWriterUserId?: string;
+  /** Who made the write; defaults to `SYSTEM_WRITER`. Derived server-side by the caller, never from a request body. */
+  writer?: WriterIdentity;
 }
 
 export interface CreateItemInput {
@@ -215,6 +218,7 @@ export async function createItemWithClient(
     item,
     properties: itemProperties,
     humanWriterUserId: options.humanWriterUserId,
+    writer: options.writer ?? SYSTEM_WRITER,
   });
   await triggerOnItemEventHeartbeats(client, input.databaseId, "create", item.id, options.queueAffinity);
   runAfterCommit(client, () =>
@@ -262,6 +266,8 @@ export interface UpdateItemWithClientOptions extends AssertWritablePropertiesOpt
   actingUserId?: string;
   /** Set only for a human REST writer (`restSession` actor); read by domain hooks that confine a write to humans. */
   humanWriterUserId?: string;
+  /** Who made the write; defaults to `SYSTEM_WRITER`. Derived server-side by the caller, never from a request body. */
+  writer?: WriterIdentity;
   /**
    * Set only by `convergeObservedEmailFlagsWithClient` below, mail sync's declared, narrow
    * ownership handoff for Emails' owner:'user' `read`/`flagged` properties — never by a
@@ -334,6 +340,7 @@ export async function updateItemWithClient(
     item,
     propertiesPatch,
     humanWriterUserId: options.humanWriterUserId,
+    writer: options.writer ?? SYSTEM_WRITER,
     skipMailDesiredStateRecording: options.skipMailDesiredStateRecording,
   });
   await triggerOnItemEventHeartbeats(client, input.databaseId, "update", item.id, options.queueAffinity);
@@ -423,9 +430,14 @@ export async function lockItemForObservedMailFlags(
 export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAffinity">) {
   const { pool, queueAffinity } = deps;
   return {
-    async createItem(input: CreateItemInput, actingUserId?: string, humanWriterUserId?: string): Promise<ItemRow> {
+    async createItem(
+      input: CreateItemInput,
+      actingUserId?: string,
+      humanWriterUserId?: string,
+      writer?: WriterIdentity,
+    ): Promise<ItemRow> {
       return withTransaction(pool, (client) =>
-        createItemWithClient(client, input, { queueAffinity, actingUserId, humanWriterUserId }),
+        createItemWithClient(client, input, { queueAffinity, actingUserId, humanWriterUserId, writer }),
       );
     },
 
@@ -433,9 +445,10 @@ export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
       input: UpdateItemInput,
       actingUserId?: string,
       humanWriterUserId?: string,
+      writer?: WriterIdentity,
     ): Promise<itemsStore.UpdateItemResult> {
       return withTransaction(pool, (client) =>
-        updateItemWithClient(client, input, { queueAffinity, actingUserId, humanWriterUserId }),
+        updateItemWithClient(client, input, { queueAffinity, actingUserId, humanWriterUserId, writer }),
       );
     },
   };

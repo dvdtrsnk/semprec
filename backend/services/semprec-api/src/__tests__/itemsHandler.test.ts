@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
+import { getTestPool, registerItemUpdateHook, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
 import {
   createChokePoint,
   createUser,
@@ -17,6 +17,7 @@ import {
   type AuthenticatedIdentity,
   type ChokePoint,
   type PasswordResetMailer,
+  type WriterIdentity,
 } from "@semprec/data";
 import { createGenericApplicationService } from "@semprec/application";
 import { createDispatcher } from "../app.js";
@@ -300,6 +301,50 @@ describe("item routes (issue #241)", () => {
       expect(res.status).toBe(400);
       const body = (await res.json()) as ErrorBody;
       expect(body.error.code).toBe("validation_failed");
+    });
+
+    it("writes a REST PATCH as the user writer", async () => {
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const writers: WriterIdentity[] = [];
+      // Hooks cannot be unregistered; this recorder only appends to this test's array.
+      registerItemUpdateHook(async (context) => {
+        writers.push(context.writer);
+      });
+
+      const res = await fetch(`${baseUrl}/api/items/${item.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties: { title: "Dune: Part Two" } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(writers).toEqual([{ writerKind: "user" }]);
+    });
+
+    it("rejects a writerKind field in a create or patch body with 400 and writes nothing", async () => {
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+
+      const patch = await fetch(`${baseUrl}/api/items/${item.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties: { title: "Changed" }, writerKind: "system" }),
+      });
+      const create = await fetch(`${baseUrl}/api/databases/${db.id}/items`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ properties: { title: "New" }, writerKind: "system" }),
+      });
+
+      for (const res of [patch, create]) {
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as ErrorBody).error.code).toBe("validation_failed");
+      }
+      expect((await chokePoint.findItem(item.id))?.properties).toEqual({ title: "Dune" });
+      expect((await chokePoint.queryDatabaseItems(db.id, {})).items).toHaveLength(1);
     });
 
     it("returns 404 patching an unknown item", async () => {

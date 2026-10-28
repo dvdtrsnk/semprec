@@ -27,6 +27,7 @@ import {
   type SystemRelationWriteContext,
 } from "./relationEdgeContext.js";
 import { runRelationEdgeWriteHooks } from "./hooks.js";
+import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
 
 /** The normalized public shape of a stored edge — same fields as `relationsStore.ItemRelationRow`, named here to match the choke-point's own edge contract. */
 export type RelationEdge = ItemRelationRow;
@@ -95,6 +96,7 @@ export async function assertRelationCreatableWithClient(
   client: PoolClient,
   input: CreateRelationInput,
   context?: SystemRelationWriteContext,
+  writer: WriterIdentity = SYSTEM_WRITER,
 ): Promise<void> {
   const edgeContext = await loadCreatableRelationEdgeContext(client, input, context);
   await runRelationEdgeWriteHooks({
@@ -103,6 +105,7 @@ export async function assertRelationCreatableWithClient(
     callerItemId: input.callerItemId,
     targetItemId: input.targetItemId,
     metadata: input.metadata,
+    writer,
   });
 }
 
@@ -119,6 +122,7 @@ export async function createRelationWithClient(
   client: PoolClient,
   input: CreateRelationInput,
   context?: SystemRelationWriteContext,
+  writer: WriterIdentity = SYSTEM_WRITER,
 ): Promise<RelationEdge> {
   const edgeContext = await loadCreatableRelationEdgeContext(client, input, context);
   await runRelationEdgeWriteHooks({
@@ -127,6 +131,7 @@ export async function createRelationWithClient(
     callerItemId: input.callerItemId,
     targetItemId: input.targetItemId,
     metadata: input.metadata,
+    writer,
   });
 
   const { itemA, itemB } = normalizeRelationSides(
@@ -150,6 +155,7 @@ export async function updateRelationWithClient(
   client: PoolClient,
   input: UpdateRelationInput,
   context?: SystemRelationWriteContext,
+  writer: WriterIdentity = SYSTEM_WRITER,
 ): Promise<RelationEdge> {
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
   await assertRelationDatabasesNotArchived(client, edgeContext);
@@ -161,6 +167,7 @@ export async function updateRelationWithClient(
     callerItemId: input.callerItemId,
     targetItemId: input.targetItemId,
     metadata: input.metadata,
+    writer,
   });
 
   const { itemA, itemB } = normalizeRelationSides(
@@ -206,6 +213,8 @@ export async function deleteRelationWithClient(
   client: PoolClient,
   input: DeleteRelationInput,
   context?: SystemRelationWriteContext,
+  // Accepted and carried so an edge-changed hook can read it without a signature change; delete runs no edge write hook yet.
+  _writer: WriterIdentity = SYSTEM_WRITER,
 ): Promise<RelationEdge | null> {
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
   await assertRelationDatabasesNotArchived(client, edgeContext);
@@ -224,16 +233,16 @@ export async function deleteRelationWithClient(
 export function createRelationOps(deps: Pick<ChokePointDeps, "pool">) {
   const { pool } = deps;
   return {
-    async createRelation(input: CreateRelationInput): Promise<RelationEdge> {
-      return withTransaction(pool, (client) => createRelationWithClient(client, input));
+    async createRelation(input: CreateRelationInput, writer?: WriterIdentity): Promise<RelationEdge> {
+      return withTransaction(pool, (client) => createRelationWithClient(client, input, undefined, writer));
     },
 
-    async updateRelation(input: UpdateRelationInput): Promise<RelationEdge> {
-      return withTransaction(pool, (client) => updateRelationWithClient(client, input));
+    async updateRelation(input: UpdateRelationInput, writer?: WriterIdentity): Promise<RelationEdge> {
+      return withTransaction(pool, (client) => updateRelationWithClient(client, input, undefined, writer));
     },
 
-    async deleteRelation(input: DeleteRelationInput): Promise<RelationEdge | null> {
-      return withTransaction(pool, (client) => deleteRelationWithClient(client, input));
+    async deleteRelation(input: DeleteRelationInput, writer?: WriterIdentity): Promise<RelationEdge | null> {
+      return withTransaction(pool, (client) => deleteRelationWithClient(client, input, undefined, writer));
     },
   };
 }

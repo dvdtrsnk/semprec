@@ -22,6 +22,10 @@ import { TRANSCRIPT_SPEAKERS_PROPERTY_KEY } from "../transcription/transcription
 import { storeCredential, type CredentialType } from "../credentials/externalCredentialsStore.js";
 import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
+import type { WriterIdentity } from "../chokePoint/writerKind.js";
+
+/** Confirming a proposal is a person's decision, so every write in its transaction is a `user` write. */
+const CONFIRMING_USER_WRITER: WriterIdentity = { writerKind: "user" };
 
 export interface ProposalActionConfig {
   processingProposalsDatabaseId: string;
@@ -283,10 +287,11 @@ export async function confirmProposalWithClient(
         });
       }
     }
-    const created = await createItemWithClient(client, {
-      databaseId: envelope.target,
-      properties: envelope.properties,
-    });
+    const created = await createItemWithClient(
+      client,
+      { databaseId: envelope.target, properties: envelope.properties },
+      { writer: CONFIRMING_USER_WRITER },
+    );
     resultItemId = created.id;
     resultLabel = await resolveResultLabel(client, envelope.target, created);
     if (credential) {
@@ -298,23 +303,33 @@ export async function confirmProposalWithClient(
     }
     // A 'database' envelope on a transcript card is always its create-Event shape.
     if (transcriptCardEdge) {
-      await createRelationWithClient(client, {
-        relationPropertyId: transcriptCardEdge.relationPropertyId,
-        callerItemId: transcriptCardEdge.transcriptId,
-        targetItemId: created.id,
-      });
+      await createRelationWithClient(
+        client,
+        {
+          relationPropertyId: transcriptCardEdge.relationPropertyId,
+          callerItemId: transcriptCardEdge.transcriptId,
+          targetItemId: created.id,
+        },
+        undefined,
+        CONFIRMING_USER_WRITER,
+      );
     }
   } else if (envelope.entityKind === "relation") {
     // `assertValidEnvelopeForCard` above only accepts a 'relation' envelope on a transcript
     // card, through the Transcripts `event` or `speakers` property — so `transcriptCardEdge`
     // names this write.
     if (!transcriptCardEdge) throw new Error(`Relation proposal ${proposal.id} has no source item to link from`);
-    await createRelationWithClient(client, {
-      relationPropertyId: transcriptCardEdge.relationPropertyId,
-      callerItemId: transcriptCardEdge.transcriptId,
-      targetItemId: envelope.target,
-      metadata: relationEnvelopeMetadata(envelope),
-    });
+    await createRelationWithClient(
+      client,
+      {
+        relationPropertyId: transcriptCardEdge.relationPropertyId,
+        callerItemId: transcriptCardEdge.transcriptId,
+        targetItemId: envelope.target,
+        metadata: relationEnvelopeMetadata(envelope),
+      },
+      undefined,
+      CONFIRMING_USER_WRITER,
+    );
     const [linked] = await itemsStore.getItemsByIds(client, [envelope.target]);
     resultItemId = envelope.target;
     resultLabel = linked ? await resolveResultLabel(client, linked.databaseId, linked) : envelope.target;
@@ -346,7 +361,7 @@ export async function confirmProposalWithClient(
         history: appendHistoryEntry(proposal.properties.history, "Confirmed by user.", "user"),
       },
     },
-    { allowedSystemKeys: ["status", "resultItemId", "resultLabel", "history"] },
+    { allowedSystemKeys: ["status", "resultItemId", "resultLabel", "history"], writer: CONFIRMING_USER_WRITER },
   );
   // Issue #106's "proposal transition" invalidation trigger: confirm/reject/revise change
   // the source Inbox item's displayed status but never touch the Inbox item itself, so
