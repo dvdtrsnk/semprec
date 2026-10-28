@@ -4,11 +4,13 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
+import { ConflictError } from "../errors.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import {
   appendHistoryEntry,
   createSemprecTickAction,
+  parseStoredProposalEnvelope,
   type ComputeSemprecProposalFn,
 } from "../inbox/inboxTickAction.js";
 import {
@@ -234,6 +236,93 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [tasksId]);
     expect(rows[0].n).toBe(0);
+  });
+
+  describe("unknown stored entityKind", () => {
+    const futureEnvelope = { entityKind: "someFutureKind", target: "future-target", properties: { a: 1 } };
+
+    async function createFutureKindProposal() {
+      const proposal = await createDatabaseProposal("Buy milk");
+      await setStoredProperty(proposal.id, "proposal", futureEnvelope);
+      return proposal;
+    }
+
+    async function readCard(proposalId: string) {
+      return withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposalId));
+    }
+
+    it("lists and reads the card with the stored envelope untouched", async () => {
+      const proposal = await createFutureKindProposal();
+
+      const card = await readCard(proposal.id);
+      expect(card!.properties.proposal).toEqual(futureEnvelope);
+      expect(card!.properties.status).toBe("proposed");
+      expect(parseStoredProposalEnvelope(card!.properties.proposal, proposal.id)).toEqual({
+        unknownKind: true,
+        ...futureEnvelope,
+      });
+    });
+
+    it("confirm answers 409 naming the kind, leaves the card proposed and writes nothing", async () => {
+      const proposal = await createFutureKindProposal();
+
+      const error = await withTransaction(pool, (client) =>
+        confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+      ).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ConflictError);
+      expect((error as ConflictError).status).toBe(409);
+      expect((error as ConflictError).message).toContain("someFutureKind");
+
+      const card = await readCard(proposal.id);
+      expect(card!.properties.status).toBe("proposed");
+      expect(card!.properties.proposal).toEqual(futureEnvelope);
+      const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [tasksId]);
+      expect(rows[0].n).toBe(0);
+    });
+
+    it("revise answers 409 and leaves the stored envelope unchanged", async () => {
+      const proposal = await createFutureKindProposal();
+
+      const error = await withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id, {
+          message: "fix it",
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Buy bread" },
+        }),
+      ).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ConflictError);
+      expect((error as ConflictError).status).toBe(409);
+      expect((error as ConflictError).message).toContain("someFutureKind");
+
+      const card = await readCard(proposal.id);
+      expect(card!.properties.proposal).toEqual(futureEnvelope);
+      expect(card!.properties.status).toBe("proposed");
+    });
+
+    it("revise still rejects writing an unknown entityKind as before", async () => {
+      const proposal = await createDatabaseProposal("Buy milk");
+
+      await expect(
+        withTransaction(pool, (client) =>
+          reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id, {
+            message: "x",
+            entityKind: "someFutureKind" as never,
+            target: tasksId,
+            properties: {},
+          }),
+        ),
+      ).rejects.toThrow(/unknown entityKind 'someFutureKind'/);
+    });
+
+    it("a structurally malformed envelope still throws on read", () => {
+      expect(() => parseStoredProposalEnvelope({ entityKind: "someFutureKind", target: "t" }, "p1")).toThrow(
+        "Malformed proposal envelope on proposal p1",
+      );
+      expect(() => parseStoredProposalEnvelope({ entityKind: 5, target: "t", properties: {} }, "p1")).toThrow(
+        "Malformed proposal envelope",
+      );
+    });
   });
 
   it("confirm still reports a null stored envelope as having no computed envelope", async () => {

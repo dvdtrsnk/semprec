@@ -60,14 +60,47 @@ export const proposalEnvelopeSchema = z.object({
 export type ProposalEnvelope = z.infer<typeof proposalEnvelopeSchema>;
 
 /**
- * Parses a Processing proposal's stored `proposal` JSONB property: `null`/`undefined` (no
- * envelope computed yet) → `null`; anything that is not a well-formed envelope throws.
+ * A stored envelope that is well-formed but whose `entityKind` this release does not know (a kind
+ * written by a newer release, kept readable for one-release rollback). It is displayed, never
+ * executed: confirm and revise refuse it. `proposalEnvelopeSchema` stays strict for writing.
  */
-export function parseStoredProposalEnvelope(value: unknown, proposalId: string): ProposalEnvelope | null {
+export interface UnknownKindProposalEnvelope {
+  unknownKind: true;
+  entityKind: string;
+  target: string;
+  properties: Record<string, unknown>;
+}
+
+const storedEnvelopeShapeSchema = z.object({
+  entityKind: z.string(),
+  target: z.string(),
+  properties: z.record(z.string(), z.unknown()),
+});
+
+/** The `entityKind` of a stored envelope that is well-formed but of a kind this release does not know; `null` for a known kind or a malformed value. */
+export function unknownStoredEntityKind(value: unknown): string | null {
+  if (proposalEnvelopeSchema.safeParse(value).success) return null;
+  const shape = storedEnvelopeShapeSchema.safeParse(value);
+  if (!shape.success) return null;
+  return (proposalEnvelopeSchema.shape.entityKind.options as readonly string[]).includes(shape.data.entityKind)
+    ? null
+    : shape.data.entityKind;
+}
+
+/**
+ * Parses a Processing proposal's stored `proposal` JSONB property: `null`/`undefined` (no
+ * envelope computed yet) → `null`; a well-formed envelope of an unknown `entityKind` → the
+ * `UnknownKindProposalEnvelope` shape; anything else that is not a well-formed envelope throws.
+ */
+export function parseStoredProposalEnvelope(
+  value: unknown,
+  proposalId: string,
+): ProposalEnvelope | UnknownKindProposalEnvelope | null {
   if (value === null || value === undefined) return null;
   const parsed = proposalEnvelopeSchema.safeParse(value);
-  if (!parsed.success) throw new Error(`Malformed proposal envelope on proposal ${proposalId}`);
-  return parsed.data;
+  if (parsed.success) return parsed.data;
+  if (unknownStoredEntityKind(value) !== null) return { unknownKind: true, ...storedEnvelopeShapeSchema.parse(value) };
+  throw new Error(`Malformed proposal envelope on proposal ${proposalId}`);
 }
 
 export interface ProposalComputationInput {
