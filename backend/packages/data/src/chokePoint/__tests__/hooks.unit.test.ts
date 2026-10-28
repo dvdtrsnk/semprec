@@ -6,6 +6,7 @@ import {
   runItemUpdateHooks,
   type ItemUpdateHookContext,
 } from "../hooks.js";
+import { SYSTEM_WRITER } from "../writerKind.js";
 
 const CONTEXT: ItemUpdateHookContext = {
   client: {} as PoolClient,
@@ -22,6 +23,7 @@ const CONTEXT: ItemUpdateHookContext = {
   },
   item: { id: "item", databaseId: "db", properties: {}, computed: {}, updatedAt: "", deletedAt: null },
   propertiesPatch: {},
+  writer: SYSTEM_WRITER,
 };
 
 describe("chokePoint/hooks item-update registry", () => {

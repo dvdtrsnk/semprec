@@ -38,6 +38,7 @@ export { databaseArchiveWithClient } from "./chokePoint/databaseOps.js";
 export { propertyDeleteWithClient } from "./chokePoint/propertyOps.js";
 export { viewDeleteWithClient } from "./chokePoint/viewOps.js";
 export { itemDeleteWithClient } from "./chokePoint/itemTrash.js";
+export { SYSTEM_WRITER, type WriterIdentity, type WriterKind } from "./chokePoint/writerKind.js";
 export type { CreateDatabaseInput } from "./chokePoint/databasesStore.js";
 export { getDatabaseByModuleId } from "./chokePoint/databasesStore.js";
 export type { CreatePropertyInput } from "./chokePoint/propertiesStore.js";

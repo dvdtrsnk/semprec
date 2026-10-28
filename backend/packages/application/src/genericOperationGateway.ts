@@ -22,6 +22,7 @@ import {
   withTransaction,
   writeNotification,
   type Actor,
+  type WriterIdentity,
   type ApprovalRequest,
   type DestructiveOperationCheck,
   type GenericOperationApprovalRequestPayload,
@@ -86,6 +87,7 @@ async function executeDestructiveWithClient(
   actor: Actor,
   actingUserId: string | undefined,
   currentResource: unknown,
+  writer: WriterIdentity,
 ): Promise<unknown> {
   switch (operation) {
     case "database.archive":
@@ -99,12 +101,15 @@ async function executeDestructiveWithClient(
       return itemDeleteWithClient(client, databaseId, (input as { itemId: string }).itemId, {
         queueAffinity: createActionQueueAffinity(),
         actingUserId,
+        writer,
       });
     }
     case "relation.delete":
       return deleteRelationWithClient(
         client,
         input as { relationPropertyId: string; callerItemId: string; targetItemId: string },
+        undefined,
+        writer,
       );
   }
 }
@@ -410,6 +415,12 @@ export async function replayApprovedGenericOperation(
         dataActor,
         actor.userId,
         currentResource,
+        {
+          writerKind: "agent",
+          agentRunId: locked.agentRunId,
+          agentProjectItemId: actor.agentProjectItemId,
+          onBehalfOfUserId: actor.userId,
+        },
       );
       return await markApprovalRequestExecutionSucceeded(client, locked.id, result);
     } catch (err) {

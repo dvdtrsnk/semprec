@@ -21,6 +21,7 @@ import * as blobsStore from "../blobs/blobsStore.js";
 import * as docsStore from "../docs/docsStore.js";
 import * as itemAutomationStore from "../library/itemAutomationStore.js";
 import * as taskRecurrenceStore from "../tasks/taskRecurrenceStore.js";
+import type { WriterIdentity } from "./writerKind.js";
 
 /**
  * Transaction-scoped counterpart to `chokePoint.softDeleteItem` (issue #89), factored out for the
@@ -31,7 +32,12 @@ export async function itemDeleteWithClient(
   client: PoolClient,
   databaseId: string,
   itemId: string,
-  options: { queueAffinity: ActionQueueAffinity; actingUserId?: string },
+  options: {
+    queueAffinity: ActionQueueAffinity;
+    actingUserId?: string;
+    /** Accepted and carried so the delete hook can read it without a signature change; not yet consumed. */
+    writer?: WriterIdentity;
+  },
 ): Promise<ItemRow | null> {
   await assertDatabaseNotArchived(client, databaseId);
   const before = await itemsStore.lockItemById(client, databaseId, itemId);
@@ -83,6 +89,8 @@ async function restoreItemWithClient(
   databaseId: string,
   itemId: string,
   actingUserId?: string,
+  // Accepted and carried so the restore hook can read it without a signature change; not yet consumed.
+  _writer?: WriterIdentity,
 ): Promise<ItemRow | null> {
   await assertDatabaseNotArchived(client, databaseId);
   // Locked for the same reason `softDeleteItem` locks its root: without it, two concurrent
@@ -212,15 +220,25 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
      * anywhere in that subtree must be unarchived, or the entire cascade is rejected and nothing
      * is written; a database midway down the tree being archived is not a partial success.
      */
-    async softDeleteItem(databaseId: string, itemId: string, actingUserId?: string): Promise<ItemRow | null> {
+    async softDeleteItem(
+      databaseId: string,
+      itemId: string,
+      actingUserId?: string,
+      writer?: WriterIdentity,
+    ): Promise<ItemRow | null> {
       return withTransaction(pool, (client) =>
-        itemDeleteWithClient(client, databaseId, itemId, { queueAffinity, actingUserId }),
+        itemDeleteWithClient(client, databaseId, itemId, { queueAffinity, actingUserId, writer }),
       );
     },
 
     /** Runs `restoreItemWithClient` in its own transaction. */
-    async restoreItem(databaseId: string, itemId: string, actingUserId?: string): Promise<ItemRow | null> {
-      return withTransaction(pool, (client) => restoreItemWithClient(client, databaseId, itemId, actingUserId));
+    async restoreItem(
+      databaseId: string,
+      itemId: string,
+      actingUserId?: string,
+      writer?: WriterIdentity,
+    ): Promise<ItemRow | null> {
+      return withTransaction(pool, (client) => restoreItemWithClient(client, databaseId, itemId, actingUserId, writer));
     },
 
     /**

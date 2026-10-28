@@ -20,6 +20,7 @@ import {
   type RelationEdgeWriteHookContext,
 } from "../chokePoint/hooks.js";
 import { loadRelationEdgeContext } from "../chokePoint/relationEdgeContext.js";
+import { SYSTEM_WRITER } from "../chokePoint/writerKind.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createSemprecTickAction } from "../inbox/inboxTickAction.js";
 import { confirmProposalWithClient, reviseProposalWithClient } from "../inbox/proposalActions.js";
@@ -105,13 +106,26 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
         );
         if (!speakersProperty) throw new Error("Transcripts speakers property was not seeded");
 
-        const createContext: ItemCreateHookContext = { client, database, item, properties: { name: "S" } };
-        const updateContext: ItemUpdateHookContext = { client, database, item, propertiesPatch: { name: "T" } };
+        const createContext: ItemCreateHookContext = {
+          client,
+          database,
+          item,
+          properties: { name: "S" },
+          writer: SYSTEM_WRITER,
+        };
+        const updateContext: ItemUpdateHookContext = {
+          client,
+          database,
+          item,
+          propertiesPatch: { name: "T" },
+          writer: SYSTEM_WRITER,
+        };
         const edgeContext: RelationEdgeWriteHookContext = {
           client,
           edgeContext: await loadRelationEdgeContext(client, speakersProperty.id),
           callerItemId: randomUUID(),
           targetItemId: randomUUID(),
+          writer: SYSTEM_WRITER,
         };
 
         await runItemCreateHooks(createContext);

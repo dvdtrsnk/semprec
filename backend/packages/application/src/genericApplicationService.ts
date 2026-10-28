@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { createChokePoint, NotFoundError, ValidationError, type Actor } from "@semprec/data";
+import { createChokePoint, NotFoundError, ValidationError, type Actor, type WriterIdentity } from "@semprec/data";
 import type {
   AuthenticatedActor,
   Database,
@@ -281,6 +281,7 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
         { databaseId: input.databaseId, properties: input.properties, idempotencyKey: input.idempotencyKey },
         actor.userId,
         humanWriterUserIdOf(actor),
+        writerIdentityOf(actor),
       );
     },
 
@@ -295,19 +296,30 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
         },
         actor.userId,
         humanWriterUserIdOf(actor),
+        writerIdentityOf(actor),
       );
     },
 
     async deleteItem(actor, input) {
       const existing = await requireItemIncludingDeleted(input.itemId);
-      const item = await chokePoint.softDeleteItem(existing.databaseId, input.itemId, actor.userId);
+      const item = await chokePoint.softDeleteItem(
+        existing.databaseId,
+        input.itemId,
+        actor.userId,
+        writerIdentityOf(actor),
+      );
       if (!item) throw new NotFoundError(`Item ${input.itemId} not found`, { resource: "item", itemId: input.itemId });
       return item;
     },
 
     async restoreItem(actor, input) {
       const existing = await requireItemIncludingDeleted(input.itemId);
-      const item = await chokePoint.restoreItem(existing.databaseId, input.itemId, actor.userId);
+      const item = await chokePoint.restoreItem(
+        existing.databaseId,
+        input.itemId,
+        actor.userId,
+        writerIdentityOf(actor),
+      );
       if (!item) throw new NotFoundError(`Item ${input.itemId} not found`, { resource: "item", itemId: input.itemId });
       return item;
     },
@@ -331,21 +343,27 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
     },
 
     // ---- relations ----
-    async putRelation(_actor, input) {
-      return chokePoint.createRelation({
-        relationPropertyId: input.relationPropertyId,
-        callerItemId: input.callerItemId,
-        targetItemId: input.targetItemId,
-        metadata: input.metadata,
-      });
+    async putRelation(actor, input) {
+      return chokePoint.createRelation(
+        {
+          relationPropertyId: input.relationPropertyId,
+          callerItemId: input.callerItemId,
+          targetItemId: input.targetItemId,
+          metadata: input.metadata,
+        },
+        writerIdentityOf(actor),
+      );
     },
 
-    async deleteRelation(_actor, input) {
-      const edge = await chokePoint.deleteRelation({
-        relationPropertyId: input.relationPropertyId,
-        callerItemId: input.callerItemId,
-        targetItemId: input.targetItemId,
-      });
+    async deleteRelation(actor, input) {
+      const edge = await chokePoint.deleteRelation(
+        {
+          relationPropertyId: input.relationPropertyId,
+          callerItemId: input.callerItemId,
+          targetItemId: input.targetItemId,
+        },
+        writerIdentityOf(actor),
+      );
       if (!edge) {
         throw new NotFoundError(`Relation edge not found`, {
           resource: "relationEdge",
@@ -357,6 +375,25 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
       return edge;
     },
   } satisfies GenericApplicationPort;
+}
+
+/**
+ * The one derivation of who wrote, from the caller identity the transport's composition root
+ * built (never from a request body): an actor carrying both run ids is an agent run; a REST
+ * session is a person; anything else (`/mcp` on a human session, no run credential) is still an
+ * agent, an MCP client, without run ids. Every agent value names the user it acts for.
+ */
+export function writerIdentityOf(actor: AuthenticatedActor): WriterIdentity {
+  if (actor.runId !== undefined && actor.agentProjectItemId !== undefined) {
+    return {
+      writerKind: "agent",
+      agentRunId: actor.runId,
+      agentProjectItemId: actor.agentProjectItemId,
+      onBehalfOfUserId: actor.userId,
+    };
+  }
+  if (actor.restSession === true) return { writerKind: "user" };
+  return { writerKind: "agent", onBehalfOfUserId: actor.userId };
 }
 
 /** The writer id the choke point's hooks may trust as human: only a REST session actor that is not acting for an agent. */

@@ -7,6 +7,7 @@
 import type { PoolClient } from "pg";
 import type { DatabaseRow, ItemRow } from "../types.js";
 import type { RelationEdgeContext } from "./relationEdgeContext.js";
+import type { WriterIdentity } from "./writerKind.js";
 
 export interface ItemCreateHookContext {
   client: PoolClient;
@@ -15,6 +16,8 @@ export interface ItemCreateHookContext {
   properties: Record<string, unknown>;
   /** The user id of a human REST writer; absent for every agent, `/mcp`, system and internal caller. */
   humanWriterUserId?: string;
+  /** Who made the write; `system` when the caller supplied nothing. Sits next to `humanWriterUserId`, not instead of it. */
+  writer: WriterIdentity;
 }
 
 export type ItemCreateHook = (context: ItemCreateHookContext) => Promise<void>;
@@ -26,6 +29,8 @@ export interface ItemUpdateHookContext {
   propertiesPatch: Record<string, unknown>;
   /** The user id of a human REST writer; absent for every agent, `/mcp`, system and internal caller. */
   humanWriterUserId?: string;
+  /** Who made the write; `system` when the caller supplied nothing. Sits next to `humanWriterUserId`, not instead of it. */
+  writer: WriterIdentity;
   /**
    * Set only by `convergeObservedEmailFlagsWithClient` (itemWrites.ts), mail sync's declared,
    * narrow ownership handoff for Emails' owner:'user' `read`/`flagged` properties — never by a
@@ -43,6 +48,8 @@ export interface RelationEdgeWriteHookContext {
   callerItemId: string;
   targetItemId: string;
   metadata?: Record<string, unknown>;
+  /** Who made the write; `system` when the caller supplied nothing. */
+  writer: WriterIdentity;
 }
 
 export type RelationEdgeWriteHook = (context: RelationEdgeWriteHookContext) => Promise<void>;
