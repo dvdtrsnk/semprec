@@ -235,6 +235,42 @@ describe("sorted view query pagination (issue #664)", () => {
         expect(paged.pages).toBe(3);
       }
     });
+
+    it.each([
+      { shape: "null", entry: null },
+      { shape: "number", entry: 42 },
+      { shape: "string", entry: "legacy" },
+      { shape: "boolean", entry: true },
+      { shape: "array", entry: [] },
+      { shape: "missing key", entry: {} },
+      { shape: "numeric key", entry: { key: 42 } },
+      { shape: "null key", entry: { key: null } },
+    ])("ignores a malformed $shape option while sorting and continuing select cursors", async ({ entry }) => {
+      const numericValue = await chokePoint.createItem({ databaseId: projectsId, properties: { status: 42 } });
+      const unknownIds = [...nullPositions.map((item) => item.id), numericValue.id].sort();
+      const options: unknown[] = optionKeys.flatMap((key) => [entry, { key }]);
+      // Normal property writes reject malformed options; raw SQL reproduces legacy stored configuration.
+      const patched = await pool.query<{ id: string }>(
+        "UPDATE properties SET config = $1::jsonb WHERE database_id = $2 AND key = $3 RETURNING id",
+        [JSON.stringify({ options }), projectsId, "status"],
+      );
+      expect(patched.rowCount).toBe(1);
+
+      for (const direction of ["asc", "desc"] as const) {
+        const sort = [{ property: "status", direction }];
+        const expected = [...(direction === "asc" ? optionIds : [...optionIds].reverse()), ...unknownIds];
+        expect((await chokePoint.queryDatabaseItems(projectsId, { sort })).items.map((item) => item.id)).toEqual(
+          expected,
+        );
+        // One-row pages exercise both option and null-position cursor continuation.
+        const paged = await collectPages((cursor) =>
+          chokePoint.queryDatabaseItems(projectsId, { sort, limit: 1, cursor }),
+        );
+        expect(paged.ids).toEqual(expected);
+        expect(new Set(paged.ids).size).toBe(10);
+        expect(paged.pages).toBe(10);
+      }
+    });
   });
 
   it("rejects a malformed or foreign cursor on a sorted query as a ValidationError naming cursor", async () => {
