@@ -186,6 +186,7 @@ export {
 export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTenDatabases.js";
 export { manifest as systemDatabasesModuleManifest } from "./seed/systemDatabasesModuleManifest.js";
 export * from "./systemSettings.js";
+export * from "./calendarTime.js";
 export { createCoreTaskList, createApiCoreTaskList, CORE_CRONTAB } from "./worker.js";
 export { createAgentTaskList, noopAgentQueueTask, type AgentQueueTaskHandler } from "./agentWorker.js";
 export {
