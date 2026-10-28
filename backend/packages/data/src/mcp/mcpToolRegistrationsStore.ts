@@ -10,8 +10,8 @@ import { ValidationError } from "../errors.js";
  *
  * `upsertMcpToolRegistration` is the sync-facing write (issue #125, "Synchronize tools only
  * on human request", owns calling it): it snapshots the tool's name/schema/description/active
- * state from a live MCP `tools/list` call. It never touches `requires_approval` or
- * `risk_class` — those are user-owned (see `mcpGrantsAdminStore.ts`) and must survive a
+ * state from a live MCP `tools/list` call. It never touches `requires_approval`,
+ * `risk_class` or `display_label` — those are user-owned (see `mcpGrantsAdminStore.ts`) and must survive a
  * re-sync untouched.
  *
  * The user-only `risk_class`/`requires_approval` mutations live in `mcpGrantsAdminStore.ts`,
@@ -20,6 +20,12 @@ import { ValidationError } from "../errors.js";
  * package) has no importable path to them at all, per this issue's "agents have no write path
  * to grants" acceptance criterion.
  */
+/** User-owned localized label; each locale is optional. */
+export interface McpToolDisplayLabel {
+  cs?: string;
+  en?: string;
+}
+
 export interface McpToolRegistration {
   id: string;
   mcpServerItemId: string;
@@ -29,6 +35,7 @@ export interface McpToolRegistration {
   active: boolean;
   requiresApproval: boolean;
   riskClass: string;
+  displayLabel: McpToolDisplayLabel | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -42,6 +49,7 @@ export interface McpToolRegistrationRow {
   active: boolean;
   requires_approval: boolean;
   risk_class: string;
+  display_label: McpToolDisplayLabel | null;
   created_at: string;
   updated_at: string;
 }
@@ -57,6 +65,7 @@ export function rowToRegistration(row: McpToolRegistrationRow): McpToolRegistrat
     active: row.active,
     requiresApproval: row.requires_approval,
     riskClass: row.risk_class,
+    displayLabel: row.display_label,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

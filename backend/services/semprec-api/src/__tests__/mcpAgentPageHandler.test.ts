@@ -196,6 +196,64 @@ describe("createMcpAgentPageRequestListener", () => {
     expect(res.status).toBe(404);
   });
 
+  describe("displayLabel", () => {
+    async function patchLabel(headers: Record<string, string>, id: string, displayLabel: unknown): Promise<Response> {
+      return fetch(`${baseUrl}/api/mcp-tool-registrations/${id}`, {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ displayLabel }),
+      });
+    }
+
+    async function registerTool(): Promise<string> {
+      const server1 = await createMcpServerItem("Server", true);
+      const registration = await upsertMcpToolRegistration(pool, {
+        mcpServerItemId: server1.id,
+        toolName: "tool",
+        toolSchema: {},
+      });
+      return registration.id;
+    }
+
+    async function listedLabel(headers: Record<string, string>): Promise<string> {
+      const res = await fetch(`${baseUrl}/api/projects/${randomUUID()}/mcp-grants`, { headers });
+      return ((await res.json()) as { rows: { displayLabel: string }[] }).rows[0]!.displayLabel;
+    }
+
+    it("sets a label, lists it in the user's locale, and clears it with null", async () => {
+      const id = await registerTool();
+      const headers = await authHeader();
+      expect((await patchLabel(headers, id, { cs: "Nástroj", en: "Tool label" })).status).toBe(200);
+      // New users default to locale 'cs'.
+      expect(await listedLabel(headers)).toBe("Nástroj");
+      const cleared = await patchLabel(headers, id, null);
+      expect(cleared.status).toBe(200);
+      expect(await listedLabel(headers)).toBe("tool");
+    });
+
+    it.each([
+      ["a non-object", "text"],
+      ["an array", ["x"]],
+      ["an unknown key", { de: "x" }],
+      ["an empty string", { cs: "" }],
+      ["a non-string value", { cs: 1 }],
+      ["a label over 120 characters", { cs: "x".repeat(121) }],
+    ])("answers 400 and changes nothing for %s", async (_name, displayLabel) => {
+      const id = await registerTool();
+      const headers = await authHeader();
+      await patchLabel(headers, id, { cs: "Původní" });
+      const res = await patchLabel(headers, id, displayLabel);
+      expect(res.status).toBe(400);
+      expect(await listedLabel(headers)).toBe("Původní");
+    });
+
+    it("names the field in the 400 for a wrong type", async () => {
+      const id = await registerTool();
+      const res = await patchLabel(await authHeader(), id, "text");
+      expect(((await res.json()) as { error: string }).error).toContain("displayLabel");
+    });
+  });
+
   describe("non-UUID path ids", () => {
     async function expectFieldError(res: Response, field: string): Promise<void> {
       expect(res.status).toBe(400);
