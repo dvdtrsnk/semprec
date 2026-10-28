@@ -224,6 +224,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "decideAndEnqueueApprovalRequest",
   "deleteAccountAsAdmin",
   "deleteBlobIfUnreferenced",
+  "deleteDerivedBlob",
   "deleteOrphanedObservabilityChecks",
   "deleteOrphanedTenantObservabilityChecks",
   "deleteOwnAccount",
