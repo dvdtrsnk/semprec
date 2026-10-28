@@ -246,7 +246,7 @@ describe("monthly AI usage (gh-1462)", () => {
         totalCostUsd: 0,
       },
     });
-    expect(await report("2024-02-01T00:00:00Z", "2024-03-01T00:00:00Z", "month", foreign)).toMatchObject({
+    expect(await report("2024-02-01T00:00:00Z", "2024-02-29T23:00:00Z", "month", foreign)).toMatchObject({
       body: { monthlyCostUsd: [{ month: "2024-02", costUsd: 7 }], totalCostUsd: 7 },
     });
   });
