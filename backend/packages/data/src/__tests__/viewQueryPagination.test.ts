@@ -42,7 +42,13 @@ describe("sorted view query pagination (issue #664)", () => {
     databaseId = db.id;
     await chokePoint.createProperty({ databaseId, key: "rank", name: "Rank", type: "number" });
     await chokePoint.createProperty({ databaseId, key: "due", name: "Due", type: "date" });
-    await chokePoint.createProperty({ databaseId, key: "status", name: "Status", type: "select" });
+    await chokePoint.createProperty({
+      databaseId,
+      key: "status",
+      name: "Status",
+      type: "select",
+      config: { options: [{ key: "done" }, { key: "open" }] },
+    });
 
     const seed: Record<string, Record<string, unknown>> = {
       a: { rank: 3, due: "2026-01-03T00:00:00Z", status: "open" },
@@ -114,7 +120,7 @@ describe("sorted view query pagination (issue #664)", () => {
     expect(viaViewPage.ids).toEqual(expected);
   });
 
-  it("pages an uncast sort key whose rows hold non-string values through every row exactly once", async () => {
+  it("pages a select sort whose rows hold non-string values through every row exactly once", async () => {
     await chokePoint.createItem({ databaseId, properties: { status: 42 } });
     await chokePoint.createItem({ databaseId, properties: { status: true } });
     const sort = [{ property: "status", direction: "asc" as const }];
@@ -125,6 +131,146 @@ describe("sorted view query pagination (issue #664)", () => {
       chokePoint.queryDatabaseItems(databaseId, { sort, limit: 1, cursor }),
     );
     expect(paged).toEqual(unpaged);
+  });
+
+  it.each([{}, { options: [] }])("pages a select without declared options using id order (%j)", async (config) => {
+    const projects = await chokePoint.createDatabase({ name: "Projects" });
+    await chokePoint.createProperty({
+      databaseId: projects.id,
+      key: "status",
+      name: "Status",
+      type: "select",
+      config,
+    });
+    const itemIds: string[] = [];
+    for (const properties of [{ status: "open" }, { status: "done" }, {}]) {
+      itemIds.push((await chokePoint.createItem({ databaseId: projects.id, properties })).id);
+    }
+    for (const direction of ["asc", "desc"]) {
+      const paged = await collectPages((cursor) =>
+        chokePoint.queryDatabaseItems(projects.id, {
+          sort: [{ property: "status", direction }],
+          limit: 1,
+          cursor,
+        }),
+      );
+      expect(paged.ids).toEqual([...itemIds].sort());
+      expect(paged.pages).toBe(3);
+    }
+  });
+
+  describe("select option order (gh-1408)", () => {
+    const optionKeys = ["inProgress", "longTerm", "done", "archived"];
+    let projectsId: string;
+    let optionIds: string[];
+    let nullPositions: { id: string; value: unknown }[];
+
+    beforeEach(async () => {
+      projectsId = (await chokePoint.createDatabase({ name: "Projects" })).id;
+      await chokePoint.createProperty({
+        databaseId: projectsId,
+        key: "status",
+        name: "Status",
+        type: "select",
+        config: { options: optionKeys.map((key) => ({ key })) },
+      });
+      const byKey = new Map<string, string>();
+      for (const status of [...optionKeys].sort()) {
+        byKey.set(status, (await chokePoint.createItem({ databaseId: projectsId, properties: { status } })).id);
+      }
+      optionIds = optionKeys.map((key) => byKey.get(key)!);
+      nullPositions = [];
+      for (const value of [undefined, null, "", "removed", "obsolete"]) {
+        const properties = value === undefined ? {} : { status: value };
+        const item = await chokePoint.createItem({ databaseId: projectsId, properties });
+        nullPositions.push({ id: item.id, value: value ?? null });
+      }
+      nullPositions.sort((a, b) => a.id.localeCompare(b.id));
+    });
+
+    it.each(["asc", "desc"] as const)(
+      "sorts projects %s by declared options, with missing, empty and unknown values last across three pages",
+      async (direction) => {
+        const sort = [{ property: "status", direction }];
+        const expected = [
+          ...(direction === "asc" ? optionIds : [...optionIds].reverse()),
+          ...nullPositions.map((item) => item.id),
+        ];
+        const unpaged = await chokePoint.queryDatabaseItems(projectsId, { sort });
+        expect(unpaged.items.map((item) => item.id)).toEqual(expected);
+        expect(unpaged.nextCursor).toBeNull();
+        const paged = await collectPages((cursor) =>
+          chokePoint.queryDatabaseItems(projectsId, { sort, limit: 3, cursor }),
+        );
+        expect(paged.ids).toEqual(expected);
+        expect(new Set(paged.ids).size).toBe(9);
+        expect(paged.pages).toBe(3);
+        // Exercise every null-position cursor regardless of random UUID page boundaries.
+        for (const [index, item] of nullPositions.entries()) {
+          const remaining = await chokePoint.queryDatabaseItems(projectsId, {
+            sort,
+            cursor: encodeCursor({ v: [item.value], id: item.id }),
+          });
+          expect(remaining.items.map((row) => row.id)).toEqual(nullPositions.slice(index + 1).map((row) => row.id));
+          expect(remaining.nextCursor).toBeNull();
+        }
+      },
+    );
+
+    it("orders select groups by declared options through both stored-view query entry points", async () => {
+      const view = await chokePoint.createView({
+        databaseId: projectsId,
+        type: "table",
+        name: "Projects by status",
+        config: { groupBy: "status" },
+      });
+      const expected = [...optionIds, ...nullPositions.map((item) => item.id)];
+      expect((await chokePoint.queryView(view.id)).items.map((item) => item.id)).toEqual(expected);
+      for (const page of [
+        (cursor: string | undefined) => chokePoint.queryView(view.id, { limit: 3, cursor }),
+        (cursor: string | undefined) => chokePoint.queryViewItems(view.id, { limit: 3, cursor }),
+      ]) {
+        const paged = await collectPages(page);
+        expect(paged.ids).toEqual(expected);
+        expect(paged.pages).toBe(3);
+      }
+    });
+
+    it.each([
+      { shape: "null", entry: null },
+      { shape: "number", entry: 42 },
+      { shape: "string", entry: "legacy" },
+      { shape: "boolean", entry: true },
+      { shape: "array", entry: [] },
+      { shape: "missing key", entry: {} },
+      { shape: "numeric key", entry: { key: 42 } },
+      { shape: "null key", entry: { key: null } },
+    ])("ignores a malformed $shape option while sorting and continuing select cursors", async ({ entry }) => {
+      const numericValue = await chokePoint.createItem({ databaseId: projectsId, properties: { status: 42 } });
+      const unknownIds = [...nullPositions.map((item) => item.id), numericValue.id].sort();
+      const options: unknown[] = optionKeys.flatMap((key) => [entry, { key }]);
+      // Normal property writes reject malformed options; raw SQL reproduces legacy stored configuration.
+      const patched = await pool.query<{ id: string }>(
+        "UPDATE properties SET config = $1::jsonb WHERE database_id = $2 AND key = $3 RETURNING id",
+        [JSON.stringify({ options }), projectsId, "status"],
+      );
+      expect(patched.rowCount).toBe(1);
+
+      for (const direction of ["asc", "desc"] as const) {
+        const sort = [{ property: "status", direction }];
+        const expected = [...(direction === "asc" ? optionIds : [...optionIds].reverse()), ...unknownIds];
+        expect((await chokePoint.queryDatabaseItems(projectsId, { sort })).items.map((item) => item.id)).toEqual(
+          expected,
+        );
+        // One-row pages exercise both option and null-position cursor continuation.
+        const paged = await collectPages((cursor) =>
+          chokePoint.queryDatabaseItems(projectsId, { sort, limit: 1, cursor }),
+        );
+        expect(paged.ids).toEqual(expected);
+        expect(new Set(paged.ids).size).toBe(10);
+        expect(paged.pages).toBe(10);
+      }
+    });
   });
 
   it("rejects a malformed or foreign cursor on a sorted query as a ValidationError naming cursor", async () => {
