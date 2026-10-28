@@ -24,6 +24,8 @@ export interface GenericOperationAgentToolResult {
 export type GenericOperationAgentTool = (
   currentRunId: string,
   args: unknown,
+  /** The agent's reason for an approval-gated call, removed from `args` by the caller; reaches the approval request only. */
+  options?: { reason?: string },
 ) => Promise<GenericOperationAgentToolResult>;
 
 interface AgentContext {
@@ -84,13 +86,13 @@ function createTool(
   moduleRegistry: ModuleRegistry | undefined,
   operation: GenericOperationName,
 ): GenericOperationAgentTool {
-  return async function invoke(currentRunId, args) {
+  return async function invoke(currentRunId, args, options) {
     try {
       const context = await resolveAgentContext(pool, moduleRegistry, currentRunId);
       if (!context) {
         return { error: true, result: "owner_violation: no persisted run context for this agent tool call" };
       }
-      const output = await gateway.invoke(operation, context.actor, context.grantedCapabilities, args ?? {});
+      const output = await gateway.invoke(operation, context.actor, context.grantedCapabilities, args ?? {}, options);
       return { error: false, result: JSON.stringify(output) };
     } catch (err) {
       return toolResultFromError(err, operation);

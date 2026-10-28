@@ -5,7 +5,7 @@ import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { createPendingApprovalRequest, decideApprovalRequest } from "../mcp/approvalRequestsStore.js";
-import { listApprovalRequestsQueue } from "../mcp/approvalRequestsQueue.js";
+import { listApprovalRequestsQueue, toApprovalRequestDecisionView } from "../mcp/approvalRequestsQueue.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -66,7 +66,28 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       agentRunId: run.id,
       projectItemId: projectItem.id,
       projectName: "Renovate the kitchen",
+      reason: null,
     });
+  });
+
+  it("surfaces the agent-supplied reason on the queue entry and on the decision view, null when absent", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const base = {
+      agentRunId: run.id,
+      toolName: "send_email",
+      riskClass: "moderate",
+      payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    };
+    const withReason = await createPendingApprovalRequest(pool, { ...base, reason: "Customer asked for a quote" });
+    const withoutReason = await createPendingApprovalRequest(pool, base);
+
+    const rows = await listApprovalRequestsQueue(pool, ownerId);
+    expect(rows.find((row) => row.id === withReason.id)!.reason).toBe("Customer asked for a quote");
+    expect(rows.find((row) => row.id === withoutReason.id)!.reason).toBeNull();
+
+    expect(toApprovalRequestDecisionView(withReason).reason).toBe("Customer asked for a quote");
+    expect(toApprovalRequestDecisionView(withoutReason).reason).toBeNull();
   });
 
   it("summarizes a generic-operation-originated request with its operationName, never mcp fields (issue #220)", async () => {

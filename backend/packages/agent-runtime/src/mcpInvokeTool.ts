@@ -3,6 +3,7 @@ import { Ajv, type ValidateFunction } from "ajv";
 import {
   resolveGrantedMcpTool,
   createPendingApprovalRequest,
+  APPROVAL_REQUEST_REASON_MAX_LENGTH,
   withTransaction,
   executeMcpInvocation,
   getTenantUserId,
@@ -163,6 +164,28 @@ export function createMcpInvokeTool(
 }
 
 /**
+ * The reserved argument an agent may add to an approval-gated MCP tool call to say why it asks
+ * (issue #1420). A third-party tool's own parameters are free-form, so a plain `reason` could
+ * collide with a real one; the wrapper removes this key before validation, storage and invocation.
+ */
+export const MCP_APPROVAL_REASON_KEY = "semprecReason";
+
+type ReasonExtraction = { ok: true; args: McpInvokeArgs; reason: string | null } | { ok: false; error: string };
+
+function extractReason(args: McpInvokeArgs): ReasonExtraction {
+  if (!(MCP_APPROVAL_REASON_KEY in args)) return { ok: true, args, reason: null };
+  const { [MCP_APPROVAL_REASON_KEY]: raw, ...rest } = args;
+  if (raw === undefined || raw === null) return { ok: true, args: rest, reason: null };
+  if (typeof raw !== "string" || raw.length > APPROVAL_REQUEST_REASON_MAX_LENGTH) {
+    return {
+      ok: false,
+      error: `Invalid argument '${MCP_APPROVAL_REASON_KEY}': it must be a string of at most ${APPROVAL_REQUEST_REASON_MAX_LENGTH} characters.`,
+    };
+  }
+  return { ok: true, args: rest, reason: raw };
+}
+
+/**
  * Formats the synthetic result a caller sees for a call this issue deferred to a human: shaped
  * exactly like a real `McpInvokeResult` (`error: false` — the *tool call itself* succeeded in the
  * sense that a request now exists, even though the underlying tool has not run) so the agent
@@ -199,7 +222,11 @@ export function createApprovalGatedMcpInvokeTool(
   mcpToolRegistrationId: string,
   options: McpInvokeOptions = {},
 ): McpInvokeTool {
-  return async function invoke(args, signal) {
+  return async function invoke(rawArgs, signal) {
+    const extracted = extractReason(rawArgs);
+    if (!extracted.ok) return { error: true, result: extracted.error };
+    const { args, reason } = extracted;
+
     const resolution = await resolveMcpInvocation(pool, projectItemId, mcpToolRegistrationId, args);
     if (!resolution.ok) return resolution.result;
 
@@ -219,6 +246,7 @@ export function createApprovalGatedMcpInvokeTool(
           // introduced that concept for the five generic-operation kinds) — this placeholder just
           // satisfies the column's `NOT NULL` constraint without claiming a hash that doesn't exist.
           resourceSnapshot: { kind: "mcp_invoke", resourceId: mcpToolRegistrationId, sha256: null },
+          reason,
         });
         const userId = await getTenantUserId(client);
         if (userId) {

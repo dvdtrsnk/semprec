@@ -305,6 +305,37 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(rows[0].count).toBe(1);
     });
 
+    it("stores the agent's reason on the request without putting it in the canonical input or the snapshot (issue #1420)", async () => {
+      const gateway = createGenericOperationGateway(pool);
+      const database = await chokePoint.createDatabase({ name: "Gateway DB reason" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      const projectItemId = randomUUID();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
+      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+
+      const withReason = (await gateway
+        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id }, { reason: "You never use it." })
+        .catch((err: unknown) => err)) as ApprovalRequiredError;
+      const withoutReason = (await gateway
+        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id })
+        .catch((err: unknown) => err)) as ApprovalRequiredError;
+
+      const request = await getApprovalRequest(pool, withReason.details.approvalRequestId);
+      expect(request!.reason).toBe("You never use it.");
+      expect(JSON.stringify(request!.payload)).not.toContain("You never use it.");
+      expect(JSON.stringify(request!.resourceSnapshot)).not.toContain("You never use it.");
+      expect(request!.payload).toMatchObject({ canonicalInput: { itemId: item.id } });
+      expect((await getApprovalRequest(pool, withoutReason.details.approvalRequestId))!.reason).toBeNull();
+    });
+
+    it("still rejects a reason field inside the operation input as strict-schema ValidationError (issue #1420)", async () => {
+      const gateway = createGenericOperationGateway(pool);
+      const actor: AuthenticatedActor = { userId: randomUUID() };
+      await expect(
+        gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: randomUUID(), reason: "x" }),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+
     it("executes a non-destructive operation immediately for a full agent actor (no approval gate)", async () => {
       const gateway = createGenericOperationGateway(pool);
       const userId = await createUser();

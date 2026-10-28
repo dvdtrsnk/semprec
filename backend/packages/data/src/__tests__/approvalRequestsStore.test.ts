@@ -42,6 +42,42 @@ async function createPendingRequest(): Promise<string> {
   return created.id;
 }
 
+describe("approvalRequestsStore reason (issue #1420)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool, createViewTypeRegistry());
+  });
+
+  async function insertWithReason(reason: string | null | undefined) {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    return createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "search_web",
+      riskClass: "unclassified",
+      payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      ...(reason === undefined ? {} : { reason }),
+    });
+  }
+
+  it("stores the reason and reads it back", async () => {
+    const created = await insertWithReason("You last filled in Mood in August.");
+    expect(created.reason).toBe("You last filled in Mood in August.");
+    expect((await getApprovalRequest(pool, created.id))!.reason).toBe("You last filled in Mood in August.");
+  });
+
+  it("reads null when no reason was given", async () => {
+    expect((await insertWithReason(undefined)).reason).toBeNull();
+    expect((await insertWithReason(null)).reason).toBeNull();
+  });
+
+  it("accepts a reason of exactly 500 characters and rejects 501 at the database", async () => {
+    expect((await insertWithReason("x".repeat(500))).reason).toHaveLength(500);
+    await expect(insertWithReason("x".repeat(501))).rejects.toThrow(/approval_requests_reason_length_check/);
+  });
+});
+
 describe("approvalRequestsStore (issue #130)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
