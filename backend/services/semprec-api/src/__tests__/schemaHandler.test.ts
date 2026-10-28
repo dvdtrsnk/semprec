@@ -141,6 +141,13 @@ describe("createSchemaRequestListener (issue #147)", () => {
     const res = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader("cs") });
     const body = (await res.json()) as SchemaProjectionBody;
     expect(body.viewTypes).toEqual(expect.arrayContaining([{ key: "table", name: "Tabulka" }]));
+    expect(body.viewTypes).toEqual(expect.arrayContaining([{ key: "gallery", name: "Galerie" }]));
+  });
+
+  it("lists the gallery view type as Gallery for a non-Czech user", async () => {
+    const res = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader("en") });
+    const body = (await res.json()) as SchemaProjectionBody;
+    expect(body.viewTypes).toEqual(expect.arrayContaining([{ key: "gallery", name: "Gallery" }]));
   });
 
   it("ignores a query-parameter locale override — locale comes only from users.locale", async () => {

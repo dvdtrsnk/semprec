@@ -119,6 +119,21 @@ describe("view routes (issue #155)", () => {
       expect(body.name).toBe("All rows");
     });
 
+    it("returns 400 naming 'config' creating a gallery view with columns 5", async () => {
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const database = await chokePoint.createDatabase({ name: "D" });
+
+      const res = await fetch(`${baseUrl}/api/databases/${database.id}/views`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ type: "gallery", name: "G", config: { columns: 5, aspect: "3:4" } }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as ErrorBody;
+      expect(body.error.code).toBe("validation_failed");
+      expect(body.error.details).toMatchObject({ field: "config" });
+    });
+
     it("returns 404 creating a view against an unknown database", async () => {
       const headers = { ...(await authHeader()), "Content-Type": "application/json" };
       const res = await fetch(`${baseUrl}/api/databases/${randomUUID()}/views`, {
