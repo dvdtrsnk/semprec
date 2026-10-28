@@ -245,10 +245,30 @@ function buildProposalEnvelope(snapshot: TickSnapshot, result: ProposalComputati
 }
 
 /** A Processing proposal's chat + decision log entry (issue #104). */
+const PROPOSAL_HISTORY_KINDS = [
+  "computed",
+  "userEdit",
+  "reset",
+  "typeChosen",
+  "threadRevision",
+  "recompute",
+  "confirmed",
+  "rejected",
+  "reopened",
+  "invalidated",
+] as const;
+
+export type ProposalHistoryKind = (typeof PROPOSAL_HISTORY_KINDS)[number];
+
 const proposalHistoryEntrySchema = z.object({
   author: z.enum(["ai", "user"]),
   message: z.string(),
   at: z.string(),
+  kind: z.enum(PROPOSAL_HISTORY_KINDS).optional(),
+  /** `ref.key` strings a `userEdit` entry touched. */
+  keys: z.array(z.string()).optional(),
+  threadId: z.string().optional(),
+  messageId: z.string().optional(),
 });
 
 export type ProposalHistoryEntry = z.infer<typeof proposalHistoryEntrySchema>;
@@ -263,10 +283,11 @@ export function appendHistoryEntry(
   history: unknown,
   message: string,
   author: "ai" | "user" = "ai",
+  extra?: Pick<ProposalHistoryEntry, "kind" | "keys" | "threadId" | "messageId">,
 ): ProposalHistoryEntry[] {
   const parsed = z.array(proposalHistoryEntrySchema).safeParse(history);
   const existing = parsed.success ? parsed.data : [];
-  return [...existing, { author, message, at: new Date().toISOString() }];
+  return [...existing, { author, message, at: new Date().toISOString(), ...extra }];
 }
 
 /**
