@@ -270,6 +270,42 @@ test "$(cat "$TEST_ROOT/caddy/semprec.env")" = "$semprec_env_before"
 test "$(grep -c '^caddy validate ' "$TEST_STATE/commands")" -eq 2
 test "$(grep -c '^systemctl reload-or-restart caddy$' "$TEST_STATE/commands")" -eq 2
 
+# Apple App Site Association: empty keys render nothing and warn by key name only.
+test ! -e "$TEST_ROOT/caddy/apple-app-site-association"
+printf 'SEMPREC_APPLE_TEAM_ID=\nSEMPREC_IOS_BUNDLE_ID=\n' >> "$TEST_ROOT/opt/semprec/shared/env/monitor.env"
+run_provision >/dev/null 2>"$TEST_STATE/aasa-empty.err"
+grep -q 'SEMPREC_APPLE_TEAM_ID is not set' "$TEST_STATE/aasa-empty.err"
+grep -q 'SEMPREC_IOS_BUNDLE_ID is not set' "$TEST_STATE/aasa-empty.err"
+test ! -e "$TEST_ROOT/caddy/apple-app-site-association"
+
+readonly AASA_TEAM_SENTINEL='TEAMSENT01'
+readonly AASA_BUNDLE_SENTINEL='dev.sentinel.app'
+sed -i "s|^SEMPREC_APPLE_TEAM_ID=.*|SEMPREC_APPLE_TEAM_ID=$AASA_TEAM_SENTINEL|; s|^SEMPREC_IOS_BUNDLE_ID=.*|SEMPREC_IOS_BUNDLE_ID=$AASA_BUNDLE_SENTINEL|" \
+  "$TEST_ROOT/opt/semprec/shared/env/monitor.env"
+run_provision >"$TEST_STATE/aasa-set.out" 2>"$TEST_STATE/aasa-set.err"
+printf '%s\n' '{"applinks":{"details":[{"appIDs":["TEAMSENT01.dev.sentinel.app"],"components":[{"/":"/","?":{"page":"password-reset"},"comment":"Password-reset link"}]}]}}' \
+  > "$TEST_STATE/aasa-expected"
+cmp "$TEST_STATE/aasa-expected" "$TEST_ROOT/caddy/apple-app-site-association"
+test -z "$(find "$TEST_ROOT/caddy/apple-app-site-association" -perm 0644 -prune -o -print)"
+if grep -q 'SEMPREC_APPLE_TEAM_ID\|SEMPREC_IOS_BUNDLE_ID' "$TEST_STATE/aasa-set.err"; then
+  echo 'provision warned although both Apple keys are set' >&2
+  exit 1
+fi
+
+# One key emptied: the earlier file is removed, only the key name is printed.
+sed -i "s|^SEMPREC_IOS_BUNDLE_ID=.*|SEMPREC_IOS_BUNDLE_ID=|" "$TEST_ROOT/opt/semprec/shared/env/monitor.env"
+run_provision >"$TEST_STATE/aasa-half.out" 2>"$TEST_STATE/aasa-half.err"
+test ! -e "$TEST_ROOT/caddy/apple-app-site-association"
+grep -q 'SEMPREC_IOS_BUNDLE_ID is not set' "$TEST_STATE/aasa-half.err"
+if grep -q 'SEMPREC_APPLE_TEAM_ID is not set' "$TEST_STATE/aasa-half.err"; then
+  echo 'provision named the Apple team id key although it is set' >&2
+  exit 1
+fi
+if grep -rq "$AASA_TEAM_SENTINEL\|$AASA_BUNDLE_SENTINEL" "$TEST_STATE/aasa-empty.err" "$TEST_STATE/aasa-set.out" "$TEST_STATE/aasa-set.err" "$TEST_STATE/aasa-half.out" "$TEST_STATE/aasa-half.err"; then
+  echo 'provision printed an Apple key value' >&2
+  exit 1
+fi
+
 readonly SECRET_SENTINEL='smtp-password-sentinel-7f3a'
 printf 'APP_BASE_URL=https://example.test\nSMTP_HOST=smtp.example.test\nSMTP_FROM_ADDRESS=no-reply@example.test\nSMTP_PASSWORD=%s\n' \
   "$SECRET_SENTINEL" >> "$TEST_ROOT/opt/semprec/shared/env/api.env"
