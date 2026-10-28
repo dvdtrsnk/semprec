@@ -23,6 +23,9 @@ import { readCallerTenantId, runForCallerTenant } from "./callerTenant.js";
  */
 const OPERATION_REQUIRES_PROJECT_ITEM = new Map<string, boolean>([
   ["agent_guidance_drift", true],
+  ["inbox_proposal", true],
+  ["inbox_attachment_extraction", true],
+  ["transcript_event_pick", false],
   ["transcript_summary", false],
   ["transcript_speaker_suggestion", false],
 ]);

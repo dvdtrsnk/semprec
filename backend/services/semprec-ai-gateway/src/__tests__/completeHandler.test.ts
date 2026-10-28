@@ -199,6 +199,79 @@ describe("POST /internal/complete", () => {
     expect(provider.calls).toHaveLength(0);
   });
 
+  describe.each(["inbox_proposal", "inbox_attachment_extraction"])("%s", (operation) => {
+    it.each([
+      ["missing", undefined],
+      ["null", null],
+    ])("rejects a %s projectItemId with 400 validation_failed and no side effects", async (_label, projectItemId) => {
+      const provider = new FakeProvider();
+      startServer(provider);
+      await listen();
+
+      const res = await post("/internal/complete", { ...VALID_BODY, operation, projectItemId });
+
+      expect(res.status).toBe(400);
+      const body: unknown = await res.json();
+      expect(body).toMatchObject({ code: "validation_failed", details: { field: "projectItemId" } });
+      expect(provider.calls).toHaveLength(0);
+      const { rows } = await pool.query<{ operation: string }>("SELECT operation FROM ai_gateway_calls");
+      expect(rows).toEqual([]);
+    });
+
+    it("dispatches with a valid project item and records the attributed operation", async () => {
+      const provider = new FakeProvider();
+      startServer(provider);
+      await listen();
+
+      const res = await post("/internal/complete", { ...VALID_BODY, operation });
+
+      expect(res.status).toBe(200);
+      const body: unknown = await res.json();
+      expect(body).toEqual({ content: { contradictions: ["one"] }, usage: { inputTokens: 100, outputTokens: 40 } });
+      expect(provider.calls).toHaveLength(1);
+      const { rows } = await pool.query<{ project_item_id: string | null; operation: string; input_tokens: number }>(
+        "SELECT project_item_id, operation, input_tokens FROM ai_gateway_calls",
+      );
+      expect(rows).toEqual([{ project_item_id: VALID_BODY.projectItemId, operation, input_tokens: 100 }]);
+    });
+  });
+
+  it("dispatches transcript_event_pick with a null projectItemId and records an unattributed audit row", async () => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", {
+      ...VALID_BODY,
+      operation: "transcript_event_pick",
+      projectItemId: null,
+    });
+
+    expect(res.status).toBe(200);
+    const body: unknown = await res.json();
+    expect(body).toEqual({ content: { contradictions: ["one"] }, usage: { inputTokens: 100, outputTokens: 40 } });
+    expect(provider.calls).toHaveLength(1);
+    const { rows } = await pool.query<{ project_item_id: string | null; operation: string; input_tokens: number }>(
+      "SELECT project_item_id, operation, input_tokens FROM ai_gateway_calls",
+    );
+    expect(rows).toEqual([{ project_item_id: null, operation: "transcript_event_pick", input_tokens: 100 }]);
+  });
+
+  it("rejects transcript_event_pick with a non-null projectItemId with 400 validation_failed and no side effects", async () => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", { ...VALID_BODY, operation: "transcript_event_pick" });
+
+    expect(res.status).toBe(400);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ code: "validation_failed", details: { field: "projectItemId" } });
+    expect(provider.calls).toHaveLength(0);
+    const { rows } = await pool.query<{ operation: string }>("SELECT operation FROM ai_gateway_calls");
+    expect(rows).toEqual([]);
+  });
+
   it.each([
     ["a project item id", "11111111-1111-1111-1111-111111111111"],
     ["no projectItemId at all", undefined],
