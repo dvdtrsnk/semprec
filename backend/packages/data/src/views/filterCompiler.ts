@@ -11,6 +11,8 @@ export interface FilterProperty {
   type: PropertyType;
   relationDefinitionId?: string;
   relationSide?: "a" | "b";
+  targetDatabaseId?: string;
+  targetRelationProperties?: FilterProperties;
 }
 
 export type FilterProperties = Map<string, FilterProperty>;
@@ -43,6 +45,57 @@ function compileRelationCondition(node: RelationCondition, property: FilterPrope
   return node.type === "relation_contains" ? exists : `(NOT ${exists})`;
 }
 
+/** Two registered relations with a live intermediate item, pinned to its database partition. */
+function compileRelationPathCondition(
+  node: Extract<FilterCondition, { type: "relation_path_contains" }>,
+  properties: FilterProperties,
+  params: unknown[],
+): string {
+  const first = properties.get(node.path[0]);
+  const second = first?.targetRelationProperties?.get(node.path[1]);
+  if (
+    first?.type !== "relation" ||
+    !first.relationDefinitionId ||
+    !first.relationSide ||
+    !first.targetDatabaseId ||
+    second?.type !== "relation" ||
+    !second.relationDefinitionId ||
+    !second.relationSide
+  ) {
+    throw new ValidationError("Filter requires a resolvable two-relation path", { field: "filter" });
+  }
+  const firstOwn = first.relationSide === "a" ? "item_a" : "item_b";
+  const firstTarget = first.relationSide === "a" ? "item_b" : "item_a";
+  const secondOwn = second.relationSide === "a" ? "item_a" : "item_b";
+  const secondTarget = second.relationSide === "a" ? "item_b" : "item_a";
+  params.push(first.relationDefinitionId);
+  const firstParam = params.length;
+  params.push(first.targetDatabaseId);
+  const databaseParam = params.length;
+  params.push(second.relationDefinitionId);
+  const secondParam = params.length;
+  params.push(node.value);
+  const valueParam = params.length;
+  return `EXISTS (
+    SELECT 1 FROM item_relations path_first
+    CROSS JOIN LATERAL (
+      SELECT intermediate.id FROM items intermediate
+      WHERE intermediate.database_id = $${databaseParam}::uuid
+        AND intermediate.id = path_first.${firstTarget}
+        AND intermediate.deleted_at IS NULL
+      OFFSET 0
+    ) path_intermediate
+    WHERE path_first.relation_definition_id = $${firstParam}
+      AND path_first.${firstOwn} = items.id
+      AND EXISTS (
+        SELECT 1 FROM item_relations path_second
+        WHERE path_second.relation_definition_id = $${secondParam}
+          AND path_second.${secondOwn} = path_intermediate.id
+          AND path_second.${secondTarget} = $${valueParam}::uuid
+      )
+  )`;
+}
+
 /** Escapes LIKE metacharacters so a `contains`/`starts_with`/`ends_with` value can never inject its own wildcard. Paired with `ESCAPE '\'` in the compiled SQL. */
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
@@ -55,6 +108,7 @@ function escapeLikePattern(value: string): string {
  * validated by filterTree.ts, is what makes a filter incapable of SQL injection.
  */
 function compileCondition(node: FilterCondition, properties: FilterProperties, params: unknown[]): string {
+  if (node.type === "relation_path_contains") return compileRelationPathCondition(node, properties, params);
   const property = properties.get(node.property);
   if (!property) {
     throw new ValidationError(`Filter references unknown property '${node.property}'`, { field: node.property });

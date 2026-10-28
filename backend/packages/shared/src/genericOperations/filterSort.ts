@@ -4,7 +4,7 @@ import { z } from "zod";
  * `view.query`/`database.query`'s filter/sort tree (issue #252, extracted from #37 via
  * `packages/data/src/views/filterTree.ts` and `sortSpec.ts`). Kept as a standalone copy rather
  * than an import: `packages/shared` must not depend on `packages/data`. The condition set and
- * tree shape must stay identical to the data-layer compiler's — issue #219 rebases that compiler
+ * tree shape (including two-key relation paths and UUID validation) must stay identical to the data-layer compiler's — issue #219 rebases that compiler
  * onto these schemas.
  */
 export const FILTER_CONDITION_TYPES = [
@@ -24,6 +24,7 @@ export const FILTER_CONDITION_TYPES = [
   "in",
   "relation_contains",
   "relation_not_contains",
+  "relation_path_contains",
 ] as const;
 export type FilterConditionType = (typeof FILTER_CONDITION_TYPES)[number];
 
@@ -35,7 +36,8 @@ export type FilterCondition =
   | { type: "date_range"; property: string; value: { from: string; to: string } }
   | { type: "in"; property: string; value: string[] }
   /** `value` must be a UUID string — `filterConditionSchema` validates it with `z.uuid()`. */
-  | { type: "relation_contains" | "relation_not_contains"; property: string; value: string };
+  | { type: "relation_contains" | "relation_not_contains"; property: string; value: string }
+  | { type: "relation_path_contains"; path: [string, string]; value: string };
 
 export type FilterNode =
   | FilterCondition
@@ -45,6 +47,29 @@ export type FilterNode =
 
 const filterProperty = z.string().min(1);
 const filterScalarValue = z.union([z.string(), z.number(), z.boolean()]);
+
+const relationPathConditionSchema = z
+  .object({
+    type: z.literal("relation_path_contains"),
+    // Explicit length also supplies minItems/maxItems to the input JSON Schema.
+    path: z.tuple([filterProperty, filterProperty]).check(z.length(2)),
+    value: z.uuid(),
+  })
+  .strict();
+
+// Keep the strict input visible to JSON Schema generation while attributing malformed
+// paths to filter. `when` also runs the marker check after aborting tuple/type issues,
+// but only for this condition, preserving other union members' error fields (AC5).
+const relationPathCondition = relationPathConditionSchema.refine(() => false, {
+  when: ({ value, issues }) =>
+    issues.length > 0 &&
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === "relation_path_contains",
+  message: "Invalid relation path filter",
+  params: { relationPathFilter: true },
+});
 
 const filterConditionSchema = z.union([
   z.object({ type: z.enum(["equals", "not_equals"]), property: filterProperty, value: filterScalarValue }).strict(),
@@ -74,6 +99,7 @@ const filterConditionSchema = z.union([
   z
     .object({ type: z.enum(["relation_contains", "relation_not_contains"]), property: filterProperty, value: z.uuid() })
     .strict(),
+  relationPathCondition,
 ]);
 
 /**

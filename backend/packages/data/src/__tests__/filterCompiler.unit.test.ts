@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compileFilterNode, type FilterProperties, type FilterProperty } from "../views/filterCompiler.js";
-import { parseFilterNode } from "../views/filterTree.js";
+import { filterNodeSchema as sharedSchema, FILTER_CONDITION_TYPES as sharedTypes } from "@semprec/shared";
+import { filterNodeSchema as dataSchema, FILTER_CONDITION_TYPES, parseFilterNode } from "../views/filterTree.js";
 import { ValidationError } from "../errors.js";
 
 function properties(entries: Array<[string, FilterProperty]>): FilterProperties {
@@ -178,5 +179,112 @@ describe("compileFilterNode", () => {
 
     const textSql = compileFilterNode(parseFilterNode({ type: "equals", property: "title", value: "x" }), props, []);
     expect(textSql).toBe("properties ->> $1 = $2");
+  });
+});
+
+describe("relation_path_contains", () => {
+  const value = "11111111-1111-4111-8111-111111111111";
+  const node = parseFilterNode({ type: "relation_path_contains", path: ["project", "area"], value });
+  const second: FilterProperty = { type: "relation", relationDefinitionId: "second-id", relationSide: "b" };
+  const first: FilterProperty = {
+    type: "relation",
+    relationDefinitionId: "first-id",
+    relationSide: "a",
+    targetDatabaseId: "22222222-2222-4222-8222-222222222222",
+    targetRelationProperties: properties([["area", second]]),
+  };
+
+  it.each(["a", "b"] as const)("binds every id and prunes the live intermediate for first side %s", (side) => {
+    for (const secondSide of ["a", "b"] as const) {
+      const params: unknown[] = ["existing"];
+      const sql = compileFilterNode(
+        node,
+        properties([
+          [
+            "project",
+            {
+              ...first,
+              relationSide: side,
+              targetRelationProperties: properties([["area", { ...second, relationSide: secondSide }]]),
+            },
+          ],
+        ]),
+        params,
+      );
+      expect(params).toEqual(["existing", "first-id", first.targetDatabaseId, "second-id", value]);
+      for (const id of params) expect(sql).not.toContain(String(id));
+      expect(sql).not.toContain("project");
+      expect(sql).not.toContain("area");
+      expect(sql).toContain("CROSS JOIN LATERAL");
+      expect(sql).toContain("intermediate.database_id = $3::uuid");
+      expect(sql).toContain("intermediate.deleted_at IS NULL");
+      expect(sql).toContain("OFFSET 0");
+      expect(sql).toContain(`path_first.${side === "a" ? "item_a" : "item_b"} = items.id`);
+      expect(sql).toContain(`intermediate.id = path_first.${side === "a" ? "item_b" : "item_a"}`);
+      expect(sql).toContain(`path_second.${secondSide === "a" ? "item_a" : "item_b"} = path_intermediate.id`);
+      expect(sql).toContain(`path_second.${secondSide === "a" ? "item_b" : "item_a"} = $5::uuid`);
+      expect(sql).toContain("path_first.relation_definition_id = $2");
+      expect(sql).toContain("path_second.relation_definition_id = $4");
+    }
+  });
+
+  const invalidProperties: Array<[string, FilterProperties]> = [
+    ["unknown first key", properties([])],
+    ["scalar first key", properties([["project", { type: "text" }]])],
+    ["missing first definition", properties([["project", { ...first, relationDefinitionId: undefined }]])],
+    ["missing first side", properties([["project", { ...first, relationSide: undefined }]])],
+    ["missing target database", properties([["project", { ...first, targetDatabaseId: undefined }]])],
+    ["missing target metadata", properties([["project", { ...first, targetRelationProperties: undefined }]])],
+    ["unknown second key", properties([["project", { ...first, targetRelationProperties: properties([]) }]])],
+    ...(
+      [
+        ["scalar second key", { type: "text" }],
+        ["missing second definition", { ...second, relationDefinitionId: undefined }],
+        ["missing second side", { ...second, relationSide: undefined }],
+      ] satisfies Array<[string, FilterProperty]>
+    ).map(([name, property]): [string, FilterProperties] => [
+      name,
+      properties([["project", { ...first, targetRelationProperties: properties([["area", property]]) }]]),
+    ]),
+  ];
+  it.each(invalidProperties)("rejects %s on field filter without adding parameters", (_name, props) => {
+    const params: unknown[] = [];
+    expect(() => compileFilterNode(node, props, params)).toThrow(ValidationError);
+    expect(() => compileFilterNode(node, props, params)).toThrow(
+      expect.objectContaining({ status: 400, details: { field: "filter" } }),
+    );
+    expect(params).toEqual([]);
+  });
+
+  it("keeps the condition lists and path-condition schema acceptance identical", () => {
+    expect(FILTER_CONDITION_TYPES).toEqual(sharedTypes);
+    const valid = { type: "relation_path_contains", path: ["project", "area"], value };
+    const cases = [
+      valid,
+      { type: "not", node: valid },
+      ...[
+        { path: [] },
+        { path: ["project"] },
+        { path: ["project", "area", "more"] },
+        { path: ["", "area"] },
+        { path: ["project", ""] },
+        { path: [1, "area"] },
+        { path: "project.area" },
+        { value: "invalid" },
+        { value: null },
+        { property: "project" },
+      ].map((override) => ({ ...valid, ...override })),
+    ];
+    for (const [index, raw] of cases.entries()) {
+      const data = dataSchema.safeParse(raw);
+      const shared = sharedSchema.safeParse(raw);
+      expect(data.success).toBe(index < 2);
+      expect(data.success).toBe(shared.success);
+      if (data.success && shared.success) expect(data.data).toEqual(shared.data);
+      else
+        expect(() => parseFilterNode(raw)).toThrow(
+          expect.objectContaining({ status: 400, details: expect.objectContaining({ field: "filter" }) }),
+        );
+    }
   });
 });

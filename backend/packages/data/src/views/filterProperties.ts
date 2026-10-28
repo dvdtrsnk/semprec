@@ -1,17 +1,12 @@
+import { z } from "zod";
 import type { PoolClient } from "pg";
 import type { PropertyRow } from "../types.js";
 import { getRelationDefinitionsByPropertyIds } from "../chokePoint/relationsStore.js";
 import type { FilterProperties } from "./filterCompiler.js";
 
 /**
- * Resolves a database's properties into what the filter compiler needs. Scalar properties
- * only carry their type; a relation property is additionally paired with its relation
- * definition and the side its own database sits on, which is what lets a `relation_contains`
- * condition compile to an `item_relations` existence check (issue #96's folder filtering).
- *
- * The relation definitions are fetched in one batched query rather than one per property:
- * this runs on every filtered read, and a database like Emails carries four relation
- * properties whose definitions would otherwise be four separate round trips.
+ * Resolves filter metadata in at most two batched queries: the database's relation
+ * definitions, then its targets' relation properties and definitions, one level deep.
  */
 export async function buildFilterProperties(client: PoolClient, properties: PropertyRow[]): Promise<FilterProperties> {
   const relationProperties = properties.filter((property) => property.type === "relation");
@@ -19,6 +14,40 @@ export async function buildFilterProperties(client: PoolClient, properties: Prop
     client,
     relationProperties.map((property) => property.id),
   );
+
+  const targetIds = new Map<string, string>();
+  for (const property of relationProperties) {
+    const parsed = z.uuid().safeParse(property.config.targetDatabaseId);
+    if (parsed.success) targetIds.set(property.id, parsed.data);
+  }
+  const targets = new Map<string, FilterProperties>();
+  if (targetIds.size > 0) {
+    const { rows } = await client.query<{
+      database_id: string;
+      key: string;
+      definition_id: string | null;
+      side: "a" | "b" | null;
+    }>(
+      `SELECT p.database_id, p.key, rd.id AS definition_id,
+         CASE WHEN rd.property_id_a = p.id THEN 'a' WHEN rd.property_id_b = p.id THEN 'b' END AS side
+       FROM properties p
+       LEFT JOIN relation_definitions rd ON rd.property_id_a = p.id OR rd.property_id_b = p.id
+       WHERE p.database_id = ANY($1::uuid[]) AND p.type = 'relation'`,
+      [[...new Set(targetIds.values())]],
+    );
+    for (const row of rows) {
+      let relations = targets.get(row.database_id);
+      if (!relations) {
+        relations = new Map();
+        targets.set(row.database_id, relations);
+      }
+      relations.set(row.key, {
+        type: "relation",
+        relationDefinitionId: row.definition_id ?? undefined,
+        relationSide: row.side ?? undefined,
+      });
+    }
+  }
 
   const filterProperties: FilterProperties = new Map();
   for (const property of properties) {
@@ -29,6 +58,8 @@ export async function buildFilterProperties(client: PoolClient, properties: Prop
     const definition = definitions.get(property.id);
     filterProperties.set(property.key, {
       type: property.type,
+      targetDatabaseId: targetIds.get(property.id),
+      targetRelationProperties: targets.get(targetIds.get(property.id) ?? ""),
       relationDefinitionId: definition?.id,
       relationSide: definition ? (definition.propertyIdA === property.id ? "a" : "b") : undefined,
     });

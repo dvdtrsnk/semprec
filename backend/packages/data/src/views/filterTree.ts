@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ValidationError } from "../errors.js";
 
-/** The V1 closed condition set (issue #22, point 2) — extending it is always a code migration of this list, never a data change. */
+/** Closed condition set; keep the types, path tuples and UUID validation identical to shared/genericOperations/filterSort.ts. */
 export const FILTER_CONDITION_TYPES = [
   "equals",
   "not_equals",
@@ -23,6 +23,7 @@ export const FILTER_CONDITION_TYPES = [
   // first caller.
   "relation_contains",
   "relation_not_contains",
+  "relation_path_contains",
 ] as const;
 export type FilterConditionType = (typeof FILTER_CONDITION_TYPES)[number];
 
@@ -33,7 +34,8 @@ export type FilterCondition =
   | { type: "before" | "after" | "on_or_before" | "on_or_after"; property: string; value: string }
   | { type: "date_range"; property: string; value: { from: string; to: string } }
   | { type: "in"; property: string; value: string[] }
-  | { type: "relation_contains" | "relation_not_contains"; property: string; value: string };
+  | { type: "relation_contains" | "relation_not_contains"; property: string; value: string }
+  | { type: "relation_path_contains"; path: [string, string]; value: string };
 
 export type FilterNode =
   | FilterCondition
@@ -55,6 +57,9 @@ const filterConditionSchema = z.union([
   // the compiled `$N::uuid` cast, where a malformed id would surface as a raw Postgres cast
   // error instead of a ValidationError naming the offending field.
   z.object({ type: z.enum(["relation_contains", "relation_not_contains"]), property, value: z.uuid() }),
+  z
+    .object({ type: z.literal("relation_path_contains"), path: z.tuple([property, property]), value: z.uuid() })
+    .strict(),
 ]);
 
 /** Recursive tree: zod needs an explicit `z.ZodType` annotation plus `z.lazy` to type-check a self-referential schema. */
