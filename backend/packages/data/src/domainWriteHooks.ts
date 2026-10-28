@@ -11,6 +11,11 @@ import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.
 import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHook.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
 import { itemSearchCreateHook, itemSearchUpdateHook } from "./search/itemSearchIndexer.js";
+import {
+  libraryRatingItemCreateHook,
+  libraryRatingItemUpdateHook,
+  libraryWatchedWithEdgeWriteHook,
+} from "./library/libraryRatingHooks.js";
 
 registerItemCreateHook(mcpServerItemCreateHook);
 registerItemCreateHook(itemSearchCreateHook);
@@ -19,3 +24,6 @@ registerItemUpdateHook(mailMessageFlagsItemUpdateHook);
 registerItemUpdateHook(taskRecurrenceItemUpdateHook);
 registerItemUpdateHook(itemSearchUpdateHook);
 registerRelationEdgeWriteHook(transcriptSpeakerEdgeWriteHook);
+registerItemCreateHook(libraryRatingItemCreateHook);
+registerItemUpdateHook(libraryRatingItemUpdateHook);
+registerRelationEdgeWriteHook(libraryWatchedWithEdgeWriteHook);
