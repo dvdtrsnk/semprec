@@ -6,6 +6,7 @@ import {
   getAgentRun,
   insertAndNotifyAgentRunEvent,
   type AgentRunEventKind,
+  type AgentRunEventRow,
   type AgentRunRow,
   type AgentRunUnit,
   type TriggeredBy,
@@ -68,8 +69,8 @@ async function recordPersistentEvent(
   agentRunId: string,
   kind: AgentRunEventKind,
   payload: unknown,
-): Promise<void> {
-  await insertAndNotifyAgentRunEvent(client, agentRunId, kind, payload);
+): Promise<AgentRunEventRow> {
+  return insertAndNotifyAgentRunEvent(client, agentRunId, kind, payload);
 }
 
 /** Best-effort: a lost typing delta affects animation only; the completed message is durable. */
@@ -81,12 +82,12 @@ async function pushLiveDelta(client: Pool | PoolClient, agentRunId: string, delt
   }
 }
 
-export function pushRunStatus(
+export async function pushRunStatus(
   client: Pool | PoolClient,
   agentRunId: string,
   status: "running" | "done" | "error",
 ): Promise<void> {
-  return recordPersistentEvent(client, agentRunId, "run_status", { kind: "run_status", status });
+  await recordPersistentEvent(client, agentRunId, "run_status", { kind: "run_status", status });
 }
 
 /**
@@ -96,7 +97,9 @@ export function pushRunStatus(
  * Returns the turn's last
  * `message`-kind event, or null if it never produced one. An aborted `signal` (already aborted, or
  * aborting while the loop waits for or records a message) ends the session through its iterator's
- * `return()` and throws `AgentRunCancelledError`.
+ * `return()` and throws `AgentRunCancelledError`. `onFirstEvent` is awaited once, with the row id
+ * of the first event this call stores, right after its insert; a throw there ends the turn like
+ * any failed step.
  *
  * Shared by `runAgentSession` (one turn, closing the run immediately after) and the
  * delegation registry (#229: many turns reusing one long-lived `agent_runs` row that only
@@ -109,7 +112,9 @@ export async function runAgentTurn(
   messages: AsyncIterable<AgentMessage>,
   onEvent?: (message: AgentMessage) => void,
   signal?: AbortSignal,
+  onFirstEvent?: (eventId: string) => Promise<void> | void,
 ): Promise<AgentMessage | null> {
+  let firstEventReported = false;
   let lastMessage: AgentMessage | null = null;
   const iterator = messages[Symbol.asyncIterator]();
   let finished = false;
@@ -155,7 +160,11 @@ export async function runAgentTurn(
         await pushLiveDelta(client, agentRunId, message);
       } else {
         if (PERSISTED_EVENT_KINDS.has(message.kind)) {
-          await recordPersistentEvent(client, agentRunId, message.kind, message);
+          const stored = await recordPersistentEvent(client, agentRunId, message.kind, message);
+          if (!firstEventReported) {
+            firstEventReported = true;
+            await onFirstEvent?.(stored.id);
+          }
         }
         if (message.kind === "message") lastMessage = message;
       }

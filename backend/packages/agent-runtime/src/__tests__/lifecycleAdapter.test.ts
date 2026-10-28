@@ -586,3 +586,60 @@ describe("runAgentTurn cancellation", () => {
     expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ signal: controller.signal }));
   });
 });
+
+describe("runAgentTurn onFirstEvent", () => {
+  async function newRun(): Promise<AgentRunRow> {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "first event" });
+    await pushRunStatus(pool, run.id, "running");
+    return run;
+  }
+
+  async function* messagesOf(...messages: AgentMessage[]): AsyncGenerator<AgentMessage> {
+    for (const message of messages) yield message;
+  }
+
+  it("reports the stored row id of the first persisted event once, skipping live deltas", async () => {
+    const run = await newRun();
+    const seen: string[] = [];
+
+    await runAgentTurn(
+      pool,
+      run.id,
+      messagesOf(
+        { kind: "message_update", text: "d" },
+        { kind: "turn_start" },
+        { kind: "message", text: "hi" },
+        { kind: "turn_end" },
+      ),
+      undefined,
+      undefined,
+      (eventId) => {
+        seen.push(eventId);
+      },
+    );
+
+    const { rows } = await pool.query<{ id: string; kind: string }>(
+      `SELECT id, kind FROM agent_run_events WHERE agent_run_id = $1 AND kind <> 'run_status' ORDER BY id`,
+      [run.id],
+    );
+    expect(seen).toEqual([rows[0]!.id]);
+    expect(rows[0]!.kind).toBe("turn_start");
+  });
+
+  it("ends the turn with the hook's error before the next message is pulled", async () => {
+    const run = await newRun();
+    let pulledSecond = false;
+    async function* messages(): AsyncGenerator<AgentMessage> {
+      yield { kind: "turn_start" };
+      pulledSecond = true;
+      yield { kind: "message", text: "hi" };
+    }
+
+    await expect(
+      runAgentTurn(pool, run.id, messages(), undefined, undefined, () => {
+        throw new Error("hook failed");
+      }),
+    ).rejects.toThrow("hook failed");
+    expect(pulledSecond).toBe(false);
+  });
+});

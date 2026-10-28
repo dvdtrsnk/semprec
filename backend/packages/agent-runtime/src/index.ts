@@ -28,6 +28,8 @@ export {
   SEMP_BUSY_ERROR_MESSAGE,
   createReconstructConversationHistory,
   type SempConversationOptions,
+  type SempSendOptions,
+  type SempTurnStart,
   type SempTurnResult,
   type ReconstructConversationHistory,
 } from "./sempConversation.js";

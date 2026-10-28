@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import {
+  type AgentRunRow,
   createAgentRun,
   finishAgentRun,
   finishAgentRunWithErrorNotification,
@@ -95,8 +96,12 @@ async function pushClosedRunStatus(
 }
 
 export interface SempConversationOptions {
-  /** Seam for the real `pi-agent-core` `createAgentSession` (or a fake, in tests). */
-  createAgentSession: CreateAgentSession;
+  /**
+   * Builds the session factory for one run. `send()` calls it with the run row it created for a
+   * waking turn, after the run is `running` and before the first prompt, so the session's tools
+   * bind to that run's id. A test double can return a constant factory.
+   */
+  createAgentSessionForRun: (run: AgentRunRow) => Promise<CreateAgentSession>;
   /**
    * Resolves the waking tenant's own Semprec project item id — `agent_runs.project_item_id` for
    * that tenant's wake run. Called once per wake, inside the caller's tenant scope, before
@@ -105,6 +110,22 @@ export interface SempConversationOptions {
   resolveProjectItemId: (pool: Pool) => Promise<string>;
   /** Defaults to the always-empty stub; pass `createReconstructConversationHistory(compactionAdapter)` for the real #119 reconstruction. */
   reconstructHistory?: ReconstructConversationHistory;
+}
+
+/** Reported by `onTurnStart` once a turn's run is `running` and its first event is stored. */
+export interface SempTurnStart {
+  agentRunId: string;
+  firstEventId: string;
+}
+
+export interface SempSendOptions {
+  /** Cancels the turn, including a prompt blocked on its next event; the run then closes as `error`. */
+  signal?: AbortSignal;
+  /**
+   * Awaited once per turn, right after the first event the turn stores and before the model is
+   * prompted further. A throw ends the turn: the run closes as `error` and the error propagates.
+   */
+  onTurnStart?: (turn: SempTurnStart) => Promise<void> | void;
 }
 
 interface TenantConversation {
@@ -241,7 +262,8 @@ export class SempConversation {
     if (state && !state.entry && !state.waking) this.conversations.delete(tenantId);
   }
 
-  async send(task: string): Promise<SempTurnResult> {
+  async send(task: string, sendOptions: SempSendOptions = {}): Promise<SempTurnResult> {
+    const { signal, onTurnStart } = sendOptions;
     // Read synchronously, before any `await`: nothing is read or written without a tenant.
     const scope = currentTenantScope();
     if (scope?.kind !== "tenant") {
@@ -270,7 +292,14 @@ export class SempConversation {
                 "AgentSession does not support continuation (send) required to continue Semp's conversation",
               );
             }
-            lastMessage = await runAgentTurn(this.pool, entry.agentRunId, entry.session.send(task));
+            lastMessage = await runAgentTurn(
+              this.pool,
+              entry.agentRunId,
+              entry.session.send(task),
+              undefined,
+              signal,
+              onTurnStart && ((firstEventId) => onTurnStart({ agentRunId: entry.agentRunId, firstEventId })),
+            );
           } catch (err) {
             // A broken turn leaves the underlying AgentSession in an unknown state — close the
             // run as error and drop the entry rather than leaving a busy-cleared but unusable
@@ -319,14 +348,23 @@ export class SempConversation {
           await persistCompaction(this.pool, run.id, priorHistory.entries);
         }
 
-        const session = this.options.createAgentSession({
-          task,
-          initialState: priorHistory ? { messages: priorHistory.entries } : undefined,
-        });
-
+        let session: AgentSession;
         let lastMessage: AgentMessage | null;
         try {
-          lastMessage = await runAgentTurn(this.pool, run.id, session.messages());
+          const createAgentSession = await this.options.createAgentSessionForRun(run);
+          session = createAgentSession({
+            task,
+            signal,
+            initialState: priorHistory ? { messages: priorHistory.entries } : undefined,
+          });
+          lastMessage = await runAgentTurn(
+            this.pool,
+            run.id,
+            session.messages(),
+            undefined,
+            signal,
+            onTurnStart && ((firstEventId) => onTurnStart({ agentRunId: run.id, firstEventId })),
+          );
         } catch (err) {
           await failRun(this.pool, run.id, err);
           throw err;
