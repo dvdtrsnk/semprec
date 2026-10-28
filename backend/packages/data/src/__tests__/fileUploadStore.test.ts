@@ -48,8 +48,10 @@ class FakeBlobStorageWriter implements BlobStorageWriter {
     this.bytesByKey.delete(storageKey);
   }
 
-  readStream(): Readable {
-    throw new Error("not used by these tests");
+  readStream(storageKey: string, range?: { start: number; end: number }): Readable {
+    const bytes = this.bytesByKey.get(storageKey);
+    if (!bytes) throw new Error(`no bytes stored for ${storageKey}`);
+    return Readable.from([range ? bytes.subarray(range.start, range.end + 1) : bytes]);
   }
 }
 
@@ -91,6 +93,67 @@ describe("ingestUploadedFile (issue #670)", () => {
       storage,
     });
   }
+
+  async function uploadBytes(
+    storage: FakeBlobStorageWriter,
+    filesDatabaseId: string,
+    bytes: Buffer,
+    contentType: string,
+  ) {
+    return ingestUploadedFile(pool, {
+      filesDatabaseId,
+      filename: "upload.bin",
+      contentType,
+      source: Readable.from([bytes]),
+      storageKeyPrefix: "files",
+      maxBytes: 1024 * 1024,
+      storage,
+    });
+  }
+
+  it("detects a PDF sent as image/jpeg from its bytes: type pdf and blob mime application/pdf", async () => {
+    const result = await uploadBytes(
+      new FakeBlobStorageWriter(),
+      await filesDatabaseId(),
+      Buffer.from("%PDF-1.7\n%body"),
+      "image/jpeg",
+    );
+    expect(result.item.properties["type"]).toBe("pdf");
+    expect(result.blob.mimeType).toBe("application/pdf");
+  });
+
+  it("stores no type and application/octet-stream for unrecognised content, whatever the client claimed", async () => {
+    const result = await uploadBytes(
+      new FakeBlobStorageWriter(),
+      await filesDatabaseId(),
+      Buffer.from("just some text"),
+      "application/pdf",
+    );
+    expect(result.item.properties).not.toHaveProperty("type");
+    expect(result.blob.mimeType).toBe("application/octet-stream");
+  });
+
+  it("stores an empty upload as unknown content", async () => {
+    const result = await uploadBytes(
+      new FakeBlobStorageWriter(),
+      await filesDatabaseId(),
+      Buffer.alloc(0),
+      "image/png",
+    );
+    expect(result.item.properties).not.toHaveProperty("type");
+    expect(result.blob.mimeType).toBe("application/octet-stream");
+  });
+
+  it("returns the existing item unchanged when identical bytes are uploaded again", async () => {
+    const filesId = await filesDatabaseId();
+    const storage = new FakeBlobStorageWriter();
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    const first = await uploadBytes(storage, filesId, bytes, "application/octet-stream");
+    const second = await uploadBytes(storage, filesId, bytes, "image/jpeg");
+    expect(first.item.properties["type"]).toBe("png");
+    expect(second.created).toBe(false);
+    expect(second.item).toEqual(first.item);
+  });
 
   it("deletes the streamed bytes and leaves no blobs row when the transaction fails", async () => {
     const filesId = await filesDatabaseId();

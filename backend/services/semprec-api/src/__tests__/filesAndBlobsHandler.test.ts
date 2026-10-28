@@ -86,7 +86,7 @@ describe("files and blobs routes (issue #158)", () => {
     await pool?.end();
   });
 
-  async function uploadFile(body: string, opts: { filename?: string; contentType?: string } = {}) {
+  async function uploadFile(body: string | Buffer, opts: { filename?: string; contentType?: string } = {}) {
     const headers = {
       ...(await authHeader()),
       "Content-Type": opts.contentType ?? "text/plain",
@@ -194,7 +194,7 @@ describe("files and blobs routes (issue #158)", () => {
   });
 
   describe("GET /api/blobs/:id", () => {
-    async function uploadAndGetBlobId(content: string, opts?: { filename?: string; contentType?: string }) {
+    async function uploadAndGetBlobId(content: string | Buffer, opts?: { filename?: string; contentType?: string }) {
       const res = await uploadFile(content, opts);
       const body = (await res.json()) as ItemBody;
       return (body.properties.file as { blobId: string }).blobId;
@@ -297,7 +297,9 @@ describe("files and blobs routes (issue #158)", () => {
 
     it("honors ?disposition=inline only for an allowlisted MIME type", async () => {
       const headers = await authHeader();
-      const pngBlobId = await uploadAndGetBlobId("fake-png-bytes", { filename: "pic.png", contentType: "image/png" });
+      // The mime is detected from the bytes, so a PNG signature is needed whatever the client claims.
+      const pngBytes = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("x")]);
+      const pngBlobId = await uploadAndGetBlobId(pngBytes, { filename: "pic.png", contentType: "text/plain" });
 
       const inline = await fetch(`${baseUrl}/api/blobs/${pngBlobId}?disposition=inline`, { headers });
       expect(inline.headers.get("content-disposition")).toContain("inline;");

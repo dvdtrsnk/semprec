@@ -485,7 +485,8 @@ async function seedTenant(): Promise<TenantFixture> {
   // Re-read after the relation write, which may have bumped the item's version.
   const itemVersion = readString(await sendOk(member, { method: "GET", path: `/api/items/${item.id}` }), "updatedAt");
 
-  const fileContent = `audio of ${randomUUID()}`;
+  // Starts with an ID3 tag so content detection treats the upload as audio.
+  const fileContent = `ID3 audio of ${randomUUID()}`;
   const fileItemId = readString(
     await sendOk(member, {
       method: "POST",
@@ -1264,7 +1265,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       });
       const foreign = await send(b.member, upload(a.fileContent));
       expectNoneOf(foreign.text, a.ids, "upload of A's bytes");
-      const random = await expectExcludesA(b.member, upload(`audio of ${randomUUID()}`));
+      const random = await expectExcludesA(b.member, upload(`ID3 audio of ${randomUUID()}`));
       expect(random.status).toBe(201);
       expect(foreign.status, foreign.text).toBe(random.status);
     }),

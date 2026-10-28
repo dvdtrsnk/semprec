@@ -177,7 +177,13 @@ export async function seedTenDatabasesInTransaction(
   const files = await createDb(client, FILES_MODULE_ID);
   await createProps(client, files.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
-    { key: "type", name: "Type", type: "select", owner: "user", config: selectConfig(["pdf", "xlsx", "docx", "jpg"]) },
+    {
+      key: "type",
+      name: "Type",
+      type: "select",
+      owner: "user",
+      config: selectConfig(["pdf", "xlsx", "docx", "jpg", "png", "heic", "audio"]),
+    },
     { key: "date", name: "Date", type: "date", owner: "user", config: { default: "today" } },
     // { blobId } over the shared `blobs` table (0004_ten_databases.sql).
     { key: "file", name: "File", type: "file", owner: "user" },
