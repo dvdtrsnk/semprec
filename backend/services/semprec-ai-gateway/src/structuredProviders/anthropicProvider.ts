@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { ProviderCallError, type StructuredCompletionProvider, type StructuredCompletionRequest } from "./types.js";
+import {
+  ProviderCallError,
+  type StructuredCompletionMessage,
+  type StructuredCompletionProvider,
+  type StructuredCompletionRequest,
+} from "./types.js";
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -104,6 +109,19 @@ async function readJsonBodyWithSizeCap(res: Response, maxBytes: number): Promise
   return JSON.parse(body);
 }
 
+/** A string message is sent as is; a block message maps each block to Anthropic's content format. */
+function toAnthropicMessage(message: StructuredCompletionMessage) {
+  if (typeof message.content === "string") return message;
+  return {
+    role: message.role,
+    content: message.content.map((block) =>
+      block.type === "text"
+        ? { type: "text", text: block.text }
+        : { type: "image", source: { type: "base64", media_type: block.mimeType, data: block.data } },
+    ),
+  };
+}
+
 /** Real Anthropic adapter. `apiKey` is read once at process startup, never per request. */
 export function createAnthropicStructuredProvider(apiKey: string): StructuredCompletionProvider {
   return {
@@ -121,7 +139,7 @@ export function createAnthropicStructuredProvider(apiKey: string): StructuredCom
         max_tokens: MAX_OUTPUT_TOKENS,
         temperature: request.temperature,
         system: request.system,
-        messages: request.messages,
+        messages: request.messages.map(toAnthropicMessage),
         tools: [
           {
             name: STRUCTURED_OUTPUT_TOOL_NAME,

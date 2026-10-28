@@ -42,6 +42,38 @@ describe("createAnthropicStructuredProvider", () => {
     vi.useRealTimers();
   });
 
+  it("sends a string message unchanged and maps text and image blocks to Anthropic's content format", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => successResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = createAnthropicStructuredProvider("test-api-key");
+
+    await provider.complete({
+      ...REQUEST,
+      messages: [
+        { role: "user", content: "hello" },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "read this" },
+            { type: "image", mimeType: "image/png", data: "iVBORw0K" },
+          ],
+        },
+      ],
+    });
+
+    const sent = JSON.parse(fetchMock.mock.calls[0]?.[1].body as string) as { messages: unknown[] };
+    expect(sent.messages).toEqual([
+      { role: "user", content: "hello" },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "read this" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0K" } },
+        ],
+      },
+    ]);
+  });
+
   it("throws ProviderCallError, not a TypeError, when the 200 response body has no content array", async () => {
     vi.stubGlobal(
       "fetch",

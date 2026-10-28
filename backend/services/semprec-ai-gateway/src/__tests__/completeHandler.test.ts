@@ -407,6 +407,156 @@ describe("POST /internal/complete", () => {
     expect(rows[0].agent_run_id).toBeNull();
   });
 
+  describe("image content blocks", () => {
+    const JPEG_BASE64 = Buffer.from("fake-jpeg-bytes").toString("base64");
+    const imageBlock = (data = JPEG_BASE64) => ({ type: "image", mimeType: "image/jpeg", data });
+    const withBlocks = (...blocks: unknown[]) => ({
+      ...VALID_BODY,
+      messages: [{ role: "user", content: [{ type: "text", text: "read this invoice" }, ...blocks] }],
+    });
+
+    it("dispatches a text block and an image block, hands both to the provider, and records real usage", async () => {
+      const provider = new FakeProvider();
+      startServer(provider);
+      await listen();
+
+      const res = await post("/internal/complete", withBlocks(imageBlock()));
+
+      expect(res.status).toBe(200);
+      expect(provider.calls).toHaveLength(1);
+      expect(provider.calls[0]?.messages[0]?.content).toEqual([
+        { type: "text", text: "read this invoice" },
+        { type: "image", mimeType: "image/jpeg", data: JPEG_BASE64 },
+      ]);
+      const { rows } = await pool.query("SELECT input_tokens, output_tokens FROM ai_gateway_calls");
+      expect(rows).toEqual([{ input_tokens: 100, output_tokens: 40 }]);
+    });
+
+    it("passes a plain string message to the provider unchanged", async () => {
+      const provider = new FakeProvider();
+      startServer(provider);
+      await listen();
+
+      const res = await post("/internal/complete", VALID_BODY);
+
+      expect(res.status).toBe(200);
+      expect(provider.calls[0]?.messages).toEqual(VALID_BODY.messages);
+    });
+
+    it("accepts four images and rejects a fifth with 400 and no reservation", async () => {
+      const provider = new FakeProvider();
+      startServer(provider);
+      await listen();
+
+      const four = await post("/internal/complete", withBlocks(imageBlock(), imageBlock(), imageBlock(), imageBlock()));
+      expect(four.status).toBe(200);
+      await pool.query("DELETE FROM ai_gateway_calls");
+
+      const five = await post(
+        "/internal/complete",
+        withBlocks(imageBlock(), imageBlock(), imageBlock(), imageBlock(), imageBlock()),
+      );
+      expect(five.status).toBe(400);
+      expect(provider.calls).toHaveLength(1);
+      expect((await pool.query("SELECT 1 FROM ai_gateway_calls")).rowCount).toBe(0);
+    });
+
+    it.each([
+      ["an image/gif mime type", { type: "image", mimeType: "image/gif", data: JPEG_BASE64 }],
+      ["invalid base64", imageBlock("not base64!!")],
+      ["base64 with bad padding", imageBlock("abc")],
+      ["an empty image", imageBlock("")],
+      ["an unknown block type", { type: "audio", data: JPEG_BASE64 }],
+      ["a text block without text", { type: "text" }],
+      ["an image above 1.5 MiB decoded", imageBlock(Buffer.alloc(1.5 * 1024 * 1024 + 3).toString("base64"))],
+    ])("rejects %s with 400 and makes no reservation", async (_label, block) => {
+      const provider = new FakeProvider();
+      startServer(provider);
+      await listen();
+
+      const res = await post("/internal/complete", withBlocks(block));
+
+      expect(res.status).toBe(400);
+      expect(provider.calls).toHaveLength(0);
+      expect((await pool.query("SELECT 1 FROM ai_gateway_calls")).rowCount).toBe(0);
+    });
+
+    it("accepts an image of exactly 1.5 MiB decoded", async () => {
+      const provider = new FakeProvider();
+      startServer(provider);
+      await listen();
+
+      const res = await post(
+        "/internal/complete",
+        withBlocks(imageBlock(Buffer.alloc(1.5 * 1024 * 1024).toString("base64"))),
+      );
+
+      expect(res.status).toBe(200);
+    });
+
+    it("answers 413 for a 9 MiB body even when it contains an image", async () => {
+      const provider = new FakeProvider();
+      startServer(provider);
+      await listen();
+
+      const res = await post("/internal/complete", {
+        ...withBlocks(imageBlock()),
+        system: "x".repeat(9 * 1024 * 1024),
+      }).catch((err: unknown) => err);
+
+      // The server may answer before the upload finishes, which a client can also see as a reset.
+      if (res instanceof Response) expect(res.status).toBe(413);
+      expect(provider.calls).toHaveLength(0);
+    });
+
+    it("still answers 413 for a text-only body above 1 MiB", async () => {
+      const provider = new FakeProvider();
+      startServer(provider);
+      await listen();
+
+      const res = await post("/internal/complete", { ...VALID_BODY, system: "x".repeat(1024 * 1024 + 1) });
+
+      expect(res.status).toBe(413);
+      expect(provider.calls).toHaveLength(0);
+    });
+
+    it("accepts a body between 1 MiB and 8 MiB when it contains an image", async () => {
+      const provider = new FakeProvider();
+      startServer(provider);
+      await listen();
+
+      const res = await post("/internal/complete", {
+        ...withBlocks(imageBlock()),
+        system: "x".repeat(2 * 1024 * 1024),
+      });
+
+      expect(res.status).toBe(200);
+    });
+
+    it("reserves 1600 tokens per image on top of the text estimate", async () => {
+      /** Records the `cost_usd` of the reservation while the provider call runs, before it is settled. */
+      class ReservationProbe extends FakeProvider {
+        reservedCostUsd: number[] = [];
+        override async complete(request: StructuredCompletionRequest) {
+          const { rows } = await pool.query<{ cost_usd: string }>(
+            "SELECT cost_usd FROM ai_gateway_calls WHERE status = 'reserved'",
+          );
+          this.reservedCostUsd.push(Number(rows[0]?.cost_usd));
+          return super.complete(request);
+        }
+      }
+      const provider = new ReservationProbe();
+      startServer(provider, { pricePerMillionInputTokens: 1000 });
+      await listen();
+
+      expect((await post("/internal/complete", withBlocks())).status).toBe(200);
+      expect((await post("/internal/complete", withBlocks(imageBlock(), imageBlock()))).status).toBe(200);
+
+      const [textOnly, twoImages] = provider.reservedCostUsd as [number, number];
+      expect(twoImages - textOnly).toBeCloseTo((2 * 1600 * 1000) / 1_000_000, 6);
+    });
+  });
+
   it("returns 502 invalid_response and still records the audit row when the provider's content fails schema validation", async () => {
     const provider = new FakeProvider();
     provider.response = { somethingElse: true };
