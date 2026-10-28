@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PROPERTY_TYPES, type PropertyType } from "./rows.js";
+import { PROPERTY_TYPES, type Item, type PropertyType } from "./rows.js";
 import { filterNodeSchema, sortSpecSchema } from "./filterSort.js";
 import type { GenericOperationName } from "./operationNames.js";
 
@@ -219,6 +219,9 @@ export const ItemPatchInputSchema = z
   })
   .strict();
 export type ItemPatchInput = z.infer<typeof ItemPatchInputSchema>;
+
+/** Item state after the patch, with the patched keys' values from its write transaction. */
+export type ItemPatchOutput = Item & { previous: Record<string, unknown> };
 
 export const ItemDeleteInputSchema = z.object({ itemId: z.string() }).strict();
 export type ItemDeleteInput = z.infer<typeof ItemDeleteInputSchema>;

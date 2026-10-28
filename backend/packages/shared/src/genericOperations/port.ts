@@ -1,6 +1,6 @@
 import type { AuthenticatedActor } from "./actor.js";
 import type { GenericOperationName } from "./operationNames.js";
-import type { InputByOperation } from "./schemas.js";
+import type { InputByOperation, ItemPatchOutput } from "./schemas.js";
 import type { Database, Item, ItemPage, Page, Property, RelationEdge, View, ViewItem } from "./rows.js";
 
 /** Exhaustive mapped type over the 29 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
@@ -33,7 +33,7 @@ export interface OutputByOperation {
   "viewItem.reorder": ViewItem;
   "item.get": Item;
   "item.create": Item;
-  "item.patch": Item;
+  "item.patch": ItemPatchOutput;
   "item.delete": Item;
   "item.restore": Item;
   "database.query": ItemPage;

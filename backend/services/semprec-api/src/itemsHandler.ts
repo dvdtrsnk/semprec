@@ -130,6 +130,7 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
           properties: body.properties,
           ifVersion: body.ifVersion,
         });
+        // The explicit envelope projection omits item.patch's transaction pre-image from REST.
         return { status: 200, body: toItemEnvelope(item) };
       },
     },

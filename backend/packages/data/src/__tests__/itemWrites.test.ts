@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { Settings } from "luxon";
 import { runInTenant } from "@semprec/shared";
 import { getTenantZeroId } from "../testSupport/testDb.js";
-import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import type { Pool } from "pg";
 import { CORE_TASK_NAMES } from "@semprec/queue";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -160,6 +160,119 @@ describe("choke-point itemWrites", () => {
         ifVersion: item.updatedAt, // stale now
       }),
     ).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  it("returns previous values of exactly two patched keys, preserving unpatched properties", async () => {
+    const db = await makeMoviesDb();
+    await chokePoint.createProperty({ databaseId: db.id, key: "due", name: "Due", type: "date" });
+    await chokePoint.createProperty({ databaseId: db.id, key: "note", name: "Note", type: "text" });
+    const item = await chokePoint.createItem({
+      databaseId: db.id,
+      properties: { title: "Original", due: "2026-10-27", note: "Unchanged" },
+    });
+    const updated = await chokePoint.updateItem({
+      databaseId: db.id,
+      itemId: item.id,
+      propertiesPatch: { title: "Revised", due: "2026-10-28" },
+    });
+    expect(updated.previous).toEqual({ title: "Original", due: "2026-10-27" });
+    expect(updated.properties).toEqual({ title: "Revised", due: "2026-10-28", note: "Unchanged" });
+  });
+
+  it("reports an unset patched key as null, including a key inherited from Object.prototype", async () => {
+    const db = await makeMoviesDb();
+    await chokePoint.createProperty({ databaseId: db.id, key: "toString", name: "To string", type: "text" });
+    const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+    const updated = await chokePoint.updateItem({
+      databaseId: db.id,
+      itemId: item.id,
+      propertiesPatch: { title: "New", toString: "Own value" },
+    });
+    expect(updated.previous).toEqual({ title: null, toString: null });
+  });
+
+  it("a stale version returns no result, writes nothing and emits no invalidation", async () => {
+    const db = await makeMoviesDb();
+    const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Original" } });
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      const outcome = await Promise.allSettled([
+        chokePoint.updateItem({
+          databaseId: db.id,
+          itemId: item.id,
+          propertiesPatch: { title: "Rejected" },
+          ifVersion: "2000-01-01T00:00:00.000Z",
+        }),
+      ]);
+      expect(outcome).toEqual([{ status: "rejected", reason: expect.any(ConflictError) }]);
+      expect(await chokePoint.getItem(db.id, item.id)).toEqual(item);
+      expect(events).toEqual([]);
+    } finally {
+      setInvalidationHook(() => {});
+    }
+  });
+
+  it("a concurrent patch waits for the first transaction and returns its committed value", async () => {
+    const db = await makeMoviesDb();
+    const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Original" } });
+    const contenderPool = getTestPool({ max: 1 });
+    let releaseFirst = () => {};
+    const commitGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let signalFirst = () => {};
+    const firstWritten = new Promise<void>((resolve) => {
+      signalFirst = resolve;
+    });
+    const first = withTransaction(pool, async (client) => {
+      const result = await updateItemWithClient(client, {
+        databaseId: db.id,
+        itemId: item.id,
+        propertiesPatch: { title: "First" },
+      });
+      signalFirst();
+      await commitGate;
+      return result;
+    });
+    // Attach a rejection handler immediately, while the first transaction is held open.
+    const firstOutcome = Promise.allSettled([first]);
+    let second: Promise<unknown> | undefined;
+    try {
+      await Promise.race([firstWritten, first]);
+      const { rows } = await contenderPool.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+      const pid = rows[0]?.pid;
+      if (pid === undefined) throw new Error("Missing contender backend pid");
+      const patch = createChokePoint(contenderPool).updateItem({
+        databaseId: db.id,
+        itemId: item.id,
+        propertiesPatch: { title: "Second" },
+      });
+      const secondOutcome = Promise.allSettled([patch]);
+      second = secondOutcome;
+      await expect
+        .poll(
+          async () => {
+            const { rows } = await pool.query<{ blocked: boolean }>(
+              "SELECT cardinality(pg_blocking_pids($1)) > 0 AS blocked",
+              [pid],
+            );
+            return rows[0]?.blocked;
+          },
+          { timeout: 5000 },
+        )
+        .toBe(true);
+      releaseFirst();
+      const [a, b] = await Promise.all([first, patch]);
+      expect(a.previous).toEqual({ title: "Original" });
+      expect(b.previous).toEqual({ title: "First" });
+      expect((await chokePoint.getItem(db.id, item.id))?.properties.title).toBe("Second");
+    } finally {
+      releaseFirst();
+      await firstOutcome;
+      if (second) await second;
+      await contenderPool.end();
+    }
   });
 
   it("updateItem on a missing item raises NotFoundError", async () => {
@@ -343,6 +456,23 @@ describe("property defaults on real item writes", () => {
     await runInTenant(getTenantZeroId(), async () => {
       const item = await chokePoint.createItem({ databaseId: await database(moduleId) });
       expect(item.properties).toEqual({ [key]: value });
+    });
+  });
+
+  it("returns only caller-patched keys when Tasks time is derived internally", async () => {
+    await runInTenant(getTenantZeroId(), async () => {
+      const databaseId = await database("tasks");
+      const item = await chokePoint.createItem({
+        databaseId,
+        properties: { timeFrom: "2026-10-27T14:00:00Z", timeTo: "2026-10-27T15:00:00Z" },
+      });
+      const updated = await chokePoint.updateItem({
+        databaseId,
+        itemId: item.id,
+        propertiesPatch: { timeFrom: "2026-10-27T14:30:00Z" },
+      });
+      expect(updated.previous).toEqual({ timeFrom: "2026-10-27T14:00:00Z" });
+      expect(updated.properties.time).not.toEqual(item.properties.time);
     });
   });
 
