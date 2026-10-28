@@ -24,9 +24,11 @@ export {
   registerItemCreateHook,
   registerItemUpdateHook,
   registerRelationEdgeWriteHook,
+  registerRelationEdgeDeleteHook,
   type ItemCreateHookContext,
   type ItemUpdateHookContext,
   type RelationEdgeWriteHookContext,
+  type RelationEdgeDeleteHookContext,
 } from "../chokePoint/hooks.js";
 
 /**

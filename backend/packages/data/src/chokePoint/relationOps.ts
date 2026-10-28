@@ -26,7 +26,7 @@ import {
   type RelationEdgeContext,
   type SystemRelationWriteContext,
 } from "./relationEdgeContext.js";
-import { runRelationEdgeWriteHooks } from "./hooks.js";
+import { runRelationEdgeDeleteHooks, runRelationEdgeWriteHooks } from "./hooks.js";
 import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
 
 /** The normalized public shape of a stored edge — same fields as `relationsStore.ItemRelationRow`, named here to match the choke-point's own edge contract. */
@@ -213,8 +213,7 @@ export async function deleteRelationWithClient(
   client: PoolClient,
   input: DeleteRelationInput,
   context?: SystemRelationWriteContext,
-  // Accepted and carried so an edge-changed hook can read it without a signature change; delete runs no edge write hook yet.
-  _writer: WriterIdentity = SYSTEM_WRITER,
+  writer: WriterIdentity = SYSTEM_WRITER,
 ): Promise<RelationEdge | null> {
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
   await assertRelationDatabasesNotArchived(client, edgeContext);
@@ -225,6 +224,14 @@ export async function deleteRelationWithClient(
     input.callerItemId,
     input.targetItemId,
   );
+  // Edge-delete hooks, not the write hooks: those validate metadata and must not run on a removal.
+  await runRelationEdgeDeleteHooks({
+    client,
+    edgeContext,
+    callerItemId: input.callerItemId,
+    targetItemId: input.targetItemId,
+    writer,
+  });
   const edge = await relationsStore.deleteItemRelation(client, edgeContext.reldef.id, itemA, itemB);
   await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
   return edge;

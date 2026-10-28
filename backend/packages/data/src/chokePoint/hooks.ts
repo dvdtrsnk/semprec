@@ -54,9 +54,26 @@ export interface RelationEdgeWriteHookContext {
 
 export type RelationEdgeWriteHook = (context: RelationEdgeWriteHookContext) => Promise<void>;
 
+/**
+ * Context of a relation edge removal. A separate seam from `RelationEdgeWriteHookContext`: write hooks
+ * validate edge metadata (Transcripts speakers) and must not run on a removal, so delete gets its own
+ * registry.
+ */
+export interface RelationEdgeDeleteHookContext {
+  client: PoolClient;
+  edgeContext: RelationEdgeContext;
+  callerItemId: string;
+  targetItemId: string;
+  /** Who removed the edge; `system` when the caller supplied nothing. */
+  writer: WriterIdentity;
+}
+
+export type RelationEdgeDeleteHook = (context: RelationEdgeDeleteHookContext) => Promise<void>;
+
 const itemCreateHooks = new Set<ItemCreateHook>();
 const itemUpdateHooks = new Set<ItemUpdateHook>();
 const relationEdgeWriteHooks = new Set<RelationEdgeWriteHook>();
+const relationEdgeDeleteHooks = new Set<RelationEdgeDeleteHook>();
 
 export function registerItemCreateHook(hook: ItemCreateHook): void {
   itemCreateHooks.add(hook);
@@ -69,6 +86,10 @@ export function registerItemUpdateHook(hook: ItemUpdateHook): void {
 
 export function registerRelationEdgeWriteHook(hook: RelationEdgeWriteHook): void {
   relationEdgeWriteHooks.add(hook);
+}
+
+export function registerRelationEdgeDeleteHook(hook: RelationEdgeDeleteHook): void {
+  relationEdgeDeleteHooks.add(hook);
 }
 
 /** Awaits every registered create hook sequentially inside the caller's transaction, after a real insert (never an idempotent replay) — the first rejection propagates and rolls the insert back. */
@@ -91,6 +112,13 @@ export async function runRelationEdgeWriteHooks(context: RelationEdgeWriteHookCo
   }
 }
 
+/** Awaits every registered edge-delete hook sequentially inside the caller's transaction, before the edge is removed. */
+export async function runRelationEdgeDeleteHooks(context: RelationEdgeDeleteHookContext): Promise<void> {
+  for (const hook of relationEdgeDeleteHooks) {
+    await hook(context);
+  }
+}
+
 /** Test-only reset of every registry — guarded so it cannot run against a real process's hooks. */
 export function clearHooksForTests(): void {
   if (process.env.NODE_ENV !== "test") {
@@ -99,4 +127,5 @@ export function clearHooksForTests(): void {
   itemCreateHooks.clear();
   itemUpdateHooks.clear();
   relationEdgeWriteHooks.clear();
+  relationEdgeDeleteHooks.clear();
 }
