@@ -7,7 +7,7 @@ import { getCurrentTenantAiBudget } from "./tenantAiBudgetsStore.js";
 
 const AGENT_RUN_UNITS: readonly AgentRunUnit[] = ["invocation", "session"];
 
-/** A caller-supplied range wider than this would let one request scan the table unbounded. */
+/** Daily reports retain the existing range cap; monthly reports span account history. */
 const MAX_RANGE_DAYS = 366;
 
 export interface AiUsageReportInput {
@@ -15,6 +15,7 @@ export interface AiUsageReportInput {
   from: string;
   /** Exclusive upper bound, ISO 8601 timestamp. */
   to: string;
+  granularity?: "day" | "month";
 }
 
 export type NativeUnit = "tokens" | "audio_seconds";
@@ -55,6 +56,12 @@ export interface DailyTokenPoint {
   outputTokens: number;
 }
 
+export interface MonthlyCostPoint {
+  /** Calendar month in the tenant timezone, YYYY-MM. */
+  month: string;
+  costUsd: number;
+}
+
 export interface AiUsageReport {
   accountStartedAt: string;
   timezone: string;
@@ -64,14 +71,15 @@ export interface AiUsageReport {
   rows: AiUsageReportRow[];
   /** Total cost across every row, the one number that IS comparable regardless of native/run unit. */
   totalCostUsd: number;
-  /** One point per calendar day in [from, to), for the reference-line graph against dailyBudgetUsd. */
+  /** Daily granularity: one point per calendar day in [from, to); empty for monthly reports. */
   dailyCostUsd: DailyCostPoint[];
-  /** One point per calendar day in [from, to), for the token-usage graph — audio-only days show 0/0. */
+  /** Daily granularity: token counts per calendar day; empty for monthly reports. */
   dailyTokenUsage: DailyTokenPoint[];
+  monthlyCostUsd?: MonthlyCostPoint[];
   budgets: AiUsageBudgets;
 }
 
-function assertBoundedRange(from: string, to: string): { fromDate: Date; toDate: Date } {
+function assertRange(from: string, to: string, granularity: "day" | "month"): { fromDate: Date; toDate: Date } {
   const fromDate = new Date(from);
   const toDate = new Date(to);
   if (Number.isNaN(fromDate.getTime()))
@@ -79,7 +87,7 @@ function assertBoundedRange(from: string, to: string): { fromDate: Date; toDate:
   if (Number.isNaN(toDate.getTime())) throw new ValidationError(`'to' is not a valid date: ${to}`, { field: "to" });
   if (toDate <= fromDate) throw new ValidationError("'to' must be after 'from'", { field: "to" });
   const rangeDays = (toDate.getTime() - fromDate.getTime()) / 86_400_000;
-  if (rangeDays > MAX_RANGE_DAYS) {
+  if (granularity === "day" && rangeDays > MAX_RANGE_DAYS) {
     throw new ValidationError(`Date range cannot exceed ${MAX_RANGE_DAYS} days`, { field: "to" });
   }
   return { fromDate, toDate };
@@ -97,6 +105,11 @@ interface UsageRow {
   audio_seconds: string | null;
 }
 
+interface MonthlyRow {
+  month: string;
+  cost_usd: string;
+}
+
 interface DailyRow {
   day: string;
   cost_usd: string;
@@ -107,11 +120,12 @@ interface DailyRow {
 /**
  * The read model behind #121's utilization report: `ai_gateway_calls` aggregated by provider,
  * model, native unit (tokens vs audio_seconds), and the originating `agent_runs.unit`
- * (invocation/session, or null for a call outside any run), plus a daily cost series for the
- * budget reference line. Bounded to `MAX_RANGE_DAYS` so a caller can't force an unbounded scan.
+ * (invocation/session, or null for a call outside any run), plus a daily or monthly cost series.
+ * Daily ranges are capped at `MAX_RANGE_DAYS`; monthly points start no earlier than the account month.
  */
 export async function getAiUsageReport(client: Queryable, input: AiUsageReportInput): Promise<AiUsageReport> {
-  const { fromDate, toDate } = assertBoundedRange(input.from, input.to);
+  const granularity = input.granularity ?? "day";
+  const { fromDate, toDate } = assertRange(input.from, input.to, granularity);
   const timezone = await getSystemTimezone(client);
   const { rows: accountRows } = await client.query<{ account_started_at: Date | null }>(
     `SELECT LEAST(
@@ -152,8 +166,39 @@ export async function getAiUsageReport(client: Queryable, input: AiUsageReportIn
     audioSeconds: row.audio_seconds === null ? null : Number(row.audio_seconds),
   }));
 
-  const { rows: dailyRows } = await client.query<DailyRow>(
-    `WITH days AS (
+  let monthlyCostUsd: MonthlyCostPoint[] | undefined;
+  let dailyRows: DailyRow[] = [];
+  if (granularity === "month") {
+    const { rows: monthlyRows } = await client.query<MonthlyRow>(
+      `WITH months AS (
+         SELECT generate_series(
+           GREATEST(
+             date_trunc('month', $1::timestamptz AT TIME ZONE $3),
+             date_trunc('month', $4::timestamptz AT TIME ZONE $3)
+           ),
+           date_trunc('month', ($2::timestamptz - interval '1 microsecond') AT TIME ZONE $3),
+           interval '1 month'
+         ) AS month
+       ), monthly AS (
+         SELECT date_trunc('month', at AT TIME ZONE $3) AS month, SUM(cost_usd) AS cost_usd
+         FROM ai_gateway_calls
+         WHERE at >= $1 AND at < $2
+         GROUP BY 1
+       )
+       SELECT to_char(months.month, 'YYYY-MM') AS month, COALESCE(monthly.cost_usd, 0) AS cost_usd
+       FROM months LEFT JOIN monthly ON monthly.month = months.month
+       ORDER BY months.month`,
+      [
+        fromDate.toISOString(),
+        toDate.toISOString(),
+        timezone,
+        accountStartedAt?.toISOString() ?? fromDate.toISOString(),
+      ],
+    );
+    monthlyCostUsd = monthlyRows.map((row) => ({ month: row.month, costUsd: Number(row.cost_usd) }));
+  } else {
+    ({ rows: dailyRows } = await client.query<DailyRow>(
+      `WITH days AS (
        SELECT generate_series(
          date_trunc('day', $1::timestamptz AT TIME ZONE $3),
          date_trunc('day', ($2::timestamptz - interval '1 microsecond') AT TIME ZONE $3),
@@ -177,8 +222,9 @@ export async function getAiUsageReport(client: Queryable, input: AiUsageReportIn
        daily.output_tokens
      FROM days LEFT JOIN daily ON daily.day = days.day
      ORDER BY days.day`,
-    [fromDate.toISOString(), toDate.toISOString(), timezone],
-  );
+      [fromDate.toISOString(), toDate.toISOString(), timezone],
+    ));
+  }
 
   const dailyCostUsd: DailyCostPoint[] = dailyRows.map((row) => ({ day: row.day, costUsd: Number(row.cost_usd) }));
   const dailyTokenUsage: DailyTokenPoint[] = dailyRows.map((row) => ({
@@ -203,6 +249,7 @@ export async function getAiUsageReport(client: Queryable, input: AiUsageReportIn
     totalCostUsd,
     dailyCostUsd,
     dailyTokenUsage,
+    ...(monthlyCostUsd === undefined ? {} : { monthlyCostUsd }),
     budgets,
   };
 }
