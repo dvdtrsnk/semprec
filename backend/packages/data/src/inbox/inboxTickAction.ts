@@ -459,6 +459,7 @@ async function writeNeedsClarification(
       },
       { allowedSystemKeys: ["fingerprint", "proposal", "status", "history"] },
     );
+    await enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId);
     return;
   }
 
@@ -477,6 +478,7 @@ async function writeNeedsClarification(
     { allowedSystemKeys: ["kind", "fingerprint", "proposal", "history", "status"] },
   );
   await linkSourceInboxRelation(client, config, proposal.id, sourceItemId);
+  await enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId);
 }
 
 /**
@@ -586,6 +588,7 @@ async function reviseProposal(
   client: PoolClient,
   config: SemprecTickActionConfig,
   existing: ItemRow,
+  sourceItemId: string,
   fingerprint: string,
   envelope: ProposalEnvelope,
 ): Promise<void> {
@@ -606,6 +609,7 @@ async function reviseProposal(
     },
     { allowedSystemKeys: ["fingerprint", "proposal", "status", "history"] },
   );
+  await enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId);
 }
 
 /**
@@ -664,7 +668,7 @@ async function writeTickResult(
   }
 
   if (snapshot.existingProposal) {
-    await reviseProposal(client, config, snapshot.existingProposal, fingerprint, envelope);
+    await reviseProposal(client, config, snapshot.existingProposal, item.id, fingerprint, envelope);
     return;
   }
 
@@ -672,7 +676,7 @@ async function writeTickResult(
   // call — revise that one through the guarded path instead of creating a duplicate.
   const raceProposal = await findExistingProposal(client, config, item.id);
   if (raceProposal) {
-    await reviseProposal(client, config, raceProposal, fingerprint, envelope);
+    await reviseProposal(client, config, raceProposal, item.id, fingerprint, envelope);
     return;
   }
 
@@ -692,6 +696,7 @@ async function writeTickResult(
   );
 
   await linkSourceInboxRelation(client, config, proposal.id, item.id);
+  await enqueueJournalInboxRecomputeForInboxItem(client, item.id);
 }
 
 /**
