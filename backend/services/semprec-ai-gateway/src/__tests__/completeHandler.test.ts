@@ -4,6 +4,7 @@ import type { Pool } from "pg";
 import { createPool, seedSystem } from "@semprec/data";
 import { getTenantZeroId, resetDatabase, setTenantAiBudget } from "@semprec/data/testSupport";
 import { getTraceContext, runInTenant } from "@semprec/shared";
+import type { AiGatewayContentBlock, AiGatewayImageBlock, AiGatewayMessage } from "@semprec/shared";
 import { createDispatcher } from "../app.js";
 import { logger } from "../logger.js";
 import type { CompleteHandlerOptions } from "../completeHandler.js";
@@ -17,6 +18,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import type { PiMessagesHandlerOptions } from "../piMessagesHandler.js";
 import { createProjectItem } from "./projectItemFixture.js";
 import { GENEROUS_GLOBAL_CAPS } from "./globalCaps.js";
+import { createAnthropicStructuredProvider } from "../structuredProviders/anthropicProvider.js";
 /** This suite never reaches `/internal/pi/messages`; the dispatcher only needs the options to exist. */
 const FAKE_PI_OPTIONS: PiMessagesHandlerOptions = {
   internalToken: "test-internal-token",
@@ -60,6 +62,9 @@ const VALID_BODY = {
   },
 };
 
+const JPEG_BLOCK: AiGatewayImageBlock = { type: "image", mimeType: "image/jpeg", data: "/9j/2Q==" };
+const MIXED_BLOCKS: AiGatewayContentBlock[] = [{ type: "text", text: "Read this invoice" }, JPEG_BLOCK];
+
 class FakeProvider implements StructuredCompletionProvider {
   id = "fake-provider";
   supportsJsonSchemaStructuredOutput = true;
@@ -67,6 +72,7 @@ class FakeProvider implements StructuredCompletionProvider {
   response: unknown = { contradictions: ["one"] };
   usage = { inputTokens: 100, outputTokens: 40 };
   failure: Error | null = null;
+  beforeResponse: (() => Promise<void>) | null = null;
   /** When set, the call never resolves and rejects only once `request.signal` aborts, as a real adapter's `fetch` would. */
   gatedUntilAbort = false;
   /** Captures the trace context active while the provider call runs, for issue #167's assertions. */
@@ -75,6 +81,7 @@ class FakeProvider implements StructuredCompletionProvider {
   async complete(request: StructuredCompletionRequest) {
     this.calls.push(request);
     this.observedTraceIds.push(getTraceContext()?.traceId);
+    if (this.beforeResponse) await this.beforeResponse();
     if (this.failure) throw this.failure;
     if (this.gatedUntilAbort) {
       await new Promise<never>((_resolve, reject) => {
@@ -147,11 +154,292 @@ describe("POST /internal/complete", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("dispatches text and JPEG blocks through the real Anthropic adapter and records real usage", async () => {
+    const actualFetch = globalThis.fetch;
+    const outgoing: unknown[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      if (input !== "https://api.anthropic.com/v1/messages") return actualFetch(input, init);
+      if (typeof init?.body !== "string") throw new Error("Expected a JSON provider request");
+      const body: unknown = JSON.parse(init.body);
+      outgoing.push(body);
+      return new Response(
+        JSON.stringify({
+          content: [{ type: "tool_use", input: { contradictions: [] } }],
+          usage: { input_tokens: 1750, output_tokens: 25 },
+        }),
+      );
+    });
+    startServer(createAnthropicStructuredProvider("test-api-key"));
+    await listen();
+
+    const res = await post("/internal/complete", {
+      ...VALID_BODY,
+      messages: [{ role: "user", content: MIXED_BLOCKS }],
+    });
+
+    expect(res.status).toBe(200);
+    const body: unknown = await res.json();
+    expect(body).toEqual({ content: { contradictions: [] }, usage: { inputTokens: 1750, outputTokens: 25 } });
+    expect(outgoing).toHaveLength(1);
+    expect(outgoing[0]).toMatchObject({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Read this invoice" },
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: JPEG_BLOCK.data } },
+          ],
+        },
+      ],
+    });
+    const { rows } = await pool.query<{
+      provider: string;
+      status: string;
+      input_tokens: number;
+      output_tokens: number;
+      cost_usd: string;
+    }>("SELECT provider, status, input_tokens, output_tokens, cost_usd FROM ai_gateway_calls");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ provider: "anthropic", status: "settled", input_tokens: 1750, output_tokens: 25 });
+    expect(Number(rows[0]?.cost_usd)).toBeCloseTo((1750 * 3 + 25 * 15) / 1_000_000, 10);
+  });
+
+  it("reserves text plus 1600 tokens for each image across messages, then settles actual usage", async () => {
+    const provider = new FakeProvider();
+    const reservations: { status: string; cost_usd: string }[] = [];
+    provider.beforeResponse = async () => {
+      const { rows } = await pool.query<{ status: string; cost_usd: string }>(
+        "SELECT status, cost_usd FROM ai_gateway_calls",
+      );
+      reservations.push(...rows);
+    };
+    startServer(provider);
+    await listen();
+    const messages: AiGatewayMessage[] = [
+      { role: "user", content: MIXED_BLOCKS },
+      { role: "assistant", content: "Please send the second page" },
+      { role: "user", content: [JPEG_BLOCK, { type: "text", text: "Second page" }] },
+    ];
+
+    const res = await post("/internal/complete", { ...VALID_BODY, messages });
+
+    expect(res.status).toBe(200);
+    expect(provider.calls).toHaveLength(1);
+    expect(provider.calls[0]?.messages).toEqual(messages);
+    const textTokens = Math.ceil(
+      (VALID_BODY.system.length +
+        "Read this invoice".length +
+        "Please send the second page".length +
+        "Second page".length +
+        JSON.stringify(VALID_BODY.responseSchema).length) /
+        4,
+    );
+    expect(reservations).toHaveLength(1);
+    expect(reservations[0]?.status).toBe("reserved");
+    expect(Number(reservations[0]?.cost_usd)).toBeCloseTo(((textTokens + 3200) * 3 + 4096 * 15) / 1_000_000, 10);
+    const { rows } = await pool.query<{
+      status: string;
+      input_tokens: number;
+      output_tokens: number;
+      cost_usd: string;
+    }>("SELECT status, input_tokens, output_tokens, cost_usd FROM ai_gateway_calls");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: "settled", input_tokens: 100, output_tokens: 40 });
+    expect(Number(rows[0]?.cost_usd)).toBeCloseTo((100 * 3 + 40 * 15) / 1_000_000, 10);
+  });
+
+  it.each([
+    [
+      "fifth image across messages",
+      [
+        { role: "user", content: [JPEG_BLOCK, JPEG_BLOCK, JPEG_BLOCK] },
+        { role: "user", content: [JPEG_BLOCK, JPEG_BLOCK] },
+      ],
+    ],
+    ["GIF", [{ role: "user", content: [{ ...JPEG_BLOCK, mimeType: "image/gif" }] }]],
+    ["invalid base64 characters", [{ role: "user", content: [{ ...JPEG_BLOCK, data: "!!!!" }] }]],
+    ["invalid base64 padding", [{ role: "user", content: [{ ...JPEG_BLOCK, data: "YQ=" }] }]],
+    ["non-canonical base64 padding bits", [{ role: "user", content: [{ ...JPEG_BLOCK, data: "YR==" }] }]],
+    ["empty image", [{ role: "user", content: [{ ...JPEG_BLOCK, data: "" }] }]],
+    [
+      "image above 1.5 MiB",
+      [{ role: "user", content: [{ ...JPEG_BLOCK, data: Buffer.alloc(1.5 * 1024 * 1024 + 1).toString("base64") }] }],
+    ],
+    ["non-string image data", [{ role: "user", content: [{ ...JPEG_BLOCK, data: 123 }] }]],
+    ["missing image MIME", [{ role: "user", content: [{ type: "image", data: JPEG_BLOCK.data }] }]],
+    ["unsupported block type", [{ role: "user", content: [{ type: "audio", data: JPEG_BLOCK.data }] }]],
+    ["non-string text", [{ role: "user", content: [{ type: "text", text: 123 }] }]],
+    ["null block", [{ role: "user", content: [null] }]],
+    ["missing block type", [{ role: "user", content: [{ text: "hello" }] }]],
+    ["empty blocks", [{ role: "user", content: [] }]],
+    ["invalid block-message role", [{ role: "system", content: MIXED_BLOCKS }]],
+  ])("rejects %s before reserving or calling the provider", async (_label, messages) => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", { ...VALID_BODY, messages });
+
+    expect(res.status).toBe(400);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ code: "validation_failed", details: { field: "messages" } });
+    expect(provider.calls).toEqual([]);
+    const { rows } = await pool.query<{ status: string }>("SELECT status FROM ai_gateway_calls");
+    expect(rows).toEqual([]);
+  });
+
+  it.each(["image/jpeg", "image/png"] as const)(
+    "accepts a %s image exactly at the decoded limit above the text body cap",
+    async (mimeType) => {
+      const provider = new FakeProvider();
+      startServer(provider);
+      await listen();
+      const content: AiGatewayContentBlock[] = [
+        { type: "image", mimeType, data: Buffer.alloc(1.5 * 1024 * 1024).toString("base64") },
+      ];
+      const request = { ...VALID_BODY, messages: [{ role: "user", content }] };
+      expect(Buffer.byteLength(JSON.stringify(request))).toBeGreaterThan(1024 * 1024);
+
+      const res = await post("/internal/complete", request);
+
+      expect(res.status).toBe(200);
+      expect(provider.calls).toHaveLength(1);
+      expect(provider.calls[0]?.messages).toEqual(request.messages);
+    },
+  );
+
+  it("accepts four images within the 8 MiB body cap", async () => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+    const messages = [{ role: "user", content: [JPEG_BLOCK, JPEG_BLOCK, JPEG_BLOCK, JPEG_BLOCK] }];
+
+    const res = await post("/internal/complete", { ...VALID_BODY, messages });
+
+    expect(res.status).toBe(200);
+    expect(provider.calls).toHaveLength(1);
+    expect(provider.calls[0]?.messages).toEqual(messages);
+  });
+
+  it.each([
+    "agent_guidance_drift",
+    "inbox_proposal",
+    "inbox_attachment_extraction",
+    "transcript_event_pick",
+    "transcript_summary",
+    "transcript_speaker_suggestion",
+  ])("accepts image content for %s", async (operation) => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+    const projectItemId = operation.startsWith("transcript_") ? null : VALID_BODY.projectItemId;
+
+    const res = await post("/internal/complete", {
+      ...VALID_BODY,
+      operation,
+      projectItemId,
+      messages: [{ role: "user", content: MIXED_BLOCKS }],
+    });
+
+    expect(res.status).toBe(200);
+    expect(provider.calls).toHaveLength(1);
+    expect(provider.calls[0]?.messages).toEqual([{ role: "user", content: MIXED_BLOCKS }]);
+    const { rows } = await pool.query<{ operation: string; project_item_id: string | null }>(
+      "SELECT operation, project_item_id FROM ai_gateway_calls",
+    );
+    expect(rows).toEqual([{ operation, project_item_id: projectItemId }]);
+  });
+
+  it.each([false, true])("accepts a body exactly at its conditional byte cap (image: %s)", async (withImage) => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+    const messages: AiGatewayMessage[] = withImage
+      ? [{ role: "user", content: [JPEG_BLOCK] }]
+      : [{ role: "user", content: "" }];
+    const request = { ...VALID_BODY, messages };
+    const cap = (withImage ? 8 : 1) * 1024 * 1024;
+    request.system += "x".repeat(cap - Buffer.byteLength(JSON.stringify(request)));
+    expect(Buffer.byteLength(JSON.stringify(request))).toBe(cap);
+
+    const res = await post("/internal/complete", request);
+
+    expect(res.status).toBe(200);
+    expect(provider.calls).toHaveLength(1);
+  });
+
+  it.each([
+    ["string-only", [{ role: "user", content: "x".repeat(1024 * 1024) }]],
+    ["text blocks only", [{ role: "user", content: [{ type: "text", text: "x".repeat(1024 * 1024) }] }]],
+    [
+      "9 MiB image-bearing body",
+      [{ role: "user", content: [{ type: "text", text: "x".repeat(9 * 1024 * 1024) }, JPEG_BLOCK] }],
+    ],
+    ["UTF-8 bytes above 1 MiB", [{ role: "user", content: "é".repeat(600 * 1024) }]],
+  ])("rejects %s with 413 and no side effects", async (_label, messages) => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", { ...VALID_BODY, messages });
+
+    expect(res.status).toBe(413);
+    expect(provider.calls).toEqual([]);
+    const { rows } = await pool.query<{ status: string }>("SELECT status FROM ai_gateway_calls");
+    expect(rows).toEqual([]);
+  });
+
+  it("refuses an image request when the tenant budget is exhausted without reserving", async () => {
+    await setTenantAiBudget(pool, getTenantZeroId(), { dailyCapUsd: 0, monthlyCapUsd: null });
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", {
+      ...VALID_BODY,
+      messages: [{ role: "user", content: MIXED_BLOCKS }],
+    });
+
+    expect(res.status).toBe(403);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ code: "budget_exceeded" });
+    expect(provider.calls).toEqual([]);
+    const { rows } = await pool.query<{ status: string }>("SELECT status FROM ai_gateway_calls");
+    expect(rows).toEqual([]);
+  });
+
+  it("marks an image request failed at zero cost when the provider fails", async () => {
+    const provider = new FakeProvider();
+    provider.failure = new ProviderCallError("image provider transport failed");
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", {
+      ...VALID_BODY,
+      messages: [{ role: "user", content: MIXED_BLOCKS }],
+    });
+
+    expect(res.status).toBe(502);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ code: "provider_failed" });
+    expect(provider.calls).toHaveLength(1);
+    const { rows } = await pool.query<{
+      status: string;
+      cost_usd: string;
+      input_tokens: number | null;
+      output_tokens: number | null;
+    }>("SELECT status, cost_usd, input_tokens, output_tokens FROM ai_gateway_calls");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: "failed", input_tokens: null, output_tokens: null });
+    expect(Number(rows[0]?.cost_usd)).toBe(0);
   });
 
   it("rejects a missing bearer token with 401 and never calls the provider", async () => {
@@ -394,6 +682,7 @@ describe("POST /internal/complete", () => {
     expect(json).toEqual({ content: { contradictions: ["one"] }, usage: { inputTokens: 100, outputTokens: 40 } });
     expect(provider.calls).toHaveLength(1);
     expect(provider.calls[0]?.model).toBe("fake-model");
+    expect(provider.calls[0]?.messages).toEqual(VALID_BODY.messages);
 
     const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
     expect(rows).toHaveLength(1);

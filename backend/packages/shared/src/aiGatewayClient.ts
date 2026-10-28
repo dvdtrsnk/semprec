@@ -6,10 +6,24 @@
  * reaches a provider.
  */
 
+export interface AiGatewayTextBlock {
+  type: "text";
+  text: string;
+}
+
+export interface AiGatewayImageBlock {
+  type: "image";
+  mimeType: "image/jpeg" | "image/png";
+  /** Base64-encoded image bytes, up to 1.5 MiB decoded. */
+  data: string;
+}
+
+export type AiGatewayContentBlock = AiGatewayTextBlock | AiGatewayImageBlock;
+
 /** A single turn in the conversation sent to the gateway's structured-completion route. */
 export interface AiGatewayMessage {
   role: "user" | "assistant";
-  content: string;
+  content: string | AiGatewayContentBlock[];
 }
 
 export interface AiGatewayCompletionInput {

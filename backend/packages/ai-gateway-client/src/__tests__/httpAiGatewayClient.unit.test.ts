@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AiGatewayFailedError, runAsSystem, runInTenant, withTraceContext } from "@semprec/shared";
+import type { AiGatewayCompletionInput } from "@semprec/shared";
 import { createHttpAiGatewayClient } from "../httpAiGatewayClient.js";
 
 const INPUT = {
@@ -14,6 +15,37 @@ const INPUT = {
 describe("createHttpAiGatewayClient", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("serializes text and image blocks in a request larger than 1 MiB", async () => {
+    const input: AiGatewayCompletionInput = {
+      ...INPUT,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Read this invoice" },
+            { type: "image", mimeType: "image/jpeg", data: Buffer.alloc(1024 * 1024).toString("base64") },
+          ],
+        },
+      ],
+    };
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      if (typeof init.body !== "string") throw new Error("Expected a JSON request body");
+      const body: unknown = JSON.parse(init.body);
+      expect(body).toEqual(input);
+      expect(Buffer.byteLength(init.body)).toBeGreaterThan(1024 * 1024);
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      return new Response(JSON.stringify({ content: { ok: true }, usage: { inputTokens: 1700, outputTokens: 5 } }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpAiGatewayClient({ port: 4100, token: "secret-token" });
+    await expect(client.complete(input)).resolves.toEqual({
+      content: { ok: true },
+      usage: { inputTokens: 1700, outputTokens: 5 },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("posts to the gateway's /internal/complete with a bearer token and returns content/usage", async () => {

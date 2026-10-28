@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProviderCallError } from "../types.js";
+import type { StructuredCompletionMessage } from "../types.js";
 import { createAnthropicStructuredProvider } from "../anthropicProvider.js";
 
 const REQUEST = {
@@ -40,6 +41,51 @@ describe("createAnthropicStructuredProvider", () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it.each<StructuredCompletionMessage[]>([
+    [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "ready" },
+    ],
+    [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Read this" },
+          { type: "image", mimeType: "image/jpeg", data: "/9j/2Q==" },
+          { type: "image", mimeType: "image/png", data: "iVBORw==" },
+        ],
+      },
+    ],
+  ])("maps message content to the Anthropic format: %j", async (...messages) => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      if (typeof init.body !== "string") throw new Error("Expected a JSON request body");
+      const body: unknown = JSON.parse(init.body);
+      expect(body).toMatchObject({
+        messages: messages.map((message) => ({
+          role: message.role,
+          content:
+            typeof message.content === "string"
+              ? message.content
+              : [
+                  { type: "text", text: "Read this" },
+                  { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "/9j/2Q==" } },
+                  { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw==" } },
+                ],
+        })),
+      });
+      return successResponse();
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = createAnthropicStructuredProvider("test-api-key");
+    await expect(provider.complete({ ...REQUEST, messages })).resolves.toEqual({
+      content: { ok: true },
+      inputTokens: 1,
+      outputTokens: 1,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("throws ProviderCallError, not a TypeError, when the 200 response body has no content array", async () => {

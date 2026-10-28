@@ -104,7 +104,11 @@ class FakeSummaryClient implements AiGatewayClientPort {
     if (this.failure) throw this.failure;
     if (input.operation === "transcript_speaker_suggestion")
       return { content: { mappings: this.speakerMappings }, usage: { inputTokens: 10, outputTokens: 5 } };
-    const instruction = input.messages[0]?.content.split("\n")[1] ?? "";
+    const content = input.messages[0]?.content;
+    if (content !== undefined && typeof content !== "string") {
+      throw new Error("Expected a text-only transcription summary request");
+    }
+    const instruction = content?.split("\n")[1] ?? "";
     return { content: { summary: `summary for: ${instruction}` }, usage: { inputTokens: 10, outputTokens: 5 } };
   }
 }

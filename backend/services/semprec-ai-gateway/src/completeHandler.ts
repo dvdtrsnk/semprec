@@ -3,7 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { Pool } from "pg";
 import { ChokePointError, ValidationError } from "@semprec/data";
 import { BudgetExceededError, complete, type GlobalAiCaps } from "@semprec/ai-gateway";
-import { withTraceContext } from "@semprec/shared";
+import { withTraceContext, type AiGatewayContentBlock } from "@semprec/shared";
 import { compileResponseSchema, InvalidResponseSchemaError } from "./schemaValidation.js";
 import {
   ProviderCallError,
@@ -38,8 +38,12 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
  */
 const RESERVED_OUTPUT_TOKENS = 4096;
 
-/** Overall request body cap: generously above the 64 KiB `responseSchema` bound alone allows for prompt/messages content. */
+/** Text-only requests retain their original cap; validated image requests may use the larger cap. */
 const MAX_BODY_BYTES = 1024 * 1024;
+const MAX_IMAGE_BODY_BYTES = 8 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 1.5 * 1024 * 1024;
+const MAX_IMAGES = 4;
+const RESERVED_IMAGE_TOKENS = 1600;
 
 export interface CompleteHandlerOptions {
   /** Compared against the caller's `Authorization: Bearer <token>` header. */
@@ -69,17 +73,18 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 
 class PayloadTooLargeError extends Error {}
 
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+async function readJsonBody(req: IncomingMessage): Promise<{ raw: unknown; size: number }> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     const buf = chunk as Buffer;
     size += buf.length;
-    if (size > MAX_BODY_BYTES) throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
+    if (size > MAX_IMAGE_BODY_BYTES) throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
     chunks.push(buf);
   }
   try {
-    return JSON.parse(chunks.length === 0 ? "{}" : Buffer.concat(chunks).toString("utf8"));
+    const raw: unknown = JSON.parse(chunks.length === 0 ? "{}" : Buffer.concat(chunks).toString("utf8"));
+    return { raw, size };
   } catch {
     throw new ValidationError("Request body is not valid JSON");
   }
@@ -109,12 +114,47 @@ function extractTraceId(req: IncomingMessage): string | undefined {
   return value !== undefined && UUID_PATTERN.test(value) ? value : undefined;
 }
 
-function isStructuredCompletionMessage(value: unknown): value is StructuredCompletionMessage {
+function isStructuredCompletionMessage(value: unknown): value is StructuredCompletionMessage & { content: string } {
   return (
     typeof value === "object" &&
     value !== null &&
-    ((value as { role?: unknown }).role === "user" || (value as { role?: unknown }).role === "assistant") &&
-    typeof (value as { content?: unknown }).content === "string"
+    "role" in value &&
+    (value.role === "user" || value.role === "assistant") &&
+    "content" in value &&
+    typeof value.content === "string"
+  );
+}
+
+function isContentBlock(value: unknown): value is AiGatewayContentBlock {
+  if (typeof value !== "object" || value === null || !("type" in value)) return false;
+  if (value.type === "text") return "text" in value && typeof value.text === "string";
+  if (
+    value.type !== "image" ||
+    !("mimeType" in value) ||
+    (value.mimeType !== "image/jpeg" && value.mimeType !== "image/png") ||
+    !("data" in value) ||
+    typeof value.data !== "string" ||
+    value.data.length === 0 ||
+    value.data.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(value.data) ||
+    Buffer.byteLength(value.data, "base64") > MAX_IMAGE_BYTES
+  ) {
+    return false;
+  }
+  // Buffer.from is permissive; round-tripping also rejects non-canonical padding bits.
+  return Buffer.from(value.data, "base64").toString("base64") === value.data;
+}
+
+function isBlockMessage(value: unknown): value is StructuredCompletionMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "role" in value &&
+    (value.role === "user" || value.role === "assistant") &&
+    "content" in value &&
+    Array.isArray(value.content) &&
+    value.content.length > 0 &&
+    value.content.every(isContentBlock)
   );
 }
 
@@ -157,7 +197,7 @@ function validateBody(raw: unknown): CompleteRequestBody {
   if (
     !Array.isArray(body.messages) ||
     body.messages.length === 0 ||
-    !body.messages.every(isStructuredCompletionMessage)
+    !body.messages.every((message) => isStructuredCompletionMessage(message) || isBlockMessage(message))
   ) {
     throw new ValidationError("'messages' must be a non-empty array of { role, content }", { field: "messages" });
   }
@@ -204,8 +244,26 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
 
       const tenantId = readCallerTenantId(req);
       await runForCallerTenant(tenantId, async () => {
-        const rawBody = await readJsonBody(req);
-        const body = validateBody(rawBody);
+        const { raw, size } = await readJsonBody(req);
+        const body = validateBody(raw);
+        let imageCount = 0;
+        let textLength = body.system.length + JSON.stringify(body.responseSchema).length;
+        for (const message of body.messages) {
+          if (typeof message.content === "string") {
+            textLength += message.content.length;
+          } else {
+            for (const block of message.content) {
+              if (block.type === "text") textLength += block.text.length;
+              else imageCount += 1;
+            }
+          }
+        }
+        if (imageCount > MAX_IMAGES) {
+          throw new ValidationError("'messages' may contain at most 4 images", { field: "messages" });
+        }
+        if (imageCount === 0 && size > MAX_BODY_BYTES) {
+          throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
+        }
 
         let validateResponse;
         try {
@@ -217,14 +275,9 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
           throw err;
         }
 
-        // #620: a rough upper bound (about 4 characters per token for the input, the full output
-        // cap) reserved against the budget before the call and replaced by the real cost on settle.
-        const estimatedInputTokens = Math.ceil(
-          (body.system.length +
-            body.messages.reduce((sum, message) => sum + message.content.length, 0) +
-            JSON.stringify(body.responseSchema).length) /
-            4,
-        );
+        // Reserve the text estimate, 1600 tokens per image and the full output cap before the
+        // call; settle replaces this estimate with the provider's reported usage.
+        const estimatedInputTokens = Math.ceil(textLength / 4) + imageCount * RESERVED_IMAGE_TOKENS;
         const estimatedCostUsd =
           (estimatedInputTokens / 1_000_000) * options.pricePerMillionInputTokens +
           (RESERVED_OUTPUT_TOKENS / 1_000_000) * options.pricePerMillionOutputTokens;

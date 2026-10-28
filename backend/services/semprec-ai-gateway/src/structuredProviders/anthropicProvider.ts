@@ -121,7 +121,20 @@ export function createAnthropicStructuredProvider(apiKey: string): StructuredCom
         max_tokens: MAX_OUTPUT_TOKENS,
         temperature: request.temperature,
         system: request.system,
-        messages: request.messages,
+        messages: request.messages.map((message) => ({
+          role: message.role,
+          content:
+            typeof message.content === "string"
+              ? message.content
+              : message.content.map((block) =>
+                  block.type === "text"
+                    ? { type: "text", text: block.text }
+                    : {
+                        type: "image",
+                        source: { type: "base64", media_type: block.mimeType, data: block.data },
+                      },
+                ),
+        })),
         tools: [
           {
             name: STRUCTURED_OUTPUT_TOOL_NAME,

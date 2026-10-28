@@ -1,3 +1,5 @@
+import type { AiGatewayContentBlock } from "@semprec/shared";
+
 /**
  * Issue #215: the registry of providers `POST /internal/complete` may dispatch to. Kept inside
  * `semprec-ai-gateway` — never `packages/ai-gateway` or any other package — so no model-provider
@@ -6,7 +8,7 @@
 
 export interface StructuredCompletionMessage {
   role: "user" | "assistant";
-  content: string;
+  content: string | AiGatewayContentBlock[];
 }
 
 export interface StructuredCompletionRequest {

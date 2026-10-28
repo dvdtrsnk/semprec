@@ -15,9 +15,8 @@ const TENANT_ID_HEADER = "x-semprec-tenant-id";
 const REQUEST_TIMEOUT_MS = 60_000;
 
 /**
- * This is a loopback round trip to a process whose own request cap (`MAX_BODY_BYTES` in
- * `completeHandler.ts`) is 1 MiB, so the response can't legitimately exceed that either — cap it
- * the same way rather than buffering an unbounded or malformed response into memory.
+ * Cap structured output independently of the request: image-bearing requests may carry up to
+ * 8 MiB, while responses keep their existing 1 MiB limit.
  */
 const MAX_RESPONSE_BODY_BYTES = 1024 * 1024;
 
