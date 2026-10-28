@@ -10,11 +10,21 @@ import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import type { DatabaseRow } from "../types.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
+import { findDependenciesBySourceDatabase } from "../rollup/dependencies.js";
+import { enqueueRollupBackfill } from "../rollup/recompute.js";
 import * as databasesStore from "./databasesStore.js";
+
+/** Archive and restore change which items the rollups over this database count; recount each in the same transaction via its idempotent full job. */
+async function enqueueDependentRollupRecomputes(client: PoolClient, sourceDatabaseId: string): Promise<void> {
+  for (const dependency of await findDependenciesBySourceDatabase(client, sourceDatabaseId)) {
+    await enqueueRollupBackfill(client, dependency.rollupPropertyId);
+  }
+}
 
 /**
  * Transaction-scoped counterpart to `chokePoint.archiveDatabase` (issue #89): `databasesStore.archiveDatabase`
- * already takes a `client` rather than opening its own transaction, so this is a thin named alias —
+ * already takes a `client` rather than opening its own transaction, so this is a named wrapper that also
+ * enqueues the dependent rollup full jobs in the same transaction (via `enqueueDependentRollupRecomputes`) —
  * one of the five approval-gated destructive `*WithClient` exports, one per operation, each exported from
  * its own operation module (`databaseOps.ts`, `viewOps.ts`, `propertyOps.ts`, `itemTrash.ts`,
  * `relationOps.ts`), so `ApprovedOperationExecutor` has one uniform naming convention to call the
@@ -26,6 +36,7 @@ export async function databaseArchiveWithClient(
   actingUserId?: string,
 ): Promise<DatabaseRow> {
   const database = await databasesStore.archiveDatabase(client, id);
+  await enqueueDependentRollupRecomputes(client, database.id);
   runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }));
   return database;
 }
@@ -48,6 +59,7 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool">) {
     async restoreDatabase(id: string, actingUserId?: string): Promise<DatabaseRow> {
       return withTransaction(pool, async (client) => {
         const database = await databasesStore.restoreDatabase(client, id);
+        await enqueueDependentRollupRecomputes(client, database.id);
         runAfterCommit(client, () =>
           notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
         );

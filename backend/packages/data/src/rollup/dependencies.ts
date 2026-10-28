@@ -71,6 +71,19 @@ export async function findDependenciesBySource(
   return rows.map(mapRow);
 }
 
+/** Archive and restore of a database: which rollups aggregate its items. Zero rows is the common case. */
+export async function findDependenciesBySourceDatabase(
+  client: PoolClient,
+  sourceDatabaseId: string,
+): Promise<RollupDependencyRow[]> {
+  const { rows } = await client.query<RollupDependencyDbRow>(
+    `SELECT rollup_property_id, relation_definition_id, source_database_id, source_property_key
+     FROM rollup_dependencies WHERE source_database_id = $1`,
+    [sourceDatabaseId],
+  );
+  return rows.map(mapRow);
+}
+
 export async function getRollupDependency(
   client: PoolClient,
   rollupPropertyId: string,
