@@ -36,7 +36,15 @@ export const manifest: ModuleManifest = {
   databases: [
     { key: MAILBOXES_MODULE_ID, name: "Mailboxes" },
     { key: FOLDERS_MODULE_ID, name: "Folders" },
-    { key: EMAILS_MODULE_ID, name: "Emails" },
+    {
+      key: EMAILS_MODULE_ID,
+      name: "Emails",
+      icon: "envelope",
+      color: "#007AFF",
+      overviewOrder: null,
+      switcherOrder: null,
+      clientVisible: true,
+    },
   ],
   capabilities: [],
   agentTools: [],

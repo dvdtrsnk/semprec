@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import { resolveCatalogLabel, type ModuleCatalogs, type ModuleRegistry } from "@semprec/module-registry";
 import { listAllDatabases } from "../chokePoint/databasesStore.js";
 import { listPropertiesByDatabases } from "../chokePoint/propertiesStore.js";
+import { createCollectionMetadataResolver } from "./collectionMetadata.js";
 import {
   createCatalogResolver,
   resolveDatabaseName,
@@ -15,6 +16,11 @@ export interface SchemaDatabaseProjection {
   /** The stable canonical key (issue #235/#147) — `null` for a user-authored database, which has no catalog entry and never will. */
   key: string | null;
   name: string;
+  icon: string | null;
+  color: string | null;
+  overviewOrder: number | null;
+  switcherOrder: number | null;
+  clientVisible: boolean;
   properties: ResolvedProperty[];
 }
 
@@ -64,6 +70,7 @@ export async function generateSchemaProjection(
 ): Promise<SchemaProjection> {
   const locale = options.locale ?? "en";
   const catalogResolver = await createCatalogResolver(moduleRegistry);
+  const metadataResolver = await createCollectionMetadataResolver(moduleRegistry);
 
   const databaseRows = await listAllDatabases(client);
   // One batch query for every database's properties (issue #147 review: the naive per-database
@@ -80,6 +87,7 @@ export async function generateSchemaProjection(
       databaseId: db.id,
       key: db.key,
       name: resolveDatabaseName(db.name, db.key, db.id, catalogs, locale),
+      ...metadataResolver.resolve(db),
       properties: properties.map((p) => resolveProperty(p, db.key, catalogs, locale)),
     });
   }

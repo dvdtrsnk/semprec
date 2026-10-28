@@ -50,6 +50,16 @@ export interface ModuleDatabaseDescriptor {
   defaultViewType?: string;
   /** Searchable property keys; absent uses the generic text and select-label rule. Unknown keys are ignored. */
   searchFields?: string[];
+  /** Icon name, lowercase kebab-case. Absent means the database declares no icon. */
+  icon?: string;
+  /** Color as `#RRGGBB`. Absent means the database declares no color. */
+  color?: string;
+  /** 1-based position in the client overview; `null` or absent means not in that list. */
+  overviewOrder?: number | null;
+  /** 1-based position in the client collection switcher; `null` or absent means not in that list. */
+  switcherOrder?: number | null;
+  /** Shows a database in neither list to clients anyway; only `true` has an effect. */
+  clientVisible?: boolean;
 }
 
 /**
@@ -150,6 +160,17 @@ const moduleDatabaseDescriptorSchema = z.object({
   name: z.string().min(1),
   defaultViewType: z.string().min(1).optional(),
   searchFields: z.array(z.string().min(1)).max(1000).optional(),
+  icon: z
+    .string()
+    .regex(/^[a-z][a-z0-9-]{0,63}$/)
+    .optional(),
+  color: z
+    .string()
+    .regex(/^#[0-9A-Fa-f]{6}$/)
+    .optional(),
+  overviewOrder: z.number().int().positive().nullable().optional(),
+  switcherOrder: z.number().int().positive().nullable().optional(),
+  clientVisible: z.boolean().optional(),
 });
 
 const moduleDataMigrationDescriptorSchema = z.object({

@@ -12,6 +12,11 @@ export interface ModuleDatabaseProjection {
   name: string;
   defaultViewType?: string;
   searchFields?: string[];
+  icon?: string;
+  color?: string;
+  overviewOrder?: number | null;
+  switcherOrder?: number | null;
+  clientVisible?: boolean;
 }
 
 export interface ModuleAgentToolProjection {
@@ -430,6 +435,11 @@ export class ModuleRegistry {
         name: db.name,
         ...(db.defaultViewType !== undefined ? { defaultViewType: db.defaultViewType } : {}),
         ...(db.searchFields !== undefined ? { searchFields: [...db.searchFields] } : {}),
+        ...(db.icon !== undefined ? { icon: db.icon } : {}),
+        ...(db.color !== undefined ? { color: db.color } : {}),
+        ...(db.overviewOrder !== undefined ? { overviewOrder: db.overviewOrder } : {}),
+        ...(db.switcherOrder !== undefined ? { switcherOrder: db.switcherOrder } : {}),
+        ...(db.clientVisible !== undefined ? { clientVisible: db.clientVisible } : {}),
       })),
     );
   }

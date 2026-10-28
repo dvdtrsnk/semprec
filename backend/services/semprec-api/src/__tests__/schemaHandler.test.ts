@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
 import {
+  createChokePoint,
   createUser,
   createViewTypeRegistry,
   hashPassword,
@@ -31,7 +32,16 @@ async function authHeader(locale?: string): Promise<{ Authorization: string }> {
 }
 
 interface SchemaProjectionBody {
-  databases: { databaseId: string; key: string | null; name: string }[];
+  databases: {
+    databaseId: string;
+    key: string | null;
+    name: string;
+    icon: string | null;
+    color: string | null;
+    overviewOrder: number | null;
+    switcherOrder: number | null;
+    clientVisible: boolean;
+  }[];
   viewTypes: { key: string; name: string }[];
   agentTools: { moduleId: string; name: string; label: string }[];
 }
@@ -105,6 +115,34 @@ describe("createSchemaRequestListener (issue #147)", () => {
     expect(tasks?.name).toBe("Úkoly");
     const journal = body.databases.find((db) => db.key === "journal");
     expect(journal?.name).toBe("Deník");
+  });
+
+  it("carries the collection metadata fields on every database", async () => {
+    const custom = await createChokePoint(pool).createDatabase({ name: "Custom" });
+    const res = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader("en") });
+    const body = (await res.json()) as SchemaProjectionBody;
+
+    expect(body.databases.find((db) => db.key === "projects")).toMatchObject({
+      icon: "folder",
+      color: "#007AFF",
+      overviewOrder: 1,
+      switcherOrder: 1,
+      clientVisible: true,
+    });
+    expect(body.databases.find((db) => db.key === "tasks")).toMatchObject({ overviewOrder: null, switcherOrder: 2 });
+    expect(body.databases.find((db) => db.key === "areas")).toMatchObject({
+      icon: "compass",
+      overviewOrder: null,
+      switcherOrder: null,
+      clientVisible: true,
+    });
+    expect(body.databases.find((db) => db.databaseId === custom.id)).toMatchObject({
+      icon: null,
+      color: null,
+      overviewOrder: null,
+      switcherOrder: null,
+      clientVisible: true,
+    });
   });
 
   it("resolves the same databases' names in en for a different locale", async () => {
