@@ -136,7 +136,18 @@ export async function generatePermissionManifest(
     const catalogs = await catalogResolver.getCatalogsForDbKey(db.key);
 
     const dbName = resolveDatabaseName(db.name, db.key, db.id, catalogs, locale);
-    const manifestProperties: ManifestProperty[] = properties.map((p) => resolveProperty(p, db.key, catalogs, locale));
+    const manifestProperties: ManifestProperty[] = properties.map((p) => {
+      // The manifest keeps its pre-#1360 shape: id, type, filterable and the typed config belong to /api/schema.
+      const { key, name, owner, locked, options, config } = resolveProperty(p, db.key, catalogs, locale);
+      return {
+        key,
+        name,
+        owner,
+        locked,
+        ...(options ? { options } : {}),
+        ...(Object.hasOwn(config, "default") ? { config: { default: config.default } } : {}),
+      };
+    });
 
     databases.push({
       databaseId: db.id,

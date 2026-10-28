@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import { resolveCatalogLabel, type ModuleCatalogs, type ModuleRegistry } from "@semprec/module-registry";
 import { listAllDatabases } from "../chokePoint/databasesStore.js";
 import { listPropertiesByDatabases } from "../chokePoint/propertiesStore.js";
+import { getRelationDefinitionsByPropertyIds } from "../chokePoint/relationsStore.js";
 import {
   createCatalogResolver,
   resolveDatabaseName,
@@ -72,6 +73,13 @@ export async function generateSchemaProjection(
     client,
     databaseRows.map((db) => db.id),
   );
+  // One batch query for the relation definitions of every relation property (issue #1360), so the
+  // query count does not grow with the number of relation properties.
+  const relationPropertyIds = [...propertiesByDatabaseId.values()]
+    .flat()
+    .filter((p) => p.type === "relation")
+    .map((p) => p.id);
+  const relationDefinitions = await getRelationDefinitionsByPropertyIds(client, relationPropertyIds);
   const databases: SchemaDatabaseProjection[] = [];
   for (const db of databaseRows) {
     const properties = propertiesByDatabaseId.get(db.id) ?? [];
@@ -80,7 +88,7 @@ export async function generateSchemaProjection(
       databaseId: db.id,
       key: db.key,
       name: resolveDatabaseName(db.name, db.key, db.id, catalogs, locale),
-      properties: properties.map((p) => resolveProperty(p, db.key, catalogs, locale)),
+      properties: properties.map((p) => resolveProperty(p, db.key, catalogs, locale, relationDefinitions)),
     });
   }
 
