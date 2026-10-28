@@ -202,6 +202,119 @@ describe("createAuthRequestListener", () => {
       expect(attackerAddress.status).toBe(401);
     });
 
+    describe("device identity", () => {
+      const DEVICE_ID = "6f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f";
+      const SAFARI_MAC_UA =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
+
+      interface DeviceRow {
+        device_id: string | null;
+        device_name: string | null;
+        device_kind: string | null;
+        os_version: string | null;
+        app_version: string | null;
+      }
+
+      async function postDeviceLogin(extra: Record<string, unknown>, userAgent?: string): Promise<Response> {
+        const user = await makeUser();
+        return fetch(`${baseUrl}/api/auth/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(userAgent ? { "User-Agent": userAgent } : {}) },
+          body: JSON.stringify({ email: user.email, password: PASSWORD, ...extra }),
+        });
+      }
+
+      async function deviceRows(): Promise<DeviceRow[]> {
+        const { rows } = await pool.query<DeviceRow>(
+          "SELECT device_id, device_name, device_kind, os_version, app_version FROM sessions",
+        );
+        return rows;
+      }
+
+      it("stores the device fields of a native login", async () => {
+        const res = await postDeviceLogin({
+          platform: "ios",
+          deviceId: DEVICE_ID,
+          deviceName: " iPhone 17 Pro ",
+          deviceKind: "iphone",
+          osVersion: "26.0",
+          appVersion: "1.2.3",
+        });
+        expect(res.status).toBe(200);
+        expect(await deviceRows()).toEqual([
+          {
+            device_id: DEVICE_ID,
+            device_name: "iPhone 17 Pro",
+            device_kind: "iphone",
+            os_version: "26.0",
+            app_version: "1.2.3",
+          },
+        ]);
+      });
+
+      it("accepts a macos login with deviceKind mac", async () => {
+        const res = await postDeviceLogin({ platform: "macos", deviceKind: "mac" });
+        expect(res.status).toBe(200);
+        expect((await deviceRows())[0]!.device_kind).toBe("mac");
+      });
+
+      it("leaves the device columns NULL when a native login sends none", async () => {
+        const res = await postDeviceLogin({ platform: "ios" });
+        expect(res.status).toBe(200);
+        expect(await deviceRows()).toEqual([
+          { device_id: null, device_name: null, device_kind: null, os_version: null, app_version: null },
+        ]);
+      });
+
+      it.each([
+        ["an unknown deviceKind", { platform: "ios", deviceKind: "phone" }, "deviceKind"],
+        ["a mac deviceKind on ios", { platform: "ios", deviceKind: "mac" }, "deviceKind"],
+        ["an iphone deviceKind on macos", { platform: "macos", deviceKind: "iphone" }, "deviceKind"],
+        ["a non-UUID deviceId", { platform: "ios", deviceId: "not-a-uuid" }, "deviceId"],
+        ["a non-string deviceId", { platform: "ios", deviceId: 7 }, "deviceId"],
+        ["an empty deviceName", { platform: "ios", deviceName: "   " }, "deviceName"],
+        ["a 101-character deviceName", { platform: "ios", deviceName: "a".repeat(101) }, "deviceName"],
+        ["a non-string osVersion", { platform: "macos", osVersion: 26 }, "osVersion"],
+        ["a 51-character osVersion", { platform: "ios", osVersion: "1".repeat(51) }, "osVersion"],
+        ["a 51-character appVersion", { platform: "ios", appVersion: "1".repeat(51) }, "appVersion"],
+      ])("rejects %s with 400 naming the field and creates no session", async (_label, body, field) => {
+        const res = await postDeviceLogin(body);
+        expect(res.status).toBe(400);
+        const json = (await res.json()) as { code: string; details?: { field?: string } };
+        expect(json.code).toBe("validation_failed");
+        expect(json.details?.field).toBe(field);
+        expect(await deviceRows()).toEqual([]);
+      });
+
+      it("accepts a deviceName of exactly 100 characters", async () => {
+        const res = await postDeviceLogin({ platform: "ios", deviceName: "a".repeat(100) });
+        expect(res.status).toBe(200);
+      });
+
+      it("derives the device of a web login from the User-Agent and ignores body fields", async () => {
+        const res = await postDeviceLogin(
+          {
+            platform: "web",
+            deviceId: DEVICE_ID,
+            deviceName: "iPhone 17 Pro",
+            deviceKind: "iphone",
+            osVersion: "26.0",
+            appVersion: "9.9.9",
+          },
+          SAFARI_MAC_UA,
+        );
+        expect(res.status).toBe(200);
+        expect(await deviceRows()).toEqual([
+          { device_id: null, device_name: "Safari", device_kind: "browser", os_version: "macOS", app_version: null },
+        ]);
+      });
+
+      it("does not reject a web login whose device fields are invalid", async () => {
+        const res = await postDeviceLogin({ platform: "web", deviceKind: "phone", deviceId: "nope" }, SAFARI_MAC_UA);
+        expect(res.status).toBe(200);
+      });
+    });
+
     it("rejects an invalid platform", async () => {
       const user = await makeUser();
       const res = await fetch(`${baseUrl}/api/auth/login`, {

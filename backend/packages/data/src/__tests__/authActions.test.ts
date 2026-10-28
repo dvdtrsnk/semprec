@@ -54,6 +54,40 @@ describe("auth actions (issue #140)", () => {
       expect(identity.session.id).toBe(result.session.id);
     });
 
+    it("persists the device passed to login, and leaves the device columns NULL without one", async () => {
+      const user = await makeUser();
+      const device = {
+        deviceId: "6f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f",
+        deviceName: "iPad Air",
+        deviceKind: "ipad",
+        osVersion: "26.0",
+        appVersion: "2.0.0",
+      } as const;
+
+      const withDevice = await login(pool, {
+        email: user.email,
+        password: "s3cret-password",
+        platform: "ios",
+        ip: "127.0.0.1",
+        device,
+      });
+      expect(withDevice.session).toMatchObject(device);
+
+      const without = await login(pool, {
+        email: user.email,
+        password: "s3cret-password",
+        platform: "ios",
+        ip: "127.0.0.1",
+      });
+      expect(without.session).toMatchObject({
+        deviceId: null,
+        deviceName: null,
+        deviceKind: null,
+        osVersion: null,
+        appVersion: null,
+      });
+    });
+
     it("records a successful attempt", async () => {
       const user = await makeUser();
       await login(pool, { email: user.email, password: "s3cret-password", platform: "web", ip: "1.2.3.4" });

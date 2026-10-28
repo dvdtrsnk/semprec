@@ -14,6 +14,9 @@ import {
   SESSION_TTL_SECONDS,
   SESSION_PLATFORMS,
   SESSION_DELIVERY_CHANNEL_BY_PLATFORM,
+  deviceFromUserAgent,
+  type LoginDevice,
+  type SessionDeviceKind,
   type SessionPlatform,
   type SessionDeliveryChannel,
   type AuthenticatedIdentity,
@@ -98,6 +101,66 @@ export async function authenticateRequest(pool: Pool, req: IncomingMessage): Pro
   return identity;
 }
 
+const NATIVE_DEVICE_KINDS: Record<"ios" | "macos", readonly SessionDeviceKind[]> = {
+  ios: ["iphone", "ipad"],
+  macos: ["mac"],
+};
+
+/** An optional trimmed string field of `1..maxLength` characters; absent (`undefined`/`null`) yields `null`. */
+function optionalDeviceString(value: unknown, field: string, maxLength: number): string | null {
+  if (value === undefined || value === null) return null;
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (trimmed.length === 0 || trimmed.length > maxLength) {
+    throw new ValidationError(`'${field}' must be a string of 1-${maxLength} characters`, { field });
+  }
+  return trimmed;
+}
+
+/**
+ * The device identity a login records. A browser must not be able to claim a device, so a `web`
+ * login ignores every body field and takes the name and OS family from its `User-Agent`; a native
+ * login's optional fields are validated and a violation is a 400 naming the field.
+ */
+function parseLoginDevice(
+  raw: Record<string, unknown>,
+  platform: SessionPlatform,
+  userAgent: string | null,
+): LoginDevice {
+  if (platform === "web") {
+    const derived = deviceFromUserAgent(userAgent);
+    return {
+      deviceId: null,
+      deviceName: derived.deviceName,
+      deviceKind: "browser",
+      osVersion: derived.osVersion,
+      appVersion: null,
+    };
+  }
+  let deviceId: string | null = null;
+  if (raw.deviceId !== undefined && raw.deviceId !== null) {
+    if (typeof raw.deviceId !== "string") {
+      throw new ValidationError("'deviceId' must be a UUID string", { field: "deviceId" });
+    }
+    deviceId = assertUuid(raw.deviceId, "deviceId");
+  }
+  let deviceKind: SessionDeviceKind | null = null;
+  if (raw.deviceKind !== undefined && raw.deviceKind !== null) {
+    const allowed = NATIVE_DEVICE_KINDS[platform];
+    const kind = allowed.find((candidate) => candidate === raw.deviceKind);
+    if (!kind) {
+      throw new ValidationError(`'deviceKind' must be one of: ${allowed.join(", ")}`, { field: "deviceKind" });
+    }
+    deviceKind = kind;
+  }
+  return {
+    deviceId,
+    deviceName: optionalDeviceString(raw.deviceName, "deviceName", 100),
+    deviceKind,
+    osVersion: optionalDeviceString(raw.osVersion, "osVersion", 50),
+    appVersion: optionalDeviceString(raw.appVersion, "appVersion", 50),
+  };
+}
+
 function isSessionPlatform(value: unknown): value is SessionPlatform {
   return typeof value === "string" && (SESSION_PLATFORMS as readonly string[]).includes(value);
 }
@@ -171,6 +234,11 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
             email?: unknown;
             password?: unknown;
             platform?: unknown;
+            deviceId?: unknown;
+            deviceName?: unknown;
+            deviceKind?: unknown;
+            osVersion?: unknown;
+            appVersion?: unknown;
           };
           if (typeof raw.email !== "string" || raw.email.length === 0) {
             throw new ValidationError("'email' must be a non-empty string");
@@ -184,6 +252,8 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
           body = { email: raw.email, password: raw.password, platform: raw.platform };
 
           const userAgentHeader = req.headers["user-agent"];
+          const userAgent = typeof userAgentHeader === "string" ? userAgentHeader : null;
+          const device = parseLoginDevice(raw, body.platform, userAgent);
           result = await login(pool, {
             email: body.email,
             password: body.password,
@@ -193,7 +263,8 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
             // lock the owner out everywhere. Per-address scoping only ever locks the attacker's own
             // address, and Argon2id verification keeps distributed guessing expensive.
             ip,
-            userAgent: typeof userAgentHeader === "string" ? userAgentHeader : null,
+            userAgent,
+            device,
           });
         } catch (err) {
           // Only a failed credential check counts; infrastructure errors and validation do not.
