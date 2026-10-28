@@ -262,7 +262,7 @@ describe("rollup engine", () => {
       const expected = [f.countProp.id, f.sumProp.id].map(rollupRecomputeFullJobKey).sort();
       expect(await fullJobKeys()).toEqual(expected);
 
-      await chokePoint.archiveDatabase(f.tasks.id).catch(() => undefined);
+      await chokePoint.archiveDatabase(f.tasks.id);
       expect(await fullJobKeys()).toEqual(expected);
     });
 

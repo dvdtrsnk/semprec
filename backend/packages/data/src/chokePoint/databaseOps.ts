@@ -14,14 +14,6 @@ import { findDependenciesBySourceDatabase } from "../rollup/dependencies.js";
 import { enqueueRollupBackfill } from "../rollup/recompute.js";
 import * as databasesStore from "./databasesStore.js";
 
-/**
- * Transaction-scoped counterpart to `chokePoint.archiveDatabase` (issue #89): `databasesStore.archiveDatabase`
- * already takes a `client` rather than opening its own transaction, so this is a thin named alias —
- * one of the five approval-gated destructive `*WithClient` exports, one per operation, each exported from
- * its own operation module (`databaseOps.ts`, `viewOps.ts`, `propertyOps.ts`, `itemTrash.ts`,
- * `relationOps.ts`), so `ApprovedOperationExecutor` has one uniform naming convention to call the
- * destructive half of each operation.
- */
 /** Archive and restore change which items the rollups over this database count; recount each in the same transaction via its idempotent full job. */
 async function enqueueDependentRollupRecomputes(client: PoolClient, sourceDatabaseId: string): Promise<void> {
   for (const dependency of await findDependenciesBySourceDatabase(client, sourceDatabaseId)) {
@@ -29,6 +21,15 @@ async function enqueueDependentRollupRecomputes(client: PoolClient, sourceDataba
   }
 }
 
+/**
+ * Transaction-scoped counterpart to `chokePoint.archiveDatabase` (issue #89): `databasesStore.archiveDatabase`
+ * already takes a `client` rather than opening its own transaction, so this is a named wrapper that also
+ * enqueues the dependent rollup full jobs in the same transaction (via `enqueueDependentRollupRecomputes`) —
+ * one of the five approval-gated destructive `*WithClient` exports, one per operation, each exported from
+ * its own operation module (`databaseOps.ts`, `viewOps.ts`, `propertyOps.ts`, `itemTrash.ts`,
+ * `relationOps.ts`), so `ApprovedOperationExecutor` has one uniform naming convention to call the
+ * destructive half of each operation.
+ */
 export async function databaseArchiveWithClient(
   client: PoolClient,
   id: string,
