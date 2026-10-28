@@ -9,13 +9,29 @@ import { findFileItemByBlobId } from "../chokePoint/itemsStore.js";
 import { findOrCreateBlob, tenantBlobStorageKey } from "./blobsStore.js";
 import type { BlobRow, ItemRow } from "../types.js";
 import { logger } from "./logger.js";
+import { detectFileType, FILE_TYPE_DETECTION_HEAD_BYTES } from "./fileTypeDetection.js";
+
+const UNKNOWN_CONTENT_MIME = "application/octet-stream";
+
+async function readHead(storage: BlobStorageWriter, storageKey: string, byteSize: number): Promise<Buffer> {
+  if (byteSize === 0) return Buffer.alloc(0);
+  const chunks: Buffer[] = [];
+  const stream = storage.readStream(storageKey, {
+    start: 0,
+    end: Math.min(byteSize, FILE_TYPE_DETECTION_HEAD_BYTES) - 1,
+  });
+  for await (const chunk of stream as AsyncIterable<Buffer | string>) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  }
+  return Buffer.concat(chunks);
+}
 
 export interface IngestUploadedFileInput {
   /** The seeded system Files database's id (`getDatabaseByModuleId(client, FILES_MODULE_ID)`). */
   filesDatabaseId: string;
   /** From the upload's `X-Filename` header — becomes the Files item's `name` (title) property. */
   filename: string;
-  /** From the upload's `Content-Type` header — stored as the blob's `mime_type`. */
+  /** From the upload's `Content-Type` header — accepted but ignored: the stored mime and Files `type` come from the bytes. */
   contentType: string;
   source: Readable;
   /** Namespacing prefix for the storage key, e.g. `"files"` — keeps this upload path's keys apart from mail attachments'. */
@@ -83,9 +99,11 @@ export async function ingestUploadedFile(
   }
 
   try {
+    // Type and mime come from the stored bytes, never from the client's `Content-Type` or the filename.
+    const detected = detectFileType(await readHead(input.storage, storageKey, byteSize));
     return await withTransaction(pool, async (client) => {
       const blob = await findOrCreateBlob(client, {
-        mimeType: input.contentType,
+        mimeType: detected?.mimeType ?? UNKNOWN_CONTENT_MIME,
         byteSize,
         storageKey,
         contentHash,
@@ -110,7 +128,11 @@ export async function ingestUploadedFile(
 
       const item = await createItemWithClient(client, {
         databaseId: input.filesDatabaseId,
-        properties: { name: input.filename, file: { blobId: blob.id } },
+        properties: {
+          name: input.filename,
+          file: { blobId: blob.id },
+          ...(detected ? { type: detected.type } : {}),
+        },
       });
       return { item, blob, created: true };
     });

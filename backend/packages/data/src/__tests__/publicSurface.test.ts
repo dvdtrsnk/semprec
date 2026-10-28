@@ -231,6 +231,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "deleteRollupDependenciesBySourceDatabase",
   "deleteTaskRecurrence",
   "deriveDesiredWorkerInstances",
+  "detectFileType",
   "docsModuleManifest",
   "enqueueItemSearchBackfill",
   "enqueueNotificationFanout",

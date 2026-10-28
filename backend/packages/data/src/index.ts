@@ -266,6 +266,8 @@ export { manifest as docsModuleManifest } from "./docs/docsModuleManifest.js";
 export * from "./blobs/blobsStore.js";
 export type { IngestUploadedFileInput, IngestUploadedFileResult } from "./blobs/fileUploadStore.js";
 export { ingestUploadedFile } from "./blobs/fileUploadStore.js";
+export { detectFileType } from "./blobs/fileTypeDetection.js";
+export type { DetectedFile, DetectedFileType } from "./blobs/fileTypeDetection.js";
 export { findFileItemByBlobId } from "./chokePoint/itemsStore.js";
 export type { BlobStorageWriter, WriteStreamOptions } from "./mail/blobStorage.js";
 export { LocalFsBlobStorageWriter, MaxBytesExceededError, resolveBlobStorageDir } from "./mail/blobStorage.js";
