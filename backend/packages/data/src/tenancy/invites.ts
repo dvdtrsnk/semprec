@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import { EMAIL_PATTERN } from "../auth/authActions.js";
 import { normalizeEmail } from "../auth/emailNormalization.js";
 import { generateOpaqueToken } from "../auth/token.js";
+import { getUserById } from "../auth/usersStore.js";
 import { runAfterCommit, type Queryable } from "../db/pool.js";
 import { ChokePointError, NotFoundError, ValidationError } from "../errors.js";
 import { assertKnownValue } from "../dbRowValidation.js";
@@ -132,9 +133,11 @@ export async function createInvite(client: PoolClient, input: CreateInviteInput)
 
   const mailer = input.mailer;
   if (mailer) {
+    // The invited person has no account yet, so the mail follows the creating admin's language.
+    const locale = (await getUserById(client, input.invitedBy))?.locale ?? "en";
     runAfterCommit(client, () => {
       void mailer
-        .sendInviteEmail({ to: invite.email, inviteUrl, expiresAt: invite.expiresAt })
+        .sendInviteEmail({ to: invite.email, inviteUrl, expiresAt: invite.expiresAt, locale })
         .catch((err: unknown) => {
           logger.error(
             { inviteId: invite.id, ...describeMailFailure(err) },
