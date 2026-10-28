@@ -355,6 +355,7 @@ export type {
   ApprovalRequestOutcome,
 } from "./mcp/approvalRequestsStore.js";
 export {
+  APPROVAL_REQUEST_REASON_MAX_LENGTH,
   createPendingApprovalRequest,
   getApprovalRequest,
   listPendingApprovalRequests,

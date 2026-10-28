@@ -43,7 +43,11 @@ describe("withUniqueNames (issue #1074)", () => {
   });
 });
 
-const fixtures = vi.hoisted(() => ({ grants: [] as McpToolGrantForProject[] }));
+const fixtures = vi.hoisted(() => ({
+  grants: [] as McpToolGrantForProject[],
+  operations: ["item.patch"] as string[],
+  calls: [] as unknown[][],
+}));
 vi.mock("@semprec/data", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@semprec/data")>()),
   withClient: async (_pool: Pool, fn: (client: Client) => Promise<unknown>) => fn(new Client()),
@@ -51,8 +55,14 @@ vi.mock("@semprec/data", async (importOriginal) => ({
 }));
 vi.mock("@semprec/agent-runtime", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@semprec/agent-runtime")>()),
-  listGrantedGenericOperationAgentTools: async () => ["item.patch"],
-  createGenericOperationAgentTools: () => ({ "item.patch": async () => ({ result: "patched", error: false }) }),
+  listGrantedGenericOperationAgentTools: async () => fixtures.operations,
+  createGenericOperationAgentTools: () => ({
+    "item.patch": async () => ({ result: "patched", error: false }),
+    "item.delete": async (...call: unknown[]) => {
+      fixtures.calls.push(call);
+      return { result: "deferred", error: false };
+    },
+  }),
   createApprovalGatedMcpInvokeTool: () => async () => ({ result: "found", error: false }),
   createProjectAgentGuidanceSystemPromptOverride: async () => (prompt: string) => prompt,
 }));
@@ -149,3 +159,69 @@ it.each([true, false])(
     }
   },
 );
+
+describe("agent-only approval reason (issue #1420)", () => {
+  const run: AgentRunRow = {
+    id: "run-1",
+    projectItemId: null,
+    parentRunId: null,
+    heartbeatId: null,
+    triggeredBy: "user",
+    unit: "invocation",
+    task: "run",
+    status: "running",
+    result: null,
+    startedAt: "2026-10-27T00:00:00Z",
+    finishedAt: null,
+    actorUserId: "user-1",
+  };
+
+  async function runCalls(args: Record<string, unknown>) {
+    fixtures.operations = ["item.patch", "item.delete"];
+    fixtures.calls = [];
+    const pool = new Pool();
+    const faux = fauxProvider();
+    const schemas: Record<string, unknown> = {};
+    faux.setResponses([
+      (context) => {
+        for (const tool of context.tools ?? []) schemas[tool.name] = tool.parameters;
+        return fauxAssistantMessage([fauxToolCall("item_delete", args, { id: "call" })], { stopReason: "toolUse" });
+      },
+      fauxAssistantMessage("done"),
+    ]);
+    try {
+      const factory = await createAgentSessionFactoryForRun(
+        pool,
+        new ModuleRegistry(() => new Set<string>()),
+        { model: faux.getModel(), streamFn: (m, context, options) => faux.provider.streamSimple(m, context, options) },
+        run,
+      );
+      const results: string[] = [];
+      for await (const event of factory({ task: run.task }).messages()) {
+        if (event.kind === "tool_result") results.push(JSON.stringify(event));
+      }
+      return { schemas, results };
+    } finally {
+      fixtures.operations = ["item.patch"];
+      await pool.end();
+    }
+  }
+
+  it("adds reason to the approval-gated schema only and strips it from the operation arguments", async () => {
+    const { schemas } = await runCalls({ itemId: "item-1", reason: "You never open it." });
+    expect(JSON.stringify(schemas.item_delete)).toContain('"reason"');
+    expect(JSON.stringify(schemas.item_patch)).not.toContain('"reason"');
+    expect(fixtures.calls).toEqual([["run-1", { itemId: "item-1" }, { reason: "You never open it." }]]);
+  });
+
+  it("passes no options when the model gave no reason", async () => {
+    await runCalls({ itemId: "item-1" });
+    expect(fixtures.calls).toEqual([["run-1", { itemId: "item-1" }, undefined]]);
+  });
+
+  it("rejects a reason over 500 characters without calling the operation", async () => {
+    const { results } = await runCalls({ itemId: "item-1", reason: "x".repeat(501) });
+    expect(fixtures.calls).toEqual([]);
+    expect(results.join()).toMatch(/reason/);
+  });
+});

@@ -1,6 +1,9 @@
 import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
 import { assertKnownValue, assertShape } from "../dbRowValidation.js";
 
+/** Longest agent-supplied reason, in characters; mirrored by the `approval_requests_reason_length_check` constraint. */
+export const APPROVAL_REQUEST_REASON_MAX_LENGTH = 500;
+
 export type ApprovalRequestStatus = "pending" | "approved" | "rejected";
 
 /** The only two transitions a decision can make a `pending` request into. */
@@ -65,6 +68,8 @@ export interface ApprovalRequest {
   executedAt: string | null;
   executionError: boolean | null;
   executionResult: unknown;
+  /** The agent's own explanation of why it asked, as plain text; `null` when it gave none. */
+  reason: string | null;
 }
 
 /** The outbound third-party-MCP-tool-invoke payload shape (issue #130) — the resolved target's identity plus the model-supplied arguments. */
@@ -113,6 +118,7 @@ interface ApprovalRequestRow {
   executed_at: string | null;
   execution_error: boolean | null;
   execution_result_jsonb: unknown;
+  reason: string | null;
 }
 
 function assertResourceSnapshotShape(value: ApprovalResourceSnapshot): ApprovalResourceSnapshot {
@@ -143,6 +149,7 @@ function rowToApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
     executedAt: row.executed_at,
     executionError: row.execution_error,
     executionResult: row.execution_result_jsonb,
+    reason: row.reason,
   };
 }
 
@@ -152,6 +159,8 @@ export interface CreatePendingApprovalRequestInput {
   riskClass: string;
   payload: ApprovalRequestPayload;
   resourceSnapshot: ApprovalResourceSnapshot;
+  /** Optional agent-supplied reason (at most `APPROVAL_REQUEST_REASON_MAX_LENGTH` characters); stored as `NULL` when absent. */
+  reason?: string | null;
 }
 
 /** Inserts one `pending` request. The caller is responsible for running this inside the same transaction as whatever it must be atomic with. */
@@ -160,8 +169,8 @@ export async function createPendingApprovalRequest(
   input: CreatePendingApprovalRequestInput,
 ): Promise<ApprovalRequest> {
   const { rows } = await client.query<ApprovalRequestRow>(
-    `INSERT INTO approval_requests (agent_run_id, tool_name, risk_class, payload, resource_snapshot)
-     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
+    `INSERT INTO approval_requests (agent_run_id, tool_name, risk_class, payload, resource_snapshot, reason)
+     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)
      RETURNING *`,
     [
       input.agentRunId,
@@ -169,6 +178,7 @@ export async function createPendingApprovalRequest(
       input.riskClass,
       JSON.stringify(input.payload),
       JSON.stringify(input.resourceSnapshot),
+      input.reason ?? null,
     ],
   );
   return rowToApprovalRequest(requireSingleRow(rows, "approval_requests insert RETURNING"));

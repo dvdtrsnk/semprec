@@ -252,6 +252,54 @@ describe("MCP invoke adapter (issue #128)", () => {
       });
     });
 
+    it("stores semprecReason on the request and strips it from the stored args (issue #1420)", async () => {
+      const contractServer = startStdioContractServer([SEARCH_TOOL]);
+      servers.push(contractServer);
+      const { server, registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+
+      const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
+      const result = await invoke({ query: "semprec", semprecReason: "To find your notes." });
+
+      expect(result.error).toBe(false);
+      const request = await getApprovalRequest(pool, result.result.match(/Approval request ([0-9a-f-]{36})/i)![1]!);
+      expect(request!.reason).toBe("To find your notes.");
+      expect(request!.payload).toEqual({
+        mcpToolRegistrationId: registration.id,
+        mcpServerItemId: server.id,
+        args: { query: "semprec" },
+      });
+    });
+
+    it("creates no request and returns an error for a semprecReason over 500 characters (issue #1420)", async () => {
+      const contractServer = startStdioContractServer([SEARCH_TOOL]);
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+
+      const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
+      const result = await invoke({ query: "semprec", semprecReason: "x".repeat(501) });
+
+      expect(result.error).toBe(true);
+      const { rows } = await pool.query(`SELECT count(*)::int AS count FROM approval_requests`);
+      expect(rows[0].count).toBe(0);
+    });
+
+    it("does not send semprecReason to the MCP server when the tool needs no approval (issue #1420)", async () => {
+      const contractServer = startStdioContractServer([SEARCH_TOOL]);
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      await pool.query(`UPDATE mcp_tool_registrations SET requires_approval = false WHERE id = $1`, [registration.id]);
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+
+      const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
+      const result = await invoke({ query: "semprec", semprecReason: "why" });
+
+      expect(result.error).toBe(false);
+      expect(contractServer.getLastToolCall()).toMatchObject({ name: "search_web", arguments: { query: "semprec" } });
+      expect(JSON.stringify(contractServer.getLastToolCall())).not.toContain("semprecReason");
+    });
+
     it("continues straight through to execution when the tool does not require approval", async () => {
       const contractServer = startStdioContractServer([SEARCH_TOOL]);
       servers.push(contractServer);

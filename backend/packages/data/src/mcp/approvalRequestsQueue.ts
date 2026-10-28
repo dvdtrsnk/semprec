@@ -35,6 +35,8 @@ export interface ApprovalRequestQueueEntry {
   projectItemId: string | null;
   /** `null` alongside `projectItemId` when there is no project, or when the project item has since been deleted. */
   projectName: string | null;
+  /** The agent's own explanation of why it asked; `null` when it gave none. */
+  reason: string | null;
 }
 
 function safeSummaryOf(payload: ApprovalRequest["payload"]): ApprovalRequestSafeSummary {
@@ -71,6 +73,7 @@ export interface ApprovalRequestDecisionView {
   requestedAt: string;
   agentRunId: string;
   safeSummary: ApprovalRequestSafeSummary;
+  reason: string | null;
 }
 
 export function toApprovalRequestDecisionView(request: ApprovalRequest): ApprovalRequestDecisionView {
@@ -85,6 +88,7 @@ export function toApprovalRequestDecisionView(request: ApprovalRequest): Approva
     requestedAt: request.requestedAt,
     agentRunId: request.agentRunId,
     safeSummary: safeSummaryOf(request.payload),
+    reason: request.reason,
   };
 }
 
@@ -125,6 +129,7 @@ export async function listApprovalRequestsQueue(
       agentRunId: request.agentRunId,
       projectItemId,
       projectName: projectItemId ? (projectNameById.get(projectItemId) ?? null) : null,
+      reason: request.reason,
     };
   });
 }

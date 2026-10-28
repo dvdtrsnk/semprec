@@ -11,13 +11,14 @@ import {
 } from "@semprec/agent-runtime";
 import {
   createPoolClientTransactionRunner,
+  APPROVAL_REQUEST_REASON_MAX_LENGTH,
   listMcpToolGrantsForProject,
   projectAgentGuidanceStore,
   withClient,
   type AgentRunRow,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
-import { operationInputJsonSchema } from "@semprec/shared";
+import { OPERATION_METADATA, operationInputJsonSchema, type GenericOperationName } from "@semprec/shared";
 import type { GatewayModel } from "./modelComposition.js";
 import { createPiAgentSessionFactory } from "./piAgentSession.js";
 import { logger } from "./logger.js";
@@ -37,6 +38,49 @@ const AGENT_RUN_ID_HEADER = "x-semprec-agent-run-id";
  * `resolveMcpInvocation` against the registration itself, on every call.
  */
 const MCP_TOOL_PARAMETERS = Type.Object({}, { additionalProperties: true });
+
+/** Same, for an approval-gated MCP tool: the free-form arguments plus the reserved optional reason (issue #1420). */
+const APPROVAL_GATED_MCP_TOOL_PARAMETERS = Type.Object(
+  { semprecReason: Type.Optional(Type.String({ maxLength: APPROVAL_REQUEST_REASON_MAX_LENGTH })) },
+  { additionalProperties: true },
+);
+
+/** The optional argument an approval-gated generic operation's tool schema adds; it never reaches the operation input. */
+const GENERIC_OPERATION_REASON_KEY = "reason";
+
+/**
+ * The tool schema for one generic operation: the operation's own strict input schema, plus the
+ * optional agent-only `reason` when the operation is approval-gated (issue #1420).
+ */
+function genericOperationToolSchema(operation: GenericOperationName): Record<string, unknown> {
+  const schema = operationInputJsonSchema(operation);
+  if (!OPERATION_METADATA[operation].requiresApproval) return schema;
+  const properties = isArgumentsObject(schema.properties) ? schema.properties : {};
+  return {
+    ...schema,
+    properties: {
+      ...properties,
+      [GENERIC_OPERATION_REASON_KEY]: { type: "string", maxLength: APPROVAL_REQUEST_REASON_MAX_LENGTH },
+    },
+  };
+}
+
+type ReasonSplit = { ok: true; args: unknown; reason?: string } | { ok: false; error: string };
+
+/** Removes the agent-only `reason` from an approval-gated operation's arguments before the operation validates them. */
+function splitGenericOperationReason(operation: GenericOperationName, params: unknown): ReasonSplit {
+  if (!OPERATION_METADATA[operation].requiresApproval || !isArgumentsObject(params)) return { ok: true, args: params };
+  if (!(GENERIC_OPERATION_REASON_KEY in params)) return { ok: true, args: params };
+  const { [GENERIC_OPERATION_REASON_KEY]: raw, ...args } = params;
+  if (raw === undefined || raw === null) return { ok: true, args };
+  if (typeof raw !== "string" || raw.length > APPROVAL_REQUEST_REASON_MAX_LENGTH) {
+    return {
+      ok: false,
+      error: `Invalid argument 'reason': it must be a string of at most ${APPROVAL_REQUEST_REASON_MAX_LENGTH} characters.`,
+    };
+  }
+  return { ok: true, args, reason: raw };
+}
 
 /**
  * Model providers accept only `[A-Za-z0-9_-]{1,64}` as a tool name, so a generic operation's dotted
@@ -64,9 +108,17 @@ async function createGenericOperationTools(
     label: operation,
     toolEventMetadata: { operation },
     description: `Semprec generic operation '${operation}'.`,
-    parameters: Type.Unsafe(operationInputJsonSchema(operation)),
+    parameters: Type.Unsafe(genericOperationToolSchema(operation)),
     async execute(_toolCallId, params) {
-      const result = await implementations[operation](runId, params);
+      const split = splitGenericOperationReason(operation, params);
+      if (!split.ok) {
+        return { content: [{ type: "text", text: split.error }], details: { error: true } };
+      }
+      const result = await implementations[operation](
+        runId,
+        split.args,
+        split.reason === undefined ? undefined : { reason: split.reason },
+      );
       return { content: [{ type: "text", text: result.result }], details: { error: result.error } };
     },
   }));
@@ -90,7 +142,7 @@ async function createMcpTools(pool: Pool, runId: string, projectItemId: string):
           },
         },
         description: grant.description ?? `MCP tool '${grant.toolName}' on '${grant.mcpServerName}'.`,
-        parameters: MCP_TOOL_PARAMETERS,
+        parameters: grant.requiresApproval ? APPROVAL_GATED_MCP_TOOL_PARAMETERS : MCP_TOOL_PARAMETERS,
         async execute(_toolCallId, params, signal) {
           if (!isArgumentsObject(params)) {
             return {

@@ -201,6 +201,7 @@ async function preflightDestructiveApproval(
   operation: DestructiveOperationName,
   actor: AuthenticatedActor,
   input: unknown,
+  reason: string | null,
 ): Promise<ApprovalRequest> {
   const metadata = OPERATION_METADATA[operation];
   return withTransaction(pool, async (client) => {
@@ -228,6 +229,7 @@ async function preflightDestructiveApproval(
       riskClass: metadata.riskClass!,
       payload,
       resourceSnapshot: snapshot,
+      reason,
     });
 
     const userId = await getTenantUserId(client);
@@ -263,6 +265,8 @@ export interface GenericOperationGateway {
     actor: AuthenticatedActor,
     grantedCapabilities: ReadonlySet<CapabilityId>,
     raw: unknown,
+    /** The agent's reason for an approval-gated call, already stripped from `raw`; stored on the request only, never in the operation input. */
+    options?: { reason?: string },
   ): Promise<OutputByOperation[K]>;
 }
 
@@ -282,7 +286,7 @@ export function createGenericOperationGateway(pool: Pool): GenericOperationGatew
       return GENERIC_OPERATION_NAMES.filter((operation) => isGranted(operation, grantedCapabilities));
     },
 
-    async invoke(operation, actor, grantedCapabilities, raw) {
+    async invoke(operation, actor, grantedCapabilities, raw, options) {
       if (!isGranted(operation, grantedCapabilities)) {
         throw new NotFoundError(`Unknown operation '${operation}'`);
       }
@@ -297,7 +301,7 @@ export function createGenericOperationGateway(pool: Pool): GenericOperationGatew
             `Operation '${operation}' is flagged as approval-requiring but is not one of the five destructive kinds`,
           );
         }
-        const request = await preflightDestructiveApproval(pool, operation, actor, input);
+        const request = await preflightDestructiveApproval(pool, operation, actor, input, options?.reason ?? null);
         throw new ApprovalRequiredError(`Operation '${operation}' requires human approval before it can run.`, {
           approvalRequestId: request.id,
           link: `?page=approvals&id=${request.id}`,
