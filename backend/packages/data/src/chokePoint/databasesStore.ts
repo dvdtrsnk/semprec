@@ -157,6 +157,39 @@ export async function listAllDatabases(client: PoolClient): Promise<DatabaseRow[
   return rows.map(mapDatabaseRow);
 }
 
+/** What a reader needs to label an item of a database: its module id and the key of its `title` property. */
+export interface DatabaseLabelRow {
+  id: string;
+  ownerModuleId: string | null;
+  titlePropertyKey: string | null;
+}
+
+/**
+ * The batched lookup behind item labels: one query for a whole set of databases, the key of the
+ * `title` property included so the caller reads titles without a query per database. A database
+ * with several `title` properties resolves to the alphabetically first key.
+ */
+export async function listDatabaseLabelsByIds(client: PoolClient, ids: string[]): Promise<DatabaseLabelRow[]> {
+  if (ids.length === 0) return [];
+  const { rows } = await client.query<{
+    id: string;
+    owner_module_id: string | null;
+    title_property_key: string | null;
+  }>(
+    `SELECT DISTINCT ON (d.id) d.id, d.owner_module_id, p.key AS title_property_key
+     FROM databases d
+     LEFT JOIN properties p ON p.database_id = d.id AND p.type = 'title'
+     WHERE d.id = ANY($1::uuid[])
+     ORDER BY d.id, p.key`,
+    [ids],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    ownerModuleId: row.owner_module_id,
+    titlePropertyKey: row.title_property_key,
+  }));
+}
+
 async function requireDatabase(client: PoolClient, id: string): Promise<DatabaseRow> {
   const database = await getDatabase(client, id);
   if (!database) throw new NotFoundError(`Database ${id} not found`);

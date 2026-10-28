@@ -64,6 +64,13 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
     return item;
   }
 
+  /** `include: ["links"]` (issue #1403): attaches each item's links (an empty object when it has none) in one batched read; without it the items come back untouched. */
+  async function withLinks<T extends Item>(items: T[], include: readonly "links"[] | undefined): Promise<T[]> {
+    if (!include?.includes("links")) return items;
+    const linksByItem = await chokePoint.getValueLinksForItems(items.map((item) => item.id));
+    return items.map((item) => ({ ...item, links: linksByItem.get(item.id) ?? {} }));
+  }
+
   return {
     // ---- databases ----
     async listDatabases(_actor, input) {
@@ -228,13 +235,14 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
     },
 
     async queryView(_actor, input) {
-      return chokePoint.queryViewItems(input.viewId, {
+      const page = await chokePoint.queryViewItems(input.viewId, {
         filter: input.filter,
         sort: input.sort,
         cursor: input.cursor,
         limit: input.limit,
         inTrash: input.inTrash,
       });
+      return { ...page, items: await withLinks(page.items, input.include) };
     },
 
     async addViewItem(actor, input) {
@@ -262,7 +270,9 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
 
     // ---- items ----
     async getItem(_actor, input) {
-      return requireItem(input.itemId);
+      const item = await requireItem(input.itemId);
+      const [withItemLinks] = await withLinks([item], input.include);
+      return withItemLinks ?? item;
     },
 
     async createItem(actor, input) {
@@ -308,13 +318,14 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
           resource: "database",
           databaseId: input.databaseId,
         });
-      return chokePoint.queryDatabaseItems(input.databaseId, {
+      const page = await chokePoint.queryDatabaseItems(input.databaseId, {
         filter: input.filter,
         sort: input.sort,
         cursor: input.cursor,
         limit: input.limit,
         inTrash: input.inTrash,
       });
+      return { ...page, items: await withLinks(page.items, input.include) };
     },
 
     // ---- relations ----

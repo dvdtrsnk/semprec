@@ -222,3 +222,15 @@ describe("RelationDeleteInputSchema", () => {
     ).toBe(false);
   });
 });
+
+describe("include on item reads (issue #1403)", () => {
+  it.each([
+    ["item.get", ItemGetInputSchema, { itemId: "i1" }],
+    ["database.query", DatabaseQueryInputSchema, { databaseId: "d1" }],
+    ["view.query", ViewQueryInputSchema, { viewId: "v1" }],
+  ] as const)("%s accepts include links and rejects an unknown include value", (_name, schema, base) => {
+    expect(schema.safeParse({ ...base, include: ["links"] }).success).toBe(true);
+    expect(schema.safeParse(base).success).toBe(true);
+    expect(schema.safeParse({ ...base, include: ["comments"] }).success).toBe(false);
+  });
+});

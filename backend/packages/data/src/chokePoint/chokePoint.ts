@@ -13,6 +13,8 @@ import { createRelationPropertyOps } from "./relationPropertyOps.js";
 import { createRelationOps } from "./relationOps.js";
 import { createItemWriteOps } from "./itemWrites.js";
 import { createItemTrashOps } from "./itemTrash.js";
+import { getValueLinksForItems } from "./valueLinkReads.js";
+import { withTransaction } from "../db/pool.js";
 
 export function createChokePoint(
   pool: Pool,
@@ -31,6 +33,12 @@ export function createChokePoint(
     createItemTrashOps(deps),
     createViewOps(deps),
     createViewQueryOps(deps),
+    {
+      /** The value links of a set of items for `include=links` (issue #1403), in one transaction. */
+      async getValueLinksForItems(itemIds: string[]) {
+        return withTransaction(pool, (client) => getValueLinksForItems(client, itemIds));
+      },
+    },
   );
 }
 

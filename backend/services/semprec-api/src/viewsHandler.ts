@@ -145,6 +145,7 @@ export function createViewRoutes(service: GenericApplicationPort): RouteDefiniti
         const body = ctx.body === undefined ? {} : requireJsonObjectBody(ctx.body);
         const result = await dispatchGenericOperation(service, "view.query", restActor(ctx.identity.user.id), {
           viewId,
+          include: body.include,
           filter: body.filter,
           sort: body.sort,
           cursor: body.cursor,

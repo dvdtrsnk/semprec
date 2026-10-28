@@ -9,9 +9,11 @@ import {
   createChokePoint,
   createUser,
   hashPassword,
+  insertValueLink,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
+  withTransaction,
   type AuthenticatedIdentity,
   type ChokePoint,
   type PasswordResetMailer,
@@ -49,6 +51,7 @@ interface ItemBody {
   updatedAt: string;
   deletedAt: string | null;
   path?: ItemBody[];
+  links?: Record<string, unknown>;
 }
 
 interface ErrorBody {
@@ -689,6 +692,177 @@ describe("item routes (issue #241)", () => {
       expect(dbBody.items.map((i) => i.id)).toEqual([arrival.id]);
       expect(viewBody.items.map((i) => i.id)).toEqual(dbBody.items.map((i) => i.id));
       expect(viewBody.nextCursor).toBe(dbBody.nextCursor);
+    });
+  });
+
+  describe("include=links (issue #1403)", () => {
+    /** A file linked to a task, as the later propagation issue (#1593) will leave it; written through the store because nothing in product code writes links yet. */
+    async function makeLinkedFile(options: { extraSource?: boolean; broken?: boolean } = {}) {
+      const tasksDb = await chokePoint.createDatabase({ name: "Tasks", ownerModuleId: "linksTasks", system: true });
+      await chokePoint.createProperty({ databaseId: tasksDb.id, key: "title", name: "Title", type: "title" });
+      const filesDb = await chokePoint.createDatabase({ name: "Files" });
+      const task = await chokePoint.createItem({ databaseId: tasksDb.id, properties: { title: "Send the invoice" } });
+      const other = await chokePoint.createItem({ databaseId: tasksDb.id, properties: { title: "Pay the invoice" } });
+      const file = await chokePoint.createItem({ databaseId: filesDb.id, properties: {} });
+      const plain = await chokePoint.createItem({ databaseId: filesDb.id, properties: {} });
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: file.id,
+          propertyKey: "projects",
+          ruleKey: "fileProject",
+          ...(options.broken
+            ? { state: "broken" as const, brokenBy: "user" as const, brokenAt: new Date("2026-10-20T10:00:00.000Z") }
+            : {}),
+          sources: [
+            { kind: "item", sourceItemId: task.id, sourcePropertyKey: "project" },
+            ...(options.extraSource
+              ? [{ kind: "item" as const, sourceItemId: other.id, sourcePropertyKey: "project" }]
+              : []),
+          ],
+        }),
+      );
+      return { tasksDb, filesDb, task, other, file, plain };
+    }
+
+    it("returns links.projects with the inherited kind and the source including its title", async () => {
+      const { file, task } = await makeLinkedFile();
+      const headers = await authHeader();
+
+      const res = await fetch(`${baseUrl}/api/items/${file.id}?include=links`, { headers });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as ItemBody;
+      expect(body.links).toEqual({
+        projects: {
+          valueKind: "inherited",
+          sources: [
+            {
+              kind: "item",
+              itemId: task.id,
+              databaseKey: "linksTasks",
+              title: "Send the invoice",
+              propertyKey: "project",
+            },
+          ],
+          brokenBy: null,
+          brokenAt: null,
+        },
+      });
+    });
+
+    it("returns both sources of a link with two sources", async () => {
+      const { file } = await makeLinkedFile({ extraSource: true });
+      const headers = await authHeader();
+
+      const body = (await (
+        await fetch(`${baseUrl}/api/items/${file.id}?include=links`, { headers })
+      ).json()) as ItemBody;
+      const entry = body.links?.projects as { sources: { title: string }[] };
+      expect(entry.sources.map((source) => source.title).sort()).toEqual(["Pay the invoice", "Send the invoice"]);
+    });
+
+    it("reads a broken row as inheritedBroken with brokenBy and brokenAt", async () => {
+      const { file } = await makeLinkedFile({ broken: true });
+      const headers = await authHeader();
+
+      const body = (await (
+        await fetch(`${baseUrl}/api/items/${file.id}?include=links`, { headers })
+      ).json()) as ItemBody;
+      expect(body.links?.projects).toMatchObject({
+        valueKind: "inheritedBroken",
+        brokenBy: "user",
+        brokenAt: "2026-10-20T10:00:00.000Z",
+      });
+    });
+
+    it("returns an empty links object for an item without a row, and no links field without include", async () => {
+      const { plain, file } = await makeLinkedFile();
+      const headers = await authHeader();
+
+      const withLinks = (await (
+        await fetch(`${baseUrl}/api/items/${plain.id}?include=links`, { headers })
+      ).json()) as ItemBody;
+      expect(withLinks.links).toEqual({});
+      const without = (await (await fetch(`${baseUrl}/api/items/${file.id}`, { headers })).json()) as ItemBody;
+      expect("links" in without).toBe(false);
+    });
+
+    it("returns both the path and the links for include=path,links, and only the path for include=path", async () => {
+      const { file } = await makeLinkedFile();
+      const headers = await authHeader();
+
+      const both = (await (
+        await fetch(`${baseUrl}/api/items/${file.id}?include=path,links`, { headers })
+      ).json()) as ItemBody;
+      expect(both.path?.map((item) => item.id)).toEqual([file.id]);
+      expect(Object.keys(both.links ?? {})).toEqual(["projects"]);
+      const pathOnly = (await (
+        await fetch(`${baseUrl}/api/items/${file.id}?include=path`, { headers })
+      ).json()) as ItemBody;
+      expect(pathOnly.path).toHaveLength(1);
+      expect("links" in pathOnly).toBe(false);
+    });
+
+    it("returns 404 for an unknown item with include=path,links", async () => {
+      const headers = await authHeader();
+      const res = await fetch(`${baseUrl}/api/items/${randomUUID()}?include=path,links`, { headers });
+      expect(res.status).toBe(404);
+    });
+
+    it("gives each item of a database.query page its own links, and none without include", async () => {
+      const { filesDb, file, plain } = await makeLinkedFile();
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+
+      const res = await fetch(`${baseUrl}/api/databases/${filesDb.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ include: ["links"] }),
+      });
+      expect(res.status).toBe(200);
+      const page = (await res.json()) as ItemQueryBody;
+      const byId = new Map(page.items.map((item) => [item.id, item]));
+      expect(Object.keys(byId.get(file.id)?.links ?? {})).toEqual(["projects"]);
+      expect(byId.get(plain.id)?.links).toEqual({});
+
+      const plainRes = await fetch(`${baseUrl}/api/databases/${filesDb.id}/query`, {
+        method: "POST",
+        headers,
+        body: "{}",
+      });
+      const plainPage = (await plainRes.json()) as ItemQueryBody;
+      expect(plainPage.items.every((item) => !("links" in item))).toBe(true);
+    });
+
+    it("gives each item of a view.query page its own links", async () => {
+      const { filesDb, file, plain } = await makeLinkedFile();
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const view = await chokePoint.createView({
+        databaseId: filesDb.id,
+        type: "table",
+        name: "All files",
+        config: {},
+      });
+
+      const res = await fetch(`${baseUrl}/api/views/${view.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ include: ["links"] }),
+      });
+      expect(res.status).toBe(200);
+      const page = (await res.json()) as ItemQueryBody;
+      const byId = new Map(page.items.map((item) => [item.id, item]));
+      expect(Object.keys(byId.get(file.id)?.links ?? {})).toEqual(["projects"]);
+      expect(byId.get(plain.id)?.links).toEqual({});
+    });
+
+    it("rejects an include value the catalog does not know", async () => {
+      const db = await makeMoviesDb();
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const res = await fetch(`${baseUrl}/api/databases/${db.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ include: ["comments"] }),
+      });
+      expect(res.status).toBe(400);
     });
   });
 
