@@ -69,6 +69,8 @@ const TENANT_TABLES = [
   "tenant_keys",
   "tenant_observability_checks",
   "tenant_exports",
+  "semp_threads",
+  "semp_messages",
 ];
 
 type Queryable = Pick<Pool | PoolClient, "query">;
