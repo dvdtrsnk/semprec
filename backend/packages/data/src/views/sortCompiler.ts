@@ -26,17 +26,35 @@ function lookupSortProperty(sort: SortSpec, properties: SortProperties): Pick<Pr
   return property;
 }
 
-/**
- * The one place a sort key's SQL expression is built — `(column ->> $key)::cast` —
- * shared by `compileSort` and `compileSortKeyset` so the `ORDER BY` and the keyset
- * predicate that resumes it can never compare different expressions. A rollup's value
- * lives in `items.computed` (the recompute worker's column), every other property's in
- * `items.properties`. Pushes the property key onto `params`.
- */
-function sortKeyExpression(sort: SortSpec, property: Pick<PropertyRow, "type" | "config">, params: unknown[]): string {
+/** Builds the row and cursor expressions together, sharing the bound select option array. */
+function sortKeyExpression(
+  sort: SortSpec,
+  property: Pick<PropertyRow, "type" | "config">,
+  params: unknown[],
+  cursorValue?: string,
+): { expression: string; cursorExpression: string | undefined } {
   params.push(sort.property);
   const column = property.type === "rollup" ? "computed" : "properties";
-  return `(${column} ->> $${params.length})${sortKeyCast(property)}`;
+  const value = `(${column} ->> $${params.length})`;
+  if (property.type === "select") {
+    const options: unknown[] = Array.isArray(property.config.options) ? property.config.options : [];
+    const keys = options.flatMap((option: unknown) =>
+      typeof option === "object" && option !== null && "key" in option && typeof option.key === "string"
+        ? [option.key]
+        : [],
+    );
+    params.push(keys);
+    const array = `$${params.length}::text[]`;
+    return {
+      expression: `array_position(${array}, ${value})`,
+      cursorExpression: cursorValue === undefined ? undefined : `array_position(${array}, ${cursorValue})`,
+    };
+  }
+  const cast = sortKeyCast(property);
+  return {
+    expression: `${value}${cast}`,
+    cursorExpression: cursorValue === undefined ? undefined : `${cursorValue}${cast}`,
+  };
 }
 
 /**
@@ -47,7 +65,7 @@ function sortKeyExpression(sort: SortSpec, property: Pick<PropertyRow, "type" | 
 export function compileSort(sorts: SortSpec[], properties: SortProperties, params: unknown[]): string {
   const clauses = sorts.map((sort) => {
     const dir = sort.direction === "asc" ? "ASC" : "DESC";
-    return `${sortKeyExpression(sort, lookupSortProperty(sort, properties), params)} ${dir} NULLS LAST`;
+    return `${sortKeyExpression(sort, lookupSortProperty(sort, properties), params).expression} ${dir} NULLS LAST`;
   });
   return clauses.join(", ");
 }
@@ -61,7 +79,9 @@ export function compileSort(sorts: SortSpec[], properties: SortProperties, param
  *
  * Each cursor value is bound as JSON and read back with `#>> '{}'` before the key's cast,
  * so it is the exact text `column ->> key` would have produced for the stored value.
- * Nothing from the cursor is interpolated into the SQL.
+ * Selects compare option positions; an unknown cursor value has a null position and
+ * resumes among null positions by the remaining keys and id. Nothing from the cursor
+ * is interpolated into the SQL.
  */
 export function compileSortKeyset(
   sorts: SortSpec[],
@@ -71,15 +91,18 @@ export function compileSortKeyset(
 ): string {
   const keys = sorts.map((sort, index) => {
     const property = lookupSortProperty(sort, properties);
-    const expression = sortKeyExpression(sort, property, params);
     const value = cursor.values[index] ?? null;
-    if (value === null) return { after: "FALSE", same: `${expression} IS NULL` };
+    if (value === null) {
+      const { expression } = sortKeyExpression(sort, property, params);
+      return { after: "FALSE", same: `${expression} IS NULL` };
+    }
     params.push(JSON.stringify(value));
-    const bound = `($${params.length}::jsonb #>> '{}')${sortKeyCast(property)}`;
+    const cursorValue = `($${params.length}::jsonb #>> '{}')`;
+    const { expression, cursorExpression: bound } = sortKeyExpression(sort, property, params, cursorValue);
     const op = sort.direction === "asc" ? ">" : "<";
     return {
-      after: `(${expression} ${op} ${bound} OR ${expression} IS NULL)`,
-      same: `${expression} = ${bound}`,
+      after: `(${bound} IS NOT NULL AND (${expression} ${op} ${bound} OR ${expression} IS NULL))`,
+      same: `${expression} IS NOT DISTINCT FROM ${bound}`,
     };
   });
   params.push(cursor.id);
