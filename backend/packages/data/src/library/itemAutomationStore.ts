@@ -5,10 +5,21 @@ import { assertKnownValue } from "../dbRowValidation.js";
 export const ITEM_AUTOMATION_STATUSES = ["pending", "done", "error", "locked"] as const;
 export type ItemAutomationStatus = (typeof ITEM_AUTOMATION_STATUSES)[number];
 
+/** Stable, localizable reason an automation failed; the diagnostic `error` text is never returned to clients. */
+export const ITEM_AUTOMATION_ERROR_CODES = [
+  "budgetExceeded",
+  "mediaUnreadable",
+  "providerFailed",
+  "unknown",
+  "deleted",
+] as const;
+export type ItemAutomationErrorCode = (typeof ITEM_AUTOMATION_ERROR_CODES)[number];
+
 export interface ItemAutomationRow {
   itemId: string;
   status: ItemAutomationStatus;
   error: string | null;
+  errorCode: ItemAutomationErrorCode | null;
   attempts: number;
   lastAttemptAt: string | null;
 }
@@ -18,6 +29,7 @@ type ItemAutomationDbRow = {
   item_id: string;
   status: string;
   error: string | null;
+  error_code: string | null;
   attempts: number;
   last_attempt_at: Date | null;
 };
@@ -27,12 +39,16 @@ function mapRow(row: ItemAutomationDbRow): ItemAutomationRow {
     itemId: row.item_id,
     status: assertKnownValue(ITEM_AUTOMATION_STATUSES, row.status, "item automation status"),
     error: row.error,
+    errorCode:
+      row.error_code === null
+        ? null
+        : assertKnownValue(ITEM_AUTOMATION_ERROR_CODES, row.error_code, "item automation error code"),
     attempts: row.attempts,
     lastAttemptAt: row.last_attempt_at ? row.last_attempt_at.toISOString() : null,
   };
 }
 
-const COLUMNS = "item_id, status, error, attempts, last_attempt_at";
+const COLUMNS = "item_id, status, error, error_code, attempts, last_attempt_at";
 
 /**
  * Idempotent: a second call for the same item is a no-op, so re-firing the onItemEvent
@@ -71,7 +87,7 @@ export async function lockItemAutomation(client: PoolClient, itemId: string): Pr
 /** A `locked` row is never touched by the heartbeat, on success or failure — the WHERE guards both write paths below. */
 export async function markItemAutomationDone(client: PoolClient, itemId: string): Promise<void> {
   await client.query(
-    `UPDATE item_automation SET status = 'done', error = NULL WHERE item_id = $1 AND status != 'locked'`,
+    `UPDATE item_automation SET status = 'done', error = NULL, error_code = NULL WHERE item_id = $1 AND status != 'locked'`,
     [itemId],
   );
 }
@@ -79,7 +95,7 @@ export async function markItemAutomationDone(client: PoolClient, itemId: string)
 /** `attempts` is a cumulative counter across the whole history (including across daily retry batches), not reset per batch. */
 export async function markItemAutomationError(client: PoolClient, itemId: string, error: string): Promise<void> {
   await client.query(
-    `UPDATE item_automation SET status = 'error', error = $2, attempts = attempts + 1, last_attempt_at = now() WHERE item_id = $1 AND status != 'locked'`,
+    `UPDATE item_automation SET status = 'error', error = $2, error_code = NULL, attempts = attempts + 1, last_attempt_at = now() WHERE item_id = $1 AND status != 'locked'`,
     [itemId, error],
   );
 }
@@ -107,7 +123,7 @@ export async function startItemAutomationAttempt(
 /**
  * Records a failed attempt's reason without counting it again (`startItemAutomationAttempt`
  * already did): `status` stays `pending` while retries remain, and becomes `error` once the
- * failure is permanent. Returns whether a row was written — `false` when the row is `locked`
+ * failure is permanent. `errorCode` replaces the stored code (`null` clears it). Returns whether a row was written — `false` when the row is `locked`
  * or absent.
  */
 export async function recordItemAutomationFailure(
@@ -115,10 +131,11 @@ export async function recordItemAutomationFailure(
   itemId: string,
   error: string,
   status: Extract<ItemAutomationStatus, "pending" | "error">,
+  errorCode: ItemAutomationErrorCode | null = null,
 ): Promise<boolean> {
   const result = await client.query(
-    `UPDATE item_automation SET status = $3, error = $2 WHERE item_id = $1 AND status != 'locked'`,
-    [itemId, error, status],
+    `UPDATE item_automation SET status = $3, error = $2, error_code = $4 WHERE item_id = $1 AND status != 'locked'`,
+    [itemId, error, status, errorCode],
   );
   return result.rowCount === 1;
 }
@@ -163,7 +180,7 @@ export async function listErroredItemAutomationForDatabases(
 ): Promise<ItemAutomationRow[]> {
   if (databaseIds.length === 0) return [];
   const { rows } = await client.query<ItemAutomationDbRow>(
-    `SELECT ia.item_id, ia.status, ia.error, ia.attempts, ia.last_attempt_at
+    `SELECT ia.item_id, ia.status, ia.error, ia.error_code, ia.attempts, ia.last_attempt_at
      FROM item_automation ia
      JOIN items i ON i.id = ia.item_id
      WHERE ia.status = 'error' AND i.database_id = ANY($1::uuid[]) AND i.deleted_at IS NULL`,

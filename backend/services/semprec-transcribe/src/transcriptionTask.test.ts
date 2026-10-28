@@ -47,8 +47,13 @@ import { wireRealtimeHooks } from "@semprec/realtime";
 import type { AiGatewayClientPort, AiGatewayCompletionInput, AiGatewayCompletionResult } from "@semprec/shared";
 import { CORE_TASK_NAMES, enqueueJob, registerTask, runOnce } from "@semprec/queue";
 import { AiGatewayFailedError } from "@semprec/shared";
-import { createTranscriptionTask, TranscriptionSourceChangedError } from "./transcriptionTask.js";
-import { AudioGatewayBudgetExceededError } from "./audioGatewayClient.js";
+import {
+  classifyTranscriptionFailure,
+  createTranscriptionTask,
+  TranscriptionSourceChangedError,
+} from "./transcriptionTask.js";
+import { AudioGatewayBudgetExceededError, AudioGatewayCallError } from "./audioGatewayClient.js";
+import { MediaToolError } from "./mediaNormalization.js";
 import type {
   AudioGatewayClient,
   DiarizationTurn,
@@ -1379,13 +1384,74 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
         {
           user_id: userId,
           kind: "automation_error",
-          link_href: null,
+          link_href: `?page=transcript&id=${transcript.id}`,
           source_table: "item_automation",
           transition_instance: "attempt:3",
         },
       ]);
       expect(gatewayClient.diarizeCalls).toHaveLength(1);
       expect(gatewayClient.transcribeCalls).toHaveLength(1);
+    });
+
+    it.each([
+      ["a budget rejection", () => new AiGatewayFailedError("budget_exceeded"), "budgetExceeded"],
+      ["an audio gateway budget rejection", () => new AudioGatewayBudgetExceededError(), "budgetExceeded"],
+      [
+        "an ffmpeg failure",
+        () => new MediaToolError("ffmpeg exited with code 1: secret transcript text"),
+        "mediaUnreadable",
+      ],
+      [
+        "an audio gateway failure",
+        () => new AudioGatewayCallError("Gateway responded with HTTP 500"),
+        "providerFailed",
+      ],
+      ["a completion gateway failure", () => new AiGatewayFailedError("http"), "providerFailed"],
+      ["any other error", () => new Error("secret transcript text"), "unknown"],
+      ["a thrown non-error", () => "secret transcript text" as unknown as Error, "unknown"],
+    ])("stores the code for %s and keeps its message out of the notification", async (_label, makeFailure, code) => {
+      const { file } = await createSourceFile();
+      await createUser();
+      const failure = makeFailure();
+      expect(classifyTranscriptionFailure(failure)).toBe(code);
+      summaryClient.failure = failure;
+      const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+
+      await task({ fileItemId: file.id }, FINAL_ATTEMPT).catch(() => undefined);
+
+      const transcript = await readTranscript(file.id);
+      const { rows } = await pool.query<{ status: string; error_code: string | null }>(
+        "SELECT status, error_code FROM item_automation WHERE item_id = $1",
+        [transcript.id],
+      );
+      expect(rows).toEqual([{ status: "error", error_code: code }]);
+      const notifications = await pool.query("SELECT to_jsonb(n) AS row FROM notifications n WHERE source_id = $1", [
+        transcript.id,
+      ]);
+      expect(notifications.rows).toHaveLength(1);
+      expect(JSON.stringify(notifications.rows)).not.toContain("secret transcript text");
+    });
+
+    it("clears the error code together with the error when a retry succeeds", async () => {
+      const { file } = await createSourceFile();
+      await createUser();
+      summaryClient.failure = new AiGatewayFailedError("http");
+      const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+      await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toBe(summaryClient.failure);
+      const transcript = await readTranscript(file.id);
+      const readCode = async () =>
+        (
+          await pool.query<{ error_code: string | null; error: string | null }>(
+            "SELECT error, error_code FROM item_automation WHERE item_id = $1",
+            [transcript.id],
+          )
+        ).rows[0];
+      expect((await readCode())?.error_code).toBe("providerFailed");
+
+      summaryClient.failure = null;
+      await task({ fileItemId: file.id }, { job: { attempts: 2, max_attempts: 3 } });
+
+      expect(await readCode()).toEqual({ error: null, error_code: null });
     });
 
     it("sends the permanent-failure automation_error notification to the user of the tenant it ran in, never the earlier-created account", async () => {

@@ -32,8 +32,23 @@ export interface MediaProbeResult {
   creationTime: string | null;
 }
 
-function describeExit(command: string, code: number | null, signal: NodeJS.Signals | null, stderr: string): Error {
-  return new Error(`${command} exited with code ${code ?? "null"}${signal ? ` (signal ${signal})` : ""}: ${stderr}`);
+/** `ffmpeg` or `ffprobe` could not read or convert the media; `recordTranscriptionFailure` stores this class as `mediaUnreadable`. */
+export class MediaToolError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MediaToolError";
+  }
+}
+
+function describeExit(
+  command: string,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  stderr: string,
+): MediaToolError {
+  return new MediaToolError(
+    `${command} exited with code ${code ?? "null"}${signal ? ` (signal ${signal})` : ""}: ${stderr}`,
+  );
 }
 
 /**
@@ -142,7 +157,7 @@ export function probeMedia(inputPath: string): Promise<MediaProbeResult> {
           if (parsed.format.duration !== undefined) {
             durationSeconds = Number.parseFloat(parsed.format.duration);
             if (!Number.isFinite(durationSeconds)) {
-              reject(new Error(`ffprobe reported a non-numeric duration: '${parsed.format.duration}'`));
+              reject(new MediaToolError(`ffprobe reported a non-numeric duration: '${parsed.format.duration}'`));
               return;
             }
           }
@@ -172,7 +187,8 @@ export async function probeNormalizedDuration(blobStorage: BlobStorageWriter, st
   const path = await downloadToTempFile(blobStorage, storageKey);
   try {
     const { durationSeconds } = await probeMedia(path);
-    if (durationSeconds === null) throw new Error(`ffprobe reported no duration for normalized output '${storageKey}'`);
+    if (durationSeconds === null)
+      throw new MediaToolError(`ffprobe reported no duration for normalized output '${storageKey}'`);
     return durationSeconds;
   } finally {
     await removeTempFile(path);
