@@ -6,7 +6,12 @@ import { assertKnownValue } from "../dbRowValidation.js";
 import { parseViewConfig, type ViewConfig } from "../views/viewConfig.js";
 import { getDatabase } from "./databasesStore.js";
 import { getItemsByIds } from "./itemsStore.js";
-import { isBuiltinViewType, isKnownViewType, type ViewTypeRegistry } from "./viewTypeRegistry.js";
+import {
+  getViewTypeDefinition,
+  isBuiltinViewType,
+  isKnownViewType,
+  type ViewTypeRegistry,
+} from "./viewTypeRegistry.js";
 
 const CREATED_BY_VALUES: readonly CreatedBy[] = ["user", "ai_agent", "system"];
 const VIEW_COLUMNS =
@@ -52,7 +57,7 @@ async function validateViewTypeConfig(
   config: ViewConfig,
   viewTypeRegistry: ViewTypeRegistry,
 ): Promise<void> {
-  const definition = viewTypeRegistry.get(type);
+  const definition = getViewTypeDefinition(viewTypeRegistry, type);
   if (definition?.configSchema) {
     const result = definition.configSchema.safeParse(config);
     if (!result.success) {

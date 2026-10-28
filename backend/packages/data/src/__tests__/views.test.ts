@@ -85,6 +85,83 @@ describe("views", () => {
       ).rejects.toBeInstanceOf(ValidationError);
     });
 
+    describe("gallery view type", () => {
+      it("creates gallery views with and without a coverKey", async () => {
+        const db = await makeTasksDb();
+        const plain = await chokePoint.createView({
+          databaseId: db.id,
+          type: "gallery",
+          name: "Files",
+          config: { columns: 3, aspect: "3:4" },
+        });
+        expect(plain.type).toBe("gallery");
+        expect(plain.config).toMatchObject({ columns: 3, aspect: "3:4" });
+        const withCover = await chokePoint.createView({
+          databaseId: db.id,
+          type: "gallery",
+          name: "Recipes",
+          config: { columns: 2, aspect: "4:3", coverKey: "photo" },
+        });
+        expect(withCover.config).toMatchObject({ columns: 2, aspect: "4:3", coverKey: "photo" });
+      });
+
+      it.each([
+        ["columns 5", { columns: 5, aspect: "3:4" }],
+        ["missing columns", { aspect: "3:4" }],
+        ["missing aspect", { columns: 3 }],
+        ["aspect 1:1", { columns: 3, aspect: "1:1" }],
+        ["empty coverKey", { columns: 3, aspect: "3:4", coverKey: "" }],
+      ])("rejects a gallery config on create: %s", async (_label, config) => {
+        const db = await makeTasksDb();
+        await expect(
+          chokePoint.createView({ databaseId: db.id, type: "gallery", name: "G", config }),
+        ).rejects.toBeInstanceOf(ValidationError);
+      });
+
+      it.each([
+        ["columns 5", { columns: 5 }],
+        ["aspect 1:1", { aspect: "1:1" }],
+      ])("rejects a gallery config on patch: %s", async (_label, patch) => {
+        const db = await makeTasksDb();
+        const view = await chokePoint.createView({
+          databaseId: db.id,
+          type: "gallery",
+          name: "G",
+          config: { columns: 3, aspect: "3:4" },
+        });
+        await expect(chokePoint.patchView({ id: view.id, actor: userActor, config: patch })).rejects.toBeInstanceOf(
+          ValidationError,
+        );
+        expect((await chokePoint.getView(view.id))?.config).toMatchObject({ columns: 3, aspect: "3:4" });
+      });
+
+      it("accepts a valid gallery patch", async () => {
+        const db = await makeTasksDb();
+        const view = await chokePoint.createView({
+          databaseId: db.id,
+          type: "gallery",
+          name: "G",
+          config: { columns: 3, aspect: "3:4" },
+        });
+        const patched = await chokePoint.patchView({ id: view.id, actor: userActor, config: { columns: 2 } });
+        expect(patched.config).toMatchObject({ columns: 2, aspect: "3:4" });
+      });
+
+      it("rejects ownerModuleId and re-registration like every built-in type", async () => {
+        const db = await makeTasksDb();
+        await expect(
+          chokePoint.createView({
+            databaseId: db.id,
+            type: "gallery",
+            name: "G",
+            config: { columns: 3, aspect: "3:4" },
+            ownerModuleId: "recipes",
+          }),
+        ).rejects.toBeInstanceOf(ValidationError);
+        expect(() => registerViewType(viewTypeRegistry, "gallery", {})).toThrow(/built-in/);
+      });
+    });
+
     it("a curated view has no databaseId and requires config.membership = 'manual'", async () => {
       const view = await chokePoint.createView({
         type: "list",
