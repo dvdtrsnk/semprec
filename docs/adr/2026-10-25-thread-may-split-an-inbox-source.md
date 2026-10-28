@@ -52,8 +52,7 @@ the extra cards and how the tick treats them. The implementation is issue #1939.
 - At most one split action per primary card is in flight: the action row-locks the primary card
   (`FOR UPDATE`) for the whole transaction.
 - A split is refused when the primary card is `confirmed` or `rejected`.
-- A split creates at most **10** cards (siblings plus any change to the primary card, counted
-  together as the cards of the split).
+- A split yields at most **10** cards in total: the primary card plus at most 9 siblings.
 - Every sibling is a normal proposal and passes the same envelope validation as any card.
 
 ## Alternatives rejected
