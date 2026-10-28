@@ -139,6 +139,9 @@ export interface DocRow {
   itemId: string;
   kind: DocKind;
   createdAt: string;
+  /** Time of the last recorded edit; equals `createdAt` when no edit was recorded. */
+  lastEditedAt: string;
+  lastEditedBy: CreatedBy | null;
 }
 
 /**

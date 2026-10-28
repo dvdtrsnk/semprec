@@ -3,12 +3,22 @@ import type { Queryable } from "../db/pool.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { ConflictError, NotFoundError } from "../errors.js";
 import { assertKnownValue } from "../dbRowValidation.js";
-import type { DocKind, DocRow } from "../types.js";
+import type { CreatedBy, DocKind, DocRow } from "../types.js";
 
 const DOC_KIND_VALUES: readonly DocKind[] = ["page", "canvas"];
 
 /** The raw `docs` row shape this module reads back from Postgres. */
-type DocDbRow = { id: string; item_id: string; kind: string; created_at: Date };
+type DocDbRow = {
+  id: string;
+  item_id: string;
+  kind: string;
+  created_at: Date;
+  last_edited_at: Date | null;
+  last_edited_by: string | null;
+};
+
+const DOC_COLUMNS = "id, item_id, kind, created_at, last_edited_at, last_edited_by";
+const CREATED_BY_VALUES: readonly CreatedBy[] = ["user", "ai_agent", "system"];
 
 function mapDocRow(row: DocDbRow): DocRow {
   return {
@@ -16,20 +26,21 @@ function mapDocRow(row: DocDbRow): DocRow {
     itemId: row.item_id,
     kind: assertKnownValue(DOC_KIND_VALUES, row.kind, "doc kind"),
     createdAt: row.created_at.toISOString(),
+    lastEditedAt: (row.last_edited_at ?? row.created_at).toISOString(),
+    lastEditedBy:
+      row.last_edited_by === null
+        ? null
+        : assertKnownValue(CREATED_BY_VALUES, row.last_edited_by, "doc last edited by"),
   };
 }
 
 export async function getDocByItemId(client: Queryable, itemId: string): Promise<DocRow | null> {
-  const { rows } = await client.query<DocDbRow>(`SELECT id, item_id, kind, created_at FROM docs WHERE item_id = $1`, [
-    itemId,
-  ]);
+  const { rows } = await client.query<DocDbRow>(`SELECT ${DOC_COLUMNS} FROM docs WHERE item_id = $1`, [itemId]);
   return rows[0] ? mapDocRow(rows[0]) : null;
 }
 
 export async function getDocById(client: Queryable, docId: string): Promise<DocRow | null> {
-  const { rows } = await client.query<DocDbRow>(`SELECT id, item_id, kind, created_at FROM docs WHERE id = $1`, [
-    docId,
-  ]);
+  const { rows } = await client.query<DocDbRow>(`SELECT ${DOC_COLUMNS} FROM docs WHERE id = $1`, [docId]);
   return rows[0] ? mapDocRow(rows[0]) : null;
 }
 
@@ -68,7 +79,7 @@ export async function getOrCreateDoc(client: Queryable, itemId: string, kind: Do
 
   const { rows } = await client.query<DocDbRow & { history_available_from: Date }>(
     `INSERT INTO docs (item_id, kind, history_available_from) VALUES ($1, $2, now())
-     ON CONFLICT DO NOTHING RETURNING id, item_id, kind, created_at, history_available_from`,
+     ON CONFLICT DO NOTHING RETURNING ${DOC_COLUMNS}, history_available_from`,
     [itemId, kind],
   );
   if (rows[0]) {
