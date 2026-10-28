@@ -5,7 +5,13 @@ import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { createPendingApprovalRequest, decideApprovalRequest } from "../mcp/approvalRequestsStore.js";
-import { listApprovalRequestsQueue } from "../mcp/approvalRequestsQueue.js";
+import { listApprovalRequestsQueue, toApprovalRequestDecisionView } from "../mcp/approvalRequestsQueue.js";
+import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
+import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { withTransaction } from "../db/pool.js";
+import * as itemsStore from "../chokePoint/itemsStore.js";
+import * as databasesStore from "../chokePoint/databasesStore.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -61,6 +67,8 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
         kind: "mcpInvoke",
         mcpToolRegistrationId: payload.mcpToolRegistrationId,
         mcpServerItemId: payload.mcpServerItemId,
+        mcpServerName: null,
+        mcpToolName: null,
         argKeys: ["to", "apiKey"],
       },
       agentRunId: run.id,
@@ -92,6 +100,72 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       kind: "genericOperation",
       operationName: "item.delete",
       argKeys: ["itemId"],
+    });
+  });
+
+  describe("MCP server and tool names", () => {
+    const resourceSnapshot = { kind: "test", resourceId: "test", sha256: null };
+
+    async function seedMcpRequest(source: "user" | "heartbeat" | "supervisor" | "mcp") {
+      await seedSystem(pool, createViewTypeRegistry());
+      const database = await withTransaction(pool, (client) =>
+        databasesStore.getDatabaseByModuleId(client, "mcpServers"),
+      );
+      if (!database) throw new Error("mcpServers database was not seeded");
+      const server = await withTransaction(pool, (client) =>
+        itemsStore.insertItem(client, { databaseId: database.id, properties: { name: "Search server" } }),
+      );
+      const registration = await upsertMcpToolRegistration(pool, {
+        mcpServerItemId: server.id,
+        toolName: "search_web",
+        toolSchema: { type: "object" },
+      });
+      const run = await createAgentRun(pool, { triggeredBy: source, task: "test" });
+      const created = await createPendingApprovalRequest(pool, {
+        agentRunId: run.id,
+        toolName: "search_web",
+        riskClass: "moderate",
+        payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { q: "x" } },
+        resourceSnapshot,
+      });
+      return { database, server, created };
+    }
+
+    it("names the server and the tool in the listed summary, whatever the run's trigger", async () => {
+      for (const source of ["user", "heartbeat", "supervisor", "mcp"] as const) {
+        await resetDatabase(pool);
+        ownerId = await createUser();
+        await seedMcpRequest(source);
+        const rows = await listApprovalRequestsQueue(pool, ownerId);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.safeSummary).toMatchObject({
+          kind: "mcpInvoke",
+          mcpServerName: "Search server",
+          mcpToolName: "search_web",
+          argKeys: ["q"],
+        });
+      }
+    });
+
+    it("names them in the decision view too", async () => {
+      const { created } = await seedMcpRequest("user");
+      const view = await toApprovalRequestDecisionView(pool, created);
+      expect(view.safeSummary).toMatchObject({ mcpServerName: "Search server", mcpToolName: "search_web" });
+    });
+
+    it("yields a null server name, with the tool name kept, once the server item is deleted", async () => {
+      const { database, server } = await seedMcpRequest("user");
+      await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, database.id, server.id));
+      const rows = await listApprovalRequestsQueue(pool, ownerId);
+      expect(rows[0]!.safeSummary).toMatchObject({ mcpServerName: null, mcpToolName: "search_web" });
+    });
+
+    it("yields a null tool name when the registration row is gone", async () => {
+      await seedMcpRequest("user");
+      // Raw delete: no store function removes a registration, and the read must survive one vanishing.
+      await pool.query(`DELETE FROM mcp_tool_registrations`);
+      const rows = await listApprovalRequestsQueue(pool, ownerId);
+      expect(rows[0]!.safeSummary).toMatchObject({ mcpServerName: "Search server", mcpToolName: null });
     });
   });
 
