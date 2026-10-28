@@ -58,6 +58,7 @@ interface ErrorBody {
 interface ItemQueryBody {
   items: ItemBody[];
   nextCursor: string | null;
+  totalCount?: number;
 }
 
 interface RelationBody {
@@ -689,6 +690,53 @@ describe("item routes (issue #241)", () => {
       expect(dbBody.items.map((i) => i.id)).toEqual([arrival.id]);
       expect(viewBody.items.map((i) => i.id)).toEqual(dbBody.items.map((i) => i.id));
       expect(viewBody.nextCursor).toBe(dbBody.nextCursor);
+    });
+  });
+
+  describe("query totalCount (includeCount)", () => {
+    it("returns the same totalCount from the database and a view over it, and none by default", async () => {
+      const db = await makeMoviesDb();
+      for (const title of ["Arrival", "Arrival", "Arrival", "Dune"]) {
+        await chokePoint.createItem({ databaseId: db.id, properties: { title } });
+      }
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const filter = { type: "equals", property: "title", value: "Arrival" };
+      const view = await chokePoint.createView({ databaseId: db.id, type: "table", name: "A", config: { filter } });
+
+      const dbRes = await fetch(`${baseUrl}/api/databases/${db.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ filter, limit: 2, includeCount: true }),
+      });
+      const dbBody = (await dbRes.json()) as ItemQueryBody;
+      const viewRes = await fetch(`${baseUrl}/api/views/${view.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ limit: 2, includeCount: true }),
+      });
+      const viewBody = (await viewRes.json()) as ItemQueryBody;
+      expect(dbBody.items).toHaveLength(2);
+      expect(dbBody.totalCount).toBe(3);
+      expect(viewBody.totalCount).toBe(3);
+
+      const plain = await fetch(`${baseUrl}/api/databases/${db.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ filter }),
+      });
+      expect(await plain.json()).not.toHaveProperty("totalCount");
+    });
+
+    it("returns 400 naming includeCount for a non-boolean value on both routes", async () => {
+      const db = await makeMoviesDb();
+      const view = await chokePoint.createView({ databaseId: db.id, type: "table", name: "V" });
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      for (const url of [`${baseUrl}/api/databases/${db.id}/query`, `${baseUrl}/api/views/${view.id}/query`]) {
+        const res = await fetch(url, { method: "POST", headers, body: JSON.stringify({ includeCount: "yes" }) });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as ErrorBody;
+        expect(JSON.stringify(body.error)).toContain("includeCount");
+      }
     });
   });
 

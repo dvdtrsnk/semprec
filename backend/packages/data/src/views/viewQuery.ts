@@ -1,7 +1,7 @@
 import type { PoolClient } from "pg";
 import { NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRow, ViewItemRow, ViewRow } from "../types.js";
-import { getItemsByIds, getItemsByIdsIncludingDeleted, listItems } from "../chokePoint/itemsStore.js";
+import { countItems, getItemsByIds, getItemsByIdsIncludingDeleted, listItems } from "../chokePoint/itemsStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import * as viewItemsStore from "../chokePoint/viewItemsStore.js";
@@ -23,11 +23,15 @@ export interface QueryViewOptions {
   cursor?: string;
   /** Excludes soft-deleted rows unless `true` (issue #157's `inTrash`). */
   includeDeleted?: boolean;
+  /** Also returns `totalCount`: the number of items matching the filter, ignoring cursor, limit and sort. */
+  includeCount?: boolean;
 }
 
 export interface QueryViewResult {
   items: ItemRow[];
   nextCursor: string | null;
+  /** Present only when `includeCount` was requested. */
+  totalCount?: number;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -127,11 +131,15 @@ async function queryItemsCore(
   const sortCursor =
     sorted && options.cursor !== undefined ? decodeSortCursor(options.cursor, sortSpecs, sortProperties) : undefined;
 
-  return listItems(client, databaseId, {
+  const buildFilterSql = filterNode
+    ? (params: unknown[]) => compileFilterNode(filterNode, filterProperties!, params)
+    : undefined;
+
+  const page = await listItems(client, databaseId, {
     limit: options.limit,
     cursor: sorted ? undefined : options.cursor,
     includeDeleted: options.includeDeleted,
-    buildFilterSql: filterNode ? (params) => compileFilterNode(filterNode, filterProperties!, params) : undefined,
+    buildFilterSql,
     buildOrderBySql: sorted ? (params) => compileSort(sortSpecs, sortProperties, params) : undefined,
     keyset: sorted
       ? {
@@ -141,6 +149,9 @@ async function queryItemsCore(
         }
       : undefined,
   });
+  if (!options.includeCount) return page;
+  const totalCount = await countItems(client, databaseId, { includeDeleted: options.includeDeleted, buildFilterSql });
+  return { ...page, totalCount };
 }
 
 async function queryFilteredView(
@@ -150,16 +161,13 @@ async function queryFilteredView(
   options: QueryViewOptions,
 ): Promise<QueryViewResult> {
   const sortSpecs = buildSortSpecs(config);
-  const { items, nextCursor } = await queryItemsCore(client, databaseId, {
+  const { items, ...rest } = await queryItemsCore(client, databaseId, {
     ...options,
     filterNode: config.filter,
     sortSpecs,
   });
 
-  return {
-    items: items.map((item) => ({ ...item, properties: projectProperties(item.properties, config) })),
-    nextCursor,
-  };
+  return { ...rest, items: items.map((item) => ({ ...item, properties: projectProperties(item.properties, config) })) };
 }
 
 /**
@@ -211,7 +219,16 @@ async function queryCuratedView(
   );
   const items = page.map((m) => itemsById.get(m.itemId)).filter((item): item is ItemRow => item !== undefined);
   const lastOnPage = page[page.length - 1];
-  return { items, nextCursor: hasMore && lastOnPage !== undefined ? String(lastOnPage.position) : null };
+  const result: QueryViewResult = {
+    items,
+    nextCursor: hasMore && lastOnPage !== undefined ? String(lastOnPage.position) : null,
+  };
+  if (options.includeCount) {
+    result.totalCount = options.includeDeleted
+      ? (await viewItemsStore.listViewItems(client, view.id)).length
+      : await viewItemsStore.countLiveViewItems(client, view.id);
+  }
+  return result;
 }
 
 export async function queryView(
@@ -266,12 +283,21 @@ function parseInTrashInput(raw: unknown): boolean {
   return raw;
 }
 
+function parseIncludeCountInput(raw: unknown): boolean {
+  if (raw === undefined) return false;
+  if (typeof raw !== "boolean") {
+    throw new ValidationError("'includeCount' must be a boolean", { field: "includeCount" });
+  }
+  return raw;
+}
+
 export interface DatabaseQueryInput {
   filter?: unknown;
   sort?: unknown;
   cursor?: unknown;
   limit?: unknown;
   inTrash?: unknown;
+  includeCount?: unknown;
 }
 
 /**
@@ -290,8 +316,9 @@ export async function queryDatabaseItems(
   const limit = parseLimitInput(input.limit);
   const cursor = parseCursorInput(input.cursor, sortSpecs.length === 0);
   const includeDeleted = parseInTrashInput(input.inTrash);
+  const includeCount = parseIncludeCountInput(input.includeCount);
 
-  return queryItemsCore(client, databaseId, { filterNode, sortSpecs, limit, cursor, includeDeleted });
+  return queryItemsCore(client, databaseId, { filterNode, sortSpecs, limit, cursor, includeDeleted, includeCount });
 }
 
 export interface ViewQueryInput {
@@ -300,6 +327,7 @@ export interface ViewQueryInput {
   cursor?: unknown;
   limit?: unknown;
   inTrash?: unknown;
+  includeCount?: unknown;
 }
 
 /**
@@ -322,6 +350,7 @@ export async function queryViewItems(
 
   const limit = parseLimitInput(input.limit);
   const includeDeleted = parseInTrashInput(input.inTrash);
+  const includeCount = parseIncludeCountInput(input.includeCount);
 
   if (view.databaseId === null) {
     if (input.filter !== undefined || input.sort !== undefined) {
@@ -330,7 +359,7 @@ export async function queryViewItems(
       });
     }
     const cursor = parseCursorInput(input.cursor, false);
-    return queryCuratedView(client, view, { limit, cursor, includeDeleted });
+    return queryCuratedView(client, view, { limit, cursor, includeDeleted, includeCount });
   }
 
   const config = parseViewConfig(view.config);
@@ -338,15 +367,13 @@ export async function queryViewItems(
   const sortSpecs = input.sort !== undefined ? parseSortConfigInput(input.sort) : buildSortSpecs(config);
   const cursor = parseCursorInput(input.cursor, sortSpecs.length === 0);
 
-  const { items, nextCursor } = await queryItemsCore(client, view.databaseId, {
+  const { items, ...rest } = await queryItemsCore(client, view.databaseId, {
     filterNode,
     sortSpecs,
     limit,
     cursor,
     includeDeleted,
+    includeCount,
   });
-  return {
-    items: items.map((item) => ({ ...item, properties: projectProperties(item.properties, config) })),
-    nextCursor,
-  };
+  return { ...rest, items: items.map((item) => ({ ...item, properties: projectProperties(item.properties, config) })) };
 }

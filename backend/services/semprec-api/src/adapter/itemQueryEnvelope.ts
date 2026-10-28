@@ -5,8 +5,12 @@ import { toItemEnvelope, type ItemEnvelope } from "./itemEnvelope.js";
 export interface ItemQueryEnvelope {
   items: ItemEnvelope[];
   nextCursor: string | null;
+  /** Present only when the request set `includeCount: true`. */
+  totalCount?: number;
 }
 
 export function toItemQueryEnvelope(result: QueryViewResult): ItemQueryEnvelope {
-  return { items: result.items.map(toItemEnvelope), nextCursor: result.nextCursor };
+  const envelope: ItemQueryEnvelope = { items: result.items.map(toItemEnvelope), nextCursor: result.nextCursor };
+  if (result.totalCount !== undefined) envelope.totalCount = result.totalCount;
+  return envelope;
 }
