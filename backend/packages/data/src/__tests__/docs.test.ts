@@ -233,6 +233,69 @@ describe("docs (CRDT layer)", () => {
       expect(rows[0]!.created_by).toBe("ai_agent");
     });
 
+    describe("last edited tracking", () => {
+      async function readLastEdited(docId: string) {
+        const { rows } = await pool.query<{ last_edited_at: Date | null; last_edited_by: string | null }>(
+          `SELECT last_edited_at, last_edited_by FROM docs WHERE id = $1`,
+          [docId],
+        );
+        return rows[0]!;
+      }
+
+      it("a user write records last_edited_by 'user' and the update's own created_at", async () => {
+        const item = await makeItem();
+        await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "user");
+        const doc = (await docStore.getDoc(item.id))!;
+        const edited = await readLastEdited(doc.id);
+        const { rows } = await pool.query<{ created_at: Date }>(
+          `SELECT created_at FROM doc_updates WHERE doc_id = $1`,
+          [doc.id],
+        );
+        expect(edited.last_edited_by).toBe("user");
+        expect(edited.last_edited_at).toEqual(rows[0]!.created_at);
+      });
+
+      it("an ai_agent write records last_edited_by 'ai_agent'", async () => {
+        const item = await makeItem();
+        await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "ai_agent");
+        const doc = (await docStore.getDoc(item.id))!;
+        expect((await readLastEdited(doc.id)).last_edited_by).toBe("ai_agent");
+      });
+
+      it("a sync-style mutateDoc update moves last_edited_at forward", async () => {
+        const item = await makeItem();
+        await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "ai_agent");
+        const doc = (await docStore.getDoc(item.id))!;
+        const first = await readLastEdited(doc.id);
+        await mutateDoc(pool, doc.id, "user", (ydoc) => {
+          ydoc.getMap("sync-test").set("k", "v");
+        });
+        const second = await readLastEdited(doc.id);
+        expect(second.last_edited_by).toBe("user");
+        expect(second.last_edited_at!.getTime()).toBeGreaterThan(first.last_edited_at!.getTime());
+      });
+
+      it("a mutation that changes nothing leaves the columns untouched", async () => {
+        const item = await makeItem();
+        await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "ai_agent");
+        const doc = (await docStore.getDoc(item.id))!;
+        const before = await readLastEdited(doc.id);
+        await mutateDoc(pool, doc.id, "user", () => {});
+        expect(await readLastEdited(doc.id)).toEqual(before);
+      });
+
+      it("a docs row with NULL columns reads lastEditedAt equal to createdAt and lastEditedBy null", async () => {
+        const item = await makeItem();
+        await withTransaction(pool, (client) => getOrCreateDoc(client, item.id, "page"));
+        const doc = (await docStore.getDoc(item.id))!;
+        expect(doc.lastEditedAt).toBe(doc.createdAt);
+        expect(doc.lastEditedBy).toBeNull();
+        await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "system");
+        const edited = (await docStore.getDoc(item.id))!;
+        expect(edited.lastEditedBy).toBe("system");
+      });
+    });
+
     it("notifies the realtime doc-update hook with the doc id, origin, and the persisted update's id", async () => {
       const events: DocUpdateEvent[] = [];
       setDocUpdateHook((event) => events.push(event));

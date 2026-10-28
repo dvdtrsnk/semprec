@@ -1,6 +1,6 @@
 import * as Y from "yjs";
 import type { Pool, PoolClient } from "pg";
-import { runAfterCommit, withTransaction } from "../db/pool.js";
+import { requireAffectedRows, runAfterCommit, withTransaction } from "../db/pool.js";
 import type { CreatedBy } from "../types.js";
 import { notifyDocUpdate } from "../realtimeHook.js";
 import { resolveDocHistoryRetentionDays, retentionHours } from "./docHistoryConfig.js";
@@ -176,6 +176,16 @@ async function appendDocUpdateWithClient(
     [docId, updateBuffer, createdBy],
   );
   const { id, created_at } = rows[0]!;
+  // Same transaction as the insert, and the insert's own created_at, so the docs row and
+  // the update agree on when and by whom the doc was last edited (issue #1405).
+  requireAffectedRows(
+    await client.query(`UPDATE docs SET last_edited_at = $2::timestamptz, last_edited_by = $3 WHERE id = $1`, [
+      docId,
+      created_at,
+      createdBy,
+    ]),
+    `docs row ${docId} for last-edited tracking`,
+  );
   await client.query(
     `INSERT INTO doc_history_updates (update_id, doc_id, update, created_by, created_at, expires_at)
      VALUES ($1, $2, $3, $4, $5::timestamptz, $5::timestamptz + make_interval(hours => $6::int))`,
