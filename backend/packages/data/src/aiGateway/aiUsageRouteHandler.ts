@@ -28,7 +28,11 @@ export function createAiUsageRouteHandler(pool: Pool) {
     if (!from || !to) {
       throw new ValidationError("'from' and 'to' query parameters are required");
     }
-    const report = await getAiUsageReport(pool, { from, to });
+    const granularity = url.searchParams.get("granularity") ?? "day";
+    if (granularity !== "day" && granularity !== "month") {
+      throw new ValidationError("'granularity' must be 'day' or 'month'", { field: "granularity" });
+    }
+    const report = await getAiUsageReport(pool, { from, to, granularity });
     return { status: 200, body: report };
   };
 }
