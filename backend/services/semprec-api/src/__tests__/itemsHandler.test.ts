@@ -271,8 +271,16 @@ describe("item routes (issue #241)", () => {
         body: JSON.stringify({ properties: { title: "Dune (2021)" }, ifVersion: item.updatedAt }),
       });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as ItemBody;
-      expect(body.properties).toEqual({ title: "Dune (2021)", year: 2021 });
+      const body: unknown = await res.json();
+      expect(body).toEqual({
+        id: item.id,
+        databaseId: db.id,
+        properties: { title: "Dune (2021)", year: 2021 },
+        computed: item.computed,
+        updatedAt: expect.any(String),
+        deletedAt: null,
+      });
+      expect(body).not.toHaveProperty("previous");
     });
 
     it("rejects a patch body with no properties field with a 'required' message, not a type error", async () => {

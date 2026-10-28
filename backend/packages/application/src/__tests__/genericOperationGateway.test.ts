@@ -13,6 +13,7 @@ import {
 import { runOnce } from "@semprec/queue";
 import {
   ApprovalRequiredError,
+  ConflictError,
   ForbiddenError,
   NotFoundError,
   ValidationError,
@@ -93,6 +94,78 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("item.patch carries the transactional pre-image through the production gateway and service", async () => {
+    await inTenantZero(async () => {
+      const gateway = createGenericOperationGateway(pool);
+      const actor: AuthenticatedActor = { userId: await createUser() };
+      const db = await chokePoint.createDatabase({ name: "Patch values" });
+      for (const key of ["due", "note", "unset"]) {
+        await chokePoint.createProperty({ databaseId: db.id, key, name: key, type: "text" });
+      }
+      const item = await chokePoint.createItem({
+        databaseId: db.id,
+        properties: { due: "2026-10-27T14:00:00Z", note: "Keep" },
+      });
+      const result = await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
+        itemId: item.id,
+        properties: { due: "2026-10-28T09:00:00Z", unset: "Now set" },
+        ifVersion: item.updatedAt,
+      });
+      expect(result).toMatchObject({
+        id: item.id,
+        properties: { due: "2026-10-28T09:00:00Z", note: "Keep", unset: "Now set" },
+        previous: { due: "2026-10-27T14:00:00Z", unset: null },
+      });
+      expect(result.previous).toEqual({ due: "2026-10-27T14:00:00Z", unset: null });
+      const rejected = await Promise.allSettled([
+        gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
+          itemId: item.id,
+          properties: { due: "Rejected" },
+          ifVersion: "2000-01-01T00:00:00.000Z",
+        }),
+      ]);
+      expect(rejected).toEqual([{ status: "rejected", reason: expect.any(ConflictError) }]);
+      const persisted = await chokePoint.getItem(db.id, item.id);
+      expect(persisted?.properties).toEqual(result.properties);
+      expect(persisted?.updatedAt).toBe(result.updatedAt);
+    });
+  });
+
+  it("item.patch exposes previous values only inside the owning tenant on a runtime-role pool", async () => {
+    const tenantA = getTenantZeroId();
+    const tenantB = await createTestTenant(pool);
+    const runtimePool = await inTenantZero(() => createRuntimeRolePool(pool, "semprec_data"));
+    try {
+      const fixture = await runInTenant(tenantA, async () => {
+        const cp = createChokePoint(runtimePool);
+        const db = await cp.createDatabase({ name: "Private patch" });
+        await cp.createProperty({ databaseId: db.id, key: "title", name: "Title", type: "text" });
+        return { db, item: await cp.createItem({ databaseId: db.id, properties: { title: "Private" } }) };
+      });
+      const actor: AuthenticatedActor = { userId: await createUser() };
+      const gateway = createGenericOperationGateway(runtimePool);
+      const input = { itemId: fixture.item.id, properties: { title: "Changed" }, ifVersion: fixture.item.updatedAt };
+      const foreign = await runInTenant(tenantB, () =>
+        Promise.allSettled([
+          gateway.invoke("item.patch", actor, ALL_CAPABILITIES, input),
+          gateway.invoke("item.patch", actor, ALL_CAPABILITIES, { ...input, itemId: randomUUID() }),
+        ]),
+      );
+      expect(foreign).toEqual([
+        { status: "rejected", reason: expect.any(NotFoundError) },
+        { status: "rejected", reason: expect.any(NotFoundError) },
+      ]);
+      await runInTenant(tenantA, async () => {
+        expect(await createChokePoint(runtimePool).getItem(fixture.db.id, fixture.item.id)).toEqual(fixture.item);
+        const result = await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, input);
+        expect(result.previous).toEqual({ title: "Private" });
+        expect(result.properties).toEqual({ title: "Changed" });
+      });
+    } finally {
+      await runtimePool.end();
+    }
   });
 
   describe("listOperations", () => {

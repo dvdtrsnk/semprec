@@ -1,6 +1,13 @@
 import type { Pool } from "pg";
 import { createChokePoint, NotFoundError, ValidationError, type Actor } from "@semprec/data";
-import type { AuthenticatedActor, Database, GenericApplicationPort, Item, Page } from "@semprec/shared";
+import type {
+  AuthenticatedActor,
+  Database,
+  GenericApplicationPort,
+  Item,
+  ItemPatchOutput,
+  Page,
+} from "@semprec/shared";
 
 /**
  * The sole neutral implementation of `GenericApplicationPort` (issue #219): built only over
@@ -266,7 +273,7 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
       );
     },
 
-    async patchItem(actor, input) {
+    async patchItem(actor, input): Promise<ItemPatchOutput> {
       const existing = await requireItem(input.itemId);
       return chokePoint.updateItem(
         {

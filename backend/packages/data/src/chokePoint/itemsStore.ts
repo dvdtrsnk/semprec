@@ -208,7 +208,11 @@ export interface UpdateItemInput {
   ifVersion?: string;
 }
 
-export async function updateItemProperties(client: Queryable, input: UpdateItemInput): Promise<ItemRow> {
+export interface UpdateItemResult extends ItemRow {
+  previous: Record<string, unknown>;
+}
+
+export async function updateItemProperties(client: Queryable, input: UpdateItemInput): Promise<UpdateItemResult> {
   const current = await lockItemById(client, input.databaseId, input.itemId);
   if (!current || current.deletedAt) {
     throw new NotFoundError(`Item ${input.itemId} not found`);
@@ -223,7 +227,15 @@ export async function updateItemProperties(client: Queryable, input: UpdateItemI
      RETURNING id, database_id, properties, computed, updated_at, deleted_at`,
     [input.databaseId, input.itemId, JSON.stringify(input.propertiesPatch)],
   );
-  return mapItemRow(requireSingleRow(rows, "items row"));
+  return {
+    ...mapItemRow(requireSingleRow(rows, "items row")),
+    previous: Object.fromEntries(
+      Object.keys(input.propertiesPatch).map((key) => [
+        key,
+        Object.hasOwn(current.properties, key) ? current.properties[key] : null,
+      ]),
+    ),
+  };
 }
 
 export async function softDeleteItem(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {

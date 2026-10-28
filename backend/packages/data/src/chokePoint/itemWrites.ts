@@ -285,7 +285,7 @@ export async function updateItemWithClient(
   client: PoolClient,
   input: UpdateItemInput,
   options: UpdateItemWithClientOptions = {},
-): Promise<ItemRow> {
+): Promise<itemsStore.UpdateItemResult> {
   await assertDatabaseNotArchived(client, input.databaseId);
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   const patchKeys = Object.keys(input.propertiesPatch);
@@ -317,7 +317,7 @@ export async function updateItemWithClient(
     };
   }
 
-  const item = await itemsStore.updateItemProperties(client, {
+  const { previous, ...item } = await itemsStore.updateItemProperties(client, {
     databaseId: input.databaseId,
     itemId: input.itemId,
     propertiesPatch,
@@ -370,7 +370,7 @@ export async function updateItemWithClient(
       userId: options.actingUserId,
     }),
   );
-  return item;
+  return { ...item, previous: Object.fromEntries(patchKeys.map((key) => [key, previous[key]])) };
 }
 
 export interface ConvergeObservedEmailFlagsInput {
@@ -429,7 +429,11 @@ export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
       );
     },
 
-    async updateItem(input: UpdateItemInput, actingUserId?: string, humanWriterUserId?: string): Promise<ItemRow> {
+    async updateItem(
+      input: UpdateItemInput,
+      actingUserId?: string,
+      humanWriterUserId?: string,
+    ): Promise<itemsStore.UpdateItemResult> {
       return withTransaction(pool, (client) =>
         updateItemWithClient(client, input, { queueAffinity, actingUserId, humanWriterUserId }),
       );
