@@ -10,6 +10,8 @@ import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import type { DatabaseRow } from "../types.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
+import { findDependenciesBySourceDatabase } from "../rollup/dependencies.js";
+import { enqueueRollupBackfill } from "../rollup/recompute.js";
 import * as databasesStore from "./databasesStore.js";
 
 /**
@@ -20,12 +22,20 @@ import * as databasesStore from "./databasesStore.js";
  * `relationOps.ts`), so `ApprovedOperationExecutor` has one uniform naming convention to call the
  * destructive half of each operation.
  */
+/** Archive and restore change which items the rollups over this database count; recount each in the same transaction via its idempotent full job. */
+async function enqueueDependentRollupRecomputes(client: PoolClient, sourceDatabaseId: string): Promise<void> {
+  for (const dependency of await findDependenciesBySourceDatabase(client, sourceDatabaseId)) {
+    await enqueueRollupBackfill(client, dependency.rollupPropertyId);
+  }
+}
+
 export async function databaseArchiveWithClient(
   client: PoolClient,
   id: string,
   actingUserId?: string,
 ): Promise<DatabaseRow> {
   const database = await databasesStore.archiveDatabase(client, id);
+  await enqueueDependentRollupRecomputes(client, database.id);
   runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }));
   return database;
 }
@@ -48,6 +58,7 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool">) {
     async restoreDatabase(id: string, actingUserId?: string): Promise<DatabaseRow> {
       return withTransaction(pool, async (client) => {
         const database = await databasesStore.restoreDatabase(client, id);
+        await enqueueDependentRollupRecomputes(client, database.id);
         runAfterCommit(client, () =>
           notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
         );

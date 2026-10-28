@@ -245,6 +245,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "filterNodeSchema",
   "findDependenciesByRelationDefinition",
   "findDependenciesBySource",
+  "findDependenciesBySourceDatabase",
   "findFileItemByBlobId",
   "findOrCreateBlob",
   "findOrphanedOwnerProcessIds",
