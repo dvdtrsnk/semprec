@@ -704,3 +704,136 @@ describe("property defaults on real item writes", () => {
     });
   });
 });
+
+describe("title validation on item writes", () => {
+  const userWriter = { writerKind: "user" } as const;
+  const agentWriter = { writerKind: "agent" } as const;
+
+  beforeAll(() => {
+    pool = getTestPool();
+    chokePoint = createChokePoint(pool);
+  });
+  afterAll(async () => {
+    await pool.end();
+  });
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+  });
+
+  async function makeDb(withTitle = true) {
+    const db = await chokePoint.createDatabase({ name: "Things" });
+    if (withTitle) await chokePoint.createProperty({ databaseId: db.id, key: "name", name: "Name", type: "title" });
+    await chokePoint.createProperty({ databaseId: db.id, key: "note", name: "Note", type: "text" });
+    return db;
+  }
+
+  async function countItems(databaseId: string): Promise<number> {
+    const { rows } = await pool.query<{ count: string }>("SELECT count(*) FROM items WHERE database_id = $1", [
+      databaseId,
+    ]);
+    return Number(rows[0]?.count);
+  }
+
+  const rejected = { status: 400, code: "validation_failed", details: { field: "name" } };
+
+  it.each([
+    ["user", userWriter],
+    ["agent", agentWriter],
+  ])("rejects a blank or missing title on create for a %s and leaves no row", async (_label, writer) => {
+    const db = await makeDb();
+    for (const properties of [{ name: "   " }, { name: "" }, { name: null }, { note: "x" }]) {
+      await expect(
+        chokePoint.createItem({ databaseId: db.id, properties }, undefined, undefined, writer),
+      ).rejects.toMatchObject(rejected);
+    }
+    expect(await countItems(db.id)).toBe(0);
+    const item = await chokePoint.createItem(
+      { databaseId: db.id, properties: { name: " Padded " } },
+      undefined,
+      undefined,
+      writer,
+    );
+    expect(item.properties.name).toBe(" Padded ");
+  });
+
+  it("rejects patching the title to blank but allows patching another property", async () => {
+    const db = await makeDb();
+    const item = await chokePoint.createItem(
+      { databaseId: db.id, properties: { name: "Keep" } },
+      undefined,
+      undefined,
+      userWriter,
+    );
+    for (const name of ["", "  ", null]) {
+      await expect(
+        chokePoint.updateItem(
+          { databaseId: db.id, itemId: item.id, propertiesPatch: { name } },
+          undefined,
+          undefined,
+          userWriter,
+        ),
+      ).rejects.toMatchObject(rejected);
+    }
+    const updated = await chokePoint.updateItem(
+      { databaseId: db.id, itemId: item.id, propertiesPatch: { note: "n" } },
+      undefined,
+      undefined,
+      agentWriter,
+    );
+    expect(updated.properties).toEqual({ name: "Keep", note: "n" });
+  });
+
+  it("does not apply to internal writers", async () => {
+    const db = await makeDb();
+    const item = await chokePoint.createItem({ databaseId: db.id, properties: { note: "x" } });
+    const updated = await chokePoint.updateItem({
+      databaseId: db.id,
+      itemId: item.id,
+      propertiesPatch: { name: "" },
+    });
+    expect(updated.properties.name).toBe("");
+  });
+
+  it("does not apply to a database without a user-owned title property", async () => {
+    const db = await makeDb(false);
+    const item = await chokePoint.createItem(
+      { databaseId: db.id, properties: { note: "x" } },
+      undefined,
+      undefined,
+      userWriter,
+    );
+    await chokePoint.updateItem(
+      { databaseId: db.id, itemId: item.id, propertiesPatch: { note: "y" } },
+      undefined,
+      undefined,
+      agentWriter,
+    );
+  });
+
+  it("exempts Transcripts for every writer kind", async () => {
+    await runInTenant(getTenantZeroId(), async () => {
+      await seedSystem(pool);
+      const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [
+        "transcripts",
+      ]);
+      const databaseId = rows[0]?.id ?? "";
+      for (const writer of [userWriter, agentWriter]) {
+        const item = await chokePoint.createItem(
+          { databaseId, properties: { name: "" } },
+          undefined,
+          undefined,
+          writer,
+        );
+        const updated = await chokePoint.updateItem(
+          { databaseId, itemId: item.id, propertiesPatch: { name: "  " } },
+          undefined,
+          undefined,
+          writer,
+        );
+        expect(updated.properties.name).toBe("  ");
+      }
+    });
+  });
+});

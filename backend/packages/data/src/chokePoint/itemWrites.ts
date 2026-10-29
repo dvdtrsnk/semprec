@@ -29,7 +29,7 @@ import { findDependenciesBySource } from "../rollup/dependencies.js";
 import { enqueueRollupRecompute } from "../rollup/recompute.js";
 import { triggerOnItemEventHeartbeats, recomputeAllForTimezoneChange } from "../scheduler/schedulerStore.js";
 import type { ActionQueueAffinity } from "../scheduler/actions.js";
-import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { TASKS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import { assertDatabaseNotArchived } from "./databaseGuards.js";
 import { assertValidTimezone } from "../timezone.js";
@@ -114,6 +114,30 @@ function assertWritableProperties(
         );
       }
     }
+  }
+}
+
+/**
+ * A user or agent write must leave the database's user-owned title property non-blank. Internal
+ * writers keep their behavior (several create items whose title is written later or derived) and
+ * Transcripts is exempt, since a transcript is named from its event or recording date. Stored
+ * titles are not trimmed; only a value that is blank after trimming is rejected. On create the
+ * title must be present; on patch only a title key that the patch mentions is checked.
+ */
+function assertTitlePresent(
+  properties: PropertyRow[],
+  values: Record<string, unknown>,
+  ownerModuleId: string | null,
+  writer: WriterIdentity,
+  mode: "create" | "patch",
+): void {
+  if (writer.writerKind === "system" || ownerModuleId === TRANSCRIPTS_MODULE_ID) return;
+  const title = properties.find((p) => p.type === "title" && p.owner === "user");
+  if (!title) return;
+  if (mode === "patch" && !Object.hasOwn(values, title.key)) return;
+  const value = values[title.key];
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new ValidationError(`Property '${title.key}' must be a non-empty title`, { field: title.key });
   }
 }
 
@@ -224,6 +248,7 @@ export async function createItemWithClient(
           itemProperties[property.key] = value;
         }
       }
+      assertTitlePresent(properties, itemProperties, database.ownerModuleId, options.writer ?? SYSTEM_WRITER, "create");
       return itemProperties;
     },
   );
@@ -319,6 +344,13 @@ export async function updateItemWithClient(
 
   const database = await databasesStore.getDatabase(client, input.databaseId);
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
+  assertTitlePresent(
+    properties,
+    input.propertiesPatch,
+    database.ownerModuleId,
+    options.writer ?? SYSTEM_WRITER,
+    "patch",
+  );
   let propertiesPatch = input.propertiesPatch;
   // Same ownership-keyed derivation as createItemWithClient above — see
   // docs/adr/2026-09-19-derived-system-properties-computed-inline-at-choke-point.md.
