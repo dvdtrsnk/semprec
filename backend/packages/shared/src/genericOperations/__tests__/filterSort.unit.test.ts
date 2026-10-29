@@ -60,6 +60,17 @@ describe("relation_path_contains schema", () => {
   });
 });
 
+describe("numeric comparison schema", () => {
+  it.each(["lt", "lte", "gt", "gte"] as const)("accepts %s with a finite number", (type) => {
+    expect(filterNodeSchema.safeParse({ type, property: "rating", value: 4 }).success).toBe(true);
+    expect(filterNodeSchema.safeParse({ type, property: "rating", value: -0.5 }).success).toBe(true);
+  });
+
+  it.each([["4"], [null], [Number.POSITIVE_INFINITY], [Number.NaN], [true]])("rejects value %j", (value) => {
+    expect(filterNodeSchema.safeParse({ type: "gte", property: "rating", value }).success).toBe(false);
+  });
+});
+
 describe("relation emptiness schema", () => {
   it.each(["relation_is_empty", "relation_is_not_empty"])(
     "accepts %s with a property only, also in a group",
