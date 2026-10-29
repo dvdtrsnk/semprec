@@ -20,6 +20,8 @@ export interface FilterProperty {
   relationSide?: "a" | "b";
   targetDatabaseId?: string;
   targetRelationProperties?: FilterProperties;
+  /** Set for a rollup whose value is a number (any aggregation but `earliest`/`latest`). */
+  numericRollup?: boolean;
 }
 
 export type FilterProperties = Map<string, FilterProperty>;
@@ -320,6 +322,21 @@ function compileCondition(
       const to = params.length;
       const cast = dateComparisonCast([node.value.from, node.value.to]);
       return `(${textField})${cast} BETWEEN $${from}${cast} AND $${to}${cast}`;
+    }
+    case "lt":
+    case "lte":
+    case "gt":
+    case "gte": {
+      if (!(property.type === "number" || (property.type === "rollup" && property.numericRollup))) {
+        throw new ValidationError(
+          `Condition '${node.type}' requires a number or numeric rollup property, but '${node.property}' is '${property.type}'`,
+          { field: node.property },
+        );
+      }
+      params.push(node.value);
+      const operator = { lt: "<", lte: "<=", gt: ">", gte: ">=" }[node.type];
+      // CASE (unlike AND) guarantees a stored non-number never reaches the cast; a missing key is not a number either.
+      return `(CASE WHEN jsonb_typeof(${jsonField}) = 'number' THEN (${textField})::numeric ${operator} $${params.length}::numeric ELSE false END)`;
     }
     case "in": {
       params.push(node.value);

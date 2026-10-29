@@ -17,6 +17,10 @@ export const FILTER_CONDITION_TYPES = [
   "on_or_after",
   "date_range",
   "date_relative",
+  "lt",
+  "lte",
+  "gt",
+  "gte",
   "in",
   // Relation-valued conditions (issue #96): relation values live in `item_relations`, not
   // in `properties`, so they need their own condition types rather than a `value` on the
@@ -57,6 +61,7 @@ export type FilterCondition =
   | { type: "before" | "after" | "on_or_before" | "on_or_after"; property: string; value: string }
   | { type: "date_range"; property: string; value: { from: string; to: string } }
   | { type: "date_relative"; property: string; endProperty?: string; preset: DateRelativePreset }
+  | { type: "lt" | "lte" | "gt" | "gte"; property: string; value: number }
   | { type: "in"; property: string; value: string[] }
   | { type: "relation_contains" | "relation_not_contains"; property: string; value: string }
   | { type: "relation_path_contains"; path: [string, string]; value: string }
@@ -94,6 +99,7 @@ const filterConditionSchema = z.union([
     endProperty: property.optional(),
     preset: dateRelativePreset,
   }),
+  z.object({ type: z.enum(["lt", "lte", "gt", "gte"]), property, value: z.number().finite() }),
   z.object({ type: z.literal("in"), property, value: z.array(z.string()).min(1) }),
   // The value is a target *item id*, so it is validated as a uuid here rather than reaching
   // the compiled `$N::uuid` cast, where a malformed id would surface as a raw Postgres cast
