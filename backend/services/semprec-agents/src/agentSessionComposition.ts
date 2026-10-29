@@ -144,7 +144,14 @@ async function createGenericOperationTools(
         split.args,
         split.reason === undefined ? undefined : { reason: split.reason },
       );
-      return { content: [{ type: "text", text: result.result }], details: { error: result.error } };
+      return {
+        content: [{ type: "text", text: result.result }],
+        details: {
+          error: result.error,
+          ...(result.approvalRequestId !== undefined ? { approvalRequestId: result.approvalRequestId } : {}),
+          ...(result.changes !== undefined ? { changes: result.changes } : {}),
+        },
+      };
     },
   }));
 }
@@ -182,6 +189,7 @@ async function createMcpTools(pool: Pool, runId: string, projectItemId: string):
             content: [{ type: "text", text: result.result }],
             details: {
               error: result.error,
+              ...(result.approvalRequestId !== undefined ? { approvalRequestId: result.approvalRequestId } : {}),
               ...(result.failure
                 ? {
                     failureKind: result.failure.failureKind,

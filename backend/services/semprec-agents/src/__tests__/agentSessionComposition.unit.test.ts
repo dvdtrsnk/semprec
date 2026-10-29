@@ -49,7 +49,8 @@ const fixtures = vi.hoisted(() => ({
   calls: [] as unknown[][],
   locale: null as string | null,
   guidance: null as string | null,
-  mcpResult: null as McpInvokeResult | null,
+  mcpResult: null as (McpInvokeResult & { approvalRequestId?: string }) | null,
+  structured: {},
 }));
 vi.mock("@semprec/data", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@semprec/data")>()),
@@ -64,7 +65,7 @@ vi.mock("@semprec/agent-runtime", async (importOriginal) => ({
     "item.patch": async () => ({ result: "patched", error: false }),
     "item.delete": async (...call: unknown[]) => {
       fixtures.calls.push(call);
-      return { result: "deferred", error: false };
+      return { result: "deferred", error: false, ...fixtures.structured };
     },
   }),
   createApprovalGatedMcpInvokeTool: () => async () => fixtures.mcpResult ?? { result: "found", error: false },
@@ -383,6 +384,27 @@ describe("agent-only approval reason (issue #1420)", () => {
     expect(fixtures.calls).toEqual([["run-1", { itemId: "item-1" }, undefined]]);
   });
 
+  it("writes approvalRequestId and changes into the generic tool result details", async () => {
+    fixtures.structured = { approvalRequestId: "req-1", changes: [{ key: "due", before: "a", after: "b" }] };
+    try {
+      const { results } = await runCalls({ itemId: "item-1" });
+      const details = (JSON.parse(results[0]!) as { result: { details: unknown } }).result.details;
+      expect(details).toEqual({
+        error: false,
+        approvalRequestId: "req-1",
+        changes: [{ key: "due", before: "a", after: "b" }],
+      });
+    } finally {
+      fixtures.structured = {};
+    }
+  });
+
+  it("writes neither field when the operation reported none", async () => {
+    const { results } = await runCalls({ itemId: "item-1" });
+    const details = (JSON.parse(results[0]!) as { result: { details: unknown } }).result.details;
+    expect(details).toEqual({ error: false });
+  });
+
   it("rejects a reason over 500 characters without calling the operation", async () => {
     const { results } = await runCalls({ itemId: "item-1", reason: "x".repeat(501) });
     expect(fixtures.calls).toEqual([]);
@@ -543,6 +565,13 @@ describe("MCP failure classification in the tool result (issue #1444)", () => {
       failure: { failureKind: "unavailable" },
     });
     expect(details).toEqual({ error: true, failureKind: "unavailable", connectorName: "first-server name" });
+  });
+
+  it("writes approvalRequestId for a deferred MCP call", async () => {
+    expect(await mcpToolResultDetails({ result: "pending", error: false, approvalRequestId: "req-9" })).toEqual({
+      error: false,
+      approvalRequestId: "req-9",
+    });
   });
 
   it("carries none of the classification keys for a successful call", async () => {

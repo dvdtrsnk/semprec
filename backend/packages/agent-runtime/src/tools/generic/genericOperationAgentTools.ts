@@ -4,6 +4,7 @@ import {
   ChokePointError,
   generatePermissionManifest,
   getAgentRun,
+  listPropertiesByDatabase,
   withTransaction,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
@@ -14,11 +15,68 @@ import {
   type GenericOperationName,
 } from "@semprec/shared";
 import { createGenericOperationGateway, type GenericOperationGateway } from "@semprec/application";
+import { logger } from "../../logger.js";
+import type { ToolResultChange } from "../../toolEventPayload.js";
 
 /** Shaped like a pi-agent-core `tool_result` payload — the same local approximation `heartbeatAgentTools.ts`'s `HeartbeatAgentToolResult` uses. */
 export interface GenericOperationAgentToolResult {
   error: boolean;
   result: string;
+  /** The approval request this call created, when it was deferred to a human. */
+  approvalRequestId?: string;
+  /** Per-property changes of a successful `item.patch`. */
+  changes?: ToolResultChange[];
+}
+
+/** Longest string a `changes` entry stores for a `before` or `after` value. */
+export const TOOL_CHANGE_VALUE_MAX_LENGTH = 200;
+
+function boundValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value.length > TOOL_CHANGE_VALUE_MAX_LENGTH ? value.slice(0, TOOL_CHANGE_VALUE_MAX_LENGTH) : value;
+  }
+  if (typeof value === "object" && value !== null) {
+    const json = JSON.stringify(value);
+    return json.length > TOOL_CHANGE_VALUE_MAX_LENGTH ? json.slice(0, TOOL_CHANGE_VALUE_MAX_LENGTH) : value;
+  }
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Builds `changes` for a successful `item.patch` from the operation's own `previous` values (read
+ * inside its write transaction) and the call's `properties`. A `longText` property keeps only its
+ * key; a key without a reported previous value has no `before`. Returns undefined when nothing
+ * can be reported, including when the property types could not be read: the content of a
+ * `longText` property must never be stored by guess.
+ */
+async function buildPatchChanges(pool: Pool, output: unknown, args: unknown): Promise<ToolResultChange[] | undefined> {
+  if (!isRecord(output) || !isRecord(args) || !isRecord(args.properties)) return undefined;
+  const databaseId = output.databaseId;
+  if (typeof databaseId !== "string") return undefined;
+  const patched = args.properties;
+  const previous = isRecord(output.previous) ? output.previous : {};
+  const keys = Object.keys(patched);
+  if (keys.length === 0) return undefined;
+  let longTextKeys: Set<string>;
+  try {
+    const properties = await withTransaction(pool, (client) => listPropertiesByDatabase(client, databaseId));
+    longTextKeys = new Set(properties.filter((property) => property.type === "longText").map((p) => p.key));
+  } catch (err) {
+    logger.error({ err, databaseId }, "could not read property types for the item.patch changes; omitting them");
+    return undefined;
+  }
+  return keys.map((key): ToolResultChange => {
+    if (longTextKeys.has(key)) return { key };
+    return {
+      key,
+      ...(Object.hasOwn(previous, key) ? { before: boundValue(previous[key]) } : {}),
+      after: boundValue(patched[key]),
+    };
+  });
 }
 
 export type GenericOperationAgentTool = (
@@ -71,6 +129,7 @@ function pendingApprovalResult(
   return {
     error: false,
     result: `Operation '${operation}' requires human approval before it can run. Approval request ${err.details.approvalRequestId} has been created and is awaiting a decision; this call has not been executed.`,
+    approvalRequestId: err.details.approvalRequestId,
   };
 }
 
@@ -93,7 +152,8 @@ function createTool(
         return { error: true, result: "owner_violation: no persisted run context for this agent tool call" };
       }
       const output = await gateway.invoke(operation, context.actor, context.grantedCapabilities, args ?? {}, options);
-      return { error: false, result: JSON.stringify(output) };
+      const changes = operation === "item.patch" ? await buildPatchChanges(pool, output, args) : undefined;
+      return { error: false, result: JSON.stringify(output), ...(changes ? { changes } : {}) };
     } catch (err) {
       return toolResultFromError(err, operation);
     }

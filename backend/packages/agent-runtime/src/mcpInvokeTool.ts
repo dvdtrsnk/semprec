@@ -18,7 +18,10 @@ import {
 export type { McpInvokeResult, McpInvokeArgs, McpInvokeOptions } from "@semprec/data";
 export { executeMcpInvocation } from "@semprec/data";
 
-export type McpInvokeTool = (args: McpInvokeArgs, signal?: AbortSignal) => Promise<McpInvokeResult>;
+/** An MCP result that also names the approval request the call created, when it was deferred to a human. */
+export type McpInvokeToolResult = McpInvokeResult & { approvalRequestId?: string };
+
+export type McpInvokeTool = (args: McpInvokeArgs, signal?: AbortSignal) => Promise<McpInvokeToolResult>;
 
 /**
  * The outbound MCP-invoke adapter (issue #128): resolves `mcpToolRegistrationId` against
@@ -196,9 +199,10 @@ function extractReason(args: McpInvokeArgs): ReasonExtraction {
  * turn and run complete normally as `done`, per the issue's Task, instead of the run treating
  * this as a failure.
  */
-function pendingApprovalResult(requestId: string, toolName: string): McpInvokeResult {
+function pendingApprovalResult(requestId: string, toolName: string): McpInvokeToolResult {
   return {
     error: false,
+    approvalRequestId: requestId,
     result: `Tool '${toolName}' requires human approval before it can run. Approval request ${requestId} has been created and is awaiting a decision; this call has not been executed.`,
   };
 }

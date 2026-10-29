@@ -243,6 +243,7 @@ describe("MCP invoke adapter (issue #128)", () => {
 
       const requestIdMatch = result.result.match(/Approval request ([0-9a-f-]{36})/i);
       expect(requestIdMatch).not.toBeNull();
+      expect(result.approvalRequestId).toBe(requestIdMatch![1]);
       const request = await getApprovalRequest(pool, requestIdMatch![1]!);
       expect(request).not.toBeNull();
       expect(request!.status).toBe("pending");
