@@ -19,6 +19,7 @@ import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { withTransaction } from "../db/pool.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { createEmailDraft } from "../mail/draft.js";
+import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { EMAIL_INGEST_ALLOWED_SYSTEM_KEYS, ingestEmailMessage } from "../mail/ingest.js";
 import { getMailMessageMetaByItemId, upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
 import { handleMailMessagePreviewBackfillTask } from "../mail/mailMessagePreviewBackfillJob.js";
@@ -131,14 +132,18 @@ describe("mail preview and ingest time on ingest and send", () => {
     const emailProps = await chokePoint.listProperties(emailsId);
     folderRelationPropertyId = emailProps.find((p) => p.key === "folder")!.id;
     attachmentsRelationPropertyId = emailProps.find((p) => p.key === "attachments")!.id;
-    mailboxId = (
-      await withTransaction(pool, (client) =>
-        createItemWithClient(client, {
-          databaseId: mailboxesId,
-          properties: { name: "Test", provider: "generic", addresses: "me@example.com" },
-        }),
-      )
-    ).id;
+    mailboxId = await withTransaction(pool, async (client) => {
+      const mailbox = await createItemWithClient(client, {
+        databaseId: mailboxesId,
+        properties: { name: "Test", provider: "generic" },
+      });
+      await writeMailboxAddresses(client, {
+        mailboxesDatabaseId: mailboxesId,
+        mailboxItemId: mailbox.id,
+        address: "me@example.com",
+      });
+      return mailbox.id;
+    });
     inboxId = await createFolder("inbox");
     moduleIds = {
       emailsDatabaseId: emailsId,

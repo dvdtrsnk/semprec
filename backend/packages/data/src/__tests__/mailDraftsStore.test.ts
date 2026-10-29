@@ -10,6 +10,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { withTransaction } from "../db/pool.js";
 import { createEmailDraft } from "../mail/draft.js";
+import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import {
   getMailDraft,
   insertMailDraft,
@@ -63,7 +64,12 @@ describe("mail drafts store (issue #1504)", () => {
     await withTransaction(pool, async (client) => {
       const mailbox = await createItemWithClient(client, {
         databaseId: mailboxesId,
-        properties: { name: "Test", provider: "generic", addresses: "me@example.com" },
+        properties: { name: "Test", provider: "generic" },
+      });
+      await writeMailboxAddresses(client, {
+        mailboxesDatabaseId: mailboxesId,
+        mailboxItemId: mailbox.id,
+        address: "me@example.com",
       });
       mailboxId = mailbox.id;
       const drafts = await createItemWithClient(

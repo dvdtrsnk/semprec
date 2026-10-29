@@ -120,7 +120,10 @@ export async function seedEmailModuleInTransaction(
       owner: "user",
       config: selectConfig(["gmail", "outlook", "icloud", "generic"]),
     },
-    { key: "addresses", name: "Addresses", type: "longText", owner: "user" },
+    // Owned by the system since issue #1454: the connect and reauthorization flows (#1686, #1736)
+    // will record the provider-verified address through mail/mailboxAddresses.ts, and a generic
+    // item write (REST or agent) is refused with owner_violation.
+    { key: "addresses", name: "Addresses", type: "longText", owner: "system" },
     // Overrides the sync worker's provider-derived default IMAP simultaneous-connection cap
     // (imapConnectionLimiter.ts) — unset by default, since most accounts should just take the
     // conservative per-provider default.

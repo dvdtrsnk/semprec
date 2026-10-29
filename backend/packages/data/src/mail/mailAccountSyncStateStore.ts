@@ -1,5 +1,6 @@
 import { requireAffectedRows, type Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
+import { ChokePointError, ValidationError } from "../errors.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 
 export const SYNC_MODES = ["imap", "gmail_api", "graph_api"] as const;
@@ -190,6 +191,62 @@ export async function recordGmailWatchRegistration(
     [itemId, input.expiresAt, input.historyId, input.emailAddress],
   );
   requireAffectedRows(result, `gmail watch registration for item ${itemId}`);
+}
+
+const PROVIDER_ACCOUNT_ADDRESS_INDEX = "mail_account_sync_state_tenant_provider_address_uq";
+
+/**
+ * Another mailbox of the same tenant already records this provider account address (issue #1454,
+ * migration 0125). The connect flows (#1686, #1736) will map it to "already connected".
+ */
+export class ProviderAccountAlreadyConnectedError extends ChokePointError {
+  constructor() {
+    super(
+      409,
+      "provider_account_already_connected",
+      "This provider account is already connected to a mailbox in this tenant",
+    );
+    this.name = "ProviderAccountAlreadyConnectedError";
+  }
+}
+
+function isProviderAccountAddressConflict(error: unknown): boolean {
+  const e = error as { code?: unknown; constraint?: unknown } | null;
+  return e?.code === "23505" && e.constraint === PROVIDER_ACCOUNT_ADDRESS_INDEX;
+}
+
+/**
+ * Records the provider-verified account address of a mailbox, normalized with `normalizeEmailAddress`
+ * (issue #1454). The row must already exist (`ensureMailAccountSyncState`). A second mailbox of the
+ * same tenant that records the same address, in any letter case, fails with
+ * `ProviderAccountAlreadyConnectedError`; the refused UPDATE changes nothing on that row. Postgres
+ * aborts the whole caller transaction on that conflict, so the caller must roll it back rather than
+ * run further statements in it. Any other error propagates unchanged.
+ */
+export async function recordProviderAccountAddress(client: Queryable, itemId: string, address: string): Promise<void> {
+  const normalized = normalizeEmailAddress(address);
+  if (normalized.length === 0) {
+    throw new ValidationError("A provider account address must not be empty", { field: "providerAccountAddress" });
+  }
+  try {
+    const result = await client.query(
+      `UPDATE mail_account_sync_state SET provider_account_address = $2 WHERE item_id = $1`,
+      [itemId, normalized],
+    );
+    requireAffectedRows(result, `provider account address for item ${itemId}`);
+  } catch (error) {
+    if (isProviderAccountAddressConflict(error)) throw new ProviderAccountAlreadyConnectedError();
+    throw error;
+  }
+}
+
+/** The provider account address recorded for a mailbox, or null when none is recorded yet (or no sync state row exists). */
+export async function getProviderAccountAddress(client: Queryable, itemId: string): Promise<string | null> {
+  const { rows } = await client.query<{ provider_account_address: string | null }>(
+    `SELECT provider_account_address FROM mail_account_sync_state WHERE item_id = $1`,
+    [itemId],
+  );
+  return rows[0]?.provider_account_address ?? null;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

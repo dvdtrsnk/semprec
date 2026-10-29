@@ -111,9 +111,13 @@ function assertWritableProperties(
     }
     if (property.owner === "system") {
       if (!options.allowedSystemKeys?.includes(key)) {
-        throw new ForbiddenError(`Property '${key}' is owned by 'system' and cannot be written by this caller`, {
-          field: key,
-        });
+        // Same code as the relation-write refusal in relationEdgeContext.ts, so both refusals of a
+        // system-owned field share one code (issue #1454).
+        throw new ForbiddenError(
+          `Property '${key}' is owned by 'system' and cannot be written by this caller`,
+          { field: key },
+          "owner_violation",
+        );
       }
       if (options.systemOwnerProcess && property.ownerProcess !== options.systemOwnerProcess) {
         throw new ForbiddenError(
