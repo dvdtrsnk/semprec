@@ -21,6 +21,7 @@ const AGENT_MESSAGE_KINDS: ReadonlySet<string> = new Set<AgentMessageKind>([
   "turn_end",
   "run_status",
   "message_update",
+  "user_message",
 ]);
 
 function isAgentMessage(value: unknown): value is AgentMessage {

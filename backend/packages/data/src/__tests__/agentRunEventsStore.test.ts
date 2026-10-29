@@ -73,6 +73,19 @@ describe("agentRunEventsStore", () => {
     expect(listedA[0]!.agentRunId).toBe(runA.id);
   });
 
+  it("accepts a user_message event (CHECK constraint) and reads it back in listAgentRunEvents and replay", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", unit: "session", task: "t" });
+    const first = await insertAgentRunEvent(pool, run.id, "user_message", {
+      kind: "user_message",
+      text: "hello",
+      context: [{ label: "Doc" }],
+    });
+    const second = await insertAgentRunEvent(pool, run.id, "message", { kind: "message", text: "hi" });
+
+    expect((await listAgentRunEvents(pool, run.id)).map((e) => e.kind)).toEqual(["user_message", "message"]);
+    expect((await listAgentRunEventsAfter(pool, run.id, first.id)).map((e) => e.id)).toEqual([second.id]);
+  });
+
   it("replays only later events for the requested run and resolves thin references by that same run", async () => {
     const runA = await createAgentRun(pool, { triggeredBy: "user", task: "a" });
     const runB = await createAgentRun(pool, { triggeredBy: "user", task: "b" });

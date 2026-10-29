@@ -52,6 +52,7 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
     const persisted = messages.filter((message) => message.kind !== "message_update");
 
     expect(persisted.map((message) => message.kind)).toEqual([
+      "user_message",
       "turn_start",
       "message",
       "tool_use",
@@ -67,6 +68,34 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
     expect(toolResult).toMatchObject({ toolCallId: "call-1", isError: false });
     expect(persisted.at(-2)).toMatchObject({ kind: "message", text: "all done" });
     expect(calls).toEqual([{ value: "hi" }]);
+  });
+
+  it("emits a user_message before the prompt for the wake turn and each follow-up, prepending system messages", async () => {
+    const { faux, model, streamFn } = fauxModel();
+    faux.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
+    const seen: string[] = [];
+    const wrapped: StreamFn = (m, context, options) => {
+      seen.push(JSON.stringify(context.messages.at(-1)?.content));
+      return streamFn(m, context, options);
+    };
+    const pending = [["approved: X"], []];
+    const session = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn: wrapped,
+      tools: [],
+      systemPrompt: "base",
+      pendingSystemMessages: () => pending.shift() ?? [],
+    })({ task: "hello", context: [{ label: "Budget", id: "i1" }] });
+
+    const first = await collect(session.messages());
+    const second = await collect(session.send!("again"));
+
+    expect(first[0]).toEqual({ kind: "user_message", text: "hello", context: [{ label: "Budget", id: "i1" }] });
+    expect(second[0]).toEqual({ kind: "user_message", text: "again", context: [] });
+    expect(seen[0]).toContain("approved: X");
+    expect(seen[0]).toContain("hello");
+    expect(seen[1]).toBe(JSON.stringify([{ type: "text", text: "again" }]));
   });
 
   it("aborts a blocked production tool directly while its async generator waits", async () => {

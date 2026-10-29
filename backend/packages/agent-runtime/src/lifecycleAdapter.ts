@@ -26,6 +26,7 @@ const PERSISTED_EVENT_KINDS: ReadonlySet<string> = new Set<AgentRunEventKind>([
   "tool_result",
   "turn_end",
   "run_status",
+  "user_message",
 ]);
 
 /** Resolves the abort race in `runAgentTurn`. */
