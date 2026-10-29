@@ -416,6 +416,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "listRunningAgentRuns",
   "listSessionAgentRunEventsFromLastCompaction",
   "listSessionsForUser",
+  "listStandaloneBlobIdsCreatedBefore",
   "listTenantAiBudgetOverview",
   "listTenantExports",
   "listUnreadNotificationsForUser",

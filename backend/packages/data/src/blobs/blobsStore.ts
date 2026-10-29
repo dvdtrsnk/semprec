@@ -135,6 +135,7 @@ export async function deleteBlobIfUnreferenced(client: Queryable, id: string): P
          JOIN items i ON i.database_id = p.database_id
          WHERE p.type = 'image'
            AND p.database_id = ANY($3::uuid[])
+           AND i.database_id = ANY($3::uuid[])
            AND i.properties @> jsonb_build_object(p.key, jsonb_build_object('blobId', $2::text))
        )
        AND NOT EXISTS (SELECT 1 FROM mail_attachments WHERE blob_id = $1)

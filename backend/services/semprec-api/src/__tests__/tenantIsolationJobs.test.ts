@@ -979,6 +979,25 @@ const cases: Record<string, TaskCase> = {
     touchesTenantTables: true,
     seed: createExpiredTrash,
   },
+  [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const blobId = randomUUID();
+      // A standalone upload (`<tenantId>/blobs/...`) nothing references; only its age is back-dated,
+      // because the sweep leaves anything younger than 24 hours alone.
+      await inTenant(tenant, () =>
+        pool.query(
+          `INSERT INTO blobs (id, mime_type, byte_size, storage_key, created_at)
+           VALUES ($1, 'image/png', 1, $2, now() - interval '25 hours')`,
+          [blobId, `${tenant.tenantId}/blobs/${randomUUID()}`],
+        ),
+      );
+      return marked([blobId], async () => {
+        expect(await rows(tenant, "SELECT 1 FROM blobs WHERE id = $1", [blobId])).toEqual([]);
+      });
+    },
+  },
   [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: {
     tenancy: "system",
     touchesTenantTables: true,
