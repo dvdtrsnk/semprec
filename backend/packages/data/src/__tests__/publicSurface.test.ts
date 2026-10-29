@@ -612,6 +612,7 @@ const EXPECTED_CHOKE_POINT_METHODS = [
   "changePropertyType",
   "countItems",
   "createDatabase",
+  "createDatabaseWithProperties",
   "createInlineDatabase",
   "createItem",
   "createProperty",

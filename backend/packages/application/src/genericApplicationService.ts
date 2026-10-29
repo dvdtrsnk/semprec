@@ -1,5 +1,12 @@
 import type { Pool } from "pg";
-import { createChokePoint, NotFoundError, ValidationError, type Actor, type WriterIdentity } from "@semprec/data";
+import {
+  createChokePoint,
+  ForbiddenError,
+  NotFoundError,
+  ValidationError,
+  type Actor,
+  type WriterIdentity,
+} from "@semprec/data";
 import type {
   AuthenticatedActor,
   Database,
@@ -89,8 +96,24 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
     },
 
     async createDatabase(actor, input) {
-      return chokePoint.createDatabase(
-        { name: input.name, parentItemId: input.parentItemId, icon: input.icon, color: input.color },
+      const databaseInput = {
+        name: input.name,
+        parentItemId: input.parentItemId,
+        icon: input.icon,
+        color: input.color,
+      };
+      if (input.properties === undefined) return chokePoint.createDatabase(databaseInput, actor.userId);
+      // `database.create` holds the database-write capability; property creation needs the separate
+      // schema-write capability, so only a human REST session may create properties through it.
+      if (actor.restSession !== true) {
+        throw new ForbiddenError("Creating a database with properties requires a user session", {
+          field: "properties",
+        });
+      }
+      return chokePoint.createDatabaseWithProperties(
+        databaseInput,
+        input.titlePropertyName ?? "Name",
+        input.properties,
         actor.userId,
       );
     },

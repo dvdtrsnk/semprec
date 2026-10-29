@@ -33,14 +33,56 @@ const DatabaseColorSchema = z
   .regex(/^#[0-9A-Fa-f]{6}$/, "color must be #RRGGBB")
   .transform((color) => color.toUpperCase());
 
+/** Property types a collection can be created with; `title` is added by the operation itself, the rest are added afterwards through the property operations. */
+const DATABASE_CREATE_PROPERTY_TYPES = ["text", "number", "select", "date", "checkbox", "url", "file"] as const;
+/** Key of the title property created together with `properties`. */
+export const DATABASE_CREATE_TITLE_PROPERTY_KEY = "name";
+const DATABASE_CREATE_MAX_PROPERTIES = 50;
+
+const DatabaseCreatePropertySchema = z.union([
+  z
+    .object({
+      key: z.string().min(1),
+      name: z.string().min(1),
+      type: z.enum(DATABASE_CREATE_PROPERTY_TYPES),
+      config: jsonObject.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      key: z.string().min(1),
+      name: z.string().min(1),
+      type: z.literal("relation"),
+      targetDatabaseId: z.string(),
+      cardinality: z.enum(["one_to_one", "one_to_many", "many_to_many"]),
+    })
+    .strict(),
+]);
+export type DatabaseCreateProperty = z.infer<typeof DatabaseCreatePropertySchema>;
+
 export const DatabaseCreateInputSchema = z
   .object({
     name: z.string().min(1),
     parentItemId: z.string().optional(),
     icon: DatabaseIconSchema.optional(),
     color: DatabaseColorSchema.optional(),
+    titlePropertyName: z.string().min(1).optional(),
+    properties: z.array(DatabaseCreatePropertySchema).max(DATABASE_CREATE_MAX_PROPERTIES).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((input, ctx) => {
+    const seen = new Set<string>([DATABASE_CREATE_TITLE_PROPERTY_KEY]);
+    (input.properties ?? []).forEach((property, index) => {
+      if (seen.has(property.key)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["properties", index, "key"],
+          message: `Duplicate property key '${property.key}'`,
+        });
+      }
+      seen.add(property.key);
+    });
+  });
 export type DatabaseCreateInput = z.infer<typeof DatabaseCreateInputSchema>;
 
 export const DatabasePatchInputSchema = z
