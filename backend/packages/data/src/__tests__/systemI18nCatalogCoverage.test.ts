@@ -21,7 +21,16 @@ function manifestPath(fileName: string): string {
   return new URL(`../${fileName}`, import.meta.url).href;
 }
 
-const ALL_MODULE_IDS = ["schemaCore", "views", "docs", "systemDatabases", "library", "mailSync", "inboxPipeline"];
+const ALL_MODULE_IDS = [
+  "schemaCore",
+  "views",
+  "docs",
+  "systemDatabases",
+  "library",
+  "mailSync",
+  "inboxPipeline",
+  "calendar",
+];
 
 const MANIFEST_PATHS = [
   manifestPath("chokePoint/schemaCoreModuleManifest.js"),
@@ -31,6 +40,7 @@ const MANIFEST_PATHS = [
   manifestPath("library/libraryModuleManifest.js"),
   manifestPath("mail/mailModuleManifest.js"),
   manifestPath("inbox/inboxModuleManifest.js"),
+  manifestPath("calendar/calendarModuleManifest.js"),
 ];
 
 /** The non-built-in view types this issue covers, each owned by a different manifest than "views". */

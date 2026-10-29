@@ -4,6 +4,8 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
+import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
+import { KNOWN_OWNER_PROCESS_IDS } from "../manifest/knownActionIds.js";
 import {
   createModuleRegistryDriftCheckAction,
   findOrphanedOwnerProcessIds,
@@ -83,6 +85,23 @@ describe("moduleRegistry.checkDrift", () => {
       findOrphanedOwnerProcessIds(client, new Set(["core.known"])),
     );
     expect(orphaned).toEqual(["core.unknown"]);
+  });
+
+  it("does not report a property owned by the calendar module as an orphan", async () => {
+    const db = await chokePoint.createDatabase({ name: "D" });
+    await chokePoint.createProperty({
+      databaseId: db.id,
+      key: "status",
+      name: "Status",
+      type: "text",
+      owner: "system",
+      ownerProcess: CALENDAR_MODULE_ID,
+    });
+
+    const orphaned = await withTransaction(pool, (client) =>
+      findOrphanedOwnerProcessIds(client, KNOWN_OWNER_PROCESS_IDS),
+    );
+    expect(orphaned).toEqual([]);
   });
 
   it("publishes a finding for each drift kind and resolves it once repaired", async () => {

@@ -196,7 +196,7 @@
         "pathNot": "^packages/data/src/chokePoint/(schemaCoreModuleManifest|itemTrash)\\.ts$"
       },
       "to": {
-        "path": "^packages/data/src/(mail|transcription|inbox|journal|library|docs|push|notifications|mcp|blobs|agentRuns|auth|credentials|aiGateway|observability|health|guidanceDrift|trash)/"
+        "path": "^packages/data/src/(mail|calendar|transcription|inbox|journal|library|docs|push|notifications|mcp|blobs|agentRuns|auth|credentials|aiGateway|observability|health|guidanceDrift|trash)/"
       }
     },
     {

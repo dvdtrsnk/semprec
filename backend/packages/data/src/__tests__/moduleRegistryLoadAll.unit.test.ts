@@ -23,7 +23,16 @@ import { JOURNAL_INBOX_VIEW_TYPE } from "../views/journalInboxViewType.js";
  * `libraryMailInboxModuleManifests.test.ts` each prove only within their own four/three-manifest
  * subset, never across all seven together.
  */
-const ALL_MODULE_IDS = ["schemaCore", "views", "docs", "systemDatabases", "library", "mailSync", "inboxPipeline"];
+const ALL_MODULE_IDS = [
+  "schemaCore",
+  "views",
+  "docs",
+  "systemDatabases",
+  "library",
+  "mailSync",
+  "inboxPipeline",
+  "calendar",
+];
 
 const MANIFEST_PATHS = [
   manifestPath("chokePoint/schemaCoreModuleManifest.js"),
@@ -33,6 +42,7 @@ const MANIFEST_PATHS = [
   manifestPath("library/libraryModuleManifest.js"),
   manifestPath("mail/mailModuleManifest.js"),
   manifestPath("inbox/inboxModuleManifest.js"),
+  manifestPath("calendar/calendarModuleManifest.js"),
 ];
 
 async function loadAll(getActiveModuleIds: () => ReadonlySet<string>): Promise<ModuleRegistry> {

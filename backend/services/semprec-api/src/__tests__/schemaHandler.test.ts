@@ -99,6 +99,17 @@ describe("createSchemaRequestListener (issue #147)", () => {
     });
   });
 
+  it("loads the empty calendar module and lists no database for it", async () => {
+    expect(moduleRegistry.listModuleIds()).toContain("calendar");
+    expect(await moduleRegistry.listActiveModuleIds()).toContain("calendar");
+
+    const res = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader("en") });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SchemaProjectionBody;
+    expect(body.databases.filter((db) => db.key?.startsWith("calendar"))).toEqual([]);
+    expect(body.agentTools.filter((tool) => tool.moduleId === "calendar")).toEqual([]);
+  });
+
   it("rejects a request with no credentials", async () => {
     const res = await fetch(`${baseUrl}/api/schema`);
     expect(res.status).toBe(401);
