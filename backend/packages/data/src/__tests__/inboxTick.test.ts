@@ -1,13 +1,14 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
-import { runInTenant } from "@semprec/shared";
+import { AiGatewayFailedError, runInTenant } from "@semprec/shared";
 import { getTenantZeroId, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
+import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createActionRegistry, type ActionRegistry } from "../scheduler/actions.js";
 import {
@@ -318,5 +319,62 @@ describe("Inbox item event dispatch (issue #103)", () => {
     const afterDelete = await pendingTickJobs();
     expect(afterDelete).toHaveLength(3);
     expect(afterDelete.every((j) => j.queue_name === SEMPREC_TICK_QUEUE_NAME)).toBe(true);
+  });
+
+  it("a timeout on a non-final queue attempt keeps the heartbeat job for its retry and writes no card (issue #1485)", async () => {
+    const inboxId = await databaseIdFor("inbox");
+    const journalId = await databaseIdFor("journal");
+    const typesId = await databaseIdFor("inboxItemTypes");
+    const proposalsId = await databaseIdFor("processingProposals");
+    const type = await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name: "Task",
+          emoji: "☑️",
+          processingMethod: "database",
+          targetDatabase: "tasks",
+        }),
+      ),
+    );
+    await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: inboxId,
+          journalDatabaseId: journalId,
+          timezone: "Europe/Prague",
+          date: "2026-08-28",
+          time: "09:00",
+          text: "Buy milk",
+          type: type.id,
+        }),
+      ),
+    );
+
+    const registry = createActionRegistry();
+    registry.set(
+      SEMPREC_TICK_ACTION_ID,
+      createSemprecTickAction(pool, async () => {
+        throw new AiGatewayFailedError("timeout");
+      }),
+    );
+    await drainQueue(registry);
+
+    // Attempt 1 of 3 is not final, so the tick rethrows and graphile-worker keeps the job for a retry.
+    const { rows: jobs } = await pool.query<{ attempts: number; last_error: string | null }>(
+      `SELECT j.attempts, j.last_error
+       FROM graphile_worker._private_jobs j
+       JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+       WHERE t.identifier = 'heartbeatFireCore'`,
+    );
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.attempts).toBe(1);
+    expect(jobs[0]!.last_error).toContain("AI gateway call failed: timeout");
+
+    const { rows: cards } = await pool.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM items WHERE database_id = $1",
+      [proposalsId],
+    );
+    expect(cards[0]!.n).toBe(0);
   });
 });

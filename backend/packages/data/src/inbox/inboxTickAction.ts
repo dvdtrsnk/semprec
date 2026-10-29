@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { createLogger, type Logger } from "@semprec/shared";
+import { AiGatewayFailedError, createLogger, type AiGatewayFailureReason, type Logger } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
@@ -25,6 +25,7 @@ import { FILES_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { assertValidMcpServerProposalProperties } from "../mcp/mcpServerProposal.js";
 import { parseFileFromAttachmentProperties } from "./fileAttachmentStep.js";
 import { assertNoRefCycle, selectActiveSteps, stepError } from "./proposalStepGraph.js";
+import { appendHistoryEntry } from "./proposalHistory.js";
 import { CardinalityViolationError, ForbiddenError, ValidationError } from "../errors.js";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import type { DatabaseRow, ItemRow, PropertyRow } from "../types.js";
@@ -398,51 +399,9 @@ function buildProposalEnvelope(snapshot: TickSnapshot, result: ProposalComputati
   return { entityKind: "pageContent", target: result.target, properties: result.properties };
 }
 
-/** A Processing proposal's chat + decision log entry (issue #104). */
-const PROPOSAL_HISTORY_KINDS = [
-  "computed",
-  "userEdit",
-  "reset",
-  "typeChosen",
-  "threadRevision",
-  "recompute",
-  "confirmed",
-  "rejected",
-  "reopened",
-  "invalidated",
-] as const;
-
-export type ProposalHistoryKind = (typeof PROPOSAL_HISTORY_KINDS)[number];
-
-const proposalHistoryEntrySchema = z.object({
-  author: z.enum(["ai", "user"]),
-  message: z.string(),
-  at: z.string(),
-  kind: z.enum(PROPOSAL_HISTORY_KINDS).optional(),
-  /** `ref.key` strings a `userEdit` entry touched. */
-  keys: z.array(z.string()).optional(),
-  threadId: z.string().optional(),
-  messageId: z.string().optional(),
-});
-
-export type ProposalHistoryEntry = z.infer<typeof proposalHistoryEntrySchema>;
-
-/**
- * Appends one history entry to a proposal's `history`, tolerating a missing/malformed
- * stored value as empty. Defaults to `author: 'ai'` for this module's own tick-driven
- * entries; inbox/proposalActions.ts (issue #105) reuses this with `author: 'user'` for
- * confirm/reject/revise's own log entries.
- */
-export function appendHistoryEntry(
-  history: unknown,
-  message: string,
-  author: "ai" | "user" = "ai",
-  extra?: Pick<ProposalHistoryEntry, "kind" | "keys" | "threadId" | "messageId">,
-): ProposalHistoryEntry[] {
-  const parsed = z.array(proposalHistoryEntrySchema).safeParse(history);
-  const existing = parsed.success ? parsed.data : [];
-  return [...existing, { author, message, at: new Date().toISOString(), ...extra }];
-}
+// The proposal history block (kinds, entry schema, `appendHistoryEntry`) lives in `proposalHistory.ts`;
+// re-exported here so existing importers keep their path (issue #1485 size cap, no behaviour change).
+export { appendHistoryEntry, type ProposalHistoryEntry, type ProposalHistoryKind } from "./proposalHistory.js";
 
 /** Checks a `'database'` envelope's `relations`: each key a relation property of the target database, unique target ids, every target linkable. */
 async function assertValidEnvelopeRelations(
@@ -1072,6 +1031,38 @@ async function reviseProposal(
 }
 
 /**
+ * The source-item re-checks a write transaction runs before it writes anything for `snapshot`:
+ * the item must still exist, undeleted, with the same recognized type and the same fingerprint.
+ * Returns the item and its current fingerprint, or `null` after logging why the write is stale.
+ * Shared by `writeTickResult` and `writeComputeFailure` (issue #1485).
+ */
+async function currentSourceFingerprint(
+  client: PoolClient,
+  config: SemprecTickActionConfig,
+  snapshot: TickSnapshot,
+): Promise<{ item: ItemRow; fingerprint: string } | null> {
+  const item = await itemsStore.getItemById(client, config.inboxDatabaseId, snapshot.item.id);
+  if (!item || item.deletedAt) {
+    logger.info({ sourceItemId: snapshot.item.id, reason: "sourceDeleted" }, "Skipping stale tick write");
+    return null;
+  }
+
+  const recognized = await resolveRecognizedType(client, config, item);
+  if (!recognized) {
+    logger.info({ sourceItemId: snapshot.item.id, reason: "unrecognizedType" }, "Skipping stale tick write");
+    return null;
+  }
+
+  // Both sides are version 2: the snapshot's fingerprint was computed by `readTickSnapshot` the same way.
+  const fingerprint = computeInboxFingerprintV2(await inboxFingerprintInput(client, item, recognized.type));
+  if (fingerprint !== snapshot.fingerprint) {
+    logger.info({ sourceItemId: snapshot.item.id, reason: "fingerprintChanged" }, "Skipping stale tick write");
+    return null;
+  }
+  return { item, fingerprint };
+}
+
+/**
  * The tick's write phase, run in its own transaction after the non-transactional
  * `computeProposal` call has returned. Re-validates every field `snapshot` was staked on before
  * writing anything: the source item must still exist, undeleted, with the same recognized type
@@ -1086,24 +1077,9 @@ async function writeTickResult(
   snapshot: TickSnapshot,
   envelope: ProposalEnvelope,
 ): Promise<void> {
-  const item = await itemsStore.getItemById(client, config.inboxDatabaseId, snapshot.item.id);
-  if (!item || item.deletedAt) {
-    logger.info({ sourceItemId: snapshot.item.id, reason: "sourceDeleted" }, "Skipping stale tick write");
-    return;
-  }
-
-  const recognized = await resolveRecognizedType(client, config, item);
-  if (!recognized) {
-    logger.info({ sourceItemId: snapshot.item.id, reason: "unrecognizedType" }, "Skipping stale tick write");
-    return;
-  }
-
-  // Both sides are version 2: the snapshot's fingerprint was computed by `readTickSnapshot` the same way.
-  const fingerprint = computeInboxFingerprintV2(await inboxFingerprintInput(client, item, recognized.type));
-  if (fingerprint !== snapshot.fingerprint) {
-    logger.info({ sourceItemId: snapshot.item.id, reason: "fingerprintChanged" }, "Skipping stale tick write");
-    return;
-  }
+  const current = await currentSourceFingerprint(client, config, snapshot);
+  if (!current) return;
+  const { item, fingerprint } = current;
 
   try {
     await assertValidProposalEnvelope(client, envelope);
@@ -1159,6 +1135,66 @@ async function writeTickResult(
 }
 
 /**
+ * The write phase of a failed `computeProposal` call (issue #1485), run in its own transaction
+ * after the call has thrown an `AiGatewayFailedError`. It applies the same source re-checks as
+ * `writeTickResult`, so an edit or deletion during the call writes nothing (the edit has already
+ * enqueued a newer tick). It then stores the card as `computeFailed` with a cleared fingerprint, so
+ * the next tick computes again instead of skipping on an unchanged fingerprint. An existing
+ * `proposal` stays stored as it was; a locked card is never touched; a card is created only when
+ * none exists, with the `sourceInbox` edge to the source item.
+ */
+async function writeComputeFailure(
+  client: PoolClient,
+  config: SemprecTickActionConfig,
+  snapshot: TickSnapshot,
+  reason: AiGatewayFailureReason,
+): Promise<void> {
+  const current = await currentSourceFingerprint(client, config, snapshot);
+  if (!current) return;
+  const { item } = current;
+  // The message carries the reason code only: the provider's own text never reaches the card.
+  const message = `Computing the proposal failed: ${reason}.`;
+
+  // Another tick may have created a proposal for this source while this one waited on the AI call,
+  // so a null `snapshot.existingProposal` does not mean there is nothing to update.
+  const existing = snapshot.existingProposal ?? (await findExistingProposal(client, config, item.id));
+  if (existing) {
+    const locked = await lockUnlockedProposal(client, config, existing);
+    if (!locked) return;
+    await updateItemWithClient(
+      client,
+      {
+        databaseId: config.processingProposalsDatabaseId,
+        itemId: locked.id,
+        ifVersion: locked.updatedAt,
+        propertiesPatch: {
+          fingerprint: null,
+          status: "computeFailed",
+          history: appendHistoryEntry(locked.properties.history, message),
+        },
+      },
+      { allowedSystemKeys: ["fingerprint", "status", "history"] },
+    );
+  } else {
+    const proposal = await createItemWithClient(
+      client,
+      {
+        databaseId: config.processingProposalsDatabaseId,
+        properties: {
+          kind: "inbox",
+          fingerprint: null,
+          history: appendHistoryEntry([], message),
+          status: "computeFailed",
+        },
+      },
+      { allowedSystemKeys: ["kind", "fingerprint", "history", "status"] },
+    );
+    await linkSourceInboxRelation(client, config, proposal.id, item.id);
+  }
+  await enqueueJournalInboxRecomputeForInboxItem(client, item.id);
+}
+
+/**
  * Registered as an `onItemEvent` ('create'/'update'/'delete') heartbeat action on the Inbox
  * database (issue #103): re-reads the item by id at run time — never trusting anything about
  * its content from the job payload — so when several rapid edits collapse onto one pending
@@ -1177,6 +1213,12 @@ async function writeTickResult(
  * A computed envelope that fails destination validation lands in `needsClarification` rather
  * than being stored as `proposed`. Every create, revise, or status change appends one
  * `{ author: 'ai', message, at }` history entry (issue #104).
+ *
+ * A gateway failure (`AiGatewayFailedError`) from `computeProposal` is recorded on the card as
+ * `computeFailed` (issue #1485) when its reason is `budget_exceeded` or the call is the final queue
+ * attempt (`context.isFinalAttempt === true`), unless the source changed during the call or the card
+ * is locked, in which case nothing is written. Any other gateway failure is rethrown, so the queue
+ * retries the job. Every other error from `computeProposal` propagates unchanged.
  */
 export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemprecProposalFn): ActionHandler {
   return async (actionConfig: Record<string, unknown>, context: ActionContext) => {
@@ -1191,15 +1233,30 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
     });
     if (!snapshot) return;
 
-    const result = await computeProposal({
-      sourceItem: snapshot.item,
-      type: snapshot.type,
-      entityKind: snapshot.entityKind,
-      targetDatabaseId: snapshot.targetDatabaseId,
-      targetModuleId: snapshot.targetModuleId,
-      locale: snapshot.locale,
-      projectItemId: context.projectItemId,
-    });
+    let result: ProposalComputationResult;
+    try {
+      result = await computeProposal({
+        sourceItem: snapshot.item,
+        type: snapshot.type,
+        entityKind: snapshot.entityKind,
+        targetDatabaseId: snapshot.targetDatabaseId,
+        targetModuleId: snapshot.targetModuleId,
+        locale: snapshot.locale,
+        projectItemId: context.projectItemId,
+      });
+    } catch (err) {
+      if (!(err instanceof AiGatewayFailedError)) throw err;
+      const reason = err.reason;
+      // A budget rejection is not worth retrying, and the final queue attempt has no retry left: both
+      // are recorded on the card. Any other gateway failure on a non-final attempt is rethrown, so the
+      // queue retries the job.
+      if (reason !== "budget_exceeded" && context.isFinalAttempt !== true) throw err;
+      logger.warn({ sourceItemId, reason }, "Recording a failed proposal computation on the card");
+      await withTransaction(pool, (client) => writeComputeFailure(client, config, snapshot, reason), {
+        isolation: "repeatable_read",
+      });
+      return;
+    }
     const envelope = buildProposalEnvelope(snapshot, result);
 
     await withTransaction(pool, (client) => writeTickResult(client, config, snapshot, envelope), {

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool, type PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { AiGatewayFailedError, type AiGatewayFailureReason, runInTenant } from "@semprec/shared";
 import { createUser } from "../auth/usersStore.js";
 import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
@@ -1543,6 +1543,254 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       properties: { name: "Buy milk (from A)" },
     });
     expect(proposal!.properties.history).toHaveLength(2);
+  });
+});
+
+describe("semprec.tick records a failed proposal computation on the card (issue #1485)", () => {
+  let inboxId: string;
+  let typesId: string;
+  let proposalsId: string;
+  let journalId: string;
+  let databaseIds: TickDatabaseIds;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    viewTypeRegistry = createViewTypeRegistry();
+    await resetDatabase(pool);
+    await seedSystem(pool, viewTypeRegistry);
+    inboxId = await databaseIdFor("inbox");
+    typesId = await databaseIdFor("inboxItemTypes");
+    proposalsId = await databaseIdFor("processingProposals");
+    journalId = await databaseIdFor("journal");
+    databaseIds = {
+      inboxDatabaseId: inboxId,
+      inboxItemTypesDatabaseId: typesId,
+      processingProposalsDatabaseId: proposalsId,
+    };
+  });
+
+  /** A typed Inbox item (a 'database' type targeting `tasks`) with the text `Buy milk`. */
+  async function createTypedItem(): Promise<{ itemId: string; typeId: string }> {
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
+    );
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        text: "Buy milk",
+        type: type.id,
+      }),
+    );
+    return { itemId: item.id, typeId: type.id };
+  }
+
+  /** One attempt of the tick with a stubbed computation; `isFinalAttempt` is what the heartbeat fire task passes. */
+  function attempt(itemId: string, computeProposal: ComputeSemprecProposalFn, isFinalAttempt: boolean): Promise<void> {
+    return createSemprecTickAction(pool, computeProposal)(databaseIds, {
+      heartbeatId: "hb",
+      projectItemId: "proj",
+      itemId,
+      isFinalAttempt,
+    });
+  }
+
+  /** A computation that fails with the gateway's own error for `reason`. */
+  function failingWith(reason: AiGatewayFailureReason): ComputeSemprecProposalFn {
+    return async () => {
+      throw new AiGatewayFailedError(reason);
+    };
+  }
+
+  /** A concurrent source edit: the text changes, so the source's fingerprint no longer matches the snapshot. */
+  async function editSourceText(itemId: string, text: string): Promise<void> {
+    await withTransaction(pool, (client) =>
+      itemsStore.updateItemProperties(client, { databaseId: inboxId, itemId, propertiesPatch: { text } }),
+    );
+  }
+
+  it("a budget rejection creates a computeFailed card naming the reason, and the tick does not throw", async () => {
+    const { itemId } = await createTypedItem();
+
+    let calls = 0;
+    await expect(
+      attempt(
+        itemId,
+        async () => {
+          calls++;
+          throw new AiGatewayFailedError("budget_exceeded");
+        },
+        false,
+      ),
+    ).resolves.toBeUndefined();
+    expect(calls).toBe(1);
+
+    const card = await findProposalForItem(pool, proposalsId, itemId);
+    expect(card).toBeTruthy();
+    expect(card!.properties.status).toBe("computeFailed");
+    expect(card!.properties.fingerprint ?? null).toBeNull();
+    expect(card!.properties.proposal ?? null).toBeNull();
+    expect(card!.properties.history).toEqual([
+      expect.objectContaining({ author: "ai", message: "Computing the proposal failed: budget_exceeded." }),
+    ]);
+  });
+
+  it.each(["timeout", "http", "invalid_response"] as const)(
+    "a %s failure on a non-final attempt rethrows so the queue retries, and writes no card",
+    async (reason) => {
+      const { itemId } = await createTypedItem();
+
+      await expect(attempt(itemId, failingWith(reason), false)).rejects.toThrow(`AI gateway call failed: ${reason}`);
+      expect(await findProposalForItem(pool, proposalsId, itemId)).toBeNull();
+    },
+  );
+
+  it.each(["timeout", "http", "invalid_response"] as const)(
+    "a %s failure on the final attempt records the card and does not throw",
+    async (reason) => {
+      const { itemId } = await createTypedItem();
+
+      await expect(attempt(itemId, failingWith(reason), true)).resolves.toBeUndefined();
+
+      const card = await findProposalForItem(pool, proposalsId, itemId);
+      expect(card!.properties.status).toBe("computeFailed");
+      expect(card!.properties.history).toEqual([
+        expect.objectContaining({ author: "ai", message: `Computing the proposal failed: ${reason}.` }),
+      ]);
+    },
+  );
+
+  it("an error that is not a gateway failure propagates even on the final attempt, and writes nothing", async () => {
+    const { itemId } = await createTypedItem();
+
+    await expect(
+      attempt(
+        itemId,
+        async () => {
+          throw new Error("the answer did not match the schema");
+        },
+        true,
+      ),
+    ).rejects.toThrow("the answer did not match the schema");
+    expect(await findProposalForItem(pool, proposalsId, itemId)).toBeNull();
+  });
+
+  it("an item edited while the failing call is in flight writes no card, even on the final attempt", async () => {
+    const { itemId } = await createTypedItem();
+
+    await expect(
+      attempt(
+        itemId,
+        async () => {
+          await editSourceText(itemId, "Buy milk and eggs");
+          throw new AiGatewayFailedError("timeout");
+        },
+        true,
+      ),
+    ).resolves.toBeUndefined();
+    expect(await findProposalForItem(pool, proposalsId, itemId)).toBeNull();
+  });
+
+  it("an item deleted while the failing call is in flight writes no card", async () => {
+    const { itemId } = await createTypedItem();
+
+    await expect(
+      attempt(
+        itemId,
+        async () => {
+          await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, itemId));
+          throw new AiGatewayFailedError("timeout");
+        },
+        true,
+      ),
+    ).resolves.toBeUndefined();
+    expect(await findProposalForItem(pool, proposalsId, itemId)).toBeNull();
+  });
+
+  it.each(["confirmed", "rejected"] as const)(
+    "a card that became %s while the failing call was in flight stays untouched",
+    async (lockedStatus) => {
+      const { itemId } = await createTypedItem();
+      await attempt(itemId, async () => ({ properties: { name: "Buy milk" } }), false);
+      const proposed = (await findProposalForItem(pool, proposalsId, itemId))!;
+      expect(proposed.properties.status).toBe("proposed");
+      await editSourceText(itemId, "Buy milk and eggs");
+
+      await expect(
+        attempt(
+          itemId,
+          async () => {
+            await withTransaction(pool, (client) =>
+              itemsStore.updateItemProperties(client, {
+                databaseId: proposalsId,
+                itemId: proposed.id,
+                propertiesPatch: { status: lockedStatus },
+              }),
+            );
+            throw new AiGatewayFailedError("timeout");
+          },
+          true,
+        ),
+      ).resolves.toBeUndefined();
+
+      const after = await findProposalForItem(pool, proposalsId, itemId);
+      expect(after!.properties.status).toBe(lockedStatus);
+      expect(after!.properties.history).toEqual(proposed.properties.history);
+    },
+  );
+
+  it("a card that already exists keeps its proposal and gains the failure entry", async () => {
+    const { itemId } = await createTypedItem();
+    await attempt(itemId, async () => ({ properties: { name: "Buy milk" } }), false);
+    const proposed = (await findProposalForItem(pool, proposalsId, itemId))!;
+    await editSourceText(itemId, "Buy milk and eggs");
+
+    await attempt(itemId, failingWith("timeout"), true);
+
+    const card = (await findProposalForItem(pool, proposalsId, itemId))!;
+    expect(card.id).toBe(proposed.id);
+    expect(card.properties.status).toBe("computeFailed");
+    expect(card.properties.fingerprint ?? null).toBeNull();
+    expect(card.properties.proposal).toEqual(proposed.properties.proposal);
+    expect(card.properties.history).toEqual([
+      ...(proposed.properties.history as unknown[]),
+      expect.objectContaining({ author: "ai", message: "Computing the proposal failed: timeout." }),
+    ]);
+  });
+
+  it("the next successful tick after a failure makes the card proposed with a fresh fingerprint", async () => {
+    const { itemId, typeId } = await createTypedItem();
+    await attempt(itemId, failingWith("budget_exceeded"), false);
+
+    // The source did not change, but a null fingerprint is never current, so the tick computes again.
+    let calls = 0;
+    await attempt(
+      itemId,
+      async () => {
+        calls++;
+        return { properties: { name: "Buy milk" } };
+      },
+      false,
+    );
+    expect(calls).toBe(1);
+
+    const card = await findProposalForItem(pool, proposalsId, itemId);
+    expect(card!.properties.status).toBe("proposed");
+    expect(card!.properties.fingerprint).toBe(fingerprintV2Of({ typeId, text: "Buy milk" }));
+    expect(card!.properties.proposal).toEqual({
+      entityKind: "database",
+      target: await databaseIdFor("tasks"),
+      properties: { name: "Buy milk" },
+    });
   });
 });
 
