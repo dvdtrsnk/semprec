@@ -5,7 +5,6 @@ import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.js";
-import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import type { PermissionManifest } from "../manifest/permissionManifest.js";
 import { EMAIL_INGEST_ALLOWED_SYSTEM_KEYS, formatAddress, formatAddressList } from "./ingest.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
@@ -16,12 +15,13 @@ import {
   type MailEnvelope,
   type MailEnvelopeAddress,
 } from "./mailMessageMetaStore.js";
+import { getMailAccountSyncState, defaultSyncModeForProvider } from "./mailAccountSyncStateStore.js";
 import { resolveThreadId } from "./threading.js";
 import { buildMailPreviewFromBody } from "./mailPlainText.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
-import type { MailSmtpClient } from "./smtpClient.js";
-import { generateOutgoingMessageId } from "./outgoingMime.js";
+import { buildOutgoingMime, generateOutgoingMessageId, type OutgoingMimeDeps } from "./outgoingMime.js";
+import type { MailTransportFactory } from "./mailTransport.js";
 
 /**
  * The choke point's actor distinction for `email.send` (issue #95, epic #92's "Enforcement
@@ -52,11 +52,12 @@ export function assertEmailSendAuthorized(actor: SendEmailActor): void {
 /**
  * Real transport connections are out of `@semprec/data` — same "inject the real
  * implementation, default to a stub that throws" shape as `MailSyncAdapterFactory`
- * (mail/mailSyncJob.ts). A real composition root supplies its own factory (`NodemailerSmtpClient`,
- * mail/smtpClient.ts, wrapping an already-authenticated `nodemailer` transport).
+ * (mail/mailSyncJob.ts). A real composition root supplies `createMailTransportFactory(pool)`
+ * (mail/mailTransport.ts) and the storage roots that attachment bytes are read from.
  */
 export interface MailSendAdapterFactory {
-  createSmtpClient?: (mailboxItemId: string, credential: string) => MailSmtpClient | Promise<MailSmtpClient>;
+  transports?: MailTransportFactory;
+  attachmentStorage?: Pick<OutgoingMimeDeps, "files" | "mailAttachments">;
 }
 
 export const noopMailSendAdapterFactory: MailSendAdapterFactory = {};
@@ -128,7 +129,7 @@ async function unlinkFromFoldersWithSpecialPurpose(
  * on success finalizes the draft item into the mailbox's Sent folder; on SMTP failure it undoes
  * the claim so a genuine retry can still send.
  *
- * The claim is `upsertMailMessageMeta` itself, moved to run *before* `smtp.sendMail` instead of
+ * The claim is `upsertMailMessageMeta` itself, moved to run *before* the transport's `send` instead of
  * after — `mail_message_meta.item_id` is this table's primary key (one row per Email item), so
  * two concurrent calls for the same draft can't both win it: the loser's INSERT fails with a
  * primary-key violation (each call's `message_id` is a fresh random UUID, so `ON CONFLICT
@@ -189,16 +190,16 @@ export async function sendDraftEmail(
     );
   }
 
-  if (!adapters.createSmtpClient) throw new Error("No SMTP adapter configured for this composition root");
-  // Passed `pool` directly, not wrapped in `withTransaction` (mirrors mailSyncJob.ts's own
-  // credential fetch): the access-log insert inside getDecryptedCredential must survive even
-  // if decryption itself fails.
-  const credential = await getDecryptedCredential(pool, {
-    itemId: input.mailboxItemId,
-    actorType: "smtp_send",
-    purpose: "email_send",
-  });
-  if (!credential) throw new Error(`Mailbox ${input.mailboxItemId} has no stored credential`);
+  const { transports, attachmentStorage } = adapters;
+  if (!transports || !attachmentStorage) throw new Error("No SMTP adapter configured for this composition root");
+  // A mailbox that has never synced has no sync-state row. It takes the default mode of its provider, the
+  // mode its first sync would use, so the transport is chosen the same way on either path.
+  const syncState = await getMailAccountSyncState(pool, input.mailboxItemId);
+  const syncMode =
+    syncState?.syncMode ??
+    defaultSyncModeForProvider(
+      typeof mailbox.properties.provider === "string" ? mailbox.properties.provider : "generic",
+    );
 
   const messageId = generateOutgoingMessageId(input.from.address);
   const envelope: MailEnvelope = { from: input.from, to: input.to, cc: input.cc, bcc: input.bcc };
@@ -232,19 +233,28 @@ export async function sendDraftEmail(
     throw err;
   }
 
-  const smtp = await adapters.createSmtpClient(input.mailboxItemId, credential);
+  // Any failure in this block undoes the claim, including a transport that cannot be built (no settings, no
+  // credential). A failure after the server took the message is undone the same way, as the SMTP failure already was.
   try {
-    await smtp.sendMail({
-      from: input.from,
-      to: input.to,
-      cc: input.cc,
-      bcc: input.bcc,
-      subject: input.subject,
-      text: input.bodyText,
-      html: input.bodyHtml,
-      messageId,
-      inReplyTo: input.inReplyTo,
-      references: input.references,
+    const transport = await transports.forMailbox(input.mailboxItemId, syncMode);
+    const mime = await buildOutgoingMime(
+      {
+        from: input.from,
+        to: input.to,
+        cc: input.cc,
+        bcc: input.bcc,
+        subject: input.subject,
+        text: input.bodyText ?? "",
+        html: input.bodyHtml,
+        messageId,
+        inReplyTo: input.inReplyTo,
+        references: input.references,
+      },
+      { client: pool, files: attachmentStorage.files, mailAttachments: attachmentStorage.mailAttachments },
+    );
+    await transport.send({
+      raw: mime.raw,
+      envelope: { from: input.from.address, recipients: mime.envelopeRecipients },
     });
   } catch (err) {
     // Best-effort: the SMTP failure in `err` is the cause this call must surface — if the

@@ -71,6 +71,33 @@ export class MailServerUnreachableError extends Error {
 }
 
 /**
+ * Thrown by a mail transport when the outgoing server rejects the login: a 535 reply, or another login failure
+ * nodemailer reports as `EAUTH`. The message names neither the server's response nor the credential.
+ */
+export class MailSendAuthFailedError extends Error {
+  readonly code = "mail_send_auth_failed";
+
+  constructor() {
+    super("The mail server rejected the login");
+    this.name = "MailSendAuthFailedError";
+  }
+}
+
+/**
+ * Thrown by a mail transport when the outgoing server refuses a recipient in the RCPT phase: a 5xx when every
+ * recipient is refused, or any refusal when the server accepted the message for only some recipients. The
+ * refused recipients get nothing; the accepted ones already have the message. The error names no address.
+ */
+export class MailRecipientRejectedError extends Error {
+  readonly code = "mail_recipient_rejected";
+
+  constructor() {
+    super("The mail server refused a recipient");
+    this.name = "MailRecipientRejectedError";
+  }
+}
+
+/**
  * Shared upper bound on a single attachment part's *decoded* size, enforced identically by
  * all three adapters (issue #26's provider limits table tops out at iCloud's 20MB baseline /
  * Gmail's 25MB) — generous enough to never bind on a real attachment, but a hard backstop

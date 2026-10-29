@@ -264,10 +264,19 @@ export {
 export {
   MailConnectionLimitError,
   MailReauthorizationRequiredError,
+  MailRecipientRejectedError,
+  MailSendAuthFailedError,
   MailServerUnreachableError,
 } from "./mail/providerTypes.js";
 export { isImapConnectionLimitError } from "./mail/imapFlowClient.js";
 export type { ImapMailClient } from "./mail/imapReconcile.js";
+export {
+  createMailTransportFactory,
+  type MailTransport,
+  type MailTransportFactory,
+  type MailTransportMessage,
+  type MailTransportResult,
+} from "./mail/mailTransport.js";
 export {
   getMailDraft,
   insertMailDraft,
