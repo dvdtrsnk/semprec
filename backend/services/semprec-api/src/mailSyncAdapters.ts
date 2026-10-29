@@ -24,7 +24,8 @@ export interface CreateMailSyncAdaptersOptions {
   fetchImpl?: typeof fetch;
 }
 
-interface OAuthClient {
+/** One provider's OAuth client keys, as `readOAuthClient` reads them from the environment. */
+export interface OAuthClient {
   clientId: string;
   clientSecret: string;
 }
@@ -96,7 +97,7 @@ export function createMailSyncAdapters(options: CreateMailSyncAdaptersOptions): 
  * Reads one provider's OAuth client keys. An unset or empty key counts as missing. A missing result
  * names the keys that are missing, never their values.
  */
-function readOAuthClient(
+export function readOAuthClient(
   env: CreateMailSyncAdaptersOptions["env"],
   idKey: string,
   secretKey: string,
