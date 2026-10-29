@@ -41,6 +41,7 @@ import {
   mergeModuleTaskListForAffinity,
   mintMcpRunCredential,
   provisionTenant,
+  resolveMailModuleIds,
   recordHeartbeatFailure,
   requestTenantExport,
   resolveTaskAffinitySets,
@@ -53,6 +54,7 @@ import {
 import {
   createRuntimeRolePool,
   createTestTenant,
+  ensureFolderItem,
   ensureMailAccountSyncState,
   getTenantZeroId,
   getTestPool,
@@ -398,7 +400,7 @@ async function seededSemprecProjectItemId(tenant: Tenant): Promise<string> {
   return row.id;
 }
 
-async function createMailbox(tenant: Tenant): Promise<string> {
+async function createMailbox(tenant: Tenant, syncMode: "imap" | "gmail_api" = "imap"): Promise<string> {
   const mailboxesId = await requireModuleDatabaseId(tenant, "mailboxes");
   return inTenant(tenant, () =>
     withTransaction(pool, async (client) => {
@@ -407,7 +409,7 @@ async function createMailbox(tenant: Tenant): Promise<string> {
         properties: { name: `Mailbox ${randomUUID()}`, provider: "generic" },
       });
       await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" });
-      await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" });
+      await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode });
       return mailbox.id;
     }),
   );
@@ -885,6 +887,39 @@ const cases: Record<string, TaskCase> = {
             [itemId],
           ),
         ).toEqual([{ has_preview: true, has_time: true }]);
+      });
+    },
+  },
+  [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const mailboxItemId = await createMailbox(tenant, "gmail_api");
+      // The folder an earlier Gmail sync created for a label that is not a real folder.
+      const folderItemId = await inTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const moduleIds = await resolveMailModuleIds(client);
+          const { rows } = await client.query<{ id: string }>(
+            "SELECT id FROM properties WHERE database_id = $1 AND key = 'mailbox'",
+            [moduleIds.foldersDatabaseId],
+          );
+          const mailboxRelationPropertyId = rows[0]?.id;
+          if (!mailboxRelationPropertyId) throw new Error("expected the Folders mailbox relation property");
+          return ensureFolderItem(client, {
+            foldersDatabaseId: moduleIds.foldersDatabaseId,
+            mailboxItemId,
+            mailboxRelationPropertyId,
+            providerId: "UNREAD",
+            name: "Unread",
+            behavior: "label",
+            specialPurpose: "none",
+          });
+        }),
+      );
+      return marked([folderItemId], async () => {
+        expect(
+          await rows(tenant, "SELECT 1 AS present FROM items WHERE id = $1 AND deleted_at IS NULL", [folderItemId]),
+        ).toEqual([]);
       });
     },
   },
