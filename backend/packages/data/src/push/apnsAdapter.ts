@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import http2 from "node:http2";
 import crypto from "node:crypto";
+import { ValidationError } from "../errors.js";
 import type { ApnsEnvironment } from "./types.js";
 import type { ApnsTarget, NotificationPushPayload, PushSendResult } from "./pushSenders.js";
 
@@ -194,13 +195,6 @@ export async function sendApnsNotification(
   payload: NotificationPushPayload,
   config?: ApnsConfig,
 ): Promise<PushSendResult> {
-  let resolvedConfig: ApnsConfig;
-  try {
-    resolvedConfig = config ?? getApnsConfigFromEnv();
-  } catch (error) {
-    return { outcome: "not-configured", reason: error instanceof Error ? error.message : String(error) };
-  }
-
   const body = JSON.stringify({
     // `notifications` (migration 0030) has no separate body/description column — `title` is the
     // only user-facing text there is, so the alert carries it as `title` alone rather than
@@ -214,6 +208,27 @@ export async function sendApnsNotification(
     notification_id: payload.notificationId,
   });
 
+  return sendApnsRequest(target, body, {}, config);
+}
+
+/**
+ * Sends one encoded request and maps APNs' answer to a `PushSendResult`. The alert and background
+ * pushes both go through it, so the provider JWT, the 410/`BadDeviceToken` rule and the transient
+ * fallback exist once. `extraHeaders` holds only what differs between the two push types.
+ */
+async function sendApnsRequest(
+  target: ApnsTarget,
+  body: string,
+  extraHeaders: http2.OutgoingHttpHeaders,
+  config: ApnsConfig | undefined,
+): Promise<PushSendResult> {
+  let resolvedConfig: ApnsConfig;
+  try {
+    resolvedConfig = config ?? getApnsConfigFromEnv();
+  } catch (error) {
+    return { outcome: "not-configured", reason: error instanceof Error ? error.message : String(error) };
+  }
+
   try {
     const response = await postApnsRequest(
       APNS_HOSTS[target.apnsEnvironment],
@@ -222,6 +237,7 @@ export async function sendApnsNotification(
         authorization: `bearer ${getProviderJwt(resolvedConfig)}`,
         "apns-topic": resolvedConfig.topic,
         "content-type": "application/json",
+        ...extraHeaders,
       },
       body,
     );
@@ -234,4 +250,26 @@ export async function sendApnsNotification(
   } catch (error) {
     return { outcome: "transient-failure", error };
   }
+}
+
+/**
+ * A silent background push (issue #1445): `aps` carries only `content-available: 1`, with no alert,
+ * sound or badge, so APNs can wake the app to reload its data without showing anything. The
+ * caller's `data` is sent beside `aps`, unchanged. A `data` that names `aps` would replace the
+ * wake-up key, so it is rejected with a `ValidationError` before any request. The request, the
+ * provider token and the result mapping are `sendApnsNotification`'s. The adapter only sends:
+ * finding a user's registrations and revoking a dead one stay with the caller, and nothing is
+ * written to `notifications` or `push_deliveries`.
+ */
+export async function sendApnsBackgroundPush(
+  target: ApnsTarget,
+  data: Record<string, unknown>,
+  config?: ApnsConfig,
+): Promise<PushSendResult> {
+  if (Object.hasOwn(data, "aps")) {
+    throw new ValidationError("A background push payload must not contain the aps key");
+  }
+
+  const body = JSON.stringify({ aps: { "content-available": 1 }, ...data });
+  return sendApnsRequest(target, body, { "apns-push-type": "background", "apns-priority": "5" }, config);
 }

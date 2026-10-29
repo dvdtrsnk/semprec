@@ -5,8 +5,9 @@ import http2 from "node:http2";
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getApnsConfigFromEnv, sendApnsNotification, type ApnsConfig } from "../apnsAdapter.js";
+import { getApnsConfigFromEnv, sendApnsBackgroundPush, sendApnsNotification, type ApnsConfig } from "../apnsAdapter.js";
 import type { NotificationPushPayload } from "../pushSenders.js";
+import { ValidationError } from "../../errors.js";
 
 const ENV_KEYS = ["APNS_TEAM_ID", "APNS_KEY_ID", "APNS_PRIVATE_KEY_PATH", "APNS_TOPIC"] as const;
 const originalEnv: Record<string, string | undefined> = {};
@@ -87,32 +88,67 @@ describe("sendApnsNotification (issue #703)", () => {
   });
 });
 
-/** One HTTP/2 request's stand-in: records the body it is ended with, then answers 200. */
-class FakeApnsStream extends EventEmitter {
-  private readonly bodies: string[];
+const apnsTarget = { deviceToken: "device-1", apnsEnvironment: "sandbox" as const };
+const apnsTestConfig: ApnsConfig = {
+  teamId: "team-1",
+  keyId: "key-1",
+  privateKey: crypto.generateKeyPairSync("ec", {
+    namedCurve: "prime256v1",
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  }).privateKey,
+  topic: "com.example.app",
+};
 
-  constructor(bodies: string[]) {
+/** One HTTP/2 request as the fake session received it: its headers and the body it was ended with. */
+interface RecordedApnsRequest {
+  headers: http2.OutgoingHttpHeaders;
+  body: string;
+}
+
+/** The status and optional `reason` the fake session answers every request with. */
+interface FakeApnsAnswer {
+  status: number;
+  reason?: string;
+}
+
+/** One HTTP/2 request's stand-in: records its headers and body when ended, then gives `answer`. */
+class FakeApnsStream extends EventEmitter {
+  private readonly requests: RecordedApnsRequest[];
+  private readonly headers: http2.OutgoingHttpHeaders;
+  private readonly answer: FakeApnsAnswer;
+
+  constructor(requests: RecordedApnsRequest[], headers: http2.OutgoingHttpHeaders, answer: FakeApnsAnswer) {
     super();
-    this.bodies = bodies;
+    this.requests = requests;
+    this.headers = headers;
+    this.answer = answer;
   }
 
   setEncoding(): void {}
 
   end(body: string): void {
-    this.bodies.push(body);
+    this.requests.push({ headers: this.headers, body });
     queueMicrotask(() => {
-      this.emit("response", { ":status": 200 });
+      this.emit("response", { ":status": this.answer.status });
+      if (this.answer.reason !== undefined) this.emit("data", JSON.stringify({ reason: this.answer.reason }));
       this.emit("end");
     });
   }
 }
 
-/** The HTTP/2 session the adapter connects; every request body it sends is kept in `bodies`. */
+/** The HTTP/2 session the adapter connects; every request it sends is kept in `requests`. */
 class FakeApnsSession extends EventEmitter {
-  readonly bodies: string[] = [];
+  readonly requests: RecordedApnsRequest[] = [];
+  private readonly answer: FakeApnsAnswer;
 
-  request(): FakeApnsStream {
-    return new FakeApnsStream(this.bodies);
+  constructor(answer: FakeApnsAnswer = { status: 200 }) {
+    super();
+    this.answer = answer;
+  }
+
+  request(headers: http2.OutgoingHttpHeaders): FakeApnsStream {
+    return new FakeApnsStream(this.requests, headers, this.answer);
   }
 
   close(): void {}
@@ -121,14 +157,6 @@ class FakeApnsSession extends EventEmitter {
 }
 
 describe("sendApnsNotification interruption level (issue #1443)", () => {
-  const privateKey = crypto.generateKeyPairSync("ec", {
-    namedCurve: "prime256v1",
-    privateKeyEncoding: { type: "pkcs8", format: "pem" },
-    publicKeyEncoding: { type: "spki", format: "pem" },
-  }).privateKey;
-  const config: ApnsConfig = { teamId: "team-1", keyId: "key-1", privateKey, topic: "com.example.app" };
-  const target = { deviceToken: "device-1", apnsEnvironment: "sandbox" as const };
-
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -139,10 +167,10 @@ describe("sendApnsNotification interruption level (issue #1443)", () => {
     // The adapter uses only request, close, destroy and on, which the fake provides.
     vi.spyOn(http2, "connect").mockImplementation(() => session as unknown as http2.ClientHttp2Session);
 
-    const result = await sendApnsNotification(target, payload, config);
+    const result = await sendApnsNotification(apnsTarget, payload, apnsTestConfig);
 
-    expect(session.bodies).toHaveLength(1);
-    const wire: unknown = JSON.parse(session.bodies[0]!);
+    expect(session.requests).toHaveLength(1);
+    const wire: unknown = JSON.parse(session.requests[0]!.body);
     return { result, wire };
   }
 
@@ -171,5 +199,120 @@ describe("sendApnsNotification interruption level (issue #1443)", () => {
       link_href: null,
       notification_id: "notif-2",
     });
+  });
+});
+
+describe("sendApnsBackgroundPush (issue #1445)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Sends through a fake session and returns the result with the exact body and headers the adapter put on the wire. */
+  async function sendBackgroundAndRead(data: Record<string, unknown>, answer?: FakeApnsAnswer) {
+    const session = new FakeApnsSession(answer);
+    vi.spyOn(http2, "connect").mockImplementation(() => session as unknown as http2.ClientHttp2Session);
+
+    const result = await sendApnsBackgroundPush(apnsTarget, data, apnsTestConfig);
+
+    expect(session.requests).toHaveLength(1);
+    const request = session.requests[0]!;
+    return { result, body: request.body, headers: request.headers };
+  }
+
+  it("sends a sleepResync data object beside aps as a silent background push at priority 5", async () => {
+    const { result, body, headers } = await sendBackgroundAndRead({ kind: "sleepResync" });
+
+    expect(result).toEqual({ outcome: "delivered" });
+    expect(body).toBe('{"aps":{"content-available":1},"kind":"sleepResync"}');
+    expect(headers["apns-push-type"]).toBe("background");
+    expect(headers["apns-priority"]).toBe("5");
+  });
+
+  it("sends a dismiss list in the payload unchanged, with no alert", async () => {
+    const { result, body, headers } = await sendBackgroundAndRead({ dismiss: ["n1"] });
+
+    expect(result).toEqual({ outcome: "delivered" });
+    expect(body).toBe('{"aps":{"content-available":1},"dismiss":["n1"]}');
+    expect(headers["apns-push-type"]).toBe("background");
+    expect(headers["apns-priority"]).toBe("5");
+  });
+
+  it("rejects a data object that contains aps with a ValidationError, before any request", async () => {
+    const session = new FakeApnsSession();
+    const connectSpy = vi
+      .spyOn(http2, "connect")
+      .mockImplementation(() => session as unknown as http2.ClientHttp2Session);
+
+    await expect(
+      sendApnsBackgroundPush(apnsTarget, { aps: { alert: "Title" } }, apnsTestConfig),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(connectSpy).not.toHaveBeenCalled();
+  });
+
+  it("maps a 410 answer to permanent-failure", async () => {
+    const { result } = await sendBackgroundAndRead({ kind: "sleepResync" }, { status: 410, reason: "Unregistered" });
+
+    expect(result).toEqual({ outcome: "permanent-failure", error: "Unregistered" });
+  });
+
+  it("maps a BadDeviceToken answer to permanent-failure", async () => {
+    const { result } = await sendBackgroundAndRead({ kind: "sleepResync" }, { status: 400, reason: "BadDeviceToken" });
+
+    expect(result).toEqual({ outcome: "permanent-failure", error: "BadDeviceToken" });
+  });
+
+  it("maps any other failed answer to transient-failure", async () => {
+    const { result } = await sendBackgroundAndRead(
+      { kind: "sleepResync" },
+      { status: 500, reason: "InternalServerError" },
+    );
+
+    expect(result).toEqual({ outcome: "transient-failure", error: "InternalServerError" });
+  });
+
+  it("maps a connection that cannot be opened to transient-failure", async () => {
+    const connectError = new Error("ECONNREFUSED");
+    vi.spyOn(http2, "connect").mockImplementation(() => {
+      throw connectError;
+    });
+
+    const result = await sendApnsBackgroundPush(apnsTarget, { kind: "sleepResync" }, apnsTestConfig);
+
+    expect(result).toEqual({ outcome: "transient-failure", error: connectError });
+  });
+
+  it("resolves not-configured naming the missing variable when APNS_* is unset, without a request", async () => {
+    for (const key of ENV_KEYS) delete process.env[key];
+    const session = new FakeApnsSession();
+    const connectSpy = vi
+      .spyOn(http2, "connect")
+      .mockImplementation(() => session as unknown as http2.ClientHttp2Session);
+
+    const result = await sendApnsBackgroundPush(apnsTarget, { kind: "sleepResync" });
+
+    expect(result).toEqual({ outcome: "not-configured", reason: expect.stringMatching(/APNS_TEAM_ID/) });
+    expect(connectSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("sendApnsNotification push headers (issue #1445)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("sends an alert without the background push-type or priority headers", async () => {
+    const session = new FakeApnsSession();
+    vi.spyOn(http2, "connect").mockImplementation(() => session as unknown as http2.ClientHttp2Session);
+
+    await sendApnsNotification(
+      apnsTarget,
+      { notificationId: "notif-3", title: "Title", linkHref: null },
+      apnsTestConfig,
+    );
+
+    expect(session.requests).toHaveLength(1);
+    const headers = session.requests[0]!.headers;
+    expect(headers).not.toHaveProperty("apns-push-type");
+    expect(headers).not.toHaveProperty("apns-priority");
   });
 });
