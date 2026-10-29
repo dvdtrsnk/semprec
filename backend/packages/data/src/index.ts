@@ -433,6 +433,16 @@ export * from "./tenancy/invites.js";
 export * from "./tenancy/inviteMail.js";
 export * from "./tenancy/tenantStatusSignal.js";
 export {
+  raiseProblem,
+  resolveProblem,
+  type RaiseProblemInput,
+  type RaiseProblemOutcome,
+  type RaiseProblemResult,
+  type SempProblemCategory,
+  type SempProblemResolutionKind,
+  type SempProblemSeverity,
+} from "./semp/sempProblemsStore.js";
+export {
   getDownloadableTenantExport,
   listTenantExports,
   requestTenantExport,
