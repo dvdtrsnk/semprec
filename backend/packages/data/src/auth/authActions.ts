@@ -25,8 +25,17 @@ import {
 } from "../tenancy/tenantsStore.js";
 import { revokePushSubscriptionsForSession } from "../push/pushSubscriptionsStore.js";
 
-/** How long a freshly-issued session stays valid without further activity. */
-export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
+const SECONDS_PER_DAY = 60 * 60 * 24;
+
+/** How long a session stays valid without further activity; each authenticated request slides expiry forward by this much. */
+export const SESSION_IDLE_TTL_SECONDS_BY_PLATFORM: Record<SessionPlatform, number> = {
+  ios: 90 * SECONDS_PER_DAY,
+  macos: 90 * SECONDS_PER_DAY,
+  web: 30 * SECONDS_PER_DAY,
+};
+
+/** Absolute ceiling: a session never outlives `created_at` plus this, however actively it is used. */
+export const SESSION_MAX_LIFETIME_SECONDS = 365 * SECONDS_PER_DAY;
 
 /** `UserRow` minus `passwordHash` — the shape safe to hand back to a caller or attach to a request. */
 export type PublicUser = Omit<UserRow, "passwordHash">;
@@ -146,7 +155,7 @@ export async function login(pool: Pool, input: LoginInput): Promise<LoginResult>
   }
 
   const { token, tokenHash } = generateOpaqueToken();
-  const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000);
+  const expiresAt = new Date(Date.now() + SESSION_IDLE_TTL_SECONDS_BY_PLATFORM[input.platform] * 1000);
   const session = await withTransaction(pool, async (client) => {
     // Re-checked under lock: a suspension that committed after the read above is seen here, and
     // one that has not yet locked the user waits for this commit and then revokes this session.
@@ -248,7 +257,11 @@ export async function verifySessionToken(client: Pool | PoolClient, token: strin
   const binding = await getUserTenantBinding(client, user.id);
   if (!binding || binding.status !== "active") throw new UnauthorizedError();
 
-  await touchSessionLastSeen(client, session.id);
+  await touchSessionLastSeen(client, {
+    id: session.id,
+    idleSeconds: SESSION_IDLE_TTL_SECONDS_BY_PLATFORM[session.platform],
+    maxLifetimeSeconds: SESSION_MAX_LIFETIME_SECONDS,
+  });
   return { session, user: toPublicUser(user), tenantId: binding.tenantId, role: binding.role };
 }
 

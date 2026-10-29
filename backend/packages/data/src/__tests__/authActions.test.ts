@@ -11,6 +11,7 @@ import { withTransaction } from "../db/pool.js";
 import { createTestTenant } from "../testSupport/tenantFixtures.js";
 import { suspendAccount } from "../tenancy/accountsAdminStore.js";
 import { login, verifySessionToken, logout, revokeUserSession, bootstrapFirstAccount } from "../auth/authActions.js";
+import { SESSION_IDLE_TTL_SECONDS_BY_PLATFORM, SESSION_MAX_LIFETIME_SECONDS } from "../auth/authActions.js";
 import { LOCKOUT_THRESHOLD } from "../auth/loginLockout.js";
 import { NotFoundError, UnauthorizedError, ValidationError } from "../errors.js";
 
@@ -276,6 +277,83 @@ describe("auth actions (issue #140)", () => {
 
       const active = await getActiveSessionByTokenHash(pool, session.tokenHash);
       expect(active?.lastSeenAt).not.toBe(before);
+    });
+  });
+
+  describe("sliding session expiry (issue #1512)", () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    async function loginAs(platform: "web" | "ios" | "macos") {
+      const user = await makeUser(`${platform}-slide@example.com`);
+      return login(pool, { email: user.email, password: "s3cret-password", platform, ip: "1.1.1.1" });
+    }
+
+    // Raw SQL: production cannot age a session, and the test needs created_at/expires_at in the past.
+    async function setTimes(id: string, createdDaysAgo: number, expiresInDays: number): Promise<void> {
+      await pool.query(
+        `UPDATE sessions SET created_at = now() - make_interval(days => $2::int),
+                             expires_at = now() + make_interval(days => $3::int) WHERE id = $1`,
+        [id, createdDaysAgo, expiresInDays],
+      );
+    }
+
+    async function expiresAtMs(id: string): Promise<number> {
+      const { rows } = await pool.query<{ expires_at: Date }>(`SELECT expires_at FROM sessions WHERE id = $1`, [id]);
+      return rows[0]!.expires_at.getTime();
+    }
+
+    it.each([
+      ["ios", 90],
+      ["macos", 90],
+      ["web", 30],
+    ] as const)("pushes a %s session expiry to about %i days ahead", async (platform, days) => {
+      const { token, session } = await loginAs(platform);
+      expect(SESSION_IDLE_TTL_SECONDS_BY_PLATFORM[platform]).toBe(days * 86400);
+      await setTimes(session.id, 0, 1);
+
+      await verifySessionToken(pool, token);
+
+      const delta = (await expiresAtMs(session.id)) - Date.now();
+      expect(Math.abs(delta - days * DAY_MS)).toBeLessThan(60_000);
+    });
+
+    it("sets the initial expiry from the platform idle window", async () => {
+      const ios = await loginAs("ios");
+      const web = await loginAs("web");
+      expect(Math.abs(Date.parse(ios.session.expiresAt) - Date.now() - 90 * DAY_MS)).toBeLessThan(60_000);
+      expect(Math.abs(Date.parse(web.session.expiresAt) - Date.now() - 30 * DAY_MS)).toBeLessThan(60_000);
+    });
+
+    it("caps expiry at created_at + 365 days for a session created 364 days ago", async () => {
+      const { token, session } = await loginAs("ios");
+      await setTimes(session.id, 364, 1);
+
+      await verifySessionToken(pool, token);
+
+      const { rows } = await pool.query<{ capped: boolean }>(
+        `SELECT expires_at = created_at + make_interval(secs => $2::double precision) AS capped FROM sessions WHERE id = $1`,
+        [session.id, SESSION_MAX_LIFETIME_SECONDS],
+      );
+      expect(rows[0]?.capped).toBe(true);
+    });
+
+    it("never moves expires_at earlier, even when the ceiling is already below it", async () => {
+      const { token, session } = await loginAs("web");
+      // Idle window would give now()+30d, but the row already expires later than that.
+      await setTimes(session.id, 0, 200);
+      const before = await expiresAtMs(session.id);
+
+      await verifySessionToken(pool, token);
+
+      expect(await expiresAtMs(session.id)).toBeGreaterThanOrEqual(before);
+    });
+
+    it("rejects a token unused for longer than its idle window with 401", async () => {
+      const { token, session } = await loginAs("web");
+      await setTimes(session.id, 31, -1);
+
+      await expect(verifySessionToken(pool, token)).rejects.toThrow(UnauthorizedError);
+      expect(await expiresAtMs(session.id)).toBeLessThan(Date.now());
     });
   });
 
