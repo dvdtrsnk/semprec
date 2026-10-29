@@ -327,4 +327,51 @@ describe("files and blobs routes (issue #158)", () => {
       expect(disposition).toContain('filename="evil_.txt_; filename=_x"');
     });
   });
+
+  describe("blob metadata on item envelopes (issue #1412)", () => {
+    interface BlobsItemBody extends ItemBody {
+      blobs?: Record<string, { blobId: string; byteSize: number; mimeType: string; filename: string | null }>;
+    }
+    interface QueryBody {
+      items: BlobsItemBody[];
+    }
+
+    it("returns blobs.file with size, type and filename on the upload response, GET and query", async () => {
+      const headers = await authHeader();
+      const uploaded = (await (
+        await uploadFile("hello world", { filename: "report.txt", contentType: "text/plain" })
+      ).json()) as BlobsItemBody;
+      const blobId = (uploaded.properties.file as { blobId: string }).blobId;
+      const expected = { blobId, byteSize: 11, mimeType: "application/octet-stream", filename: "report.txt" };
+
+      expect(uploaded.blobs).toEqual({ file: expected });
+
+      const got = (await (await fetch(`${baseUrl}/api/items/${uploaded.id}`, { headers })).json()) as BlobsItemBody;
+      expect(got.blobs).toEqual({ file: expected });
+      expect(got.properties).toEqual(uploaded.properties);
+
+      const queried = (await (
+        await fetch(`${baseUrl}/api/databases/${uploaded.databaseId}/query`, {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: "{}",
+        })
+      ).json()) as QueryBody;
+      expect(queried.items.find((item) => item.id === uploaded.id)?.blobs).toEqual({ file: expected });
+    });
+
+    it("has no blobs key on an item without a file blob", async () => {
+      const headers = await authHeader();
+      const uploaded = (await (await uploadFile("x")).json()) as BlobsItemBody;
+      const created = await fetch(`${baseUrl}/api/databases/${uploaded.databaseId}/items`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ properties: { name: "no file here" } }),
+      });
+      expect(created.status).toBe(201);
+      const body = (await created.json()) as BlobsItemBody;
+      expect(body).not.toHaveProperty("blobs");
+      expect(body.properties).toMatchObject({ name: "no file here" });
+    });
+  });
 });

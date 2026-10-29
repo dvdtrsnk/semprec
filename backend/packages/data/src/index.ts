@@ -317,6 +317,8 @@ export type { IngestUploadedFileInput, IngestUploadedFileResult } from "./blobs/
 export { ingestUploadedFile } from "./blobs/fileUploadStore.js";
 export { openBlobFromRoots, primaryRootForBlob } from "./blobs/openBlobFromRoots.js";
 export type { BlobRootName, OpenBlobFromRootsInput } from "./blobs/openBlobFromRoots.js";
+export { loadBlobMetadataForItems } from "./blobs/blobMetadata.js";
+export type { BlobMetadata, ItemBlobMetadata } from "./blobs/blobMetadata.js";
 export { detectFileType } from "./blobs/fileTypeDetection.js";
 export type { DetectedFile, DetectedFileType } from "./blobs/fileTypeDetection.js";
 export { findFileItemByBlobId } from "./chokePoint/itemsStore.js";

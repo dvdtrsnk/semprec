@@ -70,7 +70,7 @@ describe("relation path query validation at the REST operation boundary", () => 
     });
 
     const service = createGenericApplicationService(pool);
-    const dispatch = mountRoutes(pool, [...createItemRoutes(service, pool), ...createViewRoutes(service)]);
+    const dispatch = mountRoutes(pool, [...createItemRoutes(service, pool), ...createViewRoutes(service, pool)]);
     server = createServer((req, res) => {
       if (!dispatch(req, res)) res.writeHead(404).end();
     });

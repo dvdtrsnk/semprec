@@ -413,6 +413,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "listTenantExports",
   "listUnreadNotificationsForUser",
   "listWritableProposalTargets",
+  "loadBlobMetadataForItems",
   "loadFullModuleRegistry",
   "loadYDoc",
   "lockAdminMembership",

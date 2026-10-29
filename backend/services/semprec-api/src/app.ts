@@ -80,7 +80,7 @@ export async function createDispatcher(
     ...createAdminRoutes(pool, options),
     ...createDatabaseRoutes(genericApplicationService, options.moduleRegistry),
     ...createPropertyRoutes(genericApplicationService, options.moduleRegistry),
-    ...createViewRoutes(genericApplicationService),
+    ...createViewRoutes(genericApplicationService, pool),
     ...createItemRoutes(genericApplicationService, pool),
   ]);
   // Issue #220's own composition root over the same generic catalog: a second
