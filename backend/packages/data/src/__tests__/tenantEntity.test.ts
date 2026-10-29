@@ -194,7 +194,7 @@ describe("tenant entity (issue #968)", () => {
         password: "s3cret-password",
       });
 
-      expect(Object.keys(account).sort()).toEqual(["createdAt", "email", "id", "locale"]);
+      expect(Object.keys(account).sort()).toEqual(["createdAt", "displayName", "email", "id", "locale"]);
       const { rows } = await pool.query<{ tenant_id: string; role: string }>(
         "SELECT tenant_id, role FROM users WHERE id = $1",
         [account.id],
