@@ -11,8 +11,10 @@ export interface RefreshAndPersistAccessTokenInput {
   clientId: string;
   clientSecret: string;
   scope?: string;
-  /** Names the sync mode in `credential_access_log`, e.g. `gmail_sync`. */
+  /** Names the sync mode in `credential_access_log`, e.g. `gmail_api_sync`. */
   purpose: string;
+  /** Replaces the global `fetch` for the token request (see `RefreshAccessTokenInput.fetchImpl`). */
+  fetchImpl?: typeof fetch;
 }
 
 export interface RefreshedAccessToken {
@@ -61,6 +63,7 @@ export async function refreshAndPersistAccessToken(
       clientSecret: input.clientSecret,
       refreshToken,
       ...(input.scope ? { scope: input.scope } : {}),
+      ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
     });
 
     if (refreshed.refreshToken !== undefined) {

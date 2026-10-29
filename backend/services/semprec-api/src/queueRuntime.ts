@@ -11,6 +11,7 @@ import {
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { createApiActionRegistry } from "./actionRegistryComposition.js";
+import { createMailSyncAdapters } from "./mailSyncAdapters.js";
 
 export interface ApiQueueRuntimeOptions {
   /** Overrides `CORE_CRONTAB` — tests use a faster cadence to observe a sweep without waiting on the real one. */
@@ -35,10 +36,12 @@ export interface ApiQueueRuntime {
  * mail jobs resolve the mail databases' ids themselves, per job or per tenant pass, inside that
  * tenant's scope (`resolveMailModuleIds`): nothing is captured at boot, so this starts on a
  * database the mail module is not seeded in, and a tenant without those databases fails only the
- * job that needs them, naming the missing module ids and the seed CLI. The remaining adapters (an external library-metadata fetcher,
- * mail sync transports, mail blob storage, a legacy raw-MIME fetcher, push senders) still stay on
- * `createApiCoreTaskList`'s own defaults here — wiring one in is each adapter's own
- * composition-root concern once it exists.
+ * job that needs them, naming the missing module ids and the seed CLI. Gmail-mode mail accounts sync
+ * through the Gmail transport `createMailSyncAdapters` builds from this process's environment (#1505);
+ * the IMAP and Graph transports are not wired yet (#1510, #1508). The remaining adapters (an external
+ * library-metadata fetcher, mail blob storage, a legacy raw-MIME fetcher, push senders) still stay on
+ * `createApiCoreTaskList`'s own defaults here — wiring one in is each adapter's own composition-root
+ * concern once it exists.
  */
 export async function createApiQueueRuntime(
   pool: Pool,
@@ -56,9 +59,7 @@ export async function createApiQueueRuntime(
     pool,
     actionRegistry,
     undefined, // libraryMetadataFetcher
-    // Transport adapters wait on mailbox onboarding: a Mailbox carries no server settings or stored
-    // credential yet, so a real IMAP/Gmail/Graph adapter would have nothing to connect with.
-    undefined, // mailSyncAdapters
+    createMailSyncAdapters({ pool, env: process.env }), // mailSyncAdapters: Gmail only until #1510 and #1508
     undefined, // mailBlobStorage
     undefined, // legacyRawMimeFetcher
     moduleRegistry,

@@ -249,17 +249,21 @@ async function toFetchedMessage(
 }
 
 /**
- * Real `GmailMailClient` (gmailReconcile.ts) over the Gmail REST API — not exercised by this
- * issue's tests (no live Google account in CI); the reconcile logic itself is tested against
- * a fake client. `getAccessToken` is injected (see oauthTokenExchange.ts) rather than baked
- * in, so this class never itself holds a refresh token in memory beyond one call.
+ * Real `GmailMailClient` (gmailReconcile.ts) over the Gmail REST API. CI never reaches Google: the
+ * semprec-api tests in `mailSyncAdapters.test.ts` run it against a fake Gmail server through
+ * `fetchImpl`, and the reconcile logic itself is tested against a fake client. `getAccessToken` is
+ * injected (see oauthTokenExchange.ts) rather than baked in, so this class never itself holds a
+ * refresh token in memory beyond one call. `fetchImpl` defaults to the global `fetch`.
  */
 export class GmailRestClient implements GmailMailClient {
-  constructor(private readonly getAccessToken: () => Promise<string>) {}
+  constructor(
+    private readonly getAccessToken: () => Promise<string>,
+    private readonly fetchImpl: typeof fetch = fetch,
+  ) {}
 
   private async request<T>(path: string): Promise<{ status: number; json: T | null }> {
     const token = await this.getAccessToken();
-    const response = await fetch(`${BASE_URL}${path}`, {
+    const response = await this.fetchImpl(`${BASE_URL}${path}`, {
       headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(30_000),
     });
@@ -379,7 +383,7 @@ export class GmailRestClient implements GmailMailClient {
 
   async modifyMessageLabels(messageId: string, addLabelIds: string[], removeLabelIds: string[]): Promise<void> {
     const token = await this.getAccessToken();
-    const response = await fetch(`${BASE_URL}/messages/${encodeURIComponent(messageId)}/modify`, {
+    const response = await this.fetchImpl(`${BASE_URL}/messages/${encodeURIComponent(messageId)}/modify`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ addLabelIds, removeLabelIds }),
