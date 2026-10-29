@@ -94,8 +94,8 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
     expect(rows.find((row) => row.id === withReason.id)!.reason).toBe("Customer asked for a quote");
     expect(rows.find((row) => row.id === withoutReason.id)!.reason).toBeNull();
 
-    expect(toApprovalRequestDecisionView(withReason).reason).toBe("Customer asked for a quote");
-    expect(toApprovalRequestDecisionView(withoutReason).reason).toBeNull();
+    expect((await toApprovalRequestDecisionView(pool, withReason)).reason).toBe("Customer asked for a quote");
+    expect((await toApprovalRequestDecisionView(pool, withoutReason)).reason).toBeNull();
   });
 
   it("summarizes a generic-operation-originated request with its operationName, never mcp fields (issue #220)", async () => {
