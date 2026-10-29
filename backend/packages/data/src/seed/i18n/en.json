@@ -129,6 +129,12 @@
   "property.transcripts.link.name": "Link",
   "property.transcripts.event.name": "Event",
   "property.transcripts.speakers.name": "Speakers",
+  "property.transcripts.project.name": "Project",
+  "property.projects.transcripts.name": "Transcripts",
+  "property.transcripts.company.name": "Company",
+  "property.companies.transcripts.name": "Transcripts",
+  "property.transcripts.people.name": "People",
+  "property.people.transcripts.name": "Transcripts",
 
   "database.journal.name": "Journal",
   "property.journal.name.name": "Name",

@@ -29,6 +29,47 @@ async function speakersPropertyCount(transcriptsId: string): Promise<number> {
   return rows[0]?.count ?? 0;
 }
 
+const RELATION_PAIRS = [
+  { moduleId: "projects", transcriptsKey: "project", otherKey: "transcripts", cardinality: "one_to_many" },
+  { moduleId: "companies", transcriptsKey: "company", otherKey: "transcripts", cardinality: "one_to_many" },
+  { moduleId: "people", transcriptsKey: "people", otherKey: "transcripts", cardinality: "many_to_many" },
+] as const;
+
+interface PropertyRow {
+  id: string;
+  database_id: string;
+  config: { relationDefinitionId: string; targetDatabaseId: string };
+}
+
+/** Reads both sides of a Transcripts relation pair and its definition; throws when either side is missing. */
+async function relationPairShape(
+  transcriptsId: string,
+  otherDatabaseId: string,
+  pair: (typeof RELATION_PAIRS)[number],
+) {
+  const { rows } = await pool.query<PropertyRow>(
+    `SELECT id, database_id, config FROM properties
+     WHERE (database_id = $1 AND key = $3) OR (database_id = $2 AND key = $4)`,
+    [transcriptsId, otherDatabaseId, pair.transcriptsKey, pair.otherKey],
+  );
+  const mine = rows.find((row) => row.database_id === transcriptsId);
+  const other = rows.find((row) => row.database_id === otherDatabaseId);
+  if (!mine || !other) throw new Error(`Relation pair '${pair.transcriptsKey}' is incomplete`);
+  const { rows: definitions } = await pool.query<{ property_id_a: string; cardinality: string }>(
+    `SELECT property_id_a, cardinality FROM relation_definitions WHERE id = $1`,
+    [mine.config.relationDefinitionId],
+  );
+  return {
+    relationDefinitionId: mine.config.relationDefinitionId,
+    transcriptsPropertyId: mine.id,
+    otherPropertyId: other.id,
+    transcriptsTarget: mine.config.targetDatabaseId,
+    otherTarget: other.config.targetDatabaseId,
+    propertyIdA: definitions[0]!.property_id_a,
+    cardinality: definitions[0]!.cardinality,
+  };
+}
+
 /**
  * `globalSetup.ts` already runs this migration once against a database with no Transcripts
  * database yet (a fresh test DB, before any test's `seedSystem` call), exercising its "not
@@ -65,10 +106,52 @@ describe("runTranscriptsCatalogCutoverMigration (issue #180)", () => {
       await pool.query(`DELETE FROM properties WHERE id = $1`, [speakers.id]);
       await pool.query(`DELETE FROM relation_definitions WHERE id = $1`, [speakers.config.relationDefinitionId]);
     }
+    // Issue #1470: drop the project, company and people pairs (both properties and the definition).
+    for (const pair of RELATION_PAIRS) {
+      const shape = await relationPairShape(transcriptsId, await databaseIdFor(pair.moduleId), pair);
+      await pool.query(`DELETE FROM properties WHERE id = ANY($1::uuid[])`, [
+        [shape.transcriptsPropertyId, shape.otherPropertyId],
+      ]);
+      await pool.query(`DELETE FROM relation_definitions WHERE id = $1`, [shape.relationDefinitionId]);
+    }
   });
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("adds the project, company and people pairs with both sides, targets and cardinality (issue #1470)", async () => {
+    await runTranscriptsCatalogCutoverMigration(pool);
+
+    for (const pair of RELATION_PAIRS) {
+      const otherId = await databaseIdFor(pair.moduleId);
+      const shape = await relationPairShape(transcriptsId, otherId, pair);
+      expect(shape.cardinality).toBe(pair.cardinality);
+      expect(shape.transcriptsTarget).toBe(otherId);
+      expect(shape.otherTarget).toBe(transcriptsId);
+      // For one_to_many, property A (the "one" side) is the other database's `transcripts`.
+      expect(shape.propertyIdA).toBe(
+        pair.cardinality === "one_to_many" ? shape.otherPropertyId : shape.transcriptsPropertyId,
+      );
+    }
+  });
+
+  it("a second run changes nothing and leaves 'event' and 'speakers' untouched (issue #1470)", async () => {
+    await runTranscriptsCatalogCutoverMigration(pool);
+    const snapshot = async () => ({
+      properties: (await pool.query(`SELECT id, key, config FROM properties ORDER BY id`)).rows,
+      definitions: (await pool.query(`SELECT * FROM relation_definitions ORDER BY id`)).rows,
+    });
+    const before = await snapshot();
+
+    await runTranscriptsCatalogCutoverMigration(pool);
+
+    expect(await snapshot()).toEqual(before);
+    const { rows } = await pool.query<{ key: string }>(
+      `SELECT key FROM properties WHERE database_id = $1 AND key IN ('event', 'speakers')`,
+      [transcriptsId],
+    );
+    expect(rows.map((row) => row.key).sort()).toEqual(["event", "speakers"]);
   });
 
   it("adds the 'error' status option and the 'speakers' relation to an already-provisioned Transcripts database", async () => {
