@@ -44,6 +44,7 @@
     "packages/data/src/guidanceDrift/agentGuidanceDriftFindingsStore.ts::9bc71ce5a623",
     "packages/data/src/inbox/inboxAttachmentsStore.ts::c2f53ea78c67",
     "packages/data/src/inbox/itemOriginsStore.ts::be04e72e600f",
+    "packages/data/src/inbox/processingProposalsCardStateCutoverMigration.ts::e08cc8334e50",
     "packages/data/src/library/itemAutomationStore.ts::4ddf03fb40de",
     "packages/data/src/library/itemAutomationStore.ts::6cba5d4a7538",
     "packages/data/src/library/itemAutomationStore.ts::7b1413045457",
