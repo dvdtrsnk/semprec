@@ -9,7 +9,7 @@ import {
   requireUuidParam,
 } from "./adapter/requestValidation.js";
 import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
-import { toItemDetailEnvelope, toItemEnvelope } from "./adapter/itemEnvelope.js";
+import { toItemDetailEnvelope, toItemEnvelopeWithBlobs } from "./adapter/itemEnvelope.js";
 import { toItemQueryEnvelope } from "./adapter/itemQueryEnvelope.js";
 import { toRelationEnvelope } from "./adapter/relationEnvelope.js";
 
@@ -92,7 +92,7 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
           properties: body.properties ?? {},
           idempotencyKey,
         });
-        return { status: 201, body: toItemEnvelope(item) };
+        return { status: 201, body: await toItemEnvelopeWithBlobs(pool, item) };
       },
     },
     {
@@ -110,7 +110,7 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
             itemId: id,
             include: includeLinks ? ["links"] : undefined,
           });
-          return { status: 200, body: toItemEnvelope(item) };
+          return { status: 200, body: await toItemEnvelopeWithBlobs(pool, item) };
         }
 
         // `getItemPath`'s chain already ends with `id` itself (or is empty if it doesn't exist),
@@ -120,7 +120,7 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
         const path = await chokePoint.getItemPath(id);
         const item = path.at(-1);
         if (!item) throw new NotFoundError(`Item ${id} not found`);
-        const detail = toItemDetailEnvelope(item, path);
+        const detail = { ...toItemDetailEnvelope(item, path), ...(await toItemEnvelopeWithBlobs(pool, item)) };
         if (!includeLinks) return { status: 200, body: detail };
         const links = (await chokePoint.getValueLinksForItems([id])).get(id) ?? {};
         return { status: 200, body: { ...detail, links } };
@@ -138,7 +138,7 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
           ifVersion: body.ifVersion,
         });
         // The explicit envelope projection omits item.patch's transaction pre-image from REST.
-        return { status: 200, body: toItemEnvelope(item) };
+        return { status: 200, body: await toItemEnvelopeWithBlobs(pool, item) };
       },
     },
     {
@@ -149,7 +149,7 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
         const item = await dispatchGenericOperation(service, "item.delete", restActor(ctx.identity.user.id), {
           itemId: id,
         });
-        return { status: 200, body: toItemEnvelope(item) };
+        return { status: 200, body: await toItemEnvelopeWithBlobs(pool, item) };
       },
     },
     {
@@ -160,7 +160,7 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
         const item = await dispatchGenericOperation(service, "item.restore", restActor(ctx.identity.user.id), {
           itemId: id,
         });
-        return { status: 200, body: toItemEnvelope(item) };
+        return { status: 200, body: await toItemEnvelopeWithBlobs(pool, item) };
       },
     },
     {
@@ -179,7 +179,7 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
           inTrash: body.inTrash,
           includeCount: body.includeCount,
         });
-        return { status: 200, body: toItemQueryEnvelope(result) };
+        return { status: 200, body: await toItemQueryEnvelope(pool, result) };
       },
     },
     {

@@ -1,5 +1,6 @@
+import type { Pool } from "pg";
 import type { ItemRow, ItemValueLinks } from "@semprec/data";
-import { toItemEnvelope, type ItemEnvelope } from "./itemEnvelope.js";
+import { toItemEnvelopes, type ItemEnvelope } from "./itemEnvelope.js";
 
 /** A query page whose items carry `links` only when the request asked for `include=links` (issue #1403). */
 interface ItemQueryResult {
@@ -16,8 +17,12 @@ export interface ItemQueryEnvelope {
   totalCount?: number;
 }
 
-export function toItemQueryEnvelope(result: ItemQueryResult): ItemQueryEnvelope {
-  const envelope: ItemQueryEnvelope = { items: result.items.map(toItemEnvelope), nextCursor: result.nextCursor };
+/** Fills each item's `blobs` with one blob lookup for the whole page; run it inside the caller's tenant scope. */
+export async function toItemQueryEnvelope(pool: Pool, result: ItemQueryResult): Promise<ItemQueryEnvelope> {
+  const envelope: ItemQueryEnvelope = {
+    items: await toItemEnvelopes(pool, result.items),
+    nextCursor: result.nextCursor,
+  };
   if (result.totalCount !== undefined) envelope.totalCount = result.totalCount;
   return envelope;
 }

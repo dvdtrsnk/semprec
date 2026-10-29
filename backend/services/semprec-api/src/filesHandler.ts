@@ -13,7 +13,7 @@ import {
 import { runInTenant } from "@semprec/shared";
 import { authenticateRequest } from "./authHandler.js";
 import { requireHeader } from "./adapter/requestValidation.js";
-import { toItemEnvelope } from "./adapter/itemEnvelope.js";
+import { toItemEnvelopeWithBlobs } from "./adapter/itemEnvelope.js";
 import { statusForError, toErrorResponseBody } from "./adapter/errorContract.js";
 import { sendJson } from "./adapter/http.js";
 import { logger } from "./logger.js";
@@ -83,7 +83,7 @@ export function createFilesRequestListener(pool: Pool, options: FilesRequestList
           storage: options.storage,
         });
 
-        sendJson(res, created ? 201 : 200, toItemEnvelope(item));
+        sendJson(res, created ? 201 : 200, await toItemEnvelopeWithBlobs(pool, item));
       });
     } catch (err) {
       if (err instanceof MaxBytesExceededError) {
