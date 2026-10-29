@@ -11,6 +11,8 @@ import { BlockInputError, validateBlockInput, type BlockIssue, type TextRun } fr
  */
 
 const PAGE_LINK_PREFIX = "semprec://page/";
+const ITEM_LINK_PREFIX = "semprec://items/";
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const COMMENT_PATTERN = /^<!-- semprec:block (.*) -->$/;
 const TYPE_KEY_PATTERN = /^[\w.:-]+$/;
 const LIST_TYPES: ReadonlySet<string> = new Set(["bullet", "number", "todo"]);
@@ -797,4 +799,44 @@ export function stripMarkdown(markdown: string, maxChars: number): string {
     .trim();
   const characters = Array.from(text);
   return characters.length <= maxChars ? text : characters.slice(0, Math.floor(maxChars)).join("").trimEnd();
+}
+
+// ---------------------------------------------------------------------------
+// Item links
+// ---------------------------------------------------------------------------
+
+/** Item references found in parsed blocks. */
+export interface ItemLinks {
+  /** Distinct lower-cased ids of `semprec://items/<uuid>` links, in order of first appearance. */
+  ids: string[];
+  /** True when some `semprec://items/` link carries something that is not a UUID. */
+  malformed: boolean;
+}
+
+/**
+ * Collects the item references (`[Title](semprec://items/<uuid>)`) from the link attributes of
+ * parsed blocks. Pure: it neither checks that an item exists nor writes a relation; a server
+ * checks the ids against the caller's tenant before it persists the blocks.
+ */
+export function collectItemLinks(blocks: readonly Pick<ParsedBlock, "text">[]): ItemLinks {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  let malformed = false;
+  for (const block of blocks) {
+    for (const run of block.text ?? []) {
+      const href = run.attributes?.link?.href;
+      if (typeof href !== "string" || !href.startsWith(ITEM_LINK_PREFIX)) continue;
+      const id = href.slice(ITEM_LINK_PREFIX.length);
+      if (!UUID_PATTERN.test(id)) {
+        malformed = true;
+        continue;
+      }
+      const normalized = id.toLowerCase();
+      if (!seen.has(normalized)) {
+        seen.add(normalized);
+        ids.push(normalized);
+      }
+    }
+  }
+  return { ids, malformed };
 }

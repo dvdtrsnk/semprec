@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   BlockInputError,
+  collectItemLinks,
   parseMarkdown,
   serializeBlocks,
   stripMarkdown,
@@ -171,6 +172,29 @@ describe("markdown behaviour", () => {
       const out = serializeBlocks([{ id: "b1", type: "text", indent: 0, text: text(insert) }]);
       expect(parseMarkdown(out), out).toEqual([{ id: "b1", type: "text", indent: 0, text: text(insert) }]);
     }
+  });
+});
+
+describe("collectItemLinks", () => {
+  const ID = "3f2b8c1e-5a47-4d0b-9c61-7e2a1b9d4f10";
+  const OTHER = "aaaaaaaa-5a47-4d0b-9c61-7e2a1b9d4f11";
+
+  it("returns distinct well-formed ids in order of first appearance, lower-cased", () => {
+    const md = `[A](semprec://items/${OTHER})\n\n[B](semprec://items/${ID.toUpperCase()}) and [C](semprec://items/${ID})\n\n[D](semprec://items/${OTHER})`;
+    expect(collectItemLinks(parseMarkdown(md))).toEqual({ ids: [OTHER, ID], malformed: false });
+  });
+
+  it("flags a malformed item id and ignores other links", () => {
+    const md = "[A](semprec://items/not-a-uuid) [B](https://example.com) [C](semprec://page/p-1)";
+    expect(collectItemLinks(parseMarkdown(md))).toEqual({ ids: [], malformed: true });
+    expect(collectItemLinks(parseMarkdown("[B](https://example.com)"))).toEqual({ ids: [], malformed: false });
+  });
+
+  it("does not change the parsed blocks: the link stays plain content", () => {
+    const blocks = parseMarkdown(`[Standup](semprec://items/${ID})`);
+    expect(blocks).toMatchObject([
+      { type: "text", text: [{ insert: "Standup", attributes: { link: { href: `semprec://items/${ID}` } } }] },
+    ]);
   });
 });
 

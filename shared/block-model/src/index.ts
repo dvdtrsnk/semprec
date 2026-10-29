@@ -36,9 +36,11 @@ export {
   type NewBlockInput,
 } from "./blockOperations.js";
 export {
+  collectItemLinks,
   parseMarkdown,
   serializeBlocks,
   stripMarkdown,
+  type ItemLinks,
   type ParseOptions,
   type ParsedBlock,
   type SerializableBlock,
