@@ -13,7 +13,7 @@ import {
   type GenericOperationApprovalRequestPayload,
 } from "./approvalRequestsStore.js";
 import { resolveGrantedMcpTool } from "./mcpToolInvocation.js";
-import { executeMcpInvocation, type McpInvokeResult } from "./mcpToolExecution.js";
+import { executeMcpInvocation } from "./mcpToolExecution.js";
 
 const logger = createLogger("mcp");
 
@@ -147,12 +147,11 @@ export async function handleApprovalRequestExecuteTask(
     return resolveGrantedMcpTool(client, run.projectItemId, payload.mcpToolRegistrationId);
   });
 
-  const noLongerAvailableOutcome: McpInvokeResult = {
+  const noLongerAvailableOutcome: ApprovalRequestOutcome = {
     error: true,
     outcomeKind: "toolUnavailable",
     result:
       "This MCP tool is no longer available to the requesting project: its grant was revoked, or its registration or server is inactive.",
-    failure: { failureKind: "unavailable", mcpServerItemId: payload.mcpServerItemId },
   };
   let outcome: ApprovalRequestOutcome = noLongerAvailableOutcome;
   if (target && target.mcpServerItemId === payload.mcpServerItemId && target.toolName === claimed.toolName) {
