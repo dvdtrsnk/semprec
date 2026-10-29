@@ -240,7 +240,7 @@ describe("observability.checkSystem (issue #169)", () => {
     await ensureMailAccountSyncState(pool, { itemId: erroredMailbox, syncMode: "imap" });
     // A connection-limit backoff pushes next_expected_activity_at into the future while last_error
     // stays set — this account is not "due" for another sync pass, but must still alert.
-    await recordSyncError(pool, erroredMailbox, "boom", "other");
+    await recordSyncError(pool, erroredMailbox, "boom", "reauthorization");
     await pool.query(
       `UPDATE mail_account_sync_state SET next_expected_activity_at = now() + interval '1 hour' WHERE item_id = $1`,
       [erroredMailbox],
@@ -263,10 +263,21 @@ describe("observability.checkSystem (issue #169)", () => {
       [overdueCheck!.id],
     );
     expect(notifications.rows).toEqual([{ kind: "mail_sync_stalled", source_table: "tenant_observability_checks" }]);
+    const overduePayload = await pool.query<{ payload: unknown }>(
+      `SELECT payload FROM notifications WHERE source_id = $1`,
+      [overdueCheck!.id],
+    );
+    expect(overduePayload.rows[0]?.payload).toEqual({ mailboxItemId: overdueMailbox, reason: "other" });
 
     const erroredCheck = await getTenantCheck(`mail:${erroredMailbox}`);
     expect(erroredCheck?.status).toBe("alerting");
     expect(erroredCheck?.tenant_id).toBe(getTenantZeroId());
+    const erroredPayload = await pool.query<{ payload: unknown }>(
+      `SELECT payload FROM notifications WHERE source_id = $1`,
+      [erroredCheck!.id],
+    );
+    expect(erroredPayload.rows[0]?.payload).toEqual({ mailboxItemId: erroredMailbox, reason: "reauthorization" });
+    expect(JSON.stringify(erroredPayload.rows[0]?.payload)).not.toContain("boom");
 
     const healthyCheck = await getTenantCheck(`mail:${healthyMailbox}`);
     expect(healthyCheck?.status).toBe("ok");
@@ -632,7 +643,7 @@ describe("observability.checkSystem (issue #169)", () => {
 
       const stalls = await alertRows("mail_sync_stalled");
       expect(stalls).toEqual([
-        { user_id: adminB, tenant_id: tenantB, payload: { mailboxItemId: mailboxId, lastError: "boom" } },
+        { user_id: adminB, tenant_id: tenantB, payload: { mailboxItemId: mailboxId, reason: "other" } },
       ]);
       const operatorRows = await pool.query<{ payload: string }>(
         `SELECT payload::text AS payload FROM notifications WHERE kind IN ('process_stale', 'queue_backlog')`,

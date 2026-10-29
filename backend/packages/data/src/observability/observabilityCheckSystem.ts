@@ -246,7 +246,9 @@ const MAIL_CHECK_KEY_PREFIX = "mail:";
  *
  * Must run inside a tenant scope (`forEachActiveTenant`): the sync-state read, the check rows and
  * their `tenant_id` all come from RLS and the column default. The rows live in
- * `tenant_observability_checks`, so `detail` may carry the provider's `lastError`.
+ * `tenant_observability_checks`, so `detail` may carry the provider's `lastError`. The user-facing
+ * `mail_sync_stalled` notification never does: its payload is `{ mailboxItemId, reason }` where `reason`
+ * is the stored failure kind, or `other` when the check alerts only because the sync is overdue.
  *
  * `mail_account_sync_state` has no FK to `tenant_observability_checks`, so a deleted mail account
  * simply stops appearing in `listAllMailAccountSyncStates` — its `mail:<itemId>` row would otherwise
@@ -277,7 +279,7 @@ async function checkMailSync(pool: Pool, helpers: ObservabilityCheckSystemHelper
       if (transition.transitionedToAlerting) {
         await notifyMailSyncStalled(client, helpers, checkKey, transition.id, {
           mailboxItemId: account.itemId,
-          lastError: account.lastError,
+          reason: account.lastFailureKind ?? "other",
         });
       }
     });
