@@ -94,6 +94,8 @@ export const CORE_TASK_NAMES = {
   TRANSCRIPTION_JOB: "transcriptionJob",
   // Issue #643: the hourly sweep that closes every MCP-triggered run whose run-credential expired.
   MCP_RUN_CREDENTIAL_EXPIRY_SWEEP: "mcpRunCredentialExpirySweep",
+  // Issue #1483: the sweep that deletes expired and used mailbox OAuth states.
+  MAIL_OAUTH_STATES_SWEEP: "mailOauthStatesSweep",
   // Issue #692: the daily sweep that deletes pre-checkpoint agent_run_events rows past retention.
   AGENT_RUN_EVENTS_RETENTION: "agentRunEventsRetention",
   // Issue #706: the daily sweep that deletes permanently-failed graphile_worker.jobs rows past retention.
@@ -140,6 +142,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.TRASH_PURGE]: "api",
   [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: "transcribe",
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "api",
+  [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "api",
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "api",
   [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: "api",
   [CORE_TASK_NAMES.TENANT_EXPORT]: "api",
@@ -192,6 +195,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.TRASH_PURGE]: "system",
   [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: "tenant",
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "system",
+  [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "system",
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "system",
   [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: "system",
   [CORE_TASK_NAMES.TENANT_EXPORT]: "tenant",
