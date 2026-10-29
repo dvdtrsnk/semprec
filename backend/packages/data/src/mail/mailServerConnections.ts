@@ -203,8 +203,12 @@ export async function openImapConnection(
 export interface MailSmtpTransporter {
   /** Connects, negotiates TLS, logs in and disconnects; resolves `true` when the server accepts the login. */
   verify(): Promise<true>;
-  /** Resolves when the server accepts the message. */
-  sendMail(message: SendMailOptions): Promise<void>;
+  /**
+   * Resolves when the server accepts the message, with the number of recipients it refused. A refused
+   * recipient is not an error here: the server may still have accepted the message for the others.
+   */
+  sendMail(message: SendMailOptions): Promise<{ refusedRecipientCount: number }>;
+  /** Ends the transport. A send still in flight ends too: every socket it holds is destroyed, and the send rejects. */
   close(): void;
 }
 
@@ -216,21 +220,43 @@ export interface MailSmtpTransporter {
  */
 type SocketCallback = (error: Error | null, socketOptions?: { connection: Socket }) => void;
 
-function connectPinned(host: string, port: number, lookup: LookupFunction, callback: SocketCallback): void {
+function connectPinned(
+  host: string,
+  port: number,
+  lookup: LookupFunction,
+  callback: SocketCallback,
+  openSockets: Set<Socket>,
+): void {
   const socket = connect({ host, port, lookup });
+  openSockets.add(socket);
   let connected = false;
+  let settled = false;
+  // The socket reports an error and then closes, so the callback is settled once, by whichever comes first.
+  const settle: SocketCallback = (error, socketOptions) => {
+    if (settled) return;
+    settled = true;
+    callback(error, socketOptions);
+  };
   const timer = setTimeout(() => {
     socket.destroy(Object.assign(new Error("Connection attempt timed out"), { code: "ETIMEDOUT" }));
   }, CONNECT_TIMEOUT_MS);
   socket.once("connect", () => {
     connected = true;
     clearTimeout(timer);
-    callback(null, { connection: socket });
+    settle(null, { connection: socket });
   });
   // Stays attached after connect as a no-op so an error in the gap before nodemailer attaches its own handler cannot be unhandled.
   socket.on("error", (error: Error) => {
     clearTimeout(timer);
-    if (!connected) callback(error);
+    if (!connected) settle(error);
+  });
+  // A socket closed before it connected, by `close()` or after an error, must still settle the callback.
+  socket.once("close", () => {
+    openSockets.delete(socket);
+    clearTimeout(timer);
+    if (!connected) {
+      settle(Object.assign(new Error("Connection closed before it was established"), { code: "ECONNRESET" }));
+    }
   });
 }
 
@@ -248,6 +274,9 @@ export function createSmtpTransporter(
   const host = endpoint.host;
   const policy = policyOf(options);
   const lookup = createPolicyLookup(policy);
+  // Sockets handed to nodemailer that have connected and not yet closed. nodemailer's own `close()` does not end
+  // an in-flight send, so `close()` below destroys these.
+  const openSockets = new Set<Socket>();
   const transporter = createTransport({
     host,
     port: endpoint.port,
@@ -263,7 +292,7 @@ export function createSmtpTransporter(
         callback(refusal);
         return;
       }
-      connectPinned(host, endpoint.port, lookup, callback);
+      connectPinned(host, endpoint.port, lookup, callback, openSockets);
     },
   });
   return {
@@ -273,11 +302,14 @@ export function createSmtpTransporter(
       }),
     sendMail: (message: SendMailOptions) =>
       transporter.sendMail(message).then(
-        () => undefined,
+        (info) => ({ refusedRecipientCount: info.rejected.length }),
         (error: unknown) => {
           throw mapConnectionFailure(error, host);
         },
       ),
-    close: () => transporter.close(),
+    close: () => {
+      transporter.close();
+      for (const socket of [...openSockets]) socket.destroy();
+    },
   };
 }

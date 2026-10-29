@@ -25,6 +25,7 @@ import { handleMailMessagePreviewBackfillTask } from "../mail/mailMessagePreview
 import { buildMailPreview, htmlToPlainText } from "../mail/mailPlainText.js";
 import { sendDraftEmail, type SendEmailModuleIds } from "../mail/send.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
+import { recordingTransport, sendAdapters, transportFor } from "../testSupport/mailSendFakes.js";
 
 const storage: BlobStorageWriter = {
   async writeStream() {
@@ -200,7 +201,7 @@ describe("mail preview and ingest time on ingest and send", () => {
         bodyHtml: "<p>hi   <i>bob</i></p>",
       },
       moduleIds,
-      { createSmtpClient: async () => ({ async sendMail() {} }) },
+      sendAdapters(transportFor(recordingTransport())),
     );
 
     const claimed = await getMailMessageMetaByItemId(pool, draft.id);

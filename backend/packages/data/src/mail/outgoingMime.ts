@@ -40,8 +40,10 @@ export interface OutgoingMimeInput {
   cc?: MailEnvelopeAddress[];
   bcc?: MailEnvelopeAddress[];
   subject: string;
-  /** Plain text body; the message has no HTML part. */
+  /** Plain text body. */
   text: string;
+  /** Optional HTML body, sent as a `multipart/alternative` part beside the text body. */
+  html?: string;
   messageId: string;
   inReplyTo?: string;
   references?: string[];
@@ -143,6 +145,7 @@ export async function buildOutgoingMime(input: OutgoingMimeInput, deps: Outgoing
       // Bcc never reaches a header: it is returned only through the envelope below.
       subject: input.subject,
       text: input.text,
+      html: input.html,
       messageId: input.messageId,
       inReplyTo: input.inReplyTo,
       references: input.references,

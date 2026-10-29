@@ -18,7 +18,9 @@ import {
   noopMailSendAdapterFactory,
   type SendEmailModuleIds,
 } from "../mail/send.js";
-import type { MailSmtpClient, OutgoingMailMessage } from "../mail/smtpClient.js";
+import type { MailTransport } from "../mail/mailTransport.js";
+import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
+import { recordingTransport, sendAdapters, transportFor } from "../testSupport/mailSendFakes.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -27,17 +29,6 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
   if (!rows[0]) throw new Error(`Database '${moduleId}' was not seeded`);
   return rows[0].id;
-}
-
-function fakeSmtpClient(overrides: Partial<MailSmtpClient> = {}): MailSmtpClient & { sent: OutgoingMailMessage[] } {
-  const sent: OutgoingMailMessage[] = [];
-  return {
-    sent,
-    async sendMail(message) {
-      sent.push(message);
-    },
-    ...overrides,
-  };
 }
 
 describe("drafts and authorized SMTP sending (issue #95)", () => {
@@ -209,7 +200,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       }),
     );
 
-    const smtp = fakeSmtpClient();
+    const smtp = recordingTransport();
     const result = await sendDraftEmail(
       pool,
       {
@@ -222,11 +213,12 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
         bodyText: "hi bob",
       },
       moduleIds,
-      { createSmtpClient: async () => smtp },
+      sendAdapters(transportFor(smtp)),
     );
 
     expect(smtp.sent).toHaveLength(1);
-    expect(smtp.sent[0]!.messageId).toBe(result.messageId);
+    expect(smtp.sent[0]!.raw.toString("utf8")).toContain(`Message-ID: ${result.messageId}\r\n`);
+    expect(smtp.sent[0]!.envelope).toEqual({ from: "me@example.com", recipients: ["bob@example.com"] });
     expect(result.messageId).toMatch(/^<.+@example\.com>$/);
 
     const meta = await getMailMessageMetaByItemId(pool, draft.id);
@@ -252,7 +244,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
 
     // A retried/duplicated call for the same already-sent draft (client retry after a
     // timeout, a double-click) must not submit the message a second time.
-    const secondSmtp = fakeSmtpClient();
+    const secondSmtp = recordingTransport();
     await expect(
       sendDraftEmail(
         pool,
@@ -266,7 +258,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
           bodyText: "hi bob",
         },
         moduleIds,
-        { createSmtpClient: async () => secondSmtp },
+        sendAdapters(transportFor(secondSmtp)),
       ),
     ).rejects.toMatchObject({ name: "ConflictError" });
     expect(secondSmtp.sent).toHaveLength(0);
@@ -286,9 +278,9 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       }),
     );
 
-    const smtpA = fakeSmtpClient();
-    const smtpB = fakeSmtpClient();
-    const send = (smtp: ReturnType<typeof fakeSmtpClient>) =>
+    const smtpA = recordingTransport();
+    const smtpB = recordingTransport();
+    const send = (smtp: ReturnType<typeof recordingTransport>) =>
       sendDraftEmail(
         pool,
         {
@@ -301,7 +293,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
           bodyText: "hi bob",
         },
         moduleIds,
-        { createSmtpClient: async () => smtp },
+        sendAdapters(transportFor(smtp)),
       );
 
     const [a, b] = await Promise.allSettled([send(smtpA), send(smtpB)]);
@@ -330,8 +322,8 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       }),
     );
 
-    const failingSmtp = fakeSmtpClient({
-      async sendMail() {
+    const failingSmtp = recordingTransport({
+      async send() {
         throw new Error("SMTP server rejected the message");
       },
     });
@@ -349,7 +341,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
           bodyText: "hi bob",
         },
         moduleIds,
-        { createSmtpClient: async () => failingSmtp },
+        sendAdapters(transportFor(failingSmtp)),
       ),
     ).rejects.toThrow(/SMTP server rejected/);
 
@@ -361,7 +353,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     );
     expect(draftRelation).toHaveLength(1);
 
-    const workingSmtp = fakeSmtpClient();
+    const workingSmtp = recordingTransport();
     const result = await sendDraftEmail(
       pool,
       {
@@ -374,7 +366,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
         bodyText: "hi bob",
       },
       moduleIds,
-      { createSmtpClient: async () => workingSmtp },
+      sendAdapters(transportFor(workingSmtp)),
     );
     expect(workingSmtp.sent).toHaveLength(1);
     expect(result.itemId).toBe(draft.id);
@@ -395,8 +387,8 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     );
 
     const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, emailProjectId));
-    const smtp = fakeSmtpClient();
-    const createSmtpClient = vi.fn(async () => smtp);
+    const smtp = recordingTransport();
+    const forMailbox = vi.fn(async () => smtp);
 
     await expect(
       sendDraftEmail(
@@ -411,11 +403,11 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
           bodyText: "hi bob",
         },
         moduleIds,
-        { createSmtpClient },
+        sendAdapters({ forMailbox }),
       ),
     ).rejects.toMatchObject({ name: "ForbiddenError", status: 403 });
 
-    expect(createSmtpClient).not.toHaveBeenCalled();
+    expect(forMailbox).not.toHaveBeenCalled();
     expect(smtp.sent).toHaveLength(0);
     expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
 
@@ -452,7 +444,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       }),
     );
 
-    const smtp = fakeSmtpClient();
+    const smtp = recordingTransport();
     const result = await sendDraftEmail(
       pool,
       {
@@ -465,7 +457,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
         bodyText: "hi bob",
       },
       moduleIds,
-      { createSmtpClient: async () => smtp },
+      sendAdapters(transportFor(smtp)),
     );
 
     expect(smtp.sent).toHaveLength(1);
@@ -502,6 +494,40 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     ).rejects.toThrow(/No SMTP adapter configured/);
   });
 
+  it("throws when the transports are configured but no attachment storage is, without side effects", async () => {
+    const draftsId = await draftsFolderId();
+    const draft = await withTransaction(pool, (client) =>
+      createEmailDraft(client, {
+        emailsDatabaseId: emailsId,
+        folderRelationPropertyId,
+        draftsFolderItemId: draftsId,
+        subject: "Hello",
+        from: { address: "me@example.com" },
+        to: [{ address: "bob@example.com" }],
+      }),
+    );
+
+    const smtp = recordingTransport();
+    await expect(
+      sendDraftEmail(
+        pool,
+        {
+          mailboxItemId: mailboxId,
+          draftItemId: draft.id,
+          actor: { type: "user" },
+          from: { address: "me@example.com" },
+          to: [{ address: "bob@example.com" }],
+          subject: "Hello",
+        },
+        moduleIds,
+        { transports: transportFor(smtp) },
+      ),
+    ).rejects.toThrow(/No SMTP adapter configured/);
+
+    expect(smtp.sent).toHaveLength(0);
+    expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
+  });
+
   it("rejects a From address that isn't one of the mailbox's registered addresses, before any claim or SMTP call", async () => {
     const draftsId = await draftsFolderId();
     const draft = await withTransaction(pool, (client) =>
@@ -515,7 +541,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       }),
     );
 
-    const smtp = fakeSmtpClient();
+    const smtp = recordingTransport();
     await expect(
       sendDraftEmail(
         pool,
@@ -528,7 +554,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
           subject: "Hello",
         },
         moduleIds,
-        { createSmtpClient: async () => smtp },
+        sendAdapters(transportFor(smtp)),
       ),
     ).rejects.toMatchObject({ name: "ForbiddenError" });
 
@@ -549,7 +575,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       }),
     );
 
-    const smtp = fakeSmtpClient();
+    const smtp = recordingTransport();
     const unknownMailboxId = "00000000-0000-0000-0000-000000000000";
     await expect(
       sendDraftEmail(
@@ -563,7 +589,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
           subject: "Hello",
         },
         moduleIds,
-        { createSmtpClient: async () => smtp },
+        sendAdapters(transportFor(smtp)),
       ),
     ).rejects.toMatchObject({ name: "NotFoundError" });
 
@@ -586,7 +612,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
 
     await chokePoint.softDeleteItem(mailboxesId, mailboxId);
 
-    const smtp = fakeSmtpClient();
+    const smtp = recordingTransport();
     await expect(
       sendDraftEmail(
         pool,
@@ -599,7 +625,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
           subject: "Hello",
         },
         moduleIds,
-        { createSmtpClient: async () => smtp },
+        sendAdapters(transportFor(smtp)),
       ),
     ).rejects.toMatchObject({ name: "NotFoundError" });
 
@@ -621,7 +647,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       }),
     );
 
-    const smtp = fakeSmtpClient();
+    const smtp = recordingTransport();
     const result = await sendDraftEmail(
       pool,
       {
@@ -634,7 +660,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
         bodyText: "hi bob",
       },
       moduleIds,
-      { createSmtpClient: async () => smtp },
+      sendAdapters(transportFor(smtp)),
     );
 
     const sentId = (
@@ -683,6 +709,189 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     const meta = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, result.messageId);
     expect(meta?.itemId).toBe(draft.id);
     expect(meta?.mailboxItemId).toBe(mailboxId);
+  });
+
+  it("a send with an HTML body carries the HTML part beside the text part in the raw message", async () => {
+    const draftsId = await draftsFolderId();
+    const draft = await withTransaction(pool, (client) =>
+      createEmailDraft(client, {
+        emailsDatabaseId: emailsId,
+        folderRelationPropertyId,
+        draftsFolderItemId: draftsId,
+        subject: "Hello",
+        from: { address: "me@example.com" },
+        to: [{ address: "bob@example.com" }],
+        bodyText: "hi bob",
+      }),
+    );
+
+    const smtp = recordingTransport();
+    await sendDraftEmail(
+      pool,
+      {
+        mailboxItemId: mailboxId,
+        draftItemId: draft.id,
+        actor: { type: "user" },
+        from: { address: "me@example.com" },
+        to: [{ address: "bob@example.com" }],
+        subject: "Hello",
+        bodyText: "hi bob",
+        bodyHtml: "<p>hi <b>bob</b></p>",
+      },
+      moduleIds,
+      sendAdapters(transportFor(smtp)),
+    );
+
+    const raw = smtp.sent[0]!.raw.toString("utf8");
+    expect(raw).toContain("Content-Type: text/plain");
+    expect(raw).toContain("Content-Type: text/html");
+    expect(raw).toContain("<p>hi <b>bob</b></p>");
+  });
+
+  it("bcc recipients reach the SMTP envelope and no header of the raw message", async () => {
+    const draftsId = await draftsFolderId();
+    const draft = await withTransaction(pool, (client) =>
+      createEmailDraft(client, {
+        emailsDatabaseId: emailsId,
+        folderRelationPropertyId,
+        draftsFolderItemId: draftsId,
+        subject: "Hello",
+        from: { address: "me@example.com" },
+        to: [{ address: "bob@example.com" }],
+        bodyText: "hi bob",
+      }),
+    );
+
+    const smtp = recordingTransport();
+    await sendDraftEmail(
+      pool,
+      {
+        mailboxItemId: mailboxId,
+        draftItemId: draft.id,
+        actor: { type: "user" },
+        from: { address: "me@example.com" },
+        to: [{ address: "bob@example.com" }],
+        bcc: [{ address: "hidden@example.com" }],
+        subject: "Hello",
+        bodyText: "hi bob",
+      },
+      moduleIds,
+      sendAdapters(transportFor(smtp)),
+    );
+
+    expect(smtp.sent[0]!.envelope).toEqual({
+      from: "me@example.com",
+      recipients: ["bob@example.com", "hidden@example.com"],
+    });
+    expect(smtp.sent[0]!.raw.toString("utf8")).not.toContain("hidden@example.com");
+  });
+
+  it("a transport that cannot be built leaves the draft unclaimed, in Drafts, and sends nothing", async () => {
+    const draftsId = await draftsFolderId();
+    const draft = await withTransaction(pool, (client) =>
+      createEmailDraft(client, {
+        emailsDatabaseId: emailsId,
+        folderRelationPropertyId,
+        draftsFolderItemId: draftsId,
+        subject: "Hello",
+        from: { address: "me@example.com" },
+        to: [{ address: "bob@example.com" }],
+        bodyText: "hi bob",
+      }),
+    );
+
+    const forMailbox = vi.fn(async () => {
+      throw new Error("Mailbox has no SMTP server settings");
+    });
+    await expect(
+      sendDraftEmail(
+        pool,
+        {
+          mailboxItemId: mailboxId,
+          draftItemId: draft.id,
+          actor: { type: "user" },
+          from: { address: "me@example.com" },
+          to: [{ address: "bob@example.com" }],
+          subject: "Hello",
+          bodyText: "hi bob",
+        },
+        moduleIds,
+        sendAdapters({ forMailbox }),
+      ),
+    ).rejects.toThrow(/no SMTP server settings/);
+
+    expect(forMailbox).toHaveBeenCalledTimes(1);
+    expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
+    const { rows: draftRelation } = await pool.query(
+      `SELECT 1 FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2) AND (item_a = $3 OR item_b = $3)`,
+      [folderRelationPropertyId, draft.id, draftsId],
+    );
+    expect(draftRelation).toHaveLength(1);
+  });
+
+  describe("transport choice by sync mode", () => {
+    async function draftId(): Promise<string> {
+      const draftsId = await draftsFolderId();
+      const draft = await withTransaction(pool, (client) =>
+        createEmailDraft(client, {
+          emailsDatabaseId: emailsId,
+          folderRelationPropertyId,
+          draftsFolderItemId: draftsId,
+          subject: "Hello",
+          from: { address: "me@example.com" },
+          to: [{ address: "bob@example.com" }],
+          bodyText: "hi bob",
+        }),
+      );
+      return draft.id;
+    }
+
+    /** Sends one draft and returns the sync mode the factory was asked for. */
+    async function sendAndRecordMode(): Promise<string[]> {
+      const requested: string[] = [];
+      const smtp = recordingTransport();
+      await sendDraftEmail(
+        pool,
+        {
+          mailboxItemId: mailboxId,
+          draftItemId: await draftId(),
+          actor: { type: "user" },
+          from: { address: "me@example.com" },
+          to: [{ address: "bob@example.com" }],
+          subject: "Hello",
+          bodyText: "hi bob",
+        },
+        moduleIds,
+        sendAdapters({
+          forMailbox: async (_mailboxItemId, syncMode) => {
+            requested.push(syncMode);
+            return smtp;
+          },
+        }),
+      );
+      return requested;
+    }
+
+    it("uses the sync mode of the mailbox's sync-state row when one exists", async () => {
+      await withTransaction(pool, (client) =>
+        ensureMailAccountSyncState(client, { itemId: mailboxId, syncMode: "gmail_api" }),
+      );
+      expect(await sendAndRecordMode()).toEqual(["gmail_api"]);
+    });
+
+    it("without a sync-state row, uses the default mode of the mailbox's provider", async () => {
+      // raw SQL: the fixture mailbox has no sync-state row yet, and the test needs its provider to be gmail.
+      await pool.query(`UPDATE items SET properties = properties || '{"provider":"gmail"}'::jsonb WHERE id = $1`, [
+        mailboxId,
+      ]);
+      expect(await sendAndRecordMode()).toEqual(["gmail_api"]);
+    });
+
+    it("without a sync-state row or a provider property, uses the generic default, IMAP", async () => {
+      // raw SQL: removes the provider the fixture sets, so the mailbox has no provider property at all.
+      await pool.query(`UPDATE items SET properties = properties - 'provider' WHERE id = $1`, [mailboxId]);
+      expect(await sendAndRecordMode()).toEqual(["imap"]);
+    });
   });
 
   describe("threading of sent messages (issue #1474)", () => {
@@ -740,7 +949,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       return draft.id;
     }
 
-    function send(draftItemId: string, smtp: MailSmtpClient, threadHeaders: { inReplyTo?: string } = {}) {
+    function send(draftItemId: string, smtp: MailTransport, threadHeaders: { inReplyTo?: string } = {}) {
       return sendDraftEmail(
         pool,
         {
@@ -755,7 +964,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
           references: threadHeaders.inReplyTo ? [threadHeaders.inReplyTo] : undefined,
         },
         moduleIds,
-        { createSmtpClient: async () => smtp },
+        sendAdapters(transportFor(smtp)),
       );
     }
 
@@ -769,7 +978,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       const original = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, "<orig@example.com>");
       expect(original?.threadId).toBeTruthy();
 
-      const result = await send(await newDraft(), fakeSmtpClient(), { inReplyTo: "<orig@example.com>" });
+      const result = await send(await newDraft(), recordingTransport(), { inReplyTo: "<orig@example.com>" });
 
       const sent = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, result.messageId);
       expect(sent?.threadId).toBe(original?.threadId);
@@ -777,7 +986,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     });
 
     it("a send without ancestors starts a new thread that a later reply joins", async () => {
-      const first = await send(await newDraft(), fakeSmtpClient());
+      const first = await send(await newDraft(), recordingTransport());
       const firstMeta = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, first.messageId);
       expect(firstMeta?.threadId).toBeTruthy();
       expect(await threadCount()).toBe(1);
@@ -786,13 +995,13 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       await pool.query(`UPDATE mail_message_meta SET in_reply_to = $1 WHERE message_id = '<reply@example.com>'`, [
         first.messageId,
       ]); // raw SQL: ingest has no in-reply-to input here, and the point is the next send's lookup
-      const second = await send(await newDraft(), fakeSmtpClient(), { inReplyTo: first.messageId });
+      const second = await send(await newDraft(), recordingTransport(), { inReplyTo: first.messageId });
       const secondMeta = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, second.messageId);
       expect(secondMeta?.threadId).toBe(firstMeta?.threadId);
     });
 
     it("a later Sent-folder sync of the same message id keeps the thread and creates no second one", async () => {
-      const result = await send(await newDraft(), fakeSmtpClient());
+      const result = await send(await newDraft(), recordingTransport());
       const before = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, result.messageId);
 
       await ingestSynced(result.messageId);
@@ -804,8 +1013,8 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
 
     it("an SMTP failure removes the claim and leaves no orphan thread, and a retry threads again", async () => {
       const draftId = await newDraft();
-      const failing = fakeSmtpClient({
-        async sendMail() {
+      const failing = recordingTransport({
+        async send() {
           throw new Error("SMTP server rejected the message");
         },
       });
@@ -813,7 +1022,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       expect(await getMailMessageMetaByItemId(pool, draftId)).toBeNull();
       expect(await threadCount()).toBe(0);
 
-      const result = await send(draftId, fakeSmtpClient());
+      const result = await send(draftId, recordingTransport());
       const meta = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, result.messageId);
       expect(meta?.threadId).toBeTruthy();
       expect(await threadCount()).toBe(1);
@@ -821,8 +1030,8 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
 
     it("an SMTP failure on a reply keeps the shared thread", async () => {
       await ingestSynced("<orig@example.com>");
-      const failing = fakeSmtpClient({
-        async sendMail() {
+      const failing = recordingTransport({
+        async send() {
           throw new Error("SMTP server rejected the message");
         },
       });
@@ -832,8 +1041,8 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
 
     it("a lost claim race ends in ConflictError and leaves no extra thread", async () => {
       const draftId = await newDraft();
-      await send(draftId, fakeSmtpClient());
-      await expect(send(draftId, fakeSmtpClient())).rejects.toThrow(/already being sent or was already sent/);
+      await send(draftId, recordingTransport());
+      await expect(send(draftId, recordingTransport())).rejects.toThrow(/already being sent or was already sent/);
       expect(await threadCount()).toBe(1);
     });
   });

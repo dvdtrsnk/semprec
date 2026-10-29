@@ -260,7 +260,18 @@ export {
   type MailServerCredential,
   type MailSmtpTransporter,
 } from "./mail/mailServerConnections.js";
-export { MailServerUnreachableError } from "./mail/providerTypes.js";
+export {
+  MailRecipientRejectedError,
+  MailSendAuthFailedError,
+  MailServerUnreachableError,
+} from "./mail/providerTypes.js";
+export {
+  createMailTransportFactory,
+  type MailTransport,
+  type MailTransportFactory,
+  type MailTransportMessage,
+  type MailTransportResult,
+} from "./mail/mailTransport.js";
 export {
   getMailDraft,
   insertMailDraft,
