@@ -9,6 +9,7 @@ import {
   createChokePoint,
   createUser,
   createViewTypeRegistry,
+  ForbiddenError,
   hashPassword,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
@@ -418,6 +419,104 @@ describe("database routes (issue #240)", () => {
     expect(bareBody).toMatchObject({ icon: "database", color: "#FF9500" });
     const { rows } = await pool.query("SELECT icon, color FROM databases WHERE id = $1", [bareBody.id]);
     expect(rows[0]).toEqual({ icon: null, color: null });
+  });
+
+  describe("create with properties (issue #1592)", () => {
+    const jsonHeaders = async (locale = "en") => ({
+      ...(await authHeader(locale)),
+      "Content-Type": "application/json",
+    });
+    const post = (headers: Record<string, string>, body: unknown) =>
+      fetch(`${baseUrl}/api/databases`, { method: "POST", headers, body: JSON.stringify(body) });
+    const footprint = async () => {
+      const { rows } = await pool.query<{ databases: string; partitions: string; properties: string }>(
+        `SELECT (SELECT count(*) FROM databases WHERE system = false) AS databases,
+                (SELECT count(*) FROM pg_class WHERE relname LIKE 'items\\_p\\_%') AS partitions,
+                (SELECT count(*) FROM properties p JOIN databases d ON d.id = p.database_id WHERE d.system = false) AS properties`,
+      );
+      return rows[0];
+    };
+    const threeProperties = [
+      { key: "recipient", name: "Recipient", type: "text" },
+      { key: "status", name: "Status", type: "select", config: { options: [{ key: "idea", label: "Idea" }] } },
+      { key: "when", name: "When", type: "date" },
+    ];
+
+    it("creates the database, a localized title property and the listed properties in order", async () => {
+      const headers = await jsonHeaders("cs");
+      const res = await post(headers, { name: "Gift ideas", properties: threeProperties });
+      expect(res.status).toBe(201);
+      const created = (await res.json()) as DatabaseBody;
+      const listed = await fetch(`${baseUrl}/api/databases/${created.id}/properties`, { headers });
+      const body = (await listed.json()) as PropertyCatalogBody;
+      expect(body.properties.map((p) => [p.key, p.type])).toEqual([
+        ["name", "title"],
+        ["recipient", "text"],
+        ["status", "select"],
+        ["when", "date"],
+      ]);
+      expect(body.properties[0]?.label).toBe("Název");
+      const item = await fetch(`${baseUrl}/api/databases/${created.id}/items`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ properties: { name: "Book", recipient: "Anna" } }),
+      });
+      expect(item.status).toBe(201);
+    });
+
+    it("creates no title property without properties", async () => {
+      const res = await post(await jsonHeaders(), { name: "Bare" });
+      const created = (await res.json()) as DatabaseBody;
+      expect(await chokePoint.listProperties(created.id)).toEqual([]);
+    });
+
+    it.each([
+      ["a bad select config", { key: "status", name: "Status", type: "select", config: { options: "nope" } }],
+      ["a duplicate key", { key: "recipient", name: "Again", type: "text" }],
+      [
+        "a relation to a missing database",
+        { key: "link", name: "Link", type: "relation", targetDatabaseId: randomUUID(), cardinality: "many_to_many" },
+      ],
+    ])("leaves nothing behind when the third property has %s", async (_label, third) => {
+      const before = await footprint();
+      const res = await post(await jsonHeaders(), {
+        name: "Broken",
+        properties: [
+          { key: "recipient", name: "Recipient", type: "text" },
+          { key: "when", name: "When", type: "date" },
+          third,
+        ],
+      });
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(res.status).toBeLessThan(500);
+      expect(await footprint()).toEqual(before);
+    });
+
+    it("forbids a non-REST actor from sending properties, writes nothing, and still allows a bare create", async () => {
+      const service = createGenericApplicationService(pool);
+      const agent = { userId: randomUUID(), runId: randomUUID(), agentProjectItemId: randomUUID() };
+      const before = await footprint();
+      await expect(
+        service.createDatabase(agent, { name: "Agent", properties: [{ key: "a", name: "A", type: "text" }] }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+      expect(await footprint()).toEqual(before);
+      const bare = await service.createDatabase(agent, { name: "Agent bare" });
+      expect(bare.name).toBe("Agent bare");
+    });
+
+    it("names the missing field of a relation entry and rejects forbidden types", async () => {
+      const headers = await jsonHeaders();
+      const noTarget = await post(headers, {
+        name: "X",
+        properties: [{ key: "link", name: "Link", type: "relation", cardinality: "one_to_one" }],
+      });
+      expect(noTarget.status).toBe(400);
+      expect(JSON.stringify(await noTarget.json())).toContain("targetDatabaseId");
+      for (const type of ["rollup", "title", "multi_select"]) {
+        const res = await post(headers, { name: "X", properties: [{ key: "k", name: "K", type }] });
+        expect(res.status).toBe(400);
+      }
+    });
   });
 
   it("patches only the color, resets the icon with null and rejects bad formats", async () => {

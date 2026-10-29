@@ -93,4 +93,35 @@ describe("choke-point databaseOps", () => {
     expect(ids).toContain(kept.id);
     expect(ids).not.toContain(archived.id);
   });
+
+  it("createDatabaseWithProperties creates the title first, then the listed properties, in one transaction", async () => {
+    const db = await chokePoint.createDatabaseWithProperties({ name: "Gifts" }, "Name", [
+      { key: "recipient", name: "Recipient", type: "text" },
+      { key: "when", name: "When", type: "date" },
+    ]);
+    const properties = await chokePoint.listProperties(db.id);
+    expect(properties.map((p) => [p.key, p.type, p.name])).toEqual([
+      ["name", "title", "Name"],
+      ["recipient", "text", "Recipient"],
+      ["when", "date", "When"],
+    ]);
+  });
+
+  it("createDatabaseWithProperties rolls back the database and partition when a later property fails", async () => {
+    const countRows = async () =>
+      (
+        await pool.query<{ databases: string; partitions: string }>(
+          `SELECT (SELECT count(*) FROM databases) AS databases,
+                  (SELECT count(*) FROM pg_class WHERE relname LIKE 'items\\_p\\_%') AS partitions`,
+        )
+      ).rows[0];
+    const before = await countRows();
+    await expect(
+      chokePoint.createDatabaseWithProperties({ name: "Broken" }, "Name", [
+        { key: "a", name: "A", type: "text" },
+        { key: "a", name: "A again", type: "text" },
+      ]),
+    ).rejects.toThrow();
+    expect(await countRows()).toEqual(before);
+  });
 });

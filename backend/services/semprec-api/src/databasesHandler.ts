@@ -191,13 +191,15 @@ export function createDatabaseRoutes(
       path: "/api/databases",
       handler: async (ctx) => {
         const body = requireJsonObjectBody(ctx.body);
+        const locale = toManifestLocale(ctx.identity.user.locale);
         const database = await dispatchGenericOperation(service, "database.create", restActor(ctx.identity.user.id), {
           name: body.name,
           parentItemId: body.parentItemId,
           icon: body.icon,
           color: body.color,
+          properties: body.properties,
+          titlePropertyName: body.titlePropertyName ?? (locale === "cs" ? "Název" : "Name"),
         });
-        const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
         const metadataResolver = await createCollectionMetadataResolver(moduleRegistry);
         return { status: 201, body: await resolvedDatabaseBody(catalogResolver, database, locale, metadataResolver) };

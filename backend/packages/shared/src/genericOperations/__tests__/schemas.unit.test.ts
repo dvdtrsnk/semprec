@@ -75,6 +75,45 @@ describe("every generic-operation input schema", () => {
 });
 
 describe("DatabaseCreateInputSchema", () => {
+  it("accepts titlePropertyName and a properties list of the allowed types", () => {
+    const result = DatabaseCreateInputSchema.safeParse({
+      name: "Gifts",
+      titlePropertyName: "Název",
+      properties: [
+        { key: "recipient", name: "Recipient", type: "text" },
+        { key: "link", name: "Link", type: "relation", targetDatabaseId: "db", cardinality: "one_to_many" },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects duplicate keys naming the key, the title key, more than 50 entries and disallowed types", () => {
+    const dup = DatabaseCreateInputSchema.safeParse({
+      name: "G",
+      properties: [
+        { key: "a", name: "A", type: "text" },
+        { key: "a", name: "B", type: "text" },
+      ],
+    });
+    expect(dup.success).toBe(false);
+    expect(JSON.stringify(dup.error?.issues)).toContain("'a'");
+    expect(
+      DatabaseCreateInputSchema.safeParse({ name: "G", properties: [{ key: "name", name: "N", type: "text" }] })
+        .success,
+    ).toBe(false);
+    const many = Array.from({ length: 51 }, (_, i) => ({ key: `k${i}`, name: "K", type: "text" }));
+    expect(DatabaseCreateInputSchema.safeParse({ name: "G", properties: many }).success).toBe(false);
+    for (const type of ["rollup", "title", "multi_select"]) {
+      expect(
+        DatabaseCreateInputSchema.safeParse({ name: "G", properties: [{ key: "k", name: "K", type }] }).success,
+      ).toBe(false);
+    }
+    expect(
+      DatabaseCreateInputSchema.safeParse({ name: "G", properties: [{ key: "k", name: "K", type: "relation" }] })
+        .success,
+    ).toBe(false);
+  });
+
   it("accepts a bare name", () => {
     expect(DatabaseCreateInputSchema.safeParse({ name: "Tasks" }).success).toBe(true);
   });
