@@ -12,6 +12,10 @@ export {
 } from "../push/pushRouteHandlers.js";
 export { createAiUsageRouteHandler } from "../aiGateway/aiUsageRouteHandler.js";
 export { createSystemHealthRouteHandler } from "../observability/systemHealthRouteHandler.js";
+export {
+  createGetNotificationPreferencesRouteHandler,
+  createPatchNotificationPreferencesRouteHandler,
+} from "../notifications/notificationPreferencesRoutes.js";
 
 /**
  * Retrofit manifest (module-contract issue #226) for the schema/data core: the choke point
@@ -86,6 +90,24 @@ export const manifest: ModuleManifest = {
       // block) — the "single-consumer-read" justification. Operator data is not served here
       // (issue #1038, GET /api/admin/health).
       justification: "single-consumer-read",
+    },
+    {
+      name: "getNotificationPreferences",
+      method: "GET",
+      path: "/api/notification-preferences",
+      handlerExport: "createGetNotificationPreferencesRouteHandler",
+      // Shaped for exactly one consumer, the settings screen's notification section: the caller's
+      // own preferences row, or the defaults, and no other table.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "patchNotificationPreferences",
+      method: "PATCH",
+      path: "/api/notification-preferences",
+      handlerExport: "createPatchNotificationPreferencesRouteHandler",
+      // The first change inserts the caller's row and the update that sets its fields commits with
+      // it in one transaction, a shape the generic item-write endpoint can't express.
+      justification: "transactional-semantics",
     },
   ],
 };

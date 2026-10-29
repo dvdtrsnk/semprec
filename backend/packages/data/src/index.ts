@@ -136,6 +136,7 @@ export * from "./notifications/findings.js";
 export * from "./notifications/notificationKinds.js";
 export * from "./notifications/notify.js";
 export * from "./notifications/notificationsStore.js";
+export * from "./notifications/notificationPreferencesStore.js";
 export * from "./notifications/notificationFanoutJob.js";
 
 export * from "./agentRuns/agentRunsStore.js";
