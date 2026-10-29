@@ -195,6 +195,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "connectMcpServer",
   "consumePasswordResetToken",
   "coreAgentRunAction",
+  "countEffectiveMcpGrants",
   "countRecentFailedAttempts",
   "countRecentPasswordResetTokens",
   "createActionQueueAffinity",

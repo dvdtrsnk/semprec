@@ -94,8 +94,16 @@ describe("createMcpAgentPageRequestListener", () => {
       headers: await authHeader(),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { rows: unknown[] };
-    expect(body.rows).toEqual([expect.objectContaining({ mcpToolRegistrationId: registration.id, granted: false })]);
+    const body = (await res.json()) as { rows: unknown[]; counts: unknown };
+    expect(body.rows).toEqual([
+      expect.objectContaining({
+        mcpToolRegistrationId: registration.id,
+        granted: false,
+        effective: false,
+        server: { state: "connected", lastConnectedAt: null, lastErrorReason: null },
+      }),
+    ]);
+    expect(body.counts).toEqual({ effective: 0, total: 1 });
   });
 
   it("round-trips a grant toggle through PATCH", async () => {
@@ -119,8 +127,13 @@ describe("createMcpAgentPageRequestListener", () => {
     const getRes = await fetch(`${baseUrl}/api/projects/${projectItemId}/mcp-grants`, {
       headers: await authHeader(),
     });
-    const body = (await getRes.json()) as { rows: Array<{ granted: boolean }> };
+    const body = (await getRes.json()) as {
+      rows: Array<{ granted: boolean; effective: boolean }>;
+      counts: unknown;
+    };
     expect(body.rows[0]!.granted).toBe(true);
+    expect(body.rows[0]!.effective).toBe(true);
+    expect(body.counts).toEqual({ effective: 1, total: 1 });
   });
 
   it("rejects a grant PATCH with a non-boolean 'granted'", async () => {
