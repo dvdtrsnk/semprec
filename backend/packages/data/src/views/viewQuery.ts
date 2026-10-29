@@ -38,9 +38,15 @@ export interface QueryViewResult {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+type GroupDirection = NonNullable<ViewConfig["groupDirection"]>;
+
+function effectiveGroupDirection(config: ViewConfig): GroupDirection {
+  return config.groupDirection ?? "asc";
+}
+
 function buildSortSpecs(config: ViewConfig): SortSpec[] {
   const specs = config.sort ? parseSortConfig(config.sort) : [];
-  return config.groupBy ? [{ property: config.groupBy, direction: "asc" as const }, ...specs] : specs;
+  return config.groupBy ? [{ property: config.groupBy, direction: effectiveGroupDirection(config) }, ...specs] : specs;
 }
 
 /**
@@ -49,8 +55,15 @@ function buildSortSpecs(config: ViewConfig): SortSpec[] {
  * tuple `compileSortKeyset` resumes after. A rollup key's value is read from `computed`, the
  * column its sort expression reads.
  */
-function encodeSortCursor(sortSpecs: SortSpec[], properties: SortProperties, item: ItemRow): string {
+function encodeSortCursor(
+  sortSpecs: SortSpec[],
+  properties: SortProperties,
+  item: ItemRow,
+  groupDirection: GroupDirection,
+): string {
   const payload = {
+    // Written only for `desc`, so tokens issued before `groupDirection` existed stay valid under the default.
+    ...(groupDirection === "desc" ? { g: groupDirection } : {}),
     v: sortSpecs.map((sort) => {
       const source = properties.get(sort.property)?.type === "rollup" ? item.computed : item.properties;
       return source[sort.property] ?? null;
@@ -87,6 +100,7 @@ function decodeSortCursor(
   raw: string,
   sortSpecs: SortSpec[],
   properties: SortProperties,
+  groupDirection: GroupDirection,
 ): { values: unknown[]; id: string } {
   const invalid = new ValidationError("Invalid cursor", { field: "cursor" });
   let payload: unknown;
@@ -97,7 +111,8 @@ function decodeSortCursor(
     throw err;
   }
   if (typeof payload !== "object" || payload === null) throw invalid;
-  const { v, id } = payload as { v?: unknown; id?: unknown };
+  const { v, id, g } = payload as { v?: unknown; id?: unknown; g?: unknown };
+  if ((g ?? "asc") !== groupDirection) throw invalid;
   if (!Array.isArray(v) || v.length !== sortSpecs.length) throw invalid;
   if (typeof id !== "string" || !UUID_RE.test(id)) throw invalid;
   const castable = sortSpecs.every((sort, index) => {
@@ -111,6 +126,8 @@ function decodeSortCursor(
 interface QueryItemsCoreOptions extends QueryViewOptions {
   filterNode?: FilterNode;
   sortSpecs?: SortSpec[];
+  /** The direction `sortSpecs`' leading group key was built with; the cursor carries it. */
+  groupDirection?: GroupDirection;
 }
 
 /**
@@ -130,8 +147,11 @@ async function queryItemsCore(
   const filterProperties = filterNode ? await buildFilterProperties(client, properties) : undefined;
   const sortSpecs = options.sortSpecs ?? [];
   const sorted = sortSpecs.length > 0;
+  const groupDirection = options.groupDirection ?? "asc";
   const sortCursor =
-    sorted && options.cursor !== undefined ? decodeSortCursor(options.cursor, sortSpecs, sortProperties) : undefined;
+    sorted && options.cursor !== undefined
+      ? decodeSortCursor(options.cursor, sortSpecs, sortProperties, groupDirection)
+      : undefined;
 
   const filterContext = filterNode ? await resolveFilterCompileContext(client, filterNode, options.now) : undefined;
   const buildFilterSql = filterNode
@@ -148,7 +168,7 @@ async function queryItemsCore(
       ? {
           buildAfterSql: (params) =>
             sortCursor ? compileSortKeyset(sortSpecs, sortProperties, sortCursor, params) : undefined,
-          encodeCursor: (last) => encodeSortCursor(sortSpecs, sortProperties, last),
+          encodeCursor: (last) => encodeSortCursor(sortSpecs, sortProperties, last, groupDirection),
         }
       : undefined,
   });
@@ -168,6 +188,7 @@ async function queryFilteredView(
     ...options,
     filterNode: config.filter,
     sortSpecs,
+    groupDirection: effectiveGroupDirection(config),
   });
 
   return { ...rest, items: items.map((item) => ({ ...item, properties: projectProperties(item.properties, config) })) };
@@ -373,6 +394,8 @@ export async function queryViewItems(
   const { items, ...rest } = await queryItemsCore(client, view.databaseId, {
     filterNode,
     sortSpecs,
+    // An ad-hoc `sort` replaces the view's grouping, so there is no group direction to carry.
+    groupDirection: input.sort !== undefined ? "asc" : effectiveGroupDirection(config),
     limit,
     cursor,
     includeDeleted,
