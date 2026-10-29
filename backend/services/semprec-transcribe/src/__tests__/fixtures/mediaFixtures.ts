@@ -63,6 +63,80 @@ export function generateMp4Fixture(options: { withVideo?: boolean; creationTime?
 }
 
 /**
+ * A three-second streamed Matroska recording with a video track whose audio track starts one second
+ * late (`-itsoffset`) and lasts two. Matroska because a fragmented MP4 piped from ffmpeg does not
+ * keep the offset.
+ */
+export function generateLateAudioVideoFixture(): Promise<Buffer> {
+  return runToBuffer("ffmpeg", [
+    "-y",
+    "-loglevel",
+    "error",
+    "-f",
+    "lavfi",
+    "-i",
+    "testsrc=size=64x64:rate=5:duration=3",
+    "-itsoffset",
+    "1",
+    "-f",
+    "lavfi",
+    "-i",
+    "sine=frequency=440:duration=2",
+    "-c:v",
+    "libx264",
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "aac",
+    "-f",
+    "matroska",
+    "pipe:1",
+  ]);
+}
+
+/** A one-second Ogg Opus recording, a type that is not directly playable on iOS. */
+export function generateOggFixture(): Promise<Buffer> {
+  return runToBuffer("ffmpeg", [
+    "-y",
+    "-loglevel",
+    "error",
+    "-f",
+    "lavfi",
+    "-i",
+    "sine=frequency=440:duration=1",
+    "-c:a",
+    "libopus",
+    "-f",
+    "ogg",
+    "pipe:1",
+  ]);
+}
+
+/** The codec, channel count and bit rate of a file's first audio stream, as ffprobe reports them. */
+export async function probeAudioStream(
+  path: string,
+): Promise<{ codecName: string; channels: number; bitRate: number }> {
+  const output = await runToBuffer("ffprobe", [
+    "-v",
+    "error",
+    "-print_format",
+    "json",
+    "-show_entries",
+    "stream=codec_name,channels,bit_rate",
+    "-select_streams",
+    "a",
+    path,
+  ]);
+  const stream = z
+    .object({
+      streams: z.array(z.object({ codec_name: z.string(), channels: z.number(), bit_rate: z.string().optional() })),
+    })
+    .parse(JSON.parse(output.toString("utf8"))).streams[0];
+  if (!stream) throw new Error(`'${path}' has no audio stream`);
+  return { codecName: stream.codec_name, channels: stream.channels, bitRate: Number(stream.bit_rate ?? 0) };
+}
+
+/**
  * A three-second streamed WebM/Matroska recording, the shape browser `MediaRecorder` output takes.
  * Piped straight to `pipe:1` rather than muxed to a seekable file, its container header carries no
  * `format.duration` — unlike `generateMp4Fixture`, which does store one even when fragmented.

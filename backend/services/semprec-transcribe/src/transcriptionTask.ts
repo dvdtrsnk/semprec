@@ -54,6 +54,7 @@ import {
   probeMedia,
   probeNormalizedDuration,
   removeTempFile,
+  renderPlaybackAudio,
   type MediaProbeResult,
   type NormalizedAudioResult,
 } from "./mediaNormalization.js";
@@ -81,8 +82,17 @@ function sourceName(properties: Record<string, unknown>): string {
   throw new ValidationError("Source file has no name", { field: "name" });
 }
 
+/** Source types an iOS player can play and seek as they are; any other type gets a rendition (`renderPlaybackAudio`). */
+const DIRECTLY_PLAYABLE_MIME_TYPES: ReadonlySet<string> = new Set(["audio/mp4", "audio/mpeg", "audio/wav"]);
+
+function isDirectlyPlayable(mimeType: string): boolean {
+  return DIRECTLY_PLAYABLE_MIME_TYPES.has(mimeType.split(";")[0]!.trim().toLowerCase());
+}
+
 interface PrepareStepResult {
   normalizedBlobId: string;
+  /** The blob the app plays and seeks on the segments' timeline: the original for a directly playable type, else the rendition's. Absent from checkpoints written before this field existed. */
+  playbackBlobId?: string | undefined;
   durationSeconds: number;
   /** The recording's own `creation_time`; `null` when it had none usable and `date` fell back to the upload time. */
   creationTime: string | null;
@@ -169,6 +179,7 @@ function requireTranscriptId(source: ItemRow, fileItemId: string): string {
 
 const prepareCheckpointSchema = z.object({
   normalizedBlobId: z.string(),
+  playbackBlobId: z.string().optional(),
   durationSeconds: z.number(),
   creationTime: z.string().nullable(),
 });
@@ -280,16 +291,34 @@ async function runPrepareStep(
     const sourceBlob = await getBlob(client, sourceBlobId);
     if (!sourceBlob) throw new NotFoundError(`Blob '${sourceBlobId}' not found`, { resource: "blob" });
     const normalizedStorageKey = await tenantBlobStorageKey(client, `transcriptions/${randomUUID()}.opus`);
-    return { sourceBlobId, storageKey: sourceBlob.storageKey, uploadedAt: sourceBlob.createdAt, normalizedStorageKey };
+    const playbackStorageKey = isDirectlyPlayable(sourceBlob.mimeType)
+      ? null
+      : await tenantBlobStorageKey(client, `transcriptions/${randomUUID()}.m4a`);
+    return {
+      sourceBlobId,
+      storageKey: sourceBlob.storageKey,
+      uploadedAt: sourceBlob.createdAt,
+      normalizedStorageKey,
+      playbackStorageKey,
+    };
   });
   if (!snapshot) return;
 
   const tempPath = await downloadToTempFile(blobStorage, snapshot.storageKey);
   let probe: MediaProbeResult;
   let normalized: NormalizedAudioResult;
+  let playback: NormalizedAudioResult | null = null;
   try {
     probe = await probeMedia(tempPath);
     normalized = await normalizeAudio(tempPath, blobStorage, snapshot.normalizedStorageKey);
+    if (snapshot.playbackStorageKey !== null) {
+      try {
+        playback = await renderPlaybackAudio(tempPath, blobStorage, snapshot.playbackStorageKey);
+      } catch (err) {
+        await discardStoredAudio(blobStorage, normalized.storageKey);
+        throw err;
+      }
+    }
   } finally {
     await removeTempFile(tempPath);
   }
@@ -319,6 +348,14 @@ async function runPrepareStep(
         storageKey: normalized.storageKey,
         contentHash: normalized.contentHash,
       });
+      const playbackBlob = playback
+        ? await createBlob(client, {
+            mimeType: "audio/mp4",
+            byteSize: playback.byteSize,
+            storageKey: playback.storageKey,
+            contentHash: playback.contentHash,
+          })
+        : null;
       const transcripts = await getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
       if (!transcripts) throw new NotFoundError("Transcripts database not found");
       await updateItemWithClient(
@@ -332,6 +369,7 @@ async function runPrepareStep(
       );
       const result: PrepareStepResult = {
         normalizedBlobId: normalizedBlob.id,
+        playbackBlobId: playbackBlob?.id ?? snapshot.sourceBlobId,
         durationSeconds,
         creationTime: probe.creationTime,
       };
@@ -339,7 +377,10 @@ async function runPrepareStep(
       referenced = true;
     });
   } finally {
-    if (!referenced) await discardStoredAudio(blobStorage, normalized.storageKey);
+    if (!referenced) {
+      await discardStoredAudio(blobStorage, normalized.storageKey);
+      if (playback) await discardStoredAudio(blobStorage, playback.storageKey);
+    }
   }
 }
 
