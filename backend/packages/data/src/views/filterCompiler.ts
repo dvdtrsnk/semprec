@@ -1,6 +1,13 @@
+import type { Queryable } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
+import { getSystemTimezone } from "../systemSettings.js";
 import type { PropertyType } from "../types.js";
 import type { FilterCondition, FilterNode } from "./filterTree.js";
+import { resolveDayRange, type FilterCompileContext } from "./relativeDates.js";
+
+export type { FilterCompileContext } from "./relativeDates.js";
+
+const DATE_ONLY_PATTERN = "^\\d{4}-\\d{2}-\\d{2}$";
 
 /**
  * What the compiler needs to know about one filterable property. A relation property also
@@ -96,6 +103,69 @@ function compileRelationPathCondition(
   )`;
 }
 
+/** The calendar day of a stored date value in the tenant zone: a date-only string as written, a timestamp via AT TIME ZONE; empty or missing is NULL. */
+function dayExpression(field: string, zoneParam: number): string {
+  return `(CASE WHEN NULLIF(${field}, '') IS NULL THEN NULL WHEN ${field} ~ '${DATE_ONLY_PATTERN}' THEN (${field})::date ELSE ((${field})::timestamptz AT TIME ZONE $${zoneParam}::text)::date END)`;
+}
+
+/**
+ * Compiles `date_relative` to day-range comparisons. The bounds come from the compile context
+ * (zone and clock) and are bound as parameters, so no clock call appears in the SQL. A null or
+ * missing value yields NULL and never matches. With `endProperty` the interval
+ * [property, endProperty or property] must intersect the range.
+ */
+function compileDateRelative(
+  node: Extract<FilterCondition, { type: "date_relative" }>,
+  properties: FilterProperties,
+  params: unknown[],
+  context: FilterCompileContext | undefined,
+): string {
+  if (!context) {
+    throw new ValidationError("A relative date filter needs the tenant time zone and clock", { field: node.property });
+  }
+  for (const key of node.endProperty ? [node.property, node.endProperty] : [node.property]) {
+    const property = properties.get(key);
+    if (!property) throw new ValidationError(`Filter references unknown property '${key}'`, { field: key });
+    if (property.type !== "date") {
+      throw new ValidationError(
+        `Condition 'date_relative' requires a date property, but '${key}' is '${property.type}'`,
+        { field: key },
+      );
+    }
+  }
+  params.push(context.zone);
+  const zoneParam = params.length;
+  const field = (key: string): string => {
+    params.push(key);
+    return `properties ->> $${params.length}`;
+  };
+  const startField = field(node.property);
+  const start = dayExpression(startField, zoneParam);
+  const end = node.endProperty ? `COALESCE(${dayExpression(field(node.endProperty), zoneParam)}, ${start})` : start;
+  const range = resolveDayRange(node.preset, context);
+  const clauses: string[] = [`${start} IS NOT NULL`];
+  if (node.preset === "beforeNow") {
+    // A timestamp is compared as an instant, a date-only value as day < D.
+    params.push(context.now.toISOString());
+    const nowParam = params.length;
+    params.push(range.to);
+    const toParam = params.length;
+    clauses.push(
+      `(CASE WHEN ${startField} ~ '${DATE_ONLY_PATTERN}' THEN (${startField})::date <= $${toParam}::date ELSE (${startField})::timestamptz < $${nowParam}::timestamptz END)`,
+    );
+    return `(${clauses.join(" AND ")})`;
+  }
+  if (range.from !== undefined) {
+    params.push(range.from);
+    clauses.push(`${end} >= $${params.length}::date`);
+  }
+  if (range.to !== undefined) {
+    params.push(range.to);
+    clauses.push(`${start} <= $${params.length}::date`);
+  }
+  return `(${clauses.join(" AND ")})`;
+}
+
 /** Escapes LIKE metacharacters so a `contains`/`starts_with`/`ends_with` value can never inject its own wildcard. Paired with `ESCAPE '\'` in the compiled SQL. */
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
@@ -107,7 +177,13 @@ function escapeLikePattern(value: string): string {
  * the node is ever concatenated into the SQL text. That, plus the closed condition set
  * validated by filterTree.ts, is what makes a filter incapable of SQL injection.
  */
-function compileCondition(node: FilterCondition, properties: FilterProperties, params: unknown[]): string {
+function compileCondition(
+  node: FilterCondition,
+  properties: FilterProperties,
+  params: unknown[],
+  context: FilterCompileContext | undefined,
+): string {
+  if (node.type === "date_relative") return compileDateRelative(node, properties, params, context);
   if (node.type === "relation_path_contains") return compileRelationPathCondition(node, properties, params);
   const property = properties.get(node.property);
   if (!property) {
@@ -190,15 +266,44 @@ function compileCondition(node: FilterCondition, properties: FilterProperties, p
   }
 }
 
-export function compileFilterNode(node: FilterNode, properties: FilterProperties, params: unknown[]): string {
+/** `context` carries the tenant zone and clock; only `date_relative` conditions need it. */
+export function compileFilterNode(
+  node: FilterNode,
+  properties: FilterProperties,
+  params: unknown[],
+  context?: FilterCompileContext,
+): string {
   switch (node.type) {
     case "and":
-      return `(${node.nodes.map((n) => compileFilterNode(n, properties, params)).join(" AND ")})`;
+      return `(${node.nodes.map((n) => compileFilterNode(n, properties, params, context)).join(" AND ")})`;
     case "or":
-      return `(${node.nodes.map((n) => compileFilterNode(n, properties, params)).join(" OR ")})`;
+      return `(${node.nodes.map((n) => compileFilterNode(n, properties, params, context)).join(" OR ")})`;
     case "not":
-      return `(NOT ${compileFilterNode(node.node, properties, params)})`;
+      return `(NOT ${compileFilterNode(node.node, properties, params, context)})`;
     default:
-      return compileCondition(node, properties, params);
+      return compileCondition(node, properties, params, context);
   }
+}
+
+/** True when the tree contains a condition whose result depends on the clock. */
+function filterUsesClock(node: FilterNode): boolean {
+  switch (node.type) {
+    case "and":
+    case "or":
+      return node.nodes.some(filterUsesClock);
+    case "not":
+      return filterUsesClock(node.node);
+    default:
+      return node.type === "date_relative";
+  }
+}
+
+/** Reads the tenant zone (only when the tree needs it) and pairs it with the clock. */
+export async function resolveFilterCompileContext(
+  client: Queryable,
+  node: FilterNode,
+  now?: Date,
+): Promise<FilterCompileContext | undefined> {
+  if (!filterUsesClock(node)) return undefined;
+  return { zone: await getSystemTimezone(client), now: now ?? new Date() };
 }

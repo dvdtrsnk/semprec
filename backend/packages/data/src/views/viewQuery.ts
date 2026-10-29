@@ -5,7 +5,7 @@ import { countItems, getItemsByIds, getItemsByIdsIncludingDeleted, listItems } f
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import * as viewItemsStore from "../chokePoint/viewItemsStore.js";
-import { compileFilterNode } from "./filterCompiler.js";
+import { compileFilterNode, resolveFilterCompileContext } from "./filterCompiler.js";
 import { buildFilterProperties } from "./filterProperties.js";
 import { compileSort, compileSortKeyset, sortKeyCast, type SortProperties } from "./sortCompiler.js";
 import { parseFilterNode, type FilterNode } from "./filterTree.js";
@@ -25,6 +25,8 @@ export interface QueryViewOptions {
   includeDeleted?: boolean;
   /** Also returns `totalCount`: the number of items matching the filter, ignoring cursor, limit and sort. */
   includeCount?: boolean;
+  /** The clock `date_relative` conditions are evaluated at; defaults to the current time. */
+  now?: Date;
 }
 
 export interface QueryViewResult {
@@ -131,8 +133,9 @@ async function queryItemsCore(
   const sortCursor =
     sorted && options.cursor !== undefined ? decodeSortCursor(options.cursor, sortSpecs, sortProperties) : undefined;
 
+  const filterContext = filterNode ? await resolveFilterCompileContext(client, filterNode, options.now) : undefined;
   const buildFilterSql = filterNode
-    ? (params: unknown[]) => compileFilterNode(filterNode, filterProperties!, params)
+    ? (params: unknown[]) => compileFilterNode(filterNode, filterProperties!, params, filterContext)
     : undefined;
 
   const page = await listItems(client, databaseId, {
