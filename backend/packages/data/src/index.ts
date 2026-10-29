@@ -122,6 +122,8 @@ export * from "./manifest/schemaProjection.js";
 export {
   compareCollections,
   createCollectionMetadataResolver,
+  DEFAULT_DATABASE_COLOR,
+  DEFAULT_DATABASE_ICON,
   type CollectionMetadata,
   type CollectionMetadataResolver,
   type OrderableCollection,

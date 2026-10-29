@@ -19,6 +19,8 @@ const CONTEXT: ItemUpdateHookContext = {
     ownerModuleId: null,
     schemaLocked: false,
     system: false,
+    icon: null,
+    color: null,
     archivedAt: null,
   },
   item: { id: "item", databaseId: "db", properties: {}, computed: {}, updatedAt: "", deletedAt: null },

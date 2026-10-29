@@ -87,6 +87,37 @@ describe("DatabaseCreateInputSchema", () => {
   );
 });
 
+describe("database icon and color inputs", () => {
+  it("normalizes a create color to upper case and keeps a valid icon", () => {
+    const parsed = DatabaseCreateInputSchema.parse({ name: "Gifts", icon: "gift", color: "#34c759" });
+    expect(parsed).toEqual({ name: "Gifts", icon: "gift", color: "#34C759" });
+  });
+
+  it.each([{ color: "red" }, { color: "#12345" }, { color: "#GGGGGG" }, { icon: "my icon" }, { icon: "Gift" }])(
+    "rejects the create input %j",
+    (extra) => {
+      expect(DatabaseCreateInputSchema.safeParse({ name: "Gifts", ...extra }).success).toBe(false);
+    },
+  );
+
+  it("accepts null to reset icon and color in a patch, and normalizes the color", () => {
+    expect(DatabasePatchInputSchema.parse({ databaseId: "d", patch: { icon: null, color: null } }).patch).toEqual({
+      icon: null,
+      color: null,
+    });
+    expect(DatabasePatchInputSchema.parse({ databaseId: "d", patch: { color: "#007aff" } }).patch).toEqual({
+      color: "#007AFF",
+    });
+  });
+
+  it.each([{ color: "red" }, { color: "#12345" }, { icon: "my icon" }, { icon: "" }, { unknown: 1 }])(
+    "rejects the patch %j",
+    (patch) => {
+      expect(DatabasePatchInputSchema.safeParse({ databaseId: "d", patch }).success).toBe(false);
+    },
+  );
+});
+
 describe("PropertyGetByKeyInputSchema", () => {
   it("accepts a database id and key, with or without a type filter", () => {
     expect(PropertyGetByKeyInputSchema.safeParse({ databaseId: "db1", key: "assignedTo" }).success).toBe(true);

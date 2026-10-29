@@ -187,8 +187,8 @@ describe("createSchemaRequestListener (issue #147)", () => {
       clientVisible: true,
     });
     expect(body.databases.find((db) => db.databaseId === custom.id)).toMatchObject({
-      icon: null,
-      color: null,
+      icon: "database",
+      color: "#FF9500",
       overviewOrder: null,
       switcherOrder: null,
       clientVisible: true,
