@@ -10,7 +10,19 @@ import {
   withTransaction,
   type NotificationCreatedEvent,
 } from "@semprec/data";
+import { reconstructConversationHistory } from "../conversationReconstruction.js";
+import type { CompactionAdapter } from "../compaction.js";
+import type { ConversationEntry } from "../types.js";
 import { repairInterruptedRuns } from "../startupRepair.js";
+
+const noopCompaction: CompactionAdapter = {
+  estimateContextTokens: (messages) => messages.length,
+  shouldCompact: () => false,
+  prepareCompaction: (entries) => entries,
+  compact: (prepared) => prepared as ConversationEntry[],
+  contextWindow: 1_000_000,
+  settings: {},
+};
 
 let pool: Pool;
 
@@ -59,20 +71,61 @@ describe("repairInterruptedRuns", () => {
   it("appends a synthetic tool_result when the last event is an unmatched tool_use", async () => {
     const run = await createAgentRun(pool, { triggeredBy: "heartbeat", task: "search something" });
     await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
-    await insertAgentRunEvent(pool, run.id, "tool_use", { kind: "tool_use", tool: "search", toolCallId: "call-1" });
+    await insertAgentRunEvent(pool, run.id, "tool_use", {
+      kind: "tool_use",
+      toolCallId: "call-1",
+      name: "search",
+      arguments: { q: "secret" },
+      operation: "items.search",
+      mcp: { server: "docs" },
+      targetDatabaseId: "db-1",
+      targetItemId: "item-1",
+      extra: "dropped",
+    });
 
     await repairInterruptedRuns(pool);
 
-    const { rows } = await pool.query<{
-      kind: string;
-      payload: { tool?: string; toolCallId?: string; error?: boolean };
-    }>(`SELECT kind, payload FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id ASC`, [run.id]);
+    const { rows } = await pool.query<{ kind: string; payload: Record<string, unknown> }>(
+      `SELECT kind, payload FROM agent_run_events WHERE agent_run_id = $1 AND kind <> 'run_status' ORDER BY id ASC`,
+      [run.id],
+    );
 
     expect(rows.map((r) => r.kind)).toEqual(["turn_start", "tool_use", "tool_result"]);
-    const synthetic = rows[2]!.payload;
-    expect(synthetic.tool).toBe("search");
-    expect(synthetic.toolCallId).toBe("call-1");
-    expect(synthetic.error).toBe(true);
+    expect(rows[2]!.payload).toEqual({
+      kind: "tool_result",
+      toolCallId: "call-1",
+      name: "search",
+      operation: "items.search",
+      mcp: { server: "docs" },
+      targetDatabaseId: "db-1",
+      targetItemId: "item-1",
+      result: {
+        content: [{ type: "text", text: expect.stringContaining("interrupted_by_restart") }],
+        details: { error: true },
+      },
+      isError: true,
+    });
+  });
+
+  it("leaves the repaired history reconstructable under the protocol check", async () => {
+    const itemId = "99999999-9999-9999-9999-999999999999";
+    const run = await createAgentRun(pool, {
+      projectItemId: itemId,
+      triggeredBy: "user",
+      unit: "session",
+      task: "search something",
+    });
+    await insertAgentRunEvent(pool, run.id, "tool_use", { kind: "tool_use", toolCallId: "call-1", name: "search" });
+
+    await repairInterruptedRuns(pool);
+
+    const history = await reconstructConversationHistory(
+      pool,
+      { projectItemId: itemId, triggeredBy: "user", parentRunId: null },
+      noopCompaction,
+    );
+    expect(history?.entries.map((e) => e.message.kind)).toEqual(["tool_use", "tool_result"]);
+    expect(history?.entries[1]!.message).toMatchObject({ toolCallId: "call-1", name: "search", isError: true });
   });
 
   it("does not append a synthetic tool_result when the trailing tool_use already has a tool_result", async () => {
@@ -97,12 +150,13 @@ describe("repairInterruptedRuns", () => {
 
     await expect(repairInterruptedRuns(pool)).resolves.toEqual({ repairedRunIds: [run.id] });
 
-    const { rows } = await pool.query<{ kind: string; payload: { error?: boolean } }>(
+    const { rows } = await pool.query<{ kind: string; payload: Record<string, unknown> }>(
       `SELECT kind, payload FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id ASC`,
       [run.id],
     );
     expect(rows.map((r) => r.kind)).toEqual(["tool_use", "tool_result"]);
-    expect(rows[1]!.payload.error).toBe(true);
+    expect(rows[1]!.payload).toMatchObject({ kind: "tool_result", name: "", isError: true });
+    expect(rows[1]!.payload).not.toHaveProperty("toolCallId");
   });
 
   it("does not append a synthetic tool_result when the run has no events at all", async () => {
@@ -149,13 +203,13 @@ describe("repairInterruptedRuns", () => {
 
     const { rows: heartbeatEvents } = await pool.query<{
       kind: string;
-      payload: { toolCallId?: string; error?: boolean };
+      payload: { toolCallId?: string; isError?: boolean };
     }>(`SELECT kind, payload FROM agent_run_events WHERE agent_run_id = $1 AND kind <> 'run_status' ORDER BY id ASC`, [
       heartbeatRun.id,
     ]);
     expect(heartbeatEvents.map((r) => r.kind)).toEqual(["tool_use", "tool_result"]);
     expect(heartbeatEvents[1]!.payload.toolCallId).toBe("hb-1");
-    expect(heartbeatEvents[1]!.payload.error).toBe(true);
+    expect(heartbeatEvents[1]!.payload.isError).toBe(true);
 
     const { rows: notifications } = await pool.query<{ kind: string; source_id: string }>(
       `SELECT kind, source_id FROM notifications ORDER BY source_id`,

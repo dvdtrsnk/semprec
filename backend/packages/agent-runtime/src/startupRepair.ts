@@ -11,6 +11,36 @@ import {
 
 const INTERRUPTED_REASON = "interrupted_by_restart";
 
+const IDENTITY_FIELDS = ["operation", "mcp", "targetDatabaseId", "targetItemId"] as const;
+
+/**
+ * The synthetic result for an unmatched `tool_use`, in the shape a tool call that returned an
+ * error result is stored in (`toolCallId`, `name`, `result: {content, details}`, `isError`).
+ * Only the call's identity fields are copied; `arguments` and any other field are not.
+ */
+function interruptedToolResult(toolUse: Record<string, unknown>): Record<string, unknown> {
+  const identity: Record<string, unknown> = {};
+  for (const field of IDENTITY_FIELDS) {
+    if (toolUse[field] !== undefined) identity[field] = toolUse[field];
+  }
+  return {
+    kind: "tool_result",
+    ...(toolUse.toolCallId !== undefined ? { toolCallId: toolUse.toolCallId } : {}),
+    name: typeof toolUse.name === "string" ? toolUse.name : "",
+    ...identity,
+    result: {
+      content: [
+        {
+          type: "text",
+          text: `Run interrupted by service restart before this tool call completed (${INTERRUPTED_REASON}).`,
+        },
+      ],
+      details: { error: true },
+    },
+    isError: true,
+  };
+}
+
 /**
  * Startup orphan repair: the in-memory session registry is always empty right after a
  * process restart, so every `agent_runs` row still `status='running'` was abandoned
@@ -69,12 +99,7 @@ async function repairCurrentTenant(pool: Pool): Promise<string[]> {
           typeof last.payload === "object" && last.payload !== null && !Array.isArray(last.payload)
             ? (last.payload as Record<string, unknown>)
             : {};
-        await insertAgentRunEvent(client, run.id, "tool_result", {
-          ...toolUsePayload,
-          kind: "tool_result",
-          error: true,
-          result: `Run interrupted by service restart before this tool call completed (${INTERRUPTED_REASON}).`,
-        });
+        await insertAgentRunEvent(client, run.id, "tool_result", interruptedToolResult(toolUsePayload));
       }
 
       await finishAgentRunWithErrorNotification(client, run.id, INTERRUPTED_REASON);

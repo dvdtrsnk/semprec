@@ -88,6 +88,30 @@ describe("toPiMessages (issue #647)", () => {
     expect(converted).toMatchObject({ role: "assistant", stopReason: "error", errorMessage: "refused" });
   });
 
+  it("converts the tool_result startup repair writes for an interrupted call", () => {
+    const [converted] = toPiMessages(
+      entries({
+        kind: "tool_result",
+        toolCallId: "call-1",
+        name: "echo",
+        result: {
+          content: [{ type: "text", text: "Run interrupted by service restart (interrupted_by_restart)." }],
+          details: { error: true },
+        },
+        isError: true,
+      }),
+      model,
+    );
+
+    expect(converted).toMatchObject({
+      role: "toolResult",
+      toolCallId: "call-1",
+      toolName: "echo",
+      details: { error: true },
+      isError: true,
+    });
+  });
+
   it("returns no messages for empty history", () => {
     expect(toPiMessages([], model)).toEqual([]);
   });
