@@ -511,6 +511,7 @@ export {
   type SempProblemResolutionKind,
   type SempProblemSeverity,
 } from "./semp/sempProblemsStore.js";
+export { SEMP_PROBLEMS_RETENTION_DAYS, handleSempProblemsPruneTask } from "./semp/sempProblemsPrune.js";
 export { createGuidanceProblemWriter } from "./semp/guidanceProblemWriter.js";
 export {
   getDownloadableTenantExport,

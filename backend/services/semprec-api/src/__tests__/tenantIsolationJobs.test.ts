@@ -1075,6 +1075,23 @@ const cases: Record<string, TaskCase> = {
       });
     },
   },
+  [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const problemId = randomUUID();
+      await adminPool.query(
+        `INSERT INTO semp_problems (id, tenant_id, user_id, category, kind, severity, source_table, source_id,
+                                    dedupe_key, resolved_at, resolution_kind)
+         VALUES ($1, $2, $3, 'mail', 'mailSyncFailed', 'warning', 'mail_account_sync_state', $4, $5,
+                 now() - interval '31 days', 'recovered')`,
+        [problemId, tenant.tenantId, tenant.userId, randomUUID(), `mail:sync:${problemId}`],
+      );
+      return marked([problemId], async () => {
+        expect(await rows(tenant, "SELECT 1 FROM semp_problems WHERE id = $1", [problemId])).toEqual([]);
+      });
+    },
+  },
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: {
     tenancy: "system",
     touchesTenantTables: true,
