@@ -16,6 +16,7 @@ export {
   createGetNotificationPreferencesRouteHandler,
   createPatchNotificationPreferencesRouteHandler,
 } from "../notifications/notificationPreferencesRoutes.js";
+export { createTriggerHeartbeatRouteHandler } from "../scheduler/triggerHeartbeatRoute.js";
 
 /**
  * Retrofit manifest (module-contract issue #226) for the schema/data core: the choke point
@@ -107,6 +108,16 @@ export const manifest: ModuleManifest = {
       handlerExport: "createPatchNotificationPreferencesRouteHandler",
       // The first change inserts the caller's row and the update that sets its fields commits with
       // it in one transaction, a shape the generic item-write endpoint can't express.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "triggerHeartbeat",
+      method: "POST",
+      path: "/api/heartbeats/:id/trigger",
+      handlerExport: "createTriggerHeartbeatRouteHandler",
+      // The active-run and waiting-job checks and the enqueue commit or roll back together under the
+      // heartbeat's row lock (issue #1453): the transactional shape the generic item-write endpoint
+      // can't express.
       justification: "transactional-semantics",
     },
   ],

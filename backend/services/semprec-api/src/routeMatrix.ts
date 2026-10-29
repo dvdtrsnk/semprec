@@ -209,6 +209,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "trigger heartbeat",
+    method: "POST",
+    path: `/api/heartbeats/${EXAMPLE_ID}/trigger`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "schema projection",
     method: "GET",
     path: "/api/schema",

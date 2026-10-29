@@ -203,6 +203,29 @@ export async function getHeartbeatForProject(
 }
 
 /**
+ * The manual-fire lookup (issue #1453): the heartbeat by id, scoped to one project when
+ * `projectItemId` is given and to the tenant alone when it is `null`, row-locked with
+ * `FOR UPDATE`. The lock is what makes the enabled check and the enqueue that follow it in the
+ * same transaction hold against a concurrent `setHeartbeatEnabled`, which takes the same row lock
+ * to update it. Must run on a `PoolClient` inside `withTransaction`: `FOR UPDATE` on a bare pool
+ * releases its lock after the one statement.
+ */
+export async function lockHeartbeatForManualFire(
+  client: PoolClient,
+  heartbeatId: string,
+  projectItemId: string | null,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<HeartbeatRow | null> {
+  const { rows } = await client.query<HeartbeatDbRow>(
+    `SELECT ${COLUMNS} FROM project_heartbeats
+     WHERE id = $1 AND ($2::uuid IS NULL OR project_item_id = $2::uuid)
+     FOR UPDATE`,
+    [heartbeatId, projectItemId],
+  );
+  return rows[0] ? mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true }) : null;
+}
+
+/**
  * Recomputes next_fire_at using the same pure function as the sweep — deterministic at write
  * time. Only the row's `enabled` flag is needed from the *current* state — never its current
  * rule — so replacing a heartbeat whose existing rule kind's module was deactivated (e.g. to
@@ -391,6 +414,28 @@ export function occurrenceFireJobKey(heartbeatId: string, occurrenceId: string, 
  */
 export function manualHeartbeatFireJobKey(heartbeatId: string): string {
   return `heartbeat-fire:manual:${heartbeatId}`;
+}
+
+/**
+ * Whether a fire job of this heartbeat is waiting for a worker or running on one (issue #1453's
+ * manual trigger refuses while one is). Matches the manual key and the scheduler keys the fire paths
+ * build (`occurrenceFireJobKey`, and `heartbeatFireJobKey` with an item suffix), which all start with
+ * `heartbeatFireJobKey(id)` followed by `:`. A job counts only
+ * while it can still run: locked, or with attempts left. A permanently failed job keeps its key
+ * until `queueFailedJobsPrune` deletes it, and a keyed enqueue revives it, so it must not block.
+ * Reads the `jobs` view of graphile-worker 0.17.3 (`key`, `locked_at`, `attempts`, `max_attempts`),
+ * the same read `findTranscriptionJobId` makes.
+ */
+export async function hasWaitingHeartbeatFireJob(client: Pool | PoolClient, heartbeatId: string): Promise<boolean> {
+  const { rows } = await client.query<{ waiting: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM graphile_worker.jobs
+       WHERE (key = $1 OR starts_with(key, $2))
+         AND (locked_at IS NOT NULL OR attempts < max_attempts)
+     ) AS waiting`,
+    [manualHeartbeatFireJobKey(heartbeatId), `${heartbeatFireJobKey(heartbeatId)}:`],
+  );
+  return requireSingleRow(rows, "heartbeat fire job lookup").waiting;
 }
 
 /**
