@@ -29,6 +29,8 @@ export {
   createReconstructConversationHistory,
   type SempConversationOptions,
   type SempSendOptions,
+  type SempThread,
+  type SempThreadWake,
   type SempTurnStart,
   type SempTurnResult,
   type ReconstructConversationHistory,
