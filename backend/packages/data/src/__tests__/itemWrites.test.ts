@@ -206,7 +206,7 @@ describe("choke-point itemWrites", () => {
         }),
       ]);
       expect(outcome).toEqual([{ status: "rejected", reason: expect.any(ConflictError) }]);
-      expect(await chokePoint.getItem(db.id, item.id)).toEqual(item);
+      expect(await chokePoint.getItem(db.id, item.id)).toEqual({ ...item, fromInbox: false });
       expect(events).toEqual([]);
     } finally {
       setInvalidationHook(() => {});

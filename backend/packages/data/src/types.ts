@@ -99,6 +99,8 @@ export interface ItemRow {
   computed: Record<string, unknown>;
   updatedAt: string;
   deletedAt: string | null;
+  /** Set by item reads and queries only: true when the item was created from an Inbox proposal. Absent on write results. */
+  fromInbox?: boolean;
 }
 
 export interface ItemRelationRow {

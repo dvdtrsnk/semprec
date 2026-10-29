@@ -13,6 +13,7 @@ import type { ItemRow } from "../types.js";
 import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as itemsStore from "./itemsStore.js";
+import { withFromInbox } from "../inbox/itemOriginsStore.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import { compileFilterNode, resolveFilterCompileContext } from "../views/filterCompiler.js";
 import { buildFilterProperties } from "../views/filterProperties.js";
@@ -71,7 +72,12 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
   const { pool } = deps;
   return {
     async getItem(databaseId: string, itemId: string): Promise<ItemRow | null> {
-      return withTransaction(pool, (client) => itemsStore.getItemById(client, databaseId, itemId));
+      return withTransaction(pool, async (client) => {
+        const item = await itemsStore.getItemById(client, databaseId, itemId);
+        if (!item) return null;
+        const [stamped] = await withFromInbox(client, [item]);
+        return stamped ?? item;
+      });
     },
 
     /**
@@ -83,7 +89,9 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
     async findItem(itemId: string): Promise<ItemRow | null> {
       return withTransaction(pool, async (client) => {
         const [item] = await itemsStore.getItemsByIds(client, [itemId]);
-        return item ?? null;
+        if (!item) return null;
+        const [stamped] = await withFromInbox(client, [item]);
+        return stamped ?? item;
       });
     },
 
@@ -145,7 +153,8 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
           now,
           buildFilterSql: rest.buildFilterSql,
         });
-        return itemsStore.listItems(client, databaseId, { ...rest, buildFilterSql });
+        const page = await itemsStore.listItems(client, databaseId, { ...rest, buildFilterSql });
+        return { ...page, items: await withFromInbox(client, page.items) };
       });
     },
 

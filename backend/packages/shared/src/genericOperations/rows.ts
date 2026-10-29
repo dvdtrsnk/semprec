@@ -101,6 +101,8 @@ export interface Item {
   computed: Record<string, unknown>;
   updatedAt: string;
   deletedAt: string | null;
+  /** Present on item reads and queries: true exactly when the item was created from an Inbox proposal. */
+  fromInbox?: boolean;
   /** Present only when the read asked for `include: ["links"]`; keyed by property key, empty when the item has no link. */
   links?: Record<string, ItemLink>;
 }
