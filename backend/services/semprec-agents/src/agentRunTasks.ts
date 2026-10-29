@@ -9,6 +9,7 @@ import {
   type CreateAgentSession,
 } from "@semprec/agent-runtime";
 import {
+  agentRunErrorCodeOf,
   finishAgentRunWithErrorNotification,
   getAgentRun,
   type AgentQueueTaskHandler,
@@ -71,7 +72,8 @@ function errorMessage(err: unknown): string {
 async function closeUncomposedRun(pool: Pool, run: AgentRunRow, cause: unknown): Promise<void> {
   try {
     await withTransaction(pool, async (client) => {
-      if (!(await finishAgentRunWithErrorNotification(client, run.id, errorMessage(cause)))) return;
+      if (!(await finishAgentRunWithErrorNotification(client, run.id, errorMessage(cause), agentRunErrorCodeOf(cause))))
+        return;
       await pushRunStatus(client, run.id, "error");
     });
   } catch (err) {

@@ -103,6 +103,7 @@ describe("coreAgentRunAction", () => {
     expect(runs).toHaveLength(3);
     for (const run of runs) {
       expect(run.status).toBe("error");
+      expect(run.errorCode).toBe("internal");
       expect(run.result).toBe("model failed");
     }
 
@@ -122,6 +123,7 @@ describe("coreAgentRunAction", () => {
     const runs = await listAgentRunsByHeartbeat(pool, heartbeatId);
     expect(runs).toHaveLength(1);
     expect(runs[0]!.status).toBe("error");
+    expect(runs[0]!.errorCode).toBe("internal");
 
     const notifications = await getNotifications("agent_run_error");
     expect(notifications).toHaveLength(1);

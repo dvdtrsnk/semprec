@@ -4,6 +4,7 @@ import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testS
 import {
   createAgentRun,
   createUser,
+  getAgentRun,
   hashPassword,
   insertAgentRunEvent,
   setNotificationCreatedHook,
@@ -60,6 +61,7 @@ describe("repairInterruptedRuns", () => {
 
     expect(byId.get(orphanA.id)?.status).toBe("error");
     expect(byId.get(orphanA.id)?.result).toBe("interrupted_by_restart");
+    expect((await getAgentRun(pool, orphanA.id))?.errorCode).toBe("interrupted");
     expect(byId.get(orphanA.id)?.finished_at).not.toBeNull();
 
     expect(byId.get(orphanB.id)?.status).toBe("error");

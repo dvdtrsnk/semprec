@@ -340,7 +340,7 @@ describe("DelegationRegistry", () => {
       targetProjectItemId,
     ]);
     const runId = runs[0]!.id;
-    expect(await finishAgentRun(pool, runId, "error", "closed elsewhere")).toBe(true);
+    expect(await finishAgentRun(pool, runId, "error", "closed elsewhere", "internal")).toBe(true);
 
     await waitFor(async () => {
       const { rows } = await pool.query<{ status: string }>(
@@ -1001,13 +1001,14 @@ describe("DelegationRegistry", () => {
       registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: "fails" }),
     ).rejects.toThrow("boom");
 
-    const { rows } = await pool.query<{ status: string; result: string | null }>(
-      `SELECT status, result FROM agent_runs WHERE project_item_id = $1`,
+    const { rows } = await pool.query<{ status: string; result: string | null; error_code: string | null }>(
+      `SELECT status, result, error_code FROM agent_runs WHERE project_item_id = $1`,
       [targetProjectItemId],
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe("error");
     expect(rows[0]!.result).toBe("boom");
+    expect(rows[0]!.error_code).toBe("internal");
 
     // The failed session must not be left registered for reuse — a retry creates a fresh one.
     const { createAgentSession: retrySession } = scriptedSession([

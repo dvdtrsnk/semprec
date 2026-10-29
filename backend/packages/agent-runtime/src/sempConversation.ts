@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import {
+  agentRunErrorCodeOf,
   type AgentRunRow,
   createAgentRun,
   finishAgentRun,
@@ -67,7 +68,9 @@ interface ConversationRegistryEntry {
 async function failRun(pool: Pool, agentRunId: string, err: unknown): Promise<void> {
   try {
     const message = err instanceof Error ? err.message : String(err);
-    await withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, agentRunId, message));
+    await withTransaction(pool, (client) =>
+      finishAgentRunWithErrorNotification(client, agentRunId, message, agentRunErrorCodeOf(err)),
+    );
     await pushRunStatus(pool, agentRunId, "error");
   } catch (closeErr) {
     logger.error({ err: closeErr, agentRunId }, "SempConversation: failed to close errored run");
@@ -230,6 +233,7 @@ export class SempConversation {
           this.pool,
           entry.agentRunId,
           ACCOUNT_DEACTIVATED_MESSAGE,
+          "cancelled",
         );
         await pushClosedRunStatus(this.pool, entry.agentRunId, closed, "error");
       });

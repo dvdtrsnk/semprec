@@ -1,10 +1,12 @@
 import { Pool, type PoolClient } from "pg";
 import {
+  agentRunErrorCodeOf,
   createAgentRun,
   finishAgentRun,
   finishAgentRunWithErrorNotification,
   getAgentRun,
   insertAndNotifyAgentRunEvent,
+  type AgentRunErrorCode,
   type AgentRunEventKind,
   type AgentRunEventRow,
   type AgentRunRow,
@@ -48,8 +50,11 @@ export interface RunAgentSessionInput {
 
 /** Thrown by `runAgentTurn` once its signal aborts; the run then closes as `error` like any failed turn. */
 export class AgentRunCancelledError extends Error {
+  readonly agentRunErrorCode: AgentRunErrorCode;
+
   constructor() {
     super("account deactivated");
+    this.agentRunErrorCode = "cancelled";
     this.name = "AgentRunCancelledError";
   }
 }
@@ -278,6 +283,7 @@ export async function runAgentSessionForRun(
             c,
             run.id,
             err instanceof Error ? err.message : String(err),
+            agentRunErrorCodeOf(err),
           );
           if (!closed) return;
           await pushRunStatus(c, run.id, "error");
