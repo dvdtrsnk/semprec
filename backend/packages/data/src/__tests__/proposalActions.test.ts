@@ -1010,6 +1010,92 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     const untouched = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposal.id));
     expect((untouched!.properties.proposal as { target: string }).target).toBe(tasksId);
   });
+
+  describe("aiProposal and aiVersion (issue #1471)", () => {
+    async function readProposal(id: string) {
+      return withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));
+    }
+
+    it("a revise through reviseProposalWithClient stores the new envelope in aiProposal and counts a version", async () => {
+      const proposal = await createDatabaseProposal("Buy milk");
+      expect(proposal.properties.aiVersion).toBe(1);
+
+      const first = await withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id, {
+          message: "Renamed the task",
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Buy oat milk" },
+        }),
+      );
+      expect(first.properties.aiProposal).toEqual({
+        entityKind: "database",
+        target: tasksId,
+        properties: { name: "Buy oat milk" },
+      });
+      expect(first.properties.aiProposal).toEqual(first.properties.proposal);
+      expect(first.properties.aiVersion).toBe(2);
+
+      const second = await withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id, {
+          message: "Renamed it again",
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Buy soy milk" },
+        }),
+      );
+      expect(second.properties.aiProposal).toEqual(second.properties.proposal);
+      expect(second.properties.aiVersion).toBe(3);
+    });
+
+    it("a revise of a legacy card without aiProposal stores aiProposal and sets aiVersion to 1", async () => {
+      const proposal = await createDatabaseProposal("Buy milk");
+      // A card written before aiProposal and aiVersion existed: no current writer can produce that state.
+      await pool.query("UPDATE items SET properties = properties - 'aiProposal' - 'aiVersion' WHERE id = $1", [
+        proposal.id,
+      ]);
+
+      const revised = await withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id, {
+          message: "Renamed the task",
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Buy oat milk" },
+        }),
+      );
+
+      expect(revised.properties.aiProposal).toEqual(revised.properties.proposal);
+      expect(revised.properties.aiVersion).toBe(1);
+    });
+
+    it("confirming a proposal leaves its aiProposal and aiVersion unchanged", async () => {
+      const proposal = await createDatabaseProposal("Buy milk");
+      const before = await readProposal(proposal.id);
+
+      await withTransaction(pool, (client) =>
+        confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+      );
+
+      const after = await readProposal(proposal.id);
+      expect(after!.properties.status).toBe("confirmed");
+      expect(after!.properties.aiProposal).toEqual(before!.properties.aiProposal);
+      expect(after!.properties.aiVersion).toBe(1);
+    });
+
+    it("rejecting a proposal leaves its aiProposal and aiVersion unchanged", async () => {
+      const proposal = await createDatabaseProposal("Buy milk");
+      const before = await readProposal(proposal.id);
+
+      await withTransaction(pool, (client) =>
+        rejectProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+      );
+
+      const after = await readProposal(proposal.id);
+      expect(after!.properties.status).toBe("rejected");
+      expect(after!.properties.aiProposal).toEqual(before!.properties.aiProposal);
+      expect(after!.properties.aiVersion).toBe(1);
+    });
+  });
 });
 
 afterAll(async () => {
