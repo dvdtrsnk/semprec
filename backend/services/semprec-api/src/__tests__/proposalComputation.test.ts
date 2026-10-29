@@ -93,11 +93,11 @@ describe("createProposalComputation (issue #1434)", () => {
     await pool?.end();
   });
 
-  async function createTaskItem(text: string): Promise<string> {
+  async function createTaskItem(text: string, targetDatabase = "tasks"): Promise<string> {
     const chokePoint = createChokePoint(pool);
     const type = await chokePoint.createItem({
       databaseId: config.inboxItemTypesDatabaseId,
-      properties: { name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" },
+      properties: { name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase },
     });
     const item = await chokePoint.createItem({
       databaseId: config.inboxDatabaseId,
@@ -224,5 +224,144 @@ describe("createProposalComputation (issue #1434)", () => {
     expect(statements.length).toBeGreaterThan(0);
     expect(statements.filter((sql) => /\b(insert|update|delete|truncate|alter|drop|create)\b/i.test(sql))).toEqual([]);
     expect(gateway.openTransactionsDuringCall).toEqual([0]);
+  });
+
+  describe("multi-step operations (issue #1492)", () => {
+    const person = {
+      op: "create",
+      database: "people",
+      properties: { name: "Eva Malá" },
+      relations: { companies: [{ alias: "brainz" }] },
+    };
+    const company = { op: "create", database: "companies", alias: "brainz", properties: { name: "Brainz" } };
+
+    async function storedProposal(gateway: AiGatewayClientPort, text = "Eva Malá at Brainz") {
+      const itemId = await createTaskItem(text, "people");
+      await runTick(pool, gateway, itemId);
+      const cards = await proposalCards();
+      expect(cards).toHaveLength(1);
+      return cards[0]!;
+    }
+
+    it("stores a person, a company with an alias and the link between them as a valid multi-step envelope", async () => {
+      const gateway = stubGateway({ properties: { name: "Eva Malá" }, operations: [person, company] });
+
+      const card = await storedProposal(gateway);
+
+      const message = gateway.calls[0]!.messages[0]!.content as string;
+      expect(message).toContain("Writable target catalog (JSON): ");
+      expect(message).toContain('"module":"companies"');
+      expect(card.status).toBe("proposed");
+      const proposal = card.proposal as { target: string; properties: unknown; operations: Array<{ ref: string }> };
+      expect(proposal.target).toBe(await databaseIdFor("people"));
+      expect(proposal.properties).toEqual({ name: "Eva Malá" });
+      expect(proposal.operations).toEqual([
+        {
+          ref: "op1",
+          op: "create",
+          role: "primary",
+          databaseKey: "people",
+          properties: { name: "Eva Malá" },
+          relations: { companies: [{ ref: "brainz" }] },
+        },
+        { ref: "brainz", op: "create", role: "secondary", databaseKey: "companies", properties: { name: "Brainz" } },
+      ]);
+    });
+
+    it("stores a single operation as the ordinary single-write envelope", async () => {
+      const card = await storedProposal(
+        stubGateway({
+          properties: {},
+          operations: [{ op: "create", database: "people", properties: { name: "Eva" } }],
+        }),
+      );
+
+      expect(card.status).toBe("proposed");
+      const proposal = card.proposal as Record<string, unknown>;
+      expect(proposal.operations).toBeUndefined();
+      expect(proposal.properties).toEqual({ name: "Eva" });
+    });
+
+    it("keeps only the first 6 operations", async () => {
+      const extra = Array.from({ length: 5 }, (_, i) => ({
+        op: "create",
+        database: "companies",
+        properties: { name: `C${i + 1}` },
+      }));
+      const operations = [person, ...extra.slice(0, 4), { ...company, alias: "brainz" }, ...extra.slice(4)];
+      expect(operations).toHaveLength(7);
+
+      const card = await storedProposal(stubGateway({ properties: { name: "Eva Malá" }, operations }));
+
+      const stored = (card.proposal as { operations: Array<{ ref: string }> }).operations;
+      expect(stored).toHaveLength(6);
+      expect(stored.map((step) => step.ref)).toEqual(["op1", "op2", "op3", "op4", "op5", "brainz"]);
+    });
+
+    it("drops an operation with an unknown target database", async () => {
+      const card = await storedProposal(
+        stubGateway({
+          properties: { name: "Eva Malá" },
+          operations: [person, { op: "create", database: "nonexistent", properties: { name: "X" } }, company],
+        }),
+      );
+
+      const stored = (card.proposal as { operations: Array<{ databaseKey: string }> }).operations;
+      expect(stored.map((step) => step.databaseKey)).toEqual(["people", "companies"]);
+    });
+
+    it("drops an operation without its mandatory field", async () => {
+      const card = await storedProposal(
+        stubGateway({
+          properties: { name: "Eva Malá" },
+          operations: [person, { op: "link", relations: { companies: ["x"] } }, company],
+        }),
+      );
+
+      const stored = (card.proposal as { operations: unknown[] }).operations;
+      expect(stored).toHaveLength(2);
+    });
+
+    it("ends in needsClarification when an existing id is not an item of the workspace", async () => {
+      const card = await storedProposal(
+        stubGateway({
+          properties: { name: "Eva Malá" },
+          operations: [
+            person,
+            company,
+            {
+              op: "link",
+              itemId: "00000000-0000-4000-8000-000000000000",
+              relations: { companies: [{ alias: "brainz" }] },
+            },
+          ],
+        }),
+      );
+
+      expect(card.status).toBe("needsClarification");
+    });
+
+    it("writes nothing to a target database or the Inbox", async () => {
+      const itemId = await createTaskItem("Eva Malá at Brainz", "people");
+      const statements: string[] = [];
+      const gateway = stubGateway({ properties: { name: "Eva Malá" }, operations: [person, company] });
+      const computation = createProposalComputation({ pool: recordingPool(pool, statements), gateway });
+      const item = await withTransaction(pool, (client) => getItemById(client, config.inboxDatabaseId, itemId));
+
+      const result = await computation({
+        sourceItem: item!,
+        type: item!,
+        entityKind: "database",
+        targetDatabaseId: await databaseIdFor("people"),
+        targetModuleId: "people",
+        locale: "cs",
+        projectItemId: semprecProjectId,
+      });
+
+      expect(result.operations).toHaveLength(2);
+      expect(statements.filter((sql) => /\b(insert|update|delete|truncate|alter|drop|create)\b/i.test(sql))).toEqual(
+        [],
+      );
+    });
   });
 });

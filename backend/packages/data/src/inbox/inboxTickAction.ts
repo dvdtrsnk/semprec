@@ -15,6 +15,11 @@ import { PROCESSING_METHODS, LOCKED_PROPOSAL_STATUSES, type ProcessingMethod } f
 import { computeInboxFingerprint } from "./fingerprint.js";
 import { enqueueJournalInboxRecomputeForInboxItem } from "./journalInboxCompute.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
+import {
+  MAX_PROPOSAL_OPERATIONS,
+  buildProposalSteps,
+  type ProposalComputationOperation,
+} from "./proposalOperations.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { assertValidMcpServerProposalProperties } from "../mcp/mcpServerProposal.js";
 import { CardinalityViolationError, ForbiddenError, ValidationError } from "../errors.js";
@@ -161,6 +166,8 @@ export interface ProposalComputationInput {
   entityKind: ComputedProposalEntityKind;
   /** Resolved target database id for `entityKind: 'database'`; absent for `'pageContent'`, where the target page is itself part of the content decision. */
   targetDatabaseId?: string;
+  /** The module id of the target database, for `entityKind: 'database'`; the primary operation of a multi-step answer must write to it. */
+  targetModuleId?: string;
   /** The language (the person's `users.locale`, e.g. `cs`) the proposal's person-facing texts must be written in. */
   locale: string;
   /** The project the heartbeat belongs to (`ActionContext.projectItemId`); the model call is attributed to it. */
@@ -171,6 +178,11 @@ export interface ProposalComputationResult {
   /** The target page id, for `entityKind: 'pageContent'` — ignored otherwise, since a `'database'` target is always the type's resolved `targetDatabase` id. */
   target?: string;
   properties: Record<string, unknown>;
+  /**
+   * Present only when the answer has more than one operation (at most `MAX_PROPOSAL_OPERATIONS`); then
+   * `buildProposalEnvelope` stores a multi-step envelope. A single operation is returned as `properties`.
+   */
+  operations?: ProposalComputationOperation[];
   /** The model's explanation of the proposal. Not read by the tick until issue #1495. */
   reason?: string;
   /** The model's confidence in the proposal. Not read by the tick until issue #1495. */
@@ -317,6 +329,7 @@ interface TickSnapshot {
   processingMethod: ProcessingMethod;
   entityKind: ComputedProposalEntityKind;
   targetDatabaseId?: string;
+  targetModuleId?: string;
   existingProposal: ItemRow | null;
   fingerprint: string;
   locale: string;
@@ -327,6 +340,17 @@ function buildProposalEnvelope(snapshot: TickSnapshot, result: ProposalComputati
   if (snapshot.entityKind === "database") {
     if (!snapshot.targetDatabaseId)
       throw new Error(`Snapshot for Inbox item ${snapshot.item.id} (entityKind 'database') has no targetDatabaseId`);
+    const operations = result.operations?.slice(0, MAX_PROPOSAL_OPERATIONS);
+    if (operations && operations.length > 1) {
+      const steps = buildProposalSteps(operations, snapshot.targetModuleId);
+      const primary = steps.find((step) => step.role === "primary")!;
+      return {
+        entityKind: "database",
+        target: snapshot.targetDatabaseId,
+        properties: primary.properties ?? {},
+        operations: steps,
+      };
+    }
     return { entityKind: "database", target: snapshot.targetDatabaseId, properties: result.properties };
   }
   if (!result.target)
@@ -960,20 +984,32 @@ async function readTickSnapshot(
 
   const entityKind: ComputedProposalEntityKind = processingMethod === "database" ? "database" : "pageContent";
   let targetDatabaseId: string | undefined;
+  let targetModuleId: string | undefined;
   if (entityKind === "database") {
-    const targetModuleId = type.properties.targetDatabase;
-    if (typeof targetModuleId !== "string") {
+    const typeTarget = type.properties.targetDatabase;
+    if (typeof typeTarget !== "string") {
       throw new Error(`Inbox item type ${type.id} has processingMethod 'database' but no 'targetDatabase'`);
     }
-    const targetDatabase = await databasesStore.getDatabaseByModuleId(client, targetModuleId);
-    if (!targetDatabase) throw new Error(`No database seeded for owner_module_id '${targetModuleId}'`);
+    const targetDatabase = await databasesStore.getDatabaseByModuleId(client, typeTarget);
+    if (!targetDatabase) throw new Error(`No database seeded for owner_module_id '${typeTarget}'`);
     targetDatabaseId = targetDatabase.id;
+    targetModuleId = typeTarget;
   }
 
   // `cs` is the `users.locale` column default, used when the tenant has no bound user.
   const locale = (await getTenantUserLocale(client)) ?? "cs";
 
-  return { item, type, processingMethod, entityKind, targetDatabaseId, existingProposal, fingerprint, locale };
+  return {
+    item,
+    type,
+    processingMethod,
+    entityKind,
+    targetDatabaseId,
+    targetModuleId,
+    existingProposal,
+    fingerprint,
+    locale,
+  };
 }
 
 /** Revises `existing` with `envelope`, through the locked re-check — a no-op if it lost the race. */
@@ -1130,6 +1166,7 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
       type: snapshot.type,
       entityKind: snapshot.entityKind,
       targetDatabaseId: snapshot.targetDatabaseId,
+      targetModuleId: snapshot.targetModuleId,
       locale: snapshot.locale,
       projectItemId: context.projectItemId,
     });

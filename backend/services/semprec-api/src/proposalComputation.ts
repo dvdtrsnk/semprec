@@ -2,9 +2,13 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import {
   listPropertiesByDatabase,
+  listWritableProposalTargets,
   withTransaction,
+  MAX_PROPOSAL_OPERATIONS,
   type ComputeSemprecProposalFn,
   type ProposalComputationInput,
+  type ProposalComputationOperation,
+  type ProposalComputationResult,
 } from "@semprec/data";
 import type { AiGatewayClientPort } from "@semprec/shared";
 
@@ -18,9 +22,21 @@ const ITEM_TEXT_OPEN = "<<<INBOX_ITEM_TEXT";
 const ITEM_TEXT_CLOSE = "INBOX_ITEM_TEXT>>>";
 
 /** The model's answer, validated before it leaves this module (`content` is `unknown` at the gateway boundary). */
+const operationSchema = z.object({
+  op: z.enum(["create", "update", "link"]),
+  database: z.string().min(1).optional(),
+  itemId: z.string().min(1).optional(),
+  alias: z.string().min(1).optional(),
+  properties: z.record(z.string(), z.unknown()).optional(),
+  relations: z
+    .record(z.string(), z.array(z.union([z.string().min(1), z.object({ alias: z.string().min(1) })])))
+    .optional(),
+});
+
 const proposalResultSchema = z.object({
   target: z.string().min(1).optional(),
   properties: z.record(z.string(), z.unknown()),
+  operations: z.array(operationSchema).optional(),
   reason: z.string().optional(),
   confidence: z.number().min(0).max(1).optional(),
 });
@@ -31,6 +47,50 @@ const PROPOSAL_RESPONSE_SCHEMA = {
   properties: {
     target: { type: "string", description: "For a page proposal: the id of the target page. Omit otherwise." },
     properties: { type: "object", description: "The property values (or page block fields) to propose, by key." },
+    operations: {
+      type: "array",
+      description: `Only when the item needs several writes: the ordered operations, at most ${MAX_PROPOSAL_OPERATIONS}. Omit for a single write.`,
+      items: {
+        type: "object",
+        properties: {
+          op: { type: "string", enum: ["create", "update", "link"] },
+          database: {
+            type: "string",
+            description: "For create: the module id of a database of the writable target catalog.",
+          },
+          itemId: {
+            type: "string",
+            description: "For update and link: an existing item id taken from the workspace context.",
+          },
+          alias: {
+            type: "string",
+            description: "A local name later operations use to refer to the record this one creates.",
+          },
+          properties: { type: "object", description: "The property values, by key." },
+          relations: {
+            type: "object",
+            description:
+              "Relation property key to targets: an existing item id, or {alias} of an earlier create operation.",
+            additionalProperties: {
+              type: "array",
+              items: {
+                anyOf: [
+                  { type: "string" },
+                  {
+                    type: "object",
+                    properties: { alias: { type: "string" } },
+                    required: ["alias"],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+            },
+          },
+        },
+        required: ["op"],
+        additionalProperties: false,
+      },
+    },
     reason: { type: "string", description: "A short explanation of the proposal." },
     confidence: { type: "number", minimum: 0, maximum: 1 },
   },
@@ -42,6 +102,14 @@ interface CatalogProperty {
   key: string;
   type: string;
   options?: string[];
+}
+
+/** A database the model may create rows in, by module id, with its plain-property catalog and relation keys. */
+interface CatalogTarget {
+  module: string;
+  name: string;
+  properties: CatalogProperty[];
+  relations: string[];
 }
 
 /**
@@ -64,6 +132,49 @@ async function readPropertyCatalog(pool: Pool, targetDatabaseId: string): Promis
     });
 }
 
+async function readTargetCatalog(pool: Pool): Promise<CatalogTarget[]> {
+  const targets = await withTransaction(pool, (client) => listWritableProposalTargets(client));
+  return Promise.all(
+    targets.map(async (target) => ({
+      module: target.moduleId,
+      name: target.name,
+      properties: await readPropertyCatalog(pool, target.databaseId),
+      relations: (await withTransaction(pool, (client) => listPropertiesByDatabase(client, target.databaseId)))
+        .filter((p) => p.type === "relation")
+        .map((p) => p.key),
+    })),
+  );
+}
+
+/**
+ * Keeps the first `MAX_PROPOSAL_OPERATIONS` operations, then drops those no step can be built from: a
+ * create without a database of the catalog, an update or link without an item id. Everything else
+ * (references, ids, property keys) is `assertValidProposalEnvelope`'s. One operation left is not a
+ * list: it is returned as the ordinary single write.
+ */
+function normalizeOperations(
+  parsed: z.infer<typeof proposalResultSchema>,
+  catalog: CatalogTarget[],
+  targetModuleId: string | undefined,
+): ProposalComputationResult {
+  const { operations, ...rest } = parsed;
+  if (!operations) return rest;
+  const modules = new Set(catalog.map((target) => target.module));
+  const kept: ProposalComputationOperation[] = operations
+    .slice(0, MAX_PROPOSAL_OPERATIONS)
+    .filter((operation) =>
+      operation.op === "create"
+        ? operation.database !== undefined && modules.has(operation.database)
+        : operation.itemId !== undefined,
+    );
+  if (kept.length > 1) return { ...rest, operations: kept };
+  const only = kept[0];
+  if (only && only.op === "create" && only.database === targetModuleId && only.properties) {
+    return { ...rest, properties: only.properties };
+  }
+  return rest;
+}
+
 function buildSystemPrompt(input: ProposalComputationInput): string {
   const lines = [
     "You turn one captured Inbox item into a proposal that a person will review before anything is saved.",
@@ -75,6 +186,9 @@ function buildSystemPrompt(input: ProposalComputationInput): string {
     lines.push(
       "Fill the properties of one row of the target database. Use only the property keys of the catalog in the user message, and for select properties only the listed option keys. Do not set a target.",
     );
+    lines.push(
+      `Some items need more than one write, for example a new person at a new company. Then also return 'operations', an ordered array of at most ${MAX_PROPOSAL_OPERATIONS} operations (extra ones are dropped from the end), and put the properties of the operation that writes to the target database in 'properties'. Each operation has 'op' (create, update or link). A create names its 'database' by a module id from the writable target catalog and gives 'properties'. An update or link names an existing 'itemId'. Give a create an 'alias' so later operations can list {"alias": "<name>"} as a relation target; relation targets that are existing items are plain ids. Take every existing item id only from the context given to you and never invent one. For a single write leave 'operations' out.`,
+    );
   } else {
     lines.push(
       "Propose content for an existing page: set 'target' to the page id and 'properties.flavour' to the block flavour, optionally 'properties.fields' (object) and 'properties.children' (array of strings). Omit 'target' if you do not know a page id.",
@@ -83,7 +197,11 @@ function buildSystemPrompt(input: ProposalComputationInput): string {
   return lines.join("\n");
 }
 
-function buildUserMessage(input: ProposalComputationInput, catalog: CatalogProperty[] | null): string {
+function buildUserMessage(
+  input: ProposalComputationInput,
+  catalog: CatalogProperty[] | null,
+  targets: CatalogTarget[] | null,
+): string {
   const { sourceItem, type } = input;
   const stringOf = (properties: Record<string, unknown>, key: string): string => {
     const value = properties[key];
@@ -98,6 +216,7 @@ function buildUserMessage(input: ProposalComputationInput, catalog: CatalogPrope
     `Time: ${stringOf(sourceItem.properties, "time")}`,
   ];
   if (catalog) lines.push(`Target property catalog (JSON): ${JSON.stringify(catalog)}`);
+  if (targets) lines.push(`Writable target catalog (JSON): ${JSON.stringify(targets)}`);
   lines.push("Item text:", ITEM_TEXT_OPEN, text, ITEM_TEXT_CLOSE);
   return lines.join("\n");
 }
@@ -122,14 +241,16 @@ export function createProposalComputation({
         ? await readPropertyCatalog(pool, input.targetDatabaseId)
         : null;
 
+    const targets = input.entityKind === "database" ? await readTargetCatalog(pool) : null;
+
     const { content } = await gateway.complete({
       projectItemId: input.projectItemId,
       operation: INBOX_PROPOSAL_OPERATION,
       temperature: PROPOSAL_TEMPERATURE,
       system: buildSystemPrompt(input),
-      messages: [{ role: "user", content: buildUserMessage(input, catalog) }],
+      messages: [{ role: "user", content: buildUserMessage(input, catalog, targets) }],
       responseSchema: PROPOSAL_RESPONSE_SCHEMA,
     });
-    return proposalResultSchema.parse(content);
+    return normalizeOperations(proposalResultSchema.parse(content), targets ?? [], input.targetModuleId);
   };
 }
