@@ -1,6 +1,12 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createTenantZeroUser,
+  getTestPool,
+  inTenantZero,
+  registerRelationEdgeDeleteHook,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import { runOnce } from "@semprec/queue";
 import * as data from "@semprec/data";
 import {
@@ -15,6 +21,7 @@ import {
   withTransaction,
   type ApprovalRequiredError,
   type ChokePoint,
+  type WriterIdentity,
 } from "@semprec/data";
 import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
 import { createGenericOperationGateway, replayApprovedGenericOperation } from "../genericOperationGateway.js";
@@ -34,6 +41,11 @@ const ALL_CAPABILITIES = new Set(CAPABILITY_IDS);
 
 let pool: Pool;
 let chokePoint: ChokePoint;
+// Hooks cannot be unregistered; this recorder is emptied before each test.
+const edgeDeletesBy: WriterIdentity[] = [];
+registerRelationEdgeDeleteHook(async (context) => {
+  edgeDeletesBy.push(context.writer);
+});
 
 async function makeAgentActor(): Promise<AuthenticatedActor> {
   const projects = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
@@ -69,6 +81,7 @@ describe("approved destructive operations write as the requesting agent (issue #
     chokePoint ??= createChokePoint(pool);
     vi.mocked(data.itemDeleteWithClient).mockClear();
     vi.mocked(data.deleteRelationWithClient).mockClear();
+    edgeDeletesBy.length = 0;
     await resetDatabase(pool);
     await seedSystem(pool, createViewTypeRegistry());
     await createTenantZeroUser(pool);
@@ -139,13 +152,15 @@ describe("approved destructive operations write as the requesting agent (issue #
       const outcome = await replayApprovedGenericOperation(pool, request as never);
 
       expect(outcome.error).toBe(false);
-      expect(data.deleteRelationWithClient).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(data.deleteRelationWithClient).mock.calls[0]?.[3]).toEqual({
+      const expected: WriterIdentity = {
         writerKind: "agent",
         agentRunId: request!.agentRunId,
         agentProjectItemId: actor.agentProjectItemId,
         onBehalfOfUserId: actor.userId,
-      });
+      };
+      expect(vi.mocked(data.deleteRelationWithClient).mock.calls[0]?.[3]).toEqual(expected);
+      // The edge-delete hook is what a consumer observes: it sees the agent and the request's run id.
+      expect(edgeDeletesBy).toEqual([expected]);
     });
   });
 });

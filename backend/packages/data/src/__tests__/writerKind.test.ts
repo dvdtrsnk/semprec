@@ -5,7 +5,12 @@ import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
-import { registerItemCreateHook, registerItemUpdateHook, registerRelationEdgeWriteHook } from "../chokePoint/hooks.js";
+import {
+  registerItemCreateHook,
+  registerItemUpdateHook,
+  registerRelationEdgeDeleteHook,
+  registerRelationEdgeWriteHook,
+} from "../chokePoint/hooks.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import {
   assertRelationCreatableWithClient,
@@ -29,6 +34,7 @@ let chokePoint: ChokePoint;
 const createdBy: WriterIdentity[] = [];
 const updatedBy: WriterIdentity[] = [];
 const edgesBy: WriterIdentity[] = [];
+const edgeDeletesBy: WriterIdentity[] = [];
 
 const AGENT: WriterIdentity = {
   writerKind: "agent",
@@ -72,6 +78,9 @@ describe("writer identity threaded into item and relation writes (issue #1415)",
     registerRelationEdgeWriteHook(async (context) => {
       edgesBy.push(context.writer);
     });
+    registerRelationEdgeDeleteHook(async (context) => {
+      edgeDeletesBy.push(context.writer);
+    });
   });
 
   beforeEach(async () => {
@@ -80,6 +89,7 @@ describe("writer identity threaded into item and relation writes (issue #1415)",
     createdBy.length = 0;
     updatedBy.length = 0;
     edgesBy.length = 0;
+    edgeDeletesBy.length = 0;
     await resetDatabase(pool);
   });
 
@@ -173,6 +183,9 @@ describe("writer identity threaded into item and relation writes (issue #1415)",
     await chokePoint.createRelation(edge);
 
     expect(await chokePoint.deleteRelation(edge, AGENT)).not.toBeNull();
+    // Delete reaches the delete seam with the writer, and never the metadata-validating write hooks.
+    expect(edgeDeletesBy).toEqual([AGENT]);
+    expect(edgesBy).toEqual([SYSTEM_WRITER]);
     expect(await chokePoint.softDeleteItem(a.id, itemA.id, undefined, AGENT)).toMatchObject({ id: itemA.id });
     expect((await chokePoint.restoreItem(a.id, itemA.id, undefined, AGENT))?.deletedAt).toBeNull();
   });
