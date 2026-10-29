@@ -15,11 +15,13 @@ import {
   createChokePoint,
   createDocStore,
   createUser,
+  createViewTypeRegistry,
   hashPassword,
   insertValueLink,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
+  seedSystem,
   withTransaction,
   type AuthenticatedIdentity,
   type ChokePoint,
@@ -192,6 +194,31 @@ describe("item routes (issue #241)", () => {
       expect(res.status).toBe(403);
       const body = (await res.json()) as ErrorBody;
       expect(body.error.code).toBe("database_archived");
+    });
+
+    it("refuses a Journal entry posted without its type and period with 403 and stores no row", async () => {
+      await seedSystem(pool, createViewTypeRegistry());
+      const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'journal'");
+      const journal = rows[0];
+      if (!journal) throw new Error("expected the journal database to be seeded");
+      const base = { ...(await authHeader()), "Content-Type": "application/json" };
+
+      for (const payload of [{}, { properties: {} }]) {
+        const res = await fetch(`${baseUrl}/api/databases/${journal.id}/items`, {
+          method: "POST",
+          headers: { ...base, "Idempotency-Key": randomUUID() },
+          body: JSON.stringify(payload),
+        });
+        expect(res.status).toBe(403);
+        const body = (await res.json()) as ErrorBody;
+        expect(body.error.code).toBe("forbidden");
+        expect(body.error.details).toEqual({ field: "type" });
+      }
+
+      const count = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+        journal.id,
+      ]);
+      expect(count.rows[0]?.n).toBe(0);
     });
   });
 

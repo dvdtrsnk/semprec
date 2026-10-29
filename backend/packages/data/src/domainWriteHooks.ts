@@ -23,6 +23,7 @@ import {
   libraryRatingItemUpdateHook,
   libraryWatchedWithEdgeWriteHook,
 } from "./library/libraryRatingHooks.js";
+import { journalItemCreateHook } from "./journal/journalWriteHook.js";
 
 registerItemPreWriteTransform(TASKS_MODULE_ID, tasksItemPreWriteTransform);
 registerItemCreateHook(mcpServerItemCreateHook);
@@ -35,3 +36,4 @@ registerRelationEdgeWriteHook(transcriptSpeakerEdgeWriteHook);
 registerItemCreateHook(libraryRatingItemCreateHook);
 registerItemUpdateHook(libraryRatingItemUpdateHook);
 registerRelationEdgeWriteHook(libraryWatchedWithEdgeWriteHook);
+registerItemCreateHook(journalItemCreateHook);
