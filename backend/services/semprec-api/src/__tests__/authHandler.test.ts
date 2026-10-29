@@ -90,6 +90,7 @@ describe("createAuthRequestListener", () => {
       expect(body.user.email).toBe(user.email);
       expect(body).not.toHaveProperty("user.passwordHash");
       expect(sessionCookieFrom(res)).toBeTruthy();
+      expect(res.headers.get("set-cookie")).toContain(`Max-Age=${365 * 24 * 60 * 60}`);
     });
 
     it("returns the token in the body and sets no cookie for native (ios/macos) credentials", async () => {

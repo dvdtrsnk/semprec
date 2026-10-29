@@ -11,7 +11,7 @@ import {
   revokeUserSession,
   requestPasswordReset,
   resetPassword,
-  SESSION_TTL_SECONDS,
+  SESSION_MAX_LIFETIME_SECONDS,
   SESSION_PLATFORMS,
   SESSION_DELIVERY_CHANNEL_BY_PLATFORM,
   deviceFromUserAgent,
@@ -281,7 +281,7 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
             res,
             200,
             { user: result.user },
-            { "Set-Cookie": sessionCookieHeader(result.token, SESSION_TTL_SECONDS) },
+            { "Set-Cookie": sessionCookieHeader(result.token, SESSION_MAX_LIFETIME_SECONDS) },
           );
         } else {
           sendJson(res, 200, { token: result.token, user: result.user });

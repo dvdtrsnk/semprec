@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { requireSingleRow, runAfterCommit } from "../db/pool.js";
+import { requireAffectedRows, requireSingleRow, runAfterCommit } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { notifySessionRevoked } from "../realtimeHook.js";
 import { SESSION_DEVICE_KINDS, SESSION_PLATFORMS, type SessionDeviceKind, type SessionRow } from "./types.js";
@@ -108,8 +108,26 @@ export async function getActiveSessionByTokenHash(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-export async function touchSessionLastSeen(client: Pool | PoolClient, id: string): Promise<void> {
-  await client.query(`UPDATE sessions SET last_seen_at = now() WHERE id = $1`, [id]);
+/**
+ * Marks the session as used and slides its expiry in one statement: `expires_at` becomes
+ * `now() + idle window`, but never earlier than it already is and never later than
+ * `created_at + max lifetime`. Idleness itself is enforced by `getActiveSessionByTokenHash`.
+ */
+export async function touchSessionLastSeen(
+  client: Pool | PoolClient,
+  input: { id: string; idleSeconds: number; maxLifetimeSeconds: number },
+): Promise<void> {
+  const result = await client.query(
+    `UPDATE sessions
+     SET last_seen_at = now(),
+         expires_at = LEAST(
+           created_at + make_interval(secs => $3::double precision),
+           GREATEST(expires_at, now() + make_interval(secs => $2::double precision))
+         )
+     WHERE id = $1`,
+    [input.id, input.idleSeconds, input.maxLifetimeSeconds],
+  );
+  requireAffectedRows(result, "sessions row touched");
 }
 
 export async function revokeSession(client: Pool | PoolClient, id: string): Promise<void> {
