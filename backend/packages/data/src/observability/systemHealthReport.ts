@@ -171,7 +171,7 @@ async function getItemAutomationErrorCounts(client: Queryable): Promise<ItemAuto
   const { rows } = await client.query<{ database_id: string; error_count: string }>(
     `SELECT i.database_id, count(*) AS error_count
      FROM item_automation ia
-     JOIN items i ON i.id = ia.item_id AND i.database_id = ANY($1::uuid[])
+     JOIN items i ON i.id = ia.item_id AND i.database_id = ANY($1::uuid[]) AND i.deleted_at IS NULL
      WHERE ia.status = 'error' AND ia.tenant_id = app_current_tenant()
      GROUP BY i.database_id
      ORDER BY i.database_id`,

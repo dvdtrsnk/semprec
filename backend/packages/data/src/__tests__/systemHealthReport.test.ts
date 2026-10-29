@@ -184,6 +184,23 @@ describe("getSystemHealthReport (issue #170, per-tenant since #1052)", () => {
     expect(JSON.stringify(reportB)).not.toContain(databaseIdA);
   });
 
+  it("does not count an item in Trash in itemAutomationErrorsByDatabase", async () => {
+    const a = await seedTenant();
+    const databaseId = await seedAutomationError(a.tenantId);
+    const trashedDatabaseId = await seedAutomationError(a.tenantId);
+    if (!databaseId || databaseId !== trashedDatabaseId) throw new Error("fixtures must share a database");
+    // Raw update: soft-deleting through the choke point is not what this query is being tested for.
+    await pool.query(
+      `UPDATE items SET deleted_at = now()
+       WHERE id = (SELECT item_id FROM item_automation WHERE tenant_id = $1 ORDER BY item_id LIMIT 1)`,
+      [a.tenantId],
+    );
+
+    const report = await runInTenant(a.tenantId, () => getSystemHealthReport(runtimePool));
+
+    expect(report.itemAutomationErrorsByDatabase).toEqual([{ databaseId, errorCount: 1 }]);
+  });
+
   it("narrows the explicitly guarded sections by tenant even on a pool that bypasses row-level security", async () => {
     const a = await seedTenant();
     const b = await seedTenant();
