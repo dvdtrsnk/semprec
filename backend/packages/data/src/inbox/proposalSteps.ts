@@ -1,26 +1,52 @@
 import type { PoolClient } from "pg";
+import { z } from "zod";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
-import { ChokePointError, NotFoundError, ValidationError } from "../errors.js";
+import { ChokePointError, ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
+import { lockBlobById } from "../blobs/blobsStore.js";
+import { filesTypeForMimeType } from "../blobs/fileTypeDetection.js";
+import { FILES_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { parseFileFromAttachmentProperties } from "./fileAttachmentStep.js";
+import { deleteInboxAttachment, getInboxAttachment } from "./inboxAttachmentsStore.js";
 import { selectActiveSteps, type ProposalStep } from "./inboxTickAction.js";
+
+/** What a `fileFromAttachment` step resolved to: the Files item, the attachment it moved, and whether this step created the item. */
+export interface FileFromAttachmentResult {
+  ref: string;
+  fileItemId: string;
+  movedAttachmentId: string;
+  created: boolean;
+}
 
 /** The item the primary step wrote or changed. */
 export interface ExecutedProposalSteps {
   primaryItemId: string;
   primaryDatabaseId: string;
-  /** Ids of the items `create` steps wrote, in execution order; patched and linked items are not listed. */
+  /** Ids of the items `create` steps and newly created Files items wrote, in execution order; patched and linked items are not listed. */
   createdItemIds: string[];
+  /** One entry per `fileFromAttachment` step, in execution order. */
+  fileFromAttachments: FileFromAttachmentResult[];
 }
 
 interface StepWriteContext {
   writer: WriterIdentity;
   actingUserId: string | undefined;
+  /** The Inbox item the proposal is for, or null when it has none (a transcript card); a `fileFromAttachment` step takes its attachment from here. */
+  sourceInboxItemId: string | null;
   /** `ref` of every step executed so far -> the id of the item it created or changed. */
   itemIdsByRef: Map<string, string>;
+}
+
+/** What one step wrote: the item it resolved to, and for a `fileFromAttachment` step the attachment it moved. */
+interface StepOutcome {
+  itemId: string;
+  databaseId: string;
+  created: boolean;
+  movedAttachmentId?: string;
 }
 
 type StepRelationTargets = Record<string, Array<string | { ref: string }>>;
@@ -150,11 +176,92 @@ async function moveEdges(
   }
 }
 
-async function executeStep(
+/** The `type` value a Files item gets from its blob's mime type: that type when the Files `type` select offers it, otherwise none. */
+async function filesTypeOptionFor(
+  client: PoolClient,
+  filesDatabaseId: string,
+  mimeType: string,
+): Promise<string | null> {
+  const candidate = filesTypeForMimeType(mimeType);
+  if (candidate === null) return null;
+  const typeProperty = await propertiesStore.getPropertyByKey(client, filesDatabaseId, "type");
+  const config = z.object({ options: z.array(z.object({ key: z.string() })) }).safeParse(typeProperty?.config);
+  if (!config.success) return null;
+  return config.data.options.some((option) => option.key === candidate) ? candidate : null;
+}
+
+/**
+ * Moves one attachment of the source Inbox item into Files (issue #1703). The attachment must belong to
+ * that Inbox item. The Files item is created unless a live one already names the attachment's blob; in
+ * that case the step resolves to the existing item and changes none of its properties or relations. The
+ * attachment row is deleted in the same transaction, and the blob stays, because a Files item names it.
+ * The blob row lock makes a concurrent confirm that files the same bytes wait until this transaction ends.
+ * If this one committed, that confirm then finds the item created here; if it rolled back, that confirm
+ * creates its own. A delete that finds no row, because another confirm moved the attachment first, is a
+ * conflict, and the caller's transaction rolls back.
+ */
+async function executeFileFromAttachment(
   client: PoolClient,
   step: ProposalStep,
   ctx: StepWriteContext,
-): Promise<{ itemId: string; databaseId: string; created: boolean }> {
+): Promise<StepOutcome> {
+  const { attachmentId, name, date } = parseFileFromAttachmentProperties(step.ref, step.properties ?? {});
+  const attachment = await getInboxAttachment(client, attachmentId);
+  if (!attachment || attachment.inboxItemId !== ctx.sourceInboxItemId) {
+    throw new ValidationError(
+      `Proposal step '${step.ref}': attachment '${attachmentId}' is not an attachment of the proposal's source Inbox item`,
+      { ref: step.ref, field: "attachmentId" },
+    );
+  }
+  const filesDatabase = await databasesStore.getDatabaseByModuleId(client, FILES_MODULE_ID);
+  if (!filesDatabase) {
+    throw new NotFoundError(`Database for module '${FILES_MODULE_ID}' not found`, {
+      ref: step.ref,
+      field: "properties",
+    });
+  }
+
+  await lockBlobById(client, attachment.blobId);
+  const existing = await itemsStore.findFileItemByBlobId(client, filesDatabase.id, attachment.blobId);
+  let fileItemId: string;
+  let created: boolean;
+  if (existing) {
+    fileItemId = existing.id;
+    created = false;
+  } else {
+    const type = await filesTypeOptionFor(client, filesDatabase.id, attachment.mimeType);
+    const fileItem = await withStepDetails(step, "properties", () =>
+      createItemWithClient(
+        client,
+        {
+          databaseId: filesDatabase.id,
+          properties: {
+            name,
+            ...(date === undefined ? {} : { date }),
+            file: { blobId: attachment.blobId },
+            ...(type === null ? {} : { type }),
+          },
+        },
+        { writer: ctx.writer, actingUserId: ctx.actingUserId },
+      ),
+    );
+    await createEdges(client, step, filesDatabase.id, fileItem.id, step.relations ?? {}, ctx);
+    fileItemId = fileItem.id;
+    created = true;
+  }
+
+  if (!(await deleteInboxAttachment(client, attachmentId))) {
+    throw new ConflictError(`Proposal step '${step.ref}': attachment '${attachmentId}' was already moved`, {
+      ref: step.ref,
+      field: "attachmentId",
+    });
+  }
+  return { itemId: fileItemId, databaseId: filesDatabase.id, created, movedAttachmentId: attachmentId };
+}
+
+async function executeStep(client: PoolClient, step: ProposalStep, ctx: StepWriteContext): Promise<StepOutcome> {
+  if (step.op === "fileFromAttachment") return executeFileFromAttachment(client, step, ctx);
+
   if (step.op === "create") {
     const database = step.databaseKey ? await databasesStore.getDatabaseByKey(client, step.databaseKey) : null;
     if (!database) {
@@ -204,26 +311,37 @@ async function executeStep(
  * Executes the active steps of a multi-step envelope in the caller's transaction, each after every
  * step whose `ref` it names. Disabled steps and unreferenced optional steps are not written. A failing
  * write is re-raised with `details: { ref, field }`; the caller's transaction rolls back. Resolves to
- * the primary step's item.
+ * the primary step's item. `sourceInboxItemId` is the Inbox item the proposal is for, or null; a
+ * `fileFromAttachment` step accepts only an attachment of that item.
  */
 export async function executeProposalSteps(
   client: PoolClient,
   steps: ProposalStep[],
-  options: { writer: WriterIdentity; actingUserId?: string },
+  options: { writer: WriterIdentity; actingUserId?: string; sourceInboxItemId: string | null },
 ): Promise<ExecutedProposalSteps> {
   const ctx: StepWriteContext = {
     writer: options.writer,
     actingUserId: options.actingUserId,
+    sourceInboxItemId: options.sourceInboxItemId,
     itemIdsByRef: new Map(),
   };
   let primary: Pick<ExecutedProposalSteps, "primaryItemId" | "primaryDatabaseId"> | null = null;
   const createdItemIds: string[] = [];
+  const fileFromAttachments: FileFromAttachmentResult[] = [];
   for (const step of orderByRefDependencies(selectActiveSteps(steps))) {
-    const { itemId, databaseId, created } = await executeStep(client, step, ctx);
-    if (created) createdItemIds.push(itemId);
-    ctx.itemIdsByRef.set(step.ref, itemId);
-    if (step.role === "primary") primary = { primaryItemId: itemId, primaryDatabaseId: databaseId };
+    const outcome = await executeStep(client, step, ctx);
+    if (outcome.created) createdItemIds.push(outcome.itemId);
+    if (outcome.movedAttachmentId !== undefined) {
+      fileFromAttachments.push({
+        ref: step.ref,
+        fileItemId: outcome.itemId,
+        movedAttachmentId: outcome.movedAttachmentId,
+        created: outcome.created,
+      });
+    }
+    ctx.itemIdsByRef.set(step.ref, outcome.itemId);
+    if (step.role === "primary") primary = { primaryItemId: outcome.itemId, primaryDatabaseId: outcome.databaseId };
   }
   if (!primary) throw new ValidationError("Proposal has no primary step to write", { field: "operations" });
-  return { ...primary, createdItemIds };
+  return { ...primary, createdItemIds, fileFromAttachments };
 }

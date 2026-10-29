@@ -4,6 +4,7 @@ import { createLogger } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
+import { withFromInbox } from "../chokePoint/itemOriginReads.js";
 import * as blobsStore from "../blobs/blobsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { listErroredItemAutomationForDatabases } from "../library/itemAutomationStore.js";
@@ -45,7 +46,8 @@ export function readBlobId(properties: Record<string, unknown>): string | undefi
  * only when its blob's mime type is `audio/*` and it carries no Emails.attachments edge (an
  * emailed audio attachment is not a standalone recording); everything else — a PDF, a video, a
  * mail attachment — is silently skipped, the same "not every create matters" shape as
- * `libraryMetadataActions.ts`'s trigger.
+ * `libraryMetadataActions.ts`'s trigger. A file filed from an Inbox attachment (an item with an
+ * `inbox` origin row, issue #1703) is skipped too: transcribing it is proposed explicitly (#1978).
  */
 export function createFilesTranscriptionTriggerAction(pool: Pool): ActionHandler {
   return async (actionConfig: Record<string, unknown>, context: ActionContext) => {
@@ -54,6 +56,9 @@ export function createFilesTranscriptionTriggerAction(pool: Pool): ActionHandler
     await withTransaction(pool, async (client) => {
       const fileItem = await itemsStore.getItemById(client, config.filesDatabaseId, context.itemId as string);
       if (!fileItem) return; // deleted before the heartbeat fired
+
+      const [stamped] = await withFromInbox(client, [fileItem]);
+      if (stamped?.fromInbox) return; // filed from an Inbox attachment, not a standalone recording
 
       const blobId = readBlobId(fileItem.properties);
       if (!blobId) return;

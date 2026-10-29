@@ -435,6 +435,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "loadFullModuleRegistry",
   "loadYDoc",
   "lockAdminMembership",
+  "lockBlobById",
   "lockItemAutomation",
   "lockItemById",
   "lockoutDurationSeconds",

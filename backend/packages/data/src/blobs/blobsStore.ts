@@ -66,6 +66,16 @@ export async function getBlob(client: Queryable, id: string): Promise<BlobRow | 
 }
 
 /**
+ * Row-locks one blob until the caller's transaction ends, and reports whether it exists. A caller
+ * that decides from a read of the blob's Files items whether to create one takes this lock first, so
+ * a concurrent transaction filing the same bytes waits and then sees the item the first one created.
+ */
+export async function lockBlobById(client: Queryable, id: string): Promise<boolean> {
+  const { rows } = await client.query<{ id: string }>("SELECT id FROM blobs WHERE id = $1 FOR UPDATE", [id]);
+  return rows.length > 0;
+}
+
+/**
  * Looks a blob up by content hash within the tenant in scope: the `tenant_isolation` RLS policy
  * confines the read to that tenant's rows, so identical bytes another tenant stored are invisible
  * here and dedupe is per tenant.
