@@ -7,6 +7,7 @@ import {
   createRuntimeRolePool,
   createTenantZeroUser,
   createTestTenant,
+  getTenantZeroId,
   getTestPool,
   resetDatabase,
 } from "../testSupport/testDb.js";
@@ -133,12 +134,10 @@ describe("MCP connection factory (issue #231)", () => {
     mcpServersId = await databaseIdFor("mcpServers");
   });
 
-  // A `stdio` spawn needs an admin of the sole tenant (issue #1033). Each test that expects a
+  // A `stdio` spawn needs an admin of tenant zero (issue #1033). Each test that expects a
   // spawn creates that admin explicitly; the member test below leaves its user a member.
   async function makeSoleTenantAdmin(): Promise<void> {
-    const { rows } = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
-    const tenantId = requireSingleRow(rows, "sole tenant").id;
-    if (!tenantId) throw new Error("Expected a sole tenant");
+    const tenantId = getTenantZeroId();
     await createUser(pool, {
       email: "admin@example.test",
       passwordHash: "unused",
