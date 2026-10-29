@@ -271,6 +271,7 @@ describe("createMcpRequestListener (issue #220)", () => {
       const tools = (body.result as { tools: { name: string }[] }).tools;
       expect(tools.some((t) => t.name === "semprec.item.create")).toBe(true);
       expect(tools.some((t) => t.name === "semprec.item.delete")).toBe(true);
+      expect(tools.some((t) => t.name === "semprec.relation.list")).toBe(true);
       expect(tools.every((t) => t.name.startsWith("semprec."))).toBe(true);
     });
 

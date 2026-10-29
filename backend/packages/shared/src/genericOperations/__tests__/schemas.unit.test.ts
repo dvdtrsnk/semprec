@@ -19,6 +19,7 @@ import {
   PropertyListInputSchema,
   PropertyPatchInputSchema,
   RelationDeleteInputSchema,
+  RelationListInputSchema,
   RelationPutInputSchema,
   ViewCreateInputSchema,
   ViewDeleteInputSchema,
@@ -61,6 +62,7 @@ const ALL_SCHEMAS = [
   DatabaseQueryInputSchema,
   RelationPutInputSchema,
   RelationDeleteInputSchema,
+  RelationListInputSchema,
 ];
 
 describe("every generic-operation input schema", () => {
@@ -290,6 +292,19 @@ describe("RelationDeleteInputSchema", () => {
         metadata: {},
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("RelationListInputSchema (issue #1404)", () => {
+  it("requires an itemId and takes the relation property as an optional narrowing", () => {
+    expect(RelationListInputSchema.safeParse({ itemId: "i1" }).success).toBe(true);
+    expect(RelationListInputSchema.safeParse({ itemId: "i1", relationPropertyId: "p1" }).success).toBe(true);
+    expect(RelationListInputSchema.safeParse({ relationPropertyId: "p1" }).success).toBe(false);
+  });
+
+  it("rejects an unknown key, such as a relation direction or a metadata field", () => {
+    expect(RelationListInputSchema.safeParse({ itemId: "i1", propertyKey: "assignedTo" }).success).toBe(false);
+    expect(RelationListInputSchema.safeParse({ itemId: "i1", direction: "out" }).success).toBe(false);
   });
 });
 

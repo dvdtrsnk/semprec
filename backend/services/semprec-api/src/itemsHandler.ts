@@ -68,11 +68,11 @@ async function resolveRelationProperty(
  * The item endpoint family (rebased onto the generic-operation bindings by issue #219): `POST
  * /api/databases/:id/items`, `GET /api/items/:id` (with optional `?include=path`), `PATCH
  * /api/items/:id` with `ifVersion`-checked optimistic concurrency, `DELETE /api/items/:id` and
- * `POST /api/items/:id/restore`, `POST /api/databases/:id/query`, and
- * `PUT`/`DELETE /api/items/:id/relations/:propertyKey/:targetItemId`. Every route assembles a
- * canonical command object and dispatches it through `dispatchGenericOperation` against the
- * injected `GenericApplicationPort` — no route constructs its own `createChokePoint(pool)` for an
- * operation the 29-operation catalog covers. `?include=path`'s breadcrumb chain
+ * `POST /api/items/:id/restore`, `POST /api/databases/:id/query`, `GET /api/items/:id/relations`
+ * (with optional `?propertyKey=`), and `PUT`/`DELETE /api/items/:id/relations/:propertyKey/:targetItemId`.
+ * Every route assembles a canonical command object and dispatches it through
+ * `dispatchGenericOperation` against the injected `GenericApplicationPort` — no route constructs its
+ * own `createChokePoint(pool)` for an operation the 30-operation catalog covers. `?include=path`'s breadcrumb chain
  * (`chokePoint.getItemPath`) is the one read this family still reaches `pool` for directly: it has
  * no corresponding generic operation, so there is no binding to rebase it onto.
  */
@@ -180,6 +180,27 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
           includeCount: body.includeCount,
         });
         return { status: 200, body: await toItemQueryEnvelope(pool, result) };
+      },
+    },
+    {
+      method: "GET",
+      path: "/api/items/:id/relations",
+      handler: async (ctx) => {
+        const id = requireUuidParam(ctx.params, "id");
+        const actor = restActor(ctx.identity.user.id);
+        // `?propertyKey=` narrows the list to one relation property, resolved exactly as the write routes resolve it.
+        const propertyKey = requestUrl(ctx.req.url).searchParams.get("propertyKey");
+        let relationPropertyId: string | undefined;
+        if (propertyKey !== null) {
+          const resolution = await resolveRelationProperty(service, actor, id, propertyKey);
+          if ("conflict" in resolution) return resolution.conflict;
+          relationPropertyId = resolution.property.id;
+        }
+        const relations = await dispatchGenericOperation(service, "relation.list", actor, {
+          itemId: id,
+          relationPropertyId,
+        });
+        return { status: 200, body: { relations } };
       },
     },
     {

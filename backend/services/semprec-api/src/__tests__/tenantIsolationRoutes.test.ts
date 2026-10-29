@@ -1251,6 +1251,17 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     leavesAUnchanged(async () => {
       await relationCases("DELETE", undefined);
     }),
+  "list relations": async () => {
+    // A foreign item answers exactly as a random one does, with or without the `propertyKey` filter.
+    await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "GET",
+      path: `/api/items/${id}/relations`,
+    }));
+    await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "GET",
+      path: `/api/items/${id}/relations?propertyKey=${a.relationPropertyKey}`,
+    }));
+  },
 
   // --- tenant: files, exports, account deletion ----------------------------------------------
   "upload file": () =>
@@ -1453,6 +1464,13 @@ function ownerProbes(): OwnerProbe[] {
     { label: "view detail", ids: [a.viewId], build: get(([id]) => `/api/views/${id}`), status: 200 },
     { label: "curated view detail", ids: [a.curatedViewId], build: get(([id]) => `/api/views/${id}`), status: 200 },
     { label: "item detail", ids: [a.itemId], build: get(([id]) => `/api/items/${id}?include=path`), status: 200 },
+    {
+      label: "list relations",
+      ids: [a.itemId],
+      build: get(([id]) => `/api/items/${id}/relations`),
+      status: 200,
+      contains: [a.targetItemId],
+    },
     {
       label: "query database",
       ids: [a.databaseId],
@@ -1740,6 +1758,9 @@ const MCP_CASES = {
       callerItemId: b.itemId,
       targetItemId,
     }));
+  },
+  "relation.list": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId }));
   },
 } satisfies Record<GenericOperationName, McpCase>;
 

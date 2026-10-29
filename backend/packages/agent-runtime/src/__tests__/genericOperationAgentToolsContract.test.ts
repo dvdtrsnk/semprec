@@ -99,7 +99,7 @@ interface Case {
 }
 
 /**
- * One AgentTool call per operation in the closed 29-operation catalog, mirroring
+ * One AgentTool call per operation in the closed 30-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern and `mcpGenericOperationsContract.test.ts`'s
  * MCP pattern one adapter over (the code-review finding on issue #220's diff: parameterized
  * contract tests across all of the then-28 operations were missing for the AgentTool adapter). Every
@@ -167,6 +167,7 @@ const CASES: Record<GenericOperationName, Case> = {
       targetItemId: fx.targetItem.id,
     }),
   },
+  "relation.list": { args: (fx) => ({ itemId: fx.itemA.id }) },
 };
 
 describe("generic operation AgentTools contract (issue #220)", () => {
@@ -212,6 +213,12 @@ describe("generic operation AgentTools contract (issue #220)", () => {
         expect(rows[0]!.count).toBe(1);
       } else {
         expect(outcome.error).toBe(false);
+        // A non-destructive call runs without an approval request (docs/adr/2026-09-18-non-destructive-generic-operations-bypass-agent-approval.md).
+        const { rows } = await pool.query<{ count: number }>(
+          `SELECT count(*)::int AS count FROM approval_requests WHERE agent_run_id = $1`,
+          [run.id],
+        );
+        expect(rows[0]!.count).toBe(0);
       }
     });
   }

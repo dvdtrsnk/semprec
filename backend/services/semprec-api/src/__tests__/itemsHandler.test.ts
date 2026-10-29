@@ -1291,6 +1291,114 @@ describe("item routes (issue #241)", () => {
         expect(body.error.code).toBe("owner_violation");
       });
     });
+
+    describe("GET list (issue #1404)", () => {
+      interface RelationListBody {
+        relations: Array<{
+          relationPropertyId: string;
+          propertyKey: string;
+          targetItemId: string;
+          targetDatabaseId: string;
+          metadata: Record<string, unknown>;
+        }>;
+      }
+
+      it("rejects an unauthenticated request", async () => {
+        const res = await fetch(`${baseUrl}/api/items/${randomUUID()}/relations`);
+        expect(res.status).toBe(401);
+      });
+
+      it("returns 404 not_found for an unknown item", async () => {
+        const headers = await authHeader();
+        const res = await fetch(`${baseUrl}/api/items/${randomUUID()}/relations`, { headers });
+        expect(res.status).toBe(404);
+        expect(((await res.json()) as ErrorBody).error.code).toBe("not_found");
+      });
+
+      it("returns an empty list for an item with no edges", async () => {
+        const { source } = await makePairedRelation();
+        const item = await chokePoint.createItem({ databaseId: source.id, properties: {} });
+        const headers = await authHeader();
+
+        const res = await fetch(`${baseUrl}/api/items/${item.id}/relations`, { headers });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ relations: [] });
+      });
+
+      it("lists a paired edge from each end under that end's own property", async () => {
+        const { source, target, property, inverseProperty } = await makePairedRelation();
+        const task = await chokePoint.createItem({ databaseId: source.id, properties: {} });
+        const person = await chokePoint.createItem({ databaseId: target.id, properties: {} });
+        await chokePoint.createRelation({
+          relationPropertyId: property.id,
+          callerItemId: task.id,
+          targetItemId: person.id,
+          metadata: { role: "owner" },
+        });
+        const headers = await authHeader();
+
+        const fromTask = await fetch(`${baseUrl}/api/items/${task.id}/relations`, { headers });
+        expect(fromTask.status).toBe(200);
+        expect(((await fromTask.json()) as RelationListBody).relations).toEqual([
+          {
+            relationPropertyId: property.id,
+            propertyKey: "assignedTo",
+            targetItemId: person.id,
+            targetDatabaseId: target.id,
+            metadata: { role: "owner" },
+          },
+        ]);
+
+        const fromPerson = await fetch(`${baseUrl}/api/items/${person.id}/relations`, { headers });
+        expect(fromPerson.status).toBe(200);
+        expect(((await fromPerson.json()) as RelationListBody).relations).toEqual([
+          {
+            relationPropertyId: inverseProperty.id,
+            propertyKey: "assignedTasks",
+            targetItemId: task.id,
+            targetDatabaseId: source.id,
+            metadata: { role: "owner" },
+          },
+        ]);
+      });
+
+      it("narrows to one property with ?propertyKey= and answers 404 for a key that is not a relation of the item's database", async () => {
+        const { source, target, property } = await makePairedRelation();
+        const { property: watchers } = await chokePoint.createRelationProperty({
+          sourceDatabaseId: source.id,
+          key: "watchers",
+          name: "Watchers",
+          targetDatabaseId: target.id,
+        });
+        await chokePoint.createProperty({ databaseId: source.id, key: "notes", name: "Notes", type: "text" });
+        const task = await chokePoint.createItem({ databaseId: source.id, properties: {} });
+        const person = await chokePoint.createItem({ databaseId: target.id, properties: {} });
+        const observer = await chokePoint.createItem({ databaseId: target.id, properties: {} });
+        await chokePoint.createRelation({
+          relationPropertyId: property.id,
+          callerItemId: task.id,
+          targetItemId: person.id,
+        });
+        await chokePoint.createRelation({
+          relationPropertyId: watchers.id,
+          callerItemId: task.id,
+          targetItemId: observer.id,
+        });
+        const headers = await authHeader();
+
+        const narrowed = await fetch(`${baseUrl}/api/items/${task.id}/relations?propertyKey=watchers`, { headers });
+        expect(narrowed.status).toBe(200);
+        expect(
+          ((await narrowed.json()) as RelationListBody).relations.map((r) => [r.propertyKey, r.targetItemId]),
+        ).toEqual([["watchers", observer.id]]);
+
+        for (const key of ["nope", "notes"]) {
+          const res = await fetch(`${baseUrl}/api/items/${task.id}/relations?propertyKey=${key}`, { headers });
+          expect(res.status, key).toBe(404);
+          expect(((await res.json()) as ErrorBody).error.code).toBe("not_found");
+        }
+      });
+    });
   });
 
   describe("relation property resolution through property.getByKey (issue #432)", () => {
@@ -1298,7 +1406,7 @@ describe("item routes (issue #241)", () => {
      * `UNIQUE(database_id, key)` makes more than one match unreachable through a real database, so
      * the ambiguous branch is driven by the real service with only `getPropertyByKey` overridden.
      */
-    async function callRelationRoute(method: "PUT" | "DELETE") {
+    async function callRelationRoute(method: "GET" | "PUT" | "DELETE") {
       const { source, property } = await makeAmbiguousFixture();
       const item = await chokePoint.createItem({ databaseId: source.id, properties: {} });
       const lookups: unknown[] = [];
@@ -1309,13 +1417,16 @@ describe("item routes (issue #241)", () => {
           return [property, { ...property, id: randomUUID() }];
         },
       };
-      const route = createItemRoutes(service, pool).find(
-        (candidate) => candidate.method === method && candidate.path.includes("/relations/"),
+      const route = createItemRoutes(service, pool).find((candidate) =>
+        method === "GET"
+          ? candidate.method === "GET" && candidate.path === "/api/items/:id/relations"
+          : candidate.method === method && candidate.path.includes("/relations/"),
       );
       if (!route) throw new Error(`expected a ${method} relation route`);
       const identity = { user: { id: randomUUID() } } as AuthenticatedIdentity;
       const result = await route.handler({
-        req: {} as IncomingMessage,
+        // The GET list reads its `?propertyKey=` filter from the request URL; the write routes ignore it.
+        req: { url: `/api/items/${item.id}/relations?propertyKey=${property.key}` } as IncomingMessage,
         identity,
         params: { id: item.id, propertyKey: property.key, targetItemId: randomUUID() },
         body: undefined,
@@ -1336,7 +1447,7 @@ describe("item routes (issue #241)", () => {
       return { source, property };
     }
 
-    it.each(["PUT", "DELETE"] as const)(
+    it.each(["GET", "PUT", "DELETE"] as const)(
       "%s answers 409 validation_failed ambiguous when the lookup returns more than one match",
       async (method) => {
         const { result, lookups, databaseId, propertyKey } = await callRelationRoute(method);

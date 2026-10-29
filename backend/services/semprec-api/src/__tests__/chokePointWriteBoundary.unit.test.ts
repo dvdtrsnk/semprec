@@ -87,6 +87,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "query database": "services/semprec-api/src/itemsHandler.ts",
   "create/replace relation": "services/semprec-api/src/itemsHandler.ts",
   "delete relation": "services/semprec-api/src/itemsHandler.ts",
+  "list relations": "services/semprec-api/src/itemsHandler.ts",
   "query view": "services/semprec-api/src/viewsHandler.ts",
   "upload file": "services/semprec-api/src/filesHandler.ts",
   "upload blob": "services/semprec-api/src/blobUploadHandler.ts",

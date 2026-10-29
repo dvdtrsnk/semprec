@@ -532,6 +532,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "list relations",
+    method: "GET",
+    path: `/api/items/${EXAMPLE_ID}/relations`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "upload file",
     method: "POST",
     path: "/api/files",
