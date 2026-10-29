@@ -136,6 +136,6 @@ describe("repairInterruptedRuns across tenants", () => {
   });
 
   it("resolves with no ids when two tenants have no running runs", async () => {
-    await expect(repairInterruptedRuns(runtimePool)).resolves.toEqual({ repairedRunIds: [] });
+    await expect(repairInterruptedRuns(runtimePool)).resolves.toEqual({ repairedRunIds: [], closedIdleRunIds: [] });
   });
 });

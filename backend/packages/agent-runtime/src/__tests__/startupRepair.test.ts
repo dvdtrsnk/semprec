@@ -150,7 +150,7 @@ describe("repairInterruptedRuns", () => {
       JSON.stringify(["not", "an", "object"]),
     ]);
 
-    await expect(repairInterruptedRuns(pool)).resolves.toEqual({ repairedRunIds: [run.id] });
+    await expect(repairInterruptedRuns(pool)).resolves.toEqual({ repairedRunIds: [run.id], closedIdleRunIds: [] });
 
     const { rows } = await pool.query<{ kind: string; payload: Record<string, unknown> }>(
       `SELECT kind, payload FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id ASC`,

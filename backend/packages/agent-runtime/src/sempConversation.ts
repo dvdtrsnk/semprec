@@ -15,7 +15,7 @@ import {
   reconstructConversationHistory as reconstructHistoryEntries,
   type ReconstructedHistory,
 } from "./conversationReconstruction.js";
-import { extractResultSnapshot, pushRunStatus, runAgentTurn } from "./lifecycleAdapter.js";
+import { extractResultSnapshot, pairDanglingToolCalls, pushRunStatus, runAgentTurn } from "./lifecycleAdapter.js";
 import type { AgentMessage, AgentSession, CreateAgentSession } from "./types.js";
 import { logger } from "./logger.js";
 
@@ -77,6 +77,7 @@ interface ConversationRegistryEntry {
  * two never leaves one without the other.
  */
 async function failRun(pool: Pool, agentRunId: string, err: unknown): Promise<void> {
+  await pairDanglingToolCalls(pool, agentRunId, err);
   try {
     const message = err instanceof Error ? err.message : String(err);
     await withTransaction(pool, (client) =>

@@ -1,4 +1,4 @@
-import { repairInterruptedRuns } from "@semprec/agent-runtime";
+import { closeIdleThreadSessions, repairInterruptedRuns } from "@semprec/agent-runtime";
 import {
   assertRuntimeRole,
   createPool,
@@ -74,7 +74,13 @@ const tenantDeactivationListener = await startTenantDeactivationListener(pool, a
   if (aborted > 0) logger.info({ tenantId, aborted }, "Aborted in-flight agent runs of a deactivated tenant");
 });
 
-const shutdown = createGracefulShutdown({ queueRuntime, tenantDeactivationListener, pool, logger });
+const shutdown = createGracefulShutdown({
+  queueRuntime,
+  tenantDeactivationListener,
+  pool,
+  logger,
+  closeIdleThreadSessions,
+});
 registerShutdownSignals(shutdown);
 
 logger.info({}, "semprec-agents queue runtime started");

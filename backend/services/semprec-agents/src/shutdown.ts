@@ -18,6 +18,8 @@ export interface CreateGracefulShutdownOptions {
   tenantDeactivationListener: TenantDeactivationListenerHandle;
   pool: Pool;
   logger: Logger;
+  /** Closes every idle thread session as `done`; runs after the queue stopped, while the pool is open. */
+  closeIdleThreadSessions: (pool: Pool) => Promise<{ closedRunIds: string[] }>;
 }
 
 /** Ends `pool`, bounded by `POOL_END_TIMEOUT_MS` so a hung or unreachable database can never stall shutdown indefinitely. */
@@ -93,12 +95,13 @@ async function closeListener(
  * Builds `semprec-agents`' shutdown sequence: this process has no HTTP intake to drain (it is a
  * pure queue consumer), so it closes the tenant deactivation listener (waiting at most
  * `LISTENER_CLOSE_TIMEOUT_MS`), stops the queue runtime
- * issue #91 hosts (`queueRuntime.stop()` awaits its `Runner.stop()`) and then ends the pool. Per
+ * issue #91 hosts (`queueRuntime.stop()` awaits its `Runner.stop()`), closes the idle thread
+ * sessions as `done` (so a deploy raises no `agent_run_error` for them) and then ends the pool. Per
  * `docs/adr/2026-09-17-shutdown-ordering-with-late-heartbeat-stop.md`'s rejected-alternative
  * note, this ordering is specific to this service — it names no heartbeat step.
  */
 export function createGracefulShutdown(options: CreateGracefulShutdownOptions): (signal: string) => Promise<void> {
-  const { queueRuntime, tenantDeactivationListener, pool, logger } = options;
+  const { queueRuntime, tenantDeactivationListener, pool, logger, closeIdleThreadSessions } = options;
 
   let shutdownPromise: Promise<void> | null = null;
 
@@ -111,6 +114,15 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
       await queueRuntime.stop();
     } catch (err) {
       logger.error({ err, signal }, "queueRuntime.stop() failed");
+    }
+
+    // After the queue stopped, so no turn is still being written; before the pool ends. A failure
+    // is logged and the next startup repair closes the same sessions, so it never blocks the pool end.
+    try {
+      const { closedRunIds } = await closeIdleThreadSessions(pool);
+      logger.info({ signal, closedIdleSessionCount: closedRunIds.length }, "Closed idle thread sessions");
+    } catch (err) {
+      logger.error({ err, signal }, "closeIdleThreadSessions() failed");
     }
 
     await endPool(pool, logger, signal);
