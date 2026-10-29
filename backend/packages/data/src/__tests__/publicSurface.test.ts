@@ -177,6 +177,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "UnauthorizedError",
   "VALUE_LINKS_OWNER_PROCESS",
   "ValidationError",
+  "acceptInvitation",
   "advanceTaskRecurrence",
   "agentGuidanceDriftFindingsStore",
   "agentRunErrorCodeOf",

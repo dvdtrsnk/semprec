@@ -135,6 +135,16 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     publicReason:
       "Issue #234: the wizard that calls the setup API above must itself be reachable before any account exists, for the same reason the API is public.",
   },
+  {
+    name: "accept invitation",
+    method: "POST",
+    path: "/api/invitations/accept",
+    surface: "api",
+    public: true,
+    tenancy: "anonymous",
+    publicReason:
+      "Issue #1087: the invitee has no session yet. The single-use invitation token is the credential, and every unusable token gets the same 404.",
+  },
   { name: "logout", method: "POST", path: "/api/auth/logout", surface: "api", public: false, tenancy: "account" },
   {
     name: "revoke session",
