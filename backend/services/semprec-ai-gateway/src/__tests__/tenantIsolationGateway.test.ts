@@ -23,6 +23,10 @@ import {
 } from "@semprec/data/testSupport";
 import { runInTenant } from "@semprec/shared";
 import { createDispatcher, GATEWAY_ENDPOINTS, type GatewayEndpoint } from "../app.js";
+import { STT_STREAM_PATH } from "../sttStreamHandler.js";
+
+/** The WebSocket route is not a POST endpoint; `sttStream.test.ts` covers its token and tenant handling. */
+type HttpGatewayEndpoint = Exclude<GatewayEndpoint, typeof STT_STREAM_PATH>;
 import type { CompleteHandlerOptions } from "../completeHandler.js";
 import type { AudioHandlerOptions } from "../audioHandler.js";
 import type { PiMessagesHandlerOptions } from "../piMessagesHandler.js";
@@ -81,9 +85,11 @@ const CASES = {
   },
   "/internal/diarize": { attributes: "none", body: () => AUDIO_BODY, headers: () => ({}) },
   "/internal/transcribe": { attributes: "none", body: () => AUDIO_BODY, headers: () => ({}) },
-} satisfies Record<GatewayEndpoint, GatewayCase>;
+} satisfies Record<HttpGatewayEndpoint, GatewayCase>;
 
-const ENDPOINTS: readonly GatewayEndpoint[] = GATEWAY_ENDPOINTS;
+const ENDPOINTS: readonly HttpGatewayEndpoint[] = GATEWAY_ENDPOINTS.filter(
+  (endpoint): endpoint is HttpGatewayEndpoint => endpoint !== STT_STREAM_PATH,
+);
 const ID_ENDPOINTS = ENDPOINTS.filter((endpoint) => CASES[endpoint].attributes !== "none");
 
 interface TenantFixture {
@@ -202,7 +208,7 @@ interface RequestOptions {
   token?: string;
 }
 
-async function call(endpoint: GatewayEndpoint, options: RequestOptions = {}): Promise<CallResult> {
+async function call(endpoint: HttpGatewayEndpoint, options: RequestOptions = {}): Promise<CallResult> {
   const gatewayCase: GatewayCase = CASES[endpoint];
   const id = gatewayCase.attributes === "none" ? undefined : options.id;
   const res = await fetch(`${baseUrl}${endpoint}`, {
@@ -252,7 +258,7 @@ async function snapshot(): Promise<Record<"a" | "b" | "zero", CallRow[]>> {
   };
 }
 
-function idOf(fixture: TenantFixture, endpoint: GatewayEndpoint): string | undefined {
+function idOf(fixture: TenantFixture, endpoint: HttpGatewayEndpoint): string | undefined {
   const kind = CASES[endpoint].attributes;
   if (kind === "run") return fixture.runId;
   if (kind === "project") return fixture.projectId;
@@ -350,7 +356,7 @@ describe("AI gateway tenant isolation across every endpoint", () => {
   });
 
   it("has a case for exactly the endpoints the gateway serves", () => {
-    expect(Object.keys(CASES).sort()).toEqual([...GATEWAY_ENDPOINTS].sort());
+    expect(Object.keys(CASES).sort()).toEqual([...ENDPOINTS].sort());
   });
 
   it("answers 404 for a path outside the table", async () => {
