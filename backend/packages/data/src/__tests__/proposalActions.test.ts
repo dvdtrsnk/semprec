@@ -4,7 +4,8 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
-import { ConflictError } from "../errors.js";
+import { ConflictError, ValidationError } from "../errors.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import {
@@ -420,6 +421,43 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     });
     const history = revised.properties.history as Array<Record<string, unknown>>;
     expect(history[history.length - 1]).toMatchObject({ author: "user", message: "Actually this is a note" });
+  });
+
+  it("revise stores a valid relations map and refuses a deleted target without touching the card (issue #1426)", async () => {
+    const proposal = await createDatabaseProposal("Buy milk");
+    const projectsId = await databaseIdFor("projects");
+    const project = await withTransaction(
+      pool,
+      async (client) =>
+        (await createItemWithClient(client, { databaseId: projectsId, properties: { name: "Home" } })).id,
+    );
+    const revise = (relations: Record<string, string[]>) =>
+      withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id, {
+          message: "link it",
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Buy milk" },
+          relations,
+        }),
+      );
+
+    const revised = await revise({ project: [project] });
+    expect(revised.properties.proposal).toEqual({
+      entityKind: "database",
+      target: tasksId,
+      properties: { name: "Buy milk" },
+      relations: { project: [project] },
+    });
+
+    await withTransaction(pool, async (client) => {
+      await itemsStore.softDeleteItem(client, projectsId, project);
+    });
+    const error = await revise({ project: [project] }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).details).toEqual({ field: "project", code: "targetDeleted" });
+    const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposal.id));
+    expect(card!.properties.proposal).toEqual(revised.properties.proposal);
   });
 
   it("revise transitions a 'needsClarification' proposal (no type at all) to 'proposed' with a valid envelope", async () => {

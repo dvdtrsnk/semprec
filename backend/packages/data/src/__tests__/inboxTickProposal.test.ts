@@ -13,9 +13,12 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { ValidationError } from "../errors.js";
 import {
   assertValidProposalEnvelope,
   createSemprecTickAction,
+  parseStoredProposalEnvelope,
   type ComputeSemprecProposalFn,
 } from "../inbox/inboxTickAction.js";
 import { confirmProposalWithClient } from "../inbox/proposalActions.js";
@@ -1316,6 +1319,98 @@ describe("assertValidProposalEnvelope resolves the target database row (issue #7
     );
 
     expect(targetDatabase).toBeNull();
+  });
+});
+
+describe("assertValidProposalEnvelope validates envelope relations (issue #1426)", () => {
+  let tasksDbId: string;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    viewTypeRegistry = createViewTypeRegistry();
+    await resetDatabase(pool);
+    await seedSystem(pool, viewTypeRegistry);
+    tasksDbId = await databaseIdFor("tasks");
+  });
+
+  async function createProject(properties: Record<string, unknown>): Promise<string> {
+    const projectsId = await databaseIdFor("projects");
+    return withTransaction(
+      pool,
+      async (client) => (await createItemWithClient(client, { databaseId: projectsId, properties })).id,
+    );
+  }
+
+  function validate(relations: Record<string, string[]>, entityKind: "database" | "pageContent" = "database") {
+    return withTransaction(pool, (client) =>
+      assertValidProposalEnvelope(client, {
+        entityKind,
+        target: tasksDbId,
+        properties: entityKind === "database" ? { name: "Buy milk" } : { flavour: "paragraph" },
+        relations,
+      }),
+    );
+  }
+
+  it("keeps stored relations when the envelope is parsed", async () => {
+    const project = await createProject({ name: "Home" });
+    const stored = {
+      entityKind: "database",
+      target: tasksDbId,
+      properties: { name: "x" },
+      relations: { project: [project] },
+    };
+
+    expect(parseStoredProposalEnvelope(stored, "proposal-id")).toEqual(stored);
+  });
+
+  it("accepts an existing project and an empty array meaning no edge", async () => {
+    const project = await createProject({ name: "Home" });
+    const done = await createProject({ name: "Late invoice", status: "done" });
+
+    await expect(validate({ project: [project] })).resolves.not.toBeNull();
+    await expect(validate({ project: [done] })).resolves.not.toBeNull();
+    await expect(validate({ project: [] })).resolves.not.toBeNull();
+  });
+
+  it("rejects a nonexistent target with the relation key as field", async () => {
+    const error = await validate({ project: ["00000000-0000-4000-8000-000000000001"] }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).status).toBe(400);
+    expect((error as ValidationError).details).toMatchObject({ field: "project" });
+  });
+
+  it("rejects an archived project with targetArchived", async () => {
+    const project = await createProject({ name: "Old", status: "archived" });
+
+    const error = await validate({ project: [project] }).catch((e: unknown) => e);
+
+    expect((error as ValidationError).details).toEqual({ field: "project", code: "targetArchived" });
+  });
+
+  it("rejects a key that is not a relation property and a duplicated target", async () => {
+    const project = await createProject({ name: "Home" });
+
+    const notRelation = await validate({ name: [project] }).catch((e: unknown) => e);
+    const unknown = await validate({ nope: [project] }).catch((e: unknown) => e);
+    const duplicate = await validate({ project: [project, project] }).catch((e: unknown) => e);
+
+    for (const [error, field] of [
+      [notRelation, "name"],
+      [unknown, "nope"],
+      [duplicate, "project"],
+    ] as const) {
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).details).toEqual({ field });
+    }
+  });
+
+  it("rejects relations on a pageContent envelope", async () => {
+    const error = await validate({ project: [] }, "pageContent").catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).details).toEqual({ field: "relations" });
   });
 });
 

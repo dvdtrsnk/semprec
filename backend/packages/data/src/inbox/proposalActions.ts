@@ -410,6 +410,7 @@ export interface ReviseProposalInput {
   entityKind: ProposalEntityKind;
   target: string;
   properties: Record<string, unknown>;
+  relations?: ProposalEnvelope["relations"];
 }
 
 /**
@@ -444,6 +445,7 @@ export async function reviseProposalWithClient(
     entityKind: input.entityKind,
     target: input.target,
     properties: input.properties,
+    ...(input.relations === undefined ? {} : { relations: input.relations }),
   };
   await assertValidEnvelopeForCard(client, config, proposal, envelope);
 
