@@ -100,6 +100,7 @@ export const CORE_TASK_NAMES = {
   MAIL_OAUTH_STATES_SWEEP: "mailOauthStatesSweep",
   // Issue #692: the daily sweep that deletes pre-checkpoint agent_run_events rows past retention.
   AGENT_RUN_EVENTS_RETENTION: "agentRunEventsRetention",
+  SEMP_PROBLEMS_PRUNE: "sempProblemsPrune",
   // Issue #706: the daily sweep that deletes permanently-failed graphile_worker.jobs rows past retention.
   QUEUE_FAILED_JOBS_PRUNE: "queueFailedJobsPrune",
   // Issue #1043: builds one requested tenant export archive, and the daily sweep that removes
@@ -149,6 +150,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "api",
   [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "api",
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "api",
+  [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: "api",
   [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: "api",
   [CORE_TASK_NAMES.TENANT_EXPORT]: "api",
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: "api",
@@ -204,6 +206,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "system",
   [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "system",
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "system",
+  [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: "system",
   [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: "system",
   [CORE_TASK_NAMES.TENANT_EXPORT]: "tenant",
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: "system",

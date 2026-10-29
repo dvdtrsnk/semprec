@@ -51,6 +51,7 @@ import { handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
 import { handleObservabilityCheckSystemTask } from "./observability/observabilityCheckSystem.js";
 import { handleMailOauthStatesSweepTask } from "./mail/mailOauthStatesSweep.js";
 import { handleMcpRunCredentialExpirySweepTask } from "./mcp/mcpRunCredentialExpiry.js";
+import { handleSempProblemsPruneTask } from "./semp/sempProblemsPrune.js";
 import { handleAgentRunEventsRetentionTask } from "./agentRuns/agentRunEventsRetention.js";
 import { handleQueueFailedJobsPruneTask } from "./observability/queueFailedJobsPrune.js";
 import { handleTenantExportExpirySweepTask, handleTenantExportTask } from "./tenancy/tenantExportJob.js";
@@ -96,6 +97,7 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 0 4 * * * ${CORE_TASK_NAMES.TRASH_PURGE}
 20 4 * * * ${CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION}
 20 4 * * * ${CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE}
+30 4 * * * ${CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE}
 10 * * * * ${CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP}
 */10 * * * * ${CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP}
 40 4 * * * ${CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP}
@@ -246,6 +248,9 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: async () => {
       await handleAgentRunEventsRetentionTask(pool);
+    },
+    [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: async () => {
+      await handleSempProblemsPruneTask(pool);
     },
     [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: async () => {
       await handleQueueFailedJobsPruneTask(pool);
