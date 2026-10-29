@@ -12,6 +12,14 @@ export function automationProblemKey(databaseId: string): string {
   return `automation:${databaseId}`;
 }
 
+/**
+ * The one problem of a mailbox that is not syncing (issue #1506). The sync job's failure reports and
+ * the `mail:<mailboxItemId>` stall check both raise it under this key, so the reports merge.
+ */
+export function mailProblemKey(mailboxItemId: string): string {
+  return `mail:${mailboxItemId}`;
+}
+
 /** The one backup problem: the monthly restore test. */
 export const BACKUP_RESTORE_PROBLEM_KEY = "backup:restoreTest";
 

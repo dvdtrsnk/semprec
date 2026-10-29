@@ -20,9 +20,22 @@ import { MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { mailSyncProcessName, upsertProcessHeartbeat } from "../health/processHeartbeats.js";
 import { ensureMailAccountSyncState, recordSyncError } from "../mail/mailAccountSyncStateStore.js";
+import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
+import { handleSyncMailAccountTask } from "../mail/mailSyncJob.js";
+import type { BlobStorageWriter } from "../mail/blobStorage.js";
+import { mailProblemKey } from "../semp/sourceProblemKeys.js";
 import { handleObservabilityCheckSystemTask } from "../observability/observabilityCheckSystem.js";
 
 let pool: Pool;
+
+/** Storage for the sync pass in the merge test; that pass fails before any write reaches it. */
+const unusedStorage: BlobStorageWriter = {
+  writeStream: () => Promise.reject(new Error("storage is not used by this test")),
+  delete: () => Promise.reject(new Error("storage is not used by this test")),
+  readStream: () => {
+    throw new Error("storage is not used by this test");
+  },
+};
 
 /** Tenant zero's admin by default; a further tenant's user when `tenantId` is given. */
 async function createTestUser(tenantId = getTenantZeroId(), role: "admin" | "member" = "admin"): Promise<string> {
@@ -463,6 +476,150 @@ describe("observability.checkSystem (issue #169)", () => {
 
       expect(await getTenantCheck(`process:mailsync:${mailboxId}`)).toBeUndefined();
       expect(await getCheck(legacyKey)).toBeUndefined();
+    });
+  });
+
+  describe("mailbox Semp problem on the stall check (issue #1506)", () => {
+    interface MailProblemRow {
+      category: string;
+      kind: string;
+      severity: string;
+      source_table: string;
+      source_id: string;
+      occurrence_count: number;
+      first_seen_at: Date;
+      resolved_at: Date | null;
+      resolution_kind: string | null;
+    }
+
+    beforeEach(async () => {
+      await seedSystem(pool);
+      await markAllProcessesFresh();
+    });
+
+    async function mailProblems(mailboxItemId: string): Promise<MailProblemRow[]> {
+      const { rows } = await pool.query<MailProblemRow>(
+        `SELECT category, kind, severity, source_table, source_id, occurrence_count, first_seen_at, resolved_at, resolution_kind
+           FROM semp_problems WHERE dedupe_key = $1 ORDER BY first_seen_at`,
+        [mailProblemKey(mailboxItemId)],
+      );
+      return rows;
+    }
+
+    /** A sync-state row whose next pass is already overdue, so the check alerts without any failure. */
+    async function overdueMailbox(): Promise<string> {
+      const mailboxItemId = randomUUID();
+      await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
+      await pool.query(
+        `UPDATE mail_account_sync_state SET next_expected_activity_at = now() - interval '1 minute' WHERE item_id = $1`,
+        [mailboxItemId],
+      );
+      return mailboxItemId;
+    }
+
+    it("raises one warning problem when a mailbox stalls and raises nothing more on later ticks", async () => {
+      await createTestUser();
+      const mailboxItemId = await overdueMailbox();
+
+      await runCheck();
+      await runCheck();
+
+      expect((await getTenantCheck(`mail:${mailboxItemId}`))?.status).toBe("alerting");
+      expect(await mailProblems(mailboxItemId)).toMatchObject([
+        {
+          category: "mail",
+          kind: "mailSyncError",
+          severity: "warning",
+          source_table: "mail_account_sync_state",
+          source_id: mailboxItemId,
+          occurrence_count: 1,
+          resolved_at: null,
+        },
+      ]);
+    });
+
+    it("raises the problem as critical when the stall follows a revoked credential", async () => {
+      await createTestUser();
+      const mailboxItemId = randomUUID();
+      await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
+      // Stored through the store function a failed pass uses; the sync job's own report is covered in mailSync.test.ts.
+      await recordSyncError(pool, mailboxItemId, "token revoked", "reauthorization");
+
+      await runCheck();
+
+      expect(await mailProblems(mailboxItemId)).toMatchObject([{ severity: "critical", occurrence_count: 1 }]);
+    });
+
+    it("starts the problem at the failure streak's start, not at the tick that raised it", async () => {
+      await createTestUser();
+      const mailboxItemId = randomUUID();
+      await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
+      await recordSyncError(pool, mailboxItemId, "boom", "other");
+      // Fixture: the streak began an hour ago, as earlier failing passes would have recorded.
+      await pool.query(
+        `UPDATE mail_account_sync_state SET failing_since = now() - interval '1 hour' WHERE item_id = $1`,
+        [mailboxItemId],
+      );
+
+      await runCheck();
+
+      const { rows: states } = await pool.query<{ failing_since: Date }>(
+        `SELECT failing_since FROM mail_account_sync_state WHERE item_id = $1`,
+        [mailboxItemId],
+      );
+      const problems = await mailProblems(mailboxItemId);
+      expect(problems).toMatchObject([{ occurrence_count: 1 }]);
+      expect(problems[0]!.first_seen_at.getTime()).toBe(states[0]!.failing_since.getTime());
+    });
+
+    it("merges the sync job's failure report with the stall check into one problem", async () => {
+      await createTestUser();
+      const mailboxItemId = await createActiveMailbox();
+      const moduleIds = await runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, (client) => resolveMailModuleIds(client)),
+      );
+
+      // The pass has no stored credential, so it fails before any provider call, with its own report.
+      await runInTenant(getTenantZeroId(), async () => {
+        await expect(
+          handleSyncMailAccountTask(pool, { mailboxItemId }, {}, moduleIds, unusedStorage, {
+            job: { id: "sync-job-1" },
+          }),
+        ).rejects.toThrow("has no stored credential");
+      });
+      await runCheck();
+
+      expect(await mailProblems(mailboxItemId)).toMatchObject([
+        { severity: "warning", occurrence_count: 2, resolved_at: null },
+      ]);
+    });
+
+    it("resolves the problem when the check returns to ok", async () => {
+      await createTestUser();
+      const mailboxItemId = randomUUID();
+      await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
+      await recordSyncError(pool, mailboxItemId, "boom", "other");
+      await runCheck();
+      expect(await mailProblems(mailboxItemId)).toMatchObject([{ resolved_at: null }]);
+
+      // Fixture: a successful pass clears last_error. The sync job resolves its own problem in that
+      // pass; this test covers the check's recovery.
+      await pool.query(`UPDATE mail_account_sync_state SET last_error = NULL WHERE item_id = $1`, [mailboxItemId]);
+      await runCheck();
+
+      expect((await getTenantCheck(`mail:${mailboxItemId}`))?.status).toBe("ok");
+      expect(await mailProblems(mailboxItemId)).toMatchObject([
+        { resolved_at: expect.any(Date), resolution_kind: "recovered" },
+      ]);
+    });
+
+    it("raises no problem for a stalled mailbox while the tenant has no user", async () => {
+      const mailboxItemId = await overdueMailbox();
+
+      await runCheck();
+
+      expect((await getTenantCheck(`mail:${mailboxItemId}`))?.status).toBe("alerting");
+      expect(await mailProblems(mailboxItemId)).toEqual([]);
     });
   });
 
