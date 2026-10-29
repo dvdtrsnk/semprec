@@ -67,6 +67,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       id: created.id,
       toolName: "send_email",
       riskClass: "write",
+      riskLevel: "write",
       requestedAt: created.requestedAt,
       safeSummary: {
         kind: "mcpInvoke",
@@ -161,6 +162,51 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       operationName: "item.delete",
       argKeys: ["itemId"],
     });
+  });
+
+  it.each([
+    ["item.delete", "write"],
+    ["property.delete", "irreversible"],
+    ["database.archive", "write"],
+    ["view.delete", "irreversible"],
+    ["relation.delete", "irreversible"],
+  ] as const)("derives riskLevel for a generic %s request: %s", async (operationName, riskLevel) => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const resourceSnapshot = { kind: "test", resourceId: "test", sha256: null };
+    const created = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: operationName,
+      riskClass: "destructive",
+      payload: {
+        operationName,
+        canonicalInput: {},
+        actor: { runId: run.id, agentProjectItemId: randomUUID(), userId: run.actorUserId },
+        resourceSnapshot,
+      },
+      resourceSnapshot,
+    });
+    const rows = await listApprovalRequestsQueue(pool, ownerId);
+    expect(rows[0]!.riskLevel).toBe(riskLevel);
+    expect((await toApprovalRequestDecisionView(pool, created)).riskLevel).toBe(riskLevel);
+  });
+
+  it.each([
+    ["destructive", "irreversible"],
+    ["outbound", "outbound"],
+    ["breaksLink", "breaksLink"],
+    ["unclassified", "write"],
+  ] as const)("derives riskLevel for an MCP request of class %s: %s", async (riskClass, riskLevel) => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const created = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "some_tool",
+      riskClass,
+      payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    const rows = await listApprovalRequestsQueue(pool, ownerId);
+    expect(rows[0]!.riskLevel).toBe(riskLevel);
+    expect((await toApprovalRequestDecisionView(pool, created)).riskLevel).toBe(riskLevel);
   });
 
   describe("MCP server and tool names", () => {

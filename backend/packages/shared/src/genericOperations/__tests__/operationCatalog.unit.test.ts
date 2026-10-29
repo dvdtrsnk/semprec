@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { GENERIC_OPERATION_NAMES, type GenericOperationName } from "../operationNames.js";
 import { GENERIC_OPERATION_BINDINGS } from "../bindings.js";
-import { OPERATION_METADATA, RISK_CLASSES, isRiskClass, type CapabilityId, type RiskClass } from "../capabilities.js";
+import {
+  OPERATION_METADATA,
+  RISK_CLASSES,
+  deriveApprovalRiskLevel,
+  isRiskClass,
+  type CapabilityId,
+  type RiskClass,
+} from "../capabilities.js";
 import type { GenericApplicationPort } from "../port.js";
 import * as schemas from "../schemas.js";
 
@@ -43,37 +50,162 @@ const EXPECTED_ROWS: Record<
 
 const EXPECTED_METADATA: Record<
   GenericOperationName,
-  { requiresCapability: CapabilityId; requiresApproval: boolean; riskClass: RiskClass }
+  { requiresCapability: CapabilityId; requiresApproval: boolean; riskClass: RiskClass; reversible: boolean }
 > = {
-  "database.list": { requiresCapability: "core.database.read", requiresApproval: false, riskClass: "read" },
-  "database.get": { requiresCapability: "core.database.read", requiresApproval: false, riskClass: "read" },
-  "database.query": { requiresCapability: "core.database.read", requiresApproval: false, riskClass: "read" },
-  "database.create": { requiresCapability: "core.database.write", requiresApproval: false, riskClass: "write" },
-  "database.patch": { requiresCapability: "core.database.write", requiresApproval: false, riskClass: "write" },
-  "database.archive": { requiresCapability: "core.database.write", requiresApproval: true, riskClass: "destructive" },
-  "database.restore": { requiresCapability: "core.database.write", requiresApproval: false, riskClass: "write" },
-  "property.list": { requiresCapability: "core.schema.read", requiresApproval: false, riskClass: "read" },
-  "property.get": { requiresCapability: "core.schema.read", requiresApproval: false, riskClass: "read" },
-  "property.getByKey": { requiresCapability: "core.schema.read", requiresApproval: false, riskClass: "read" },
-  "property.create": { requiresCapability: "core.schema.write", requiresApproval: false, riskClass: "write" },
-  "property.patch": { requiresCapability: "core.schema.write", requiresApproval: false, riskClass: "write" },
-  "property.delete": { requiresCapability: "core.schema.write", requiresApproval: true, riskClass: "destructive" },
-  "view.list": { requiresCapability: "core.view.read", requiresApproval: false, riskClass: "read" },
-  "view.get": { requiresCapability: "core.view.read", requiresApproval: false, riskClass: "read" },
-  "view.query": { requiresCapability: "core.view.read", requiresApproval: false, riskClass: "read" },
-  "view.create": { requiresCapability: "core.view.write", requiresApproval: false, riskClass: "write" },
-  "view.patch": { requiresCapability: "core.view.write", requiresApproval: false, riskClass: "write" },
-  "view.delete": { requiresCapability: "core.view.write", requiresApproval: true, riskClass: "destructive" },
-  "viewItem.add": { requiresCapability: "core.view.write", requiresApproval: false, riskClass: "write" },
-  "viewItem.remove": { requiresCapability: "core.view.write", requiresApproval: false, riskClass: "write" },
-  "viewItem.reorder": { requiresCapability: "core.view.write", requiresApproval: false, riskClass: "write" },
-  "item.get": { requiresCapability: "core.item.read", requiresApproval: false, riskClass: "read" },
-  "item.create": { requiresCapability: "core.item.write", requiresApproval: false, riskClass: "write" },
-  "item.patch": { requiresCapability: "core.item.write", requiresApproval: false, riskClass: "write" },
-  "item.delete": { requiresCapability: "core.item.write", requiresApproval: true, riskClass: "destructive" },
-  "item.restore": { requiresCapability: "core.item.write", requiresApproval: false, riskClass: "write" },
-  "relation.put": { requiresCapability: "core.item.write", requiresApproval: false, riskClass: "write" },
-  "relation.delete": { requiresCapability: "core.item.write", requiresApproval: true, riskClass: "destructive" },
+  "database.list": {
+    requiresCapability: "core.database.read",
+    requiresApproval: false,
+    riskClass: "read",
+    reversible: true,
+  },
+  "database.get": {
+    requiresCapability: "core.database.read",
+    requiresApproval: false,
+    riskClass: "read",
+    reversible: true,
+  },
+  "database.query": {
+    requiresCapability: "core.database.read",
+    requiresApproval: false,
+    riskClass: "read",
+    reversible: true,
+  },
+  "database.create": {
+    requiresCapability: "core.database.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "database.patch": {
+    requiresCapability: "core.database.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "database.archive": {
+    requiresCapability: "core.database.write",
+    requiresApproval: true,
+    riskClass: "destructive",
+    reversible: true,
+  },
+  "database.restore": {
+    requiresCapability: "core.database.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "property.list": {
+    requiresCapability: "core.schema.read",
+    requiresApproval: false,
+    riskClass: "read",
+    reversible: true,
+  },
+  "property.get": {
+    requiresCapability: "core.schema.read",
+    requiresApproval: false,
+    riskClass: "read",
+    reversible: true,
+  },
+  "property.getByKey": {
+    requiresCapability: "core.schema.read",
+    requiresApproval: false,
+    riskClass: "read",
+    reversible: true,
+  },
+  "property.create": {
+    requiresCapability: "core.schema.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "property.patch": {
+    requiresCapability: "core.schema.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "property.delete": {
+    requiresCapability: "core.schema.write",
+    requiresApproval: true,
+    riskClass: "destructive",
+    reversible: false,
+  },
+  "view.list": { requiresCapability: "core.view.read", requiresApproval: false, riskClass: "read", reversible: true },
+  "view.get": { requiresCapability: "core.view.read", requiresApproval: false, riskClass: "read", reversible: true },
+  "view.query": { requiresCapability: "core.view.read", requiresApproval: false, riskClass: "read", reversible: true },
+  "view.create": {
+    requiresCapability: "core.view.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "view.patch": {
+    requiresCapability: "core.view.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "view.delete": {
+    requiresCapability: "core.view.write",
+    requiresApproval: true,
+    riskClass: "destructive",
+    reversible: false,
+  },
+  "viewItem.add": {
+    requiresCapability: "core.view.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "viewItem.remove": {
+    requiresCapability: "core.view.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "viewItem.reorder": {
+    requiresCapability: "core.view.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "item.get": { requiresCapability: "core.item.read", requiresApproval: false, riskClass: "read", reversible: true },
+  "item.create": {
+    requiresCapability: "core.item.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "item.patch": {
+    requiresCapability: "core.item.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "item.delete": {
+    requiresCapability: "core.item.write",
+    requiresApproval: true,
+    riskClass: "destructive",
+    reversible: true,
+  },
+  "item.restore": {
+    requiresCapability: "core.item.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "relation.put": {
+    requiresCapability: "core.item.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "relation.delete": {
+    requiresCapability: "core.item.write",
+    requiresApproval: true,
+    riskClass: "destructive",
+    reversible: false,
+  },
 };
 
 describe("GENERIC_OPERATION_NAMES", () => {
@@ -140,5 +272,25 @@ describe("RISK_CLASSES", () => {
 describe("OPERATION_METADATA", () => {
   it.each(GENERIC_OPERATION_NAMES)("'%s' carries the exact capability/approval/riskClass metadata", (name) => {
     expect(OPERATION_METADATA[name]).toEqual(EXPECTED_METADATA[name]);
+  });
+});
+
+describe("deriveApprovalRiskLevel", () => {
+  const cases: Array<[string, Parameters<typeof deriveApprovalRiskLevel>[0], string]> = [
+    ["item.delete", { riskClass: "destructive", operationName: "item.delete" }, "write"],
+    ["database.archive", { riskClass: "destructive", operationName: "database.archive" }, "write"],
+    ["property.delete", { riskClass: "destructive", operationName: "property.delete" }, "irreversible"],
+    ["view.delete", { riskClass: "destructive", operationName: "view.delete" }, "irreversible"],
+    ["relation.delete", { riskClass: "destructive", operationName: "relation.delete" }, "irreversible"],
+    ["MCP destructive tool", { riskClass: "destructive" }, "irreversible"],
+    ["destructive unknown operation name", { riskClass: "destructive", operationName: "toString" }, "irreversible"],
+    ["outbound tool", { riskClass: "outbound" }, "outbound"],
+    ["breaksLink request", { riskClass: "breaksLink" }, "breaksLink"],
+    ["write", { riskClass: "write" }, "write"],
+    ["read", { riskClass: "read" }, "write"],
+    ["unclassified", { riskClass: "unclassified" }, "write"],
+  ];
+  it.each(cases)("%s", (_label, input, expected) => {
+    expect(deriveApprovalRiskLevel(input)).toBe(expected);
   });
 });

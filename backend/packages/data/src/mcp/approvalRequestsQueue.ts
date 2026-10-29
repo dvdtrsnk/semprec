@@ -1,4 +1,4 @@
-import type { RiskClass } from "@semprec/shared";
+import { deriveApprovalRiskLevel, type ApprovalRiskLevel, type RiskClass } from "@semprec/shared";
 import type { Queryable } from "../db/pool.js";
 import { getAgentRunsByIds } from "../agentRuns/agentRunsStore.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
@@ -41,6 +41,8 @@ export interface ApprovalRequestQueueEntry {
   id: string;
   toolName: string;
   riskClass: RiskClass;
+  /** Closed key the client maps to a label; derived from the class and, for generic operations, the operation. */
+  riskLevel: ApprovalRiskLevel;
   requestedAt: string;
   safeSummary: ApprovalRequestSafeSummary;
   agentRunId: string;
@@ -99,6 +101,15 @@ function safeSummaryOf(payload: ApprovalRequest["payload"], names: ResolvedMcpNa
   };
 }
 
+function riskLevelOf(request: ApprovalRequest): ApprovalRiskLevel {
+  return deriveApprovalRiskLevel({
+    riskClass: request.riskClass,
+    operationName: isGenericOperationApprovalRequestPayload(request.payload)
+      ? request.payload.operationName
+      : undefined,
+  });
+}
+
 /**
  * What `PATCH /api/approval-requests/:id` returns for a decided (or already-decided) request: the
  * decision's outcome plus the same triage fields the queue shows, with the payload reduced to
@@ -115,6 +126,8 @@ export interface ApprovalRequestDecisionView {
   conflictReason: ApprovalConflictReason | null;
   toolName: string;
   riskClass: RiskClass;
+  /** Closed key the client maps to a label; derived from the class and, for generic operations, the operation. */
+  riskLevel: ApprovalRiskLevel;
   requestedAt: string;
   agentRunId: string;
   safeSummary: ApprovalRequestSafeSummary;
@@ -136,6 +149,7 @@ export async function toApprovalRequestDecisionView(
     conflictReason: approvalConflictReason(request.executionStatus, request.executionResult),
     toolName: request.toolName,
     riskClass: request.riskClass,
+    riskLevel: riskLevelOf(request),
     requestedAt: request.requestedAt,
     agentRunId: request.agentRunId,
     safeSummary: safeSummaryOf(request.payload, names),
@@ -178,6 +192,7 @@ export async function listApprovalRequestsQueue(
       id: request.id,
       toolName: request.toolName,
       riskClass: request.riskClass,
+      riskLevel: riskLevelOf(request),
       requestedAt: request.requestedAt,
       safeSummary: safeSummaryOf(request.payload, names),
       agentRunId: request.agentRunId,
