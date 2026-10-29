@@ -25,9 +25,56 @@ export interface FilterProperty {
 export type FilterProperties = Map<string, FilterProperty>;
 
 type RelationCondition = Extract<FilterCondition, { type: "relation_contains" | "relation_not_contains" }>;
+type RelationEmptinessCondition = Extract<FilterCondition, { type: "relation_is_empty" | "relation_is_not_empty" }>;
 
-function isRelationCondition(node: FilterCondition): node is RelationCondition {
-  return node.type === "relation_contains" || node.type === "relation_not_contains";
+function isRelationCondition(node: FilterCondition): node is RelationCondition | RelationEmptinessCondition {
+  return (
+    node.type === "relation_contains" ||
+    node.type === "relation_not_contains" ||
+    node.type === "relation_is_empty" ||
+    node.type === "relation_is_not_empty"
+  );
+}
+
+function isRelationEmptinessCondition(node: FilterCondition): node is RelationEmptinessCondition {
+  return node.type === "relation_is_empty" || node.type === "relation_is_not_empty";
+}
+
+/**
+ * Emptiness of a relation property: an edge only counts when its other end is a live item of
+ * the target database. The definition id and database id are bound parameters; only the
+ * `a`/`b` side names, taken from the registered definition, are interpolated. The lateral
+ * lookup with `OFFSET 0` pins the join to the target database partition, as in the path filter.
+ */
+function compileRelationEmptinessCondition(
+  node: RelationEmptinessCondition,
+  property: FilterProperty,
+  params: unknown[],
+): string {
+  if (!property.relationDefinitionId || !property.relationSide || !property.targetDatabaseId) {
+    throw new ValidationError(`Relation property '${node.property}' has no resolvable relation definition`, {
+      field: node.property,
+    });
+  }
+  const ownSide = property.relationSide === "a" ? "item_a" : "item_b";
+  const targetSide = property.relationSide === "a" ? "item_b" : "item_a";
+  params.push(property.relationDefinitionId);
+  const definitionParam = params.length;
+  params.push(property.targetDatabaseId);
+  const databaseParam = params.length;
+  const exists = `EXISTS (
+    SELECT 1 FROM item_relations r
+    CROSS JOIN LATERAL (
+      SELECT live.id FROM items live
+      WHERE live.database_id = $${databaseParam}::uuid
+        AND live.id = r.${targetSide}
+        AND live.deleted_at IS NULL
+      OFFSET 0
+    ) live_target
+    WHERE r.relation_definition_id = $${definitionParam}
+      AND r.${ownSide} = items.id
+  )`;
+  return node.type === "relation_is_not_empty" ? exists : `(NOT ${exists})`;
 }
 
 /**
@@ -193,10 +240,11 @@ function compileCondition(
     throw new ValidationError(
       isRelationCondition(node)
         ? `Condition '${node.type}' requires a relation property, but '${node.property}' is '${property.type}'`
-        : `Property '${node.property}' is a relation; filter it with relation_contains/relation_not_contains`,
+        : `Property '${node.property}' is a relation; filter it with relation_contains/relation_not_contains or relation_is_empty/relation_is_not_empty`,
       { field: node.property },
     );
   }
+  if (isRelationEmptinessCondition(node)) return compileRelationEmptinessCondition(node, property, params);
   if (isRelationCondition(node)) return compileRelationCondition(node, property, params);
 
   params.push(node.property);

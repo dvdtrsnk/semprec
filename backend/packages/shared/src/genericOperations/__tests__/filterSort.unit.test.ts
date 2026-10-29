@@ -59,3 +59,23 @@ describe("relation_path_contains schema", () => {
     ).toBe(false);
   });
 });
+
+describe("relation emptiness schema", () => {
+  it.each(["relation_is_empty", "relation_is_not_empty"])(
+    "accepts %s with a property only, also in a group",
+    (type) => {
+      const node = { type, property: "projects" };
+      expect(filterNodeSchema.parse(node)).toEqual(node);
+      expect(filterNodeSchema.safeParse({ type: "and", nodes: [node] }).success).toBe(true);
+    },
+  );
+
+  it.each([{ property: undefined }, { property: "" }, { property: 1 }, { value: "x" }, { path: ["a", "b"] }])(
+    "rejects malformed emptiness condition %j",
+    (override) => {
+      expect(filterNodeSchema.safeParse({ type: "relation_is_empty", property: "projects", ...override }).success).toBe(
+        false,
+      );
+    },
+  );
+});

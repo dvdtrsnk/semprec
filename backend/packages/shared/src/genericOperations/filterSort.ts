@@ -26,6 +26,8 @@ export const FILTER_CONDITION_TYPES = [
   "relation_contains",
   "relation_not_contains",
   "relation_path_contains",
+  "relation_is_empty",
+  "relation_is_not_empty",
 ] as const;
 export type FilterConditionType = (typeof FILTER_CONDITION_TYPES)[number];
 
@@ -59,7 +61,8 @@ export type FilterCondition =
   | { type: "in"; property: string; value: string[] }
   /** `value` must be a UUID string — `filterConditionSchema` validates it with `z.uuid()`. */
   | { type: "relation_contains" | "relation_not_contains"; property: string; value: string }
-  | { type: "relation_path_contains"; path: [string, string]; value: string };
+  | { type: "relation_path_contains"; path: [string, string]; value: string }
+  | { type: "relation_is_empty" | "relation_is_not_empty"; property: string };
 
 export type FilterNode =
   | FilterCondition
@@ -142,6 +145,7 @@ const filterConditionSchema = z.union([
     .object({ type: z.enum(["relation_contains", "relation_not_contains"]), property: filterProperty, value: z.uuid() })
     .strict(),
   relationPathCondition,
+  z.object({ type: z.enum(["relation_is_empty", "relation_is_not_empty"]), property: filterProperty }).strict(),
 ]);
 
 /**
