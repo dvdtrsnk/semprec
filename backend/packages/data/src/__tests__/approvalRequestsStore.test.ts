@@ -237,6 +237,132 @@ describe("approvalRequestsStore description (issue #1683)", () => {
   });
 });
 
+describe("approvalRequestsStore thread activity (issue #1728)", () => {
+  const OLD = "2020-01-01T00:00:00Z";
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool, createViewTypeRegistry());
+    ownerId = await createUser();
+  });
+
+  async function insertThread(activityAt = OLD): Promise<string> {
+    const { rows } = await pool.query<{ id: string }>(
+      "INSERT INTO semp_threads (kind, last_activity_at) VALUES ('chat', $1) RETURNING id",
+      [activityAt],
+    );
+    return rows[0]!.id;
+  }
+
+  async function activity(threadId: string): Promise<number> {
+    const { rows } = await pool.query<{ t: Date }>("SELECT last_activity_at AS t FROM semp_threads WHERE id = $1", [
+      threadId,
+    ]);
+    return rows[0]!.t.getTime();
+  }
+
+  function genericPayload(runId: string) {
+    return {
+      operationName: "deleteView",
+      canonicalInput: {},
+      actor: { runId, agentProjectItemId: randomUUID(), userId: ownerId },
+      resourceSnapshot: { kind: "view", resourceId: "v", sha256: null },
+    };
+  }
+
+  function mcpPayload() {
+    return { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} };
+  }
+
+  it.each([
+    ["generic operation", true],
+    ["MCP tool call", false],
+  ])("raises the thread's activity to the creation time for a %s request", async (_label, generic) => {
+    const threadId = await insertThread();
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "t", userId: ownerId, threadId });
+    const before = Date.now();
+    await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "tool",
+      riskClass: "unclassified",
+      payload: generic ? genericPayload(run.id) : mcpPayload(),
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    expect(await activity(threadId)).toBeGreaterThanOrEqual(before - 1000);
+  });
+
+  it("leaves every thread untouched for a run without a thread", async () => {
+    const threadId = await insertThread();
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "t", userId: ownerId });
+    await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "tool",
+      riskClass: "unclassified",
+      payload: mcpPayload(),
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    expect(await activity(threadId)).toBe(new Date(OLD).getTime());
+  });
+
+  it("leaves the activity unchanged when the request transaction rolls back", async () => {
+    const threadId = await insertThread();
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "t", userId: ownerId, threadId });
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await createPendingApprovalRequest(client, {
+        agentRunId: run.id,
+        toolName: "tool",
+        riskClass: "unclassified",
+        payload: mcpPayload(),
+        resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      });
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+    expect(await activity(threadId)).toBe(new Date(OLD).getTime());
+  });
+
+  it("bumps the thread a delegated run is linked to", async () => {
+    const threadId = await insertThread();
+    const parent = await createAgentRun(pool, { triggeredBy: "user", task: "t", userId: ownerId, threadId });
+    const child = await createAgentRun(pool, { triggeredBy: "supervisor", task: "sub", parentRunId: parent.id });
+    await createPendingApprovalRequest(pool, {
+      agentRunId: child.id,
+      toolName: "tool",
+      riskClass: "unclassified",
+      payload: mcpPayload(),
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    expect(await activity(threadId)).toBeGreaterThan(new Date(OLD).getTime());
+  });
+
+  it("never moves activity backwards when a newer activity committed after the transaction started", async () => {
+    const threadId = await insertThread();
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "t", userId: ownerId, threadId });
+    const client = await pool.connect();
+    const future = new Date(Date.now() + 3_600_000);
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT now()"); // fixes the transaction start time
+      await pool.query("UPDATE semp_threads SET last_activity_at = $2 WHERE id = $1", [threadId, future]);
+      await createPendingApprovalRequest(client, {
+        agentRunId: run.id,
+        toolName: "tool",
+        riskClass: "unclassified",
+        payload: mcpPayload(),
+        resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      });
+      await client.query("COMMIT");
+    } finally {
+      client.release();
+    }
+    expect(await activity(threadId)).toBe(future.getTime());
+  });
+});
+
 describe("approvalRequestsStore (issue #130)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();

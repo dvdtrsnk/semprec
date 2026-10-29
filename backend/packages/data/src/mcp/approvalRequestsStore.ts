@@ -253,7 +253,17 @@ export async function createPendingApprovalRequest(
     );
     return rowToApprovalRequest(requireSingleRow(existing.rows, "approval_requests tool call lookup"));
   }
-  return rowToApprovalRequest(requireSingleRow(rows, "approval_requests insert RETURNING"));
+  const created = rowToApprovalRequest(requireSingleRow(rows, "approval_requests insert RETURNING"));
+  // Raise the requesting run's thread to the top of the activity ordering (issue #1728). Runs in the
+  // caller's transaction, so a rollback drops it with the request; GREATEST never lowers a newer
+  // activity committed after this transaction started (`now()` is the transaction start time). A
+  // run without a thread matches no row. A replayed tool call (conflict above) is not new activity.
+  await client.query(
+    `UPDATE semp_threads SET last_activity_at = GREATEST(last_activity_at, now())
+      WHERE id = (SELECT thread_id FROM agent_runs WHERE id = $1)`,
+    [input.agentRunId],
+  );
+  return created;
 }
 
 /** `forUpdate` row-locks the request for the duration of the caller's transaction — `approvalExecute`'s locked revalidate-then-mutate protocol (issue #89) needs this so a concurrent decide/replay can't observe or race a half-finished execution. */
