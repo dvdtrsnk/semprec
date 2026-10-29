@@ -1,3 +1,4 @@
+import "../domainWriteHooks.js";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
