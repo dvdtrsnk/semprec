@@ -10,7 +10,7 @@ export {
   createRegisterPushSubscriptionRouteHandler,
   createRevokePushSubscriptionRouteHandler,
 } from "../push/pushRouteHandlers.js";
-export { createAiUsageRouteHandler } from "../aiGateway/aiUsageRouteHandler.js";
+export { createAiUsageRouteHandler, createAiUsageSummaryRouteHandler } from "../aiGateway/aiUsageRouteHandler.js";
 export { createSystemHealthRouteHandler } from "../observability/systemHealthRouteHandler.js";
 export {
   createGetNotificationPreferencesRouteHandler,
@@ -79,6 +79,16 @@ export const manifest: ModuleManifest = {
       // An aggregate report over ai_gateway_calls/agent_runs/system settings, outside the item
       // model entirely — issue #239's "aggregate read outside the item model" justification.
       justification: "transactional-semantics",
+    },
+    {
+      name: "aiUsageSummary",
+      method: "GET",
+      path: "/api/ai-usage/summary",
+      handlerExport: "createAiUsageSummaryRouteHandler",
+      // One read shaped for the caller's own spend against its own caps (issue gh-1456): the budget
+      // row, the system timezone and the gateway's spend. The request carries no input.
+      // The "single-consumer-read" justification.
+      justification: "single-consumer-read",
     },
     {
       name: "systemHealthReport",
