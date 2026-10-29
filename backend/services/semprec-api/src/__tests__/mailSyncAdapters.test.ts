@@ -26,6 +26,9 @@ import {
   createItemWithClient,
   getDatabaseByModuleId,
   loadFullModuleRegistry,
+  MailConnectionLimitError,
+  MailReauthorizationRequiredError,
+  MailServerUnreachableError,
   seedSystem,
   upsertMailServerSettings,
   withTransaction,
@@ -730,6 +733,7 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
 const IMAP_HOST = "imap.mail.test";
 /** The settings store accepts only the standard IMAP ports (migration 0101), so the tests store 993. `redirectImapConnections` sends the connection to the fake server's own port. */
 const IMAP_STANDARD_PORT = 993;
+const IMAP_ENDPOINT: MailServerEndpoint = { host: IMAP_HOST, port: IMAP_STANDARD_PORT, security: "tls" };
 const IMAP_USERNAME = "owner@mail.test";
 const IMAP_PASSWORD = "app-password-stored-for-issue-1510";
 const IMAP_WRONG_PASSWORD = "app-password-revoked-for-issue-1510";
@@ -965,6 +969,7 @@ describe("IMAP-mode accounts (issue #1510)", () => {
   let runtime: ApiQueueRuntime | undefined;
   let stub: DnsLookupStub | undefined;
   let restorePolicy: (() => void) | undefined;
+  let savedGatewayToken: string | undefined;
 
   beforeAll(() => {
     imapCertificate = makeTlsCertificate(IMAP_HOST);
@@ -976,6 +981,7 @@ describe("IMAP-mode accounts (issue #1510)", () => {
     await seedSystem(pool);
     // The `mail_sync_error` notification the failed sync writes targets the tenant's user, so bind one.
     await createTenantZeroUser(pool);
+    savedGatewayToken = process.env.AI_GATEWAY_INTERNAL_TOKEN;
     // `createAiGatewayClientForApi` requires this to build the api runtime.
     process.env.AI_GATEWAY_INTERNAL_TOKEN = randomUUID();
     runtime = undefined;
@@ -990,6 +996,7 @@ describe("IMAP-mode accounts (issue #1510)", () => {
     restorePolicy = undefined;
     vi.restoreAllMocks();
     for (const server of imapServers.splice(0)) await server.close();
+    setEnv("AI_GATEWAY_INTERNAL_TOKEN", savedGatewayToken);
   });
 
   /** Sends IMAP_HOST to `server` on loopback under the test policy, and trusts the test certificate for the connections. */
@@ -1010,10 +1017,19 @@ describe("IMAP-mode accounts (issue #1510)", () => {
     runtime = await createApiQueueRuntime(pool, await loadFullModuleRegistry());
   }
 
-  /** An IMAP Mailbox item with its app password and a sync-state row for `imap`, and its server settings unless `imap` is null. */
+  /** The endpoints of one stored settings row. */
+  interface StoredEndpoints {
+    imap: MailServerEndpoint | null;
+    smtp: MailServerEndpoint | null;
+  }
+
+  /**
+   * An IMAP Mailbox item with its app password and a sync-state row for `imap`. The server settings hold
+   * `endpoints`; `null` stores no settings row at all.
+   */
   async function createImapMailbox(
     name: string,
-    imap: MailServerEndpoint | null = { host: IMAP_HOST, port: IMAP_STANDARD_PORT, security: "tls" },
+    endpoints: StoredEndpoints | null = { imap: IMAP_ENDPOINT, smtp: null },
     password = IMAP_PASSWORD,
   ): Promise<string> {
     return inTenantZero(() =>
@@ -1026,12 +1042,24 @@ describe("IMAP-mode accounts (issue #1510)", () => {
         });
         await storeCredential(client, { itemId: item.id, credentialType: "app_password", plaintext: password });
         await ensureMailAccountSyncState(client, { itemId: item.id, syncMode: "imap" });
-        if (imap !== null) {
-          await upsertMailServerSettings(client, item.id, { imap, smtp: null, username: IMAP_USERNAME });
+        if (endpoints !== null) {
+          await upsertMailServerSettings(client, item.id, {
+            imap: endpoints.imap,
+            smtp: endpoints.smtp,
+            username: IMAP_USERNAME,
+          });
         }
         return item.id;
       }),
     );
+  }
+
+  /** Messages ingested so far, across every mailbox; a refused or failed pass must leave this at zero. */
+  async function ingestedMessageCount(): Promise<number> {
+    const { rows } = await pool.query<{ count: number }>(`SELECT count(*)::int AS count FROM mail_message_meta`);
+    const row = rows[0];
+    if (!row) throw new Error("fixture: the message count query returned no row");
+    return row.count;
   }
 
   async function enqueueAccountSync(mailboxItemId: string): Promise<void> {
@@ -1086,8 +1114,46 @@ describe("IMAP-mode accounts (issue #1510)", () => {
       await waitFor(async () => (await syncStatusOf(mailboxId)) === "error");
       expect(await syncErrorOf(mailboxId)).toBe("The mail server could not be reached");
       expect(server.accepted()).toBe(0);
+      expect(await ingestedMessageCount()).toBe(0);
     },
   );
+
+  it("a refused address fails the factory itself with MailServerUnreachableError, before any connection", async () => {
+    const server = await startFakeImapServer(imapCertificate);
+    redirectImapConnections(server);
+    stub = stubDnsLookup({ [IMAP_HOST]: ["127.0.0.1"] });
+    const mailboxId = await createImapMailbox("Refused address direct");
+    const adapters = createMailSyncAdapters({ pool, env: {} });
+
+    const error = await inTenantZero(() => rejectionOf(adapters.createImapClient!(mailboxId, IMAP_PASSWORD)));
+
+    expect(error).toBeInstanceOf(MailServerUnreachableError);
+    expect(server.accepted()).toBe(0);
+  });
+
+  it("the factory maps a rejected login to MailReauthorizationRequiredError, without the password in the message", async () => {
+    const server = await startFakeImapServer(imapCertificate);
+    reachFakeImap(server);
+    const mailboxId = await createImapMailbox("Rejected login direct", undefined, IMAP_WRONG_PASSWORD);
+    const adapters = createMailSyncAdapters({ pool, env: {} });
+
+    const error = await inTenantZero(() => rejectionOf(adapters.createImapClient!(mailboxId, IMAP_WRONG_PASSWORD)));
+
+    expect(error).toBeInstanceOf(MailReauthorizationRequiredError);
+    expect(error.message).not.toContain(IMAP_WRONG_PASSWORD);
+  });
+
+  it("the factory maps the too-many-connections rejection to MailConnectionLimitError", async () => {
+    const server = await startFakeImapServer(imapCertificate, { connectionLimit: true });
+    reachFakeImap(server);
+    const mailboxId = await createImapMailbox("Busy server direct");
+    const adapters = createMailSyncAdapters({ pool, env: {} });
+
+    const error = await inTenantZero(() => rejectionOf(adapters.createImapClient!(mailboxId, IMAP_PASSWORD)));
+
+    expect(error).toBeInstanceOf(MailConnectionLimitError);
+    expect(error.message).not.toContain(IMAP_PASSWORD);
+  });
 
   it("marks the account needsReauthorization when the server rejects the login, with no password in the recorded error", async () => {
     const server = await startFakeImapServer(imapCertificate);
@@ -1102,6 +1168,7 @@ describe("IMAP-mode accounts (issue #1510)", () => {
     expect(error).toBe("The IMAP server rejected the stored login; reauthorize the mailbox");
     expect(error).not.toContain(IMAP_WRONG_PASSWORD);
     expect(error).not.toContain(IMAP_PASSWORD);
+    expect(await ingestedMessageCount()).toBe(0);
   });
 
   it("backs off through MailConnectionLimitError when the server reports too many simultaneous connections", async () => {
@@ -1122,6 +1189,7 @@ describe("IMAP-mode accounts (issue #1510)", () => {
       [mailboxId],
     );
     expect(rows[0]?.backed_off).toBe(true);
+    expect(await ingestedMessageCount()).toBe(0);
   });
 
   it("closes the IMAP socket when the pass throws, and keeps the password out of the recorded error", async () => {
@@ -1135,6 +1203,7 @@ describe("IMAP-mode accounts (issue #1510)", () => {
     await waitFor(async () => (await syncStatusOf(mailboxId)) === "error");
     expect(server.accepted()).toBeGreaterThan(0);
     expect(await syncErrorOf(mailboxId)).not.toContain(IMAP_PASSWORD);
+    expect(await ingestedMessageCount()).toBe(0);
     await waitFor(async () => server.closed() === server.accepted());
   });
 
@@ -1146,5 +1215,17 @@ describe("IMAP-mode accounts (issue #1510)", () => {
 
     expect(error.message).toBe(`Mailbox ${mailboxId} has no IMAP server settings; set the IMAP host before syncing it`);
     expect(error.message).not.toContain(IMAP_PASSWORD);
+  });
+
+  it("a mailbox whose stored settings hold only an SMTP endpoint fails with the same configuration error", async () => {
+    const mailboxId = await createImapMailbox("SMTP only", {
+      imap: null,
+      smtp: { host: "smtp.mail.test", port: 465, security: "tls" },
+    });
+    const adapters = createMailSyncAdapters({ pool, env: {} });
+
+    const error = await inTenantZero(() => rejectionOf(adapters.createImapClient!(mailboxId, IMAP_PASSWORD)));
+
+    expect(error.message).toBe(`Mailbox ${mailboxId} has no IMAP server settings; set the IMAP host before syncing it`);
   });
 });

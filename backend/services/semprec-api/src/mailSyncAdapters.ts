@@ -138,15 +138,20 @@ function classifyImapConnectError(error: unknown): unknown {
   if (isImapConnectionLimitError(error)) {
     return new MailConnectionLimitError("The IMAP server reports too many simultaneous connections for this account");
   }
-  // imapflow sets `authenticationFailed` on a login the server rejected (imapflow's commands/login.js).
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    (error as { authenticationFailed?: unknown }).authenticationFailed === true
-  ) {
+  if (isLoginRejection(error)) {
     return new MailReauthorizationRequiredError("The IMAP server rejected the stored login; reauthorize the mailbox");
   }
   return error;
+}
+
+/** imapflow sets `authenticationFailed` on a login the server rejected (imapflow's commands/login.js). */
+function isLoginRejection(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "authenticationFailed" in error &&
+    error.authenticationFailed === true
+  );
 }
 
 /**
