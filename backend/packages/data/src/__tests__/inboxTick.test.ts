@@ -94,12 +94,10 @@ describe("Inbox item event dispatch (issue #103)", () => {
     await pool?.end();
   });
 
-  async function createItem(inboxId: string, journalId: string, overrides: Partial<{ text: string }> = {}) {
+  async function createItem(inboxId: string, overrides: Partial<{ text: string }> = {}) {
     return withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         ...overrides,
@@ -119,8 +117,7 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
   it("create enqueues a heartbeat-fire job scoped to that item, transactionally", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
-    const item = await createItem(inboxId, journalId);
+    const item = await createItem(inboxId);
 
     const jobs = await pendingTickJobs();
     expect(jobs).toHaveLength(1);
@@ -130,8 +127,7 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
   it("update and delete each enqueue their own item-scoped job, never colliding with create's", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
-    const item = await createItem(inboxId, journalId);
+    const item = await createItem(inboxId);
 
     await chokePoint.updateItem({ databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "edited" } });
     const afterUpdate = await pendingTickJobs();
@@ -145,8 +141,7 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
   it("rapid pending updates on the same item collapse into a single job that reads the latest state", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
-    const item = await inTenantZero(() => createItem(inboxId, journalId));
+    const item = await inTenantZero(() => createItem(inboxId));
 
     await inTenantZero(() =>
       chokePoint.updateItem({ databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "first edit" } }),
@@ -172,9 +167,8 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
   it("different Inbox items never deduplicate each other", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
-    const itemA = await inTenantZero(() => createItem(inboxId, journalId));
-    const itemB = await inTenantZero(() => createItem(inboxId, journalId));
+    const itemA = await inTenantZero(() => createItem(inboxId));
+    const itemB = await inTenantZero(() => createItem(inboxId));
 
     const jobs = await pendingTickJobs();
     expect(jobs).toHaveLength(2);
@@ -187,15 +181,12 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
   it("a rolled-back item mutation emits no job", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
 
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
       await createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
       });
@@ -210,10 +201,9 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
   it("inside a tenant scope the tick job lands on the tenant's semprec-tick lane", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
     const tenantZero = getTenantZeroId();
 
-    await runInTenant(tenantZero, () => createItem(inboxId, journalId));
+    await runInTenant(tenantZero, () => createItem(inboxId));
 
     const jobs = await pendingTickJobs();
     expect(jobs).toHaveLength(1);
@@ -222,14 +212,11 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
   it("routes the heartbeat-fire job to the queue affinity registered for the semprec.tick handler", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
     const queueAffinity = new Map([[SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME]]);
 
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         queueAffinity,
@@ -244,8 +231,7 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
   it("with no queue affinity supplied, the job runs on the production semprec-tick queue", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
-    await createItem(inboxId, journalId);
+    await createItem(inboxId);
 
     const jobs = await pendingTickJobs();
     expect(jobs).toHaveLength(1);
@@ -254,9 +240,8 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
   it("createChokePoint(pool) with defaults routes update and delete ticks to semprec-tick", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
     const defaultChokePoint = createChokePoint(pool, undefined, viewTypeRegistry);
-    const item = await createItem(inboxId, journalId);
+    const item = await createItem(inboxId);
 
     await defaultChokePoint.updateItem({
       databaseId: inboxId,
@@ -291,15 +276,12 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
   it("routes the update and soft-delete paths' heartbeat-fire jobs to the same queue affinity as create", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
     const queueAffinity = new Map([[SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME]]);
     const affinitizedChokePoint = createChokePoint(pool, undefined, viewTypeRegistry, queueAffinity);
 
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         queueAffinity,
@@ -323,7 +305,6 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
   it("a timeout on a non-final queue attempt keeps the heartbeat job for its retry and writes no card (issue #1485)", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
     const typesId = await databaseIdFor("inboxItemTypes");
     const proposalsId = await databaseIdFor("processingProposals");
     const type = await inTenantZero(() =>
@@ -341,8 +322,6 @@ describe("Inbox item event dispatch (issue #103)", () => {
       withTransaction(pool, (client) =>
         createInboxItemWithClient(client, {
           inboxDatabaseId: inboxId,
-          journalDatabaseId: journalId,
-          timezone: "Europe/Prague",
           date: "2026-08-28",
           time: "09:00",
           text: "Buy milk",

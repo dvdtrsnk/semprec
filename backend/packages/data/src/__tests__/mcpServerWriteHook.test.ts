@@ -313,13 +313,10 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
 
   it("refuses to confirm a stored envelope whose url fails the baseline", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
     const proposalsId = await databaseIdFor("processingProposals");
     const inboxItem = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "connect a server",
@@ -365,13 +362,10 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
   it("refuses an admin confirming a stored stdio envelope", async () => {
     await createAdmin();
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
     const proposalsId = await databaseIdFor("processingProposals");
     const inboxItem = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "connect a server",

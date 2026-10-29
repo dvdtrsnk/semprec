@@ -100,8 +100,6 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
       withTransaction(pool, (client) =>
         createInboxItemWithClient(client, {
           inboxDatabaseId: inboxId,
-          journalDatabaseId: journalId,
-          timezone: "Europe/Prague",
           date: "2026-08-28",
           time: "09:00",
           text,
@@ -177,8 +175,6 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
       withTransaction(pool, (client) =>
         createInboxItemWithClient(client, {
           inboxDatabaseId: inboxId,
-          journalDatabaseId: journalId,
-          timezone: "Europe/Prague",
           date: "2026-08-29",
           time: "09:00",
           text: "Day two item",

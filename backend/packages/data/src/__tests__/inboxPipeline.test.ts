@@ -184,14 +184,11 @@ describe("Inbox pipeline databases (issue #101)", () => {
 
   it("rejects an Inbox item missing date or time", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
 
     await expect(
       withTransaction(pool, (client) =>
         createInboxItemWithClient(client, {
           inboxDatabaseId: inboxId,
-          journalDatabaseId: journalId,
-          timezone: "Europe/Prague",
           date: "",
           time: "14:30",
         }),
@@ -202,8 +199,6 @@ describe("Inbox pipeline databases (issue #101)", () => {
       withTransaction(pool, (client) =>
         createInboxItemWithClient(client, {
           inboxDatabaseId: inboxId,
-          journalDatabaseId: journalId,
-          timezone: "Europe/Prague",
           date: "2026-08-28",
           time: "",
         }),
@@ -219,8 +214,6 @@ describe("Inbox pipeline databases (issue #101)", () => {
       withTransaction(pool, (client) =>
         createInboxItemWithClient(client, {
           inboxDatabaseId: inboxId,
-          journalDatabaseId: journalId,
-          timezone: "Europe/Prague",
           date: "not-a-date",
           time: "14:30",
         }),
@@ -244,8 +237,6 @@ describe("Inbox pipeline databases (issue #101)", () => {
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "23:45",
         text: "Buy milk",
@@ -264,8 +255,6 @@ describe("Inbox pipeline databases (issue #101)", () => {
     const secondItem = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "08:00",
       }),
@@ -284,13 +273,10 @@ describe("Inbox pipeline databases (issue #101)", () => {
 
   it("an Inbox item without a type can still be created", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
 
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
       }),
@@ -301,7 +287,6 @@ describe("Inbox pipeline databases (issue #101)", () => {
   it("links an Inbox item to a real type by id, and renaming the type's emoji does not break the relation", async () => {
     const inboxId = await databaseIdFor("inbox");
     const typesId = await databaseIdFor("inboxItemTypes");
-    const journalId = await databaseIdFor("journal");
 
     const type = await chokePoint.createItem({
       databaseId: typesId,
@@ -310,8 +295,6 @@ describe("Inbox pipeline databases (issue #101)", () => {
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         type: type.id,
@@ -491,7 +474,6 @@ describe("Inbox pipeline databases (issue #101)", () => {
     const inboxId = await databaseIdFor("inbox");
     const typesId = await databaseIdFor("inboxItemTypes");
     const proposalsId = await databaseIdFor("processingProposals");
-    const journalId = await databaseIdFor("journal");
 
     const type = await withTransaction(pool, (client) =>
       createInboxTypeWithClient(client, {
@@ -506,8 +488,6 @@ describe("Inbox pipeline databases (issue #101)", () => {
     const unlockedItem = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         type: type.id,
@@ -516,8 +496,6 @@ describe("Inbox pipeline databases (issue #101)", () => {
     const lockedItem = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "10:00",
         type: type.id,
@@ -571,7 +549,6 @@ describe("Inbox pipeline databases (issue #101)", () => {
     const inboxId = await databaseIdFor("inbox");
     const typesId = await databaseIdFor("inboxItemTypes");
     const proposalsId = await databaseIdFor("processingProposals");
-    const journalId = await databaseIdFor("journal");
 
     const type = await withTransaction(pool, (client) =>
       createInboxTypeWithClient(client, {
@@ -593,8 +570,6 @@ describe("Inbox pipeline databases (issue #101)", () => {
     const unlockedNoProposals = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         type: type.id,
@@ -603,8 +578,6 @@ describe("Inbox pipeline databases (issue #101)", () => {
     const unlockedManyProposals = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "10:00",
         type: type.id,
@@ -632,8 +605,6 @@ describe("Inbox pipeline databases (issue #101)", () => {
     const lockedItem = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "11:00",
         type: type.id,

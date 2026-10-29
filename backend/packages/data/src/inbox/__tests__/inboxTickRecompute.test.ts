@@ -99,8 +99,6 @@ describe("Inbox tick write phase recomputes the day's Inbox summary (issue #1390
       withTransaction(pool, (client) =>
         createInboxItemWithClient(client, {
           inboxDatabaseId: inboxId,
-          journalDatabaseId: journalId,
-          timezone: "Europe/Prague",
           date: "2026-08-28",
           time: "09:00",
           text,

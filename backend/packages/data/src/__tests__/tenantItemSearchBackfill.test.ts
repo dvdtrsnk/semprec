@@ -394,10 +394,8 @@ describe("item search create/update hooks", () => {
       await withTransaction(pool, async (client) => {
         await createInboxItemWithClient(client, {
           inboxDatabaseId,
-          journalDatabaseId: databaseId,
           date: "2026-10-27",
           time: "12:00",
-          timezone: "UTC",
           text: "Journal Inbox observation",
         });
       });
