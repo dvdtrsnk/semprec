@@ -292,6 +292,7 @@ export {
 } from "./mail/mailDraftsStore.js";
 export { resolveMergedThreadId } from "./mail/mailMessageMetaStore.js";
 export { manifest as mailModuleManifest } from "./mail/mailModuleManifest.js";
+export { getMailboxRemovalImpact, type MailboxRemovalImpact } from "./mail/mailboxRemovalImpact.js";
 export {
   refreshAndPersistAccessToken,
   type RefreshAndPersistAccessTokenInput,

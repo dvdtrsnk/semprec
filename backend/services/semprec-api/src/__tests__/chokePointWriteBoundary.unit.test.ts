@@ -98,6 +98,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "upload file": "services/semprec-api/src/filesHandler.ts",
   "upload blob": "services/semprec-api/src/blobUploadHandler.ts",
   "download blob": "services/semprec-api/src/blobsHandler.ts",
+  "mailbox removal impact": "packages/data/src/mail/mailboxRemovalImpact.ts",
   "Microsoft Graph mail webhook": "services/semprec-api/src/graphWebhookHandler.ts",
 };
 
