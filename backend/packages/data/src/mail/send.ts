@@ -9,6 +9,7 @@ import type { PermissionManifest } from "../manifest/permissionManifest.js";
 import { EMAIL_INGEST_ALLOWED_SYSTEM_KEYS, formatAddress, formatAddressList } from "./ingest.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { findFolderBySpecialPurpose } from "./folderDiscovery.js";
+import { linkEmailEnvelopeToPeople } from "./personLinkingActions.js";
 import {
   deleteMailMessageMetaByItemId,
   upsertMailMessageMeta,
@@ -70,6 +71,10 @@ export interface SendEmailModuleIds {
   folderRelationPropertyId: string;
   /** Folders.mailbox relation property id. */
   mailboxFolderRelationPropertyId: string;
+  /** Emails.senderPeople relation property key (seed: `senderPeople`). */
+  senderPeopleKey: string;
+  /** Emails.recipientsPeople relation property key (seed: `recipientsPeople`). */
+  recipientsPeopleKey: string;
 }
 
 export interface SendEmailInput {
@@ -126,8 +131,9 @@ async function unlinkFromFoldersWithSpecialPurpose(
  * `email.send` (issue #95). Authorization is checked first, synchronously, before any SMTP
  * call or database write — see `assertEmailSendAuthorized`. Once authorized, this atomically
  * *claims* the draft for sending (see below) before ever calling SMTP, submits over SMTP, then
- * on success finalizes the draft item into the mailbox's Sent folder; on SMTP failure it undoes
- * the claim so a genuine retry can still send.
+ * on success finalizes the draft item into the mailbox's Sent folder and links its addresses to
+ * Persons (`linkEmailEnvelopeToPeople`, issue #1480) in that same transaction; on SMTP failure it
+ * undoes the claim so a genuine retry can still send.
  *
  * The claim is `upsertMailMessageMeta` itself, moved to run *before* the transport's `send` instead of
  * after — `mail_message_meta.item_id` is this table's primary key (one row per Email item), so
@@ -298,6 +304,15 @@ export async function sendDraftEmail(
       },
       EMAILS_RELATION_CONTEXT,
     );
+    // Same transaction as the rest of the finalization: a link failure rolls back the draft's
+    // body, its folder move and its people edges together (issue #1480).
+    await linkEmailEnvelopeToPeople(client, {
+      itemId: input.draftItemId,
+      envelope,
+      emailsDatabaseId: moduleIds.emailsDatabaseId,
+      senderPeopleKey: moduleIds.senderPeopleKey,
+      recipientsPeopleKey: moduleIds.recipientsPeopleKey,
+    });
 
     return { itemId: input.draftItemId, messageId };
   });

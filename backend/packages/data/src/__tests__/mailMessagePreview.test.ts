@@ -152,6 +152,8 @@ describe("mail preview and ingest time on ingest and send", () => {
       folderRelationPropertyId,
       mailboxFolderRelationPropertyId: (await chokePoint.listProperties(foldersId)).find((p) => p.key === "mailbox")!
         .id,
+      senderPeopleKey: "senderPeople",
+      recipientsPeopleKey: "recipientsPeople",
     };
     await storeCredential(pool, { itemId: mailboxId, credentialType: "app_password", plaintext: "s3cr3t" });
   });

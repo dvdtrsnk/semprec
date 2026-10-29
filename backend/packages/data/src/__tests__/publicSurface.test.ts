@@ -434,6 +434,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "itemDeleteWithClient",
   "legacyAgentsTextToSections",
   "libraryModuleManifest",
+  "linkEmailEnvelopeToPeople",
   "listAccounts",
   "listAdminRecipients",
   "listAgentRunEvents",

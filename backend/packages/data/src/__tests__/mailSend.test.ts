@@ -21,6 +21,8 @@ import {
 } from "../mail/send.js";
 import type { MailTransport } from "../mail/mailTransport.js";
 import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
+import { reindexPersonEmails } from "../mail/personEmailIndexStore.js";
+import { linkEmailEnvelopeToPeople } from "../mail/personLinkingActions.js";
 import { recordingTransport, sendAdapters, transportFor } from "../testSupport/mailSendFakes.js";
 
 let pool: Pool;
@@ -108,6 +110,8 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       mailboxesDatabaseId: mailboxesId,
       folderRelationPropertyId,
       mailboxFolderRelationPropertyId,
+      senderPeopleKey: "senderPeople",
+      recipientsPeopleKey: "recipientsPeople",
     };
 
     await storeCredential(pool, { itemId: mailboxId, credentialType: "app_password", plaintext: "s3cr3t" });
@@ -1051,6 +1055,178 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       await send(draftId, recordingTransport());
       await expect(send(draftId, recordingTransport())).rejects.toThrow(/already being sent or was already sent/);
       expect(await threadCount()).toBe(1);
+    });
+  });
+
+  describe("people linking of sent mail (issue #1480)", () => {
+    /** A Person whose `emails` property and `person_email_index` rows both list the given addresses. */
+    async function personOwning(name: string, addresses: string[]): Promise<string> {
+      const peopleId = await databaseIdFor("people");
+      const person = await chokePoint.createItem({
+        databaseId: peopleId,
+        properties: { name, emails: addresses.join("\n") },
+      });
+      await withTransaction(pool, (client) => reindexPersonEmails(client, person.id, addresses));
+      return person.id;
+    }
+
+    /** Creates a draft with the given subject and returns its Emails item id, without sending it. */
+    async function newDraftWithSubject(subject: string): Promise<string> {
+      const draftsId = await draftsFolderId();
+      const draft = await withTransaction(pool, (client) =>
+        createEmailDraft(client, {
+          emailsDatabaseId: emailsId,
+          folderRelationPropertyId,
+          draftsFolderItemId: draftsId,
+          subject,
+          from: { address: "me@example.com" },
+          to: [{ address: "bob@example.com" }],
+          bodyText: "hi",
+        }),
+      );
+      return draft.id;
+    }
+
+    /** Drafts and sends one message from the mailbox, returning its Emails item id. */
+    async function sendMail(options: { to: string[]; cc?: string[]; subject?: string }): Promise<string> {
+      const subject = options.subject ?? "Hello";
+      const draftId = await newDraftWithSubject(subject);
+      await sendDraftEmail(
+        pool,
+        {
+          mailboxItemId: mailboxId,
+          draftItemId: draftId,
+          actor: { type: "user" },
+          from: { address: "me@example.com" },
+          to: options.to.map((address) => ({ address })),
+          cc: options.cc?.map((address) => ({ address })),
+          subject,
+          bodyText: "hi",
+        },
+        moduleIds,
+        sendAdapters(transportFor(recordingTransport())),
+      );
+      return draftId;
+    }
+
+    /** The Person item ids joined to an Emails item through one people relation, sorted. */
+    async function linkedPersonIds(
+      emailItemId: string,
+      propertyKey: "senderPeople" | "recipientsPeople",
+    ): Promise<string[]> {
+      const { rows } = await pool.query<{ person_id: string }>(
+        `SELECT CASE WHEN r.item_a = $2 THEN r.item_b ELSE r.item_a END AS person_id
+           FROM item_relations r
+          WHERE r.relation_definition_id = (
+                  SELECT rd.id FROM relation_definitions rd
+                    JOIN properties p ON p.id = rd.property_id_a
+                   WHERE p.database_id = $1 AND p.key = $3)
+            AND (r.item_a = $2 OR r.item_b = $2)
+          ORDER BY person_id`,
+        [emailsId, emailItemId, propertyKey],
+      );
+      return rows.map((row) => row.person_id);
+    }
+
+    it("a sent message to an address a person owns gets a recipientsPeople edge to that person", async () => {
+      const bob = await personOwning("Bob", ["bob@example.com"]);
+      const mailId = await sendMail({ to: ["bob@example.com"] });
+
+      expect(await linkedPersonIds(mailId, "recipientsPeople")).toEqual([bob]);
+      expect(await linkedPersonIds(mailId, "senderPeople")).toEqual([]);
+    });
+
+    it("a sent message from a mailbox address a person owns gets a senderPeople edge to that person", async () => {
+      const me = await personOwning("Me", ["me@example.com"]);
+      const mailId = await sendMail({ to: ["nobody@example.com"] });
+
+      expect(await linkedPersonIds(mailId, "senderPeople")).toEqual([me]);
+      expect(await linkedPersonIds(mailId, "recipientsPeople")).toEqual([]);
+    });
+
+    it("an address no person owns leaves both people relations empty", async () => {
+      await personOwning("Bob", ["bob@example.com"]);
+      const mailId = await sendMail({ to: ["stranger@example.com"] });
+
+      expect(await linkedPersonIds(mailId, "recipientsPeople")).toEqual([]);
+      expect(await linkedPersonIds(mailId, "senderPeople")).toEqual([]);
+    });
+
+    it("two sent emails to the same person both link, and neither send fails", async () => {
+      const bob = await personOwning("Bob", ["bob@example.com"]);
+      const me = await personOwning("Me", ["me@example.com"]);
+      const first = await sendMail({ to: ["bob@example.com"], subject: "First" });
+      const second = await sendMail({ to: ["bob@example.com"], subject: "Second" });
+
+      expect(await linkedPersonIds(first, "recipientsPeople")).toEqual([bob]);
+      expect(await linkedPersonIds(second, "recipientsPeople")).toEqual([bob]);
+      expect(await linkedPersonIds(first, "senderPeople")).toEqual([me]);
+      expect(await linkedPersonIds(second, "senderPeople")).toEqual([me]);
+    });
+
+    it("a person listed in both To and Cc gets a single recipientsPeople edge", async () => {
+      const bob = await personOwning("Bob", ["bob@example.com"]);
+      const mailId = await sendMail({ to: ["bob@example.com"], cc: ["BOB@Example.com"] });
+
+      expect(await linkedPersonIds(mailId, "recipientsPeople")).toEqual([bob]);
+    });
+
+    it("linking an email that is already linked adds no duplicate edge and raises no error", async () => {
+      const bob = await personOwning("Bob", ["bob@example.com"]);
+      const me = await personOwning("Me", ["me@example.com"]);
+      const mailId = await sendMail({ to: ["bob@example.com"] });
+      const envelope = { from: { address: "me@example.com" }, to: [{ address: "bob@example.com" }] };
+
+      await withTransaction(pool, (client) =>
+        linkEmailEnvelopeToPeople(client, {
+          itemId: mailId,
+          envelope,
+          emailsDatabaseId: emailsId,
+          senderPeopleKey: "senderPeople",
+          recipientsPeopleKey: "recipientsPeople",
+        }),
+      );
+
+      expect(await linkedPersonIds(mailId, "recipientsPeople")).toEqual([bob]);
+      expect(await linkedPersonIds(mailId, "senderPeople")).toEqual([me]);
+    });
+
+    it("a people link that fails rolls back the whole finalization: the draft keeps its subject and stays in Drafts", async () => {
+      const peopleId = await databaseIdFor("people");
+      const bob = await personOwning("Bob", ["bob@example.com"]);
+      // The address index still maps bob@example.com to Bob after he is soft-deleted, so the link
+      // is attempted against a deleted endpoint and refused by the choke point.
+      await chokePoint.softDeleteItem(peopleId, bob);
+      const draftId = await newDraftWithSubject("Draft subject");
+
+      await expect(
+        sendDraftEmail(
+          pool,
+          {
+            mailboxItemId: mailboxId,
+            draftItemId: draftId,
+            actor: { type: "user" },
+            from: { address: "me@example.com" },
+            to: [{ address: "bob@example.com" }],
+            subject: "Final subject",
+            bodyText: "hi",
+          },
+          moduleIds,
+          sendAdapters(transportFor(recordingTransport())),
+        ),
+      ).rejects.toMatchObject({ name: "ValidationError" });
+
+      const { rows: names } = await pool.query<{ name: string }>(
+        `SELECT properties ->> 'name' AS name FROM items WHERE id = $1`,
+        [draftId],
+      );
+      expect(names[0]!.name).toBe("Draft subject");
+      expect(await linkedPersonIds(draftId, "recipientsPeople")).toEqual([]);
+      const { rows: drafts } = await pool.query(
+        `SELECT 1 FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2) AND (item_a = $3 OR item_b = $3)`,
+        [folderRelationPropertyId, draftId, await draftsFolderId()],
+      );
+      expect(drafts).toHaveLength(1);
     });
   });
 });
