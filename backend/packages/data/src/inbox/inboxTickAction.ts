@@ -120,12 +120,18 @@ export interface ProposalComputationInput {
   targetDatabaseId?: string;
   /** The language (the person's `users.locale`, e.g. `cs`) the proposal's person-facing texts must be written in. */
   locale: string;
+  /** The project the heartbeat belongs to (`ActionContext.projectItemId`); the model call is attributed to it. */
+  projectItemId: string;
 }
 
 export interface ProposalComputationResult {
   /** The target page id, for `entityKind: 'pageContent'` — ignored otherwise, since a `'database'` target is always the type's resolved `targetDatabase` id. */
   target?: string;
   properties: Record<string, unknown>;
+  /** The model's explanation of the proposal. Not read by the tick until issue #1495. */
+  reason?: string;
+  /** The model's confidence in the proposal. Not read by the tick until issue #1495. */
+  confidence?: number;
 }
 
 /**
@@ -838,6 +844,7 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
       entityKind: snapshot.entityKind,
       targetDatabaseId: snapshot.targetDatabaseId,
       locale: snapshot.locale,
+      projectItemId: context.projectItemId,
     });
     const envelope = buildProposalEnvelope(snapshot, result);
 
