@@ -15,6 +15,7 @@ import {
   deleteOrphanedTenantObservabilityChecks,
   type ObservabilityCheckStatus,
 } from "./observabilityChecksStore.js";
+import { AGENTS_PROCESS_PROBLEM_KEY } from "../semp/sourceProblemKeys.js";
 import { writeOperatorAlert } from "./operatorAlerts.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { FAILED_JOB_RETENTION_MS } from "./queueFailedJobsPrune.js";
@@ -72,6 +73,17 @@ async function checkProcessHeartbeats(pool: Pool, helpers: ObservabilityCheckSys
           checkId: transition.id,
           transitionInstance: `${helpers.job.id}:${checkKey}`,
           payload: { process: processStatus.process, beatAt: processStatus.beatAt },
+          // Only the agents process raises a problem; the other fixed processes keep the notification alone.
+          problem:
+            processStatus.process === "agents"
+              ? {
+                  category: "agents",
+                  kind: "processStale",
+                  severity: "critical",
+                  dedupeKey: AGENTS_PROCESS_PROBLEM_KEY,
+                  occurrenceKey: `${helpers.job.id}:${checkKey}`,
+                }
+              : undefined,
         });
       }
     });

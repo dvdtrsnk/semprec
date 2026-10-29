@@ -107,6 +107,21 @@ export interface GuidanceNotificationWriter<Tx> {
   create(tx: Tx, input: CreateGuidanceNotificationInput): Promise<void>;
 }
 
+export interface RaiseGuidanceDriftProblemInput {
+  userId: string;
+  projectItemId: string;
+  fingerprint: string;
+  /** The `agent_guidance_drift_findings` row the problem points at. */
+  findingId: string;
+  /** Identifies this activation cycle, like the notification's `transitionInstance`. */
+  occurrenceKey: string;
+}
+
+/** Transaction-scoped adapter that raises the Semp status problem of a drift finding (issue #1465). */
+export interface GuidanceProblemWriter<Tx> {
+  raise(tx: Tx, input: RaiseGuidanceDriftProblemInput): Promise<void>;
+}
+
 /**
  * Fingerprints a finding by its subject only (SHA-256 hex of the canonical JSON of
  * `{ projectItemId, kind, operation, mcpTool, databaseId }`). Nothing the AI words freely

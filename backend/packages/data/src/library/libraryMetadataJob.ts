@@ -15,6 +15,8 @@ import {
   markItemAutomationDone,
   markItemAutomationError,
 } from "./itemAutomationStore.js";
+import { raiseProblem } from "../semp/sempProblemsStore.js";
+import { automationProblemKey } from "../semp/sourceProblemKeys.js";
 import type { ItemRow } from "../types.js";
 
 /**
@@ -187,6 +189,16 @@ export async function handleProcessLibraryMetadataTask(
           sourceTable: "item_automation",
           sourceId: payload.itemId,
           transitionInstance: helpers.job.id,
+        });
+        await raiseProblem(client, {
+          userId,
+          category: "automation",
+          kind: "libraryAutomation",
+          severity: "warning",
+          sourceTable: "item_automation",
+          sourceId: payload.itemId,
+          dedupeKey: automationProblemKey(item.databaseId),
+          occurrenceKey: helpers.job.id,
         });
       }
     });

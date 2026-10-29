@@ -8,6 +8,8 @@ import type {
   GuidanceDriftFindingStore,
   GuidanceManifestPort,
   GuidanceNotificationWriter,
+  GuidanceProblemWriter,
+  RaiseGuidanceDriftProblemInput,
   GuidanceReferenceStore,
   ProjectAgentGuidance,
   ProjectAgentGuidanceStore,
@@ -126,6 +128,16 @@ function fakeFindings(): GuidanceDriftFindingStore<FakeTx> & { rows: Map<string,
   };
 }
 
+function fakeProblems(): GuidanceProblemWriter<FakeTx> & { raised: RaiseGuidanceDriftProblemInput[] } {
+  const raised: RaiseGuidanceDriftProblemInput[] = [];
+  return {
+    raised,
+    async raise(_tx, input) {
+      raised.push(input);
+    },
+  };
+}
+
 function fakeNotifications(): GuidanceNotificationWriter<FakeTx> & { created: CreateGuidanceNotificationInput[] } {
   const created: CreateGuidanceNotificationInput[] = [];
   return {
@@ -180,12 +192,14 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
     const guidance = fakeGuidance(baseGuidanceRow());
     const findings = fakeFindings();
     const notifications = fakeNotifications();
+    const problems = fakeProblems();
     const action = createAgentGuidanceDriftAction({
       transactions: fakeTransactions(),
       guidance,
       references: fakeReferences(),
       findings,
       notifications,
+      problems,
       manifest: fakeManifest(),
       gateway: fakeGateway(() => [CONTRADICTION_A]),
       clock: () => new Date("2026-02-01T00:00:00.000Z"),
@@ -194,6 +208,9 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
     await action({ projectItemId: "project-1" });
 
     expect(findings.rows.size).toBe(1);
+    expect(problems.raised).toHaveLength(1);
+    expect(problems.raised[0]).toMatchObject({ userId: "owner-1", projectItemId: "project-1" });
+    expect(problems.raised[0]?.occurrenceKey).toBe(`${problems.raised[0]?.fingerprint}:2026-02-01T00:00:00.000Z`);
     expect(notifications.created).toHaveLength(1);
     expect(notifications.created[0]).toMatchObject({
       userId: "owner-1",
@@ -220,6 +237,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings,
       notifications,
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: fakeGateway(() => [CONTRADICTION_A]),
       clock: () => new Date("2026-02-01T00:00:00.000Z"),
@@ -243,6 +261,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings,
       notifications,
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: fakeGateway(() => (respondWithContradiction ? [CONTRADICTION_A] : [])),
       clock: () => new Date("2026-02-01T00:00:00.000Z"),
@@ -278,6 +297,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings: findingsA,
       notifications: fakeNotifications(),
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: fakeGateway(() => [CONTRADICTION_A, CONTRADICTION_B]),
       clock: () => new Date("2026-02-01T00:00:00.000Z"),
@@ -291,6 +311,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings: findingsB,
       notifications: fakeNotifications(),
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: fakeGateway(() => [CONTRADICTION_B, CONTRADICTION_A]),
       clock: () => new Date("2026-02-01T00:00:00.000Z"),
@@ -314,6 +335,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings,
       notifications,
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: fakeGateway(() => [
         night === 0
@@ -355,6 +377,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
         references: fakeReferences(),
         findings,
         notifications: fakeNotifications(),
+        problems: fakeProblems(),
         manifest: fakeManifest(),
         gateway: fakeGateway(() => order),
         clock: () => new Date("2026-02-01T00:00:00.000Z"),
@@ -378,6 +401,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings,
       notifications,
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: {
         async complete() {
@@ -405,6 +429,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings,
       notifications,
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: fakeGateway(() => {
         // Simulates a concurrent guidance rewrite landing while the (non-transactional)
@@ -431,6 +456,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings,
       notifications,
+      problems: fakeProblems(),
       manifest,
       gateway: fakeGateway(() => {
         // A concurrent permission mutation (e.g. a heartbeat/capability change) while the
@@ -457,6 +483,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings,
       notifications,
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway,
       clock: () => new Date("2026-02-01T00:00:00.000Z"),
@@ -478,6 +505,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings,
       notifications,
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: fakeGateway(() => {
         guidance.row = null;
@@ -502,6 +530,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings,
       notifications,
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: { complete: vi.fn(async () => Promise.reject(gatewayError)) },
       clock: () => new Date("2026-02-01T00:00:00.000Z"),
@@ -520,6 +549,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings: fakeFindings(),
       notifications: fakeNotifications(),
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: fakeGateway(() => [{ ...CONTRADICTION_A, manifestFacts: [] }]),
       clock: () => new Date("2026-02-01T00:00:00.000Z"),
