@@ -4,7 +4,7 @@ import { Pool, Client } from "pg";
 import { ModuleRegistry } from "@semprec/module-registry";
 import type { AgentRunRow, McpInvokeResult, McpToolGrantForProject } from "@semprec/data";
 import { Type, fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import { createAgentSessionFactoryForRun, withUniqueNames } from "../agentSessionComposition.js";
+import { createAgentSessionFactoryForRun, mcpModelToolName, withUniqueNames } from "../agentSessionComposition.js";
 import { logger } from "../logger.js";
 
 function fakeTool(name: string, label: string): AgentTool {
@@ -126,7 +126,9 @@ it.each([true, false])(
         return fauxAssistantMessage(
           [
             fauxToolCall("item_patch", { itemId: "item-1", properties: {} }, { id: "generic-call" }),
-            ...(hasProject ? [fauxToolCall("mcp_search", { databaseId: "db-1" }, { id: "mcp-call" })] : []),
+            ...(hasProject
+              ? [fauxToolCall(mcpModelToolName("search", "first-server"), { databaseId: "db-1" }, { id: "mcp-call" })]
+              : []),
           ],
           { stopReason: "toolUse" },
         );
@@ -144,14 +146,20 @@ it.each([true, false])(
       for await (const event of factory({ task: run.task }).messages()) {
         if (event.kind === "tool_use" || event.kind === "tool_result") events.push(event);
       }
-      expect(names).toEqual([hasProject ? ["item_patch", "mcp_search"] : ["item_patch"]]);
+      expect(names).toEqual([
+        hasProject
+          ? ["item_patch", mcpModelToolName("search", "first-server"), mcpModelToolName("search", "second-server")]
+          : ["item_patch"],
+      ]);
       expect(events).toHaveLength(hasProject ? 4 : 2);
       for (const kind of ["tool_use", "tool_result"]) {
         expect(events.find((event) => event.kind === kind && event.name === "item_patch")).toMatchObject({
           operation: "item.patch",
           targetItemId: "item-1",
         });
-        const mcp = events.find((event) => event.kind === kind && event.name === "mcp_search");
+        const mcp = events.find(
+          (event) => event.kind === kind && event.name === mcpModelToolName("search", "first-server"),
+        );
         if (hasProject) {
           expect(mcp).toMatchObject({
             mcp: {
@@ -172,6 +180,79 @@ it.each([true, false])(
     }
   },
 );
+
+describe("mcpModelToolName (issue #1533)", () => {
+  const github = "a1b2c3d4-0000-4000-8000-000000000001";
+  const linear = "ffeeddcc-0000-4000-8000-000000000002";
+
+  it("qualifies the tool name with the first 8 hex characters of the server id", () => {
+    expect(mcpModelToolName("list_issues", github)).toBe("mcp_list_issues_a1b2c3d4");
+    expect(mcpModelToolName("list_issues", "A1B2C3D4-0000")).toBe("mcp_list_issues_a1b2c3d4");
+  });
+
+  it("gives different servers different names for the same tool", () => {
+    expect(mcpModelToolName("list_issues", github)).not.toBe(mcpModelToolName("list_issues", linear));
+  });
+
+  it("sanitizes the tool name and keeps the name within 64 characters ending in the suffix", () => {
+    expect(mcpModelToolName("list.issues/v1", github)).toBe("mcp_list_issues_v1_a1b2c3d4");
+    const long = mcpModelToolName("x".repeat(120), github);
+    expect(long).toHaveLength(64);
+    expect(long.endsWith("_a1b2c3d4")).toBe(true);
+    expect(long).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+  });
+
+  it("offers the same tool of two servers under two names and survives a server rename", async () => {
+    const pool = new Pool();
+    const faux = fauxProvider();
+    const offered: string[][] = [];
+    faux.setResponses([
+      (context) => {
+        offered.push(context.tools?.map((tool) => tool.name) ?? []);
+        return fauxAssistantMessage("done");
+      },
+      (context) => {
+        offered.push(context.tools?.map((tool) => tool.name) ?? []);
+        return fauxAssistantMessage("done");
+      },
+    ]);
+    const run = { id: "run-1", projectItemId: "project-1", actorUserId: "user-1", task: "run" } as AgentRunRow;
+    try {
+      for (const renamed of [false, true]) {
+        fixtures.grants = [grant("gh-reg", github), grant("li-reg", linear)].map((g) => ({
+          ...g,
+          toolName: "list_issues",
+          mcpServerName: renamed ? "Renamed" : g.mcpServerName,
+        }));
+        const factory = await createAgentSessionFactoryForRun(
+          pool,
+          new ModuleRegistry(() => new Set<string>()),
+          {
+            model: faux.getModel(),
+            streamFn: (m, context, options) => faux.provider.streamSimple(m, context, options),
+          },
+          run,
+        );
+        for await (const event of factory({ task: "run" }).messages()) void event;
+      }
+      const expected = [mcpModelToolName("list_issues", github), mcpModelToolName("list_issues", linear)];
+      expect(offered.map((names) => names.filter((n) => n.startsWith("mcp_")))).toEqual([expected, expected]);
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it("skips the later of two tools of one server that shorten to the same name, with the warning", () => {
+    const warnSpy = vi.spyOn(logger, "warn");
+    const a = fakeTool(mcpModelToolName("x".repeat(60) + "a", github), "a");
+    const b = fakeTool(mcpModelToolName("x".repeat(60) + "b", github), "b");
+    expect(withUniqueNames([a, b])).toEqual([a]);
+    expect(warnSpy).toHaveBeenCalledWith(
+      { toolName: a.name },
+      "Agent tool name collides with an earlier tool; skipped",
+    );
+  });
+});
 
 describe("MCP tool catalog of inactive servers (issue #1447)", () => {
   async function offeredToolNames(): Promise<string[]> {
@@ -224,12 +305,12 @@ describe("MCP tool catalog of inactive servers (issue #1447)", () => {
     expect(inactive.granted).toBe(true);
 
     fixtures.grants = [grant("off-reg", "off-server", true, true)];
-    expect(await offeredToolNames()).toEqual(["mcp_search"]);
+    expect(await offeredToolNames()).toEqual([mcpModelToolName("search", "off-server")]);
   });
 
   it("keeps a granted tool of an active server and drops an ungranted one", async () => {
     fixtures.grants = [grant("on-reg", "on-server", true, true)];
-    expect(await offeredToolNames()).toEqual(["mcp_search"]);
+    expect(await offeredToolNames()).toEqual([mcpModelToolName("search", "on-server")]);
     fixtures.grants = [grant("on-reg", "on-server", false, true)];
     expect(await offeredToolNames()).toEqual([]);
   });
@@ -410,9 +491,12 @@ describe("MCP failure classification in the tool result (issue #1444)", () => {
     const pool = new Pool();
     const faux = fauxProvider();
     faux.setResponses([
-      fauxAssistantMessage([fauxToolCall("mcp_search", args as Record<string, unknown>, { id: "call" })], {
-        stopReason: "toolUse",
-      }),
+      fauxAssistantMessage(
+        [fauxToolCall(mcpModelToolName("search", "first-server"), args as Record<string, unknown>, { id: "call" })],
+        {
+          stopReason: "toolUse",
+        },
+      ),
       fauxAssistantMessage("done"),
     ]);
     try {

@@ -100,6 +100,21 @@ function toModelToolName(name: string): string {
   return name.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
 }
 
+/**
+ * Model-facing name of an MCP tool: `mcp_<tool>_<first 8 hex of the server item id>`. The immutable
+ * server id (not its renameable name) keeps the name stable and separates servers that expose the
+ * same tool name; the tool part is sanitized and cut so the whole name stays within 64 characters.
+ */
+export function mcpModelToolName(toolName: string, mcpServerItemId: string): string {
+  const suffix = mcpServerItemId
+    .replace(/-/g, "")
+    .toLowerCase()
+    .slice(0, 8)
+    .replace(/[^a-z0-9_]/g, "_");
+  const tool = toolName.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64 - "mcp_".length - 1 - 8);
+  return `mcp_${tool}_${suffix}`;
+}
+
 function isArgumentsObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -143,7 +158,7 @@ async function createMcpTools(pool: Pool, runId: string, projectItemId: string):
     .map((grant) => {
       const invoke = createApprovalGatedMcpInvokeTool(pool, runId, projectItemId, grant.mcpToolRegistrationId);
       return {
-        name: toModelToolName(`mcp_${grant.toolName}`),
+        name: mcpModelToolName(grant.toolName, grant.mcpServerItemId),
         label: `${grant.mcpServerName}: ${grant.toolName}`,
         toolEventMetadata: {
           mcp: {
