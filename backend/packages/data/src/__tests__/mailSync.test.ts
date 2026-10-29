@@ -1478,6 +1478,7 @@ describe("IMAP reconcile core (issue #26)", () => {
 
   function fakeImapClient(overrides: Partial<ImapMailClient> = {}): ImapMailClient {
     return {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(["CONDSTORE", "QRESYNC"]),
       listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
       selectFolder: async () => ({ uidvalidity: 111, uidnext: 3, highestModSeq: 5 }),
@@ -2193,6 +2194,7 @@ describe("mail sync job error handling (issue #26)", () => {
     );
 
     const failingImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => {
         throw new Error("connection refused");
@@ -2290,6 +2292,7 @@ describe("mail sync job error handling (issue #26)", () => {
     // first, uneventful pass establishes real uidvalidity/uidnext state so the second pass
     // below actually reaches (and can fail inside) the vanished-UID check.
     const passOneImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -2309,6 +2312,7 @@ describe("mail sync job error handling (issue #26)", () => {
     );
 
     const failingAfterAttachmentImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
@@ -2373,6 +2377,7 @@ describe("mail sync job error handling (issue #26)", () => {
     );
 
     const emptyImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -2434,6 +2439,7 @@ describe("mail sync job error handling (issue #26)", () => {
       handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, adapters, moduleIds, noopStorage);
 
     const emptyImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -2714,6 +2720,7 @@ describe("mail sync job error handling (issue #26)", () => {
     await chokePoint.softDeleteItem(mailboxesId, mailbox.id);
 
     const createImapClient = vi.fn(async (): Promise<ImapMailClient> => ({
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -2753,6 +2760,7 @@ describe("mail sync job error handling (issue #26)", () => {
     const mailboxesId = await databaseIdFor("mailboxes");
 
     const createImapClient = vi.fn(async (): Promise<ImapMailClient> => ({
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -2854,6 +2862,7 @@ describe("mailbox Semp problem raised by the sync job (issue #1506)", () => {
   }
 
   const completingImap: ImapMailClient = {
+    appendMessage: async () => {},
     getCapabilities: async () => new Set(),
     listFolders: async () => [],
     selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -4087,6 +4096,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     );
 
     const emptyImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -4144,6 +4154,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     );
 
     const emptyImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -4215,6 +4226,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       resolveFirstStarted = resolve;
     });
     const blockingImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
       selectFolder: async () => {
@@ -4232,6 +4244,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       close: async () => {},
     };
     const emptyImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -4332,6 +4345,7 @@ describe("mail flag write-back (issue #251)", () => {
       flags: [],
     };
     const initial: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [
         { path: "INBOX", specialUse: "\\Inbox" },
@@ -4500,6 +4514,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
     overrides: Partial<ImapMailClient> = {},
   ): Promise<string> {
     const firstPassImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [{ path: "INBOX" }],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
@@ -4531,6 +4546,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
     expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: true });
 
     const secondPassImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [{ path: "INBOX" }],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
@@ -4568,6 +4584,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
     expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: false });
 
     const secondPassImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [{ path: "INBOX" }],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
@@ -4604,6 +4621,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
     expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: false });
 
     const secondPassImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [{ path: "INBOX" }],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
@@ -4774,6 +4792,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
     expect(calls).toEqual([]);
 
     const noCondstoreImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [{ path: "INBOX" }],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: 42 }),
