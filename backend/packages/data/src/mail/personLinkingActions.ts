@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { withTransaction } from "../db/pool.js";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
@@ -6,7 +6,7 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
-import { getMailMessageMetaByItemId } from "./mailMessageMetaStore.js";
+import { getMailMessageMetaByItemId, type MailEnvelope } from "./mailMessageMetaStore.js";
 import { lookupPersonIdByEmail, normalizeEmailAddress, reindexPersonEmails } from "./personEmailIndexStore.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
 
@@ -50,6 +50,64 @@ const linkEmailToPeopleActionConfigSchema = z.object({
 
 export type LinkEmailToPeopleActionConfig = z.infer<typeof linkEmailToPeopleActionConfigSchema>;
 
+export interface LinkEmailEnvelopeToPeopleInput {
+  /** The Emails item the envelope belongs to; the edges are created on it. */
+  itemId: string;
+  envelope: MailEnvelope;
+  emailsDatabaseId: string;
+  senderPeopleKey: string;
+  recipientsPeopleKey: string;
+}
+
+/**
+ * Links one Emails item's `senderPeople` and `recipientsPeople` to the Persons that own the
+ * envelope's addresses, inside the caller's transaction. Shared by the `mail.linkPeopleByEmail`
+ * heartbeat action (for an arrived message) and `sendDraftEmail` (for a message Semprec sent, in
+ * the transaction that finalizes it), so the two cannot drift. An address no Person owns leaves
+ * its relation unfilled. Linking is idempotent: `createRelationWithClient` upserts on the
+ * normalized edge tuple, so a repeat adds no duplicate edge and raises no error.
+ */
+export async function linkEmailEnvelopeToPeople(
+  client: PoolClient,
+  input: LinkEmailEnvelopeToPeopleInput,
+): Promise<void> {
+  const senderProperty = await propertiesStore.getPropertyByKey(client, input.emailsDatabaseId, input.senderPeopleKey);
+  const recipientsProperty = await propertiesStore.getPropertyByKey(
+    client,
+    input.emailsDatabaseId,
+    input.recipientsPeopleKey,
+  );
+
+  if (senderProperty && input.envelope.from) {
+    const personId = await lookupPersonIdByEmail(client, input.envelope.from.address);
+    if (personId) {
+      await createRelationWithClient(
+        client,
+        { relationPropertyId: senderProperty.id, callerItemId: input.itemId, targetItemId: personId },
+        EMAILS_RELATION_CONTEXT,
+      );
+    }
+  }
+
+  if (recipientsProperty) {
+    const recipients = [...(input.envelope.to ?? []), ...(input.envelope.cc ?? []), ...(input.envelope.bcc ?? [])];
+    const seen = new Set<string>();
+    for (const recipient of recipients) {
+      const normalized = normalizeEmailAddress(recipient.address);
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+      const personId = await lookupPersonIdByEmail(client, normalized);
+      if (personId) {
+        await createRelationWithClient(
+          client,
+          { relationPropertyId: recipientsProperty.id, callerItemId: input.itemId, targetItemId: personId },
+          EMAILS_RELATION_CONTEXT,
+        );
+      }
+    }
+  }
+}
+
 /**
  * Registered as an `onItemEvent` ('create') heartbeat action on the Emails database: reads
  * the just-ingested message's envelope (`mail_message_meta`, already committed in the same
@@ -70,50 +128,13 @@ export function createLinkEmailToPeopleAction(pool: Pool): ActionHandler {
     await withTransaction(pool, async (client) => {
       const meta = await getMailMessageMetaByItemId(client, context.itemId as string);
       if (!meta) return;
-
-      const senderProperty = await propertiesStore.getPropertyByKey(
-        client,
-        config.emailsDatabaseId,
-        config.senderPeopleKey,
-      );
-      const recipientsProperty = await propertiesStore.getPropertyByKey(
-        client,
-        config.emailsDatabaseId,
-        config.recipientsPeopleKey,
-      );
-
-      if (senderProperty && meta.envelope.from) {
-        const personId = await lookupPersonIdByEmail(client, meta.envelope.from.address);
-        if (personId) {
-          await createRelationWithClient(
-            client,
-            { relationPropertyId: senderProperty.id, callerItemId: context.itemId as string, targetItemId: personId },
-            EMAILS_RELATION_CONTEXT,
-          );
-        }
-      }
-
-      if (recipientsProperty) {
-        const recipients = [...(meta.envelope.to ?? []), ...(meta.envelope.cc ?? []), ...(meta.envelope.bcc ?? [])];
-        const seen = new Set<string>();
-        for (const recipient of recipients) {
-          const normalized = normalizeEmailAddress(recipient.address);
-          if (seen.has(normalized)) continue;
-          seen.add(normalized);
-          const personId = await lookupPersonIdByEmail(client, normalized);
-          if (personId) {
-            await createRelationWithClient(
-              client,
-              {
-                relationPropertyId: recipientsProperty.id,
-                callerItemId: context.itemId as string,
-                targetItemId: personId,
-              },
-              EMAILS_RELATION_CONTEXT,
-            );
-          }
-        }
-      }
+      await linkEmailEnvelopeToPeople(client, {
+        itemId: context.itemId as string,
+        envelope: meta.envelope,
+        emailsDatabaseId: config.emailsDatabaseId,
+        senderPeopleKey: config.senderPeopleKey,
+        recipientsPeopleKey: config.recipientsPeopleKey,
+      });
     });
   };
 }
