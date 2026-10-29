@@ -448,6 +448,7 @@ export {
   type SempProblemResolutionKind,
   type SempProblemSeverity,
 } from "./semp/sempProblemsStore.js";
+export { createGuidanceProblemWriter } from "./semp/guidanceProblemWriter.js";
 export {
   getDownloadableTenantExport,
   listTenantExports,

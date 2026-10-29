@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { transitionObservabilityCheck } from "./observabilityChecksStore.js";
+import { BACKUP_RESTORE_PROBLEM_KEY } from "../semp/sourceProblemKeys.js";
 import { writeOperatorAlert } from "./operatorAlerts.js";
 import type { RestoreTestResult } from "./restoreTestResultArgs.js";
 
@@ -85,6 +86,13 @@ export async function recordRestoreTestResult(
       checkId: transition.id,
       transitionInstance: `${result.runId}:${RESTORE_TEST_CHECK_KEY}`,
       payload: { runId: result.runId, failedCheck: result.failedCheck },
+      problem: {
+        category: "backup",
+        kind: "backupRestore",
+        severity: "critical",
+        dedupeKey: BACKUP_RESTORE_PROBLEM_KEY,
+        occurrenceKey: result.runId,
+      },
     });
     return { notificationIds };
   });

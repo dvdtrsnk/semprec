@@ -10,6 +10,7 @@ import type {
   GuidanceDriftPermissionSubject,
   GuidanceManifestPort,
   GuidanceNotificationWriter,
+  GuidanceProblemWriter,
   GuidanceReferenceStore,
   ProjectAgentGuidanceStore,
   TransactionRunner,
@@ -63,6 +64,7 @@ export interface AgentGuidanceDriftActionDeps<Tx> {
   references: GuidanceReferenceStore<Tx>;
   findings: GuidanceDriftFindingStore<Tx>;
   notifications: GuidanceNotificationWriter<Tx>;
+  problems: GuidanceProblemWriter<Tx>;
   manifest: GuidanceManifestPort<Tx>;
   gateway: AiGatewayClientPort;
   clock: () => Date;
@@ -94,7 +96,7 @@ export interface AgentGuidanceDriftActionInput {
 export function createAgentGuidanceDriftAction<Tx>(
   deps: AgentGuidanceDriftActionDeps<Tx>,
 ): (input: AgentGuidanceDriftActionInput) => Promise<void> {
-  const { transactions, guidance, references, findings, notifications, manifest, gateway, clock } = deps;
+  const { transactions, guidance, references, findings, notifications, problems, manifest, gateway, clock } = deps;
 
   return async function runAgentGuidanceDriftAction({ projectItemId }) {
     const snapshot = await transactions.withTransaction({ isolation: "repeatable_read" }, async (tx) => {
@@ -183,6 +185,13 @@ export function createAgentGuidanceDriftAction<Tx>(
               manifestFacts: contradiction.manifestFacts,
               severity: contradiction.severity,
             },
+          });
+          await problems.raise(tx, {
+            userId: snapshot.ownerUserId,
+            projectItemId,
+            fingerprint,
+            findingId: finding.id,
+            occurrenceKey: `${fingerprint}:${seenAt.toISOString()}`,
           });
         }
       }
