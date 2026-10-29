@@ -106,8 +106,15 @@ describe("invites (issue #1040)", () => {
     const created = await invite("New@Example.com", mailer);
 
     expect(mailer.calls).toEqual([
-      { to: "new@example.com", inviteUrl: created.inviteUrl, expiresAt: created.invite.expiresAt },
+      { to: "new@example.com", inviteUrl: created.inviteUrl, expiresAt: created.invite.expiresAt, locale: "cs" },
     ]);
+  });
+
+  it("passes the creating admin's locale, not anything about the invited address", async () => {
+    await pool.query("UPDATE users SET locale = 'en' WHERE id = $1", [inviterId]);
+    const mailer = recordingMailer();
+    await invite("novak@example.cz", mailer);
+    expect(mailer.calls.map((call) => call.locale)).toEqual(["en"]);
   });
 
   it("sends nothing when no mailer is configured", async () => {
