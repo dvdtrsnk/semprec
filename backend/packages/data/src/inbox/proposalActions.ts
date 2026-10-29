@@ -93,7 +93,7 @@ function unsupportedEntityKindError(entityKind: string): ConflictError {
   });
 }
 
-function transcriptCardRole(envelope: ProposalEnvelope): TranscriptCardRole {
+export function transcriptCardRole(envelope: ProposalEnvelope): TranscriptCardRole {
   return envelope.entityKind === "relation" && envelope.properties.propertyKey === TRANSCRIPT_SPEAKERS_PROPERTY_KEY
     ? "speaker"
     : "event";
