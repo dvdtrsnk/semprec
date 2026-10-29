@@ -356,4 +356,97 @@ describe("Inbox item event dispatch (issue #103)", () => {
     );
     expect(cards[0]!.n).toBe(0);
   });
+
+  // Restoring an Inbox item is a change of it: its `update` heartbeat re-runs the tick (issue #1604).
+  function tickRegistry(compute: ComputeSemprecProposalFn): ActionRegistry {
+    const registry = createActionRegistry();
+    registry.set(SEMPREC_TICK_ACTION_ID, createSemprecTickAction(pool, compute));
+    return registry;
+  }
+
+  /** Records each source it is asked to recompute, then fails the test by throwing. */
+  function refusingCompute(calls: string[]): ComputeSemprecProposalFn {
+    return async (input) => {
+      calls.push(input.sourceItem.id);
+      throw new Error("computeProposal must not be called when the source fingerprint is unchanged");
+    };
+  }
+
+  /** The single live card of the Processing proposals database, read from its table. */
+  async function soleCardProperties(): Promise<Record<string, unknown>> {
+    const proposalsId = await databaseIdFor("processingProposals");
+    const { rows } = await pool.query<{ properties: Record<string, unknown> }>(
+      "SELECT properties FROM items WHERE database_id = $1 AND deleted_at IS NULL",
+      [proposalsId],
+    );
+    expect(rows).toHaveLength(1);
+    return rows[0]!.properties;
+  }
+
+  it("restoring a deleted Inbox item enqueues one tick, which returns its invalid card to proposed with no reason", async () => {
+    const inboxId = await databaseIdFor("inbox");
+    const journalId = await databaseIdFor("journal");
+    const typesId = await databaseIdFor("inboxItemTypes");
+    const type = await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name: "Task",
+          emoji: "☑️",
+          processingMethod: "database",
+          targetDatabase: "tasks",
+        }),
+      ),
+    );
+    const item = await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: inboxId,
+          journalDatabaseId: journalId,
+          timezone: "Europe/Prague",
+          date: "2026-08-28",
+          time: "09:00",
+          text: "Buy milk",
+          type: type.id,
+        }),
+      ),
+    );
+    await drainQueue(tickRegistry(async () => ({ properties: { name: "Buy milk" } })));
+    expect(await soleCardProperties()).toMatchObject({ status: "proposed" });
+
+    await inTenantZero(() => chokePoint.softDeleteItem(inboxId, item.id));
+    await drainQueue(tickRegistry(refusingCompute([])));
+    expect(await soleCardProperties()).toMatchObject({
+      status: "invalid",
+      invalidReason: { code: "sourceDeleted" },
+    });
+
+    await inTenantZero(() => chokePoint.restoreItem(inboxId, item.id));
+    const jobs = await pendingTickJobs();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.payload.payload.itemId).toBe(item.id);
+
+    const recomputed: string[] = [];
+    await drainQueue(tickRegistry(refusingCompute(recomputed)));
+    expect(recomputed).toEqual([]);
+    expect(await soleCardProperties()).toMatchObject({ status: "proposed", invalidReason: null });
+  });
+
+  it("restoring an item of a database without update heartbeats enqueues no tick and restores it as before", async () => {
+    const movies = await inTenantZero(() => chokePoint.createDatabase({ name: "Movies" }));
+    await inTenantZero(() =>
+      chokePoint.createProperty({ databaseId: movies.id, key: "title", name: "Title", type: "text" }),
+    );
+    const movie = await inTenantZero(() =>
+      chokePoint.createItem({ databaseId: movies.id, properties: { title: "Dune" } }),
+    );
+    await inTenantZero(() => chokePoint.softDeleteItem(movies.id, movie.id));
+    expect(await pendingTickJobs()).toHaveLength(0);
+
+    await inTenantZero(() => chokePoint.restoreItem(movies.id, movie.id));
+
+    expect(await pendingTickJobs()).toHaveLength(0);
+    const { items } = await inTenantZero(() => chokePoint.listItems(movies.id));
+    expect(items.map((row) => row.id)).toEqual([movie.id]);
+  });
 });

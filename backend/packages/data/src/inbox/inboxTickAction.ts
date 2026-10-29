@@ -802,6 +802,8 @@ async function writeNeedsClarification(
 
     const locked = await lockUnlockedProposal(client, config, existingProposal);
     if (!locked) return;
+    // A card that leaves `invalid` here drops its reason in the same write, as a revise does (issue #1604).
+    const clearedReason = locked.properties.status === "invalid" ? { invalidReason: null } : {};
     await updateItemWithClient(
       client,
       {
@@ -813,10 +815,13 @@ async function writeNeedsClarification(
           proposal: null,
           ...aiProposalPatch(locked.properties, null),
           status: "needsClarification",
+          ...clearedReason,
           history: appendHistoryEntry(locked.properties.history, message),
         },
       },
-      { allowedSystemKeys: ["fingerprint", "proposal", "aiProposal", "aiVersion", "status", "history"] },
+      {
+        allowedSystemKeys: ["fingerprint", "proposal", "aiProposal", "aiVersion", "status", "invalidReason", "history"],
+      },
     );
     await enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId);
     return;
@@ -843,8 +848,9 @@ async function writeNeedsClarification(
 
 /**
  * Why a Processing proposal is `invalid` (issue #1482), stored in its `invalidReason` system
- * property. `sourceDeleted` is final: the card can only be discarded. `targetArchived` and
- * `targetDeleted` are fixable: revising the card to a valid target returns it to `proposed`.
+ * property. `sourceDeleted` is final for revise: the card can only be discarded, or reopened when
+ * its source is restored from the trash (issue #1604). `targetArchived` and `targetDeleted` are
+ * fixable: revising the card to a valid target returns it to `proposed`.
  * `field` is the editor field concerned (empty for the source), `itemId` the item that caused
  * it, and `label` that item's name when the reason was written. The warning sentence is not
  * stored; `renderInvalidReason` renders it from the code and the label.
@@ -968,11 +974,81 @@ async function inboxFingerprintInput(
 }
 
 /**
+ * True when a card's stored `proposal` envelope passes the check the tick applies to a computed
+ * envelope before storing it (`assertValidProposalEnvelope`). A card with no envelope, or one
+ * that no longer parses, does not pass. Any other error propagates.
+ */
+async function storedEnvelopeStillValid(client: PoolClient, proposal: ItemRow): Promise<boolean> {
+  const parsed = proposalEnvelopeSchema.safeParse(proposal.properties.proposal);
+  if (!parsed.success) return false;
+  try {
+    await assertValidProposalEnvelope(client, parsed.data);
+    return true;
+  } catch (err) {
+    if (err instanceof ValidationError) return false;
+    throw err;
+  }
+}
+
+/**
+ * Brings a `sourceDeleted` card back once its source Inbox item has been restored from the trash
+ * (issue #1604), inside the read transaction and before the fingerprint gate. A card whose stored
+ * envelope still validates goes to `proposed`. One whose envelope no longer validates goes to
+ * `needsClarification` as `writeNeedsClarification` writes it, keeping the stored fingerprint. In
+ * both cases `invalidReason` is cleared. Returns the card as it now stands, or `null` when the
+ * lock refuses it because it changed since the tick read it, which ends the tick.
+ */
+async function reopenRestoredSourceProposal(
+  client: PoolClient,
+  config: SemprecTickActionConfig,
+  invalidCard: ItemRow,
+  sourceItemId: string,
+): Promise<ItemRow | null> {
+  const locked = await lockUnlockedProposal(client, config, invalidCard);
+  if (!locked) return null;
+
+  if (!(await storedEnvelopeStillValid(client, locked))) {
+    const fingerprint = typeof locked.properties.fingerprint === "string" ? locked.properties.fingerprint : null;
+    await writeNeedsClarification(
+      client,
+      config,
+      sourceItemId,
+      locked,
+      "Source item was restored, but its stored proposal no longer validates; needs clarification.",
+      fingerprint,
+    );
+    return findExistingProposal(client, config, sourceItemId);
+  }
+
+  return updateItemWithClient(
+    client,
+    {
+      databaseId: config.processingProposalsDatabaseId,
+      itemId: locked.id,
+      ifVersion: locked.updatedAt,
+      propertiesPatch: {
+        status: "proposed",
+        invalidReason: null,
+        history: appendHistoryEntry(
+          locked.properties.history,
+          "Source item was restored; the proposal is proposed again.",
+          "ai",
+          { kind: "reopened" },
+        ),
+      },
+    },
+    { allowedSystemKeys: ["status", "invalidReason", "history"] },
+  );
+}
+
+/**
  * The tick's read phase: everything up to and including the fingerprint gate, run in one
  * transaction. The outcomes that need no LLM call (deleted source, unrecognized type, a locked
  * or unchanged-fingerprint existing proposal) are written here and end the tick (`null`
- * return). Otherwise resolves the `processingMethod: 'database'` target database here too — so
- * it never needs to be re-derived — and returns a snapshot for the external call and the write
+ * return). A `sourceDeleted` card whose source is live again is first returned to `proposed` or
+ * `needsClarification` (issue #1604), and the gate then applies to the card as it now stands.
+ * Otherwise resolves the `processingMethod: 'database'` target database here too — so it never
+ * needs to be re-derived — and returns a snapshot for the external call and the write
  * transaction that follows it.
  */
 async function readTickSnapshot(
@@ -981,7 +1057,7 @@ async function readTickSnapshot(
   sourceItemId: string,
 ): Promise<TickSnapshot | null> {
   const item = await itemsStore.getItemById(client, config.inboxDatabaseId, sourceItemId);
-  const existingProposal = await findExistingProposal(client, config, sourceItemId);
+  let existingProposal = await findExistingProposal(client, config, sourceItemId);
 
   // Issue #106: this fires on every create/update/delete tick (issue #103's onItemEvent
   // heartbeats), so it is the one trigger point that covers a property edit (text/date/
@@ -1013,6 +1089,13 @@ async function readTickSnapshot(
   const emoji = typeof type.properties.emoji === "string" ? type.properties.emoji : "";
   const v2Input = await inboxFingerprintInput(client, item, type);
   const fingerprint = computeInboxFingerprintV2(v2Input);
+
+  // The source was restored: the card leaves `invalid` before the fingerprint gate, so an unchanged
+  // fingerprint does not hide the change of state (issue #1604).
+  if (existingProposal && isFinalInvalid(existingProposal.properties)) {
+    existingProposal = await reopenRestoredSourceProposal(client, config, existingProposal, item.id);
+    if (!existingProposal) return null;
+  }
 
   if (existingProposal) {
     const status = existingProposal.properties.status;
@@ -1262,8 +1345,10 @@ async function writeComputeFailure(
  * Runs in three phases, per `docs/adr/2026-09-10-bracket-non-transactional-calls-with-staleness-checked-transactions.md`:
  * a read transaction (`readTickSnapshot`) that either resolves the tick with no AI call (deleted
  * source → `invalid`, unrecognized type → `needsClarification`, a locked or unchanged-fingerprint
- * existing proposal → no-op) or returns a snapshot; the injected, LLM-backed `computeProposal`
- * call outside any transaction; and a write transaction (`writeTickResult`) that re-validates the
+ * existing proposal → no-op; a restored source's `sourceDeleted` card → `proposed` or
+ * `needsClarification` before the fingerprint gate, issue #1604) or returns a snapshot; the
+ * injected, LLM-backed `computeProposal` call outside any transaction; and a write transaction
+ * (`writeTickResult`) that re-validates the
  * snapshot against the source item's current state before writing — a `confirmed`/`rejected`
  * (locked) proposal is never recomputed, and a source that changed while the call was in flight
  * makes this tick write nothing (the next tick, already enqueued, produces the up-to-date card).
