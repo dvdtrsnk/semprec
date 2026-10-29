@@ -14,7 +14,7 @@ import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
-import { ForbiddenError } from "../errors.js";
+import { ForbiddenError, ValidationError } from "../errors.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 import { sweepDueHeartbeats } from "../scheduler/schedulerStore.js";
 import { createCoreTaskList } from "../worker.js";
@@ -59,6 +59,91 @@ async function getDatabaseIdByModule(moduleId: string): Promise<string> {
   const { rows } = await pool.query("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
   return rows[0].id;
 }
+
+describe("library rating validation", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  const invalidRatings = [7, 2.5, -1, "4", NaN];
+
+  for (const moduleId of ["books", "movies"]) {
+    it(`rejects an invalid ${moduleId} rating on create and update, accepts 0 to 5 and null`, async () => {
+      const databaseId = await getDatabaseIdByModule(moduleId);
+      for (const rating of invalidRatings) {
+        await expect(
+          inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "X", rating } })),
+        ).rejects.toMatchObject({ status: 400, details: { field: "rating" } });
+      }
+      const item = await inTenantZero(() =>
+        chokePoint.createItem({ databaseId, properties: { name: "X", rating: 0 } }),
+      );
+      for (const rating of invalidRatings) {
+        const error = await chokePoint
+          .updateItem({ databaseId, itemId: item.id, propertiesPatch: { rating } })
+          .catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toMatchObject({ details: { field: "rating" } });
+      }
+      for (const rating of [0, 1, 5, null]) {
+        await chokePoint.updateItem({ databaseId, itemId: item.id, propertiesPatch: { rating } });
+      }
+      const created = await inTenantZero(() =>
+        chokePoint.createItem({ databaseId, properties: { name: "Y", rating: 5 } }),
+      );
+      expect((await chokePoint.getItem(databaseId, created.id))?.properties.rating).toBe(5);
+    });
+
+    it(`validates only the keys present in a ${moduleId} patch`, async () => {
+      const databaseId = await getDatabaseIdByModule(moduleId);
+      // Seed a stored invalid value behind the hooks; an unrelated patch must still succeed.
+      const item = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "X" } }));
+      await pool.query(`UPDATE items SET properties = jsonb_set(properties, '{rating}', '9'::jsonb) WHERE id = $1`, [
+        item.id,
+      ]);
+      await chokePoint.updateItem({ databaseId, itemId: item.id, propertiesPatch: { name: "Renamed" } });
+    });
+  }
+
+  it("validates watchedWith edge metadata.rating from 1 to 5 and leaves other edges valid", async () => {
+    const moviesId = await getDatabaseIdByModule("movies");
+    const peopleId = await getDatabaseIdByModule("people");
+    const movie = await inTenantZero(() => chokePoint.createItem({ databaseId: moviesId, properties: { name: "M" } }));
+    const person = await inTenantZero(() =>
+      chokePoint.createItem({ databaseId: peopleId, properties: { name: "Alex" } }),
+    );
+    const watchedWith = (await chokePoint.listProperties(moviesId)).find((p) => p.key === "watchedWith")!;
+    const edge = (metadata?: Record<string, unknown>) =>
+      chokePoint.createRelation({
+        relationPropertyId: watchedWith.id,
+        callerItemId: movie.id,
+        targetItemId: person.id,
+        metadata,
+      });
+
+    for (const rating of [9, 0, 2.5, "4"]) {
+      await expect(edge({ rating })).rejects.toMatchObject({ status: 400, details: { field: "metadata.rating" } });
+    }
+    await edge({ rating: 4 });
+    await edge({ rating: 1 });
+    await edge({ note: "fun" });
+    await edge(undefined);
+  });
+
+  it("does not validate rating on a database of another module", async () => {
+    const database = await chokePoint.createDatabase({ name: "Other", ownerModuleId: "ratingProbe" });
+    await chokePoint.createProperty({ databaseId: database.id, key: "name", name: "Name", type: "title" });
+    await chokePoint.createProperty({ databaseId: database.id, key: "rating", name: "Rating", type: "number" });
+    const item = await inTenantZero(() =>
+      chokePoint.createItem({ databaseId: database.id, properties: { name: "X", rating: 7 } }),
+    );
+    await chokePoint.updateItem({ databaseId: database.id, itemId: item.id, propertiesPatch: { rating: 2.5 } });
+    expect((await chokePoint.getItem(database.id, item.id))?.properties.rating).toBe(2.5);
+  });
+});
 
 describe("library module (issue #25)", () => {
   beforeEach(async () => {
