@@ -11,7 +11,7 @@ import {
   getTestPool,
   resetDatabase,
 } from "@semprec/data/testSupport";
-import { createAgentRun, finishAgentRun, TASKS_MODULE_ID } from "@semprec/data";
+import { createAgentRun, finishAgentRun, seedSystem, TASKS_MODULE_ID } from "@semprec/data";
 import { runInTenant } from "@semprec/shared";
 import {
   BUSY_ERROR_MESSAGE,
@@ -841,6 +841,8 @@ describe("DelegationRegistry", () => {
   });
 
   it("refuses a random, trashed or non-Projects target without creating a session", async () => {
+    // A Tasks item needs the seeded Tasks catalog: its pre-write transform stores the derived `time` key.
+    await seedSystem(pool);
     const registry = new DelegationRegistry(pool);
     const supervisorRunId = await newSupervisorRunId();
     const trashedProjectItemId = await createTestProjectItem(pool);

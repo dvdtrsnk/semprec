@@ -12,6 +12,7 @@ import {
   withTenantTransaction,
 } from "../testSupport/testDb.js";
 import { createUser } from "../auth/usersStore.js";
+import { seedSystem } from "../seed/seedSystem.js";
 import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { mailSyncProcessName, upsertProcessHeartbeat } from "../health/processHeartbeats.js";
 import { ensureMailAccountSyncState, recordSyncError } from "../mail/mailAccountSyncStateStore.js";
@@ -36,6 +37,8 @@ async function seedTenant(): Promise<{ tenantId: string; userId: string }> {
 /** One errored `item_automation` row on a fresh Tasks item in `tenantId`; returns the item's database id. */
 async function seedAutomationError(tenantId: string): Promise<string | undefined> {
   return runInTenant(tenantId, async () => {
+    // A Tasks item needs the seeded Tasks catalog: its pre-write transform stores the derived `time` key.
+    await seedSystem(runtimePool);
     const itemId = await createTestModuleItem(runtimePool, TASKS_MODULE_ID);
     // Raw insert: no production writer sets an `item_automation` error on a fixture item.
     await runtimePool.query(`INSERT INTO item_automation (item_id, status, error) VALUES ($1, 'error', 'boom')`, [
