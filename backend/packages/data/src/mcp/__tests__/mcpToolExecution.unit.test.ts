@@ -1,8 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 
 const connectMcpServer = vi.fn();
 vi.mock("../mcpConnectionFactory.js", () => ({ connectMcpServer: (...args: unknown[]) => connectMcpServer(...args) }));
+
+const recordSuccess = vi.fn();
+const recordFailure = vi.fn();
+vi.mock("../mcpServerConnectionStateStore.js", () => ({
+  recordMcpConnectionSuccess: (...args: unknown[]) => recordSuccess(...args),
+  recordMcpConnectionFailure: (...args: unknown[]) => recordFailure(...args),
+}));
 
 const { executeMcpInvocation } = await import("../mcpToolExecution.js");
 const { McpConnectionError } = await import("../mcpConnectionError.js");
@@ -130,5 +137,58 @@ describe("executeMcpInvocation failure classification (issue #1444)", () => {
   it("carries no failure for a successful call", async () => {
     mockHandle(vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] }), close);
     expect(await executeMcpInvocation(POOL, TARGET, {})).toEqual({ error: false, result: "ok" });
+  });
+});
+
+describe("executeMcpInvocation connection recording (issue #1450)", () => {
+  const close = vi.fn().mockResolvedValue(undefined);
+
+  beforeEach(() => {
+    recordSuccess.mockReset().mockResolvedValue(undefined);
+    recordFailure.mockReset().mockResolvedValue(undefined);
+  });
+
+  it("records a success after the connect", async () => {
+    mockHandle(vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] }), close);
+    await executeMcpInvocation(POOL, TARGET, {});
+    expect(recordSuccess).toHaveBeenCalledWith(POOL, "server-1");
+    expect(recordFailure).not.toHaveBeenCalled();
+  });
+
+  it("records the reason of a connection error and no success", async () => {
+    connectMcpServer.mockRejectedValue(new McpConnectionError("handshake_failed", "rejected"));
+    await executeMcpInvocation(POOL, TARGET, {});
+    expect(recordFailure).toHaveBeenCalledWith(POOL, "server-1", "handshake_failed");
+    expect(recordSuccess).not.toHaveBeenCalled();
+  });
+
+  it("records a success, not a failure, when tools/call fails after a good connect", async () => {
+    mockHandle(vi.fn().mockRejectedValue(new McpConnectionError("handshake_failed", "late")), close);
+    await executeMcpInvocation(POOL, TARGET, {});
+    expect(recordSuccess).toHaveBeenCalledTimes(1);
+    expect(recordFailure).not.toHaveBeenCalled();
+  });
+
+  it("records nothing for a non-connection error thrown by the connect", async () => {
+    connectMcpServer.mockRejectedValue(new Error("bug"));
+    await executeMcpInvocation(POOL, TARGET, {});
+    expect(recordSuccess).not.toHaveBeenCalled();
+    expect(recordFailure).not.toHaveBeenCalled();
+  });
+
+  it("returns the normal result when recording a success fails", async () => {
+    recordSuccess.mockRejectedValue(new Error("db down"));
+    mockHandle(vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] }), close);
+    expect(await executeMcpInvocation(POOL, TARGET, {})).toEqual({ error: false, result: "ok" });
+  });
+
+  it("returns the normal failure result when recording a failure fails", async () => {
+    recordFailure.mockRejectedValue(new Error("db down"));
+    connectMcpServer.mockRejectedValue(new McpConnectionError("connect_timeout", "slow"));
+    expect(await executeMcpInvocation(POOL, TARGET, {})).toEqual({
+      error: true,
+      result: "slow",
+      failure: { failureKind: "timeout", mcpServerItemId: "server-1", timeoutMs: 15000 },
+    });
   });
 });
