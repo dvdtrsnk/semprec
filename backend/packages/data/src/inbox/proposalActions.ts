@@ -1,4 +1,6 @@
+import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
+import { getSystemTimezone } from "../systemSettings.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -15,6 +17,7 @@ import {
   type ProposalEntityKind,
   type ProposalEnvelope,
 } from "./inboxTickAction.js";
+import { insertItemOrigins, type ItemOriginSource } from "./itemOriginsStore.js";
 import { executeProposalSteps } from "./proposalSteps.js";
 import { enqueueJournalInboxRecomputeForProposal } from "./journalInboxCompute.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
@@ -173,6 +176,54 @@ async function requireSourceTranscriptId(
 }
 
 /**
+ * The moment an Inbox item was captured: its `date` and `time` (the user's meant moment, stored
+ * verbatim) read in the system timezone, or null when either is missing or unparseable.
+ */
+function inboxCaptureInstant(inboxItem: ItemRow, timezone: string): string | null {
+  const { date, time } = inboxItem.properties;
+  if (typeof date !== "string" || typeof time !== "string") return null;
+  const captured = DateTime.fromISO(`${date}T${time}`, { zone: timezone });
+  return captured.isValid ? captured.toUTC().toISO() : null;
+}
+
+/**
+ * Where the items a confirm creates came from: a transcript card names its transcript, and the
+ * card's last write time stands in for its creation time (items carry no creation timestamp); any
+ * other card names its `sourceInbox` item and takes that item's capture moment, with the same
+ * stand-in when the edge or the item is gone.
+ */
+async function resolveItemOriginSource(
+  client: PoolClient,
+  config: ProposalActionConfig,
+  proposal: ItemRow,
+  transcriptId: string | null,
+): Promise<ItemOriginSource> {
+  if (transcriptId !== null) {
+    return {
+      proposalId: proposal.id,
+      inboxItemId: null,
+      sourceTranscriptId: transcriptId,
+      capturedAt: proposal.updatedAt,
+      captureChannel: "transcript",
+    };
+  }
+  const propertyId = await requireRelationPropertyId(client, config.processingProposalsDatabaseId, "sourceInbox");
+  const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, propertyId);
+  if (!relationDefinition)
+    throw new NotFoundError(`Relation definition for Processing proposals 'sourceInbox' not found`);
+  const [edge] = await relationsStore.listRelationsForItem(client, relationDefinition.id, proposal.id);
+  const inboxItemId = edge ? relationsStore.otherSide(edge, proposal.id) : null;
+  const [inboxItem] = inboxItemId ? await itemsStore.getItemsByIds(client, [inboxItemId]) : [];
+  return {
+    proposalId: proposal.id,
+    inboxItemId,
+    sourceTranscriptId: null,
+    capturedAt: (inboxItem && inboxCaptureInstant(inboxItem, await getSystemTimezone(client))) ?? proposal.updatedAt,
+    captureChannel: "inbox",
+  };
+}
+
+/**
  * Validates an envelope against the card it is for (issue #184), on top of the envelope's own
  * shape (`assertValidProposalEnvelope`). A `'relation'` envelope needs a source item to link from,
  * which only a `kind = 'transcript'` card has. A transcript card accepts exactly three shapes:
@@ -324,6 +375,7 @@ export async function confirmProposalWithClient(
     }
     // A multi-step envelope writes every active step; a single-step one keeps the direct path below.
     let created: ItemRow;
+    let createdItemIds: string[];
     let resultDatabaseId = envelope.target;
     if (envelope.operations) {
       const executed = await executeProposalSteps(client, envelope.operations, {
@@ -334,13 +386,20 @@ export async function confirmProposalWithClient(
       if (!primaryItem) throw new Error(`Primary step item ${executed.primaryItemId} disappeared during confirm`);
       created = primaryItem;
       resultDatabaseId = executed.primaryDatabaseId;
+      createdItemIds = executed.createdItemIds;
     } else {
       created = await createItemWithClient(
         client,
         { databaseId: envelope.target, properties: envelope.properties },
         { writer: CONFIRMING_USER_WRITER, actingUserId },
       );
+      createdItemIds = [created.id];
     }
+    await insertItemOrigins(
+      client,
+      createdItemIds,
+      await resolveItemOriginSource(client, config, proposal, transcriptCardEdge?.transcriptId ?? null),
+    );
     resultItemId = created.id;
     resultLabel = await resolveResultLabel(client, resultDatabaseId, created);
     if (credential) {

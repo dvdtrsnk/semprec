@@ -12,6 +12,8 @@ import { selectActiveSteps, type ProposalStep } from "./inboxTickAction.js";
 export interface ExecutedProposalSteps {
   primaryItemId: string;
   primaryDatabaseId: string;
+  /** Ids of the items `create` steps wrote, in execution order; patched and linked items are not listed. */
+  createdItemIds: string[];
 }
 
 interface StepWriteContext {
@@ -152,7 +154,7 @@ async function executeStep(
   client: PoolClient,
   step: ProposalStep,
   ctx: StepWriteContext,
-): Promise<{ itemId: string; databaseId: string }> {
+): Promise<{ itemId: string; databaseId: string; created: boolean }> {
   if (step.op === "create") {
     const database = step.databaseKey ? await databasesStore.getDatabaseByKey(client, step.databaseKey) : null;
     if (!database) {
@@ -169,7 +171,7 @@ async function executeStep(
       ),
     );
     await createEdges(client, step, database.id, created.id, step.relations ?? {}, ctx);
-    return { itemId: created.id, databaseId: database.id };
+    return { itemId: created.id, databaseId: database.id, created: true };
   }
 
   const [item] = step.itemId ? await itemsStore.getItemsByIds(client, [step.itemId]) : [];
@@ -181,7 +183,7 @@ async function executeStep(
   }
   if (step.op === "link") {
     await createEdges(client, step, item.databaseId, item.id, step.relations ?? {}, ctx);
-    return { itemId: item.id, databaseId: item.databaseId };
+    return { itemId: item.id, databaseId: item.databaseId, created: false };
   }
   const propertiesPatch = step.properties ?? {};
   if (Object.keys(propertiesPatch).length > 0) {
@@ -195,7 +197,7 @@ async function executeStep(
     );
   }
   await moveEdges(client, step, item.databaseId, item.id, ctx);
-  return { itemId: item.id, databaseId: item.databaseId };
+  return { itemId: item.id, databaseId: item.databaseId, created: false };
 }
 
 /**
@@ -214,12 +216,14 @@ export async function executeProposalSteps(
     actingUserId: options.actingUserId,
     itemIdsByRef: new Map(),
   };
-  let primary: ExecutedProposalSteps | null = null;
+  let primary: Pick<ExecutedProposalSteps, "primaryItemId" | "primaryDatabaseId"> | null = null;
+  const createdItemIds: string[] = [];
   for (const step of orderByRefDependencies(selectActiveSteps(steps))) {
-    const { itemId, databaseId } = await executeStep(client, step, ctx);
+    const { itemId, databaseId, created } = await executeStep(client, step, ctx);
+    if (created) createdItemIds.push(itemId);
     ctx.itemIdsByRef.set(step.ref, itemId);
     if (step.role === "primary") primary = { primaryItemId: itemId, primaryDatabaseId: databaseId };
   }
   if (!primary) throw new ValidationError("Proposal has no primary step to write", { field: "operations" });
-  return primary;
+  return { ...primary, createdItemIds };
 }

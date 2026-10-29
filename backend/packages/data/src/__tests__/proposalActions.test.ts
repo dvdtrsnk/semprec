@@ -1,5 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { DateTime } from "luxon";
 import type { Pool } from "pg";
+import { getSystemTimezone } from "../systemSettings.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -23,6 +25,7 @@ import {
   rejectProposalWithClient,
   reviseProposalWithClient,
 } from "../inbox/proposalActions.js";
+import { deleteItemDependents } from "../chokePoint/itemTrash.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
@@ -792,6 +795,120 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       } finally {
         setInvalidationHook(() => {});
       }
+    });
+
+    describe("item origins (issue #1659)", () => {
+      interface OriginRow {
+        item_id: string;
+        proposal_id: string;
+        inbox_item_id: string | null;
+        source_transcript_id: string | null;
+        captured_at: Date;
+        capture_channel: string;
+      }
+      const originRows = async () => (await pool.query<OriginRow>("SELECT * FROM item_origins ORDER BY item_id")).rows;
+      const sourceInboxItemId = (cardId: string) =>
+        withTransaction(pool, async (client) => {
+          const property = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
+          const definition = await relationsStore.getRelationDefinitionByPropertyId(client, property!.id);
+          const [edge] = await relationsStore.listRelationsForItem(client, definition!.id, cardId);
+          return relationsStore.otherSide(edge!, cardId);
+        });
+      const createdIds = async () =>
+        (
+          await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = ANY($1)", [
+            [await databaseIdFor("companies"), await databaseIdFor("people")],
+          ])
+        ).rows.map((row) => row.id);
+
+      it("writes one row per created item with the card, the source Inbox item and its capture time", async () => {
+        const card = await cardWithSteps("companies", companyAndPerson());
+        await confirm(card);
+
+        const inboxItemId = await sourceInboxItemId(card);
+        const [inboxItem] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [inboxItemId]));
+        const rows = await originRows();
+        expect(rows).toHaveLength(2);
+        expect(rows.map((row) => row.item_id).sort()).toEqual((await createdIds()).sort());
+        for (const row of rows) {
+          expect(row.proposal_id).toBe(card);
+          expect(row.inbox_item_id).toBe(inboxItemId);
+          expect(row.source_transcript_id).toBeNull();
+          expect(row.capture_channel).toBe("inbox");
+          expect(row.captured_at.toISOString()).toBe(
+            DateTime.fromISO(`${String(inboxItem!.properties.date)}T${String(inboxItem!.properties.time)}`, {
+              zone: await withTransaction(pool, getSystemTimezone),
+            })
+              .toUTC()
+              .toISO(),
+          );
+        }
+      });
+
+      it("writes one row for a single-step database proposal", async () => {
+        const card = await createDatabaseProposal("Buy milk");
+        const confirmed = await confirm(card.id);
+        const rows = await originRows();
+        expect(rows.map((row) => row.item_id)).toEqual([confirmed.properties.resultItemId]);
+        expect(rows[0]!.proposal_id).toBe(card.id);
+      });
+
+      it("writes no row for an item a step only patches", async () => {
+        const existing = await createIn("companies", { name: "Existing" });
+        const card = await cardWithSteps("companies", [
+          {
+            ref: "company",
+            op: "update",
+            itemId: existing,
+            role: "primary",
+            properties: { name: "Renamed" },
+            before: { properties: { name: "Existing" } },
+            after: { properties: { name: "Renamed" } },
+          },
+          {
+            ref: "person",
+            op: "create",
+            databaseKey: "people",
+            role: "secondary",
+            properties: { name: "Jane" },
+            relations: { companies: [{ ref: "company" }] },
+          },
+        ]);
+        await confirm(card);
+        const rows = await originRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.item_id).not.toBe(existing);
+      });
+
+      it("writes no row when the confirm fails and rolls back", async () => {
+        const failing = companyAndPerson();
+        failing[1] = { ...failing[1]!, properties: { name: 42 } };
+        const card = await cardWithSteps("companies", failing);
+        await confirm(card).catch(() => undefined);
+        expect(await originRows()).toEqual([]);
+      });
+
+      it("a repeated confirm adds and changes no row", async () => {
+        const card = await cardWithSteps("companies", companyAndPerson());
+        await confirm(card);
+        const before = await originRows();
+        await confirm(card);
+        expect(await originRows()).toEqual(before);
+      });
+
+      it("permanent deletion removes the item's row and keeps the other item's", async () => {
+        const card = await cardWithSteps("companies", companyAndPerson());
+        const confirmed = await confirm(card);
+        const resultId = confirmed.properties.resultItemId as string;
+        await withTransaction(pool, async (client) => {
+          const [row] = await itemsStore.getItemsByIds(client, [resultId]);
+          await itemsStore.hardDeleteItem(client, row!.databaseId, row!.id);
+          await deleteItemDependents(client, row!);
+        });
+        const rows = await originRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.item_id).not.toBe(resultId);
+      });
     });
   });
 
