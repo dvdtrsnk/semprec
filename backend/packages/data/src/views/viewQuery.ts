@@ -18,6 +18,15 @@ import { parseFilterNode, type FilterNode } from "./filterTree.js";
 import { parseSortConfig, sortConfigSchema, type SortSpec } from "./sortSpec.js";
 import { parseViewConfig, projectProperties, type ViewConfig } from "./viewConfig.js";
 
+/**
+ * The `users.locale` of a user, or `undefined` when the user row is not visible to the caller. It lives
+ * here, not behind `auth/usersStore.ts`, because the choke point must not import a domain folder.
+ */
+export async function findUserLocale(client: PoolClient, userId: string): Promise<string | undefined> {
+  const { rows } = await client.query<{ locale: string }>(`SELECT locale FROM users WHERE id = $1`, [userId]);
+  return rows[0]?.locale;
+}
+
 export interface QueryViewOptions {
   limit?: number;
   /**
