@@ -274,6 +274,47 @@ describe("acceptInvitation (issue #1087)", () => {
     expect(await snapshot()).toEqual(before);
   });
 
+  it("stores the trimmed displayName on the invited account and returns it", async () => {
+    const { token } = await invite(INVITEE);
+    const provision = vi.fn(async () => undefined);
+
+    const user = await acceptInvitation(dataPool, { token, password: PASSWORD, displayName: "  Novak  " }, provision);
+
+    expect(user.displayName).toBe("Novak");
+    const { rows } = await adminPool.query<{ display_name: string | null }>(
+      "SELECT display_name FROM users WHERE id = $1",
+      [user.id],
+    );
+    expect(rows).toEqual([{ display_name: "Novak" }]);
+  });
+
+  it("stores NULL when the displayName is omitted", async () => {
+    const { token } = await invite(INVITEE);
+    const provision = vi.fn(async () => undefined);
+
+    const user = await acceptInvitation(dataPool, { token, password: PASSWORD }, provision);
+
+    expect(user.displayName).toBeNull();
+  });
+
+  it("refuses an invalid displayName with ValidationError, writes nothing and leaves the invitation usable", async () => {
+    const { token } = await invite(INVITEE);
+    const before = await snapshot();
+    const provision = vi.fn(async () => undefined);
+
+    for (const displayName of ["a".repeat(81), "   ", 42]) {
+      const attempt = acceptInvitation(dataPool, { token, password: PASSWORD, displayName }, provision);
+      await expect(attempt).rejects.toBeInstanceOf(ValidationError);
+      await expect(attempt).rejects.toMatchObject({ details: { field: "displayName" } });
+    }
+    expect(provision).not.toHaveBeenCalled();
+    expect(await snapshot()).toEqual(before);
+    // The refusals consumed nothing: the same invitation still accepts.
+    await expect(acceptInvitation(dataPool, { token, password: PASSWORD }, provision)).resolves.toMatchObject({
+      email: INVITEE,
+    });
+  });
+
   it("creates one tenant and one account when two acceptances of one token run concurrently", async () => {
     const { token } = await invite(INVITEE);
     const before = await snapshot();

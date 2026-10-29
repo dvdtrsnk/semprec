@@ -32,6 +32,11 @@ export interface CreateUserInput {
   tenantId?: string;
   /** Defaults to the `users.role` column default (`member`) when omitted. */
   role?: UserRole;
+  /**
+   * Stored as `users.display_name`; NULL when omitted. A caller that takes the name from a request validates it
+   * with `normalizeDisplayName` first.
+   */
+  displayName?: string;
 }
 
 /** Throws (unique violation, Postgres error code `23505`) if `email` is already taken. */
@@ -42,6 +47,7 @@ export async function createUser(client: Pool | PoolClient, input: CreateUserInp
     ["locale", input.locale],
     ["tenant_id", input.tenantId],
     ["role", input.role],
+    ["display_name", input.displayName],
   ];
   for (const [column, value] of optional) {
     if (value === undefined) continue;

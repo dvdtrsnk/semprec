@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { runAsSystem } from "@semprec/shared";
 import { MIN_PASSWORD_LENGTH, type PublicUser } from "../auth/authActions.js";
+import { normalizeDisplayName } from "../auth/displayName.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { hashToken } from "../auth/token.js";
 import type { UserRow } from "../auth/types.js";
@@ -16,6 +17,8 @@ export interface AcceptInvitationInput {
   /** The raw token from the invitation link's fragment. Only its hash is stored. */
   token: string;
   password: string;
+  /** Optional; validated by `normalizeDisplayName` before any lookup, so a refused name never consumes the invitation (issue #1513). */
+  displayName?: unknown;
 }
 
 /** Seeds a tenant's system databases and activates it. Production passes `provisionTenant`; a test may inject another. */
@@ -71,7 +74,7 @@ async function lockUsableInvite(client: PoolClient, tokenHash: string): Promise<
  */
 async function createInvitedUser(
   client: PoolClient,
-  input: { email: string; passwordHash: string; tenantId: string },
+  input: { email: string; passwordHash: string; tenantId: string; displayName: string | null },
 ): Promise<UserRow> {
   try {
     return await createUser(client, {
@@ -79,6 +82,7 @@ async function createInvitedUser(
       passwordHash: input.passwordHash,
       tenantId: input.tenantId,
       role: "member",
+      displayName: input.displayName ?? undefined,
     });
   } catch (err) {
     if (isUniqueViolation(err, "users_email_key")) throw new NotFoundError("Not found");
@@ -112,6 +116,8 @@ export async function acceptInvitation(
     if (input.password.length < MIN_PASSWORD_LENGTH) {
       throw new ValidationError(`'password' must be at least ${MIN_PASSWORD_LENGTH} characters`);
     }
+    // Before the lookup: a refused name must leave the invitation usable, so nothing below runs for it.
+    const displayName = normalizeDisplayName(input.displayName);
     const tokenHash = hashToken(input.token);
     const candidate = await findUsableInvite(pool, tokenHash);
     if (!candidate) throw new NotFoundError("Not found");
@@ -121,7 +127,7 @@ export async function acceptInvitation(
       const invite = await lockUsableInvite(client, tokenHash);
       if (!invite) throw new NotFoundError("Not found");
       const tenantId = await createTenant(client, "provisioning");
-      const user = await createInvitedUser(client, { email: invite.email, passwordHash, tenantId });
+      const user = await createInvitedUser(client, { email: invite.email, passwordHash, tenantId, displayName });
       const marked = await client.query(
         "UPDATE invites SET accepted_at = now() WHERE id = $1 AND accepted_at IS NULL",
         [invite.id],

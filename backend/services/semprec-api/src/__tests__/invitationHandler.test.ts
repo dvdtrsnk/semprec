@@ -263,4 +263,65 @@ describe("createInvitationRequestListener (issue #1087)", () => {
     expect(logged).not.toContain(INVITEE);
     expect(logged).not.toContain(PASSWORD);
   });
+
+  describe("displayName (issue #1513)", () => {
+    async function storedDisplayName(email: string): Promise<string | null | undefined> {
+      const { rows } = await adminPool.query<{ display_name: string | null }>(
+        "SELECT display_name FROM users WHERE email = $1",
+        [email],
+      );
+      return rows[0]?.display_name;
+    }
+
+    it(
+      "stores the trimmed displayName on the accepted account and returns it",
+      async () => {
+        const baseUrl = await serve();
+        const { token } = await issue(INVITEE);
+
+        const res = await post(baseUrl, JSON.stringify({ token, password: PASSWORD, displayName: "  Novak  " }));
+
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { user: { displayName: string | null } };
+        expect(body.user.displayName).toBe("Novak");
+        expect(await storedDisplayName(INVITEE)).toBe("Novak");
+      },
+      PROVISIONING_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "stores NULL when displayName is omitted",
+      async () => {
+        const baseUrl = await serve();
+        const { token } = await issue(INVITEE);
+
+        const res = await accept(baseUrl, token);
+
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { user: { displayName: string | null } };
+        expect(body.user.displayName).toBeNull();
+        expect(await storedDisplayName(INVITEE)).toBeNull();
+      },
+      PROVISIONING_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "refuses an invalid displayName with 400 naming the field, and the invitation is still accepted afterwards",
+      async () => {
+        const baseUrl = await serve();
+        const { token } = await issue(INVITEE);
+
+        for (const displayName of ["a".repeat(81), "   ", 42]) {
+          const res = await post(baseUrl, JSON.stringify({ token, password: PASSWORD, displayName }));
+          expect(res.status).toBe(400);
+          expect(await res.json()).toMatchObject({ code: "validation_failed", details: { field: "displayName" } });
+        }
+        expect(await storedDisplayName(INVITEE)).toBeUndefined();
+
+        const accepted = await accept(baseUrl, token);
+        expect(accepted.status).toBe(200);
+      },
+      PROVISIONING_TEST_TIMEOUT_MS,
+    );
+  });
 });

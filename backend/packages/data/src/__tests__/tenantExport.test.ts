@@ -405,7 +405,13 @@ describe("tenant data export (issue #1043)", () => {
     );
 
     const account: unknown = JSON.parse(entries.get("account.json")!.toString("utf8"));
-    expect(account).toEqual({ email: seededA.email, locale: "cs", role: "member", createdAt: expect.any(String) });
+    expect(account).toEqual({
+      email: seededA.email,
+      displayName: null,
+      locale: "cs",
+      role: "member",
+      createdAt: expect.any(String),
+    });
 
     const manifest = manifestSchema.parse(JSON.parse(entries.get("manifest.json")!.toString("utf8")));
     expect(manifest.exportId).toBe(exportId);
@@ -471,6 +477,29 @@ describe("tenant data export (issue #1043)", () => {
     expect(
       [...entries.keys()].some((name) => name.includes("tenant_keys") || name.includes("external_credentials")),
     ).toBe(false);
+  });
+
+  it("writes the account's displayName into account.json when one is set", async () => {
+    const email = `${randomUUID()}@example.com`;
+    await createUser(adminPool, {
+      email,
+      passwordHash: `hash-${randomUUID()}`,
+      tenantId: tenantB,
+      displayName: "Ada Lovelace",
+    });
+    const exportId = await requestExportIn(tenantB);
+
+    await runExport(tenantB, exportId);
+
+    const entries = readZip(readFileSync(archivePath(tenantB, exportId)));
+    const account: unknown = JSON.parse(entries.get("account.json")!.toString("utf8"));
+    expect(account).toEqual({
+      email,
+      displayName: "Ada Lovelace",
+      locale: "cs",
+      role: "member",
+      createdAt: expect.any(String),
+    });
   });
 
   it("exports a Files upload reused by an identical mail attachment from the files root", async () => {
