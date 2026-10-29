@@ -129,6 +129,16 @@ export interface RelationListEntry {
   metadata: Record<string, unknown>;
 }
 
+/**
+ * The page after `page.restoreVersion` (issue #1617): the restored instant as ISO 8601 and the ids
+ * of the page's blocks in document order once the restore is applied.
+ */
+export interface PageRestoreOutput {
+  itemId: string;
+  at: string;
+  blockIds: string[];
+}
+
 export interface Page<T> {
   items: T[];
   nextCursor: string | null;

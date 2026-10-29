@@ -15,10 +15,12 @@
 //   approval.databaseArchive  {databaseName, affectedCount}
 //   approval.viewDelete       {viewName, databaseName}
 //   approval.relationDelete   {fromItemName, fromDatabaseKey, toItemName, toDatabaseKey}
+//   approval.pageRestore      {itemName, databaseKey, databaseName}   (issue #1617; the restored instant is an argument value, so it is not in the description)
 //   approval.mcpInvoke        {serverName, toolName}
 // Constrained by: docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
 import type { PoolClient } from "pg";
 import type { DestructiveOperationCheck } from "../chokePoint/destructiveProjection.js";
+import type { PageRestoreCheck } from "../docs/docPageRestore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
@@ -63,14 +65,26 @@ async function countLiveItems(client: PoolClient, databaseId: string, propertyKe
 }
 
 /**
- * The description of one of the five destructive generic operations, read on the same client (and
+ * The description of one of the six destructive generic operations, read on the same client (and
  * so in the same transaction) as the request insert that stores it.
  */
 export async function buildDestructiveApprovalDescription(
   client: PoolClient,
-  check: DestructiveOperationCheck,
+  check: DestructiveOperationCheck | PageRestoreCheck,
 ): Promise<ApprovalDescription> {
   switch (check.operation) {
+    case "page.restoreVersion": {
+      const item = await requireItem(client, check.input.itemId);
+      const database = await requireDatabase(client, item.databaseId);
+      return {
+        key: "approval.pageRestore",
+        params: {
+          itemName: nameOf(item.properties),
+          databaseKey: database.key,
+          databaseName: databaseDisplayName(database),
+        },
+      };
+    }
     case "item.delete": {
       const item = await requireItem(client, check.input.itemId);
       const database = await requireDatabase(client, item.databaseId);

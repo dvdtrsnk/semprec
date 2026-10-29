@@ -182,6 +182,7 @@ export const en = {
   "approval.relationDelete":
     'Remove the link between "{fromItemName}" ({fromDatabaseKey}) and "{toItemName}" ({toDatabaseKey})',
   "approval.mcpInvoke": 'Call the tool "{toolName}" on the MCP server "{serverName}"',
+  "approval.pageRestore": 'Restore the page "{itemName}" in the database "{databaseName}" to an earlier version',
   "setup.title": "Set up your account",
   "setup.email": "Email",
   "setup.password": "Password",
@@ -504,6 +505,7 @@ export const cs: Messages = {
   "approval.relationDelete":
     "Odebrat propojení mezi „{fromItemName}“ ({fromDatabaseKey}) a „{toItemName}“ ({toDatabaseKey})",
   "approval.mcpInvoke": "Zavolat nástroj „{toolName}“ na MCP serveru „{serverName}“",
+  "approval.pageRestore": "Obnovit stránku „{itemName}“ v databázi „{databaseName}“ do starší verze",
   "setup.title": "Nastavení účtu",
   "setup.email": "E-mail",
   "setup.password": "Heslo",

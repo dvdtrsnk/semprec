@@ -311,6 +311,11 @@ export {
   openDocVersionAt,
 } from "./docs/docHistory.js";
 export {
+  computePageRestoreProjection,
+  restorePageVersionWithClient,
+  type PageRestoreCheck,
+} from "./docs/docPageRestore.js";
+export {
   DEFAULT_DOC_HISTORY_RETENTION_DAYS,
   resolveDocHistoryRetentionDays,
   retentionHours,

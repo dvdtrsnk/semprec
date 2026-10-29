@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import {
   createChokePoint,
+  createDocStore,
   ForbiddenError,
   NotFoundError,
   ValidationError,
@@ -58,6 +59,7 @@ function paginate<T extends { id: string }>(rows: readonly T[], cursor: string |
 
 export function createGenericApplicationService(pool: Pool): GenericApplicationPort {
   const chokePoint = createChokePoint(pool);
+  const docStore = createDocStore(pool);
 
   async function requireItem(itemId: string): Promise<Item> {
     const item = await chokePoint.findItem(itemId);
@@ -406,6 +408,12 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
       if (!relations)
         throw new NotFoundError(`Item ${input.itemId} not found`, { resource: "item", itemId: input.itemId });
       return relations;
+    },
+
+    // ---- pages ----
+    /** The docs module refuses an unknown or non-page item (404), a future `at` (400) and an `at` outside the retained window (410). */
+    async restorePageVersion(_actor, input) {
+      return docStore.restoreVersion(input.itemId, new Date(input.at));
     },
   } satisfies GenericApplicationPort;
 }

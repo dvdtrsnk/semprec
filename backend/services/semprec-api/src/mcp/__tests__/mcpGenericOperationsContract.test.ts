@@ -11,6 +11,7 @@ import {
 } from "@semprec/data/testSupport";
 import {
   createChokePoint,
+  createDocStore,
   createUser,
   createViewTypeRegistry,
   hashPassword,
@@ -181,7 +182,7 @@ interface Case {
 }
 
 /**
- * One `tools/call` case per operation in the closed 30-operation catalog, mirroring
+ * One `tools/call` case per operation in the closed 31-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern one adapter over (the code-review finding on
  * issue #220's diff: parameterized contract tests across all of the then-28 operations were missing for the
  * MCP and AgentTool adapters). Reused across two describe-blocks below: dispatched by a plain
@@ -304,6 +305,38 @@ const CASES: Record<GenericOperationName, Case> = {
     }),
   },
   "relation.list": { tool: (fx) => ({ name: "semprec.relation.list", arguments: { itemId: fx.itemA.id } }) },
+  "page.restoreVersion": {
+    // The block's update is dated an hour back, so the instant (half an hour back) sits inside the history `prepare` opens.
+    tool: (fx) => ({
+      name: "semprec.page.restoreVersion",
+      arguments: { itemId: fx.itemA.id, at: new Date(Date.now() - 30 * 60 * 1000).toISOString() },
+    }),
+    prepare: async (fx) => {
+      await createDocStore(pool).putBlock(
+        fx.itemA.id,
+        { id: "b1", flavour: "paragraph", fields: { content: "first" } },
+        "user",
+      );
+      await pool.query(`UPDATE docs SET history_available_from = now() - interval '1 hour' WHERE item_id = $1`, [
+        fx.itemA.id,
+      ]);
+      await pool.query(
+        `UPDATE doc_snapshot_history SET represented_at = now() - interval '1 hour'
+         WHERE through_update_id = 0 AND doc_id = (SELECT id FROM docs WHERE item_id = $1)`,
+        [fx.itemA.id],
+      );
+      await pool.query(
+        `UPDATE doc_updates SET created_at = now() - interval '1 hour'
+         WHERE doc_id = (SELECT id FROM docs WHERE item_id = $1)`,
+        [fx.itemA.id],
+      );
+      await pool.query(
+        `UPDATE doc_history_updates SET created_at = now() - interval '1 hour'
+         WHERE doc_id = (SELECT id FROM docs WHERE item_id = $1)`,
+        [fx.itemA.id],
+      );
+    },
+  },
 };
 
 describe("generic operation MCP contract (issue #220)", () => {

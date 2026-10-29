@@ -6,6 +6,7 @@ import type {
   Item,
   ItemPage,
   Page,
+  PageRestoreOutput,
   Property,
   RelationEdge,
   RelationListEntry,
@@ -13,7 +14,7 @@ import type {
   ViewItem,
 } from "./rows.js";
 
-/** Exhaustive mapped type over the 30 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 31 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
 export interface OutputByOperation {
   "database.list": Page<Database>;
   "database.get": Database;
@@ -50,6 +51,7 @@ export interface OutputByOperation {
   "relation.put": RelationEdge;
   "relation.delete": RelationEdge;
   "relation.list": RelationListEntry[];
+  "page.restoreVersion": PageRestoreOutput;
 }
 
 type AssertSameKeys<T, U> = [T] extends [U] ? ([U] extends [T] ? true : never) : never;
@@ -182,4 +184,8 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["relation.list"],
   ): Promise<OutputByOperation["relation.list"]>;
+  restorePageVersion(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.restoreVersion"],
+  ): Promise<OutputByOperation["page.restoreVersion"]>;
 }

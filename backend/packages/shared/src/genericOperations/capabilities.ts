@@ -31,7 +31,8 @@ export function isRiskClass(value: string): value is RiskClass {
 /**
  * Reads and reversible/non-destructive writes never require approval. `database.archive`,
  * `property.delete`, `view.delete`, `item.delete`, and `relation.delete` are the five
- * destructive operations that do. No approval enforcement happens in this batch position — the
+ * destructive operations that do; `page.restoreVersion` (issue #1617) is the sixth. No approval
+ * enforcement happens in this batch position — the
  * interceptor consuming this metadata is #220.
  */
 export interface OperationMetadata {
@@ -57,7 +58,7 @@ const destructive = (requiresCapability: CapabilityId, reversible: boolean): Ope
 });
 
 /**
- * Exhaustive over the 30 literal operation names, capability and approval/risk metadata checked
+ * Exhaustive over the 31 literal operation names, capability and approval/risk metadata checked
  * together in one object literal per operation: assigning this object literal to a type with
  * exactly these keys is what makes an operation missing (or an extra, misspelled one) a compile
  * error rather than a runtime gap.
@@ -93,6 +94,8 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   "relation.put": nonDestructive("core.item.write", "write"),
   "relation.delete": destructive("core.item.write", false),
   "relation.list": nonDestructive("core.item.read", "read"),
+  // Restorable by another restore to an earlier instant, so `reversible` (issue #1617).
+  "page.restoreVersion": destructive("core.item.write", true),
 };
 
 export const APPROVAL_RISK_LEVELS = ["irreversible", "outbound", "breaksLink", "write"] as const;

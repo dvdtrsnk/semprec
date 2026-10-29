@@ -20,6 +20,7 @@ import {
   createAgentRun,
   createChokePoint,
   createCoreTaskList,
+  createDocStore,
   createUser as createBoundUser,
   createViewTypeRegistry,
   decideAndEnqueueApprovalRequest,
@@ -883,6 +884,118 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(finished!.executionStatus).toBe("succeeded");
       const { rows } = await pool.query(`SELECT count(*)::int AS count FROM item_relations WHERE id = $1`, [edge.id]);
       expect(rows[0].count).toBe(0);
+    });
+  });
+
+  describe("page.restoreVersion through the approval gate (issue #1617)", () => {
+    async function makeAgentActor(): Promise<AuthenticatedActor> {
+      const projectItemId = await createRealAgentProjectItemId();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "page restore" });
+      return { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+    }
+
+    async function replayRequest(requestId: string) {
+      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
+        payload: GenericOperationApprovalRequestPayload;
+      };
+      const outcome = await replayApprovedGenericOperation(pool, request);
+      return { outcome, finished: await getApprovalRequest(pool, requestId) };
+    }
+
+    /**
+     * A page whose history starts two hours before the database clock, with block `b1` written an hour
+     * before it. The instant returned is half an hour before the clock, so it sits between the two.
+     */
+    async function pageWithFirstBlock(): Promise<{ itemId: string; docId: string; at: Date }> {
+      const docStore = createDocStore(pool);
+      const { rows } = await pool.query<{ now: Date }>(`SELECT transaction_timestamp() AS now`);
+      const now = rows[0]!.now;
+      const hoursBefore = (hours: number) => new Date(now.getTime() - hours * 60 * 60 * 1000);
+      const database = await chokePoint.createDatabase({ name: "Pages" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "name", name: "Name", type: "text" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: { name: "Chapter one" } });
+      const doc = await docStore.getOrCreateDoc(item.id, "page");
+      await pool.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [doc.id, hoursBefore(2)]);
+      await pool.query(
+        `UPDATE doc_snapshot_history SET represented_at = $2 WHERE doc_id = $1 AND through_update_id = 0`,
+        [doc.id, hoursBefore(2)],
+      );
+      await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph", fields: { content: "first" } }, "user");
+      await pool.query(`UPDATE doc_updates SET created_at = $2 WHERE doc_id = $1`, [doc.id, hoursBefore(1)]);
+      await pool.query(`UPDATE doc_history_updates SET created_at = $2 WHERE doc_id = $1`, [doc.id, hoursBefore(1)]);
+      return { itemId: item.id, docId: doc.id, at: hoursBefore(0.5) };
+    }
+
+    async function blockIdsOf(itemId: string): Promise<string[]> {
+      const blocks = await createDocStore(pool).listBlocks(itemId);
+      return blocks.map((block) => String(block["sys:id"])).sort();
+    }
+
+    it("holds an agent call for approval, and the approved replay restores the page as one user update", async () => {
+      const page = await pageWithFirstBlock();
+      const docStore = createDocStore(pool);
+      await docStore.putBlock(page.itemId, { id: "b2", flavour: "paragraph", fields: { content: "second" } }, "user");
+      const actor = await makeAgentActor();
+      const input = { itemId: page.itemId, at: page.at.toISOString() };
+
+      const requestId = await approveDestructive("page.restoreVersion", actor, input);
+      // Approval alone changes nothing: the restore runs when the approved request is replayed.
+      expect(await blockIdsOf(page.itemId)).toEqual(["b1", "b2"]);
+      const request = await getApprovalRequest(pool, requestId);
+      expect(request).toMatchObject({
+        toolName: "page.restoreVersion",
+        riskClass: "destructive",
+        description: {
+          key: "approval.pageRestore",
+          params: { itemName: "Chapter one", databaseKey: null, databaseName: "Pages" },
+        },
+      });
+
+      const { outcome, finished } = await replayRequest(requestId);
+
+      expect(outcome.error).toBe(false);
+      expect(finished!.executionStatus).toBe("succeeded");
+      expect(await blockIdsOf(page.itemId)).toEqual(["b1"]);
+      const { rows } = await pool.query<{ created_by: string }>(
+        `SELECT created_by FROM doc_updates WHERE doc_id = $1 ORDER BY id DESC LIMIT 1`,
+        [page.docId],
+      );
+      expect(rows[0]!.created_by).toBe("user");
+    });
+
+    it("ends the replay as a conflict, restoring nothing, when the page was edited after the request", async () => {
+      const page = await pageWithFirstBlock();
+      const actor = await makeAgentActor();
+      const requestId = await approveDestructive("page.restoreVersion", actor, {
+        itemId: page.itemId,
+        at: page.at.toISOString(),
+      });
+      await createDocStore(pool).putBlock(
+        page.itemId,
+        { id: "b2", flavour: "paragraph", fields: { content: "second" } },
+        "user",
+      );
+
+      const { finished } = await replayRequest(requestId);
+
+      expect(finished!.executionStatus).toBe("conflict");
+      expect(await blockIdsOf(page.itemId)).toEqual(["b1", "b2"]);
+    });
+
+    it("refuses a request for an unknown page without queuing an approval", async () => {
+      const actor = await makeAgentActor();
+      const gateway = createGenericOperationGateway(pool);
+
+      await expect(
+        gateway.invoke("page.restoreVersion", actor, ALL_CAPABILITIES, {
+          itemId: randomUUID(),
+          at: new Date().toISOString(),
+        }),
+      ).rejects.toBeInstanceOf(NotFoundError);
+      const { rows } = await pool.query<{ count: string }>(
+        `SELECT count(*) AS count FROM approval_requests WHERE tool_name = 'page.restoreVersion'`,
+      );
+      expect(rows[0]!.count).toBe("0");
     });
   });
 
