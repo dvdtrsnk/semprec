@@ -163,6 +163,7 @@ describe("AI usage account metadata (gh-1376)", () => {
             audioSeconds: null,
           },
         ],
+        estimated: false,
         totalCostUsd: 1,
         dailyCostUsd: [{ day: "2026-01-02", costUsd: 1 }],
         dailyTokenUsage: [{ day: "2026-01-02", inputTokens: 10, outputTokens: 5 }],

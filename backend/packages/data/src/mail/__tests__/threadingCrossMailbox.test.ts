@@ -49,7 +49,8 @@ describe("cross-mailbox threading of one message", () => {
     const t2 = await ingest(mailboxB, "<other@x>");
     expect(t2).not.toBe(t1);
     const merged = await ingest(mailboxB, "<dup@x>", ["<other@x>"]);
-    expect(merged).toBe(t1 < t2 ? t1 : t2);
+    // The other copy of the same message (t1) is consulted first and becomes the merge target.
+    expect(merged).toBe(t1);
     const { rows } = await pool.query(`SELECT id FROM mail_threads WHERE id = ANY($1::uuid[])`, [[t1, t2]]);
     expect(rows).toHaveLength(1);
     const { rows: metas } = await pool.query(`SELECT DISTINCT thread_id FROM mail_message_meta`);
