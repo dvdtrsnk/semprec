@@ -124,7 +124,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
       requestHeaders.push({ ...options?.headers });
       return faux.provider.streamSimple(model, context, options);
     };
-    fauxGateway = { model: faux.getModel(), streamFn };
+    fauxGateway = { model: faux.getModel(), streamFn, isBudgetRefusal: () => false };
   });
 
   afterEach(async () => {

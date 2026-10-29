@@ -100,9 +100,9 @@ const requestBodySchema = z.object({
 
 type PiMessagesRequestBody = z.infer<typeof requestBodySchema>;
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   const payload = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", ...headers });
   res.end(payload);
 }
 
@@ -375,7 +375,12 @@ export function createPiMessagesRequestListener(pool: Pool, options: PiMessagesH
           if (err instanceof BudgetExceededError) {
             // Raised by the reservation, before `streamTurn` wrote the head; the pi client surfaces
             // the status as its own `error` event.
-            sendJson(res, 403, { error: err.message, code: "budget_exceeded" });
+            sendJson(
+              res,
+              403,
+              { error: err.message, code: "budget_exceeded" },
+              { "x-semprec-error-code": "budget_exceeded" },
+            );
             return;
           }
           // Anything else that escaped before the head was written (the reservation itself failing)

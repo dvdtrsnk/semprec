@@ -51,6 +51,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "APPROVAL_REQUEST_REASON_MAX_LENGTH",
   "AREAS_MODULE_ID",
   "AgentRunError",
+  "AiBudgetExceededError",
   "ApprovalRequiredError",
   "BUILTIN_VIEW_TYPES",
   "BUILTIN_VIEW_TYPE_DEFINITIONS",

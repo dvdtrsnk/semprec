@@ -141,7 +141,11 @@ it.each([true, false])(
       const factory = await createAgentSessionFactoryForRun(
         pool,
         new ModuleRegistry(() => new Set<string>()),
-        { model, streamFn: (m, context, options) => faux.provider.streamSimple(m, context, options) },
+        {
+          model,
+          streamFn: (m, context, options) => faux.provider.streamSimple(m, context, options),
+          isBudgetRefusal: () => false,
+        },
         run,
       );
       const events = [];
@@ -232,6 +236,7 @@ describe("mcpModelToolName (issue #1533)", () => {
           {
             model: faux.getModel(),
             streamFn: (m, context, options) => faux.provider.streamSimple(m, context, options),
+            isBudgetRefusal: () => false,
           },
           run,
         );
@@ -271,7 +276,11 @@ describe("MCP tool catalog of inactive servers (issue #1447)", () => {
       const factory = await createAgentSessionFactoryForRun(
         pool,
         new ModuleRegistry(() => new Set<string>()),
-        { model: faux.getModel(), streamFn: (m, context, options) => faux.provider.streamSimple(m, context, options) },
+        {
+          model: faux.getModel(),
+          streamFn: (m, context, options) => faux.provider.streamSimple(m, context, options),
+          isBudgetRefusal: () => false,
+        },
         {
           id: "run-1",
           projectItemId: "project-1",
@@ -358,7 +367,11 @@ describe("agent-only approval reason (issue #1420)", () => {
       const factory = await createAgentSessionFactoryForRun(
         pool,
         new ModuleRegistry(() => new Set<string>()),
-        { model: faux.getModel(), streamFn: (m, context, options) => faux.provider.streamSimple(m, context, options) },
+        {
+          model: faux.getModel(),
+          streamFn: (m, context, options) => faux.provider.streamSimple(m, context, options),
+          isBudgetRefusal: () => false,
+        },
         run,
       );
       const results: string[] = [];
@@ -451,7 +464,11 @@ describe("agent language instruction (issue #1388)", () => {
       const factory = await createAgentSessionFactoryForRun(
         pool,
         new ModuleRegistry(() => new Set<string>()),
-        { model: faux.getModel(), streamFn: (m, context, options) => faux.provider.streamSimple(m, context, options) },
+        {
+          model: faux.getModel(),
+          streamFn: (m, context, options) => faux.provider.streamSimple(m, context, options),
+          isBudgetRefusal: () => false,
+        },
         run,
       );
       for await (const event of factory({ task: run.task }).messages()) void event;
@@ -530,7 +547,11 @@ describe("MCP failure classification in the tool result (issue #1444)", () => {
       const factory = await createAgentSessionFactoryForRun(
         pool,
         new ModuleRegistry(() => new Set<string>()),
-        { model: faux.getModel(), streamFn: (m, context, options) => faux.provider.streamSimple(m, context, options) },
+        {
+          model: faux.getModel(),
+          streamFn: (m, context, options) => faux.provider.streamSimple(m, context, options),
+          isBudgetRefusal: () => false,
+        },
         run,
       );
       for await (const event of factory({ task: run.task }).messages()) {

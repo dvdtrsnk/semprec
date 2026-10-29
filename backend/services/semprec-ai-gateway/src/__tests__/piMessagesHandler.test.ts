@@ -665,7 +665,8 @@ describe("POST /internal/pi/messages", () => {
       const res = await post({ model: MODEL_ID, context: CONTEXT });
 
       expect(res.status).toBe(403);
-      expect(((await res.json()) as { code: string }).code).toBe("budget_exceeded");
+      expect(res.headers.get("x-semprec-error-code")).toBe("budget_exceeded");
+      expect(await res.json()).toEqual({ error: "AI budget exceeded", code: "budget_exceeded" });
       expect(streamCalls).toHaveLength(0);
       const rows = await gatewayCalls();
       expect(rows).toHaveLength(1); // only the seeded row
