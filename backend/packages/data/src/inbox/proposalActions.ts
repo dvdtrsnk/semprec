@@ -20,7 +20,7 @@ import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { TRANSCRIPT_SPEAKERS_PROPERTY_KEY } from "../transcription/transcriptionSpeakerEdges.js";
 import { storeCredential, type CredentialType } from "../credentials/externalCredentialsStore.js";
-import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
+import { ChokePointError, ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
 
@@ -119,6 +119,37 @@ async function requireRelationPropertyId(client: PoolClient, databaseId: string,
   const property = await propertiesStore.getPropertyByKey(client, databaseId, key);
   if (!property) throw new NotFoundError(`Property '${key}' not found on database ${databaseId}`);
   return property.id;
+}
+
+/**
+ * Writes the envelope's `relations` edges from the freshly created item, in the order of the keys
+ * and ids in the envelope. Runs in the confirm transaction, so a failing edge aborts the item and
+ * every earlier edge; the edge's own canonical error is rethrown with `details.field` set to the
+ * relation key.
+ */
+async function writeEnvelopeRelations(
+  client: PoolClient,
+  databaseId: string,
+  itemId: string,
+  relations: ProposalEnvelope["relations"],
+): Promise<void> {
+  for (const [key, targetItemIds] of Object.entries(relations ?? {})) {
+    const relationPropertyId = await requireRelationPropertyId(client, databaseId, key);
+    for (const targetItemId of targetItemIds) {
+      try {
+        await createRelationWithClient(
+          client,
+          { relationPropertyId, callerItemId: itemId, targetItemId },
+          undefined,
+          CONFIRMING_USER_WRITER,
+        );
+      } catch (error) {
+        if (!(error instanceof ChokePointError)) throw error;
+        const details = typeof error.details === "object" && error.details !== null ? error.details : {};
+        throw new ChokePointError(error.status, error.code, error.message, { ...details, field: key });
+      }
+    }
+  }
 }
 
 /** The transcript a `kind = 'transcript'` card was created for, via its `sourceTranscript` edge (written with the card by the match step). */
@@ -255,7 +286,9 @@ async function assertValidEnvelopeForCard(
  * for `'database'` it is written right after the Event is created. Both run in the caller's one
  * transaction, so a failed edge write (e.g. the 1:1 relation's `cardinality_violation` when the
  * transcript or Event is already linked elsewhere) leaves no Event, no edge and the card still
- * `proposed`. A speaker-mapping transcript card (issue #185) writes its `speakers` edge with the
+ * `proposed`. A `'database'` envelope's `relations` (issue #1476) are written the same way, after
+ * the item, one edge per target id with the new item as caller; any failing edge aborts the item
+ * and the earlier edges, and its error carries `details.field` = the relation key. A speaker-mapping transcript card (issue #185) writes its `speakers` edge with the
  * envelope's `{ speaker }` metadata as the relation write itself — the user-owned mapping only
  * ever exists once a human confirmed it.
  */
@@ -314,6 +347,7 @@ export async function confirmProposalWithClient(
         CONFIRMING_USER_WRITER,
       );
     }
+    await writeEnvelopeRelations(client, envelope.target, created.id, envelope.relations);
   } else if (envelope.entityKind === "relation") {
     // `assertValidEnvelopeForCard` above only accepts a 'relation' envelope on a transcript
     // card, through the Transcripts `event` or `speakers` property — so `transcriptCardEdge`

@@ -487,6 +487,85 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     expect(card!.properties.proposal).toEqual(revised.properties.proposal);
   });
 
+  describe("relations on confirm (issue #1476)", () => {
+    async function proposalWithRelations(relations: Record<string, string[]>) {
+      const proposal = await createDatabaseProposal("Buy milk");
+      await withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id, {
+          message: "link it",
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Buy milk" },
+          relations,
+        }),
+      );
+      return proposal;
+    }
+    async function createProject(name: string): Promise<string> {
+      const projectsId = await databaseIdFor("projects");
+      return withTransaction(
+        pool,
+        async (client) => (await createItemWithClient(client, { databaseId: projectsId, properties: { name } })).id,
+      );
+    }
+    const confirm = (proposalId: string) =>
+      withTransaction(pool, (client) =>
+        confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposalId),
+      );
+    const countTasks = async () =>
+      (await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [tasksId])).rows[0].n as number;
+    const countEdges = async () =>
+      (await pool.query("SELECT count(*)::int AS n FROM item_relations")).rows[0].n as number;
+
+    it("writes the task and its project edge in one transaction, once even when confirmed again", async () => {
+      const project = await createProject("Home");
+      const proposal = await proposalWithRelations({ project: [project] });
+      const before = await countEdges();
+
+      const confirmed = await confirm(proposal.id);
+      expect(await countTasks()).toBe(1);
+      expect(await countEdges()).toBe(before + 1);
+      const { rows } = await pool.query(
+        "SELECT 1 FROM item_relations WHERE (item_a = $1 AND item_b = $2) OR (item_a = $2 AND item_b = $1)",
+        [confirmed.properties.resultItemId, project],
+      );
+      expect(rows).toHaveLength(1);
+
+      await confirm(proposal.id);
+      expect(await countEdges()).toBe(before + 1);
+    });
+
+    it("rolls back item and edge with field 'project' when a target disappears before confirm", async () => {
+      const project = await createProject("Home");
+      const proposal = await proposalWithRelations({ project: [project] });
+      const projectsId = await databaseIdFor("projects");
+      await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, projectsId, project));
+      const before = await countEdges();
+
+      const error = await confirm(proposal.id).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).details).toMatchObject({ field: "project" });
+      expect(await countTasks()).toBe(0);
+      expect(await countEdges()).toBe(before);
+      const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposal.id));
+      expect(card!.properties.status).toBe("proposed");
+    });
+
+    it("rolls back the item and the first edge when the second edge violates cardinality", async () => {
+      const first = await createProject("Home");
+      const second = await createProject("Work");
+      const proposal = await proposalWithRelations({ project: [first, second] });
+      const before = await countEdges();
+
+      const error = await confirm(proposal.id).catch((e: unknown) => e);
+      expect(error).toMatchObject({ status: 409, details: { field: "project" } });
+      expect(await countTasks()).toBe(0);
+      expect(await countEdges()).toBe(before);
+      const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposal.id));
+      expect(card!.properties.status).toBe("proposed");
+    });
+  });
+
   it("revise transitions a 'needsClarification' proposal (no type at all) to 'proposed' with a valid envelope", async () => {
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
