@@ -13,6 +13,7 @@ import {
   PROCESSING_PROPOSALS_MODULE_ID,
 } from "../seed/inboxPipelineKeys.js";
 import { JOURNAL_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { indexItem } from "../search/itemSearchIndexer.js";
 import type { DatabaseRow } from "../types.js";
 
 /**
@@ -223,6 +224,9 @@ export async function recomputeJournalInboxDay(pool: Pool, journalDayItemId: str
       JOURNAL_INBOX_COMPUTED_KEY,
       items,
     );
+    // The day's search `body` quotes these Inbox entries (issue #1658). Same transaction as the computed write, so
+    // the index never quotes a list that did not commit; the stored page text is kept, so the page is not reconverted.
+    await indexItem(client, journalDayItemId);
     runAfterCommit(client, () =>
       notifyInvalidation({
         scope: "item",
