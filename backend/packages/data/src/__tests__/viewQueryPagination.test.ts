@@ -271,4 +271,47 @@ describe("select option-order sort (issue #1408)", () => {
     const { ids: paged } = await collectPages((cursor) => chokePoint.queryViewItems(view.id, { limit: 2, cursor }));
     expect(paged).toEqual(ascending());
   });
+  describe("groupDirection (issue #1532)", () => {
+    const createGrouped = (groupDirection?: string) =>
+      chokePoint.createView({
+        databaseId,
+        type: "table",
+        name: "Grouped",
+        config: { groupBy: "status", ...(groupDirection ? { groupDirection } : {}) },
+      });
+
+    it("reverses the group order with desc, items without a value stay last, paging yields each item once", async () => {
+      const view = await createGrouped("desc");
+      const all = await chokePoint.queryViewItems(view.id, {});
+      expect(all.items.map((item) => item.id)).toEqual(descending());
+      const { ids: paged } = await collectPages((cursor) => chokePoint.queryViewItems(view.id, { limit: 2, cursor }));
+      expect(paged).toEqual(descending());
+    });
+
+    it("keeps option order when groupDirection is asc or absent", async () => {
+      const view = await createGrouped();
+      const explicit = await createGrouped("asc");
+      for (const v of [view, explicit]) {
+        const { ids: paged } = await collectPages((cursor) => chokePoint.queryViewItems(v.id, { limit: 3, cursor }));
+        expect(paged).toEqual(ascending());
+      }
+    });
+
+    it("refuses a cursor produced under a different group direction", async () => {
+      const asc = await createGrouped();
+      const desc = await createGrouped("desc");
+      const ascCursor = (await chokePoint.queryViewItems(asc.id, { limit: 2 })).nextCursor!;
+      const descCursor = (await chokePoint.queryViewItems(desc.id, { limit: 2 })).nextCursor!;
+      await expect(chokePoint.queryViewItems(desc.id, { limit: 2, cursor: ascCursor })).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+      await expect(chokePoint.queryViewItems(asc.id, { limit: 2, cursor: descCursor })).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+    });
+
+    it("rejects an unknown groupDirection value", async () => {
+      await expect(createGrouped("sideways")).rejects.toBeInstanceOf(ValidationError);
+    });
+  });
 });
