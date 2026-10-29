@@ -356,14 +356,19 @@ export async function recordSyncError(
   itemId: string,
   error: string,
   failureKind: MailSyncFailureKind,
-): Promise<void> {
-  await client.query(
+): Promise<Date | null> {
+  const result = await client.query<{ failing_since: Date }>(
     `UPDATE mail_account_sync_state
      SET last_error = $2, last_activity_at = now(), next_expected_activity_at = now() + interval '15 minutes',
          failing_since = COALESCE(failing_since, now()), last_failure_kind = $3
-     WHERE item_id = $1`,
+     WHERE item_id = $1
+     RETURNING failing_since`,
     [itemId, error, failureKind],
   );
+  // Zero rows is a valid outcome: the state row was removed while the pass ran. Otherwise returns the
+  // start of the failure streak, kept from an earlier failure.
+  if (!result.rowCount) return null;
+  return result.rows[0]?.failing_since ?? null;
 }
 
 /**

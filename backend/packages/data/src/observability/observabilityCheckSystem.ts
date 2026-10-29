@@ -7,7 +7,7 @@ import {
   getExpectedProcessHeartbeatStatuses,
   type ProcessHeartbeatStatus,
 } from "../health/processHeartbeats.js";
-import { listAllMailAccountSyncStates } from "../mail/mailAccountSyncStateStore.js";
+import { listAllMailAccountSyncStates, type MailAccountSyncStateRow } from "../mail/mailAccountSyncStateStore.js";
 import {
   transitionObservabilityCheck,
   transitionTenantObservabilityCheck,
@@ -15,7 +15,8 @@ import {
   deleteOrphanedTenantObservabilityChecks,
   type ObservabilityCheckStatus,
 } from "./observabilityChecksStore.js";
-import { AGENTS_PROCESS_PROBLEM_KEY } from "../semp/sourceProblemKeys.js";
+import { raiseProblem, resolveProblem } from "../semp/sempProblemsStore.js";
+import { AGENTS_PROCESS_PROBLEM_KEY, mailProblemKey } from "../semp/sourceProblemKeys.js";
 import { writeOperatorAlert } from "./operatorAlerts.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { FAILED_JOB_RETENTION_MS } from "./queueFailedJobsPrune.js";
@@ -43,6 +44,33 @@ async function notifyMailSyncStalled(
     sourceId: checkId,
     transitionInstance: `${helpers.job.id}:${checkKey}`,
     payload: detail,
+  });
+}
+
+/**
+ * Raises the mailbox's Semp problem when its stall check alerts (issue #1506), under the same
+ * `mail:<mailboxItemId>` key the sync job raises, so the two reports merge. Severity follows the
+ * stored failure kind: a revoked credential is critical, a stall without a failure a warning. Skipped
+ * when the tenant has no bound user, like the notification. Must run inside the tenant's transaction.
+ */
+async function raiseMailSyncProblem(
+  client: PoolClient,
+  helpers: ObservabilityCheckSystemHelpers,
+  checkKey: string,
+  account: MailAccountSyncStateRow,
+): Promise<void> {
+  const userId = await getTenantUserId(client);
+  if (!userId) return;
+  await raiseProblem(client, {
+    userId,
+    category: "mail",
+    kind: "mailSyncError",
+    severity: account.lastFailureKind === "reauthorization" ? "critical" : "warning",
+    sourceTable: "mail_account_sync_state",
+    sourceId: account.itemId,
+    dedupeKey: mailProblemKey(account.itemId),
+    since: account.failingSince ? new Date(account.failingSince) : new Date(),
+    occurrenceKey: `${helpers.job.id}:${checkKey}`,
   });
 }
 
@@ -249,6 +277,8 @@ const MAIL_CHECK_KEY_PREFIX = "mail:";
  * `tenant_observability_checks`, so `detail` may carry the provider's `lastError`. The user-facing
  * `mail_sync_stalled` notification never does: its payload is `{ mailboxItemId, reason }` where `reason`
  * is the stored failure kind, or `other` when the check alerts only because the sync is overdue.
+ * On the alerting transition it also raises the mailbox's Semp problem under `mail:<id>`, and on the
+ * return to `ok` it resolves that problem (issue #1506).
  *
  * `mail_account_sync_state` has no FK to `tenant_observability_checks`, so a deleted mail account
  * simply stops appearing in `listAllMailAccountSyncStates` — its `mail:<itemId>` row would otherwise
@@ -281,6 +311,9 @@ async function checkMailSync(pool: Pool, helpers: ObservabilityCheckSystemHelper
           mailboxItemId: account.itemId,
           reason: account.lastFailureKind ?? "other",
         });
+        await raiseMailSyncProblem(client, helpers, checkKey, account);
+      } else if (transition.previousStatus === "alerting" && transition.status === "ok") {
+        await resolveProblem(client, { dedupeKey: mailProblemKey(account.itemId), resolutionKind: "recovered" });
       }
     });
   }

@@ -58,6 +58,7 @@ import { reconcileGraphAccount, type GraphMailClient } from "../mail/graphReconc
 import {
   handleMailSearchReindexSweepTask,
   handleSyncMailAccountTask,
+  type MailModuleIds,
   type MailSyncAdapterFactory,
 } from "../mail/mailSyncJob.js";
 import {
@@ -66,6 +67,7 @@ import {
   defaultSyncModeForProvider,
 } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
+import { mailProblemKey } from "../semp/sourceProblemKeys.js";
 import {
   AttachmentCapExceededError,
   MailConnectionLimitError,
@@ -2771,6 +2773,200 @@ describe("mail sync job error handling (issue #26)", () => {
     ).resolves.toBeUndefined();
 
     expect(createImapClient).not.toHaveBeenCalled();
+  });
+});
+
+describe("mailbox Semp problem raised by the sync job (issue #1506)", () => {
+  interface MailProblemRow {
+    category: string;
+    kind: string;
+    severity: string;
+    source_table: string;
+    source_id: string;
+    occurrence_count: number;
+    first_seen_at: Date;
+    resolved_at: Date | null;
+    resolution_kind: string | null;
+  }
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  async function createOwner(): Promise<void> {
+    const passwordHash = await hashPassword("s3cret-password");
+    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
+  }
+
+  async function seededModuleIds(): Promise<MailModuleIds> {
+    return {
+      emailsDatabaseId: await databaseIdFor("emails"),
+      filesDatabaseId: await databaseIdFor("files"),
+      foldersDatabaseId: await databaseIdFor("folders"),
+      mailboxesDatabaseId: await databaseIdFor("mailboxes"),
+    };
+  }
+
+  /** A Mailbox with its sync state and, when `withCredential`, a stored app password. */
+  async function createMailbox(withCredential: boolean): Promise<string> {
+    const { mailboxesDatabaseId } = await seededModuleIds();
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesDatabaseId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    if (withCredential) {
+      await withTransaction(pool, (client) =>
+        storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+      );
+    }
+    return mailbox.id;
+  }
+
+  async function syncPass(
+    mailboxItemId: string,
+    adapters: MailSyncAdapterFactory,
+    jobId: string = randomUUID(),
+  ): Promise<void> {
+    await handleSyncMailAccountTask(pool, { mailboxItemId }, adapters, await seededModuleIds(), noopStorage, {
+      job: { id: jobId },
+    });
+  }
+
+  async function mailProblems(mailboxItemId: string): Promise<MailProblemRow[]> {
+    const { rows } = await pool.query<MailProblemRow>(
+      `SELECT category, kind, severity, source_table, source_id, occurrence_count, first_seen_at, resolved_at, resolution_kind
+         FROM semp_problems WHERE dedupe_key = $1 ORDER BY first_seen_at`,
+      [mailProblemKey(mailboxItemId)],
+    );
+    return rows;
+  }
+
+  const completingImap: ImapMailClient = {
+    getCapabilities: async () => new Set(),
+    listFolders: async () => [],
+    selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+    fetchMessagesSince: async () => [],
+    fetchVanishedSince: async () => [],
+    fetchAllUids: async () => [],
+    fetchFlagsChangedSince: async () => [],
+    setMessageFlag: async () => {},
+  };
+
+  const refusingImap: MailSyncAdapterFactory = {
+    createImapClient: async () => {
+      throw new Error("connection refused");
+    },
+  };
+
+  it("raises one warning problem per mailbox, merging every failing pass and counting a retry of the same job once", async () => {
+    await createOwner();
+    const mailboxId = await createMailbox(false);
+
+    // No stored credential: each pass fails before any provider call, with the default severity.
+    await expect(syncPass(mailboxId, {}, "job-1")).rejects.toThrow("has no stored credential");
+    await expect(syncPass(mailboxId, {}, "job-2")).rejects.toThrow("has no stored credential");
+    await expect(syncPass(mailboxId, {}, "job-3")).rejects.toThrow("has no stored credential");
+    // A redelivery of job-3 is the same report again.
+    await expect(syncPass(mailboxId, {}, "job-3")).rejects.toThrow("has no stored credential");
+
+    const problems = await mailProblems(mailboxId);
+    expect(problems).toMatchObject([
+      {
+        category: "mail",
+        kind: "mailSyncError",
+        severity: "warning",
+        source_table: "mail_account_sync_state",
+        source_id: mailboxId,
+        occurrence_count: 3,
+        resolved_at: null,
+      },
+    ]);
+    // The problem starts when the failure streak did, not when the last report arrived.
+    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, mailboxId));
+    expect(problems[0]!.first_seen_at.toISOString()).toBe(state!.failingSince);
+  });
+
+  it("raises the problem as critical when the token is revoked, and writes no mail_sync_error notification for it", async () => {
+    await createOwner();
+    const mailboxId = await createMailbox(true);
+
+    await expect(
+      syncPass(mailboxId, {
+        createImapClient: async () => {
+          throw new MailReauthorizationRequiredError("token revoked");
+        },
+      }),
+    ).rejects.toThrow("token revoked");
+
+    expect(await mailProblems(mailboxId)).toMatchObject([
+      { severity: "critical", occurrence_count: 1, resolved_at: null },
+    ]);
+    const { rows: notifications } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [mailboxId]);
+    expect(notifications).toHaveLength(0);
+  });
+
+  it("raises no problem before any user account exists", async () => {
+    const mailboxId = await createMailbox(false);
+
+    await expect(syncPass(mailboxId, {}, "job-1")).rejects.toThrow("has no stored credential");
+
+    expect(await mailProblems(mailboxId)).toEqual([]);
+  });
+
+  it("raises no problem when the sync state row disappears during the pass", async () => {
+    await createOwner();
+    const mailboxId = await createMailbox(true);
+    const vanishingState: MailSyncAdapterFactory = {
+      createImapClient: async () => {
+        // A removal racing the pass: the row the prologue read is gone when the failure is recorded.
+        await pool.query("DELETE FROM mail_account_sync_state WHERE item_id = $1", [mailboxId]);
+        throw new Error("boom");
+      },
+    };
+
+    await expect(syncPass(mailboxId, vanishingState)).rejects.toThrow("boom");
+
+    expect(await mailProblems(mailboxId)).toEqual([]);
+  });
+
+  it("resolves the problem in the pass that completes, and a later failure opens a new one", async () => {
+    await createOwner();
+    const mailboxId = await createMailbox(true);
+
+    // A completed pass with no problem to resolve changes nothing.
+    await syncPass(mailboxId, { createImapClient: async () => completingImap });
+    expect(await mailProblems(mailboxId)).toEqual([]);
+
+    await expect(syncPass(mailboxId, refusingImap, "job-1")).rejects.toThrow("connection refused");
+    expect(await mailProblems(mailboxId)).toMatchObject([{ resolved_at: null, occurrence_count: 1 }]);
+
+    await syncPass(mailboxId, { createImapClient: async () => completingImap }, "job-2");
+    expect(await mailProblems(mailboxId)).toMatchObject([
+      { resolved_at: expect.any(Date), resolution_kind: "recovered" },
+    ]);
+
+    await expect(syncPass(mailboxId, refusingImap, "job-3")).rejects.toThrow("connection refused");
+    expect(await mailProblems(mailboxId)).toMatchObject([
+      { resolved_at: expect.any(Date) },
+      { resolved_at: null, occurrence_count: 1 },
+    ]);
+  });
+
+  it("raises no problem for a connection-limit rejection on its own", async () => {
+    await createOwner();
+    const mailboxId = await createMailbox(true);
+
+    await syncPass(mailboxId, {
+      createImapClient: async () => {
+        throw new MailConnectionLimitError("Too many simultaneous connections.");
+      },
+    });
+
+    expect(await mailProblems(mailboxId)).toEqual([]);
   });
 });
 

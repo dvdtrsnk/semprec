@@ -32,6 +32,8 @@ import { findEmailsMissingSearchIndex, reindexItemSearch } from "./search.js";
 import { logger } from "./logger.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
+import { raiseProblem, resolveProblem } from "../semp/sempProblemsStore.js";
+import { mailProblemKey } from "../semp/sourceProblemKeys.js";
 
 /**
  * Real transport connections (imapflow / Gmail REST / Graph REST) are out of `@semprec/data`
@@ -69,6 +71,14 @@ const STORED_FAILURE_KINDS: Record<ReturnType<typeof mailSyncFailureKind>, MailS
   connectionLimit: "connectionLimit",
   unexpected: "other",
 };
+
+/**
+ * Clears the mailbox's Semp problem after a completed pass (issue #1506). Callers run it in the same
+ * transaction as their `ok` `syncStatus` write; resolving an absent problem changes nothing.
+ */
+async function resolveMailboxProblem(client: PoolClient, mailboxItemId: string): Promise<void> {
+  await resolveProblem(client, { dedupeKey: mailProblemKey(mailboxItemId), resolutionKind: "recovered" });
+}
 
 export function mailAccountSyncJobKey(mailboxItemId: string): string {
   return `mail-account-sync:${mailboxItemId}`;
@@ -283,7 +293,9 @@ export async function handleSyncMailAccountTask(
           // A completed pass (even one that ingested nothing new) is the user-visible signal
           // that this Mailbox is healthy again — clears a prior 'error'/'needsReauthorization'
           // the same way the internal `mail_account_sync_state.last_error` columns above already do.
+          // The Semp problem of this mailbox is resolved in the same transaction (issue #1506).
           await writeSyncStatus(client, "ok");
+          await resolveMailboxProblem(client, payload.mailboxItemId);
         }),
       );
     } else if (state.syncMode === "gmail_api") {
@@ -292,6 +304,7 @@ export async function handleSyncMailAccountTask(
       await withTransaction(pool, async (client) => {
         await reconcileGmailAccount(client, gmail, shared);
         await writeSyncStatus(client, "ok");
+        await resolveMailboxProblem(client, payload.mailboxItemId);
       });
     } else {
       if (!adapters.createGraphClient) throw new Error("No Graph adapter configured for this composition root");
@@ -299,6 +312,7 @@ export async function handleSyncMailAccountTask(
       await withTransaction(pool, async (client) => {
         await reconcileGraphAccount(client, graph, shared);
         await writeSyncStatus(client, "ok");
+        await resolveMailboxProblem(client, payload.mailboxItemId);
       });
     }
     logger.info({ mailboxItemId: payload.mailboxItemId, syncMode: state.syncMode }, "Mail sync completed");
@@ -349,19 +363,43 @@ export async function handleSyncMailAccountTask(
     // A revoked credential (issue #26: "a normal state, not a system error") gets its own
     // visible status so the worker's continued (bounded, backed-off) retries read as "waiting
     // on the user," not as a persistent failure indistinguishable from a flaky connection.
-    const syncStatus = err instanceof MailReauthorizationRequiredError ? "needsReauthorization" : "error";
+    const reauthorizationRequired = err instanceof MailReauthorizationRequiredError;
+    const syncStatus = reauthorizationRequired ? "needsReauthorization" : "error";
     await withTransaction(pool, async (client) => {
-      await recordSyncError(client, payload.mailboxItemId, message, STORED_FAILURE_KINDS[mailSyncFailureKind(err)]);
+      const failingSince = await recordSyncError(
+        client,
+        payload.mailboxItemId,
+        message,
+        STORED_FAILURE_KINDS[mailSyncFailureKind(err)],
+      );
       await writeSyncStatus(client, syncStatus);
+      const userId = await getTenantUserId(client);
+      // Issue #1506: the mailbox's one Semp problem, in this same transaction. A revoked credential
+      // is critical; any other failure is a warning. `since` is the start of the failure streak. The
+      // occurrence key is the job id, so an immediate redelivery of this job adds no occurrence.
+      // Reauthorization gets the problem too, though it gets no notification. A null `failingSince`
+      // means the state row is gone, so there is nothing to report on.
+      if (userId && failingSince) {
+        await raiseProblem(client, {
+          userId,
+          category: "mail",
+          kind: "mailSyncError",
+          severity: reauthorizationRequired ? "critical" : "warning",
+          sourceTable: "mail_account_sync_state",
+          sourceId: payload.mailboxItemId,
+          dedupeKey: mailProblemKey(payload.mailboxItemId),
+          since: failingSince,
+          occurrenceKey: helpers.job.id,
+        });
+      }
       // Issue #149: same transaction as the error record, so a replayed job (same job id,
       // same `transitionInstance`) never duplicates it. Deliberately not raised for the
       // `MailConnectionLimitError` branch above — that's contention, not a sync failure —
       // nor for `MailReauthorizationRequiredError`: per the comment above, that's "a normal
       // state, not a system error," and its own `needsReauthorization` status already makes
       // it distinguishable from a genuine failure, so notifying with the same "Mail sync
-      // failed" title would conflate the two states.
-      const userId = err instanceof MailReauthorizationRequiredError ? null : await getTenantUserId(client);
-      if (userId) {
+      // failed" title would conflate the two states. Its Semp problem (above) is still raised.
+      if (userId && !reauthorizationRequired) {
         await writeNotification(client, {
           userId,
           kind: "mail_sync_error",
