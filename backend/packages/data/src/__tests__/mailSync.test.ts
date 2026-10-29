@@ -1505,6 +1505,7 @@ describe("IMAP reconcile core (issue #26)", () => {
       fetchAllUids: async () => [1, 2],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
       ...overrides,
     };
   }
@@ -2202,6 +2203,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
 
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingImap };
@@ -2296,6 +2298,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
     await handleSyncMailAccountTask(
       pool,
@@ -2337,6 +2340,7 @@ describe("mail sync job error handling (issue #26)", () => {
       },
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
 
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingAfterAttachmentImap };
@@ -2377,6 +2381,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => emptyImap };
 
@@ -2437,6 +2442,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
     const healthy: MailSyncAdapterFactory = { createImapClient: async () => emptyImap };
     const failing = (error: Error): MailSyncAdapterFactory => ({
@@ -2716,6 +2722,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     }));
     const adapters: MailSyncAdapterFactory = { createImapClient };
 
@@ -2754,6 +2761,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     }));
     const adapters: MailSyncAdapterFactory = { createImapClient };
 
@@ -2854,6 +2862,7 @@ describe("mailbox Semp problem raised by the sync job (issue #1506)", () => {
     fetchAllUids: async () => [],
     fetchFlagsChangedSince: async () => [],
     setMessageFlag: async () => {},
+    close: async () => {},
   };
 
   const refusingImap: MailSyncAdapterFactory = {
@@ -4086,6 +4095,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
 
     const runCalls: Array<{ accountId: string; limit: number }> = [];
@@ -4142,6 +4152,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
 
     const runCalls: Array<{ accountId: string; limit: number }> = [];
@@ -4218,6 +4229,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
     const emptyImap: ImapMailClient = {
       getCapabilities: async () => new Set(),
@@ -4228,6 +4240,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
 
     // The first pass takes the account's only slot and holds it (blocked inside `selectFolder`,
@@ -4330,6 +4343,7 @@ describe("mail flag write-back (issue #251)", () => {
       fetchAllUids: async (path) => (path === "INBOX" ? [1] : [2]),
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
     await withTransaction(pool, (client) => reconcileImapAccount(client, initial, params));
 
@@ -4498,6 +4512,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
       setMessageFlag: async () => {
         throw new Error("write-back is out of scope for this test");
       },
+      close: async () => {},
       ...overrides,
     };
     await withTransaction(pool, (client) => reconcileImapFolder(client, firstPassImap, params));
@@ -4526,6 +4541,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
       setMessageFlag: async () => {
         throw new Error("a converged observation must not be echoed as a write-back");
       },
+      close: async () => {},
     };
     await withTransaction(pool, (client) => reconcileImapFolder(client, secondPassImap, params));
 
@@ -4562,6 +4578,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
       setMessageFlag: async () => {
         throw new Error("this pass must not attempt a write-back itself");
       },
+      close: async () => {},
     };
     await withTransaction(pool, (client) => reconcileImapFolder(client, secondPassImap, params));
 
@@ -4597,6 +4614,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
       setMessageFlag: async () => {
         throw new Error("an observation matching desired state must not be echoed as a write-back");
       },
+      close: async () => {},
     };
     await withTransaction(pool, (client) => reconcileImapFolder(client, secondPassImap, params));
 
@@ -4767,6 +4785,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
         return [];
       },
       setMessageFlag: async () => {},
+      close: async () => {},
     };
     await withTransaction(pool, (client) => reconcileImapFolder(client, noCondstoreImap, params));
     expect(calls).toEqual([null]);

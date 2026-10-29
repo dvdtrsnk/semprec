@@ -19,6 +19,7 @@ export {
   withTenantTransaction,
 } from "./tenantFixtures.js";
 export { createTestModuleItem, createTestProjectItem } from "./projectFixtures.js";
+export { stubDnsLookup, type DnsLookupStub } from "./dnsLookupStub.js";
 export { writePageTextBlocks } from "./pageFixtures.js";
 // Test-only: lets a composition-root test outside this package observe the write hook contexts
 // (`writer`) a transport's request reaches the choke point with.

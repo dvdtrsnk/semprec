@@ -289,7 +289,13 @@ export async function handleSyncMailAccountTask(
       await imapConnectionLimiter.run(payload.mailboxItemId, connectionLimit, () =>
         withTransaction(pool, async (client) => {
           const imap = await adapters.createImapClient!(payload.mailboxItemId, credential);
-          await reconcileImapAccount(client, imap, shared);
+          try {
+            await reconcileImapAccount(client, imap, shared);
+          } finally {
+            // Releases the socket whether the pass completed or threw (issue #1510). close() never rejects,
+            // so the pass's own error still propagates to the transaction.
+            await imap.close();
+          }
           // A completed pass (even one that ingested nothing new) is the user-visible signal
           // that this Mailbox is healthy again — clears a prior 'error'/'needsReauthorization'
           // the same way the internal `mail_account_sync_state.last_error` columns above already do.

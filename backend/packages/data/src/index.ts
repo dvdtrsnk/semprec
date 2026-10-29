@@ -261,7 +261,13 @@ export {
   type MailServerCredential,
   type MailSmtpTransporter,
 } from "./mail/mailServerConnections.js";
-export { MailServerUnreachableError } from "./mail/providerTypes.js";
+export {
+  MailConnectionLimitError,
+  MailReauthorizationRequiredError,
+  MailServerUnreachableError,
+} from "./mail/providerTypes.js";
+export { isImapConnectionLimitError } from "./mail/imapFlowClient.js";
+export type { ImapMailClient } from "./mail/imapReconcile.js";
 export {
   getMailDraft,
   insertMailDraft,

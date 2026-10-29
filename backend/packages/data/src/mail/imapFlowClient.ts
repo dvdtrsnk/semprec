@@ -32,6 +32,10 @@ const IMAP_PARTIAL_FETCH_TIMEOUT_MS = 30_000;
 // single part. Chosen generously above any real mailbox's message count.
 const MAX_FLAG_FETCH_RESULTS = 100_000;
 
+// close() waits this long for the server to answer LOGOUT, then releases the socket without it, so a
+// server that stops responding cannot hold a finished sync pass open.
+const IMAP_LOGOUT_TIMEOUT_MS = 10_000;
+
 // Same rationale as IMAP_PARTIAL_FETCH_TIMEOUT_MS above, applied per iteration step of the
 // flag-fetch response stream rather than to a single fetchOne() call, since a full-mailbox
 // flag fetch is itself a long-lived `for await` rather than one bounded request.
@@ -367,7 +371,7 @@ export class ImapFlowMailClient implements ImapMailClient {
 
   async fetchMessagesSince(path: string, sinceUid: number): Promise<ImapFetchedMessage[]> {
     await this.client.mailboxOpen(path);
-    const results: ImapFetchedMessage[] = [];
+    const raws: FetchMessageObject[] = [];
     // Deliberately no `source: true`: that field is a fully-materialized `Buffer` of the whole
     // raw message, attachments included — see walkBodyStructure's header note. BODYSTRUCTURE +
     // ENVELOPE + a handful of cheap headers are all bounded fetches; the actual body/
@@ -397,8 +401,13 @@ export class ImapFlowMailClient implements ImapMailClient {
       { uid: true },
     )) {
       if (raw.uid < sinceUid) continue; // "*" in a range can include one message below sinceUid on an empty-range edge case
-      results.push({ uid: raw.uid, message: await this.parseFetchedMessage(raw) });
+      raws.push(raw);
     }
+    // Parsed only once the FETCH has ended (issue #1510). imapflow keeps a FETCH command open until its consumer has
+    // read every untagged response, so a body download issued inside the loop above queued behind that command and
+    // never ran. The raw responses hold no body bytes (see above), so buffering them adds only header-sized memory.
+    const results: ImapFetchedMessage[] = [];
+    for (const raw of raws) results.push({ uid: raw.uid, message: await this.parseFetchedMessage(raw) });
     return results;
   }
 
@@ -503,6 +512,40 @@ export class ImapFlowMailClient implements ImapMailClient {
     if (value) await this.client.messageFlagsAdd(String(uid), [flag], { uid: true });
     else await this.client.messageFlagsRemove(String(uid), [flag], { uid: true });
   }
+
+  /**
+   * Logs out, then releases the socket (issue #1510). It never rejects: the sync job calls it in a `finally`
+   * after a pass that may already have failed, and a cleanup failure must not replace that error. A LOGOUT
+   * that fails or does not answer within IMAP_LOGOUT_TIMEOUT_MS is logged by error name only, and the socket
+   * is closed regardless.
+   */
+  async close(): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        this.client.logout(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`IMAP logout timed out after ${IMAP_LOGOUT_TIMEOUT_MS}ms`)),
+            IMAP_LOGOUT_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } catch (error) {
+      logger.warn({ errorName: errorNameOf(error) }, "IMAP logout did not complete; closing the socket");
+    } finally {
+      clearTimeout(timer);
+      try {
+        this.client.close();
+      } catch (error) {
+        logger.warn({ errorName: errorNameOf(error) }, "Closing an IMAP socket failed");
+      }
+    }
+  }
+}
+
+function errorNameOf(error: unknown): string {
+  return error instanceof Error ? error.name : "NonError";
 }
 
 const CONNECTION_LIMIT_ERROR_CODES = new Set(["ClosedAfterConnectTLS", "ClosedAfterConnectText"]);
