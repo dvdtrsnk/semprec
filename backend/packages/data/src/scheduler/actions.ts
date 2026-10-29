@@ -2,7 +2,9 @@ import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, type AgentTaskName, type CoreTaskName } from "@semprec/queue";
 import { createLogger, withTraceContext } from "@semprec/shared";
 import { agentRunErrorCodeOf } from "../agentRuns/agentRunErrorCodes.js";
-import { createAgentRun, finishAgentRun, finishAgentRunWithErrorNotification } from "../agentRuns/agentRunsStore.js";
+import { createAgentRun, finishAgentRun } from "../agentRuns/agentRunsStore.js";
+import { publishSempThreadInvalidation } from "../realtimeHook.js";
+import { finishTickRunWithMessage, getOrCreateTickThread } from "../semp/sempTickThreadStore.js";
 import { withTransaction } from "../db/pool.js";
 import { tenantLane } from "../tenancy/tenantLane.js";
 import { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "../inbox/inboxTickKeys.js";
@@ -73,7 +75,10 @@ export type RunAgentFn = (input: {
  * A `runAgent` failure closes this attempt's `agent_runs` row as `error` on every attempt, but
  * writes the `agent_run_error` notification only on the final one (`context.isFinalAttempt !==
  * false`) — so a heartbeat occurrence retried up to `maxAttempts` times yields exactly one
- * `agent_run_error` notification (linking to the last attempt's run), not one per attempt. If
+ * `agent_run_error` notification (linking to the last attempt's run), not one per attempt. Each
+ * run belongs to the heartbeat's tick thread (`semp_threads`, kind `tick`); a successful run and the
+ * final failed attempt each write one assistant message there in the same transaction as the run's
+ * close, while a non-final attempt writes no message. If
  * closing/notifying itself throws, that error is logged and the original `runAgent` error is what
  * this handler rejects with — never the close failure.
  */
@@ -86,18 +91,33 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
     }
 
     const task = typeof actionConfig.task === "string" ? actionConfig.task : "";
-    const run = await createAgentRun(pool, {
-      projectItemId: context.projectItemId,
-      parentRunId: context.triggeredByRunId ?? null,
-      heartbeatId: context.heartbeatId,
-      triggeredBy: "heartbeat",
-      task,
+    // Run start: the tick thread (one per heartbeat) is created on first use and the run is linked
+    // to it in the same transaction; subscribers are told once that transaction commits.
+    const { run, thread } = await withTransaction(pool, async (client) => {
+      const tickThread = await getOrCreateTickThread(client, context.heartbeatId);
+      const created = await createAgentRun(client, {
+        projectItemId: context.projectItemId,
+        parentRunId: context.triggeredByRunId ?? null,
+        heartbeatId: context.heartbeatId,
+        threadId: tickThread.id,
+        triggeredBy: "heartbeat",
+        task,
+      });
+      publishSempThreadInvalidation(client, tickThread.tenantId, tickThread.id);
+      return { run: created, thread: tickThread };
     });
 
     await withTraceContext({ agentRunId: run.id }, async () => {
       try {
         const outcome = await runAgent({ agentRunId: run.id, projectItemId: context.projectItemId, task });
-        await finishAgentRun(pool, run.id, "done", outcome?.result ?? null);
+        // The run's close and its assistant message in the tick thread commit together or not at all.
+        await withTransaction(pool, (client) =>
+          finishTickRunWithMessage(client, {
+            thread,
+            agentRunId: run.id,
+            outcome: { status: "done", result: outcome?.result ?? null },
+          }),
+        );
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const errorCode = agentRunErrorCodeOf(err);
@@ -112,8 +132,13 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
           } else {
             // Same transaction as the source write, per issue #149: a crash between closing the
             // run and writing its `agent_run_error` notification never leaves one without the other.
+            // The final attempt also writes the error message into the tick thread.
             await withTransaction(pool, (client) =>
-              finishAgentRunWithErrorNotification(client, run.id, message, errorCode),
+              finishTickRunWithMessage(client, {
+                thread,
+                agentRunId: run.id,
+                outcome: { status: "error", result: message, errorCode },
+              }),
             );
           }
         } catch (closeErr) {
