@@ -1,15 +1,20 @@
 import * as Y from "yjs";
 import type { Pool, PoolClient } from "pg";
+import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { requireAffectedRows, runAfterCommit, withTransaction } from "../db/pool.js";
-import type { CreatedBy } from "../types.js";
+import type { CreatedBy, DocKind } from "../types.js";
 import { notifyDocUpdate } from "../realtimeHook.js";
 import { resolveDocHistoryRetentionDays, retentionHours } from "./docHistoryConfig.js";
 import { logger } from "./logger.js";
 import { assertSweepNotFailedEntirely, type SweepOutcome } from "./sweepOutcome.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
+import { tenantLane } from "../tenancy/tenantLane.js";
 
 /** y-leveldb uses 500, y-postgresql uses 200 — the issue asks for "the same shape", 200-500. */
 export const DEFAULT_COMPACTION_THRESHOLD = 200;
+
+/** A page's text is converted this long after its last edit; further edits within the window keep this run time (issue #1658). */
+const PAGE_TEXT_DEBOUNCE_MS = 30_000;
 
 interface PendingUpdateRow {
   id: string;
@@ -177,20 +182,35 @@ async function appendDocUpdateWithClient(
   );
   const { id, created_at } = rows[0]!;
   // Same transaction as the insert, and the insert's own created_at, so the docs row and
-  // the update agree on when and by whom the doc was last edited (issue #1405).
-  requireAffectedRows(
-    await client.query(`UPDATE docs SET last_edited_at = $2::timestamptz, last_edited_by = $3 WHERE id = $1`, [
-      docId,
-      created_at,
-      createdBy,
-    ]),
-    `docs row ${docId} for last-edited tracking`,
+  // the update agree on when and by whom the doc was last edited (issue #1405). RETURNING gives
+  // the owner item and kind the page-text job needs, without a second lookup.
+  const docResult = await client.query<{ item_id: string; kind: DocKind }>(
+    `UPDATE docs SET last_edited_at = $2::timestamptz, last_edited_by = $3 WHERE id = $1 RETURNING item_id, kind`,
+    [docId, created_at, createdBy],
   );
+  requireAffectedRows(docResult, `docs row ${docId} for last-edited tracking`);
+  const doc = docResult.rows[0]!;
   await client.query(
     `INSERT INTO doc_history_updates (update_id, doc_id, update, created_by, created_at, expires_at)
      VALUES ($1, $2, $3, $4, $5::timestamptz, $5::timestamptz + make_interval(hours => $6::int))`,
     [id, docId, updateBuffer, createdBy, created_at, retentionHours(retentionDays)],
   );
+  if (doc.kind === "page") {
+    // Enqueued in this transaction, so the job exists only if the edit commits. While that job is still waiting,
+    // `preserve_run_at` keeps its run time and a burst of edits collapses onto it; the job reads the page back
+    // when it runs. Canvas docs have no text to convert and queue nothing.
+    await enqueueJob(
+      client,
+      CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT,
+      { itemId: doc.item_id },
+      {
+        jobKey: doc.item_id,
+        jobKeyMode: "preserve_run_at",
+        runAt: new Date(Date.now() + PAGE_TEXT_DEBOUNCE_MS),
+        queueName: tenantLane("item-search-index"),
+      },
+    );
+  }
   runAfterCommit(client, () => notifyDocUpdate({ docId, updateId: id, createdBy }));
 }
 

@@ -60,6 +60,7 @@ import {
   getTestPool,
   resetDatabase,
   storeCredential,
+  writePageTextBlocks,
 } from "@semprec/data/testSupport";
 import { createApiActionRegistry } from "../actionRegistryComposition.js";
 
@@ -577,6 +578,24 @@ const cases: Record<string, TaskCase> = {
           [requirePayloadString(payload, "databaseId")],
         ),
       ).toEqual([{ title: "Legacy searchable", matches: true }]);
+    },
+  },
+  [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      return inTenant(tenant, async () => {
+        const databaseId = await requireModuleDatabaseId(tenant, "tasks");
+        const item = await chokePoint.createItem({ databaseId, properties: { name: "Isolated page" } });
+        await writePageTextBlocks(pool, item.id, ["Stránka tenanta A"]);
+        return { itemId: item.id };
+      });
+    },
+    async expectDone(tenant, payload) {
+      expect(
+        await rows<{ page_text: string | null }>(tenant, "SELECT page_text FROM item_search_index WHERE item_id = $1", [
+          requirePayloadString(payload, "itemId"),
+        ]),
+      ).toEqual([{ page_text: "Stránka tenanta A" }]);
     },
   },
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: {

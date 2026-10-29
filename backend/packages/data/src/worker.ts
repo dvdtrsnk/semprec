@@ -15,6 +15,7 @@ import { handleMailGmailPseudoFolderCleanupTask } from "./mail/gmailPseudoFolder
 import { handleMailMessagePreviewBackfillTask } from "./mail/mailMessagePreviewBackfillJob.js";
 import { handleMailThreadBackfillTask } from "./mail/mailThreadBackfillJob.js";
 import { handleItemSearchBackfillTask } from "./search/itemSearchBackfill.js";
+import { handleItemSearchPageTextTask } from "./search/pageTextJob.js";
 import { handlePropertyTypeMigrationTask } from "./migrationJob/propertyTypeMigration.js";
 import { handleDocCompactionSweepTask } from "./docs/docPersistence.js";
 import { handleDocHistoryCleanupTask } from "./docs/docHistory.js";
@@ -135,6 +136,9 @@ export function createCoreTaskList(
   const handlers: TaskList = {
     [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: async (payload) => {
       await handleItemSearchBackfillTask(pool, payload);
+    },
+    [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: async (payload) => {
+      await handleItemSearchPageTextTask(pool, payload);
     },
     [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {
       await handleHeartbeatSweepTask(pool, moduleRegistry);
