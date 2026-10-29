@@ -385,7 +385,6 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
   it("restoring a deleted Inbox item enqueues one tick, which returns its invalid card to proposed with no reason", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
     const typesId = await databaseIdFor("inboxItemTypes");
     const type = await inTenantZero(() =>
       withTransaction(pool, (client) =>
@@ -402,8 +401,6 @@ describe("Inbox item event dispatch (issue #103)", () => {
       withTransaction(pool, (client) =>
         createInboxItemWithClient(client, {
           inboxDatabaseId: inboxId,
-          journalDatabaseId: journalId,
-          timezone: "Europe/Prague",
           date: "2026-08-28",
           time: "09:00",
           text: "Buy milk",

@@ -1062,8 +1062,6 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "A thought",
@@ -1074,8 +1072,6 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     const page = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "The page",
@@ -1113,8 +1109,6 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "Buy milk",
