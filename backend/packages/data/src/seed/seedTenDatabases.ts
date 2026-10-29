@@ -194,6 +194,16 @@ export async function seedTenDatabasesInTransaction(
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "type", name: "Type", type: "select", owner: "user", config: selectConfig(["event", "standup", "meeting"]) },
     { key: "date", name: "Date", type: "date", owner: "user", config: { includeTime: true } },
+    // Calendar time model (wall-clock values in the tenant time zone); no `timeFrom` means all-day.
+    { key: "endDate", name: "End date", type: "date", owner: "user" },
+    { key: "timeFrom", name: "Time from", type: "time", owner: "user" },
+    { key: "timeTo", name: "Time to", type: "time", owner: "user" },
+    { key: "time", name: "Time", type: "time", owner: "system", locked: true },
+    { key: "place", name: "Place", type: "text", owner: "user" },
+    { key: "url", name: "URL", type: "url", owner: "user" },
+    { key: "description", name: "Description", type: "longText", owner: "user" },
+    { key: "alertMinutes", name: "Alert minutes", type: "number", owner: "user" },
+    { key: "travelMinutes", name: "Travel minutes", type: "number", owner: "user" },
   ]);
 
   const healthRecords = await createDb(client, HEALTH_RECORDS_MODULE_ID);

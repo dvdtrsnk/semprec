@@ -4,6 +4,7 @@ import { assertRowSecurityActive, forEachMaintainedTenant } from "../tenancy/pro
 import { runFilesTypeOptionsCutoverMigration } from "../blobs/filesTypeOptionsCutoverMigration.js";
 import { runTranscriptsCatalogCutoverMigration } from "../transcription/transcriptsCatalogCutoverMigration.js";
 import { runTranscriptionRequeueHeartbeatCutoverMigration } from "../transcription/transcriptionRequeueHeartbeatCutoverMigration.js";
+import { runEventsCalendarPropertiesCutoverMigration } from "../calendar/eventsCalendarPropertiesCutoverMigration.js";
 
 /**
  * Runs the data-driven post-migration cutovers — the ones that read and write tenant rows — once
@@ -20,5 +21,6 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runTranscriptsCatalogCutoverMigration(pool);
     await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
     await runFilesTypeOptionsCutoverMigration(pool);
+    await runEventsCalendarPropertiesCutoverMigration(pool);
   });
 }
