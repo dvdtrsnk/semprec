@@ -19,6 +19,8 @@ export interface AccessToken {
   accessToken: string;
   /** Absolute expiry, derived from the provider's `expires_in` (~1h) at call time. */
   expiresAt: Date;
+  /** Present only when the provider returned a non-empty `refresh_token` (Microsoft rotates it on every refresh). */
+  refreshToken?: string;
 }
 
 export async function refreshAccessToken(input: RefreshAccessTokenInput): Promise<AccessToken> {
@@ -55,7 +57,11 @@ export async function refreshAccessToken(input: RefreshAccessTokenInput): Promis
   if (typeof json.expires_in !== "number" || !Number.isFinite(json.expires_in)) {
     throw new Error(`OAuth token refresh response from ${input.tokenUrl} is missing a numeric expires_in`);
   }
-  return { accessToken: json.access_token, expiresAt: new Date(Date.now() + json.expires_in * 1000) };
+  const expiresAt = new Date(Date.now() + json.expires_in * 1000);
+  if (typeof json.refresh_token === "string" && json.refresh_token) {
+    return { accessToken: json.access_token, expiresAt, refreshToken: json.refresh_token };
+  }
+  return { accessToken: json.access_token, expiresAt };
 }
 
 export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";

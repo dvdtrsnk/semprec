@@ -472,6 +472,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "recordMcpConnectionFailure",
   "recordMcpConnectionSuccess",
   "recordTokenGatewayCall",
+  "refreshAndPersistAccessToken",
   "registerMailboxClientViewType",
   "registerPushSubscription",
   "registerTemporalSwitcherViewType",

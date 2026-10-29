@@ -244,6 +244,11 @@ export {
 } from "./mail/mailServerSettingsStore.js";
 export { manifest as mailModuleManifest } from "./mail/mailModuleManifest.js";
 export {
+  refreshAndPersistAccessToken,
+  type RefreshAndPersistAccessTokenInput,
+  type RefreshedAccessToken,
+} from "./mail/mailOAuthAccess.js";
+export {
   createImapMailFlagWritebackAdapter,
   createGmailMailFlagWritebackAdapter,
   createGraphMailFlagWritebackAdapter,
