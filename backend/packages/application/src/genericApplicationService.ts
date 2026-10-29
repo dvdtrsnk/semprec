@@ -23,7 +23,7 @@ import type {
  * `dependency-cruiser.rules.json`) and stays ignorant of which transport (REST today, MCP/AgentTool
  * in #220) is calling it. A composition root (e.g. `semprec-api`'s `app.ts`) constructs one
  * instance per injected `Pool` and threads it through every binding dispatch; there is no other
- * path into the 29-operation catalog's business logic.
+ * path into the 30-operation catalog's business logic.
  */
 
 /**
@@ -398,6 +398,14 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
         });
       }
       return edge;
+    },
+
+    /** The choke point answers `null` for an unknown, trashed or foreign item; that is the same not-found `requireItem` gives, so no caller can tell the three apart. */
+    async listRelations(_actor, input) {
+      const relations = await chokePoint.listItemRelations(input.itemId, input.relationPropertyId);
+      if (!relations)
+        throw new NotFoundError(`Item ${input.itemId} not found`, { resource: "item", itemId: input.itemId });
+      return relations;
     },
   } satisfies GenericApplicationPort;
 }

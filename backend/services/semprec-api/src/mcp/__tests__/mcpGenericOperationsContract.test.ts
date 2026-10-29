@@ -181,7 +181,7 @@ interface Case {
 }
 
 /**
- * One `tools/call` case per operation in the closed 29-operation catalog, mirroring
+ * One `tools/call` case per operation in the closed 30-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern one adapter over (the code-review finding on
  * issue #220's diff: parameterized contract tests across all of the then-28 operations were missing for the
  * MCP and AgentTool adapters). Reused across two describe-blocks below: dispatched by a plain
@@ -303,6 +303,7 @@ const CASES: Record<GenericOperationName, Case> = {
       },
     }),
   },
+  "relation.list": { tool: (fx) => ({ name: "semprec.relation.list", arguments: { itemId: fx.itemA.id } }) },
 };
 
 describe("generic operation MCP contract (issue #220)", () => {

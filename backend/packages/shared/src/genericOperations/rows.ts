@@ -116,6 +116,19 @@ export interface RelationEdge {
   metadata: Record<string, unknown>;
 }
 
+/**
+ * One live edge seen from one end (issue #1404): `relationPropertyId` and `propertyKey` name the
+ * listed item's own property, `targetItemId` the item on the other side, and `targetDatabaseId`
+ * that item's database. A paired definition reports the other end under that end's own property.
+ */
+export interface RelationListEntry {
+  relationPropertyId: string;
+  propertyKey: string;
+  targetItemId: string;
+  targetDatabaseId: string;
+  metadata: Record<string, unknown>;
+}
+
 export interface Page<T> {
   items: T[];
   nextCursor: string | null;

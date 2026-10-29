@@ -23,6 +23,7 @@ import {
   PropertyListInputSchema,
   PropertyPatchInputSchema,
   RelationDeleteInputSchema,
+  RelationListInputSchema,
   RelationPutInputSchema,
   ViewCreateInputSchema,
   ViewDeleteInputSchema,
@@ -48,7 +49,7 @@ export interface OperationBinding<I, O> {
   invoke(service: GenericApplicationPort, actor: AuthenticatedActor, input: I): Promise<O>;
 }
 
-/** Exhaustive over the 29 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
+/** Exhaustive over the 30 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
 export type GenericOperationBindings = {
   [K in GenericOperationName]: OperationBinding<InputByOperation[K], OutputByOperation[K]>;
 };
@@ -175,5 +176,9 @@ export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
   "relation.delete": {
     input: RelationDeleteInputSchema,
     invoke: (service, actor, input) => service.deleteRelation(actor, input),
+  },
+  "relation.list": {
+    input: RelationListInputSchema,
+    invoke: (service, actor, input) => service.listRelations(actor, input),
   },
 };

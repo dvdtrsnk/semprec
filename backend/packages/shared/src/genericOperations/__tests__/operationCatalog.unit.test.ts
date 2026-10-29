@@ -46,6 +46,7 @@ const EXPECTED_ROWS: Record<
   "database.query": { schema: schemas.DatabaseQueryInputSchema, method: "queryDatabase" },
   "relation.put": { schema: schemas.RelationPutInputSchema, method: "putRelation" },
   "relation.delete": { schema: schemas.RelationDeleteInputSchema, method: "deleteRelation" },
+  "relation.list": { schema: schemas.RelationListInputSchema, method: "listRelations" },
 };
 
 const EXPECTED_METADATA: Record<
@@ -206,17 +207,23 @@ const EXPECTED_METADATA: Record<
     riskClass: "destructive",
     reversible: false,
   },
+  "relation.list": {
+    requiresCapability: "core.item.read",
+    requiresApproval: false,
+    riskClass: "read",
+    reversible: true,
+  },
 };
 
 describe("GENERIC_OPERATION_NAMES", () => {
-  it("has exactly 29 entries with no duplicates", () => {
-    expect(GENERIC_OPERATION_NAMES).toHaveLength(29);
-    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(29);
+  it("has exactly 30 entries with no duplicates", () => {
+    expect(GENERIC_OPERATION_NAMES).toHaveLength(30);
+    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(30);
   });
 });
 
 describe("GENERIC_OPERATION_BINDINGS", () => {
-  it("has exactly the 29 catalog rows and no others", () => {
+  it("has exactly the 30 catalog rows and no others", () => {
     expect(Object.keys(GENERIC_OPERATION_BINDINGS).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 

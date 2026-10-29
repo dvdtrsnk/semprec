@@ -4,7 +4,7 @@ import { filterNodeSchema, sortSpecSchema } from "./filterSort.js";
 import type { GenericOperationName } from "./operationNames.js";
 
 /**
- * Strict Zod input schemas for the 29-operation catalog (issue #252), extracted from #37's
+ * Strict Zod input schemas for the 30-operation catalog (issues #252, #1404), extracted from #37's
  * domain-command validators into transport-independent shape. Every schema below is a strict
  * object: an unrecognized key — including a spoofed `actor`/`userId`/`agentProjectItemId` or a
  * server-derived/protected field like `system`, `schemaLocked`, `ownerProjectItemId`,
@@ -316,7 +316,16 @@ export const RelationDeleteInputSchema = z
   .strict();
 export type RelationDeleteInput = z.infer<typeof RelationDeleteInputSchema>;
 
-/** Exhaustive mapped type over the 29 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
+/** Every live edge of `itemId` (issue #1404), optionally narrowed to one of the item's own relation properties. */
+export const RelationListInputSchema = z
+  .object({
+    itemId: z.string(),
+    relationPropertyId: z.string().optional(),
+  })
+  .strict();
+export type RelationListInput = z.infer<typeof RelationListInputSchema>;
+
+/** Exhaustive mapped type over the 30 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
 export interface InputByOperation {
   "database.list": DatabaseListInput;
   "database.get": DatabaseGetInput;
@@ -347,6 +356,7 @@ export interface InputByOperation {
   "database.query": DatabaseQueryInput;
   "relation.put": RelationPutInput;
   "relation.delete": RelationDeleteInput;
+  "relation.list": RelationListInput;
 }
 
 /** Fails to compile if `InputByOperation`'s keys and `GenericOperationName`'s literals ever diverge in either direction. */

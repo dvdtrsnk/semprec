@@ -14,6 +14,7 @@ import { createRelationOps } from "./relationOps.js";
 import { createItemWriteOps } from "./itemWrites.js";
 import { createItemTrashOps } from "./itemTrash.js";
 import { getValueLinksForItems } from "./valueLinkReads.js";
+import { listItemRelationsWithClient } from "./relationReads.js";
 import { withTransaction } from "../db/pool.js";
 
 export function createChokePoint(
@@ -37,6 +38,10 @@ export function createChokePoint(
       /** The value links of a set of items for `include=links` (issue #1403), in one transaction. */
       async getValueLinksForItems(itemIds: string[]) {
         return withTransaction(pool, (client) => getValueLinksForItems(client, itemIds));
+      },
+      /** The live relation edges of one item from its own side (issue #1404), in one transaction; `null` when the item is not found. */
+      async listItemRelations(itemId: string, relationPropertyId?: string) {
+        return withTransaction(pool, (client) => listItemRelationsWithClient(client, itemId, relationPropertyId));
       },
     },
   );

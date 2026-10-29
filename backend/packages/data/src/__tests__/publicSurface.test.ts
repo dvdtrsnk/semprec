@@ -655,6 +655,7 @@ const EXPECTED_CHOKE_POINT_METHODS = [
   "getView",
   "listCuratedViews",
   "listDatabases",
+  "listItemRelations",
   "listItems",
   "listProperties",
   "listViewItems",

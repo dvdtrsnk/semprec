@@ -57,7 +57,7 @@ const destructive = (requiresCapability: CapabilityId, reversible: boolean): Ope
 });
 
 /**
- * Exhaustive over the 29 literal operation names, capability and approval/risk metadata checked
+ * Exhaustive over the 30 literal operation names, capability and approval/risk metadata checked
  * together in one object literal per operation: assigning this object literal to a type with
  * exactly these keys is what makes an operation missing (or an extra, misspelled one) a compile
  * error rather than a runtime gap.
@@ -92,6 +92,7 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   "item.restore": nonDestructive("core.item.write", "write"),
   "relation.put": nonDestructive("core.item.write", "write"),
   "relation.delete": destructive("core.item.write", false),
+  "relation.list": nonDestructive("core.item.read", "read"),
 };
 
 export const APPROVAL_RISK_LEVELS = ["irreversible", "outbound", "breaksLink", "write"] as const;
