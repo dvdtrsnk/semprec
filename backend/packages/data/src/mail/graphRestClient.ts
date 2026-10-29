@@ -224,19 +224,23 @@ class GraphApiError extends Error {
 }
 
 /**
- * Real `GraphMailClient` (graphReconcile.ts) over the Microsoft Graph REST API — same
- * "not exercised by tests, reconcile logic tested via a fake" relationship as
- * `GmailRestClient`. `internetMessageHeaders` is requested via `$select` (Graph has no
+ * Real `GraphMailClient` (graphReconcile.ts) over the Microsoft Graph REST API. CI never reaches
+ * Microsoft: the semprec-api tests in `mailSyncAdapters.test.ts` run it against a fake Graph server
+ * through `fetchImpl`, and the reconcile logic itself is tested against a fake client. `fetchImpl`
+ * defaults to the global `fetch`. `internetMessageHeaders` is requested via `$select` (Graph has no
  * separate "which headers" query parameter — it must be a selected property, same as any
  * other field) specifically to recover `References`/`In-Reply-To`, which Graph doesn't
  * surface as first-class fields.
  */
 export class GraphRestClient implements GraphMailClient {
-  constructor(private readonly getAccessToken: () => Promise<string>) {}
+  constructor(
+    private readonly getAccessToken: () => Promise<string>,
+    private readonly fetchImpl: typeof fetch = fetch,
+  ) {}
 
   private async request<T>(url: string): Promise<T> {
     const token = await this.getAccessToken();
-    const response = await fetch(url, {
+    const response = await this.fetchImpl(url, {
       headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(30_000),
     });
@@ -270,7 +274,7 @@ export class GraphRestClient implements GraphMailClient {
    */
   private async fetchAttachmentStream(messageId: string, attachmentId: string): Promise<Readable> {
     const token = await this.getAccessToken();
-    const response = await fetch(`${BASE_URL}/messages/${messageId}/attachments/${attachmentId}/$value`, {
+    const response = await this.fetchImpl(`${BASE_URL}/messages/${messageId}/attachments/${attachmentId}/$value`, {
       headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(30_000),
     });
@@ -401,7 +405,7 @@ export class GraphRestClient implements GraphMailClient {
     patch: { isRead: boolean } | { flag: { flagStatus: "flagged" | "notFlagged" } },
   ): Promise<void> {
     const token = await this.getAccessToken();
-    const response = await fetch(`${BASE_URL}/messages/${encodeURIComponent(messageId)}`, {
+    const response = await this.fetchImpl(`${BASE_URL}/messages/${encodeURIComponent(messageId)}`, {
       method: "PATCH",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify(patch),
