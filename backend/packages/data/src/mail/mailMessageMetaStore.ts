@@ -234,7 +234,18 @@ export function isProviderMessageIdConflict(err: unknown): boolean {
  * re-claim it.
  */
 export async function deleteMailMessageMetaByItemId(client: Queryable, itemId: string): Promise<void> {
-  await client.query(`DELETE FROM mail_message_meta WHERE item_id = $1`, [itemId]);
+  const { rows } = await client.query<{ thread_id: string | null }>(
+    `DELETE FROM mail_message_meta WHERE item_id = $1 RETURNING thread_id`,
+    [itemId],
+  );
+  const threadId = rows[0]?.thread_id;
+  if (!threadId) return;
+  // The claim may have created its thread (mail/send.ts threads at claim time); drop it when the
+  // deleted row was its only message, so a failed send leaves no empty `mail_threads` row.
+  await client.query(
+    `DELETE FROM mail_threads t WHERE t.id = $1 AND NOT EXISTS (SELECT 1 FROM mail_message_meta m WHERE m.thread_id = t.id)`,
+    [threadId],
+  );
 }
 
 export interface MailThreadRow {

@@ -684,4 +684,157 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     expect(meta?.itemId).toBe(draft.id);
     expect(meta?.mailboxItemId).toBe(mailboxId);
   });
+
+  describe("threading of sent messages (issue #1474)", () => {
+    const storage = {
+      async writeStream() {
+        return { byteSize: 0, contentHash: "" };
+      },
+      async delete() {},
+      readStream(): never {
+        throw new Error("readStream is not used by this test");
+      },
+    };
+
+    async function sentFolderId(): Promise<string> {
+      const { rows } = await pool.query<{ id: string }>(
+        `SELECT id FROM items WHERE database_id = $1 AND properties ->> 'specialPurpose' = 'sent'`,
+        [foldersId],
+      );
+      return rows[0]!.id;
+    }
+
+    async function ingestSynced(messageId: string): Promise<void> {
+      const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+      await withTransaction(pool, async (client) => {
+        await ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: await databaseIdFor("files"),
+          folderRelationPropertyId,
+          attachmentsRelationPropertyId: attachmentsProperty.id,
+          folderItemId: await sentFolderId(),
+          mailboxItemId: mailboxId,
+          messageId,
+          subject: "Original",
+          envelope: { from: { address: "bob@example.com" }, to: [{ address: "me@example.com" }] },
+          bodyText: "question",
+          attachments: [],
+          storage,
+          storageKeyPrefix: "test",
+        });
+      });
+    }
+
+    async function newDraft(): Promise<string> {
+      const draft = await withTransaction(pool, async (client) =>
+        createEmailDraft(client, {
+          emailsDatabaseId: emailsId,
+          folderRelationPropertyId,
+          draftsFolderItemId: await draftsFolderId(),
+          subject: "Re: Original",
+          from: { address: "me@example.com" },
+          to: [{ address: "bob@example.com" }],
+          bodyText: "answer",
+        }),
+      );
+      return draft.id;
+    }
+
+    function send(draftItemId: string, smtp: MailSmtpClient, threadHeaders: { inReplyTo?: string } = {}) {
+      return sendDraftEmail(
+        pool,
+        {
+          mailboxItemId: mailboxId,
+          draftItemId,
+          actor: { type: "user" },
+          from: { address: "me@example.com" },
+          to: [{ address: "bob@example.com" }],
+          subject: "Re: Original",
+          bodyText: "answer",
+          inReplyTo: threadHeaders.inReplyTo,
+          references: threadHeaders.inReplyTo ? [threadHeaders.inReplyTo] : undefined,
+        },
+        moduleIds,
+        { createSmtpClient: async () => smtp },
+      );
+    }
+
+    async function threadCount(): Promise<number> {
+      const { rows } = await pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM mail_threads`);
+      return rows[0]!.n;
+    }
+
+    it("a reply to a synced message joins that message's thread", async () => {
+      await ingestSynced("<orig@example.com>");
+      const original = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, "<orig@example.com>");
+      expect(original?.threadId).toBeTruthy();
+
+      const result = await send(await newDraft(), fakeSmtpClient(), { inReplyTo: "<orig@example.com>" });
+
+      const sent = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, result.messageId);
+      expect(sent?.threadId).toBe(original?.threadId);
+      expect(await threadCount()).toBe(1);
+    });
+
+    it("a send without ancestors starts a new thread that a later reply joins", async () => {
+      const first = await send(await newDraft(), fakeSmtpClient());
+      const firstMeta = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, first.messageId);
+      expect(firstMeta?.threadId).toBeTruthy();
+      expect(await threadCount()).toBe(1);
+
+      await ingestSynced("<reply@example.com>");
+      await pool.query(`UPDATE mail_message_meta SET in_reply_to = $1 WHERE message_id = '<reply@example.com>'`, [
+        first.messageId,
+      ]); // raw SQL: ingest has no in-reply-to input here, and the point is the next send's lookup
+      const second = await send(await newDraft(), fakeSmtpClient(), { inReplyTo: first.messageId });
+      const secondMeta = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, second.messageId);
+      expect(secondMeta?.threadId).toBe(firstMeta?.threadId);
+    });
+
+    it("a later Sent-folder sync of the same message id keeps the thread and creates no second one", async () => {
+      const result = await send(await newDraft(), fakeSmtpClient());
+      const before = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, result.messageId);
+
+      await ingestSynced(result.messageId);
+
+      const after = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, result.messageId);
+      expect(after?.threadId).toBe(before?.threadId);
+      expect(await threadCount()).toBe(1);
+    });
+
+    it("an SMTP failure removes the claim and leaves no orphan thread, and a retry threads again", async () => {
+      const draftId = await newDraft();
+      const failing = fakeSmtpClient({
+        async sendMail() {
+          throw new Error("SMTP server rejected the message");
+        },
+      });
+      await expect(send(draftId, failing)).rejects.toThrow(/SMTP server rejected/);
+      expect(await getMailMessageMetaByItemId(pool, draftId)).toBeNull();
+      expect(await threadCount()).toBe(0);
+
+      const result = await send(draftId, fakeSmtpClient());
+      const meta = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, result.messageId);
+      expect(meta?.threadId).toBeTruthy();
+      expect(await threadCount()).toBe(1);
+    });
+
+    it("an SMTP failure on a reply keeps the shared thread", async () => {
+      await ingestSynced("<orig@example.com>");
+      const failing = fakeSmtpClient({
+        async sendMail() {
+          throw new Error("SMTP server rejected the message");
+        },
+      });
+      await expect(send(await newDraft(), failing, { inReplyTo: "<orig@example.com>" })).rejects.toThrow(/rejected/);
+      expect(await threadCount()).toBe(1);
+    });
+
+    it("a lost claim race ends in ConflictError and leaves no extra thread", async () => {
+      const draftId = await newDraft();
+      await send(draftId, fakeSmtpClient());
+      await expect(send(draftId, fakeSmtpClient())).rejects.toThrow(/already being sent or was already sent/);
+      expect(await threadCount()).toBe(1);
+    });
+  });
 });
