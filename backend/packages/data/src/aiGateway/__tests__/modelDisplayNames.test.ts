@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import type { ModuleCatalogs } from "@semprec/module-registry";
-import { getModelDisplayCatalogs, resolveModelDisplayName } from "../modelDisplayNames.js";
+import { getModelDisplayCatalogs, resolveModelDisplayName, resolveOperationLabel } from "../modelDisplayNames.js";
 
 describe("resolveModelDisplayName", () => {
   let catalogs: ModuleCatalogs;
@@ -37,5 +37,31 @@ describe("resolveModelDisplayName", () => {
     expect(resolveModelDisplayName(catalogs, "en", "gpt-x")).toBe("gpt-x");
     expect(resolveModelDisplayName(catalogs, "en", "claude-opus-4")).toBe("claude-opus-4");
     expect(resolveModelDisplayName(catalogs, "en", "Claude-Sonnet-4")).toBe("Claude-Sonnet-4");
+  });
+});
+
+describe("resolveOperationLabel", () => {
+  let catalogs: ModuleCatalogs;
+  beforeAll(async () => {
+    catalogs = await getModelDisplayCatalogs();
+  });
+
+  it("localizes a known operation", () => {
+    expect(resolveOperationLabel(catalogs, "cs", "agent_turn")).toBe("Semp – chat a automatické úlohy");
+    expect(resolveOperationLabel(catalogs, "en", "agent_turn")).toBe("Semp - chat and automatic tasks");
+    expect(resolveOperationLabel(catalogs, "cs", "other")).toBe("Ostatní");
+  });
+
+  it("falls back to English, then to the raw key", () => {
+    expect(resolveOperationLabel(catalogs, "de", "transcript_summary")).toBe("Meeting summaries");
+    expect(resolveOperationLabel(catalogs, "cs", "mail_triage")).toBe("mail_triage");
+  });
+
+  it("labels the drift and voice aliases like their merged key", () => {
+    expect(resolveOperationLabel(catalogs, "en", "agent_behavior_drift")).toBe(
+      resolveOperationLabel(catalogs, "en", "agent_guidance_drift"),
+    );
+    expect(resolveOperationLabel(catalogs, "cs", "voice_synthesize")).toBe("Hlas");
+    expect(resolveOperationLabel(catalogs, "en", "voice_transcribe_stream")).toBe("Voice");
   });
 });

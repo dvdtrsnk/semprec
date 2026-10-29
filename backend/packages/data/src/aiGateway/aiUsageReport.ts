@@ -4,7 +4,7 @@ import { getSystemTimezone } from "../systemSettings.js";
 import type { AgentRunUnit } from "../agentRuns/agentRunsStore.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { getCurrentTenantAiBudget } from "./tenantAiBudgetsStore.js";
-import { getModelDisplayCatalogs, resolveModelDisplayName } from "./modelDisplayNames.js";
+import { getModelDisplayCatalogs, resolveModelDisplayName, resolveOperationLabel } from "./modelDisplayNames.js";
 
 /** Operations whose native unit is audio seconds; every other operation (including NULL) is token-native. */
 const AUDIO_OPERATIONS: readonly string[] = ["transcription_transcribe", "transcription_diarize"];
@@ -85,6 +85,19 @@ export interface AiUsageByModel {
   operations: string[];
 }
 
+/** One line per merged operation over the range. */
+export interface AiUsageByOperation {
+  /** Canonical operation key after merging; a NULL operation is `other`. */
+  operation: string;
+  /** Localized label; the raw key when the catalog does not know the operation. */
+  label: string;
+  costUsd: number;
+  /** Fraction of `totalCostUsd` between 0 and 1; 0 for every entry when the total is 0. */
+  share: number;
+  /** Non-failed calls only. */
+  callCount: number;
+}
+
 export interface AiUsageReport {
   accountStartedAt: string;
   timezone: string;
@@ -94,6 +107,8 @@ export interface AiUsageReport {
   rows: AiUsageReportRow[];
   /** One entry per (provider, model), ordered by cost descending then model. */
   byModel: AiUsageByModel[];
+  /** One entry per merged operation, ordered by cost descending then operation. */
+  byOperation: AiUsageByOperation[];
   /** True when any non-failed call in [from, to) is still `reserved`, so its cost is an estimate. */
   estimated: boolean;
   /** Total cost across every row, the one number that IS comparable regardless of native/run unit. */
@@ -143,6 +158,19 @@ interface ByModelRow {
   audio_seconds: string | null;
   operations: string[];
 }
+
+interface ByOperationRow {
+  operation: string;
+  call_count: string;
+  cost_usd: string;
+}
+
+/** Operations recorded under several keys that the report shows as one activity. */
+const MERGED_OPERATIONS: Readonly<Record<string, string>> = {
+  agent_behavior_drift: "agent_guidance_drift",
+  voice_transcribe_stream: "voice",
+  voice_synthesize: "voice",
+};
 
 interface MonthlyRow {
   month: string;
@@ -261,6 +289,32 @@ export async function getAiUsageReport(client: Queryable, input: AiUsageReportIn
     operations: row.operations,
   }));
 
+  const { rows: operationRows } = await client.query<ByOperationRow>(
+    `SELECT COALESCE(operation, 'other') AS operation, COUNT(*) AS call_count, SUM(cost_usd) AS cost_usd
+     FROM ai_gateway_calls
+     WHERE at >= $1 AND at < $2 AND status <> 'failed'
+     GROUP BY 1`,
+    [fromDate.toISOString(), toDate.toISOString()],
+  );
+  const mergedOperations = new Map<string, { costUsd: number; callCount: number }>();
+  for (const row of operationRows) {
+    const key = MERGED_OPERATIONS[row.operation] ?? row.operation;
+    const entry = mergedOperations.get(key) ?? { costUsd: 0, callCount: 0 };
+    entry.costUsd += Number(row.cost_usd);
+    entry.callCount += Number(row.call_count);
+    mergedOperations.set(key, entry);
+  }
+  const operationsTotalCostUsd = [...mergedOperations.values()].reduce((sum, entry) => sum + entry.costUsd, 0);
+  const byOperation: AiUsageByOperation[] = [...mergedOperations.entries()]
+    .map(([operation, entry]) => ({
+      operation,
+      label: resolveOperationLabel(catalogs, locale, operation),
+      costUsd: entry.costUsd,
+      share: operationsTotalCostUsd === 0 ? 0 : entry.costUsd / operationsTotalCostUsd,
+      callCount: entry.callCount,
+    }))
+    .sort((a, b) => b.costUsd - a.costUsd || (a.operation < b.operation ? -1 : a.operation > b.operation ? 1 : 0));
+
   let monthlyCostUsd: MonthlyCostPoint[] | undefined;
   let dailyRows: DailyRow[] = [];
   if (granularity === "month") {
@@ -343,6 +397,7 @@ export async function getAiUsageReport(client: Queryable, input: AiUsageReportIn
     to: toDate.toISOString(),
     rows: reportRows,
     byModel,
+    byOperation,
     estimated,
     totalCostUsd,
     dailyCostUsd,

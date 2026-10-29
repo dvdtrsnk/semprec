@@ -27,3 +27,13 @@ export function resolveModelDisplayName(catalogs: ModuleCatalogs, locale: string
   const manifestLocale = toManifestLocale(locale);
   return resolveCatalogLabel(null, catalogs[manifestLocale], catalogs.en, family.key);
 }
+
+/**
+ * Localized label of a stored operation key: requested locale, then English, then the raw key, so
+ * an operation without a catalog entry is never hidden.
+ */
+export function resolveOperationLabel(catalogs: ModuleCatalogs, locale: string, operation: string): string {
+  const manifestLocale = toManifestLocale(locale);
+  const label = resolveCatalogLabel(null, catalogs[manifestLocale], catalogs.en, `operation.${operation}`);
+  return label === `operation.${operation}` ? operation : label;
+}
