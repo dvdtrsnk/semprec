@@ -62,6 +62,7 @@
     "packages/data/src/mail/mailMessageMetaStore.ts::b0bf0c5858c7",
     "packages/data/src/mail/mailMessageMetaStore.ts::b1faf19d152b",
     "packages/data/src/mail/mailMessageMetaStore.ts::f68fe3c6f7a5",
+    "packages/data/src/mail/mailOauthStatesStore.ts::06b2b93b8930",
     "packages/data/src/mail/personEmailIndexStore.ts::3adf6598c00a",
     "packages/data/src/mcp/approvalRequestExecutionStatusCutoverMigration.ts::8b453fdeb0b2",
     "packages/data/src/mcp/approvalRequestExecutionStatusCutoverMigration.ts::d40632db3a90",
