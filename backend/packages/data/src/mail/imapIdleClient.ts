@@ -33,11 +33,12 @@ export interface ImapIdleFlowOptions {
 }
 
 /**
- * Builds a connected, authenticated `ImapFlow` client — real host/auth resolution (the
- * mailbox's server settings, decrypting `credential`) is the composition root's job, same
- * delegation `MailSyncAdapterFactory.createImapClient` (mailSyncJob.ts) already uses; this
- * module only ever asks for the IDLE-specific options (`maxIdleTime`, `socketTimeout`) to be
- * applied on top of whatever connection options the composition root otherwise supplies.
+ * Builds a connected, authenticated `ImapFlow` client: the composition root's `createClient`
+ * returns `openImapFlow`'s result (mailServerConnections.ts), built with the mailbox's stored
+ * settings and the IDLE options (`maxIdleTime`, `socketTimeout`). Host and auth resolution is the
+ * composition root's job, same delegation `MailSyncAdapterFactory.createImapClient` (mailSyncJob.ts)
+ * already uses. The transport never connects a client it receives: it arrives connected
+ * (docs/adr/2026-10-29-imap-idle-connections-through-the-shared-imap-connect-step.md).
  */
 export type CreateIdleTunedImapFlowClient = (
   mailboxItemId: string,
@@ -115,7 +116,6 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
         socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
       });
       try {
-        await client.connect();
         const list = await client.list();
         const inbox = list.find((f) => f.specialUse === SPECIAL_USE_INBOX);
         const allMail = list.find((f) => f.specialUse === SPECIAL_USE_ALL);
@@ -137,7 +137,6 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
         socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
       });
       try {
-        await client.connect();
         await client.mailboxOpen(folderPath);
       } catch (err) {
         await closeQuietly(client);

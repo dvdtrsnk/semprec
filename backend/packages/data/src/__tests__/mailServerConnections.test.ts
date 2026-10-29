@@ -4,12 +4,14 @@ import { Socket as NetSocket, createServer as createNetServer, type Server as Ne
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import tls from "node:tls";
+import { ImapFlow } from "imapflow";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { MailServerEndpoint, MailServerSecurity } from "../mail/mailServerSettingsStore.js";
 import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
 import {
   createSmtpTransporter,
   openImapConnection,
+  openImapFlow,
   type MailServerConnectionSettings,
   type MailServerCredential,
 } from "../mail/mailServerConnections.js";
@@ -397,6 +399,80 @@ describe("openImapConnection (issue #1478)", () => {
     expect(options?.host).toBe("public.test");
     expect(await lookupThroughPolicy(options ?? {}, "public.test")).toBe("93.184.216.34");
     expect(stub.calls).toEqual(["public.test"]);
+  });
+});
+
+/**
+ * imapflow 1.7.6 stores the idle options it was constructed with as the client's own `maxIdleTime` and
+ * `socketTimeout` fields, and its typings declare neither. This is the only observable effect of those
+ * options on the client, so the tests read it here; `package.json` declares `^1.7.6` for imapflow.
+ */
+function imapflowField(client: ImapFlow, field: "maxIdleTime" | "socketTimeout"): unknown {
+  return Reflect.get(client, field);
+}
+
+describe("openImapFlow (issue #1550)", () => {
+  it("resolves with a connected, logged-in client for the fake server", async () => {
+    useLoopbackPolicy();
+    trustCertificate(mailCertificate);
+    const server = await startFakeServer(imapSession(credential.password), mailCertificate);
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+
+    const client = await openImapFlow(settingsFor("mail.test", server.port), credential);
+
+    try {
+      expect(client).toBeInstanceOf(ImapFlow);
+      expect(client.usable).toBe(true);
+      expect(client.authenticated).toBeTruthy();
+    } finally {
+      client.close();
+    }
+  });
+
+  it.each(["127.0.0.1", "10.0.0.1"])(
+    "refuses a name that resolves to %s with the unreachable error, before any connection is made",
+    async (address) => {
+      stub = stubDnsLookup({ "internal.test": [address] });
+      const server = await startFakeServer(imapSession(credential.password));
+      const error = await rejectionOf(openImapFlow(settingsFor("internal.test", server.port), credential));
+      expect(error).toBeInstanceOf(MailServerUnreachableError);
+      expect(server.connections()).toBe(0);
+    },
+  );
+
+  it("forwards maxIdleTime and socketTimeout to the ImapFlow client it constructs", async () => {
+    useLoopbackPolicy();
+    trustCertificate(mailCertificate);
+    const server = await startFakeServer(imapSession(credential.password), mailCertificate);
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+
+    const client = await openImapFlow(settingsFor("mail.test", server.port), credential, {
+      maxIdleTime: 25 * 60 * 1000,
+      socketTimeout: 35 * 60 * 1000,
+    });
+
+    try {
+      expect(imapflowField(client, "maxIdleTime")).toBe(25 * 60 * 1000);
+      expect(imapflowField(client, "socketTimeout")).toBe(35 * 60 * 1000);
+    } finally {
+      client.close();
+    }
+  });
+
+  it("keeps imapflow's own defaults when the idle options are not given", async () => {
+    useLoopbackPolicy();
+    trustCertificate(mailCertificate);
+    const server = await startFakeServer(imapSession(credential.password), mailCertificate);
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+
+    const client = await openImapFlow(settingsFor("mail.test", server.port), credential);
+
+    try {
+      expect(imapflowField(client, "maxIdleTime")).toBe(false);
+      expect(imapflowField(client, "socketTimeout")).toBe(5 * 60 * 1000);
+    } finally {
+      client.close();
+    }
   });
 });
 

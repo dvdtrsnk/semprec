@@ -35,6 +35,14 @@ export interface MailServerCredential {
 export interface MailServerConnectionOptions {
   /** Vets every address the host name resolves to. Defaults to the module policy (`currentOutboundAddressPolicy`). */
   policy?: OutboundAddressPolicy;
+  /**
+   * IMAP only; `createSmtpTransporter` ignores it. imapflow reads it when the client is constructed, so a caller
+   * that receives a connected client cannot set it. Forwarded to the `ImapFlow` constructor when present; imapflow's
+   * default applies otherwise (docs/adr/2026-10-29-imap-idle-connections-through-the-shared-imap-connect-step.md).
+   */
+  maxIdleTime?: number;
+  /** IMAP only, as `maxIdleTime`: how long the socket may stay silent before imapflow gives up on it. */
+  socketTimeout?: number;
 }
 
 /** A connection attempt may not take longer than this to establish, in each library and for the TCP connect of SMTP. */
@@ -159,17 +167,18 @@ function closeAfterFailedConnect(client: ImapFlow, host: string): void {
 }
 
 /**
- * Opens and logs in to an IMAP connection to a tenant-chosen host. imapflow hands its TLS options to
- * `tls.connect`, so the policy lookup resolves the host name once and the socket connects to the
- * vetted address; `servername` keeps the host name for SNI and certificate checks. Resolves with the
- * client wrapper. A refused, unreachable or TLS-failing server rejects with MailServerUnreachableError;
- * a rejected login rejects with imapflow's authentication error.
+ * The connect step of every IMAP connection to a tenant-chosen host
+ * (docs/adr/2026-10-29-imap-idle-connections-through-the-shared-imap-connect-step.md). imapflow hands its TLS
+ * options to `tls.connect`, so the policy lookup resolves the host name once and the socket connects to the
+ * vetted address; `servername` keeps the host name for SNI and certificate checks. Resolves with the connected
+ * client and never with an unconnected one. A refused, unreachable or TLS-failing server rejects with
+ * MailServerUnreachableError; a rejected login rejects with imapflow's authentication error.
  */
-export async function openImapConnection(
+export async function openImapFlow(
   settings: MailServerConnectionSettings,
   credential: MailServerCredential,
   options: MailServerConnectionOptions = {},
-): Promise<ImapFlowMailClient> {
+): Promise<ImapFlow> {
   const { endpoint, username } = settings;
   const policy = policyOf(options);
   const refusal = literalRefusal(endpoint.host, policy);
@@ -183,6 +192,8 @@ export async function openImapConnection(
     tls: { servername: endpoint.host, lookup: createPolicyLookup(policy) },
     connectionTimeout: CONNECT_TIMEOUT_MS,
     greetingTimeout: GREETING_TIMEOUT_MS,
+    ...(options.maxIdleTime !== undefined ? { maxIdleTime: options.maxIdleTime } : {}),
+    ...(options.socketTimeout !== undefined ? { socketTimeout: options.socketTimeout } : {}),
     // imapflow's default logger writes the protocol traffic, server responses included, to the console; that traffic can carry folder names and message subjects.
     logger: false,
   });
@@ -196,7 +207,19 @@ export async function openImapConnection(
     closeAfterFailedConnect(client, endpoint.host);
     throw mapConnectionFailure(error, endpoint.host);
   }
-  return new ImapFlowMailClient(client);
+  return client;
+}
+
+/**
+ * Opens an IMAP connection for the sync pass: the connected client of `openImapFlow`, wrapped in the narrow
+ * `ImapFlowMailClient` the reconcile pass uses (imapFlowClient.ts). The wrapper keeps the raw client private.
+ */
+export async function openImapConnection(
+  settings: MailServerConnectionSettings,
+  credential: MailServerCredential,
+  options: MailServerConnectionOptions = {},
+): Promise<ImapFlowMailClient> {
+  return new ImapFlowMailClient(await openImapFlow(settings, credential, options));
 }
 
 /** The SMTP operations the rest of the package uses. Its connect and send failures map exactly as `openImapConnection`'s do. */
