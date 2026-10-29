@@ -51,9 +51,28 @@ export interface GmailMailClient {
   modifyMessageLabels(messageId: string, addLabelIds: string[], removeLabelIds: string[]): Promise<void>;
 }
 
+/** The Gmail system labels that are real places mail lives in; every other system label (UNREAD, STARRED, IMPORTANT, CATEGORY_*, CHAT) is a flag or a tab, not a folder. */
+const GMAIL_SYSTEM_FOLDER_PURPOSES: Record<string, string> = {
+  INBOX: "inbox",
+  SENT: "sent",
+  SPAM: "junk",
+  TRASH: "trash",
+  DRAFT: "drafts",
+};
+
+/** Provider id of the synthetic Archive folder (Gmail has no archive label: archived mail is mail without INBOX). */
+export const GMAIL_ARCHIVE_PROVIDER_ID = "semprec:archive";
+
+/** Provider ids of the five system labels; a message carrying none of them is archived. */
+export const GMAIL_PLACEMENT_LABEL_IDS: readonly string[] = Object.keys(GMAIL_SYSTEM_FOLDER_PURPOSES);
+
 function specialPurposeForLabel(label: GmailLabelRef): string {
-  const known: Record<string, string> = { INBOX: "inbox", SENT: "sent", SPAM: "junk", TRASH: "trash", DRAFT: "drafts" };
-  return known[label.id] ?? "none";
+  return GMAIL_SYSTEM_FOLDER_PURPOSES[label.id] ?? "none";
+}
+
+/** A label becomes a Folder only when it is a user label or one of the five system folders. */
+function isFolderLabel(label: GmailLabelRef): boolean {
+  return label.type === "user" || Object.hasOwn(GMAIL_SYSTEM_FOLDER_PURPOSES, label.id);
 }
 
 export interface ReconcileGmailAccountParams {
@@ -98,6 +117,7 @@ export async function reconcileGmailAccount(
   const labels = await gmail.listLabels();
   const folderItemIdByLabel = new Map<string, string>();
   for (const label of labels) {
+    if (!isFolderLabel(label)) continue;
     const folderItemId = await ensureFolderItem(dbClient, {
       foldersDatabaseId: params.foldersDatabaseId,
       mailboxItemId: params.mailboxItemId,
@@ -109,6 +129,15 @@ export async function reconcileGmailAccount(
     });
     folderItemIdByLabel.set(label.id, folderItemId);
   }
+  const archiveFolderItemId = await ensureFolderItem(dbClient, {
+    foldersDatabaseId: params.foldersDatabaseId,
+    mailboxItemId: params.mailboxItemId,
+    mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
+    providerId: GMAIL_ARCHIVE_PROVIDER_ID,
+    name: "Archive",
+    behavior: "label",
+    specialPurpose: "archive",
+  });
 
   let changedIds: string[];
   let removedIds: string[] = [];
@@ -147,6 +176,9 @@ export async function reconcileGmailAccount(
     const mappedFolderIds = fetched.labelIds
       .map((labelId) => folderItemIdByLabel.get(labelId))
       .filter((v): v is string => Boolean(v));
+    // No INBOX/SPAM/TRASH/SENT/DRAFT label = archived (also a message with no labels at all).
+    if (!fetched.labelIds.some((labelId) => GMAIL_PLACEMENT_LABEL_IDS.includes(labelId)))
+      mappedFolderIds.push(archiveFolderItemId);
     let itemId: string | null = null;
     for (const folderItemId of mappedFolderIds) {
       const result = await ingestEmailMessage(dbClient, {
@@ -166,9 +198,8 @@ export async function reconcileGmailAccount(
       itemId = result.itemId;
     }
 
-    // A message whose current labelIds map to zero known Folder items (e.g. it lost every
-    // label it had, or briefly carries one this pass hasn't discovered yet) is never ingested
-    // fresh above — but if it was already known from a prior pass, its stale folder edges
+    // A message whose current labelIds map to zero known Folder items (a placement label this
+    // pass hasn't discovered yet) is never ingested fresh above — but if it was already known from a prior pass, its stale folder edges
     // still need dropping, the same as any other label removal.
     if (!itemId) {
       const existing = await getMailMessageMetaByProviderMessageId(dbClient, fetched.id);
