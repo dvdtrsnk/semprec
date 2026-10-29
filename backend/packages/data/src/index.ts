@@ -519,6 +519,7 @@ export { createGuidanceManifestPort } from "./guidanceDrift/guidanceManifestPort
 export { purgeExpiredTrash, handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
 export { forEachActiveTenant } from "./tenancy/forEachActiveTenant.js";
 export { provisionTenant } from "./tenancy/provisionTenant.js";
+export { acceptInvitation } from "./tenancy/acceptInvitation.js";
 export { getUserTenantBinding } from "./tenancy/tenantsStore.js";
 export * from "./tenancy/accountsAdminStore.js";
 export * from "./tenancy/deleteAccount.js";

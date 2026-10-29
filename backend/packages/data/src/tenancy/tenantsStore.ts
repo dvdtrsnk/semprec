@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import type { UserRole, UserRow } from "../auth/types.js";
+import { requireSingleRow } from "../db/pool.js";
 import { ChokePointError, NotFoundError } from "../errors.js";
 
 export type TenantStatus = "provisioning" | "active" | "suspended" | "deleting";
@@ -13,6 +14,18 @@ function isTenantStatus(value: unknown): value is TenantStatus {
 
 function isUserRole(value: unknown): value is UserRole {
   return typeof value === "string" && (USER_ROLES as readonly string[]).includes(value);
+}
+
+/**
+ * Inserts a tenant in `status` and returns its id, which the database generates. The row commits or
+ * rolls back with the caller's transaction. Invitation acceptance (issue #1087) creates a tenant in
+ * `provisioning`; `provisionTenant` moves it to `active`.
+ */
+export async function createTenant(client: PoolClient, status: TenantStatus): Promise<string> {
+  const { rows } = await client.query<{ id: string }>("INSERT INTO tenants (status) VALUES ($1) RETURNING id", [
+    status,
+  ]);
+  return requireSingleRow(rows, "tenants insert").id;
 }
 
 /**

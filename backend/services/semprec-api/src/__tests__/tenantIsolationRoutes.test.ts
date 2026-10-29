@@ -26,6 +26,7 @@ import {
   createChokePoint,
   createCoreTaskList,
   createHeartbeat,
+  createInvite,
   createItemWithClient,
   createPendingApprovalRequest,
   createUser,
@@ -37,6 +38,7 @@ import {
   LocalFsBlobStorageWriter,
   provisionTenant,
   recordTokenGatewayCall,
+  revokeInvite,
   setProjectMcpGrantForAgentPage,
   upsertMcpToolRegistration,
   withTransaction,
@@ -187,6 +189,28 @@ function readIdArray(text: string, field: string): string[] {
 /** Test SQL inside `tenantId`'s scope on the runtime-role pool, which strict enforcement requires. */
 function inTenantTransaction<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(pool, fn));
+}
+
+/** The raw token of an invitation created and revoked through the production functions; invitations are global, so no tenant scope applies. */
+function revokedInvitationToken(invitedBy: string): Promise<string> {
+  return runAsSystem("isolation test invitation", () =>
+    withTransaction(pool, async (client) => {
+      const created = await createInvite(client, {
+        email: `${randomUUID()}@example.test`,
+        invitedBy,
+        appBaseUrl: "https://app.example.test",
+        mailer: null,
+      });
+      await revokeInvite(client, created.invite.id);
+      return new URL(created.inviteUrl).hash.replace("#token=", "");
+    }),
+  );
+}
+
+/** The number of tenant rows, read as the superuser so the count sees every tenant. */
+async function tenantCount(): Promise<number> {
+  const { rows } = await adminPool.query<{ n: number }>("SELECT count(*)::int AS n FROM tenants");
+  return rows[0]?.n ?? -1;
 }
 
 async function send(caller: Caller | null, request: Request): Promise<Answer> {
@@ -809,6 +833,18 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       headers: { Authorization: `Bearer ${SETUP_TOKEN}` },
     });
     expect(masked(known, [a.member.email])).toEqual(masked(unknown, [unknownEmail]));
+  },
+  "accept invitation": async () => {
+    // A revoked invitation's token stands in for a foreign one: it must answer exactly like a random token,
+    // and no tenant may be created by either request.
+    const revokedToken = await revokedInvitationToken(a.member.userId);
+    const tenantsBefore = await tenantCount();
+    await expectForeignLikeRandom(null, [revokedToken], ([token]) => ({
+      method: "POST",
+      path: "/api/invitations/accept",
+      body: { token, password: "accepted-password" },
+    }));
+    expect(await tenantCount()).toBe(tenantsBefore);
   },
   "Microsoft Graph mail webhook": async () => {
     await expectForeignLikeRandom(null, [a.graphSubscriptionId], ([subscriptionId]) => ({
