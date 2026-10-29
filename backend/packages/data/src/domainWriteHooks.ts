@@ -25,6 +25,7 @@ import {
 } from "./library/libraryRatingHooks.js";
 import { journalItemCreateHook } from "./journal/journalWriteHook.js";
 import { inboxItemCreateHook } from "./inbox/inboxCreateHook.js";
+import { inboxTypeItemCreateHook, inboxTypeItemUpdateHook } from "./inbox/inboxTypeWriteHook.js";
 
 registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform);
 registerItemCreateHook(mcpServerItemCreateHook);
@@ -39,3 +40,5 @@ registerItemUpdateHook(libraryRatingItemUpdateHook);
 registerRelationEdgeWriteHook(libraryWatchedWithEdgeWriteHook);
 registerItemCreateHook(journalItemCreateHook);
 registerItemCreateHook(inboxItemCreateHook);
+registerItemCreateHook(inboxTypeItemCreateHook);
+registerItemUpdateHook(inboxTypeItemUpdateHook);
