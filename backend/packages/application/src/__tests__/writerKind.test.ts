@@ -138,6 +138,34 @@ describe("writer identity derived from the authenticated actor (issue #1415)", (
     });
   });
 
+  it("item.create on the Journal is refused with 403 for a REST session, a human /mcp session and an agent run, and stores no entry", async () => {
+    await inTenantZero(async () => {
+      await fixture();
+      const gateway = createGenericOperationGateway(pool);
+      const journal = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "journal"));
+      const projectItemId = await agentProjectItemId();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "journal" });
+      const agentRun: AuthenticatedActor = {
+        userId: run.actorUserId,
+        runId: run.id,
+        agentProjectItemId: projectItemId,
+      };
+      const refusal = { status: 403, code: "forbidden", details: { field: "type" } };
+
+      const actors: AuthenticatedActor[] = [{ userId, restSession: true }, { userId }, agentRun];
+      for (const actor of actors) {
+        await expect(
+          gateway.invoke("item.create", actor, ALL_CAPABILITIES, { databaseId: journal!.id, properties: {} }),
+        ).rejects.toMatchObject(refusal);
+      }
+
+      const { rows } = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+        journal!.id,
+      ]);
+      expect(rows[0]?.n).toBe(0);
+    });
+  });
+
   it("item.patch reaches the hooks as an agent with run id, project item and onBehalfOfUserId for an agent run", async () => {
     await inTenantZero(async () => {
       const { itemA } = await fixture();
