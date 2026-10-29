@@ -48,6 +48,7 @@ const TENANT_TABLES = [
   "agent_run_events",
   "approval_requests",
   "mcp_tool_registrations",
+  "mcp_server_connection_state",
   "project_mcp_grants",
   "project_agent_guidance",
   "agent_guidance_drift_findings",

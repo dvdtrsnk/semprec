@@ -6,6 +6,7 @@ import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamable
 import { SseError } from "@modelcontextprotocol/sdk/client/sse.js";
 import { McpConnectionError, MCP_DEFAULT_CONNECT_TIMEOUT_MS } from "./mcpConnectionError.js";
 import type { McpToolInvocationTarget } from "./mcpToolInvocation.js";
+import { recordMcpConnectionFailure, recordMcpConnectionSuccess } from "./mcpServerConnectionStateStore.js";
 
 const logger = createLogger("mcp");
 
@@ -131,6 +132,21 @@ function formatCallToolContent(result: CallToolResultLike): McpInvokeResult {
 }
 
 /**
+ * Best-effort (issue #1450): a failure to record the connection outcome is logged and never
+ * changes the invocation result. Logs the error name and the server id only.
+ */
+async function recordConnectionOutcome(record: () => Promise<void>, serverItemId: string): Promise<void> {
+  try {
+    await record();
+  } catch (err) {
+    logger.warn(
+      { errName: err instanceof Error ? err.name : typeof err, mcpServerItemId: serverItemId },
+      "recording the MCP connection outcome failed",
+    );
+  }
+}
+
+/**
  * Opens a connection through the #231 factory, calls `tools/call`, and always closes the
  * connection again — on both the success and failure path, matching `connectMcpServer`'s own
  * try/finally contract. Assumes `target` was already authorized (either just resolved by
@@ -157,6 +173,7 @@ export async function executeMcpInvocation(
       actorId: options.actorId,
       purpose: "mcp_tool_invoke",
     });
+    await recordConnectionOutcome(() => recordMcpConnectionSuccess(pool, target.serverItem.id), target.serverItem.id);
     const callResult = await handle.client.callTool(
       {
         name: target.toolName,
@@ -168,6 +185,14 @@ export async function executeMcpInvocation(
     );
     return formatCallToolResult(callResult as CallToolResultLike, target.serverItem.id);
   } catch (err) {
+    // `handle` is set only once the connect succeeded, so a `McpConnectionError` here is a failed connect.
+    if (handle === undefined && err instanceof McpConnectionError) {
+      const { reason } = err;
+      await recordConnectionOutcome(
+        () => recordMcpConnectionFailure(pool, target.serverItem.id, reason),
+        target.serverItem.id,
+      );
+    }
     if (signal?.aborted) return { error: true, result: "MCP tool call was cancelled before it completed" };
     return {
       error: true,

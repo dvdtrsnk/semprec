@@ -396,6 +396,12 @@ export type {
   McpInvokeFailure,
   McpFailureKind,
 } from "./mcp/mcpToolExecution.js";
+export type { McpServerConnectionState } from "./mcp/mcpServerConnectionStateStore.js";
+export {
+  recordMcpConnectionSuccess,
+  recordMcpConnectionFailure,
+  getMcpConnectionStates,
+} from "./mcp/mcpServerConnectionStateStore.js";
 export { executeMcpInvocation, MCP_FAILURE_KINDS } from "./mcp/mcpToolExecution.js";
 export type { GenericOperationApprovalReplay } from "./mcp/approvalRequestExecution.js";
 // `approvalRequestsStore.ts`'s `decideApprovalRequest` is deliberately NOT exported here — see
