@@ -243,11 +243,12 @@ export async function updateHeartbeatName(
       field: "name",
     });
   }
-  const { rows } = await client.query<HeartbeatDbRow>(
+  const { rows, rowCount } = await client.query<HeartbeatDbRow>(
     `UPDATE project_heartbeats SET name = $2 WHERE id = $1 RETURNING ${COLUMNS}`,
     [id, trimmed],
   );
-  return rows[0] ? mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true }) : null;
+  // Zero rows is a valid outcome: no heartbeat with this id is visible to the caller's tenant.
+  return rowCount && rows[0] ? mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true }) : null;
 }
 
 /**
@@ -268,14 +269,15 @@ export async function updateHeartbeatTask(
   }
   // The action check is part of the UPDATE's WHERE, so a concurrent action change cannot slip
   // between a check and the write.
-  const { rows } = await client.query<HeartbeatDbRow>(
+  const { rows, rowCount } = await client.query<HeartbeatDbRow>(
     `UPDATE project_heartbeats
      SET action_config = jsonb_set(action_config, '{task}', to_jsonb($2::text))
      WHERE id = $1 AND action_id = $3
      RETURNING ${COLUMNS}`,
     [id, task, CORE_AGENT_RUN_ACTION_ID],
   );
-  if (rows[0]) return mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true });
+  // Zero rows is a valid outcome: the heartbeat is invisible to the tenant or has another action.
+  if (rowCount && rows[0]) return mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true });
   const { rows: existing } = await client.query<{ action_id: string }>(
     `SELECT action_id FROM project_heartbeats WHERE id = $1`,
     [id],
