@@ -12,7 +12,9 @@ import { createInboxTypeWithClient, deleteInboxTypeWithClient } from "../inbox/i
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
-import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
+import { createBlob } from "../blobs/blobsStore.js";
+import { deleteInboxAttachment, insertInboxAttachments, listInboxAttachments } from "../inbox/inboxAttachmentsStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { ValidationError } from "../errors.js";
 import {
@@ -34,8 +36,33 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-function sha256Of(emoji: string, text: string): string {
+/** The version 1 fingerprint (issue #223), pinned by formula: the tick no longer writes it (issue #1606). */
+function legacyFingerprintOf(emoji: string, text: string): string {
   return createHash("sha256").update(JSON.stringify({ emoji, text })).digest("hex");
+}
+
+/**
+ * The version 2 fingerprint (issue #1606) written out by hand: canonical JSON with the keys in code-point
+ * order and the attachment hashes sorted, and `transcribedText` empty. The test does not reuse the
+ * production function it checks.
+ */
+function fingerprintV2Of(input: {
+  typeId: string;
+  text: string;
+  date?: string;
+  time?: string;
+  attachmentHashes?: string[];
+}): string {
+  const canonical = JSON.stringify({
+    attachmentHashes: [...(input.attachmentHashes ?? [])].sort(),
+    date: input.date ?? "2026-08-28",
+    text: input.text,
+    time: input.time ?? "09:00",
+    transcribedText: "",
+    typeId: input.typeId,
+    v: 2,
+  });
+  return `v2:${createHash("sha256").update(canonical).digest("hex")}`;
 }
 
 type TickDatabaseIds = {
@@ -127,7 +154,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     const proposal = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposal).toBeTruthy();
     expect(proposal!.properties.status).toBe("proposed");
-    expect(proposal!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk"));
+    expect(proposal!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk" }));
     expect(proposal!.properties.history).toHaveLength(1);
     const entry = (proposal!.properties.history as Array<Record<string, unknown>>)[0]!;
     expect(entry).toMatchObject({ author: "ai" });
@@ -301,7 +328,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     const revised = await findProposalForItem(pool, proposalsId, item.id);
 
     expect(revised!.id).toBe(first!.id);
-    expect(revised!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk and eggs"));
+    expect(revised!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs" }));
     expect(revised!.properties.proposal).toEqual({
       entityKind: "database",
       target: await databaseIdFor("tasks"),
@@ -311,6 +338,246 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
 
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [proposalsId]);
     expect(rows[0].n).toBe(1);
+  });
+
+  describe("version 2 fingerprint inputs and the version 1 compatibility rule (issue #1606)", () => {
+    async function createInboxType(name: string, emoji: string) {
+      return withTransaction(pool, (client) =>
+        createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name,
+          emoji,
+          processingMethod: "database",
+          targetDatabase: "tasks",
+        }),
+      );
+    }
+
+    async function createInboxItemOfType(text: string, typeId: string) {
+      return withTransaction(pool, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: inboxId,
+          journalDatabaseId: journalId,
+          timezone: "Europe/Prague",
+          date: "2026-08-28",
+          time: "09:00",
+          text,
+          type: typeId,
+        }),
+      );
+    }
+
+    async function editInboxItem(itemId: string, propertiesPatch: Record<string, unknown>) {
+      await withTransaction(pool, (client) =>
+        itemsStore.updateItemProperties(client, { databaseId: inboxId, itemId, propertiesPatch }),
+      );
+    }
+
+    /** Creates a blob whose content hash is derived from `label` and attaches it to the Inbox item. */
+    async function attachNewBlob(itemId: string, label: string) {
+      const contentHash = createHash("sha256").update(label).digest("hex");
+      const blob = await createBlob(pool, {
+        mimeType: "image/jpeg",
+        byteSize: 3,
+        storageKey: `t/blobs/${label}`,
+        contentHash,
+      });
+      await insertInboxAttachments(pool, itemId, [{ blobId: blob.id, source: "camera" }]);
+      return { blobId: blob.id, contentHash };
+    }
+
+    async function detachBlob(itemId: string, blobId: string) {
+      const attachments = await listInboxAttachments(pool, [itemId]);
+      const attachment = attachments.find((row) => row.blobId === blobId);
+      if (!attachment) throw new Error(`Inbox item ${itemId} has no attachment of blob ${blobId}`);
+      await deleteInboxAttachment(pool, attachment.attachmentId);
+    }
+
+    /**
+     * Sets the stored fingerprint of a proposal. The tick no longer writes version 1 values, so a
+     * card that holds one (as a card written before issue #1606 does) is built by setting it here.
+     */
+    async function setProposalFingerprint(proposalId: string, fingerprint: string) {
+      await withTransaction(pool, (client) =>
+        itemsStore.updateItemProperties(client, {
+          databaseId: proposalsId,
+          itemId: proposalId,
+          propertiesPatch: { fingerprint },
+        }),
+      );
+    }
+
+    it.each([
+      { field: "time", patch: { time: "10:30" } },
+      { field: "date", patch: { date: "2026-08-29" } },
+    ])("a changed capture $field recomputes the proposal", async ({ patch }) => {
+      const type = await createInboxType("Task", "☑️");
+      const item = await createInboxItemOfType("Buy milk", type.id);
+      let calls = 0;
+      const compute: ComputeSemprecProposalFn = async () => {
+        calls++;
+        return { properties: { name: "Buy milk" } };
+      };
+      await runTick(pool, databaseIds, item.id, compute);
+      expect(calls).toBe(1);
+
+      await editInboxItem(item.id, patch);
+      await runTick(pool, databaseIds, item.id, compute);
+
+      expect(calls).toBe(2);
+      const proposal = await findProposalForItem(pool, proposalsId, item.id);
+      expect(proposal!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk", ...patch }));
+    });
+
+    it("adding an attachment to the item and then removing it each recomputes the proposal", async () => {
+      const type = await createInboxType("Task", "☑️");
+      const item = await createInboxItemOfType("Buy milk", type.id);
+      let calls = 0;
+      const compute: ComputeSemprecProposalFn = async () => {
+        calls++;
+        return { properties: { name: "Buy milk" } };
+      };
+      await runTick(pool, databaseIds, item.id, compute);
+      expect(calls).toBe(1);
+
+      const photo = await attachNewBlob(item.id, "photo");
+      await runTick(pool, databaseIds, item.id, compute);
+      expect(calls).toBe(2);
+      const withPhoto = await findProposalForItem(pool, proposalsId, item.id);
+      expect(withPhoto!.properties.fingerprint).toBe(
+        fingerprintV2Of({ typeId: type.id, text: "Buy milk", attachmentHashes: [photo.contentHash] }),
+      );
+
+      await detachBlob(item.id, photo.blobId);
+      await runTick(pool, databaseIds, item.id, compute);
+      expect(calls).toBe(3);
+      const withoutPhoto = await findProposalForItem(pool, proposalsId, item.id);
+      expect(withoutPhoto!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk" }));
+    });
+
+    it("reordering the attachments of an item does not recompute the proposal", async () => {
+      const type = await createInboxType("Task", "☑️");
+      const item = await createInboxItemOfType("Buy milk", type.id);
+      const first = await attachNewBlob(item.id, "first");
+      const second = await attachNewBlob(item.id, "second");
+      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+      const before = await findProposalForItem(pool, proposalsId, item.id);
+
+      // Attachments are ordered by position, so moving `first` behind `second` reverses the pair.
+      await detachBlob(item.id, first.blobId);
+      await insertInboxAttachments(pool, item.id, [{ blobId: first.blobId, source: "camera" }]);
+      const attachments = await listInboxAttachments(pool, [item.id]);
+      expect(attachments.map((row) => row.blobId)).toEqual([second.blobId, first.blobId]);
+
+      await runTick(pool, databaseIds, item.id, async () => {
+        throw new Error("computeProposal must not be called when only the attachment order changed");
+      });
+
+      const after = await findProposalForItem(pool, proposalsId, item.id);
+      expect(after!.properties.fingerprint).toBe(before!.properties.fingerprint);
+      expect(after!.updatedAt).toBe(before!.updatedAt);
+    });
+
+    it("choosing another type that shares the emoji recomputes the proposal", async () => {
+      const task = await createInboxType("Task", "☑️");
+      const errand = await createInboxType("Errand", "☑️");
+      const item = await createInboxItemOfType("Buy milk", task.id);
+      let calls = 0;
+      const compute: ComputeSemprecProposalFn = async () => {
+        calls++;
+        return { properties: { name: "Buy milk" } };
+      };
+      await runTick(pool, databaseIds, item.id, compute);
+      const before = await findProposalForItem(pool, proposalsId, item.id);
+
+      await withTransaction(pool, async (client) => {
+        const typeProperty = await propertiesStore.getPropertyByKey(client, inboxId, "type");
+        await deleteRelationWithClient(client, {
+          relationPropertyId: typeProperty!.id,
+          callerItemId: item.id,
+          targetItemId: task.id,
+        });
+        await createRelationWithClient(client, {
+          relationPropertyId: typeProperty!.id,
+          callerItemId: item.id,
+          targetItemId: errand.id,
+        });
+      });
+      await runTick(pool, databaseIds, item.id, compute);
+
+      expect(calls).toBe(2);
+      const after = await findProposalForItem(pool, proposalsId, item.id);
+      expect(after!.id).toBe(before!.id);
+      expect(after!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: errand.id, text: "Buy milk" }));
+      expect(after!.properties.fingerprint).not.toBe(before!.properties.fingerprint);
+    });
+
+    it("a version 1 card whose emoji and text are unchanged is not recomputed, even when its time changes", async () => {
+      const type = await createInboxType("Task", "☑️");
+      const item = await createInboxItemOfType("Buy milk", type.id);
+      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+      const created = await findProposalForItem(pool, proposalsId, item.id);
+      await setProposalFingerprint(created!.id, legacyFingerprintOf("☑️", "Buy milk"));
+      const legacyCard = await findProposalForItem(pool, proposalsId, item.id);
+
+      await runTick(pool, databaseIds, item.id, async () => {
+        throw new Error("computeProposal must not be called for an unchanged version 1 fingerprint");
+      });
+
+      await editInboxItem(item.id, { time: "10:30" });
+      await runTick(pool, databaseIds, item.id, async () => {
+        throw new Error("computeProposal must not be called when only the time of a version 1 card changed");
+      });
+
+      const after = await findProposalForItem(pool, proposalsId, item.id);
+      expect(after!.properties.fingerprint).toBe(legacyFingerprintOf("☑️", "Buy milk"));
+      expect(after!.updatedAt).toBe(legacyCard!.updatedAt);
+    });
+
+    it("a version 1 card whose text changed is recomputed and stored as a version 2 fingerprint", async () => {
+      const type = await createInboxType("Task", "☑️");
+      const item = await createInboxItemOfType("Buy milk", type.id);
+      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+      const created = await findProposalForItem(pool, proposalsId, item.id);
+      await setProposalFingerprint(created!.id, legacyFingerprintOf("☑️", "Buy milk"));
+
+      await editInboxItem(item.id, { text: "Buy bread" });
+      let calls = 0;
+      await runTick(pool, databaseIds, item.id, async () => {
+        calls++;
+        return { properties: { name: "Buy bread" } };
+      });
+
+      expect(calls).toBe(1);
+      const revised = await findProposalForItem(pool, proposalsId, item.id);
+      expect(revised!.id).toBe(created!.id);
+      expect(revised!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy bread" }));
+    });
+
+    it("a version 1 card whose type emoji changed is recomputed and stored as a version 2 fingerprint", async () => {
+      const type = await createInboxType("Task", "☑️");
+      const item = await createInboxItemOfType("Buy milk", type.id);
+      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+      const created = await findProposalForItem(pool, proposalsId, item.id);
+      await setProposalFingerprint(created!.id, legacyFingerprintOf("☑️", "Buy milk"));
+
+      await withTransaction(pool, (client) =>
+        itemsStore.updateItemProperties(client, {
+          databaseId: typesId,
+          itemId: type.id,
+          propertiesPatch: { emoji: "📌" },
+        }),
+      );
+      let calls = 0;
+      await runTick(pool, databaseIds, item.id, async () => {
+        calls++;
+        return { properties: { name: "Buy milk" } };
+      });
+
+      expect(calls).toBe(1);
+      const revised = await findProposalForItem(pool, proposalsId, item.id);
+      expect(revised!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk" }));
+    });
   });
 
   it.each(["confirmed", "rejected"] as const)(
@@ -360,7 +627,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
 
       const stillLocked = await findProposalForItem(pool, proposalsId, item.id);
       expect(stillLocked!.properties.status).toBe(lockedStatus);
-      expect(stillLocked!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk"));
+      expect(stillLocked!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk" }));
     },
   );
 
@@ -421,7 +688,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       [proposalsId],
     );
     expect(liveRows).toHaveLength(1);
-    expect(liveRows[0].properties.fingerprint).toBe(sha256Of("☑️", "Buy milk and eggs"));
+    expect(liveRows[0].properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs" }));
   });
 
   it("an item with no type is marked needsClarification, not silently skipped (issue #104)", async () => {
@@ -618,7 +885,7 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     const proposed = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposed!.id).toBe(needsClarification!.id);
     expect(proposed!.properties.status).toBe("proposed");
-    expect(proposed!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk"));
+    expect(proposed!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk" }));
     expect(proposed!.properties.proposal).toEqual({
       entityKind: "database",
       target: await databaseIdFor("tasks"),
@@ -1203,7 +1470,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
   }, 10000);
 
   it("writes nothing for a stale envelope when the source changes during computeProposal, and the next tick produces the card for the new fingerprint", async () => {
-    const { item } = await createTypedItem("Buy milk");
+    const { type, item } = await createTypedItem("Buy milk");
 
     const handler = createSemprecTickAction(pool, async () => {
       await withTransaction(pool, (client) =>
@@ -1235,7 +1502,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
 
     const proposal = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposal).toBeTruthy();
-    expect(proposal!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk and eggs"));
+    expect(proposal!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs" }));
     expect(proposal!.properties.proposal).toEqual({
       entityKind: "database",
       target: await databaseIdFor("tasks"),

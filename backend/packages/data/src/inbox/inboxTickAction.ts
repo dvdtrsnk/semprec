@@ -12,7 +12,7 @@ import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWr
 import { assertRelationTargetLinkableWithClient, createRelationWithClient } from "../chokePoint/relationOps.js";
 import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import { PROCESSING_METHODS, LOCKED_PROPOSAL_STATUSES, type ProcessingMethod } from "./inboxTypesStore.js";
-import { computeInboxFingerprint } from "./fingerprint.js";
+import { computeInboxFingerprintV2, isFingerprintCurrent, type InboxFingerprintV2Input } from "./fingerprint.js";
 import { enqueueJournalInboxRecomputeForInboxItem } from "./journalInboxCompute.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import {
@@ -930,6 +930,41 @@ async function invalidateProposalForDeletedSource(
 }
 
 /**
+ * The attachment hashes that version 2 of the fingerprint covers (issue #1606): one per attachment
+ * reference of the item, the blob's `content_hash`. A blob without a content hash is covered by its id
+ * instead, so adding or removing it still changes the value; uploads always store a hash
+ * (`blobs/fileUploadStore.ts`). Read on the caller's client, so it belongs to the tick's read
+ * transaction, and never taken from a job payload.
+ */
+async function readAttachmentHashes(client: PoolClient, inboxItemId: string): Promise<string[]> {
+  const { rows } = await client.query<{ attachment_hash: string }>(
+    `SELECT COALESCE(b.content_hash, b.id::text) AS attachment_hash
+       FROM inbox_attachments a
+       JOIN blobs b ON b.tenant_id = a.tenant_id AND b.id = a.blob_id
+      WHERE a.inbox_item_id = $1`,
+    [inboxItemId],
+  );
+  return rows.map((row) => row.attachment_hash);
+}
+
+/** The version 2 fingerprint input of an Inbox item and its recognized type (issue #1606). */
+async function inboxFingerprintInput(
+  client: PoolClient,
+  item: ItemRow,
+  type: ItemRow,
+): Promise<InboxFingerprintV2Input> {
+  return {
+    typeId: type.id,
+    text: typeof item.properties.text === "string" ? item.properties.text : "",
+    date: typeof item.properties.date === "string" ? item.properties.date : "",
+    time: typeof item.properties.time === "string" ? item.properties.time : "",
+    attachmentHashes: await readAttachmentHashes(client, item.id),
+    // Inbox audio attachments are not transcribed yet, so there is no transcript text to cover.
+    transcribedText: "",
+  };
+}
+
+/**
  * The tick's read phase: everything up to and including the fingerprint gate, run in one
  * transaction. The outcomes that need no LLM call (deleted source, unrecognized type, a locked
  * or unchanged-fingerprint existing proposal) are written here and end the tick (`null`
@@ -973,13 +1008,20 @@ async function readTickSnapshot(
   const { type, processingMethod } = recognized;
 
   const emoji = typeof type.properties.emoji === "string" ? type.properties.emoji : "";
-  const text = typeof item.properties.text === "string" ? item.properties.text : "";
-  const fingerprint = computeInboxFingerprint(emoji, text);
+  const v2Input = await inboxFingerprintInput(client, item, type);
+  const fingerprint = computeInboxFingerprintV2(v2Input);
 
   if (existingProposal) {
     const status = existingProposal.properties.status;
     if (typeof status === "string" && LOCKED_PROPOSAL_STATUSES.has(status)) return null;
-    if (existingProposal.properties.fingerprint === fingerprint) return null;
+    if (
+      isFingerprintCurrent(existingProposal.properties.fingerprint, {
+        v2Input,
+        legacyEmoji: emoji,
+        legacyText: v2Input.text,
+      })
+    )
+      return null;
   }
 
   const entityKind: ComputedProposalEntityKind = processingMethod === "database" ? "database" : "pageContent";
@@ -1068,9 +1110,8 @@ async function writeTickResult(
     return;
   }
 
-  const emoji = typeof recognized.type.properties.emoji === "string" ? recognized.type.properties.emoji : "";
-  const text = typeof item.properties.text === "string" ? item.properties.text : "";
-  const fingerprint = computeInboxFingerprint(emoji, text);
+  // Both sides are version 2: the snapshot's fingerprint was computed by `readTickSnapshot` the same way.
+  const fingerprint = computeInboxFingerprintV2(await inboxFingerprintInput(client, item, recognized.type));
   if (fingerprint !== snapshot.fingerprint) {
     logger.info({ sourceItemId: snapshot.item.id, reason: "fingerprintChanged" }, "Skipping stale tick write");
     return;
