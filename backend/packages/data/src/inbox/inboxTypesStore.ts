@@ -24,6 +24,10 @@ export interface InboxTypeSummary {
   id: string;
   emoji: string;
   label: string;
+  /** The stored `processingMethod` (issue #1436 validates it on write), or `null` when the type has none. */
+  processingMethod: string | null;
+  /** The stored `targetDatabase` canonical key, or `null` when the type has no target. */
+  targetDatabaseKey: string | null;
 }
 
 /** An Inbox item type's processing method (issue #102) — replaces the mock's hardcoded label-text comparison. */
@@ -258,6 +262,8 @@ export async function deleteInboxTypeWithClient(
  * up via i18n — unlike a structural, system-defined vocabulary entry, an Inbox item type is
  * user-managed content, the same as any other item's `name`. Relations always store `id`,
  * never `emoji` — renaming a type's emoji afterwards cannot break an Inbox item's relation.
+ * `processingMethod` and `targetDatabaseKey` are the stored values (issue #1439); the target's
+ * display name is not read here, `createInboxTypesRouteHandler` resolves it in the caller's locale.
  */
 export async function listActiveInboxTypes(
   client: Queryable,
@@ -282,5 +288,7 @@ export async function listActiveInboxTypes(
     id: item.id,
     emoji: typeof item.properties.emoji === "string" ? item.properties.emoji : "",
     label: typeof item.properties.name === "string" ? item.properties.name : "",
+    processingMethod: typeof item.properties.processingMethod === "string" ? item.properties.processingMethod : null,
+    targetDatabaseKey: typeof item.properties.targetDatabase === "string" ? item.properties.targetDatabase : null,
   }));
 }

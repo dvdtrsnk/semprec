@@ -6,11 +6,13 @@ import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
+import { renameDatabase } from "../../chokePoint/databasesStore.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
-import { createInboxTypeWithClient } from "../inboxTypesStore.js";
+import { createInboxTypeWithClient, type CreateInboxTypeInput } from "../inboxTypesStore.js";
 import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inboxTickAction.js";
 import { createConfirmProposalRouteHandler, createInboxTypesRouteHandler } from "../inboxRouteHandlers.js";
 import { NotFoundError, ValidationError } from "../../errors.js";
+import type { ItemRow } from "../../types.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
@@ -129,25 +131,203 @@ describe("inbox custom route handlers (issue #239)", () => {
     });
   });
 
-  describe("createInboxTypesRouteHandler", () => {
-    it("lists active inbox types, a thin mapping onto listActiveInboxTypes", async () => {
+  describe("createInboxTypesRouteHandler (issue #1439)", () => {
+    /** The adapter always supplies the caller; this handler reads only its locale. */
+    const callerIn = (locale: string) => ({ identity: { user: { locale } } });
+
+    async function createActiveType(
+      name: string,
+      processing: Pick<CreateInboxTypeInput, "processingMethod" | "targetDatabase">,
+    ): Promise<ItemRow> {
+      return withTransaction(pool, (client) =>
+        createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name,
+          emoji: "☑️",
+          status: "active",
+          ...processing,
+        }),
+      );
+    }
+
+    /**
+     * A raw UPDATE: since issue #1436 the choke point refuses an unknown target, so this is the stored
+     * state an older write could leave behind.
+     */
+    async function storeTargetDirectly(itemId: string, target: string): Promise<void> {
+      const { rows } = await pool.query<{ id: string }>(
+        `UPDATE items SET properties = jsonb_set(properties, '{targetDatabase}', to_jsonb($3::text))
+         WHERE database_id = $1 AND id = $2
+         RETURNING id`,
+        [typesId, itemId, target],
+      );
+      if (rows.length !== 1) throw new Error(`Inbox item type ${itemId} was not found`);
+    }
+
+    it("lists an active database type with its method, target key and label in cs and en", async () => {
+      const type = await createActiveType("Task", { processingMethod: "database", targetDatabase: "tasks" });
+      const handler = createInboxTypesRouteHandler(pool);
+
+      expect(await handler(callerIn("cs"))).toEqual({
+        status: 200,
+        body: {
+          types: [
+            {
+              id: type.id,
+              emoji: "☑️",
+              label: "Task",
+              processingMethod: "database",
+              targetDatabaseKey: "tasks",
+              targetLabel: "Úkoly",
+            },
+          ],
+        },
+      });
+      expect(await handler(callerIn("en"))).toEqual({
+        status: 200,
+        body: {
+          types: [
+            {
+              id: type.id,
+              emoji: "☑️",
+              label: "Task",
+              processingMethod: "database",
+              targetDatabaseKey: "tasks",
+              targetLabel: "Tasks",
+            },
+          ],
+        },
+      });
+    });
+
+    it("returns a pageContent type with method pageContent and null target key and label", async () => {
+      const type = await createActiveType("Note", { processingMethod: "pageContent" });
+
+      expect(await createInboxTypesRouteHandler(pool)(callerIn("cs"))).toEqual({
+        status: 200,
+        body: {
+          types: [
+            {
+              id: type.id,
+              emoji: "☑️",
+              label: "Note",
+              processingMethod: "pageContent",
+              targetDatabaseKey: null,
+              targetLabel: null,
+            },
+          ],
+        },
+      });
+    });
+
+    it("returns the key itself as the label of a stored target the catalog does not know, without failing the list", async () => {
+      const unknown = await createActiveType("Old", { processingMethod: "database", targetDatabase: "tasks" });
+      await storeTargetDirectly(unknown.id, "nonsense");
+      const known = await createActiveType("Task", { processingMethod: "database", targetDatabase: "tasks" });
+
+      expect(await createInboxTypesRouteHandler(pool)(callerIn("en"))).toEqual({
+        status: 200,
+        body: {
+          types: expect.arrayContaining([
+            {
+              id: unknown.id,
+              emoji: "☑️",
+              label: "Old",
+              processingMethod: "database",
+              targetDatabaseKey: "nonsense",
+              targetLabel: "nonsense",
+            },
+            {
+              id: known.id,
+              emoji: "☑️",
+              label: "Task",
+              processingMethod: "database",
+              targetDatabaseKey: "tasks",
+              targetLabel: "Tasks",
+            },
+          ]),
+        },
+      });
+    });
+
+    it("labels every type that shares a target with that target's label", async () => {
+      const first = await createActiveType("Task", { processingMethod: "database", targetDatabase: "tasks" });
+      const second = await createActiveType("Errand", { processingMethod: "database", targetDatabase: "tasks" });
+
+      expect(await createInboxTypesRouteHandler(pool)(callerIn("cs"))).toEqual({
+        status: 200,
+        body: {
+          types: expect.arrayContaining([
+            {
+              id: first.id,
+              emoji: "☑️",
+              label: "Task",
+              processingMethod: "database",
+              targetDatabaseKey: "tasks",
+              targetLabel: "Úkoly",
+            },
+            {
+              id: second.id,
+              emoji: "☑️",
+              label: "Errand",
+              processingMethod: "database",
+              targetDatabaseKey: "tasks",
+              targetLabel: "Úkoly",
+            },
+          ]),
+        },
+      });
+    });
+
+    it("uses a target database's own name over its catalog label", async () => {
+      const tasksId = await databaseIdFor("tasks");
+      await withTransaction(pool, (client) => renameDatabase(client, tasksId, "My tasks"));
+      const type = await createActiveType("Task", { processingMethod: "database", targetDatabase: "tasks" });
+
+      expect(await createInboxTypesRouteHandler(pool)(callerIn("cs"))).toEqual({
+        status: 200,
+        body: {
+          types: [
+            {
+              id: type.id,
+              emoji: "☑️",
+              label: "Task",
+              processingMethod: "database",
+              targetDatabaseKey: "tasks",
+              targetLabel: "My tasks",
+            },
+          ],
+        },
+      });
+    });
+
+    it("excludes archived types, and the list holds only the active one", async () => {
+      const active = await createActiveType("Task", { processingMethod: "database", targetDatabase: "tasks" });
       await withTransaction(pool, (client) =>
         createInboxTypeWithClient(client, {
           inboxItemTypesDatabaseId: typesId,
-          name: "Task",
-          emoji: "☑️",
-          status: "active",
-          processingMethod: "database",
-          targetDatabase: "tasks",
+          name: "Old",
+          emoji: "🗑️",
+          status: "archived",
+          processingMethod: "pageContent",
         }),
       );
-      const handler = createInboxTypesRouteHandler(pool);
 
-      const result = await handler();
-
-      expect(result.status).toBe(200);
-      const body = "body" in result ? (result.body as { types: Array<{ label: string }> }) : undefined;
-      expect(body?.types.some((type) => type.label === "Task")).toBe(true);
+      expect(await createInboxTypesRouteHandler(pool)(callerIn("en"))).toEqual({
+        status: 200,
+        body: {
+          types: [
+            {
+              id: active.id,
+              emoji: "☑️",
+              label: "Task",
+              processingMethod: "database",
+              targetDatabaseKey: "tasks",
+              targetLabel: "Tasks",
+            },
+          ],
+        },
+      });
     });
   });
 });
