@@ -1,4 +1,9 @@
-import { assertJsonObject, MailReauthorizationRequiredError } from "./providerTypes.js";
+import {
+  assertJsonObject,
+  MailAdminConsentRequiredError,
+  MailAuthorizationCodeRejectedError,
+  MailReauthorizationRequiredError,
+} from "./providerTypes.js";
 
 /**
  * Generic OAuth2 refresh-token -> access-token exchange (issue #26: "the access token is
@@ -62,6 +67,99 @@ export async function refreshAccessToken(input: RefreshAccessTokenInput): Promis
     return { accessToken: json.access_token, expiresAt, refreshToken: json.refresh_token };
   }
   return { accessToken: json.access_token, expiresAt };
+}
+
+export interface ExchangeAuthorizationCodeInput {
+  tokenUrl: string;
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
+  code: string;
+  /** The PKCE verifier whose S256 challenge was sent on the authorization request. */
+  codeVerifier: string;
+}
+
+export interface AuthorizationCodeTokens {
+  accessToken: string;
+  expiresAt: Date;
+  refreshToken: string;
+}
+
+const PROVIDER_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+const ADMIN_CONSENT_MARKERS = ["AADSTS65001", "AADSTS90094"];
+
+/** Reads only the provider's short `error` code and whether the description names an admin-consent AADSTS code. */
+async function readProviderError(response: Response): Promise<{ code: string | null; adminConsent: boolean }> {
+  let parsed: unknown;
+  try {
+    parsed = await response.json();
+  } catch {
+    // A non-JSON error body only costs the classification detail; the status still decides the error.
+    return { code: null, adminConsent: false };
+  }
+  if (typeof parsed !== "object" || parsed === null) return { code: null, adminConsent: false };
+  const { error, error_description: description } = parsed as Record<string, unknown>;
+  const code = typeof error === "string" && PROVIDER_ERROR_CODE.test(error) ? error : null;
+  const adminConsent =
+    code === "consent_required" ||
+    (code === "invalid_grant" &&
+      typeof description === "string" &&
+      ADMIN_CONSENT_MARKERS.some((marker) => description.includes(marker)));
+  return { code, adminConsent };
+}
+
+/**
+ * OAuth2 `authorization_code` grant with PKCE (RFC 6749 §4.1.3, RFC 7636 §4.5). Persists
+ * nothing; the caller stores the refresh token. No thrown message contains the code, verifier,
+ * client secret or any token: only the status and the provider's short error code.
+ */
+export async function exchangeAuthorizationCode(
+  input: ExchangeAuthorizationCodeInput,
+): Promise<AuthorizationCodeTokens> {
+  const body = new URLSearchParams({
+    grant_type: "authorization_code",
+    code: input.code,
+    redirect_uri: input.redirectUri,
+    client_id: input.clientId,
+    client_secret: input.clientSecret,
+    code_verifier: input.codeVerifier,
+  });
+
+  const response = await fetch(input.tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) {
+    if (response.status === 400 || response.status === 401) {
+      const { code, adminConsent } = await readProviderError(response);
+      const detail = `status ${response.status}${code ? `, error ${code}` : ""}`;
+      if (adminConsent) {
+        throw new MailAdminConsentRequiredError(`OAuth code exchange needs administrator consent (${detail})`, code);
+      }
+      throw new MailAuthorizationCodeRejectedError(
+        `OAuth code exchange rejected the authorization code (${detail})`,
+        code,
+      );
+    }
+    throw new Error(`OAuth code exchange failed with status ${response.status}`);
+  }
+  const json = assertJsonObject(await response.json(), `OAuth code exchange response from ${input.tokenUrl}`);
+  if (typeof json.access_token !== "string" || !json.access_token) {
+    throw new Error(`OAuth code exchange response from ${input.tokenUrl} is missing a string access_token`);
+  }
+  if (typeof json.expires_in !== "number" || !Number.isFinite(json.expires_in)) {
+    throw new Error(`OAuth code exchange response from ${input.tokenUrl} is missing a numeric expires_in`);
+  }
+  if (typeof json.refresh_token !== "string" || !json.refresh_token) {
+    throw new Error(`OAuth code exchange response from ${input.tokenUrl} is missing a string refresh_token`);
+  }
+  return {
+    accessToken: json.access_token,
+    expiresAt: new Date(Date.now() + json.expires_in * 1000),
+    refreshToken: json.refresh_token,
+  };
 }
 
 export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
