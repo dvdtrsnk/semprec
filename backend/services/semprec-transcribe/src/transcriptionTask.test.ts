@@ -53,7 +53,7 @@ import {
   TranscriptionSourceChangedError,
 } from "./transcriptionTask.js";
 import { AudioGatewayBudgetExceededError, AudioGatewayCallError } from "./audioGatewayClient.js";
-import { MediaToolError } from "./mediaNormalization.js";
+import { MediaToolError, probeMedia } from "./mediaNormalization.js";
 import type {
   AudioGatewayClient,
   DiarizationTurn,
@@ -63,8 +63,11 @@ import type {
 } from "./audioGatewayClient.js";
 import {
   FIXTURE_CREATION_TIME,
+  generateLateAudioVideoFixture,
   generateMp4Fixture,
+  generateOggFixture,
   generateWebmFixture,
+  probeAudioStream,
   probeNormalizedAudio,
 } from "./__tests__/fixtures/mediaFixtures.js";
 
@@ -230,6 +233,7 @@ describe("transcription step 0", () => {
 
 const prepareCheckpointSchema = z.object({
   normalizedBlobId: z.string(),
+  playbackBlobId: z.string().optional(),
   durationSeconds: z.number(),
   creationTime: z.string().nullable(),
 });
@@ -529,6 +533,79 @@ describe("transcription step 1 (prepare)", () => {
       blobRows: 1,
       storedFiles: [concurrentStorageKey.slice(transcriptionsPrefix.length)],
     });
+  });
+
+  async function countTranscriptionBlobs(): Promise<number> {
+    const { rows } = await pool.query<{ count: string }>("SELECT count(*) FROM blobs WHERE storage_key LIKE $1", [
+      `${transcriptionsPrefix}%`,
+    ]);
+    return Number(rows[0]?.count);
+  }
+
+  async function runPrepare(mimeType: string, bytes: Buffer) {
+    const { files, file, blob } = await createSourceFile(mimeType, bytes);
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+    const prepare = prepareCheckpointSchema.parse((await readSource(files.id, file.id))?.computed.prepare);
+    return { prepare, blob };
+  }
+
+  it.each(["audio/mp4", "audio/mpeg", "audio/wav"])(
+    "plays the original of a %s source and creates no playback blob",
+    async (mimeType) => {
+      const { prepare, blob } = await runPrepare(mimeType, audioFixture);
+
+      expect(prepare.playbackBlobId).toBe(blob.id);
+      // Only the normalized Opus copy is created next to the original.
+      expect(await countTranscriptionBlobs()).toBe(1);
+    },
+  );
+
+  it.each([
+    ["a video", "video/mp4", null, () => videoFixture],
+    ["an Ogg recording", "audio/ogg", 1, () => generateOggFixture()],
+    // The audio lasts two seconds but starts one second into the container.
+    ["a video whose audio starts late", "video/x-matroska", 2, () => generateLateAudioVideoFixture()],
+  ])("renders and checkpoints an AAC m4a playback blob for %s", async (_label, mimeType, audioSeconds, getBytes) => {
+    const { prepare, blob } = await runPrepare(mimeType, await getBytes());
+
+    expect(prepare.playbackBlobId).toBeDefined();
+    expect(prepare.playbackBlobId).not.toBe(blob.id);
+    expect(prepare.playbackBlobId).not.toBe(prepare.normalizedBlobId);
+    const { rows } = await pool.query<{ mime_type: string; storage_key: string }>(
+      "SELECT mime_type, storage_key FROM blobs WHERE id = $1",
+      [prepare.playbackBlobId],
+    );
+    expect(rows).toEqual([
+      { mime_type: "audio/mp4", storage_key: expect.stringMatching(new RegExp(`^${transcriptionsPrefix}.*\\.m4a$`)) },
+    ]);
+    const path = join(tmpBlobDir, rows[0]!.storage_key);
+    expect(await probeAudioStream(path)).toMatchObject({ codecName: "aac", channels: 1 });
+    const { durationSeconds } = await probeMedia(path);
+    if (audioSeconds !== null) expect(Math.abs((durationSeconds ?? NaN) - audioSeconds)).toBeLessThan(0.1);
+    else expect(durationSeconds).toBeGreaterThan(0);
+  });
+
+  it("discards the normalized audio when rendering the playback copy fails", async () => {
+    const { file } = await createSourceFile("video/mp4", videoFixture);
+    const storage: BlobStorageWriter = {
+      writeStream: (storageKey, source, options) => {
+        if (storageKey.endsWith(".m4a")) return Promise.reject(new Error("disk full"));
+        return blobStorage.writeStream(storageKey, source, options);
+      },
+      delete: (storageKey) => blobStorage.delete(storageKey),
+      readStream: (storageKey, range) => blobStorage.readStream(storageKey, range),
+    };
+
+    await expect(
+      createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
+    ).rejects.toThrow("disk full");
+
+    expect(await readNormalizedLeftovers()).toEqual({ blobRows: 0, storedFiles: [] });
   });
 
   it("rolls back and discards its audio when the write transaction fails", async () => {
