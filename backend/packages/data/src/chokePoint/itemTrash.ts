@@ -20,6 +20,7 @@ import { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
 import { TRANSCRIPTION_PREPARE_COMPUTED_KEY } from "../transcription/transcriptionComputedKeys.js";
 import * as blobsStore from "../blobs/blobsStore.js";
 import * as docsStore from "../docs/docsStore.js";
+import * as itemOriginsStore from "../inbox/itemOriginsStore.js";
 import * as itemAutomationStore from "../library/itemAutomationStore.js";
 import * as taskRecurrenceStore from "../tasks/taskRecurrenceStore.js";
 import type { WriterIdentity } from "./writerKind.js";
@@ -219,6 +220,7 @@ export async function deleteItemDependents(client: PoolClient, row: ItemRow): Pr
   await docsStore.deleteDocByItemId(client, row.id);
   await taskRecurrenceStore.deleteTaskRecurrence(client, row.id);
   await itemAutomationStore.deleteItemAutomation(client, row.id);
+  await itemOriginsStore.deleteItemOrigin(client, row.id);
   await client.query("DELETE FROM item_search_index WHERE item_id = $1", [row.id]);
 
   const blobStorageKeys: string[] = [];
