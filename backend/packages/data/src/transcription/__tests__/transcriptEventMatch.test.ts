@@ -243,4 +243,19 @@ describe("matchTranscriptToEvent (issue #247)", () => {
   it("rejects a transcript id that does not exist", async () => {
     await expect(match("00000000-0000-4000-8000-000000000000")).rejects.toBeInstanceOf(NotFoundError);
   });
+
+  it("stores the create-Event envelope as aiProposal too, at aiVersion 1 (issue #1471)", async () => {
+    const transcriptId = await createTranscript();
+
+    expect(await match(transcriptId)).toBe("suggested");
+
+    const cards = await cardsFor(transcriptId);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.properties).toMatchObject({ aiVersion: 1 });
+    expect(cards[0]?.properties.aiProposal).toEqual({
+      entityKind: "database",
+      target: eventsId,
+      properties: { name: "Weekly sync", type: "meeting", date: RECORDING_START },
+    });
+  });
 });

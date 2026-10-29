@@ -166,6 +166,36 @@ export function parseStoredProposalEnvelope(
   throw new Error(`Malformed proposal envelope on proposal ${proposalId}`);
 }
 
+/**
+ * The `aiProposal` and `aiVersion` an automated writer stores with a Processing proposal: the
+ * assistant's output `envelope` (`null` for `needsClarification`) and the version counter, one above
+ * the row's previous `aiVersion`. A row without a counter counts as 0, so a legacy card gets 1 on its
+ * next automated write. `existingProperties` is the row as read under its row lock in the write's own
+ * transaction; a row being created passes `{}`.
+ */
+export function aiProposalPatch(
+  existingProperties: Record<string, unknown>,
+  envelope: ProposalEnvelope | null,
+): { aiProposal: ProposalEnvelope | null; aiVersion: number } {
+  const previousVersion = existingProperties.aiVersion;
+  return { aiProposal: envelope, aiVersion: (typeof previousVersion === "number" ? previousVersion : 0) + 1 };
+}
+
+/**
+ * The assistant's last proposal of a Processing proposal row: its `aiProposal` when that is set, else its
+ * stored `proposal`. A row written before `aiProposal` existed has none, and its `proposal` is the
+ * assistant's output because no user override could exist yet. `null` when neither holds an envelope.
+ */
+export function readAiProposal(
+  properties: Record<string, unknown>,
+  proposalId: string,
+): ProposalEnvelope | UnknownKindProposalEnvelope | null {
+  return (
+    parseStoredProposalEnvelope(properties.aiProposal, proposalId) ??
+    parseStoredProposalEnvelope(properties.proposal, proposalId)
+  );
+}
+
 export interface ProposalComputationInput {
   /** The Inbox item the proposal is for. */
   sourceItem: ItemRow;
@@ -822,11 +852,12 @@ async function writeNeedsClarification(
         propertiesPatch: {
           fingerprint,
           proposal: null,
+          ...aiProposalPatch(locked.properties, null),
           status: "needsClarification",
           history: appendHistoryEntry(locked.properties.history, message),
         },
       },
-      { allowedSystemKeys: ["fingerprint", "proposal", "status", "history"] },
+      { allowedSystemKeys: ["fingerprint", "proposal", "aiProposal", "aiVersion", "status", "history"] },
     );
     await enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId);
     return;
@@ -840,11 +871,12 @@ async function writeNeedsClarification(
         kind: "inbox",
         fingerprint,
         proposal: null,
+        ...aiProposalPatch({}, null),
         history: appendHistoryEntry([], message),
         status: "needsClarification",
       },
     },
-    { allowedSystemKeys: ["kind", "fingerprint", "proposal", "history", "status"] },
+    { allowedSystemKeys: ["kind", "fingerprint", "proposal", "aiProposal", "aiVersion", "history", "status"] },
   );
   await linkSourceInboxRelation(client, config, proposal.id, sourceItemId);
   await enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId);
@@ -1029,11 +1061,12 @@ async function reviseProposal(
       propertiesPatch: {
         fingerprint,
         proposal: envelope,
+        ...aiProposalPatch(locked.properties, envelope),
         status: "proposed",
         history: appendHistoryEntry(locked.properties.history, "Revised the proposal after the source item changed."),
       },
     },
-    { allowedSystemKeys: ["fingerprint", "proposal", "status", "history"] },
+    { allowedSystemKeys: ["fingerprint", "proposal", "aiProposal", "aiVersion", "status", "history"] },
   );
   await enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId);
 }
@@ -1113,11 +1146,12 @@ async function writeTickResult(
         kind: "inbox",
         fingerprint,
         proposal: envelope,
+        ...aiProposalPatch({}, envelope),
         history: appendHistoryEntry([], "Created a proposal for the source item."),
         status: "proposed",
       },
     },
-    { allowedSystemKeys: ["kind", "fingerprint", "proposal", "history", "status"] },
+    { allowedSystemKeys: ["kind", "fingerprint", "proposal", "aiProposal", "aiVersion", "history", "status"] },
   );
 
   await linkSourceInboxRelation(client, config, proposal.id, item.id);

@@ -18,9 +18,11 @@ import { deleteInboxAttachment, insertInboxAttachments, listInboxAttachments } f
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { ValidationError } from "../errors.js";
 import {
+  aiProposalPatch,
   assertValidProposalEnvelope,
   createSemprecTickAction,
   parseStoredProposalEnvelope,
+  readAiProposal,
   type ComputeSemprecProposalFn,
   type ProposalEnvelope,
   type ProposalStep,
@@ -1910,6 +1912,219 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
 
       expect(error.details).toEqual({ ref: "move", field: "itemId" });
     });
+  });
+});
+
+describe("aiProposal and aiVersion on the tick's writes (issue #1471)", () => {
+  let inboxId: string;
+  let typesId: string;
+  let proposalsId: string;
+  let journalId: string;
+  let databaseIds: TickDatabaseIds;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    viewTypeRegistry = createViewTypeRegistry();
+    await resetDatabase(pool);
+    await seedSystem(pool, viewTypeRegistry);
+    inboxId = await databaseIdFor("inbox");
+    typesId = await databaseIdFor("inboxItemTypes");
+    proposalsId = await databaseIdFor("processingProposals");
+    journalId = await databaseIdFor("journal");
+    databaseIds = {
+      inboxDatabaseId: inboxId,
+      inboxItemTypesDatabaseId: typesId,
+      processingProposalsDatabaseId: proposalsId,
+    };
+  });
+
+  async function createTaskType() {
+    return withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
+    );
+  }
+
+  async function createTaskItem(text: string, typeId: string) {
+    return withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        text,
+        type: typeId,
+      }),
+    );
+  }
+
+  async function editText(itemId: string, text: string) {
+    await withTransaction(pool, (client) =>
+      itemsStore.updateItemProperties(client, { databaseId: inboxId, itemId, propertiesPatch: { text } }),
+    );
+  }
+
+  it("the tick's create stores aiProposal equal to proposal at aiVersion 1", async () => {
+    const type = await createTaskType();
+    const item = await createTaskItem("Buy milk", type.id);
+
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
+    expect(proposal!.properties.proposal).toBeTruthy();
+    expect(proposal!.properties.aiProposal).toEqual(proposal!.properties.proposal);
+    expect(proposal!.properties.aiVersion).toBe(1);
+  });
+
+  it("a recompute after a source change stores the new envelope at aiVersion 2, and the next one at 3", async () => {
+    const type = await createTaskType();
+    const item = await createTaskItem("Buy milk", type.id);
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+
+    await editText(item.id, "Buy milk and eggs");
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk and eggs" } }));
+    const second = await findProposalForItem(pool, proposalsId, item.id);
+    expect(second!.properties.aiProposal).toEqual({
+      entityKind: "database",
+      target: await databaseIdFor("tasks"),
+      properties: { name: "Buy milk and eggs" },
+    });
+    expect(second!.properties.aiProposal).toEqual(second!.properties.proposal);
+    expect(second!.properties.aiVersion).toBe(2);
+
+    await editText(item.id, "Buy oat milk");
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy oat milk" } }));
+    const third = await findProposalForItem(pool, proposalsId, item.id);
+    expect(third!.properties.aiProposal).toEqual(third!.properties.proposal);
+    expect(third!.properties.aiVersion).toBe(3);
+  });
+
+  it("an untyped item's needsClarification stores null aiProposal and aiVersion 1", async () => {
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        text: "no type",
+      }),
+    );
+    await runTick(pool, databaseIds, item.id, async () => {
+      throw new Error("computeProposal must not be called for an untyped item");
+    });
+
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
+    expect(proposal!.properties).toMatchObject({
+      status: "needsClarification",
+      proposal: null,
+      aiProposal: null,
+      aiVersion: 1,
+    });
+  });
+
+  it("a needsClarification written over an existing card nulls aiProposal and counts one more version", async () => {
+    const type = await createTaskType();
+    const item = await createTaskItem("Buy milk", type.id);
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const before = await findProposalForItem(pool, proposalsId, item.id);
+    expect(before!.properties.aiVersion).toBe(1);
+
+    // Taking the type off the item makes it untyped, so the tick writes needsClarification over the card.
+    await withTransaction(pool, async (client) => {
+      const typeProperty = await propertiesStore.getPropertyByKey(client, inboxId, "type");
+      await deleteRelationWithClient(client, {
+        relationPropertyId: typeProperty!.id,
+        callerItemId: item.id,
+        targetItemId: type.id,
+      });
+    });
+    await runTick(pool, databaseIds, item.id, async () => {
+      throw new Error("computeProposal must not be called for an untyped item");
+    });
+
+    const after = await findProposalForItem(pool, proposalsId, item.id);
+    expect(after!.id).toBe(before!.id);
+    expect(after!.properties).toMatchObject({
+      status: "needsClarification",
+      proposal: null,
+      aiProposal: null,
+      aiVersion: 2,
+    });
+  });
+
+  it("invalidating a card for a deleted source leaves its aiProposal and aiVersion as they were", async () => {
+    const type = await createTaskType();
+    const item = await createTaskItem("Buy milk", type.id);
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const before = await findProposalForItem(pool, proposalsId, item.id);
+
+    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, item.id));
+    await runTick(pool, databaseIds, item.id, async () => {
+      throw new Error("computeProposal must not be called for a deleted source");
+    });
+
+    const invalidated = await findProposalForItem(pool, proposalsId, item.id);
+    expect(invalidated!.properties.status).toBe("invalid");
+    expect(invalidated!.properties.aiProposal).toEqual(before!.properties.aiProposal);
+    expect(invalidated!.properties.aiVersion).toBe(1);
+  });
+
+  it("a legacy card without aiProposal reads its proposal, and its next automated write sets aiProposal at aiVersion 1", async () => {
+    const type = await createTaskType();
+    const item = await createTaskItem("Buy milk", type.id);
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const created = await findProposalForItem(pool, proposalsId, item.id);
+
+    // A card written before aiProposal and aiVersion existed: no current writer can produce that state.
+    await pool.query("UPDATE items SET properties = properties - 'aiProposal' - 'aiVersion' WHERE id = $1", [
+      created!.id,
+    ]);
+    const legacy = await findProposalForItem(pool, proposalsId, item.id);
+    expect(legacy!.properties).not.toHaveProperty("aiProposal");
+    expect(legacy!.properties).not.toHaveProperty("aiVersion");
+    expect(readAiProposal(legacy!.properties, legacy!.id)).toEqual(created!.properties.proposal);
+
+    await editText(item.id, "Buy milk and eggs");
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk and eggs" } }));
+
+    const revised = await findProposalForItem(pool, proposalsId, item.id);
+    expect(revised!.properties.aiProposal).toEqual(revised!.properties.proposal);
+    expect(revised!.properties.aiVersion).toBe(1);
+  });
+});
+
+describe("aiProposalPatch and readAiProposal (issue #1471)", () => {
+  const envelope: ProposalEnvelope = {
+    entityKind: "database",
+    target: "00000000-0000-4000-8000-000000000001",
+    properties: { name: "Buy milk" },
+  };
+  const otherEnvelope: ProposalEnvelope = { ...envelope, properties: { name: "Buy eggs" } };
+
+  it("a new row starts at aiVersion 1, a row with a counter adds one, and a row without one counts as 0", () => {
+    expect(aiProposalPatch({}, envelope)).toEqual({ aiProposal: envelope, aiVersion: 1 });
+    expect(aiProposalPatch({ aiVersion: 4 }, null)).toEqual({ aiProposal: null, aiVersion: 5 });
+  });
+
+  it("readAiProposal returns aiProposal when it is set, even where proposal differs", () => {
+    expect(readAiProposal({ aiProposal: envelope, proposal: otherEnvelope }, "card")).toEqual(envelope);
+  });
+
+  it("readAiProposal falls back to the stored proposal when aiProposal is absent or JSON null", () => {
+    expect(readAiProposal({ proposal: envelope }, "card")).toEqual(envelope);
+    expect(readAiProposal({ aiProposal: null, proposal: envelope }, "card")).toEqual(envelope);
+  });
+
+  it("readAiProposal returns null when neither property holds an envelope", () => {
+    expect(readAiProposal({}, "card")).toBeNull();
+    expect(readAiProposal({ aiProposal: null, proposal: null }, "card")).toBeNull();
   });
 });
 

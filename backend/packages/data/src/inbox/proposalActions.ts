@@ -10,6 +10,7 @@ import { assertRelationCreatableWithClient, createRelationWithClient } from "../
 import { putBlockWithClient } from "../docs/docStore.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
 import {
+  aiProposalPatch,
   appendHistoryEntry,
   assertValidProposalEnvelope,
   parseStoredProposalEnvelope,
@@ -571,11 +572,12 @@ export async function reviseProposalWithClient(
       itemId: proposal.id,
       propertiesPatch: {
         proposal: envelope,
+        ...aiProposalPatch(proposal.properties, envelope),
         status: "proposed",
         history: appendHistoryEntry(proposal.properties.history, input.message, "user"),
       },
     },
-    { allowedSystemKeys: ["proposal", "status", "history"] },
+    { allowedSystemKeys: ["proposal", "aiProposal", "aiVersion", "status", "history"] },
   );
   await enqueueJournalInboxRecomputeForProposal(client, proposal.id);
   return updated;
