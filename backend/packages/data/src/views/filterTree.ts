@@ -25,6 +25,8 @@ export const FILTER_CONDITION_TYPES = [
   "relation_contains",
   "relation_not_contains",
   "relation_path_contains",
+  "relation_is_empty",
+  "relation_is_not_empty",
 ] as const;
 export type FilterConditionType = (typeof FILTER_CONDITION_TYPES)[number];
 
@@ -57,7 +59,8 @@ export type FilterCondition =
   | { type: "date_relative"; property: string; endProperty?: string; preset: DateRelativePreset }
   | { type: "in"; property: string; value: string[] }
   | { type: "relation_contains" | "relation_not_contains"; property: string; value: string }
-  | { type: "relation_path_contains"; path: [string, string]; value: string };
+  | { type: "relation_path_contains"; path: [string, string]; value: string }
+  | { type: "relation_is_empty" | "relation_is_not_empty"; property: string };
 
 export type FilterNode =
   | FilterCondition
@@ -99,6 +102,7 @@ const filterConditionSchema = z.union([
   z
     .object({ type: z.literal("relation_path_contains"), path: z.tuple([property, property]), value: z.uuid() })
     .strict(),
+  z.object({ type: z.enum(["relation_is_empty", "relation_is_not_empty"]), property }).strict(),
 ]);
 
 /** Recursive tree: zod needs an explicit `z.ZodType` annotation plus `z.lazy` to type-check a self-referential schema. */
