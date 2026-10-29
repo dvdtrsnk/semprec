@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   withTransaction,
   ChokePointError,
+  countEffectiveMcpGrants,
   listMcpToolGrantsForProject,
   type McpToolDisplayLabel,
   reclassifyMcpTool,
@@ -56,7 +57,7 @@ export function createMcpAgentPageRequestListener(pool: Pool) {
             const rows = await withTransaction(pool, (client) =>
               listMcpToolGrantsForProject(client, projectItemId, identity.user.locale),
             );
-            sendJson(res, 200, { rows });
+            sendJson(res, 200, { rows, counts: countEffectiveMcpGrants(rows) });
             return;
           }
 

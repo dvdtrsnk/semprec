@@ -10,6 +10,7 @@ import {
   type SetProjectMcpGrantInput,
 } from "./mcpGrantsAdminStore.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
+import type { McpConnectionErrorReason } from "./mcpConnectionError.js";
 import type { McpToolDisplayLabel, McpToolRegistration } from "./mcpToolRegistrationsStore.js";
 import type { ProjectMcpGrant } from "./mcpProjectGrantsStore.js";
 
@@ -39,6 +40,20 @@ export interface McpToolGrantForProject {
   /** Whether the owning `mcpServers` item is `active` — a `false` here is the transport-offline case. */
   mcpServerOnline: boolean;
   granted: boolean;
+  /** `granted`, and the server item is active (`mcpServerOnline`); the listing only holds active registrations. */
+  effective: boolean;
+  server: McpToolGrantServerState;
+}
+
+/**
+ * `offline` when the server item is not active or its last recorded connection failed;
+ * otherwise `connected` (a server never called included). Informational: a failed connection
+ * of an active server does not make its granted tools non-effective.
+ */
+export interface McpToolGrantServerState {
+  state: "connected" | "offline";
+  lastConnectedAt: string | null;
+  lastErrorReason: McpConnectionErrorReason | null;
 }
 
 interface McpToolGrantForProjectRow {
@@ -52,6 +67,19 @@ interface McpToolGrantForProjectRow {
   server_name: string | null;
   server_online: boolean;
   granted: boolean;
+  last_connected_at: string | null;
+  last_error_reason: McpConnectionErrorReason | null;
+}
+
+/**
+ * The one counting rule for "N of M enabled" (the project summary reuses it): `total` is the
+ * number of rows (active registrations), `effective` those with `effective: true`.
+ */
+export function countEffectiveMcpGrants(rows: ReadonlyArray<Pick<McpToolGrantForProject, "effective">>): {
+  effective: number;
+  total: number;
+} {
+  return { effective: rows.filter((row) => row.effective).length, total: rows.length };
 }
 
 export async function listMcpToolGrantsForProject(
@@ -68,10 +96,13 @@ export async function listMcpToolGrantsForProject(
     `SELECT r.id AS registration_id, r.tool_name, r.description, r.display_label, r.requires_approval, r.risk_class,
             s.id AS server_item_id, s.properties ->> 'name' AS server_name,
             (s.properties ->> 'active') = 'true' AS server_online,
-            COALESCE(g.granted, false) AS granted
+            COALESCE(g.granted, false) AS granted,
+            to_char(c.last_connected_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS last_connected_at,
+            c.last_error_reason
        FROM mcp_tool_registrations r
        JOIN items s ON s.database_id = $1 AND s.id = r.mcp_server_item_id AND s.deleted_at IS NULL
        LEFT JOIN project_mcp_grants g ON g.mcp_tool_registration_id = r.id AND g.project_item_id = $2
+       LEFT JOIN mcp_server_connection_state c ON c.mcp_server_item_id = r.mcp_server_item_id
       WHERE r.active = true
       ORDER BY s.properties ->> 'name', r.tool_name`,
     [mcpServersDatabase.id, projectItemId],
@@ -88,6 +119,12 @@ export async function listMcpToolGrantsForProject(
     mcpServerName: row.server_name ?? "",
     mcpServerOnline: row.server_online,
     granted: row.granted,
+    effective: row.granted && row.server_online,
+    server: {
+      state: row.server_online && row.last_error_reason === null ? "connected" : "offline",
+      lastConnectedAt: row.last_connected_at,
+      lastErrorReason: row.last_error_reason,
+    },
   }));
 }
 
