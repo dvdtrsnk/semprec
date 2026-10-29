@@ -8,7 +8,7 @@ export {
   AgentRunCancelledError,
   type RunAgentSessionInput,
 } from "./lifecycleAdapter.js";
-export { repairInterruptedRuns } from "./startupRepair.js";
+export { closeIdleThreadSessions, repairInterruptedRuns } from "./startupRepair.js";
 export {
   DelegationRegistry,
   BUSY_ERROR_MESSAGE,

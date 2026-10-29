@@ -6,6 +6,7 @@ import {
   finishAgentRunWithErrorNotification,
   getAgentRun,
   insertAndNotifyAgentRunEvent,
+  listAgentRunEvents,
   type AgentRunErrorCode,
   type AgentRunEventKind,
   type AgentRunEventRow,
@@ -18,6 +19,7 @@ import { publishAgentRunDelta } from "@semprec/realtime";
 import { withTraceContext } from "@semprec/shared";
 import type { AgentMessage, CreateAgentSession } from "./types.js";
 import { logger } from "./logger.js";
+import { findDanglingToolUses, syntheticToolResult } from "./danglingToolCalls.js";
 
 const PERSISTED_EVENT_KINDS: ReadonlySet<string> = new Set<AgentRunEventKind>([
   "turn_start",
@@ -238,6 +240,33 @@ export async function runAgentSession(client: Pool | PoolClient, input: RunAgent
 }
 
 /**
+ * Pairs every unpaired `tool_use` of a still-`running` run with a synthetic error `tool_result`
+ * in the regular tool result shape, so the run's history keeps its protocol invariant and the
+ * thread can be woken again without waiting for a restart. Call it before closing the run: only a
+ * `running` run accepts these events. A failure to pair is logged and never replaces the turn's
+ * own failure, which the caller still has to record.
+ */
+export async function pairDanglingToolCalls(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  failure: unknown,
+): Promise<void> {
+  try {
+    const dangling = findDanglingToolUses(await listAgentRunEvents(client, agentRunId));
+    if (dangling.length === 0) return;
+    const reason = agentRunErrorCodeOf(failure) === "cancelled" ? "cancelled" : "failed";
+    const text = `Turn ${reason} before this tool call completed.`;
+    await closeAtomically(client, async (c) => {
+      for (const toolUse of dangling) {
+        await recordPersistentEvent(c, agentRunId, "tool_result", syntheticToolResult(toolUse, text));
+      }
+    });
+  } catch (err) {
+    logger.error({ err, agentRunId }, "Failed to pair dangling tool calls of a failed turn");
+  }
+}
+
+/**
  * Runs `close` atomically: a bare `Pool` gets one transaction for the whole close, while a
  * caller-supplied `PoolClient` is reused as is, so the caller's own transaction decides.
  */
@@ -275,6 +304,7 @@ export async function runAgentSessionForRun(
         await pushRunStatus(c, run.id, "done");
       });
     } catch (err) {
+      await pairDanglingToolCalls(client, run.id, err);
       try {
         // Issue #149: same client as the status write, so a caller-supplied transaction rolls
         // both back together. A `false` close means another closer already decided the outcome,

@@ -34,12 +34,39 @@ function createFakes(options: { listenerClose?: () => Promise<void> } = {}) {
       errors.push({ obj, msg });
     },
   } as unknown as Logger;
-  return { calls, errors, deps: { queueRuntime, tenantDeactivationListener, pool, logger } };
+  const closeIdleThreadSessions = async () => {
+    calls.push("closeIdleThreadSessions");
+    return { closedRunIds: [] };
+  };
+  return { calls, errors, deps: { queueRuntime, tenantDeactivationListener, pool, logger, closeIdleThreadSessions } };
 }
 
 describe("semprec-agents graceful shutdown", () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("logs a failing idle-session close and still ends the pool", async () => {
+    const { calls, errors, deps } = createFakes();
+    const failure = new Error("close failed");
+    const shutdown = createGracefulShutdown({
+      ...deps,
+      closeIdleThreadSessions: async () => {
+        calls.push("closeIdleThreadSessions");
+        throw failure;
+      },
+    });
+
+    await expect(shutdown("SIGTERM")).resolves.toBeUndefined();
+
+    expect(calls).toEqual([
+      "tenantDeactivationListener.close:start",
+      "tenantDeactivationListener.close:done",
+      "queueRuntime.stop",
+      "closeIdleThreadSessions",
+      "pool.end",
+    ]);
+    expect(errors).toEqual([{ obj: { err: failure, signal: "SIGTERM" }, msg: "closeIdleThreadSessions() failed" }]);
   });
 
   it("awaits the listener close before stopping the queue runtime, then ends the pool", async () => {
@@ -58,6 +85,7 @@ describe("semprec-agents graceful shutdown", () => {
       "tenantDeactivationListener.close:start",
       "tenantDeactivationListener.close:done",
       "queueRuntime.stop",
+      "closeIdleThreadSessions",
       "pool.end",
     ]);
     expect(vi.getTimerCount()).toBe(0);
@@ -80,7 +108,12 @@ describe("semprec-agents graceful shutdown", () => {
 
     await expect(createGracefulShutdown(deps)("SIGTERM")).resolves.toBeUndefined();
 
-    expect(calls).toEqual(["tenantDeactivationListener.close:start", "queueRuntime.stop", "pool.end"]);
+    expect(calls).toEqual([
+      "tenantDeactivationListener.close:start",
+      "queueRuntime.stop",
+      "closeIdleThreadSessions",
+      "pool.end",
+    ]);
     expect(errors).toEqual([
       {
         obj: { errorName, signal: "SIGTERM" },
@@ -100,7 +133,12 @@ describe("semprec-agents graceful shutdown", () => {
     expect(errors).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
 
-    expect(calls).toEqual(["tenantDeactivationListener.close:start", "queueRuntime.stop", "pool.end"]);
+    expect(calls).toEqual([
+      "tenantDeactivationListener.close:start",
+      "queueRuntime.stop",
+      "closeIdleThreadSessions",
+      "pool.end",
+    ]);
     await expect(shutdown).resolves.toBeUndefined();
     expect(errors).toEqual([
       {
@@ -134,7 +172,12 @@ describe("semprec-agents graceful shutdown", () => {
       const shutdown = createGracefulShutdown(deps)("SIGTERM");
       await vi.advanceTimersByTimeAsync(LISTENER_CLOSE_TIMEOUT_MS);
       await shutdown;
-      expect(calls).toEqual(["tenantDeactivationListener.close:start", "queueRuntime.stop", "pool.end"]);
+      expect(calls).toEqual([
+        "tenantDeactivationListener.close:start",
+        "queueRuntime.stop",
+        "closeIdleThreadSessions",
+        "pool.end",
+      ]);
 
       settleClose();
       await vi.advanceTimersByTimeAsync(0);
@@ -142,6 +185,7 @@ describe("semprec-agents graceful shutdown", () => {
       expect(calls).toEqual([
         "tenantDeactivationListener.close:start",
         "queueRuntime.stop",
+        "closeIdleThreadSessions",
         "pool.end",
         ...(outcome === "resolve" ? ["tenantDeactivationListener.close:done"] : []),
       ]);
