@@ -29,6 +29,9 @@ export function defaultSyncModeForProvider(provider: string): SyncMode {
   }
 }
 
+export const MAIL_SYNC_FAILURE_KINDS = ["reauthorization", "connectionLimit", "other"] as const;
+export type MailSyncFailureKind = (typeof MAIL_SYNC_FAILURE_KINDS)[number];
+
 export interface MailAccountSyncStateRow {
   itemId: string;
   syncMode: SyncMode;
@@ -41,6 +44,10 @@ export interface MailAccountSyncStateRow {
   lastError: string | null;
   lastActivityAt: string | null;
   nextExpectedActivityAt: string | null;
+  lastSuccessfulSyncAt: string | null;
+  failingSince: string | null;
+  initialSyncCompletedAt: string | null;
+  lastFailureKind: MailSyncFailureKind | null;
 }
 
 /** The raw `mail_account_sync_state` row shape this module reads back from Postgres. */
@@ -56,6 +63,10 @@ type MailAccountSyncStateDbRow = {
   last_error: string | null;
   last_activity_at: Date | null;
   next_expected_activity_at: Date | null;
+  last_successful_sync_at: Date | null;
+  failing_since: Date | null;
+  initial_sync_completed_at: Date | null;
+  last_failure_kind: string | null;
 };
 
 function mapRow(row: MailAccountSyncStateDbRow): MailAccountSyncStateRow {
@@ -71,11 +82,18 @@ function mapRow(row: MailAccountSyncStateDbRow): MailAccountSyncStateRow {
     lastError: row.last_error,
     lastActivityAt: row.last_activity_at?.toISOString() ?? null,
     nextExpectedActivityAt: row.next_expected_activity_at?.toISOString() ?? null,
+    lastSuccessfulSyncAt: row.last_successful_sync_at?.toISOString() ?? null,
+    failingSince: row.failing_since?.toISOString() ?? null,
+    initialSyncCompletedAt: row.initial_sync_completed_at?.toISOString() ?? null,
+    lastFailureKind:
+      row.last_failure_kind === null
+        ? null
+        : assertKnownValue(MAIL_SYNC_FAILURE_KINDS, row.last_failure_kind, "mail sync failure kind"),
   };
 }
 
 const COLUMNS =
-  "item_id, sync_mode, gmail_history_id, gmail_watch_expires_at, graph_subscription_id, graph_subscription_expires_at, graph_client_state, graph_delta_link, last_error, last_activity_at, next_expected_activity_at";
+  "item_id, sync_mode, gmail_history_id, gmail_watch_expires_at, graph_subscription_id, graph_subscription_expires_at, graph_client_state, graph_delta_link, last_error, last_activity_at, next_expected_activity_at, last_successful_sync_at, failing_since, initial_sync_completed_at, last_failure_kind";
 
 export interface EnsureMailAccountSyncStateInput {
   itemId: string;
@@ -132,7 +150,9 @@ export async function recordGmailActivity(client: Queryable, input: RecordGmailA
   await client.query(
     `UPDATE mail_account_sync_state
      SET gmail_history_id = $2, gmail_watch_expires_at = COALESCE($3, gmail_watch_expires_at),
-         last_error = NULL, last_activity_at = now(), next_expected_activity_at = $4
+         last_error = NULL, last_activity_at = now(), next_expected_activity_at = $4,
+         last_successful_sync_at = now(), initial_sync_completed_at = COALESCE(initial_sync_completed_at, now()),
+         failing_since = NULL, last_failure_kind = NULL
      WHERE item_id = $1`,
     [input.itemId, input.historyId, input.watchExpiresAt ?? null, input.nextExpectedActivityAt],
   );
@@ -225,7 +245,9 @@ export async function recordGraphActivity(client: Queryable, input: RecordGraphA
      SET graph_delta_link = $2,
          graph_subscription_id = COALESCE($3, graph_subscription_id),
          graph_subscription_expires_at = COALESCE($4, graph_subscription_expires_at),
-         last_error = NULL, last_activity_at = now(), next_expected_activity_at = $5
+         last_error = NULL, last_activity_at = now(), next_expected_activity_at = $5,
+         last_successful_sync_at = now(), initial_sync_completed_at = COALESCE(initial_sync_completed_at, now()),
+         failing_since = NULL, last_failure_kind = NULL
      WHERE item_id = $1`,
     [
       input.itemId,
@@ -313,7 +335,11 @@ export interface RecordImapActivityInput {
 
 export async function recordImapActivity(client: Queryable, input: RecordImapActivityInput): Promise<void> {
   await client.query(
-    `UPDATE mail_account_sync_state SET last_error = NULL, last_activity_at = now(), next_expected_activity_at = $2 WHERE item_id = $1`,
+    `UPDATE mail_account_sync_state
+     SET last_error = NULL, last_activity_at = now(), next_expected_activity_at = $2,
+         last_successful_sync_at = now(), initial_sync_completed_at = COALESCE(initial_sync_completed_at, now()),
+         failing_since = NULL, last_failure_kind = NULL
+     WHERE item_id = $1`,
     [input.itemId, input.nextExpectedActivityAt],
   );
 }
@@ -325,12 +351,18 @@ export async function recordImapActivity(client: Queryable, input: RecordImapAct
  * would make the sweep hammer the same broken account every cycle instead of settling into a
  * bounded retry cadence.
  */
-export async function recordSyncError(client: Queryable, itemId: string, error: string): Promise<void> {
+export async function recordSyncError(
+  client: Queryable,
+  itemId: string,
+  error: string,
+  failureKind: MailSyncFailureKind,
+): Promise<void> {
   await client.query(
     `UPDATE mail_account_sync_state
-     SET last_error = $2, last_activity_at = now(), next_expected_activity_at = now() + interval '15 minutes'
+     SET last_error = $2, last_activity_at = now(), next_expected_activity_at = now() + interval '15 minutes',
+         failing_since = COALESCE(failing_since, now()), last_failure_kind = $3
      WHERE item_id = $1`,
-    [itemId, error],
+    [itemId, error, failureKind],
   );
 }
 
@@ -347,12 +379,14 @@ export async function recordConnectionLimitBackoff(
   itemId: string,
   error: string,
   delaySeconds: number,
+  failureKind: MailSyncFailureKind,
 ): Promise<void> {
   await client.query(
     `UPDATE mail_account_sync_state
-     SET last_error = $2, last_activity_at = now(), next_expected_activity_at = now() + make_interval(secs => $3)
+     SET last_error = $2, last_activity_at = now(), next_expected_activity_at = now() + make_interval(secs => $3),
+         failing_since = COALESCE(failing_since, now()), last_failure_kind = $4
      WHERE item_id = $1`,
-    [itemId, error, delaySeconds],
+    [itemId, error, delaySeconds, failureKind],
   );
 }
 

@@ -233,7 +233,7 @@ describe("getSystemHealthReport (issue #170, per-tenant since #1052)", () => {
     const mailboxA = await createMailbox(a.tenantId);
     await runInTenant(a.tenantId, async () => {
       await ensureMailAccountSyncState(runtimePool, { itemId: mailboxA, syncMode: "imap" });
-      await recordSyncError(runtimePool, mailboxA, "connection refused");
+      await recordSyncError(runtimePool, mailboxA, "connection refused", "other");
       const run = await createAgentRun(runtimePool, { triggeredBy: "user", task: "a-run", unit: "invocation" });
       await finishAgentRun(runtimePool, run.id, "error", "boom", "internal");
     });

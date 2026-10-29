@@ -1,6 +1,6 @@
 import type { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { withTransaction, type Queryable } from "../db/pool.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
@@ -15,6 +15,7 @@ import {
   listAccountsDueForSync,
   recordConnectionLimitBackoff,
   recordSyncError,
+  type MailSyncFailureKind,
 } from "./mailAccountSyncStateStore.js";
 import { reconcileImapAccount, type ImapMailClient } from "./imapReconcile.js";
 import { reconcileGmailAccount, type GmailMailClient } from "./gmailReconcile.js";
@@ -62,6 +63,12 @@ function mailSyncFailureKind(error: unknown): "connectionLimit" | "reauthorizati
   if (error instanceof MailReauthorizationRequiredError) return "reauthorizationRequired";
   return "unexpected";
 }
+
+const STORED_FAILURE_KINDS: Record<ReturnType<typeof mailSyncFailureKind>, MailSyncFailureKind> = {
+  reauthorizationRequired: "reauthorization",
+  connectionLimit: "connectionLimit",
+  unexpected: "other",
+};
 
 export function mailAccountSyncJobKey(mailboxItemId: string): string {
   return `mail-account-sync:${mailboxItemId}`;
@@ -178,6 +185,17 @@ export async function handleSyncMailAccountTask(
   // backoff can still compute a provider-aware delay even though the transaction that read it
   // has since been rolled back.
   let mailboxProvider: string | undefined;
+  // The `syncStatus` the prologue read: a pass writes the Mailboxes item only when its outcome
+  // differs, so repeated identical passes cause no item update.
+  let previousSyncStatus: unknown;
+  const writeSyncStatus = async (client: PoolClient, syncStatus: "ok" | "error" | "needsReauthorization") => {
+    if (previousSyncStatus === syncStatus) return;
+    await updateItemWithClient(
+      client,
+      { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus } },
+      { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
+    );
+  };
   try {
     // Its own short, read-only transaction — not part of the write transaction below — because
     // these are plain lookups of stable ids that don't need to be atomic with anything the sync
@@ -206,6 +224,7 @@ export async function handleSyncMailAccountTask(
     // here, before any credential decrypt or provider call, avoids that dead end entirely.
     if (!mailboxItem || mailboxItem.deletedAt) return;
 
+    previousSyncStatus = mailboxItem.properties.syncStatus;
     mailboxProvider = typeof mailboxItem.properties.provider === "string" ? mailboxItem.properties.provider : undefined;
 
     const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, payload.mailboxItemId));
@@ -264,15 +283,7 @@ export async function handleSyncMailAccountTask(
           // A completed pass (even one that ingested nothing new) is the user-visible signal
           // that this Mailbox is healthy again — clears a prior 'error'/'needsReauthorization'
           // the same way the internal `mail_account_sync_state.last_error` columns above already do.
-          await updateItemWithClient(
-            client,
-            {
-              databaseId: moduleIds.mailboxesDatabaseId,
-              itemId: payload.mailboxItemId,
-              propertiesPatch: { syncStatus: "ok" },
-            },
-            { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
-          );
+          await writeSyncStatus(client, "ok");
         }),
       );
     } else if (state.syncMode === "gmail_api") {
@@ -280,30 +291,14 @@ export async function handleSyncMailAccountTask(
       const gmail = adapters.createGmailClient(payload.mailboxItemId, credential);
       await withTransaction(pool, async (client) => {
         await reconcileGmailAccount(client, gmail, shared);
-        await updateItemWithClient(
-          client,
-          {
-            databaseId: moduleIds.mailboxesDatabaseId,
-            itemId: payload.mailboxItemId,
-            propertiesPatch: { syncStatus: "ok" },
-          },
-          { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
-        );
+        await writeSyncStatus(client, "ok");
       });
     } else {
       if (!adapters.createGraphClient) throw new Error("No Graph adapter configured for this composition root");
       const graph = adapters.createGraphClient(payload.mailboxItemId, credential);
       await withTransaction(pool, async (client) => {
         await reconcileGraphAccount(client, graph, shared);
-        await updateItemWithClient(
-          client,
-          {
-            databaseId: moduleIds.mailboxesDatabaseId,
-            itemId: payload.mailboxItemId,
-            propertiesPatch: { syncStatus: "ok" },
-          },
-          { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
-        );
+        await writeSyncStatus(client, "ok");
       });
     }
     logger.info({ mailboxItemId: payload.mailboxItemId, syncMode: state.syncMode }, "Mail sync completed");
@@ -344,16 +339,9 @@ export async function handleSyncMailAccountTask(
           payload.mailboxItemId,
           message,
           connectionLimitBackoffSecondsForProvider(mailboxProvider),
+          STORED_FAILURE_KINDS.connectionLimit,
         );
-        await updateItemWithClient(
-          client,
-          {
-            databaseId: moduleIds.mailboxesDatabaseId,
-            itemId: payload.mailboxItemId,
-            propertiesPatch: { syncStatus: "error" },
-          },
-          { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
-        );
+        await writeSyncStatus(client, "error");
       });
       return;
     }
@@ -363,12 +351,8 @@ export async function handleSyncMailAccountTask(
     // on the user," not as a persistent failure indistinguishable from a flaky connection.
     const syncStatus = err instanceof MailReauthorizationRequiredError ? "needsReauthorization" : "error";
     await withTransaction(pool, async (client) => {
-      await recordSyncError(client, payload.mailboxItemId, message);
-      await updateItemWithClient(
-        client,
-        { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus } },
-        { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
-      );
+      await recordSyncError(client, payload.mailboxItemId, message, STORED_FAILURE_KINDS[mailSyncFailureKind(err)]);
+      await writeSyncStatus(client, syncStatus);
       // Issue #149: same transaction as the error record, so a replayed job (same job id,
       // same `transitionInstance`) never duplicates it. Deliberately not raised for the
       // `MailConnectionLimitError` branch above — that's contention, not a sync failure —
