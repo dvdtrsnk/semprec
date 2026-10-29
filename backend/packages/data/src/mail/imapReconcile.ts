@@ -69,6 +69,11 @@ export interface ImapMailClient {
    * calls it itself.
    */
   setMessageFlag(path: string, uid: number, flag: WritableImapFlag, value: boolean): Promise<void>;
+  /**
+   * Logs out and releases the socket. The sync job calls it once per pass, on success and on failure
+   * (mailSyncJob.ts), so it never rejects: the caller is already cleaning up after a pass that may have failed.
+   */
+  close(): Promise<void>;
 }
 
 export interface ReconcileImapFolderParams {
