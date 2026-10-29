@@ -26,7 +26,7 @@ async function propertyIdFor(databaseId: string, key: string): Promise<string> {
 /** Issue #1470: project, company and people relations on Transcripts, on a fresh install. */
 describe("Transcript project, company and people relations (issue #1470)", () => {
   let chokePoint: ChokePoint;
-  let ids: Record<"transcripts" | "projects" | "companies" | "people", string>;
+  let ids: Record<"transcripts" | "projects" | "companies" | "people" | "events", string>;
 
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -38,6 +38,7 @@ describe("Transcript project, company and people relations (issue #1470)", () =>
       projects: await databaseIdFor("projects"),
       companies: await databaseIdFor("companies"),
       people: await databaseIdFor("people"),
+      events: await databaseIdFor("events"),
     };
   });
 
@@ -104,6 +105,54 @@ describe("Transcript project, company and people relations (issue #1470)", () =>
         targetItemId: second.id,
       }),
     ).rejects.toBeInstanceOf(CardinalityViolationError);
+  });
+
+  it("accepts several transcripts for one Event: the parts of one meeting (issue #1464)", async () => {
+    const eventTranscriptProperty = await propertyIdFor(ids.events, "transcript");
+    const event = await createItem(ids.events);
+    const firstPart = await createItem(ids.transcripts);
+    const secondPart = await createItem(ids.transcripts);
+    for (const part of [firstPart, secondPart]) {
+      await chokePoint.createRelation({
+        relationPropertyId: eventTranscriptProperty,
+        callerItemId: event.id,
+        targetItemId: part.id,
+      });
+    }
+
+    const { rows } = await pool.query<{ item_b: string }>(
+      `SELECT r.item_b FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
+       WHERE d.property_id_a = $1 AND r.item_a = $2`,
+      [eventTranscriptProperty, event.id],
+    );
+    expect(rows.map((row) => row.item_b).sort()).toEqual([firstPart.id, secondPart.id].sort());
+  });
+
+  it("refuses a second Event for one transcript with cardinality_violation (issue #1464)", async () => {
+    const eventTranscriptProperty = await propertyIdFor(ids.events, "transcript");
+    const transcript = await createItem(ids.transcripts);
+    const first = await createItem(ids.events);
+    const second = await createItem(ids.events);
+    await chokePoint.createRelation({
+      relationPropertyId: eventTranscriptProperty,
+      callerItemId: first.id,
+      targetItemId: transcript.id,
+    });
+
+    await expect(
+      chokePoint.createRelation({
+        relationPropertyId: eventTranscriptProperty,
+        callerItemId: second.id,
+        targetItemId: transcript.id,
+      }),
+    ).rejects.toBeInstanceOf(CardinalityViolationError);
+
+    const { rows } = await pool.query<{ item_a: string }>(
+      `SELECT r.item_a FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
+       WHERE d.property_id_a = $1 AND r.item_b = $2`,
+      [eventTranscriptProperty, transcript.id],
+    );
+    expect(rows.map((row) => row.item_a)).toEqual([first.id]);
   });
 
   it("accepts several people and shows them from both sides", async () => {

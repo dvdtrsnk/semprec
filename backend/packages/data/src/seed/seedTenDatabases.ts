@@ -406,13 +406,17 @@ export async function seedTenDatabasesInTransaction(
     targetDatabaseId: people.id,
     cardinality: "many_to_many",
   });
-  // Events <-> Transcripts: explicit bidirectional 1:1.
+  // Events <-> Transcripts: explicit bidirectional. One Event has many transcripts (the parts of one
+  // meeting, each with its own summary); a transcript has at most one Event. `property_id_a` is
+  // Events.transcript (the "one" side), so the trigger from 0013 guards only `item_b`, the transcript.
+  // Populated installs seeded with the earlier `one_to_one` are cut over by
+  // `transcription/eventTranscriptCardinalityCutoverMigration.ts`.
   await relate({
     sourceDatabaseId: events.id,
     key: "transcript",
     name: "Transcript",
     targetDatabaseId: transcripts.id,
-    cardinality: "one_to_one",
+    cardinality: "one_to_many",
     inverse: { key: "event", name: "Event" },
   });
   // Events -> Tasks (action items from a meeting): one-directional only (Tasks' own relation list doesn't name Events).

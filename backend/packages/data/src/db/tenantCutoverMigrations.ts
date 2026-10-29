@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import { assertRowSecurityActive, forEachMaintainedTenant } from "../tenancy/provisionTenant.js";
 import { runFilesTypeOptionsCutoverMigration } from "../blobs/filesTypeOptionsCutoverMigration.js";
 import { runTranscriptsCatalogCutoverMigration } from "../transcription/transcriptsCatalogCutoverMigration.js";
+import { runEventTranscriptCardinalityCutoverMigration } from "../transcription/eventTranscriptCardinalityCutoverMigration.js";
 import { runTranscriptionRequeueHeartbeatCutoverMigration } from "../transcription/transcriptionRequeueHeartbeatCutoverMigration.js";
 import { runEventsCalendarPropertiesCutoverMigration } from "../calendar/eventsCalendarPropertiesCutoverMigration.js";
 import { runProjectAgentGuidanceCutoverMigration } from "../projectAgentGuidance/projectAgentGuidanceCutoverMigration.js";
@@ -24,6 +25,7 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
   await forEachMaintainedTenant(pool, async () => {
     await runPropertyDefaultsCutoverMigration(pool);
     await runTranscriptsCatalogCutoverMigration(pool);
+    await runEventTranscriptCardinalityCutoverMigration(pool);
     await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
     await runFilesTypeOptionsCutoverMigration(pool);
     await runEventsCalendarPropertiesCutoverMigration(pool);
