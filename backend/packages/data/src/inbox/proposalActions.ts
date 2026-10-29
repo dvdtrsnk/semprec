@@ -338,8 +338,8 @@ async function assertValidEnvelopeForCard(
  * `envelope.target`, and the result is that existing item. A `kind = 'transcript'` card also
  * gets its Transcription<->Event edge: for `'relation'` that edge is the relation write itself;
  * for `'database'` it is written right after the Event is created. Both run in the caller's one
- * transaction, so a failed edge write (e.g. the 1:1 relation's `cardinality_violation` when the
- * transcript or Event is already linked elsewhere) leaves no Event, no edge and the card still
+ * transaction, so a failed edge write (e.g. `cardinality_violation` when the transcript is already
+ * linked to another Event; an Event may hold many transcripts) leaves no Event, no edge and the card still
  * `proposed`. A `'database'` envelope's `relations` (issue #1476) are written the same way, after
  * the item, one edge per target id with the new item as caller; any failing edge aborts the item
  * and the earlier edges, and its error carries `details.field` = the relation key. A speaker-mapping transcript card (issue #185) writes its `speakers` edge with the
