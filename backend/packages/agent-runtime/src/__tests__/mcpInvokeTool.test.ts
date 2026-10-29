@@ -135,12 +135,16 @@ describe("MCP invoke adapter (issue #128)", () => {
     it("maps the server's isError result to an error result", async () => {
       const contractServer = await startServer();
       servers.push(contractServer);
-      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      const { server, registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
 
       const invoke = createMcpInvokeTool(pool, projectItemId, registration.id);
       const result = await invoke({ query: "semprec", __forceError: true });
 
-      expect(result).toEqual({ error: true, result: "contract-server-forced-error" });
+      expect(result).toEqual({
+        error: true,
+        result: "contract-server-forced-error",
+        failure: { failureKind: "toolError", mcpServerItemId: server.id },
+      });
     });
 
     it("returns a cancelled error result without calling the tool when its signal is aborted", async () => {
