@@ -138,6 +138,7 @@ describe("semp_problem notifications raised by raiseProblem (issue #1466)", () =
     expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
       notificationId: notifications[0]?.id,
       title: expect.any(String),
+      body: null,
       linkHref: `?page=semp-status&id=${problemId}`,
       interruptionLevel: "time-sensitive",
     });

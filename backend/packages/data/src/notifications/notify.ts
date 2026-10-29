@@ -15,9 +15,25 @@ function getNotificationCatalogs(): Promise<ModuleCatalogs> {
   return catalogsPromise;
 }
 
+/** Catalog key rendered for a `null` body parameter, such as the name of an item that has none (issue #1773). */
+const UNNAMED_LABEL_KEY = "notification.body.unnamed";
+
 /** Replaces each `{param}` placeholder in `template` with `params[param]`, leaving an unmatched placeholder untouched. */
 function interpolate(template: string, params: Readonly<Record<string, string>>): string {
   return template.replace(/\{(\w+)\}/g, (placeholder, key: string) => params[key] ?? placeholder);
+}
+
+/** Renders a body template: numbers as text, and every `null` as the localised unnamed label. */
+function renderBody(
+  template: string,
+  params: Readonly<Record<string, string | number | null>>,
+  unnamedLabel: string,
+): string {
+  const values: Record<string, string> = {};
+  for (const [name, value] of Object.entries(params)) {
+    values[name] = value === null ? unnamedLabel : String(value);
+  }
+  return interpolate(template, values);
 }
 
 export interface WriteNotificationInput {
@@ -26,6 +42,16 @@ export interface WriteNotificationInput {
   kind: NotificationKind;
   /** Substituted into the `notification.<kind>.title` catalog entry (e.g. `{name}` for `heartbeat_error`). */
   titleParams?: Readonly<Record<string, string>>;
+  /**
+   * Catalog key of this notification's body (issue #1773), rendered in the recipient's locale the
+   * same way as the title and stored in `notifications.body`. Absent: the stored body is NULL.
+   */
+  bodyKey?: string;
+  /**
+   * Substituted into the body entry's `{param}` placeholders. A `null` value renders as the
+   * `notification.body.unnamed` label; a param the entry does not name is ignored.
+   */
+  bodyParams?: Readonly<Record<string, string | number | null>>;
   /**
    * Where this notification's title should link, already resolved to the app's URL scheme
    * (e.g. `?page=agent-run&id=...`) — the writer has no per-kind routing knowledge, only the
@@ -84,12 +110,21 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
 
   const catalogs = await getNotificationCatalogs();
   const locale = toManifestLocale(user.locale);
-  const titleTemplate = resolveCatalogLabel(null, catalogs[locale], catalogs.en, `notification.${input.kind}.title`);
+  const localeCatalog = catalogs[locale];
+  const titleTemplate = resolveCatalogLabel(null, localeCatalog, catalogs.en, `notification.${input.kind}.title`);
   const title = interpolate(titleTemplate, input.titleParams ?? {});
+  const body =
+    input.bodyKey === undefined
+      ? null
+      : renderBody(
+          resolveCatalogLabel(null, localeCatalog, catalogs.en, input.bodyKey),
+          input.bodyParams ?? {},
+          resolveCatalogLabel(null, localeCatalog, catalogs.en, UNNAMED_LABEL_KEY),
+        );
 
   const { rows } = await client.query<{ id: string; created_at: Date; inserted: boolean }>(
-    `INSERT INTO notifications (user_id, kind, title, link_href, source_table, source_id, transition_instance, payload)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+    `INSERT INTO notifications (user_id, kind, title, body, link_href, source_table, source_id, transition_instance, payload)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
      ON CONFLICT (tenant_id, user_id, source_table, source_id, kind, transition_instance)
        DO UPDATE SET source_table = notifications.source_table
      RETURNING id, created_at, (xmax = 0) AS inserted`,
@@ -97,6 +132,7 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
       input.userId,
       input.kind,
       title,
+      body,
       input.linkHref,
       input.sourceTable,
       input.sourceId,

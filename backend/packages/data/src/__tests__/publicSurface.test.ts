@@ -183,6 +183,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "anyUserExists",
   "appendHistoryEntry",
   "approvalConflictReason",
+  "approvalNotificationBody",
   "assertAggregationCompatibleWithType",
   "assertAnotherActiveAdminRemains",
   "assertGatewayTenantActive",

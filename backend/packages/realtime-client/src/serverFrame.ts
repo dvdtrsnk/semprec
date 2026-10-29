@@ -13,6 +13,7 @@ function isNotificationRow(value: unknown): value is NotificationRow {
     typeof value.userId === "string" &&
     typeof value.kind === "string" &&
     typeof value.title === "string" &&
+    (value.body === null || typeof value.body === "string") &&
     (value.linkHref === null || typeof value.linkHref === "string") &&
     typeof value.sourceTable === "string" &&
     typeof value.sourceId === "string" &&

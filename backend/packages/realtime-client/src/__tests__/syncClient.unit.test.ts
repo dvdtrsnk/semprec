@@ -107,6 +107,7 @@ describe("createSyncClient (issue #164)", () => {
       userId: "u1",
       kind: "system",
       title: "Hello",
+      body: null,
       linkHref: null,
       sourceTable: "items",
       sourceId: "i1",

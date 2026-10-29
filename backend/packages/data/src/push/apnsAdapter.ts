@@ -181,10 +181,10 @@ function postApnsRequest(
 
 /**
  * The `apns` half of issue #151's fanout adapters: HTTP/2 to production or sandbox depending on
- * this exact registration's `apns_environment`, an alert title plus `link_href` and
- * `notification_id` in the payload (and `aps["interruption-level"]` when the payload names one),
- * and the shared, cached provider JWT above. A 410 or
- * `BadDeviceToken` means this exact device token is dead — the caller pairs that with #150's
+ * this exact registration's `apns_environment`, an alert title (with `aps.alert.body` when the
+ * notification has a body, issue #1773) plus `link_href` and `notification_id` in the payload (and
+ * `aps["interruption-level"]` when the payload names one), and the shared, cached provider JWT above.
+ * A 410 or `BadDeviceToken` means this exact device token is dead — the caller pairs that with #150's
  * `revokePushSubscriptionByProviderInvalidation`. Everything else (network failure, other 4xx/5xx)
  * is transient and left for the job's own retry. Missing `APNS_*` env vars or an unreadable key
  * file (issue #703) resolve `not-configured` instead of throwing — a server-side gap, not a
@@ -196,12 +196,11 @@ export async function sendApnsNotification(
   config?: ApnsConfig,
 ): Promise<PushSendResult> {
   const body = JSON.stringify({
-    // `notifications` (migration 0030) has no separate body/description column — `title` is the
-    // only user-facing text there is, so the alert carries it as `title` alone rather than
-    // duplicating it into `body` too. `interruption-level` is sent only when the fanout job decided
-    // one; without it APNs delivers at its default, `active`.
+    // `alert.body` is sent only when the notification has one (issue #1773), so a notification of
+    // another kind keeps the title-only alert it always had. `interruption-level` is sent only when
+    // the fanout job decided one; without it APNs delivers at its default, `active`.
     aps: {
-      alert: { title: payload.title },
+      alert: { title: payload.title, ...(payload.body === null ? {} : { body: payload.body }) },
       ...(payload.interruptionLevel === undefined ? {} : { "interruption-level": payload.interruptionLevel }),
     },
     link_href: payload.linkHref,

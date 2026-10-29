@@ -790,6 +790,117 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
   });
 
+  describe("approval notification body (issue #1773)", () => {
+    async function makeActor(): Promise<AuthenticatedActor> {
+      const projectItemId = await createRealAgentProjectItemId();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "notify" });
+      return { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+    }
+
+    /** Raises the request with the recipient's locale set to English, so the body can be asserted in English. */
+    async function raiseInEnglish(
+      operation: GenericOperationName,
+      actor: AuthenticatedActor,
+      input: unknown,
+    ): Promise<string> {
+      await pool.query(`UPDATE users SET locale = 'en'`);
+      return approveDestructive(operation, actor, input);
+    }
+
+    async function notificationOf(requestId: string): Promise<{ title: string; body: string | null }> {
+      const { rows } = await pool.query<{ title: string; body: string | null }>(
+        `SELECT title, body FROM notifications WHERE source_id = $1 AND kind = 'approval_pending'`,
+        [requestId],
+      );
+      expect(rows).toHaveLength(1);
+      return rows[0]!;
+    }
+
+    it("gives every approval the fixed title, and property.delete a body that ends with the irreversible sentence", async () => {
+      const database = await chokePoint.createDatabase({ name: "Journal" });
+      const property = await chokePoint.createProperty({
+        databaseId: database.id,
+        key: "mood",
+        name: "Mood",
+        type: "text",
+      });
+      const actor = await makeActor();
+
+      const requestId = await raiseInEnglish("property.delete", actor, { propertyId: property.id });
+
+      expect(await notificationOf(requestId)).toEqual({
+        title: "Semp needs approval",
+        body: 'Delete the property "Mood" in the database "Journal". This action is irreversible.',
+      });
+    });
+
+    it("gives item.delete a body that ends with the undo sentence, because the item goes to the trash", async () => {
+      const tasks = await chokePoint.createDatabase({ name: "Tasks" });
+      await chokePoint.createProperty({ databaseId: tasks.id, key: "name", name: "Name", type: "text" });
+      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { name: "Tax return" } });
+      const actor = await makeActor();
+
+      const requestId = await raiseInEnglish("item.delete", actor, { itemId: task.id });
+
+      expect((await notificationOf(requestId)).body).toBe(
+        'Delete the item "Tax return" in the database "Tasks". This can be undone later.',
+      );
+    });
+
+    it("renders an item without a name as the unnamed label, never as a placeholder", async () => {
+      const tasks = await chokePoint.createDatabase({ name: "Tasks" });
+      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: {} });
+      const actor = await makeActor();
+
+      const requestId = await raiseInEnglish("item.delete", actor, { itemId: task.id });
+
+      expect((await notificationOf(requestId)).body).toBe(
+        'Delete the item "unnamed" in the database "Tasks". This can be undone later.',
+      );
+    });
+
+    it("gives database.archive an undo sentence and view.delete and relation.delete the irreversible one", async () => {
+      const tasks = await chokePoint.createDatabase({ name: "Tasks" });
+      const people = await chokePoint.createDatabase({ name: "People" });
+      await chokePoint.createProperty({ databaseId: tasks.id, key: "name", name: "Name", type: "text" });
+      await chokePoint.createProperty({ databaseId: people.id, key: "name", name: "Name", type: "text" });
+      const { property: assignedTo } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: tasks.id,
+        key: "assignedTo",
+        name: "Assigned To",
+        targetDatabaseId: people.id,
+        inverse: { key: "assignedTasks", name: "Assigned Tasks" },
+      });
+      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { name: "Tax return" } });
+      const person = await chokePoint.createItem({ databaseId: people.id, properties: { name: "Eva" } });
+      await chokePoint.createRelation({
+        relationPropertyId: assignedTo.id,
+        callerItemId: task.id,
+        targetItemId: person.id,
+      });
+      const actor = await makeActor();
+      const view = await chokePoint.createView(
+        { databaseId: tasks.id, type: "table", name: "Open tasks" },
+        { type: "ai_agent", agentProjectItemId: actor.agentProjectItemId },
+      );
+
+      const archiveId = await raiseInEnglish("database.archive", actor, { databaseId: tasks.id });
+      expect((await notificationOf(archiveId)).body).toBe('Archive the database "Tasks". This can be undone later.');
+
+      const viewId = await raiseInEnglish("view.delete", actor, { viewId: view.id });
+      expect((await notificationOf(viewId)).body).toBe('Delete the view "Open tasks". This action is irreversible.');
+
+      const relationId = await raiseInEnglish("relation.delete", actor, {
+        relationPropertyId: assignedTo.id,
+        callerItemId: task.id,
+        targetItemId: person.id,
+      });
+      expect((await notificationOf(relationId)).body).toBe(
+        'Remove the link between "Tax return" and "Eva". This action is irreversible.',
+      );
+    });
+  });
+
   describe("replay parity for all five destructive operations (issue #89 acceptance criteria)", () => {
     async function makeAgentActor(): Promise<AuthenticatedActor> {
       const projectItemId = await createRealAgentProjectItemId();
