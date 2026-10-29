@@ -3,11 +3,14 @@ import {
   ApprovalRequiredError,
   ConflictError,
   ForbiddenError,
+  HeartbeatDisabledError,
   HeartbeatEventTriggeredError,
+  HeartbeatRunningError,
   NotFoundError,
   PropertyLockedError,
   SchemaLockedError,
   ValidationError,
+  type ActiveHeartbeatRunSummary,
   type ChokePointError,
   type ItemRow,
 } from "@semprec/data";
@@ -68,7 +71,25 @@ const FIXTURES: Array<{ code: ItemErrorCode; status: number; error: ChokePointEr
     status: 409,
     error: new HeartbeatEventTriggeredError("This heartbeat fires only from its triggering event"),
   },
+  {
+    code: "heartbeat_disabled",
+    status: 409,
+    error: new HeartbeatDisabledError("this heartbeat is disabled; enable it before triggering it"),
+  },
+  {
+    code: "heartbeat_running",
+    status: 409,
+    error: new HeartbeatRunningError("this heartbeat is already running or queued", { activeRun: null }),
+  },
 ];
+
+const ACTIVE_RUN: ActiveHeartbeatRunSummary = {
+  id: "44444444-4444-4444-4444-444444444444",
+  status: "running",
+  triggeredBy: "heartbeat",
+  startedAt: "2026-10-29T08:00:00.000Z",
+  threadId: "55555555-5555-5555-5555-555555555555",
+};
 
 describe("error contract (issue #238)", () => {
   for (const fixture of FIXTURES) {
@@ -126,6 +147,24 @@ describe("error contract (issue #238)", () => {
     const error = new PropertyLockedError("Property is locked", { field: "title", locked: true });
     const body = toErrorResponseBody(error);
     expect(body.error.details).toEqual({ field: "title", locked: true });
+  });
+
+  it("projects heartbeat_running's details.activeRun to the id, status, trigger, start and thread only", () => {
+    // The run carries more than the contract shows; the projection must not forward it.
+    const run = { ...ACTIVE_RUN, task: "a task text the client must not see", result: "a result" };
+    const error = new HeartbeatRunningError("already running", { activeRun: run });
+    const body = toErrorResponseBody(error);
+    expect(body.error).toEqual({ code: "heartbeat_running", details: { activeRun: ACTIVE_RUN } });
+  });
+
+  it("keeps heartbeat_running's activeRun null while only a fire job is waiting", () => {
+    const body = toErrorResponseBody(new HeartbeatRunningError("already queued", { activeRun: null }));
+    expect(body.error).toEqual({ code: "heartbeat_running", details: { activeRun: null } });
+  });
+
+  it("falls through to the generic branch when heartbeat_running's activeRun is not a run summary", () => {
+    const error = new ForbiddenError("already running", { activeRun: { id: 1 } }, "heartbeat_running");
+    expect(toErrorResponseBody(error).error.details).toBeUndefined();
   });
 });
 

@@ -930,6 +930,16 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       });
     }
   },
+  // A's heartbeat answers B exactly as a random id does (issue #1453): the lookup is tenant-scoped,
+  // and a refused trigger writes nothing, so A's state is compared before and after.
+  "trigger heartbeat": () =>
+    leavesAUnchanged(async () => {
+      await expectForeignLikeRandom(b.member, [a.heartbeatId], ([id]) => ({
+        method: "POST",
+        path: entryPath("trigger heartbeat", id!),
+        body: {},
+      }));
+    }),
   "schema projection": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/schema" });
   },

@@ -34,6 +34,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "mark all notifications read": "services/semprec-api/src/notificationsHandler.ts",
   "get notification preferences": "packages/data/src/notifications/notificationPreferencesRoutes.ts",
   "patch notification preferences": "packages/data/src/notifications/notificationPreferencesRoutes.ts",
+  "trigger heartbeat": "packages/data/src/scheduler/triggerHeartbeatRoute.ts",
   "project mcp grants": "services/semprec-api/src/mcpAgentPageHandler.ts",
   "project mcp grant toggle": "services/semprec-api/src/mcpAgentPageHandler.ts",
   "mcp tool registration reclassify": "services/semprec-api/src/mcpAgentPageHandler.ts",

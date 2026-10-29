@@ -25,6 +25,8 @@ export interface ActionContext {
   itemId?: string;
   /** the run id from `heartbeat.trigger`'s payload (issue #136) — the agent run that manually fired this heartbeat, becoming the new run's `parent_run_id`. Unset for a scheduler-fired (sweep or onItemEvent) run. */
   triggeredByRunId?: string;
+  /** the user from the manual trigger's payload (`POST /api/heartbeats/:id/trigger`, issue #1453) — the person whose run this is, recorded as the new run's actor. Unset for every other fire, and a manual fire from a person has no `triggeredByRunId`. */
+  triggeredByUserId?: string;
   /**
    * Set by the heartbeat fire task from the queue job's `attempts >= max_attempts`. `undefined`
    * for a caller outside the queue (treated as final — a direct caller has no retry).
@@ -112,6 +114,9 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
         threadId: tickThread.id,
         triggeredBy: "heartbeat" as const,
         task,
+        // A manual fire from a person names that person as the run's actor (`createAgentRun`'s
+        // `userId`); a scheduled or item-event fire leaves it unset, so the tenant's user stays the actor.
+        userId: context.triggeredByUserId,
       };
       let created: AgentRunRow;
       if (context.occurrenceId === undefined) {

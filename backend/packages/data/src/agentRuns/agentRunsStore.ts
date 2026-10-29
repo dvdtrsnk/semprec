@@ -390,6 +390,23 @@ export async function listAgentRunsByHeartbeat(
 }
 
 /**
+ * The most recently started run of a heartbeat whose `status` is still `running`, or `null`. The
+ * manual trigger (issue #1453) reads it to refuse a second run while this one is active.
+ */
+export async function getRunningAgentRunOfHeartbeat(
+  client: Pool | PoolClient,
+  heartbeatId: string,
+): Promise<AgentRunRow | null> {
+  const { rows } = await client.query<AgentRunDbRow>(
+    `SELECT ${AGENT_RUN_ROW_COLUMNS}
+     FROM agent_runs WHERE heartbeat_id = $1 AND status = 'running'
+     ORDER BY started_at DESC LIMIT 1`,
+    [heartbeatId],
+  );
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
+/**
  * Identifies one dormant conversation's `unit='session'` runs — the filter both Semp's own
  * conversation (#118, `triggered_by='user'`, `parent_run_id` null) and a delegated one (#229,
  * `triggered_by='supervisor'`, `parent_run_id` the supervisor run that key's `DelegationRegistry`
