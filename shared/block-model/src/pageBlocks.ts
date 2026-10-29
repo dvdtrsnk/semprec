@@ -68,7 +68,8 @@ export interface BlockIssue {
     | "text_not_allowed"
     | "invalid_page_id"
     | "page_id_not_allowed"
-    | "page_id_required";
+    | "page_id_required"
+    | "page_not_allowed";
   message: string;
 }
 

@@ -22,3 +22,12 @@ export {
   type PageBlock,
   type TextRun,
 } from "./pageBlocks.js";
+export {
+  parseMarkdown,
+  serializeBlocks,
+  stripMarkdown,
+  type ParseOptions,
+  type ParsedBlock,
+  type SerializableBlock,
+  type SerializeOptions,
+} from "./markdown.js";
