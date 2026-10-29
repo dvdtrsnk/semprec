@@ -1,18 +1,16 @@
 import type { Pool, PoolClient } from "pg";
-import type { ModuleRegistry } from "@semprec/module-registry";
+import type {
+  ModuleDataMigrationConverter,
+  ModuleDataMigrationConverterContext,
+  ModuleRegistry,
+} from "@semprec/module-registry";
 import { requireAffectedRows, requireSingleRow, withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import { getSystemTimezone } from "../systemSettings.js";
 import { lockItemBatch } from "./itemBatch.js";
+import { logger } from "./logger.js";
 
-/**
- * Converts one item's properties to the transition's target shape. Must be idempotent —
- * `converter(converter(p))` deep-equals `converter(p)` — because the runner makes two passes
- * over the database's items: the first skips rows another transaction holds locked, the
- * second revisits every row (blocking on a held one) so rows skipped or inserted below the
- * cursor during the first pass are converted too. Together they guarantee every row is
- * converted at least once and rewritten only when the converter actually changes it.
- */
-export type ModuleDataMigrationConverter = (properties: Record<string, unknown>) => Record<string, unknown>;
+export type { ModuleDataMigrationConverter, ModuleDataMigrationConverterContext };
 
 export interface RunModuleDataMigrationParams {
   moduleId: string;
@@ -97,7 +95,11 @@ export async function runModuleDataMigration(pool: Pool, params: RunModuleDataMi
       const database = await getDatabaseByModuleId(client, databaseKey);
       if (!database) throw new Error(`No database seeded for database key "${databaseKey}"`);
 
-      await convertInBatches(pool, transition, database.id, converter, pageSize);
+      // Read once for the whole run, after the advisory lock: every item this run converts sees
+      // the same zone (docs/adr/2026-10-29-module-data-migration-converter-context.md).
+      const timezone = await getSystemTimezone(client);
+
+      await convertInBatches(pool, transition, database.id, timezone, converter, pageSize);
 
       await withTransaction(pool, async (txClient) => {
         await txClient.query(
@@ -137,6 +139,7 @@ async function convertInBatches(
   pool: Pool,
   transition: Transition,
   databaseId: string,
+  timezone: string,
   converter: ModuleDataMigrationConverter,
   pageSize: number,
 ): Promise<void> {
@@ -151,7 +154,14 @@ async function convertInBatches(
       });
 
       for (const row of rows) {
-        const converted = converter(row.properties);
+        const context: ModuleDataMigrationConverterContext = {
+          timezone,
+          itemId: row.id,
+          log: (reason) => {
+            logger.info({ itemId: row.id, reason }, "Module data migration converter logged a reason");
+          },
+        };
+        const converted = converter(row.properties, context);
         // A full replace is safe only because the row is locked for this whole transaction.
         // Zero affected rows is the expected outcome when the converter left the row as is:
         // the guard keeps `updated_at` (the `ifVersion` token) untouched on such a row.

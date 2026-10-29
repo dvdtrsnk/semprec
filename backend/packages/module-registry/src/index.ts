@@ -33,6 +33,8 @@ export {
   type ModuleTaskDefinition,
   type ModuleHeartbeatRuleKindDefinition,
   type ModuleDataMigrationDefinition,
+  type ModuleDataMigrationConverter,
+  type ModuleDataMigrationConverterContext,
   type ModuleCustomRouteDefinition,
   type ModuleLinkRuleProjection,
 } from "./registry.js";
