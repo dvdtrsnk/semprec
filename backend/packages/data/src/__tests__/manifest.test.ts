@@ -69,6 +69,24 @@ describe("permission manifest and drift check", () => {
     expect(manifest.databases[0]!.properties.map((p) => p.key).sort()).toEqual(["note", "rating"]);
   });
 
+  it("projects the tenant zone and its current day, which differs from the UTC day around local midnight", async () => {
+    const instant = new Date("2026-03-10T23:30:00Z");
+    await seedSystem(pool, createViewTypeRegistry());
+    const projectTenant = (zone: string) =>
+      withTransaction(pool, async (client) => {
+        await client.query(
+          `UPDATE items SET properties = jsonb_set(properties, '{timezone}', to_jsonb($1::text))
+           WHERE database_id = (SELECT id FROM databases WHERE owner_module_id = 'systemSettings' AND system = true)`,
+          [zone],
+        );
+        return (await generateSchemaProjection(client, new ModuleRegistry(() => new Set()), { now: instant })).tenant;
+      });
+
+    expect(await projectTenant("Europe/Prague")).toEqual({ timezone: "Europe/Prague", today: "2026-03-11" });
+    expect(await projectTenant("UTC")).toEqual({ timezone: "UTC", today: "2026-03-10" });
+    expect(await projectTenant("America/New_York")).toEqual({ timezone: "America/New_York", today: "2026-03-10" });
+  });
+
   it("projects id, type, typed config and filterable per property in the schema (issue #1360)", async () => {
     const projects = await chokePoint.createDatabase({ name: "Projects" });
     const tasks = await chokePoint.createDatabase({ name: "Tasks" });

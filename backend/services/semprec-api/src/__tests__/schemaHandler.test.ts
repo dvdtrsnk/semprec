@@ -11,6 +11,7 @@ import {
   loadFullModuleRegistry,
   login,
   seedSystem,
+  today,
   withTransaction,
 } from "@semprec/data";
 import { createSchemaRequestListener } from "../schemaHandler.js";
@@ -42,6 +43,7 @@ interface SchemaProjectionBody {
     switcherOrder: number | null;
     clientVisible: boolean;
   }[];
+  tenant: { timezone: string; today: string };
   viewTypes: { key: string; name: string }[];
   agentTools: { moduleId: string; name: string; label: string }[];
 }
@@ -97,6 +99,33 @@ describe("createSchemaRequestListener (issue #147)", () => {
         }),
       ]),
     });
+  });
+
+  it("returns the tenant zone and its current day, and reflects a zone change on the next request", async () => {
+    const headers = await authHeader("en");
+    const fetchTenant = async () => {
+      const res = await fetch(`${baseUrl}/api/schema`, { headers });
+      expect(res.status).toBe(200);
+      return ((await res.json()) as SchemaProjectionBody).tenant;
+    };
+
+    const before = new Date();
+    const prague = await fetchTenant();
+    const after = new Date();
+    expect(prague.timezone).toBe("Europe/Prague");
+    expect([today("Europe/Prague", before), today("Europe/Prague", after)]).toContain(prague.today);
+
+    await pool.query(
+      `UPDATE items SET properties = jsonb_set(properties, '{timezone}', '"Pacific/Kiritimati"')
+       WHERE database_id = (SELECT id FROM databases WHERE owner_module_id = 'systemSettings' AND system = true)`,
+    );
+    const changedBefore = new Date();
+    const changed = await fetchTenant();
+    const changedAfter = new Date();
+    expect(changed.timezone).toBe("Pacific/Kiritimati");
+    expect([today("Pacific/Kiritimati", changedBefore), today("Pacific/Kiritimati", changedAfter)]).toContain(
+      changed.today,
+    );
   });
 
   it("loads the empty calendar module and lists no database for it", async () => {

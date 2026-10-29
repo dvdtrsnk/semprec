@@ -3,6 +3,7 @@ import { resolveCatalogLabel, type ModuleCatalogs, type ModuleRegistry } from "@
 import { listAllDatabases } from "../chokePoint/databasesStore.js";
 import { listPropertiesByDatabases } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionsByPropertyIds } from "../chokePoint/relationsStore.js";
+import { getCalendarClock } from "../calendarTime.js";
 import { createCollectionMetadataResolver } from "./collectionMetadata.js";
 import {
   createCatalogResolver,
@@ -36,7 +37,15 @@ export interface SchemaAgentToolProjection {
   label: string;
 }
 
+export interface SchemaTenantProjection {
+  /** The tenant's IANA time zone (the System settings `timezone`). */
+  timezone: string;
+  /** The current calendar day in `timezone`, `YYYY-MM-DD`. Stale after midnight; clients use it as a drift check. */
+  today: string;
+}
+
 export interface SchemaProjection {
+  tenant: SchemaTenantProjection;
   databases: SchemaDatabaseProjection[];
   viewTypes: SchemaViewTypeProjection[];
   agentTools: SchemaAgentToolProjection[];
@@ -53,6 +62,8 @@ export interface GenerateSchemaProjectionOptions {
    * caller with a narrower notion of "granted" may pass its own set instead.
    */
   grantedCapabilities?: ReadonlySet<string>;
+  /** The instant `tenant.today` is computed for; defaults to the current time. A test seam for the clock. */
+  now?: Date;
 }
 
 /**
@@ -70,6 +81,8 @@ export async function generateSchemaProjection(
   options: GenerateSchemaProjectionOptions = {},
 ): Promise<SchemaProjection> {
   const locale = options.locale ?? "en";
+  const calendarClock = await getCalendarClock(client);
+  const tenant: SchemaTenantProjection = { timezone: calendarClock.zone, today: calendarClock.today(options.now) };
   const catalogResolver = await createCatalogResolver(moduleRegistry);
   const metadataResolver = await createCollectionMetadataResolver(moduleRegistry);
 
@@ -137,5 +150,5 @@ export async function generateSchemaProjection(
     });
   }
 
-  return { databases, viewTypes, agentTools };
+  return { tenant, databases, viewTypes, agentTools };
 }
