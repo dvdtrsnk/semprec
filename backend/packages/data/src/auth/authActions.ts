@@ -24,6 +24,7 @@ import {
   lockUserTenantBinding,
 } from "../tenancy/tenantsStore.js";
 import { revokePushSubscriptionsForSession } from "../push/pushSubscriptionsStore.js";
+import { seedAccountSystemProjectGuidance } from "../projectAgentGuidance/seedSystemProjectAgentGuidance.js";
 
 const SECONDS_PER_DAY = 60 * 60 * 24;
 
@@ -213,6 +214,10 @@ export interface BootstrapFirstAccountInput {
  * actual decision runs inside a transaction holding `SETUP_ADVISORY_LOCK_KEY` for its duration —
  * concurrent callers queue on that lock, and every one after the first to commit re-checks
  * `anyUserExists` and finds it `true`, so exactly one call ever reaches `createAccount`.
+ *
+ * After that commit the tenant's system projects get their agent guidance rows (issue #1449), in the
+ * tenant's own scope: the setup route calls this under the system scope, whose transactions cannot read
+ * the tenant's system databases. A failure there rethrows after the account has been created.
  */
 export async function bootstrapFirstAccount(
   pool: Pool,
@@ -222,15 +227,18 @@ export async function bootstrapFirstAccount(
 ): Promise<PublicUser> {
   if (await anyUserExists(pool)) throw new NotFoundError("Not found");
 
-  return withTransaction(pool, async (client) => {
+  const created = await withTransaction(pool, async (client) => {
     await client.query("SELECT pg_advisory_xact_lock($1)", [SETUP_ADVISORY_LOCK_KEY]);
 
     if (await anyUserExists(client)) throw new NotFoundError("Not found");
     if (!tokensMatch(providedToken, expectedToken)) throw new NotFoundError("Not found");
 
     const tenantId = await getSoleTenantId(client);
-    return createAccount(client, { email: input.email, password: input.password, tenantId, role: "admin" });
+    const user = await createAccount(client, { email: input.email, password: input.password, tenantId, role: "admin" });
+    return { tenantId, user };
   });
+  await seedAccountSystemProjectGuidance(pool, created.tenantId, created.user.id);
+  return created.user;
 }
 
 export interface AuthenticatedIdentity {

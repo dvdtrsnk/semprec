@@ -7,6 +7,7 @@ import type { UserRow } from "../auth/types.js";
 import { createUser } from "../auth/usersStore.js";
 import { requireAffectedRows, withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
+import { seedAccountSystemProjectGuidance } from "../projectAgentGuidance/seedSystemProjectAgentGuidance.js";
 import { logger } from "./logger.js";
 import { provisionTenant } from "./provisionTenant.js";
 import { createTenant } from "./tenantsStore.js";
@@ -89,8 +90,9 @@ async function createInvitedUser(
  * Accepts an admin-issued invitation (issue #1087), the only way to create an account after
  * `bootstrapFirstAccount`. One transaction creates the invited person's tenant in `provisioning`, binds
  * their `member` account to it and marks the invitation accepted. After it commits, `provision` seeds the
- * tenant's system databases and activates it. A tenant that is not `active` cannot authenticate, so a
- * failed `provision` leaves the account unable to sign in until the next deploy's seed step provisions it.
+ * tenant's system databases and activates it, and then the system projects get their agent guidance rows
+ * (issue #1449). A tenant that is not `active` cannot authenticate, so a failed `provision` leaves the
+ * account unable to sign in until the next deploy's seed step provisions it.
  *
  * Every unusable token (unknown, expired, revoked or already used) and an address that already has an
  * account answer the same `NotFoundError("Not found")` and write nothing. The tenant id is generated here,
@@ -135,6 +137,8 @@ export async function acceptInvitation(
       logger.error({ tenantId: accepted.tenantId }, "invitation_provisioning_failed");
       throw err;
     }
+    // The system projects exist only once the tenant is provisioned, so their guidance is seeded after it (issue #1449).
+    await seedAccountSystemProjectGuidance(pool, accepted.tenantId, accepted.user.id);
     return toPublicUser(accepted.user);
   });
 }
