@@ -20,6 +20,7 @@ import { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
 import { TRANSCRIPTION_PREPARE_COMPUTED_KEY } from "../transcription/transcriptionComputedKeys.js";
 import * as blobsStore from "../blobs/blobsStore.js";
 import * as docsStore from "../docs/docsStore.js";
+import * as inboxAttachmentsStore from "../inbox/inboxAttachmentsStore.js";
 import * as itemOriginsStore from "../inbox/itemOriginsStore.js";
 import * as itemAutomationStore from "../library/itemAutomationStore.js";
 import * as taskRecurrenceStore from "../tasks/taskRecurrenceStore.js";
@@ -200,13 +201,15 @@ function derivedBlobIds(row: ItemRow): string[] {
  * composite key, so none of these tables carries a Postgres FK to it and nothing else removes
  * them: its relation edges, curated-view memberships, idempotency reservation, doc (whose
  * snapshots, updates, history updates and snapshot history cascade by FK), recurrence rule,
- * automation state and search-index row. Must run in the purge's own transaction, after
- * `itemsStore.hardDeleteItem` has removed `row` — the blob check below relies on the row already
- * being gone.
+ * automation state, origin and search-index row, and its Inbox attachment rows (issue #1564).
+ * Must run in the purge's own transaction, after `itemsStore.hardDeleteItem` has removed `row` —
+ * the blob checks below rely on the row already being gone.
  *
- * The doc, recurrence rule, automation state and blob rows are each deleted through their owning
- * store. For a Files item it also deletes the `blobs` row its `properties.file.blobId` names, but
- * only when nothing else references that blob (`blobsStore.deleteBlobIfUnreferenced`). Returns the
+ * The doc, recurrence rule, automation state, origin and blob rows are each deleted through their
+ * owning store. Every blob an Inbox attachment row named is released through
+ * `blobsStore.deleteBlobIfUnreferenced` once those rows are gone, so a blob a Files item or another
+ * attachment still names keeps its row. For a Files item it also deletes the `blobs` row its
+ * `properties.file.blobId` names, but only when nothing else references that blob. Returns the
  * deleted blob's `storage_key`, and the derived blobs named by its `computed.prepare` checkpoint
  * (`normalizedBlobId`, `playbackBlobId`) are deleted unconditionally through
  * `blobsStore.deleteDerivedBlob`, since they are one-to-one with the item; a playback id equal to
@@ -224,6 +227,12 @@ export async function deleteItemDependents(client: PoolClient, row: ItemRow): Pr
   await client.query("DELETE FROM item_search_index WHERE item_id = $1", [row.id]);
 
   const blobStorageKeys: string[] = [];
+  // The attachment rows go first: a row still present would keep its blob referenced.
+  const attachmentBlobIds = await inboxAttachmentsStore.deleteInboxAttachmentsForItem(client, row.id);
+  for (const id of new Set(attachmentBlobIds)) {
+    const key = await blobsStore.deleteBlobIfUnreferenced(client, id);
+    if (key !== null) blobStorageKeys.push(key);
+  }
   const blobId = fileBlobId(row);
   if (blobId) {
     const key = await blobsStore.deleteBlobIfUnreferenced(client, blobId);

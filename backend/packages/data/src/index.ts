@@ -344,6 +344,16 @@ export {
   type ProposalComputationOperation,
   type WritableProposalTarget,
 } from "./inbox/proposalOperations.js";
+export {
+  deleteInboxAttachment,
+  deleteInboxAttachmentsForItem,
+  getInboxAttachment,
+  insertInboxAttachments,
+  listInboxAttachments,
+  type InboxAttachmentRow,
+  type InboxAttachmentSource,
+  type NewInboxAttachment,
+} from "./inbox/inboxAttachmentsStore.js";
 export { CALENDAR_MODULE_ID } from "./calendar/calendarModuleId.js";
 export { manifest as calendarModuleManifest } from "./calendar/calendarModuleManifest.js";
 export { manifest as inboxPipelineModuleManifest } from "./inbox/inboxModuleManifest.js";

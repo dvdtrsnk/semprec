@@ -104,7 +104,7 @@ describe("row-level security as the runtime roles", () => {
         ORDER BY relname`,
     );
     tenantTables = tables.map((row) => row.relname);
-    expect(tenantTables).toHaveLength(56);
+    expect(tenantTables).toHaveLength(57);
   });
 
   afterAll(async () => {

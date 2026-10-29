@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
@@ -12,6 +12,7 @@ import { seedSystem } from "../../seed/seedSystem.js";
 import { createBlob, deleteBlobIfUnreferenced } from "../blobsStore.js";
 import { ingestUploadedBlob } from "../fileUploadStore.js";
 import { handleBlobsUnreferencedSweepTask, sweepUnreferencedBlobs } from "../unreferencedBlobSweep.js";
+import { insertInboxAttachments } from "../../inbox/inboxAttachmentsStore.js";
 import { withTransaction } from "../../db/pool.js";
 
 /** In-memory storage that enforces `maxBytes` like the real writer and records deletes. */
@@ -175,6 +176,23 @@ describe("standalone blobs (issue #1401)", () => {
       expect(await countBlobs(referenced.id)).toBe(1);
       expect(storage.bytesByKey.has(referenced.storageKey)).toBe(true);
       expect(await countBlobs(fresh.id)).toBe(1);
+    });
+
+    it("keeps a stale standalone blob an Inbox attachment names, bytes included", async () => {
+      const storage = new FakeStorage();
+      const attached = (await upload(storage, "attached")).blob;
+      const stale = (await upload(storage, "stale again")).blob;
+      // The attachment table has no foreign key to items, so an id naming no row is enough here.
+      await insertInboxAttachments(pool, randomUUID(), [{ blobId: attached.id, source: "camera" }]);
+      await ageBlob(attached.id, 25);
+      await ageBlob(stale.id, 25);
+
+      expect(await sweepUnreferencedBlobs(pool, storage)).toBe(1);
+
+      expect(await countBlobs(attached.id)).toBe(1);
+      expect(storage.bytesByKey.has(attached.storageKey)).toBe(true);
+      expect(await countBlobs(stale.id)).toBe(0);
+      expect(storage.deleteCalls).toEqual([stale.storageKey]);
     });
 
     it("leaves a stale blob outside the blobs/ prefix alone", async () => {
