@@ -328,6 +328,29 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect((await getApprovalRequest(pool, withoutReason.details.approvalRequestId))!.reason).toBeNull();
     });
 
+    it("stores the tool call id on the request, and leaves it NULL when none is supplied (issue #1618)", async () => {
+      const gateway = createGenericOperationGateway(pool);
+      const database = await chokePoint.createDatabase({ name: "Gateway DB tool call" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      const projectItemId = randomUUID();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
+      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+
+      const linked = (await gateway
+        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id }, { toolCallId: "call_1" })
+        .catch((err: unknown) => err)) as ApprovalRequiredError;
+      const redelivered = (await gateway
+        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id }, { toolCallId: "call_1" })
+        .catch((err: unknown) => err)) as ApprovalRequiredError;
+      const unlinked = (await gateway
+        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id })
+        .catch((err: unknown) => err)) as ApprovalRequiredError;
+
+      expect((await getApprovalRequest(pool, linked.details.approvalRequestId))!.toolCallId).toBe("call_1");
+      expect(redelivered.details.approvalRequestId).toBe(linked.details.approvalRequestId);
+      expect((await getApprovalRequest(pool, unlinked.details.approvalRequestId))!.toolCallId).toBeNull();
+    });
+
     it("still rejects a reason field inside the operation input as strict-schema ValidationError (issue #1420)", async () => {
       const gateway = createGenericOperationGateway(pool);
       const actor: AuthenticatedActor = { userId: randomUUID() };

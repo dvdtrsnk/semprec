@@ -296,6 +296,26 @@ describe("MCP invoke adapter (issue #128)", () => {
       });
     });
 
+    it("stores the tool call id on the request and returns the same request for a redelivered call (issue #1618)", async () => {
+      const contractServer = startStdioContractServer([SEARCH_TOOL]);
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+
+      const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
+      const first = await invoke({ query: "semprec" }, undefined, { toolCallId: "call_1" });
+      const again = await invoke({ query: "semprec" }, undefined, { toolCallId: "call_1" });
+      const without = await invoke({ query: "semprec" });
+
+      expect(again.approvalRequestId).toBe(first.approvalRequestId);
+      expect((await getApprovalRequest(pool, first.approvalRequestId!))!.toolCallId).toBe("call_1");
+      expect((await getApprovalRequest(pool, without.approvalRequestId!))!.toolCallId).toBeNull();
+      const { rows } = await pool.query("SELECT count(*)::int AS n FROM approval_requests WHERE agent_run_id = $1", [
+        run.id,
+      ]);
+      expect(rows[0].n).toBe(2);
+    });
+
     it("creates no request and returns an error for a semprecReason over 500 characters (issue #1420)", async () => {
       const contractServer = startStdioContractServer([SEARCH_TOOL]);
       servers.push(contractServer);

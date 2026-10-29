@@ -134,16 +134,15 @@ async function createGenericOperationTools(
     toolEventMetadata: { operation },
     description: `Semprec generic operation '${operation}'.`,
     parameters: Type.Unsafe(genericOperationToolSchema(operation)),
-    async execute(_toolCallId, params) {
+    async execute(toolCallId, params) {
       const split = splitGenericOperationReason(operation, params);
       if (!split.ok) {
         return { content: [{ type: "text", text: split.error }], details: { error: true } };
       }
-      const result = await implementations[operation](
-        runId,
-        split.args,
-        split.reason === undefined ? undefined : { reason: split.reason },
-      );
+      const result = await implementations[operation](runId, split.args, {
+        ...(split.reason === undefined ? {} : { reason: split.reason }),
+        toolCallId,
+      });
       return {
         content: [{ type: "text", text: result.result }],
         details: {
@@ -177,14 +176,14 @@ async function createMcpTools(pool: Pool, runId: string, projectItemId: string):
         },
         description: grant.description ?? `MCP tool '${grant.toolName}' on '${grant.mcpServerName}'.`,
         parameters: grant.requiresApproval ? APPROVAL_GATED_MCP_TOOL_PARAMETERS : MCP_TOOL_PARAMETERS,
-        async execute(_toolCallId, params, signal) {
+        async execute(toolCallId, params, signal) {
           if (!isArgumentsObject(params)) {
             return {
               content: [{ type: "text", text: "Tool arguments must be a JSON object." }],
               details: { error: true },
             };
           }
-          const result = await invoke(params, signal);
+          const result = await invoke(params, signal, { toolCallId });
           return {
             content: [{ type: "text", text: result.result }],
             details: {

@@ -376,12 +376,14 @@ describe("agent-only approval reason (issue #1420)", () => {
     const { schemas } = await runCalls({ itemId: "item-1", reason: "You never open it." });
     expect(JSON.stringify(schemas.item_delete)).toContain('"reason"');
     expect(JSON.stringify(schemas.item_patch)).not.toContain('"reason"');
-    expect(fixtures.calls).toEqual([["run-1", { itemId: "item-1" }, { reason: "You never open it." }]]);
+    expect(fixtures.calls).toEqual([
+      ["run-1", { itemId: "item-1" }, { reason: "You never open it.", toolCallId: "call" }],
+    ]);
   });
 
-  it("passes no options when the model gave no reason", async () => {
+  it("passes only the tool call id when the model gave no reason (issue #1618)", async () => {
     await runCalls({ itemId: "item-1" });
-    expect(fixtures.calls).toEqual([["run-1", { itemId: "item-1" }, undefined]]);
+    expect(fixtures.calls).toEqual([["run-1", { itemId: "item-1" }, { toolCallId: "call" }]]);
   });
 
   it("writes approvalRequestId and changes into the generic tool result details", async () => {

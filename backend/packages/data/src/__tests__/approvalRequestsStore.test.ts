@@ -123,6 +123,62 @@ describe("approval_requests.risk_class closed set (issue #1423)", () => {
   });
 });
 
+describe("approvalRequestsStore toolCallId (issue #1618)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool, createViewTypeRegistry());
+    ownerId = await createUser();
+  });
+
+  async function insert(agentRunId: string, toolCallId?: string | null) {
+    return createPendingApprovalRequest(pool, {
+      agentRunId,
+      toolName: "search_web",
+      riskClass: "unclassified",
+      payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      ...(toolCallId === undefined ? {} : { toolCallId }),
+    });
+  }
+
+  it("stores the tool call id and reads it back", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+    const created = await insert(run.id, "call_1");
+    expect(created.toolCallId).toBe("call_1");
+    expect((await getApprovalRequest(pool, created.id))!.toolCallId).toBe("call_1");
+  });
+
+  it("leaves tool_call_id NULL when none is supplied, and allows several such requests per run", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+    const first = await insert(run.id);
+    const second = await insert(run.id, null);
+    expect(first.toolCallId).toBeNull();
+    expect(second.toolCallId).toBeNull();
+    expect(second.id).not.toBe(first.id);
+  });
+
+  it("returns the existing request for a repeated (run, tool call id) and keeps one row", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+    const first = await insert(run.id, "call_1");
+    const again = await insert(run.id, "call_1");
+    expect(again.id).toBe(first.id);
+    const { rows } = await pool.query("SELECT count(*)::int AS n FROM approval_requests WHERE agent_run_id = $1", [
+      run.id,
+    ]);
+    expect(rows[0].n).toBe(1);
+  });
+
+  it("creates separate requests for the same tool call id in different runs or different ids in one run", async () => {
+    const runA = await createAgentRun(pool, { triggeredBy: "user", task: "a", userId: ownerId });
+    const runB = await createAgentRun(pool, { triggeredBy: "user", task: "b", userId: ownerId });
+    const a1 = await insert(runA.id, "call_1");
+    const b1 = await insert(runB.id, "call_1");
+    const a2 = await insert(runA.id, "call_2");
+    expect(new Set([a1.id, b1.id, a2.id]).size).toBe(3);
+  });
+});
+
 describe("approvalRequestsStore (issue #130)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
