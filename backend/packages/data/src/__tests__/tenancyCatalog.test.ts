@@ -669,7 +669,7 @@ describe("tenancy classification catalog", () => {
           AND c.relnamespace = 'public'::regnamespace AND NOT c.relispartition
         ORDER BY k.conname`,
     );
-    expect(twins).toHaveLength(34);
+    expect(twins).toHaveLength(33);
     for (const twin of twins) {
       const client = await pool.connect();
       try {

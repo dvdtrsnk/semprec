@@ -116,7 +116,13 @@ describe("tenant_id on every tenant-owned table", () => {
         }
         await withFreshDatabase(async (pool) => {
           await runMigrations(pool, dir);
-          const db = await createChokePoint(pool).createDatabase({ name: "Upgrade" });
+          // Raw SQL, not `createDatabase`: this schema predates every later column (`icon`, `color`, ...) that the
+          // choke point's INSERT names, and the test only needs a database row with its items partition.
+          const { rows: dbRows } = await pool.query<{ id: string }>(
+            `INSERT INTO databases (name) VALUES ('Upgrade') RETURNING id`,
+          );
+          const db = { id: dbRows[0]?.id ?? "" };
+          await pool.query("SELECT create_items_partition($1::uuid)", [db.id]);
           await createChokePoint(pool).createItem({ databaseId: db.id });
           await pool.query(...notificationInsert(await insertUser(pool, null)));
 

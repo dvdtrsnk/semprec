@@ -509,6 +509,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "resolveHeartbeatFireTaskName",
   "resolveMailModuleIds",
   "resolveMcpRunCredential",
+  "resolveMergedThreadId",
   "resolveModelDisplayName",
   "resolveNotificationsBySource",
   "resolveOperationLabel",

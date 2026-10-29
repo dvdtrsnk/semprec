@@ -6,7 +6,9 @@
 -- happened before this migration are not backfilled; those ids are already lost.
 --
 -- `from_thread_id` has no foreign key: the row it names was deleted by the merge. The composite foreign
--- key on `to_thread_id` removes the alias when its target thread is deleted.
+-- key on `to_thread_id` removes the alias when its target thread is deleted. It is named *_fkey, not
+-- *_tenant_fkey, because the tenancy catalog pairs every *_tenant_fkey with a single-column twin and this
+-- key has none (the same reason as agent_runs_retry_of_run_id_fkey in 0105).
 CREATE TABLE mail_thread_aliases (
   tenant_id uuid NOT NULL DEFAULT app_tenant_default() REFERENCES tenants(id),
   from_thread_id uuid NOT NULL,
@@ -14,7 +16,7 @@ CREATE TABLE mail_thread_aliases (
   created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, from_thread_id),
   CONSTRAINT mail_thread_aliases_not_self CHECK (from_thread_id <> to_thread_id),
-  CONSTRAINT mail_thread_aliases_to_thread_tenant_fkey
+  CONSTRAINT mail_thread_aliases_to_thread_fkey
     FOREIGN KEY (tenant_id, to_thread_id) REFERENCES mail_threads (tenant_id, id) ON DELETE CASCADE
 );
 CREATE INDEX mail_thread_aliases_to_thread_idx ON mail_thread_aliases (tenant_id, to_thread_id);
