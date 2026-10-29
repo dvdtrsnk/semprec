@@ -43,6 +43,8 @@ export type QueueJobEnvelope = z.infer<typeof queueJobEnvelopeSchema>;
  */
 export const CORE_TASK_NAMES = {
   ITEM_SEARCH_BACKFILL: "itemSearchBackfill",
+  // Issue #1468: fills mail_message_meta.preview_text/ingested_at for rows that predate them.
+  MAIL_MESSAGE_PREVIEW_BACKFILL: "mailMessagePreviewBackfill",
   HEARTBEAT_SWEEP: "heartbeatSweep",
   // Issue #222: the API-runtime half of `heartbeatFire`'s split for every deterministic
   // heartbeat action (including library processing); the agent-session half is
@@ -116,6 +118,7 @@ export type TaskAffinity = (typeof TASK_AFFINITIES)[number];
  */
 export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: "api",
+  [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "api",
   [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: "api",
   [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: "api",
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: "api",
@@ -167,6 +170,7 @@ export type TaskTenancy = "tenant" | "system";
  */
 export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: "tenant",
+  [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "system",
   [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: "system",
   [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: "tenant",
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: "tenant",
