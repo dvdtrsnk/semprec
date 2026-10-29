@@ -1,7 +1,13 @@
 import { Readable } from "node:stream";
 import { simpleParser } from "mailparser";
 import type { GmailFetchedMessage, GmailHistoryResult, GmailLabelRef, GmailMailClient } from "./gmailReconcile.js";
-import { assertJsonObject, MAX_ATTACHMENT_BYTES, type FetchedMessage } from "./providerTypes.js";
+import {
+  assertJsonObject,
+  MAX_ATTACHMENT_BYTES,
+  MailReauthorizationRequiredError,
+  MailRecipientRejectedError,
+  type FetchedMessage,
+} from "./providerTypes.js";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { isDeliveryStatusReport, parseContentTypeHeader } from "./dsn.js";
@@ -248,6 +254,59 @@ async function toFetchedMessage(
   };
 }
 
+/** The most of a failed send's body that is read. It is only read to tell an invalid recipient apart from other refusals. */
+const SEND_ERROR_BODY_READ_LIMIT = 4_096;
+
+/**
+ * Gmail error text that names a refused recipient. The wording is inferred from Gmail's error messages; no live
+ * Gmail refusal has been captured to confirm it, so a refusal worded differently is an ordinary failure.
+ */
+const RECIPIENT_REFUSAL = /invalid (to|cc|bcc) header|invalid recipient|recipient address rejected/i;
+
+/** The sent message's id and the thread Gmail filed it into (`users.messages.send`). */
+export interface GmailSentMessage {
+  id: string;
+  threadId: string;
+}
+
+/**
+ * Reads at most `SEND_ERROR_BODY_READ_LIMIT` bytes of a failed send's body and then releases the stream. A read
+ * failure propagates, so the send fails as an ordinary error rather than with a classification it did not earn.
+ */
+async function readSendErrorBodyStart(response: Response): Promise<string> {
+  if (!response.body) return "";
+  const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let read = 0;
+  try {
+    while (read < SEND_ERROR_BODY_READ_LIMIT) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      chunks.push(chunk);
+      read += chunk.byteLength;
+    }
+  } finally {
+    // Releasing the stream is cleanup. A failure here must not replace the outcome of the read above.
+    await reader.cancel().catch(() => undefined);
+  }
+  return Buffer.concat(chunks).subarray(0, SEND_ERROR_BODY_READ_LIMIT).toString("utf8");
+}
+
+/**
+ * The error a refused `users.messages.send` becomes. A refusal that names an invalid recipient is
+ * `MailRecipientRejectedError` whatever its status. Otherwise a 400 or 401 is `MailReauthorizationRequiredError`,
+ * and any other status is an ordinary failure. The thrown messages name neither the body nor any token.
+ */
+async function sendFailure(response: Response): Promise<Error> {
+  const errorBodyStart = await readSendErrorBodyStart(response);
+  if (RECIPIENT_REFUSAL.test(errorBodyStart)) return new MailRecipientRejectedError();
+  if (response.status === 400 || response.status === 401) {
+    return new MailReauthorizationRequiredError(`Gmail rejected the send with status ${response.status}`);
+  }
+  return new Error(`Gmail send failed with status ${response.status}`);
+}
+
 /**
  * Real `GmailMailClient` (gmailReconcile.ts) over the Gmail REST API. CI never reaches Google: the
  * semprec-api tests in `mailSyncAdapters.test.ts` run it against a fake Gmail server through
@@ -391,5 +450,26 @@ export class GmailRestClient implements GmailMailClient {
     });
     if (!response.ok) throw new Error(`Gmail label modification failed with status ${response.status}`);
     await response.body?.cancel();
+  }
+
+  /**
+   * Sends a complete RFC 5322 message through `users.messages.send`, base64url-encoded in the `raw` field.
+   * `threadId` names the conversation the sent message is filed into. The In-Reply-To header is not enough for
+   * that, so a reply that must join its thread passes the thread here. Refusals are classified by `sendFailure`.
+   */
+  async sendMessage(raw: Buffer, threadId?: string): Promise<GmailSentMessage> {
+    const token = await this.getAccessToken();
+    const response = await this.fetchImpl(`${BASE_URL}/messages/send`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ raw: raw.toString("base64url"), ...(threadId ? { threadId } : {}) }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) throw await sendFailure(response);
+    const body = assertJsonObject(await response.json(), "Gmail send response");
+    if (typeof body.id !== "string" || typeof body.threadId !== "string") {
+      throw new Error("Gmail send response is missing the message id or the thread id");
+    }
+    return { id: body.id, threadId: body.threadId };
   }
 }

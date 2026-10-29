@@ -622,8 +622,8 @@ describe("createMailTransportFactory (issue #1634)", () => {
   });
 
   it("refuses a sync mode with no transport yet, before reading anything", async () => {
-    await expect(createMailTransportFactory(pool).forMailbox(mailboxId, "gmail_api")).rejects.toThrow(
-      /No mail transport for sync mode gmail_api/,
+    await expect(createMailTransportFactory(pool).forMailbox(mailboxId, "graph_api")).rejects.toThrow(
+      /No mail transport for sync mode graph_api/,
     );
   });
 

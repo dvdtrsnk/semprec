@@ -10,19 +10,24 @@ import {
 } from "./mailServerConnections.js";
 import { getMailServerSettings } from "./mailServerSettingsStore.js";
 import { logger } from "./logger.js";
+import { createGmailMailTransport } from "./gmailTransport.js";
 import { MailRecipientRejectedError, MailSendAuthFailedError } from "./providerTypes.js";
 import { NodemailerSmtpClient, type RawMailEnvelope } from "./smtpClient.js";
 
 /**
  * How a mailbox submits outgoing mail. `sendDraftEmail` (mail/send.ts) builds a complete RFC 5322 message
  * once (mail/outgoingMime.ts) and hands it to the transport of the mailbox's sync mode, so each provider
- * differs only in how the bytes leave. The SMTP transport below serves `imap` mailboxes; the Gmail API and
- * Microsoft Graph transports implement this same interface (#1637, #1753).
+ * differs only in how the bytes leave. The SMTP transport below serves `imap` mailboxes, the Gmail API
+ * transport (gmailTransport.ts) serves `gmail_api` mailboxes, and the Microsoft Graph transport (#1753)
+ * will implement this same interface.
  */
 export interface MailTransportMessage {
   raw: Buffer;
   envelope: RawMailEnvelope;
-  /** The provider's thread id, for a provider that threads sent mail itself (Gmail's `X-GM-THRID`). The SMTP transport ignores it. */
+  /**
+   * The provider's thread id of the message being replied to, for a provider that files sent mail into a
+   * conversation by id. The Gmail API transport passes it as the send's `threadId`. The SMTP transport ignores it.
+   */
   providerThreadId?: string;
 }
 
@@ -110,14 +115,38 @@ export function createSmtpMailTransport(
   };
 }
 
+export interface MailTransportFactoryOptions {
+  /** The Google OAuth client the `gmail_api` transport refreshes its access tokens with. Without it a Gmail mailbox cannot send. */
+  gmailOAuthClient?: { clientId: string; clientSecret: string };
+  /** Replaces the global `fetch` for the Gmail transport's token endpoint and API requests. Tests inject a fake Google here. */
+  fetchImpl?: typeof fetch;
+}
+
 /**
- * The transport factory a composition root hands `sendDraftEmail`. `forMailbox` reads the mailbox's stored
- * SMTP settings and decrypts its app-specific password for the `smtp_send` purpose; `sendDraftEmail` gets the
- * password only through this factory. Only the `imap` sync mode has a transport so far.
+ * The transport factory a composition root hands `sendDraftEmail`. `forMailbox` picks the transport of the
+ * mailbox's sync mode. For `imap` it reads the mailbox's stored SMTP settings and decrypts its app-specific
+ * password for the `smtp_send` purpose; `sendDraftEmail` gets the password only through this factory. For
+ * `gmail_api` it builds the Gmail transport from `options.gmailOAuthClient`. `graph_api` has no transport yet (#1753).
  */
-export function createMailTransportFactory(pool: Pool): MailTransportFactory {
+export function createMailTransportFactory(
+  pool: Pool,
+  options: MailTransportFactoryOptions = {},
+): MailTransportFactory {
   return {
     async forMailbox(mailboxItemId, syncMode) {
+      if (syncMode === "gmail_api") {
+        const { gmailOAuthClient, fetchImpl } = options;
+        if (!gmailOAuthClient) {
+          throw new Error("No Gmail OAuth client is configured for this composition root");
+        }
+        return createGmailMailTransport({
+          pool,
+          mailboxItemId,
+          clientId: gmailOAuthClient.clientId,
+          clientSecret: gmailOAuthClient.clientSecret,
+          ...(fetchImpl ? { fetchImpl } : {}),
+        });
+      }
       if (syncMode !== "imap") {
         throw new Error(`No mail transport for sync mode ${syncMode} is available yet`);
       }
