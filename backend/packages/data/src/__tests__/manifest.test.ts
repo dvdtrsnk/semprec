@@ -13,6 +13,7 @@ import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import * as permissionManifest from "../manifest/permissionManifest.js";
 import { generatePermissionManifest } from "../manifest/permissionManifest.js";
+import { generateSchemaProjection } from "../manifest/schemaProjection.js";
 import { createDriftCheckAction, findOrphanedOwnerProcessProperties } from "../manifest/driftCheck.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -66,6 +67,81 @@ describe("permission manifest and drift check", () => {
     expect(manifest.databases[0]!.databaseId).toBe(owned.id);
     expect(manifest.databases[0]!.writable).toBe(true);
     expect(manifest.databases[0]!.properties.map((p) => p.key).sort()).toEqual(["note", "rating"]);
+  });
+
+  it("projects id, type, typed config and filterable per property in the schema (issue #1360)", async () => {
+    const projects = await chokePoint.createDatabase({ name: "Projects" });
+    const tasks = await chokePoint.createDatabase({ name: "Tasks" });
+    const base = { databaseId: projects.id };
+    await chokePoint.createProperty({
+      ...base,
+      key: "status",
+      name: "Status",
+      type: "select",
+      config: { options: [{ key: "open", label: "Open" }] },
+    });
+    await chokePoint.createProperty({ ...base, key: "due", name: "Due", type: "date", config: { includeTime: true } });
+    await chokePoint.createProperty({ ...base, key: "start", name: "Start", type: "date" });
+    await chokePoint.createProperty({ ...base, key: "budget", name: "Budget", type: "number" });
+    await chokePoint.createProperty({
+      ...base,
+      key: "score",
+      name: "Score",
+      type: "number",
+      config: { filterPresets: [{ key: "high" }] },
+    });
+    await chokePoint.createProperty({ ...base, key: "note", name: "Note", type: "text" });
+    for (const key of ["a", "b", "c"]) {
+      await chokePoint.createRelationProperty({
+        sourceDatabaseId: projects.id,
+        key: `tasks${key}`,
+        name: `Tasks ${key}`,
+        targetDatabaseId: tasks.id,
+        cardinality: "one_to_many",
+        inverse: { key: `project${key}`, name: `Project ${key}` },
+      });
+    }
+
+    let relationQueries = 0;
+    const schema = await withTransaction(pool, (client) => {
+      const counting = new Proxy(client, {
+        get(target, prop, receiver) {
+          if (prop !== "query") return Reflect.get(target, prop, receiver) as unknown;
+          return (...args: unknown[]) => {
+            const text = typeof args[0] === "string" ? args[0] : "";
+            if (text.includes("FROM relation_definitions")) relationQueries += 1;
+            return (target.query as (...a: unknown[]) => unknown)(...args);
+          };
+        },
+      });
+      return generateSchemaProjection(counting, new ModuleRegistry(() => new Set()));
+    });
+
+    const byKey = new Map(
+      schema.databases.find((d) => d.databaseId === projects.id)!.properties.map((p) => [p.key, p]),
+    );
+    expect(byKey.get("status")).toMatchObject({
+      type: "select",
+      filterable: true,
+      config: {},
+      options: [{ key: "open", label: "Open" }],
+    });
+    expect(byKey.get("status")!.id).toEqual(expect.any(String));
+    expect(byKey.get("tasksa")).toMatchObject({
+      type: "relation",
+      filterable: true,
+      config: { targetDatabaseId: tasks.id, cardinality: "one_to_many" },
+    });
+    expect(byKey.get("due")).toMatchObject({ type: "date", filterable: true, config: { includeTime: true } });
+    expect(byKey.get("start")!.config).toEqual({ includeTime: false });
+    expect(byKey.get("budget")).toMatchObject({ type: "number", filterable: false, config: {} });
+    expect(byKey.get("score")).toMatchObject({
+      type: "number",
+      filterable: true,
+      config: { filterPresets: [{ key: "high" }] },
+    });
+    expect(byKey.get("note")).toMatchObject({ type: "text", filterable: false, config: {} });
+    expect(relationQueries).toBe(1);
   });
 
   it("scopes Semprec's own grant to Processing proposals only, per issue #105's grant separation", async () => {

@@ -69,12 +69,21 @@ describe("createSchemaRequestListener (issue #147)", () => {
         expect.objectContaining({
           key: "projects",
           properties: expect.arrayContaining([
-            expect.objectContaining({ key: "status", config: { default: "inProgress" } }),
+            expect.objectContaining({
+              key: "status",
+              type: "select",
+              filterable: true,
+              id: expect.stringMatching(/.+/),
+              config: { default: "inProgress" },
+              options: expect.any(Array),
+            }),
           ]),
         }),
         expect.objectContaining({
           key: "files",
-          properties: expect.arrayContaining([expect.objectContaining({ key: "date", config: { default: "today" } })]),
+          properties: expect.arrayContaining([
+            expect.objectContaining({ key: "date", config: { includeTime: false, default: "today" } }),
+          ]),
         }),
       ]),
     });

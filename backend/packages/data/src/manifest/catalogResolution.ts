@@ -1,5 +1,5 @@
 import { resolveCatalogLabel, type ModuleCatalogs, type ModuleRegistry } from "@semprec/module-registry";
-import type { PropertyRow } from "../types.js";
+import type { PropertyRow, PropertyType, RelationDefinitionRow } from "../types.js";
 
 /** The two locales `resolveCatalogLabel` resolves against (issue #236's scope note). */
 export type ManifestLocale = "cs" | "en";
@@ -19,14 +19,33 @@ export interface ResolvedOption {
   label: string;
 }
 
+/**
+ * Typed projection of a property's stored config (issue #1360), not a dump of the stored object.
+ * Select and multi_select options stay in `ResolvedProperty.options`, never here.
+ */
+export interface ResolvedPropertyConfig {
+  default?: unknown;
+  /** relation only; present together with `cardinality` when the relation definition is readable. */
+  targetDatabaseId?: string;
+  cardinality?: RelationDefinitionRow["cardinality"];
+  /** date only; `false` when the stored config has no value. */
+  includeTime?: boolean;
+  /** number only; passed through as stored. */
+  filterPresets?: unknown;
+}
+
 export interface ResolvedProperty {
+  id: string;
+  type: PropertyType;
+  /** Whether a filter can be built on this property (issue #1360). */
+  filterable: boolean;
   key: string;
   name: string;
   owner: PropertyRow["owner"];
   locked: boolean;
   /** Resolved select/multi_select option labels (issue #147) — absent for every other property type. */
   options?: ResolvedOption[];
-  config?: { default: unknown };
+  config: ResolvedPropertyConfig;
 }
 
 export interface CatalogResolver {
@@ -98,17 +117,52 @@ export function resolveDatabaseName(
     : rawKeyFallback(dbName, dbKey, dbId);
 }
 
+const ALWAYS_FILTERABLE_TYPES: readonly PropertyType[] = ["select", "multi_select", "relation", "date", "checkbox"];
+const DEFAULT_TYPES: readonly PropertyType[] = ["select", "multi_select", "checkbox", "number", "text", "date"];
+
+function isFilterable(p: PropertyRow): boolean {
+  if (p.type === "number") return Array.isArray(p.config.filterPresets) && p.config.filterPresets.length > 0;
+  return ALWAYS_FILTERABLE_TYPES.includes(p.type);
+}
+
+function resolveConfig(
+  p: PropertyRow,
+  relationDefinitions: ReadonlyMap<string, RelationDefinitionRow> | undefined,
+): ResolvedPropertyConfig {
+  if (p.type === "relation") {
+    const definition = relationDefinitions?.get(p.id);
+    const targetDatabaseId = p.config.targetDatabaseId;
+    if (!definition || typeof targetDatabaseId !== "string") return {};
+    return { targetDatabaseId, cardinality: definition.cardinality };
+  }
+  const config: ResolvedPropertyConfig = {};
+  if (p.type === "date") config.includeTime = p.config.includeTime === true;
+  if (p.type === "number" && Object.hasOwn(p.config, "filterPresets")) config.filterPresets = p.config.filterPresets;
+  if (DEFAULT_TYPES.includes(p.type) && Object.hasOwn(p.config, "default")) config.default = p.config.default;
+  return config;
+}
+
 export function resolveProperty(
   p: PropertyRow,
   dbKey: string | null,
   catalogs: ModuleCatalogs | undefined,
   locale: ManifestLocale,
+  relationDefinitions?: ReadonlyMap<string, RelationDefinitionRow>,
 ): ResolvedProperty {
   const propName = catalogs
     ? resolveCatalogLabel(p.name, catalogs[locale], catalogs.en, `property.${dbKey}.${p.key}.name`)
     : rawKeyFallback(p.name, p.key, p.key);
 
-  const resolved: ResolvedProperty = { key: p.key, name: propName, owner: p.owner, locked: p.locked };
+  const resolved: ResolvedProperty = {
+    id: p.id,
+    type: p.type,
+    filterable: isFilterable(p),
+    key: p.key,
+    name: propName,
+    owner: p.owner,
+    locked: p.locked,
+    config: resolveConfig(p, relationDefinitions),
+  };
 
   if (p.type === "select" || p.type === "multi_select") {
     const rawOptions = p.config.options;
@@ -127,11 +181,5 @@ export function resolveProperty(
     }
   }
 
-  if (
-    ["select", "multi_select", "checkbox", "number", "text", "date"].includes(p.type) &&
-    Object.hasOwn(p.config, "default")
-  ) {
-    resolved.config = { default: p.config.default };
-  }
   return resolved;
 }
