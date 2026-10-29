@@ -234,8 +234,9 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
       return chokePoint.deleteView({ id: input.viewId, actor: toActor(actor), actingUserId: actor.userId });
     },
 
-    async queryView(_actor, input) {
+    async queryView(actor, input) {
       const page = await chokePoint.queryViewItems(input.viewId, {
+        locale: await chokePoint.findUserLocale(actor.userId),
         filter: input.filter,
         sort: input.sort,
         cursor: input.cursor,
@@ -324,7 +325,7 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
       return item;
     },
 
-    async queryDatabase(_actor, input) {
+    async queryDatabase(actor, input) {
       const database = await chokePoint.getDatabase(input.databaseId);
       if (!database)
         throw new NotFoundError(`Database ${input.databaseId} not found`, {
@@ -332,6 +333,7 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
           databaseId: input.databaseId,
         });
       const page = await chokePoint.queryDatabaseItems(input.databaseId, {
+        locale: await chokePoint.findUserLocale(actor.userId),
         filter: input.filter,
         sort: input.sort,
         cursor: input.cursor,

@@ -1,6 +1,9 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { randomUUID } from "node:crypto";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createUser } from "../auth/usersStore.js";
+import { hashPassword } from "../auth/passwordHash.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { ValidationError } from "../errors.js";
 import type { QueryViewResult } from "../views/viewQuery.js";
@@ -313,5 +316,88 @@ describe("select option-order sort (issue #1408)", () => {
     it("rejects an unknown groupDirection value", async () => {
       await expect(createGrouped("sideways")).rejects.toBeInstanceOf(ValidationError);
     });
+  });
+});
+
+describe("text sort collation and title tie-break (issue #1524)", () => {
+  let databaseId: string;
+  const titles = ["Hrad", "Chalupa", "Rybník", "Řeka", "Auto"];
+  const ids: Record<string, string> = {};
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint = createChokePoint(pool);
+    await resetDatabase(pool);
+    databaseId = (await chokePoint.createDatabase({ name: "Places" })).id;
+    await chokePoint.createProperty({ databaseId, key: "name", name: "Name", type: "title" });
+    await chokePoint.createProperty({ databaseId, key: "kind", name: "Kind", type: "text" });
+    for (const name of titles) {
+      ids[name] = (await chokePoint.createItem({ databaseId, properties: { name, kind: "x" } })).id;
+    }
+  });
+
+  const nameOf = (id: string) => titles.find((name) => ids[name] === id);
+
+  it("orders Czech titles by the Czech alphabet for locale cs", async () => {
+    const page = await chokePoint.queryDatabaseItems(databaseId, {
+      sort: [{ property: "name", direction: "asc" }],
+      locale: "cs",
+    });
+    expect(page.items.map((item) => item.properties.name)).toEqual(["Auto", "Hrad", "Chalupa", "Rybník", "Řeka"]);
+  });
+
+  it("uses the neutral collation for other locales and for no locale", async () => {
+    for (const locale of ["en", undefined]) {
+      const page = await chokePoint.queryDatabaseItems(databaseId, {
+        sort: [{ property: "name", direction: "asc" }],
+        locale,
+      });
+      expect(page.items.map((item) => item.properties.name)).toEqual(["Auto", "Chalupa", "Hrad", "Řeka", "Rybník"]);
+    }
+  });
+
+  it("breaks ties on another key by title, then by id", async () => {
+    const dupId = (await chokePoint.createItem({ databaseId, properties: { name: "Hrad", kind: "x" } })).id;
+    const page = await chokePoint.queryDatabaseItems(databaseId, {
+      sort: [{ property: "kind", direction: "asc" }],
+      locale: "cs",
+    });
+    expect(page.items.map((item) => item.properties.name)).toEqual([
+      "Auto",
+      "Hrad",
+      "Hrad",
+      "Chalupa",
+      "Rybník",
+      "Řeka",
+    ]);
+    const hradIds = page.items.filter((item) => item.properties.name === "Hrad").map((item) => item.id);
+    expect(hradIds).toEqual([ids.Hrad!, dupId].sort());
+  });
+
+  it("pages a Czech title sort through three pages without missing or repeating a row", async () => {
+    const sort = [{ property: "name", direction: "asc" }];
+    const { ids: paged, pages } = await collectPages((cursor) =>
+      chokePoint.queryDatabaseItems(databaseId, { sort, limit: 2, cursor, locale: "cs" }),
+    );
+    expect(pages).toBe(3);
+    expect(paged.map(nameOf)).toEqual(["Auto", "Hrad", "Chalupa", "Rybník", "Řeka"]);
+  });
+
+  it("pages a descending text-key sort with the title tie-break through every row once", async () => {
+    const sort = [{ property: "kind", direction: "desc" }];
+    const { ids: paged } = await collectPages((cursor) =>
+      chokePoint.queryDatabaseItems(databaseId, { sort, limit: 2, cursor, locale: "cs" }),
+    );
+    expect(paged.map(nameOf)).toEqual(["Auto", "Hrad", "Chalupa", "Rybník", "Řeka"]);
+  });
+
+  it("reads the locale of a user", async () => {
+    const user = await createUser(pool, {
+      email: `locale-${randomUUID()}@example.test`,
+      passwordHash: await hashPassword("s3cret-password"),
+      locale: "en",
+      tenantId: getTenantZeroId(),
+    });
+    expect(await chokePoint.findUserLocale(user.id)).toBe("en");
   });
 });

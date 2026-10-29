@@ -18,6 +18,24 @@ export function sortKeyCast(property: Pick<PropertyRow, "type" | "config">): "::
   return property.type === "number" ? "::numeric" : property.type === "date" ? "::timestamptz" : "";
 }
 
+/** The ICU collations a text sort may use; the SQL names come only from this closed list. */
+export type SortCollation = "cs-x-icu" | "und-x-icu";
+
+/** The neutral collation, used for every locale but Czech and for callers without a user. */
+export const DEFAULT_SORT_COLLATION: SortCollation = "und-x-icu";
+
+/** Maps a `users.locale` to its collation: Czech sorts by the Czech alphabet, anything else (or no locale) neutrally. */
+export function collationForLocale(locale: string | undefined): SortCollation {
+  return locale?.split(/[-_]/)[0]?.toLowerCase() === "cs" ? "cs-x-icu" : DEFAULT_SORT_COLLATION;
+}
+
+const COLLATED_TYPES: ReadonlySet<string> = new Set(["title", "text", "url"]);
+
+/** `COLLATE "<name>"` for a text-like sort key, empty for every other type. */
+function collateClause(property: Pick<PropertyRow, "type">, collation: SortCollation): string {
+  return COLLATED_TYPES.has(property.type) ? ` COLLATE "${collation}"` : "";
+}
+
 function lookupSortProperty(sort: SortSpec, properties: SortProperties): Pick<PropertyRow, "type" | "config"> {
   const property = properties.get(sort.property);
   if (!property) {
@@ -33,14 +51,19 @@ function lookupSortProperty(sort: SortSpec, properties: SortProperties): Pick<Pr
  * lives in `items.computed` (the recompute worker's column), every other property's in
  * `items.properties`. Pushes the property key onto `params`.
  */
-function sortKeyExpression(sort: SortSpec, property: Pick<PropertyRow, "type" | "config">, params: unknown[]): string {
+function sortKeyExpression(
+  sort: SortSpec,
+  property: Pick<PropertyRow, "type" | "config">,
+  params: unknown[],
+  collation: SortCollation,
+): string {
   const optionKeys = selectOptionKeys(property);
   if (optionKeys) params.push(optionKeys);
   const keysIndex = params.length;
   params.push(sort.property);
   if (optionKeys) return optionPosition(keysIndex, `properties ->> $${params.length}`);
   const column = property.type === "rollup" ? "computed" : "properties";
-  return `(${column} ->> $${params.length})${sortKeyCast(property)}`;
+  return `(${column} ->> $${params.length})${sortKeyCast(property)}${collateClause(property, collation)}`;
 }
 
 /**
@@ -75,10 +98,15 @@ function cursorOptionText(value: unknown, optionKeys: string[]): string | null {
  * (never the direction, which is only ever the literal 'ASC'/'DESC' chosen below from
  * the already-validated 'asc'|'desc' enum) onto `params`.
  */
-export function compileSort(sorts: SortSpec[], properties: SortProperties, params: unknown[]): string {
+export function compileSort(
+  sorts: SortSpec[],
+  properties: SortProperties,
+  params: unknown[],
+  collation: SortCollation = DEFAULT_SORT_COLLATION,
+): string {
   const clauses = sorts.map((sort) => {
     const dir = sort.direction === "asc" ? "ASC" : "DESC";
-    return `${sortKeyExpression(sort, lookupSortProperty(sort, properties), params)} ${dir} NULLS LAST`;
+    return `${sortKeyExpression(sort, lookupSortProperty(sort, properties), params, collation)} ${dir} NULLS LAST`;
   });
   return clauses.join(", ");
 }
@@ -99,17 +127,18 @@ export function compileSortKeyset(
   properties: SortProperties,
   cursor: { values: unknown[]; id: string },
   params: unknown[],
+  collation: SortCollation = DEFAULT_SORT_COLLATION,
 ): string {
   const keys = sorts.map((sort, index) => {
     const property = lookupSortProperty(sort, properties);
-    const expression = sortKeyExpression(sort, property, params);
+    const expression = sortKeyExpression(sort, property, params, collation);
     const optionKeys = selectOptionKeys(property);
     const rawValue = cursor.values[index] ?? null;
     const value = optionKeys && rawValue !== null ? cursorOptionText(rawValue, optionKeys) : rawValue;
     if (value === null) return { after: "FALSE", same: `${expression} IS NULL` };
     params.push(JSON.stringify(value));
     const boundText = `$${params.length}::jsonb #>> '{}'`;
-    let bound = `(${boundText})${sortKeyCast(property)}`;
+    let bound = `(${boundText})${sortKeyCast(property)}${collateClause(property, collation)}`;
     if (optionKeys) {
       params.push(optionKeys);
       bound = optionPosition(params.length, boundText);

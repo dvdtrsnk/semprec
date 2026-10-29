@@ -1,13 +1,19 @@
 import type { PoolClient } from "pg";
 import { NotFoundError, ValidationError } from "../errors.js";
-import type { ItemRow, ViewItemRow, ViewRow } from "../types.js";
+import type { ItemRow, PropertyRow, ViewItemRow, ViewRow } from "../types.js";
 import { countItems, getItemsByIds, getItemsByIdsIncludingDeleted, listItems } from "../chokePoint/itemsStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import * as viewItemsStore from "../chokePoint/viewItemsStore.js";
 import { compileFilterNode, resolveFilterCompileContext } from "./filterCompiler.js";
 import { buildFilterProperties } from "./filterProperties.js";
-import { compileSort, compileSortKeyset, sortKeyCast, type SortProperties } from "./sortCompiler.js";
+import {
+  collationForLocale,
+  compileSort,
+  compileSortKeyset,
+  sortKeyCast,
+  type SortProperties,
+} from "./sortCompiler.js";
 import { parseFilterNode, type FilterNode } from "./filterTree.js";
 import { parseSortConfig, sortConfigSchema, type SortSpec } from "./sortSpec.js";
 import { parseViewConfig, projectProperties, type ViewConfig } from "./viewConfig.js";
@@ -27,6 +33,8 @@ export interface QueryViewOptions {
   includeCount?: boolean;
   /** The clock `date_relative` conditions are evaluated at; defaults to the current time. */
   now?: Date;
+  /** The caller's `users.locale`, choosing the text-sort collation (`cs` is Czech, anything else or absent is neutral). */
+  locale?: string;
 }
 
 export interface QueryViewResult {
@@ -123,6 +131,18 @@ function decodeSortCursor(
   return { values: v, id };
 }
 
+/**
+ * Appends the database's title property as a last ascending sort key when a sort exists and the
+ * title is not already one, so rows equal on every key order by title (then by id). The title is
+ * part of the sort tuple, hence of the keyset cursor.
+ */
+function withTitleTieBreak(sortSpecs: SortSpec[], properties: PropertyRow[]): SortSpec[] {
+  if (sortSpecs.length === 0) return sortSpecs;
+  const title = properties.find((p) => p.type === "title");
+  if (!title || sortSpecs.some((sort) => sort.property === title.key)) return sortSpecs;
+  return [...sortSpecs, { property: title.key, direction: "asc" }];
+}
+
 interface QueryItemsCoreOptions extends QueryViewOptions {
   filterNode?: FilterNode;
   sortSpecs?: SortSpec[];
@@ -145,7 +165,8 @@ async function queryItemsCore(
   const properties = await listPropertiesByDatabase(client, databaseId);
   const sortProperties: SortProperties = new Map(properties.map((p) => [p.key, p]));
   const filterProperties = filterNode ? await buildFilterProperties(client, properties) : undefined;
-  const sortSpecs = options.sortSpecs ?? [];
+  const collation = collationForLocale(options.locale);
+  const sortSpecs = withTitleTieBreak(options.sortSpecs ?? [], properties);
   const sorted = sortSpecs.length > 0;
   const groupDirection = options.groupDirection ?? "asc";
   const sortCursor =
@@ -163,11 +184,11 @@ async function queryItemsCore(
     cursor: sorted ? undefined : options.cursor,
     includeDeleted: options.includeDeleted,
     buildFilterSql,
-    buildOrderBySql: sorted ? (params) => compileSort(sortSpecs, sortProperties, params) : undefined,
+    buildOrderBySql: sorted ? (params) => compileSort(sortSpecs, sortProperties, params, collation) : undefined,
     keyset: sorted
       ? {
           buildAfterSql: (params) =>
-            sortCursor ? compileSortKeyset(sortSpecs, sortProperties, sortCursor, params) : undefined,
+            sortCursor ? compileSortKeyset(sortSpecs, sortProperties, sortCursor, params, collation) : undefined,
           encodeCursor: (last) => encodeSortCursor(sortSpecs, sortProperties, last, groupDirection),
         }
       : undefined,
@@ -322,6 +343,8 @@ export interface DatabaseQueryInput {
   limit?: unknown;
   inTrash?: unknown;
   includeCount?: unknown;
+  /** Set by the application layer from the actor's `users.locale`; never read from the request body. */
+  locale?: string;
 }
 
 /**
@@ -342,7 +365,15 @@ export async function queryDatabaseItems(
   const includeDeleted = parseInTrashInput(input.inTrash);
   const includeCount = parseIncludeCountInput(input.includeCount);
 
-  return queryItemsCore(client, databaseId, { filterNode, sortSpecs, limit, cursor, includeDeleted, includeCount });
+  return queryItemsCore(client, databaseId, {
+    filterNode,
+    sortSpecs,
+    limit,
+    cursor,
+    includeDeleted,
+    includeCount,
+    locale: input.locale,
+  });
 }
 
 export interface ViewQueryInput {
@@ -352,6 +383,8 @@ export interface ViewQueryInput {
   limit?: unknown;
   inTrash?: unknown;
   includeCount?: unknown;
+  /** Set by the application layer from the actor's `users.locale`; never read from the request body. */
+  locale?: string;
 }
 
 /**
@@ -400,6 +433,7 @@ export async function queryViewItems(
     cursor,
     includeDeleted,
     includeCount,
+    locale: input.locale,
   });
   return { ...rest, items: items.map((item) => ({ ...item, properties: projectProperties(item.properties, config) })) };
 }
