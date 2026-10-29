@@ -7,7 +7,7 @@ import type {
   ToolEventMetadata,
   UserTurnContextRef,
 } from "@semprec/agent-runtime";
-import { AgentRunError } from "@semprec/data";
+import { AgentRunError, AiBudgetExceededError } from "@semprec/data";
 import { logger } from "./logger.js";
 import { toPiMessages } from "./piConversationHistory.js";
 
@@ -23,6 +23,8 @@ export interface PiAgentSessionFactoryOptions {
    * the next prompt text. Called once per turn; absent means none.
    */
   pendingSystemMessages?: () => readonly string[];
+  /** Whether a failed assistant message came from a call the gateway refused for the budget. */
+  isBudgetRefusal?: (message: AssistantMessage) => boolean;
 }
 
 function isAssistantMessage(message: unknown): message is AssistantMessage {
@@ -116,10 +118,14 @@ function toAgentMessage(
  * pi reports a failed or aborted model call as a final assistant message rather than a rejected
  * `prompt()`; turn that into a thrown error so the caller closes the run as `error`.
  */
-function assertModelSucceeded(agent: Agent): void {
+function assertModelSucceeded(
+  agent: Agent,
+  isBudgetRefusal: ((message: AssistantMessage) => boolean) | undefined,
+): void {
   const last = agent.state.messages.at(-1);
   if (!isAssistantMessage(last)) return;
   if (last.stopReason === "error" || last.stopReason === "aborted") {
+    if (isBudgetRefusal?.(last)) throw new AiBudgetExceededError();
     throw new AgentRunError("modelError", last.errorMessage ?? `model call ended with stopReason '${last.stopReason}'`);
   }
 }
@@ -137,6 +143,7 @@ async function* promptMessages(
   promptText: string,
   toolFailure: { error: Error | undefined },
   toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>,
+  isBudgetRefusal: ((message: AssistantMessage) => boolean) | undefined,
   signal?: AbortSignal,
 ): AsyncGenerator<AgentMessage> {
   signal?.throwIfAborted();
@@ -196,7 +203,7 @@ async function* promptMessages(
   }
 
   if (toolFailure.error) throw toolFailure.error;
-  assertModelSucceeded(agent);
+  assertModelSucceeded(agent, isBudgetRefusal);
 }
 
 /**
@@ -251,6 +258,7 @@ export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOption
         promptText,
         toolFailure,
         options.toolEventMetadata,
+        options.isBudgetRefusal,
         sessionOptions.signal,
       );
     };

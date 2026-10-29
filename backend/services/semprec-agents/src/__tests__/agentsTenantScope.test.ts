@@ -139,7 +139,7 @@ describe("agents process runs each job inside its tenant under strict enforcemen
       streamScopes.push(currentTenantScope());
       return faux.provider.streamSimple(model, context, options);
     };
-    fauxGateway = { model: faux.getModel(), streamFn };
+    fauxGateway = { model: faux.getModel(), streamFn, isBudgetRefusal: () => false };
   });
 
   afterEach(async () => {

@@ -16,6 +16,14 @@ export class AgentRunError extends Error {
   }
 }
 
+/** The gateway refused a model call because the AI budget is spent; the message never carries provider or request text. */
+export class AiBudgetExceededError extends AgentRunError {
+  constructor() {
+    super("budgetExceeded", "AI budget exceeded");
+    this.name = "AiBudgetExceededError";
+  }
+}
+
 /** The code an error carries in `agentRunErrorCode`; any other thrown value is `internal`. */
 export function agentRunErrorCodeOf(err: unknown): AgentRunErrorCode {
   if (typeof err === "object" && err !== null && "agentRunErrorCode" in err) {

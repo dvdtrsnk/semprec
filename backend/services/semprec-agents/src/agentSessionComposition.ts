@@ -264,5 +264,6 @@ export async function createAgentSessionFactoryForRun(
     tools: uniqueTools,
     toolEventMetadata,
     systemPrompt,
+    isBudgetRefusal: gateway.isBudgetRefusal,
   });
 }

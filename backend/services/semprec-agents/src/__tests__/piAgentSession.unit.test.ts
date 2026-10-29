@@ -1,8 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
-import { Type, fauxAssistantMessage, fauxProvider, fauxToolCall, type Context } from "@earendil-works/pi-ai";
+import {
+  Type,
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxToolCall,
+  type AssistantMessage,
+  type Context,
+} from "@earendil-works/pi-ai";
 import type { AgentMessage, ToolEventMetadata } from "@semprec/agent-runtime";
-import { agentRunErrorCodeOf } from "@semprec/data";
+import { AiBudgetExceededError, agentRunErrorCodeOf } from "@semprec/data";
 import { toPiMessages } from "../piConversationHistory.js";
 import { createPiAgentSessionFactory } from "../piAgentSession.js";
 
@@ -236,6 +243,48 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
     const failure = await collect(createSession({ task: "t" }).messages()).catch((err: unknown) => err);
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toBe("gateway refused: budget");
+    expect(agentRunErrorCodeOf(failure)).toBe("modelError");
+  });
+
+  it("fails the session with AiBudgetExceededError when the failed message is a budget refusal", async () => {
+    const { faux, model, streamFn: fauxStreamFn } = fauxModel();
+    faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "403: secret provider text" })]);
+    // Marks the final message object of the call, as the gateway model does: it must still be the
+    // object the agent keeps in its state.
+    const refused = new WeakSet<AssistantMessage>();
+    const streamFn: StreamFn = (m, context, options) => {
+      const stream = fauxStreamFn(m, context, options);
+      void Promise.resolve(stream).then((s) => s.result().then((message) => refused.add(message)));
+      return stream;
+    };
+    const createSession = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn,
+      tools: [],
+      systemPrompt: "base",
+      isBudgetRefusal: (message) => refused.has(message),
+    });
+
+    const failure = await collect(createSession({ task: "t" }).messages()).catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(AiBudgetExceededError);
+    expect((failure as Error).message).toBe("AI budget exceeded");
+    expect(agentRunErrorCodeOf(failure)).toBe("budgetExceeded");
+  });
+
+  it("keeps modelError when the detector does not recognize the failed message", async () => {
+    const { faux, model, streamFn } = fauxModel();
+    faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "boom" })]);
+    const createSession = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn,
+      tools: [],
+      systemPrompt: "base",
+      isBudgetRefusal: () => false,
+    });
+
+    const failure = await collect(createSession({ task: "t" }).messages()).catch((err: unknown) => err);
     expect(agentRunErrorCodeOf(failure)).toBe("modelError");
   });
 

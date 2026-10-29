@@ -358,7 +358,7 @@ describe("background task isolation across two tenants: agents runtime (issue #1
 
     faux = fauxProvider();
     const streamFn: StreamFn = (model, context, options) => faux.provider.streamSimple(model, context, options);
-    const gateway: GatewayModel = { model: faux.getModel(), streamFn };
+    const gateway: GatewayModel = { model: faux.getModel(), streamFn, isBudgetRefusal: () => false };
 
     // Composed as createAgentsQueueRuntime composes it, with serve.ts's session wiring: one in-flight
     // registry shared by all three session entry points.

@@ -136,7 +136,7 @@ export * from "./notifications/notificationsStore.js";
 export * from "./notifications/notificationFanoutJob.js";
 
 export * from "./agentRuns/agentRunsStore.js";
-export { AgentRunError, agentRunErrorCodeOf } from "./agentRuns/agentRunErrorCodes.js";
+export { AgentRunError, AiBudgetExceededError, agentRunErrorCodeOf } from "./agentRuns/agentRunErrorCodes.js";
 export * from "./agentRuns/agentRunEventsStore.js";
 export {
   AGENT_RUN_EVENTS_RETENTION_DAYS,
