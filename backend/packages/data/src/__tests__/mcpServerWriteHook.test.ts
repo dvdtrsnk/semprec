@@ -10,6 +10,7 @@ import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWr
 import {
   clearHooksForTests,
   registerItemCreateHook,
+  registerItemPreWriteTransform,
   registerItemUpdateHook,
   registerRelationEdgeWriteHook,
   runItemCreateHooks,
@@ -30,7 +31,9 @@ import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as mcpServerWriteHook from "../mcp/mcpServerWriteHook.js";
 import * as mailMessageFlagSyncStore from "../mail/mailMessageFlagSyncStore.js";
 import * as taskRecurrenceItemUpdateHook from "../tasks/taskRecurrenceItemUpdateHook.js";
+import { tasksItemPreWriteTransform } from "../tasks/tasksItemPreWriteTransform.js";
 import * as transcriptionSpeakerEdges from "../transcription/transcriptionSpeakerEdges.js";
+import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 
 let pool: Pool;
 let mcpServersId: string;
@@ -71,13 +74,14 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
     await pool?.end();
   });
 
-  /** Mirrors the five registrations of `../domainWriteHooks.ts`. Reads each hook through its module namespace, so a test's scoped spy is what gets registered while it is installed. */
+  /** Mirrors the registrations of `../domainWriteHooks.ts` that this file's scenarios depend on. Reads each hook through its module namespace, so a test's scoped spy is what gets registered while it is installed. */
   function registerProductionWriteHookDefaults(): void {
     registerItemCreateHook(mcpServerWriteHook.mcpServerItemCreateHook);
     registerItemUpdateHook(mcpServerWriteHook.mcpServerItemUpdateHook);
     registerItemUpdateHook(mailMessageFlagSyncStore.mailMessageFlagsItemUpdateHook);
     registerItemUpdateHook(taskRecurrenceItemUpdateHook.taskRecurrenceItemUpdateHook);
     registerRelationEdgeWriteHook(transcriptionSpeakerEdges.transcriptSpeakerEdgeWriteHook);
+    registerItemPreWriteTransform(TASKS_MODULE_ID, tasksItemPreWriteTransform);
   }
 
   it("restores all five production write hooks after a registry reset, each dispatched once when restored twice (issue #1261)", async () => {
