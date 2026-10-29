@@ -128,6 +128,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "SESSION_PLATFORMS",
   "SESSION_TTL_SECONDS",
   "SYSTEM_SETTINGS_MODULE_ID",
+  "SYSTEM_WRITER",
   "SchemaLockedError",
   "SelfDeletionRequiresReauthenticationError",
   "TASKS_MODULE_ID",

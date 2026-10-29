@@ -104,7 +104,11 @@ describe("writer identity derived from the authenticated actor (issue #1415)", (
       updatedBy.length = 0;
 
       await gateway.invoke("item.create", actor, ALL_CAPABILITIES, { databaseId: a.id, properties: { title: "n" } });
-      await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, { itemId: itemA.id, properties: { title: "b" } });
+      await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
+        itemId: itemA.id,
+        properties: { title: "b" },
+        ifVersion: itemA.updatedAt,
+      });
 
       expect(createdBy).toEqual([{ writerKind: "user" }]);
       expect(updatedBy).toEqual([{ writerKind: "user" }]);
@@ -120,7 +124,11 @@ describe("writer identity derived from the authenticated actor (issue #1415)", (
       updatedBy.length = 0;
 
       await gateway.invoke("item.create", actor, ALL_CAPABILITIES, { databaseId: a.id, properties: { title: "n" } });
-      await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, { itemId: itemA.id, properties: { title: "b" } });
+      await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
+        itemId: itemA.id,
+        properties: { title: "b" },
+        ifVersion: itemA.updatedAt,
+      });
 
       const expected: WriterIdentity = { writerKind: "agent", onBehalfOfUserId: userId };
       expect(createdBy).toEqual([expected]);
@@ -139,7 +147,11 @@ describe("writer identity derived from the authenticated actor (issue #1415)", (
       const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
       updatedBy.length = 0;
 
-      await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, { itemId: itemA.id, properties: { title: "b" } });
+      await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
+        itemId: itemA.id,
+        properties: { title: "b" },
+        ifVersion: itemA.updatedAt,
+      });
 
       expect(updatedBy).toEqual([
         {

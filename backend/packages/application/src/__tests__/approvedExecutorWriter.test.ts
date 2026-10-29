@@ -79,27 +79,31 @@ describe("approved destructive operations write as the requesting agent (issue #
   });
 
   it("the approvalExecute job executes an approved item.delete with agent, the request's run id and project, and its user", async () => {
-    await inTenantZero(async () => {
+    // The queue worker runs as the system scope, which cannot be entered from inside a tenant.
+    const { item, actor, requestId } = await inTenantZero(async () => {
       const database = await chokePoint.createDatabase({ name: "Approved delete" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       const actor = await makeAgentActor();
       const requestId = await approve("item.delete", actor, { itemId: item.id });
+      return { item, actor, requestId };
+    });
+
+    // Only the trailing replay slot matters; the other positional parameters default sensibly.
+    const taskList = createCoreTaskList(
+      pool,
+      new Map(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      replayApprovedGenericOperation,
+    );
+    await runOnce({ pgPool: pool, taskList });
+
+    await inTenantZero(async () => {
       const request = await getApprovalRequest(pool, requestId);
-
-      // Only the trailing replay slot matters; the other positional parameters default sensibly.
-      const taskList = createCoreTaskList(
-        pool,
-        new Map(),
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        replayApprovedGenericOperation,
-      );
-      await runOnce({ pgPool: pool, taskList });
-
       expect(data.itemDeleteWithClient).toHaveBeenCalledTimes(1);
       expect(vi.mocked(data.itemDeleteWithClient).mock.calls[0]?.[3]).toMatchObject({
         writer: {
@@ -109,7 +113,7 @@ describe("approved destructive operations write as the requesting agent (issue #
           onBehalfOfUserId: actor.userId,
         },
       });
-      expect((await getApprovalRequest(pool, requestId))?.executionStatus).toBe("succeeded");
+      expect(request?.executionStatus).toBe("succeeded");
       expect(await chokePoint.findItem(item.id)).toBeNull();
     });
   });

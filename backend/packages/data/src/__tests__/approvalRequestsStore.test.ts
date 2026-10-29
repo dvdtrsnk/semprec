@@ -47,10 +47,11 @@ describe("approvalRequestsStore reason (issue #1420)", () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
     await seedSystem(pool, createViewTypeRegistry());
+    ownerId = await createUser();
   });
 
   async function insertWithReason(reason: string | null | undefined) {
-    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
     return createPendingApprovalRequest(pool, {
       agentRunId: run.id,
       toolName: "search_web",

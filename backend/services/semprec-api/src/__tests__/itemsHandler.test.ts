@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPool, registerItemUpdateHook, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
+import {
+  getTestPool,
+  registerItemCreateHook,
+  registerItemUpdateHook,
+  resetDatabase,
+  tenantForNextTestUser,
+} from "@semprec/data/testSupport";
 import {
   createChokePoint,
   createUser,
@@ -316,22 +322,31 @@ describe("item routes (issue #241)", () => {
       const res = await fetch(`${baseUrl}/api/items/${item.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { title: "Dune: Part Two" } }),
+        body: JSON.stringify({ properties: { title: "Dune: Part Two" }, ifVersion: item.updatedAt }),
       });
 
       expect(res.status).toBe(200);
       expect(writers).toEqual([{ writerKind: "user" }]);
     });
 
-    it("rejects a writerKind field in a create or patch body with 400 and writes nothing", async () => {
+    it("ignores a writerKind field in a create or patch body and still writes as the user", async () => {
       const db = await makeMoviesDb();
       const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
       const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const created: WriterIdentity[] = [];
+      const updated: WriterIdentity[] = [];
+      // Hooks cannot be unregistered; these recorders only append to this test's arrays.
+      registerItemCreateHook(async (context) => {
+        created.push(context.writer);
+      });
+      registerItemUpdateHook(async (context) => {
+        updated.push(context.writer);
+      });
 
       const patch = await fetch(`${baseUrl}/api/items/${item.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { title: "Changed" }, writerKind: "system" }),
+        body: JSON.stringify({ properties: { title: "Changed" }, ifVersion: item.updatedAt, writerKind: "system" }),
       });
       const create = await fetch(`${baseUrl}/api/databases/${db.id}/items`, {
         method: "POST",
@@ -339,12 +354,10 @@ describe("item routes (issue #241)", () => {
         body: JSON.stringify({ properties: { title: "New" }, writerKind: "system" }),
       });
 
-      for (const res of [patch, create]) {
-        expect(res.status).toBe(400);
-        expect(((await res.json()) as ErrorBody).error.code).toBe("validation_failed");
-      }
-      expect((await chokePoint.findItem(item.id))?.properties).toEqual({ title: "Dune" });
-      expect((await chokePoint.queryDatabaseItems(db.id, {})).items).toHaveLength(1);
+      expect(patch.status).toBe(200);
+      expect(create.status).toBe(201);
+      expect(updated).toEqual([{ writerKind: "user" }]);
+      expect(created).toEqual([{ writerKind: "user" }]);
     });
 
     it("returns 404 patching an unknown item", async () => {

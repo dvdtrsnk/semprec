@@ -61,9 +61,10 @@ async function validateViewTypeConfig(
   if (definition?.configSchema) {
     const result = definition.configSchema.safeParse(config);
     if (!result.success) {
+      // `details` stays a flat record of primitives: the HTTP error contract drops anything else
+      // wholesale (including `field`), and the issues are already in the message.
       throw new ValidationError(`Invalid config for view type '${type}': ${result.error.message}`, {
         field: "config",
-        issues: result.error.issues,
       });
     }
   }
