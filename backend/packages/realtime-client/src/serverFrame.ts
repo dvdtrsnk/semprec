@@ -71,6 +71,10 @@ export function parseServerFrame(raw: string): OutboundFrame | null {
         const { databaseId } = parsed;
         return typeof databaseId === "string" ? { type: "invalidate", scope: "schema", databaseId } : null;
       }
+      if (parsed.scope === "sempThread") {
+        const { threadId } = parsed;
+        return typeof threadId === "string" ? { type: "invalidate", scope: "sempThread", threadId } : null;
+      }
       return null;
     }
     case "notification": {

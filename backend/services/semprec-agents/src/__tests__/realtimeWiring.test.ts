@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
@@ -7,7 +8,9 @@ import {
   createPool,
   createUser,
   insertAndNotifyAgentRunEvent,
+  publishSempThreadInvalidation,
   seedSystem,
+  withTransaction,
 } from "@semprec/data";
 import { createTestTenant, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { REALTIME_CHANNEL, wireRealtimeHooks, type RealtimeMessage } from "@semprec/realtime";
@@ -103,6 +106,32 @@ describe("semprec-agents realtime wiring (issue #1383)", () => {
     const published = envelopes.find((e) => e.message.type === "agent_run_event")!;
     expect(published.tenantId).toBe(tenantId);
     expect(published.message).toMatchObject({ type: "agent_run_event", eventId: String(event.id) });
+  });
+
+  it("publishes a sempThread invalidation of the given tenant after commit from an agents-style write (issue #1395)", async () => {
+    const tenantId = getTenantZeroId();
+    const otherTenantId = await createTestTenant(adminPool);
+    const envelopes = await collectEnvelopes(listener!);
+    const rolledBackThreadId = randomUUID();
+    const threadId = randomUUID();
+
+    await runInTenant(tenantId, async () => {
+      await expect(
+        withTransaction(agentsPool, async (client) => {
+          publishSempThreadInvalidation(client, tenantId, rolledBackThreadId);
+          throw new Error("force rollback");
+        }),
+      ).rejects.toThrow("force rollback");
+      await withTransaction(agentsPool, async (client) => {
+        publishSempThreadInvalidation(client, tenantId, threadId);
+      });
+    });
+
+    await waitUntil(() => envelopes.some((e) => e.message.type === "invalidation" && e.message.scope === "sempThread"));
+    const published = envelopes.filter((e) => e.message.type === "invalidation" && e.message.scope === "sempThread");
+    expect(published.map((e) => e.message)).toEqual([{ type: "invalidation", scope: "sempThread", threadId }]);
+    expect(published[0]!.tenantId).toBe(tenantId);
+    expect(envelopes.filter((e) => e.tenantId === otherTenantId)).toEqual([]);
   });
 
   it("serve.ts wires the hooks after the runtime role check and before the queue runtime exists", () => {

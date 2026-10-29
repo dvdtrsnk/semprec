@@ -14,6 +14,7 @@ import {
   createUser,
   hashPassword,
   insertAgentRunEvent,
+  publishSempThreadInvalidation,
   writeNotification,
   createChokePoint,
   createDocStore,
@@ -534,6 +535,90 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
     clientA.close();
     clientB.close();
     clientU.close();
+  });
+
+  it("delivers a sempThread invalidation committed through the hook only to sockets of its own tenant (issue #1395)", async () => {
+    const otherTenant = await createTestTenant(pool);
+    identityByToken.set("a", {
+      tenantId: getTenantZeroId(),
+      userId: await createTestUser(),
+      sessionId: "session-a",
+    });
+    identityByToken.set("b", { tenantId: otherTenant, userId: await createTestUser(), sessionId: "session-b" });
+    const clientA = await connect("a");
+    const clientB = await connect("b");
+    const receivedA = new Promise<string>((resolve) => clientA.once("message", (d) => resolve(messageText(d))));
+    const receivedB: string[] = [];
+    clientB.on("message", (d) => receivedB.push(messageText(d)));
+
+    // The hook is wired over a pool that is not the writer's tenant scope, as in the agents process.
+    wireRealtimeHooks(pool);
+    const threadId = randomUUID();
+    await withTransaction(pool, async (client) => {
+      publishSempThreadInvalidation(client, getTenantZeroId(), threadId);
+    });
+
+    expect(JSON.parse(await receivedA)).toEqual({ type: "invalidate", scope: "sempThread", threadId });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(receivedB).toEqual([]);
+
+    clientA.close();
+    clientB.close();
+  });
+
+  it("sends no sempThread frame when the surrounding transaction rolls back (issue #1395)", async () => {
+    identityByToken.set("a", {
+      tenantId: getTenantZeroId(),
+      userId: await createTestUser(),
+      sessionId: "session-a",
+    });
+    const clientA = await connect("a");
+    const received: string[] = [];
+    clientA.on("message", (d) => received.push(messageText(d)));
+
+    wireRealtimeHooks(pool);
+    const rolledBackThreadId = randomUUID();
+    await expect(
+      withTransaction(pool, async (client) => {
+        publishSempThreadInvalidation(client, getTenantZeroId(), rolledBackThreadId);
+        throw new Error("force rollback");
+      }),
+    ).rejects.toThrow("force rollback");
+
+    // A committed sentinel proves the rolled-back notify would already have been dispatched.
+    const sentinelThreadId = randomUUID();
+    await withTransaction(pool, async (client) => {
+      publishSempThreadInvalidation(client, getTenantZeroId(), sentinelThreadId);
+    });
+    await vi.waitFor(() => expect(received.length).toBeGreaterThan(0));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(received.map((text) => JSON.parse(text))).toEqual([
+      { type: "invalidate", scope: "sempThread", threadId: sentinelThreadId },
+    ]);
+
+    clientA.close();
+  });
+
+  it("drops a malformed sempThread invalidation without reaching any socket (issue #1395)", async () => {
+    identityByToken.set("a", {
+      tenantId: getTenantZeroId(),
+      userId: await createTestUser(),
+      sessionId: "session-a",
+    });
+    const clientA = await connect("a");
+    const received: string[] = [];
+    clientA.on("message", (d) => received.push(messageText(d)));
+
+    await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), {
+      type: "invalidation",
+      scope: "sempThread",
+      threadId: "not-a-uuid",
+    });
+    await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), { type: "invalidation", scope: "sempThread" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(received).toEqual([]);
+
+    clientA.close();
   });
 
   it("closes a session_revoked socket only when the envelope's tenant matches the socket's tenant", async () => {

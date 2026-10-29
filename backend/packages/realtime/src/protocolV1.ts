@@ -63,7 +63,8 @@ export function parseInboundFrame(raw: string): InboundFrame | null {
 /**
  * The closed catalog of protocol-v1 outbound (server -> client) text frames. `invalidate` stays a
  * thin reference (issue #161) — `scope: "item"` names one item's identifiers/op/`updatedAt`,
- * `scope: "schema"` names only the database whose properties/views changed — so the client always
+ * `scope: "schema"` names only the database whose properties/views changed, and
+ * `scope: "sempThread"` names only the Semp thread that changed (best effort, no replay) — so the client always
  * refetches the durable row itself over REST rather than trusting a second, parallel copy of it
  * riding the socket. `notification` is the one deliberate exception and carries the complete row:
  * a notification's `title` is pre-rendered text with no second enforcement layer to fall back on.
@@ -81,6 +82,7 @@ export type OutboundFrame =
       updatedAt: string;
     }
   | { type: "invalidate"; scope: "schema"; databaseId: string }
+  | { type: "invalidate"; scope: "sempThread"; threadId: string }
   | { type: "notification"; notification: NotificationRow }
   | { type: "agent:event"; agentRunId: string; event: AgentRunEventRow }
   | { type: "agent:delta"; agentRunId: string; delta: unknown; chunk?: AgentDeltaChunk }
