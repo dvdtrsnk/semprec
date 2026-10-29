@@ -342,7 +342,8 @@ async function assertValidEnvelopeForCard(
  * the item, one edge per target id with the new item as caller; any failing edge aborts the item
  * and the earlier edges, and its error carries `details.field` = the relation key. A speaker-mapping transcript card (issue #185) writes its `speakers` edge with the
  * envelope's `{ speaker }` metadata as the relation write itself — the user-owned mapping only
- * ever exists once a human confirmed it.
+ * ever exists once a human confirmed it. A `fileFromAttachment` step (issue #1703) moves an attachment
+ * of the card's source Inbox item into Files inside the same transaction; `executeProposalSteps` does it.
  */
 export async function confirmProposalWithClient(
   client: PoolClient,
@@ -373,6 +374,7 @@ export async function confirmProposalWithClient(
         });
       }
     }
+    const origin = await resolveItemOriginSource(client, config, proposal, transcriptCardEdge?.transcriptId ?? null);
     // A multi-step envelope writes every active step; a single-step one keeps the direct path below.
     let created: ItemRow;
     let createdItemIds: string[];
@@ -381,6 +383,7 @@ export async function confirmProposalWithClient(
       const executed = await executeProposalSteps(client, envelope.operations, {
         writer: CONFIRMING_USER_WRITER,
         actingUserId,
+        sourceInboxItemId: origin.inboxItemId,
       });
       const [primaryItem] = await itemsStore.getItemsByIds(client, [executed.primaryItemId]);
       if (!primaryItem) throw new Error(`Primary step item ${executed.primaryItemId} disappeared during confirm`);
@@ -395,11 +398,7 @@ export async function confirmProposalWithClient(
       );
       createdItemIds = [created.id];
     }
-    await insertItemOrigins(
-      client,
-      createdItemIds,
-      await resolveItemOriginSource(client, config, proposal, transcriptCardEdge?.transcriptId ?? null),
-    );
+    await insertItemOrigins(client, createdItemIds, origin);
     resultItemId = created.id;
     resultLabel = await resolveResultLabel(client, resultDatabaseId, created);
     if (credential) {

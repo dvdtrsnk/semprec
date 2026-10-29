@@ -21,7 +21,9 @@ import {
   type ProposalComputationOperation,
 } from "./proposalOperations.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
+import { FILES_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { assertValidMcpServerProposalProperties } from "../mcp/mcpServerProposal.js";
+import { parseFileFromAttachmentProperties } from "./fileAttachmentStep.js";
 import { CardinalityViolationError, ForbiddenError, ValidationError } from "../errors.js";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import type { DatabaseRow, ItemRow, PropertyRow } from "../types.js";
@@ -67,12 +69,15 @@ const stepRelationsSchema = z.record(z.string(), z.array(stepRelationTargetSchem
 /**
  * One step of a multi-step envelope (`docs/adr/2026-10-25-multi-step-proposal-envelope.md`).
  * `create` names its database by `databaseKey`; `update` and `link` name an existing item by `itemId`.
+ * `fileFromAttachment` names neither: it writes the system Files database, and its `properties` are
+ * the attachment to move and the Files item's name and date. It is never the primary step
+ * (`docs/adr/2026-10-29-file-from-attachment-proposal-step.md`).
  * `enabled` defaults to true and `optional` to false when absent. `before` holds the current values
  * of the properties and relations an `update` step changes, `after` the values it writes.
  */
 const proposalStepSchema = z.object({
   ref: z.string().min(1),
-  op: z.enum(["create", "update", "link"]),
+  op: z.enum(["create", "update", "link", "fileFromAttachment"]),
   databaseKey: z.string().min(1).optional(),
   itemId: z.string().min(1).optional(),
   properties: z.record(z.string(), z.unknown()).optional(),
@@ -581,9 +586,34 @@ function assertStepDatabaseWritable(step: ProposalStep, database: DatabaseRow | 
   return database;
 }
 
+/**
+ * Validates a `fileFromAttachment` step (issue #1703): it names neither a `databaseKey` nor an `itemId`,
+ * its properties are exactly the allowed fields, and its relations are checked as a create step's are.
+ * The attachment itself is checked at confirm, where the proposal's source Inbox item is known.
+ */
+async function assertValidFileFromAttachmentStep(client: PoolClient, step: ProposalStep): Promise<DatabaseRow> {
+  if (step.databaseKey !== undefined)
+    throw stepError(step, "a fileFromAttachment step cannot name a databaseKey", "databaseKey");
+  if (step.itemId !== undefined) throw stepError(step, "a fileFromAttachment step cannot name an itemId", "itemId");
+  parseFileFromAttachmentProperties(step.ref, step.properties ?? {});
+  const database = assertStepDatabaseWritable(
+    step,
+    await databasesStore.getDatabaseByModuleId(client, FILES_MODULE_ID),
+    "properties",
+  );
+  await withStepRef(step.ref, async () => {
+    const byKey = new Map(
+      (await propertiesStore.listPropertiesByDatabase(client, database.id)).map((property) => [property.key, property]),
+    );
+    await assertValidEnvelopeRelations(client, database.id, byKey, existingItemRelations(step));
+  });
+  return database;
+}
+
 /** Validates one active step as a single-step envelope would be; resolves to the database the step writes to. */
 async function assertValidStep(client: PoolClient, step: ProposalStep): Promise<DatabaseRow> {
   const properties = step.properties ?? {};
+  if (step.op === "fileFromAttachment") return assertValidFileFromAttachmentStep(client, step);
   if (step.op === "create") {
     if (step.itemId !== undefined) throw stepError(step, "a create step cannot name an itemId", "itemId");
     if (step.databaseKey === undefined) throw stepError(step, "a create step needs a databaseKey", "databaseKey");
@@ -674,6 +704,10 @@ async function assertValidEnvelopeOperations(
     const database = await assertValidStep(client, step);
     if (step.role !== "primary") continue;
     if (step.op === "link") throw stepError(step, "the primary step cannot be a link step", "op");
+    // The envelope's top-level `properties` mirror the primary step and are checked against the target
+    // database's own properties; a file step's `attachmentId` is not one of them.
+    if (step.op === "fileFromAttachment")
+      throw stepError(step, "the primary step cannot be a fileFromAttachment step", "op");
     if (database.id !== envelope.target) {
       throw stepError(
         step,

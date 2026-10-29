@@ -63,6 +63,25 @@ function officeTypeFromZip(head: Buffer): "xlsx" | "docx" | null {
   return null;
 }
 
+/** The Files `type` value each stored mime type files as; `audio/*` is handled separately. */
+const FILES_TYPE_BY_MIME_TYPE: ReadonlyMap<string, DetectedFileType> = new Map([
+  ["application/pdf", "pdf"],
+  ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"],
+  ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"],
+  ["image/jpeg", "jpg"],
+  ["image/png", "png"],
+  ["image/heic", "heic"],
+]);
+
+/**
+ * The Files `type` value a stored blob's mime type files as, or null when no Files type matches it.
+ * A caller still checks that the value is one of the Files `type` options before it writes it.
+ */
+export function filesTypeForMimeType(mimeType: string): DetectedFileType | null {
+  if (mimeType.startsWith("audio/")) return "audio";
+  return FILES_TYPE_BY_MIME_TYPE.get(mimeType) ?? null;
+}
+
 /**
  * Detects a file's type from its leading bytes (at most the first `FILE_TYPE_DETECTION_HEAD_BYTES`
  * are read), never from a declared content type or extension. Pure and total: short, empty or
