@@ -773,12 +773,14 @@ const cases: Record<string, TaskCase> = {
         const notificationId = await withTransaction(pool, (client) =>
           writeNotification(client, {
             userId: tenant.userId,
-            // A critical problem: the default preferences push it, a warning would not be pushed (issue #1443).
-            kind: "mail_sync_error",
+            // A critical Semp problem: the default preferences push it, a warning would not be pushed
+            // (issues #1443 and #1466).
+            kind: "semp_problem",
             linkHref: null,
-            sourceTable: "mail_account_sync_state",
+            sourceTable: "semp_problems",
             sourceId: randomUUID(),
             transitionInstance: randomUUID(),
+            payload: { severity: "critical" },
           }),
         );
         return { notificationId };

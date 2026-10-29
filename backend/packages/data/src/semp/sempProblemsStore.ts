@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import { ValidationError } from "../errors.js";
+import { writeNotification } from "../notifications/notify.js";
 
 /** Mirrors the CHECK on `semp_problems.category`. */
 export type SempProblemCategory = "mail" | "agents" | "guidance" | "automation" | "transcription" | "backup";
@@ -46,8 +47,12 @@ interface RaiseRow {
  * the active problem for `(tenant, dedupeKey)` or merges into it. A merge increases
  * `occurrence_count` and sets `last_seen_at`, unless `occurrenceKey` equals the stored
  * `last_occurrence_key` (a replay of the same job or run). A `critical` raise escalates a stored
- * `warning`; an equal or lower severity never changes the stored one. The push for a new or
- * escalated problem is the caller's to act on through the returned outcome.
+ * `warning`; an equal or lower severity never changes the stored one.
+ *
+ * A new or escalated problem also writes its `semp_problem` notification in the same transaction
+ * (issue #1466): one notification per problem and per severity rise, which the fanout job pushes
+ * according to the user's preferences. A merge writes no notification. The returned outcome tells
+ * the caller which of the three happened.
  *
  * One INSERT ... ON CONFLICT on the partial unique index `semp_problems_active_dedupe_uq`. A
  * transaction-scoped advisory lock on the key, taken first, makes the prior severity the
@@ -93,9 +98,22 @@ export async function raiseProblem(client: PoolClient, input: RaiseProblemInput)
   );
   const row = rows[0];
   if (!row) throw new Error("raiseProblem: INSERT ... ON CONFLICT returned no row");
-  if (row.inserted) return { problemId: row.id, outcome: "created" };
   const escalated = row.prior_severity === "warning" && row.severity === "critical";
-  return { problemId: row.id, outcome: escalated ? "escalated" : "merged" };
+  const outcome: RaiseProblemOutcome = row.inserted ? "created" : escalated ? "escalated" : "merged";
+  if (outcome !== "merged") {
+    // The transition instance names the severity, so a severity rise is a new transition of the
+    // same problem. The severity comes from RETURNING, not from the input.
+    await writeNotification(client, {
+      userId: input.userId,
+      kind: "semp_problem",
+      linkHref: `?page=semp-status&id=${row.id}`,
+      sourceTable: "semp_problems",
+      sourceId: row.id,
+      transitionInstance: `${row.id}:${row.severity}`,
+      payload: { severity: row.severity },
+    });
+  }
+  return { problemId: row.id, outcome };
 }
 
 /**

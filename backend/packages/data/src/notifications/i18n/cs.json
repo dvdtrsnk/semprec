@@ -9,5 +9,6 @@
   "notification.process_stale.title": "Proces přestal hlásit stav",
   "notification.queue_backlog.title": "Fronta úloh se hromadí",
   "notification.mail_sync_stalled.title": "Synchronizace pošty se zasekla",
-  "notification.backup_restore_failed.title": "Test obnovy zálohy selhal"
+  "notification.backup_restore_failed.title": "Test obnovy zálohy selhal",
+  "notification.semp_problem.title": "Něco vyžaduje vaši pozornost"
 }

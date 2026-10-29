@@ -1,7 +1,8 @@
 import type { Pool, PoolClient } from "pg";
 import { enqueueJob, CORE_TASK_NAMES } from "@semprec/queue";
 import { withTransaction } from "../db/pool.js";
-import { getNotificationById } from "./notificationsStore.js";
+import { assertKnownValue } from "../dbRowValidation.js";
+import { getNotificationById, type NotificationRow } from "./notificationsStore.js";
 import {
   listPushSubscriptionsForUser,
   revokePushSubscriptionByProviderInvalidation,
@@ -112,6 +113,30 @@ function problemsLevelIncludes(level: NotificationProblemsLevel, severity: Notif
   }
 }
 
+/** The severities a `semp_problem` notification may carry in its payload: a Semp problem is never `info`. */
+const PAYLOAD_PROBLEM_SEVERITIES = ["critical", "warning"] as const;
+
+/**
+ * The fixed policy this notification is pushed under. A `semp_problem` has no fixed severity: its
+ * `payload.severity` is the stored problem's severity, written by `raiseProblem` (issue #1466). A
+ * payload without a known severity is a broken write, so the job throws rather than guess.
+ */
+function policyForNotification(notification: NotificationRow): NotificationKindPolicy {
+  const policy = policyForKind(notification.kind);
+  if (policy.category !== "problems" || policy.severity !== "payload") return policy;
+  const severity = notification.payload.severity;
+  if (typeof severity !== "string") {
+    throw new Error(
+      `notificationFanout: notification ${notification.id} (${notification.kind}) has no severity in its payload`,
+    );
+  }
+  return {
+    category: "problems",
+    severity: assertKnownValue(PAYLOAD_PROBLEM_SEVERITIES, severity, "payload.severity"),
+    push: policy.push,
+  };
+}
+
 export interface HandleNotificationFanoutInput {
   notificationId: string;
 }
@@ -148,7 +173,7 @@ export async function handleNotificationFanoutTask(
   if (!notification) return;
 
   const preferences = await withTransaction(pool, (client) => getNotificationPreferences(client, notification.userId));
-  const interruptionLevel = pushInterruptionLevelFor(policyForKind(notification.kind), preferences);
+  const interruptionLevel = pushInterruptionLevelFor(policyForNotification(notification), preferences);
   if (interruptionLevel === null) return;
 
   const registrations = await withTransaction(pool, (client) =>

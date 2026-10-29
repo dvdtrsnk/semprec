@@ -60,9 +60,14 @@ interface NotificationRow {
   payload: Record<string, unknown>;
 }
 
+/**
+ * The `backup_restore_failed` notifications only. A failure also raises its Semp problem, which writes
+ * a `semp_problem` notification per admin (issue #1466); that one is not what these tests assert.
+ */
 async function listNotifications(): Promise<NotificationRow[]> {
   const { rows } = await pool.query<NotificationRow>(
-    `SELECT id, user_id, kind, title, source_table, source_id, payload FROM notifications ORDER BY created_at`,
+    `SELECT id, user_id, kind, title, source_table, source_id, payload FROM notifications
+      WHERE kind = 'backup_restore_failed' ORDER BY created_at`,
   );
   return rows;
 }
