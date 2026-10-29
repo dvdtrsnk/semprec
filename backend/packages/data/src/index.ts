@@ -115,6 +115,13 @@ export {
   type ResolvedProperty,
 } from "./manifest/catalogResolution.js";
 export * from "./manifest/schemaProjection.js";
+export {
+  compareCollections,
+  createCollectionMetadataResolver,
+  type CollectionMetadata,
+  type CollectionMetadataResolver,
+  type OrderableCollection,
+} from "./manifest/collectionMetadata.js";
 export * from "./manifest/fullModuleRegistry.js";
 export * from "./notifications/findings.js";
 export * from "./notifications/notificationKinds.js";

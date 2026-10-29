@@ -50,6 +50,11 @@ interface DatabaseBody {
   key: string | null;
   system: boolean;
   archivedAt: string | null;
+  icon: string | null;
+  color: string | null;
+  overviewOrder: number | null;
+  switcherOrder: number | null;
+  clientVisible: boolean;
 }
 
 interface PropertyCatalogBody {
@@ -247,6 +252,116 @@ describe("database routes (issue #240)", () => {
 
     const unauthenticated = await fetch(`${baseUrl}/api/databases/${database.id}/properties`);
     expect(unauthenticated.status).toBe(401);
+  });
+
+  async function listPage(query: string): Promise<{ databases: DatabaseBody[]; nextCursor: string | null }> {
+    const res = await fetch(`${baseUrl}/api/databases${query}`, { headers: await authHeader() });
+    expect(res.status).toBe(200);
+    return (await res.json()) as { databases: DatabaseBody[]; nextCursor: string | null };
+  }
+
+  it("orders by switcher order, then overview-only order, then by name, and carries the descriptor metadata", async () => {
+    await chokePoint.createDatabase({ name: "alpha custom" });
+    const { databases } = await listPage("?limit=200");
+    const keys = databases.map((db) => db.key);
+    expect(keys.slice(0, 8)).toEqual([
+      "projects",
+      "tasks",
+      "events",
+      "journal",
+      "people",
+      "companies",
+      "files",
+      "healthRecords",
+    ]);
+    const overviewOnly = databases.filter((db) => db.switcherOrder === null && db.overviewOrder !== null);
+    expect(overviewOnly.map((db) => db.overviewOrder)).toEqual([...overviewOnly.map((db) => db.overviewOrder)].sort());
+    expect(keys.indexOf("books") === -1 || keys.indexOf("books") === 8).toBe(true);
+    const rest = databases.slice(8 + overviewOnly.length).map((db) => db.name.toLowerCase());
+    expect(rest).toEqual([...rest].sort((a, b) => a.localeCompare(b)));
+
+    const byKey = new Map(databases.map((db) => [db.key, db]));
+    expect(byKey.get("projects")).toMatchObject({
+      icon: "folder",
+      color: "#007AFF",
+      overviewOrder: 1,
+      switcherOrder: 1,
+      clientVisible: true,
+    });
+    expect(byKey.get("tasks")).toMatchObject({ overviewOrder: null, switcherOrder: 2, clientVisible: true });
+    expect(byKey.get("journal")).toMatchObject({ overviewOrder: null, switcherOrder: 4, clientVisible: true });
+    expect(byKey.get("healthRecords")).toMatchObject({ overviewOrder: 6, switcherOrder: 8 });
+    for (const key of ["areas", "transcripts"]) {
+      expect(byKey.get(key)).toMatchObject({ overviewOrder: null, switcherOrder: null, clientVisible: true });
+    }
+    for (const key of ["books", "movies", "emails"]) {
+      const db = byKey.get(key);
+      if (db) expect(db).toMatchObject({ switcherOrder: null, clientVisible: true });
+    }
+    for (const db of databases.filter(
+      (d) =>
+        d.system &&
+        !["areas", "transcripts", "books", "movies", "emails"].includes(d.key ?? "") &&
+        d.overviewOrder === null &&
+        d.switcherOrder === null,
+    )) {
+      expect(db.clientVisible).toBe(false);
+    }
+    const custom = databases.find((db) => db.name === "alpha custom");
+    expect(custom).toMatchObject({
+      system: false,
+      clientVisible: true,
+      icon: null,
+      color: null,
+      overviewOrder: null,
+      switcherOrder: null,
+    });
+  });
+
+  it("walks every database exactly once with limit=2 and resumes after the cursor row was archived", async () => {
+    await chokePoint.createDatabase({ name: "Zeta custom" });
+    const all = (await listPage("?limit=200")).databases.map((db) => db.id);
+    expect(all.length).toBeGreaterThan(6);
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const page = await listPage(`?limit=2${cursor === null ? "" : `&cursor=${encodeURIComponent(cursor)}`}`);
+      expect(page.databases.length).toBeLessThanOrEqual(2);
+      seen.push(...page.databases.map((db) => db.id));
+      cursor = page.nextCursor;
+      pages += 1;
+    } while (cursor !== null);
+    expect(pages).toBeGreaterThanOrEqual(3);
+    expect(seen).toEqual(all);
+
+    const custom = await chokePoint.createDatabase({ name: "Gamma custom" });
+    const first = await listPage("?limit=200");
+    const idx = first.databases.findIndex((db) => db.id === custom.id);
+    const cursorPage = await listPage(`?limit=${idx + 1}`);
+    expect(cursorPage.nextCursor).not.toBeNull();
+    await chokePoint.archiveDatabase(custom.id);
+    const resumed = await listPage(`?limit=200&cursor=${encodeURIComponent(cursorPage.nextCursor!)}`);
+    expect(resumed.databases.map((db) => db.id)).toEqual(first.databases.slice(idx + 1).map((db) => db.id));
+  });
+
+  it("rejects a malformed cursor and an out-of-range limit with 400 naming the field", async () => {
+    const headers = await authHeader();
+    for (const cursor of [
+      "not-a-cursor",
+      Buffer.from("[1,2]").toString("base64url"),
+      Buffer.from('["a",null,"n","i"]').toString("base64url"),
+    ]) {
+      const res = await fetch(`${baseUrl}/api/databases?cursor=${cursor}`, { headers });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: { details: unknown } }).error.details).toEqual({ field: "cursor" });
+    }
+    for (const limit of ["0", "201", "x"]) {
+      const res = await fetch(`${baseUrl}/api/databases?limit=${limit}`, { headers });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: { details: unknown } }).error.details).toEqual({ field: "limit" });
+    }
   });
 
   it("registers exactly one property-catalog route handler", () => {
