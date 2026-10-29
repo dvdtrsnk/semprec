@@ -66,8 +66,9 @@ export interface ModuleDatabaseDescriptor {
  * A manifest-declared resumable data migration (issue #111) for one `from_version` ->
  * `to_version` transition of `databaseKey`'s items, distinct from the plain-string
  * `migrations` field above (that one names the module's own structural/DDL files applied
- * by the forward-only runner, issue #224). `converterExport` names a function of shape
- * `(properties) => properties` the module data migration runner calls once per item.
+ * by the forward-only runner, issue #224). `converterExport` names a `ModuleDataMigrationConverter`
+ * (`registry.ts`) of shape `(properties, context) => properties` that the module data migration
+ * runner calls once per item; a converter that needs no context may declare only `properties`.
  */
 export interface ModuleDataMigrationDescriptor {
   databaseKey: string;

@@ -96,15 +96,40 @@ export interface ModuleHeartbeatRuleKindDefinition {
 }
 
 /**
+ * What the module data migration runner passes a converter besides the item's `properties`
+ * (`docs/adr/2026-10-29-module-data-migration-converter-context.md`). `timezone` is the tenant's
+ * configured time zone, read once per run after the run's advisory lock is taken. `itemId` is the
+ * id of the item being converted. `log` writes one structured entry carrying the item id and
+ * `reason`; `reason` is a short code, and no property value may be passed in it.
+ */
+export interface ModuleDataMigrationConverterContext {
+  timezone: string;
+  itemId: string;
+  log: (reason: string) => void;
+}
+
+/**
+ * A module data migration converter, `(properties, context) => properties`. A converter that does
+ * not use `context` may declare only `properties`. Every converter must be idempotent:
+ * `converter(converter(p))` deep-equals `converter(p)` (see
+ * `docs/adr/2026-09-28-two-pass-skip-locked-module-data-migration.md`). The context is read-only
+ * and carries no database access.
+ */
+export type ModuleDataMigrationConverter = (
+  properties: Record<string, unknown>,
+  context: ModuleDataMigrationConverterContext,
+) => Record<string, unknown>;
+
+/**
  * A module data migration's converter resolved to the actual imported function, for the
- * module data migration runner (issue #111) to call once per item's `properties`.
+ * module data migration runner (issue #111) to call once per item.
  */
 export interface ModuleDataMigrationDefinition {
   moduleId: string;
   databaseKey: string;
   fromVersion: string;
   toVersion: string;
-  converter: (properties: Record<string, unknown>) => Record<string, unknown>;
+  converter: ModuleDataMigrationConverter;
 }
 
 export interface ModuleRegistryOptions {
