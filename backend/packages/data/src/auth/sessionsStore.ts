@@ -2,7 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import { requireSingleRow, runAfterCommit } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { notifySessionRevoked } from "../realtimeHook.js";
-import { SESSION_PLATFORMS, type SessionRow } from "./types.js";
+import { SESSION_DEVICE_KINDS, SESSION_PLATFORMS, type SessionDeviceKind, type SessionRow } from "./types.js";
 
 /**
  * Fires the realtime session-revocation event (issue #160's `WS /api/sync` closes that
@@ -30,6 +30,11 @@ type SessionDbRow = {
   expires_at: Date;
   user_agent: string | null;
   revoked_at: Date | null;
+  device_id: string | null;
+  device_name: string | null;
+  device_kind: string | null;
+  os_version: string | null;
+  app_version: string | null;
 };
 
 function mapRow(row: SessionDbRow): SessionRow {
@@ -43,11 +48,17 @@ function mapRow(row: SessionDbRow): SessionRow {
     expiresAt: row.expires_at.toISOString(),
     userAgent: row.user_agent,
     revokedAt: row.revoked_at ? row.revoked_at.toISOString() : null,
+    deviceId: row.device_id,
+    deviceName: row.device_name,
+    deviceKind:
+      row.device_kind === null ? null : assertKnownValue(SESSION_DEVICE_KINDS, row.device_kind, "device_kind"),
+    osVersion: row.os_version,
+    appVersion: row.app_version,
   };
 }
 
 const SELECT_COLUMNS =
-  "id, user_id, token_hash, platform, created_at, last_seen_at, expires_at, user_agent, revoked_at";
+  "id, user_id, token_hash, platform, created_at, last_seen_at, expires_at, user_agent, revoked_at, device_id, device_name, device_kind, os_version, app_version";
 
 export interface CreateSessionInput {
   userId: string;
@@ -55,15 +66,31 @@ export interface CreateSessionInput {
   platform: (typeof SESSION_PLATFORMS)[number];
   expiresAt: Date;
   userAgent?: string | null;
+  deviceId?: string | null;
+  deviceName?: string | null;
+  deviceKind?: SessionDeviceKind | null;
+  osVersion?: string | null;
+  appVersion?: string | null;
 }
 
 /** Throws (unique violation) in the astronomically unlikely event `tokenHash` collides with a live session. */
 export async function createSession(client: Pool | PoolClient, input: CreateSessionInput): Promise<SessionRow> {
   const { rows } = await client.query<SessionDbRow>(
-    `INSERT INTO sessions (user_id, token_hash, platform, expires_at, user_agent)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO sessions (user_id, token_hash, platform, expires_at, user_agent, device_id, device_name, device_kind, os_version, app_version)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      RETURNING ${SELECT_COLUMNS}`,
-    [input.userId, input.tokenHash, input.platform, input.expiresAt, input.userAgent ?? null],
+    [
+      input.userId,
+      input.tokenHash,
+      input.platform,
+      input.expiresAt,
+      input.userAgent ?? null,
+      input.deviceId ?? null,
+      input.deviceName ?? null,
+      input.deviceKind ?? null,
+      input.osVersion ?? null,
+      input.appVersion ?? null,
+    ],
   );
   return mapRow(requireSingleRow(rows, "sessions row"));
 }

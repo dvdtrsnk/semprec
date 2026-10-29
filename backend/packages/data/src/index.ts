@@ -291,6 +291,7 @@ export * from "./auth/passwordHash.js";
 export * from "./auth/token.js";
 export * from "./auth/usersStore.js";
 export * from "./auth/sessionsStore.js";
+export * from "./auth/userAgentDevice.js";
 export * from "./auth/loginAttemptsStore.js";
 export * from "./auth/emailNormalization.js";
 export * from "./auth/loginLockout.js";

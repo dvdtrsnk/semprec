@@ -19,6 +19,9 @@ export const SESSION_DELIVERY_CHANNEL_BY_PLATFORM: Record<SessionPlatform, Sessi
   macos: "bearer",
 };
 
+export const SESSION_DEVICE_KINDS = ["iphone", "ipad", "mac", "browser"] as const;
+export type SessionDeviceKind = (typeof SESSION_DEVICE_KINDS)[number];
+
 export type UserRole = "admin" | "member";
 
 export interface UserRow {
@@ -39,6 +42,11 @@ export interface SessionRow {
   expiresAt: string;
   userAgent: string | null;
   revokedAt: string | null;
+  deviceId: string | null;
+  deviceName: string | null;
+  deviceKind: SessionDeviceKind | null;
+  osVersion: string | null;
+  appVersion: string | null;
 }
 
 export interface LoginAttemptRow {

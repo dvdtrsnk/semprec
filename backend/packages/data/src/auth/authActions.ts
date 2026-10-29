@@ -7,6 +7,7 @@ import { generateOpaqueToken, hashToken } from "./token.js";
 import { anyUserExists, createUser, getUserById } from "./usersStore.js";
 import {
   createSession,
+  type CreateSessionInput,
   getActiveSessionByTokenHash,
   revokeSession,
   revokeSessionForUser,
@@ -79,7 +80,14 @@ export interface LoginInput {
   platform: SessionPlatform;
   ip: string;
   userAgent?: string | null;
+  /** Already-validated device identity of the logging-in client; omitted leaves the session's device columns NULL. */
+  device?: LoginDevice;
 }
+
+export type LoginDevice = Pick<
+  CreateSessionInput,
+  "deviceId" | "deviceName" | "deviceKind" | "osVersion" | "appVersion"
+>;
 
 export interface LoginResult {
   token: string;
@@ -150,6 +158,7 @@ export async function login(pool: Pool, input: LoginInput): Promise<LoginResult>
       platform: input.platform,
       expiresAt,
       userAgent: input.userAgent,
+      ...input.device,
     });
     await recordLoginAttempt(client, { email, ip: input.ip, succeeded: true });
     return created;
