@@ -238,6 +238,12 @@ async function toFetchedMessage(
     deliveredToHeaders: partHeaderValues(payload, "Delivered-To"),
     xOriginalTo: partHeaderValues(payload, "X-Original-To")[0] ?? null,
     envelopeTo: partHeaderValues(payload, "Envelope-To")[0] ?? null,
+    bulkHeaders: {
+      listUnsubscribe: partHeader(payload, "List-Unsubscribe") ?? null,
+      listId: partHeader(payload, "List-Id") ?? null,
+      precedence: partHeader(payload, "Precedence") ?? null,
+      autoSubmitted: partHeader(payload, "Auto-Submitted") ?? null,
+    },
     isDsn: isDeliveryStatusReport(contentType?.type, contentType?.params),
   };
 }

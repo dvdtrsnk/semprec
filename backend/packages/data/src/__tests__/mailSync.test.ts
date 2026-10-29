@@ -478,6 +478,61 @@ describe("message ingest dedup (issue #26)", () => {
     const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [emailsId]);
     expect(Number(rows[0].count)).toBe(1);
   });
+
+  it("stores is_bulk from the bulk headers and sender, and a repeat ingest leaves it unchanged (issue #1502)", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+    const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+    const folder = await withTransaction(pool, (client) =>
+      createItemWithClient(
+        client,
+        { databaseId: foldersId, properties: { name: "INBOX" } },
+        { allowedSystemKeys: ["name"] },
+      ),
+    );
+    const base = {
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      folderRelationPropertyId: folderProperty.id,
+      attachmentsRelationPropertyId: attachmentsProperty.id,
+      folderItemId: folder.id,
+      mailboxItemId: TEST_MAILBOX_ITEM_ID,
+      attachments: [],
+      storage: noopStorage,
+      storageKeyPrefix: "test",
+    };
+    const person = { from: { address: "anna@example.com" } };
+    const cases: Array<[string, Partial<Parameters<typeof ingestEmailMessage>[1]>, boolean]> = [
+      ["<unsub@x>", { envelope: person, bulkHeaders: { listUnsubscribe: "<mailto:u@example.com>" } }, true],
+      ["<listid@x>", { envelope: person, bulkHeaders: { listId: "<l.example.com>" } }, true],
+      ["<prec@x>", { envelope: person, bulkHeaders: { precedence: "bulk" } }, true],
+      ["<auto@x>", { envelope: person, bulkHeaders: { autoSubmitted: "auto-generated" } }, true],
+      ["<noreply@x>", { envelope: { from: { address: "No-Reply@example.com" } } }, true],
+      ["<person@x>", { envelope: person, bulkHeaders: { autoSubmitted: "no" } }, false],
+    ];
+    for (const [messageId, extra, expected] of cases) {
+      const { itemId } = await withTransaction(pool, (client) =>
+        ingestEmailMessage(client, { ...base, envelope: {}, messageId, ...extra }),
+      );
+      const { rows } = await pool.query(`SELECT is_bulk FROM mail_message_meta WHERE item_id = $1`, [itemId]);
+      expect(rows[0].is_bulk, messageId).toBe(expected);
+    }
+
+    // A later pass over an already-ingested message, even one now reporting different headers, keeps the flag.
+    const again = await withTransaction(pool, (client) =>
+      ingestEmailMessage(client, {
+        ...base,
+        messageId: "<unsub@x>",
+        envelope: person,
+        bulkHeaders: { autoSubmitted: "no" },
+      }),
+    );
+    expect(again.created).toBe(false);
+    const { rows } = await pool.query(`SELECT is_bulk FROM mail_message_meta WHERE item_id = $1`, [again.itemId]);
+    expect(rows[0].is_bulk).toBe(true);
+  });
 });
 
 describe("per-mailbox message identity (issue #674)", () => {

@@ -1,5 +1,6 @@
 import type { MailEnvelope } from "./mailMessageMetaStore.js";
 import type { ClassifiedAttachment } from "./attachments.js";
+import type { BulkMailHeaders } from "./bulkMail.js";
 
 /**
  * Thrown by an adapter when it detects that the stored credential itself is no longer valid
@@ -101,6 +102,8 @@ export interface FetchedMessage {
   deliveredToHeaders?: string[];
   xOriginalTo?: string | null;
   envelopeTo?: string | null;
+  /** The raw `List-Unsubscribe`/`List-Id`/`Precedence`/`Auto-Submitted` values (each absent as `null`) — mail/ingest.ts feeds them to `detectBulkMail` (mail/bulkMail.ts) once, centrally. */
+  bulkHeaders?: BulkMailHeaders;
   /** True when this message's top-level Content-Type is `multipart/report; report-type=delivery-status` (mail/dsn.ts) — a DSN/bounce, not an ordinary human reply. */
   isDsn?: boolean;
   /**
