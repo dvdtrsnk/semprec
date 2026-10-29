@@ -108,9 +108,10 @@ export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput
 /**
  * Deletes blob `id` only when nothing references it any more — no item visible to the caller (live
  * or trashed, in any of its databases, archived ones included) whose `properties.file.blobId` or
- * `properties.<key>.blobId` of any `image` property names it and no mail attachment — because
- * `findOrCreateBlob`'s content-hash dedup shares one blob between identical uploads. Used by the
- * trash purge (issue #675) in its own transaction, after the referencing item is gone. Returns the
+ * `properties.<key>.blobId` of any `image` property names it, no mail attachment and no
+ * `inbox_attachments` row — because `findOrCreateBlob`'s content-hash dedup shares one blob between
+ * identical uploads. Used by the trash purge (issue #675) in its own transaction, after the
+ * referencing item is gone. Returns the
  * deleted row's `storage_key` so the caller can remove the bytes after the commit, or null when the
  * blob is still referenced or already absent.
  */
@@ -139,6 +140,7 @@ export async function deleteBlobIfUnreferenced(client: Queryable, id: string): P
            AND i.properties @> jsonb_build_object(p.key, jsonb_build_object('blobId', $2::text))
        )
        AND NOT EXISTS (SELECT 1 FROM mail_attachments WHERE blob_id = $1)
+       AND NOT EXISTS (SELECT 1 FROM inbox_attachments WHERE blob_id = $1)
      RETURNING storage_key`,
     [id, id, await visibleDatabaseIds(client)],
   );
