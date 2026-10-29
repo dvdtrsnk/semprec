@@ -14,7 +14,13 @@ import { createProperty } from "../../chokePoint/propertiesStore.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createTenantZeroUser, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
-import { recordTokenGatewayCall } from "../aiGatewayCallsStore.js";
+import {
+  failGatewayCall,
+  recordTokenGatewayCall,
+  reserveGatewayCall,
+  settleAudioGatewayCall,
+} from "../aiGatewayCallsStore.js";
+import { getAiUsageReport } from "../aiUsageReport.js";
 import { createAiUsageRouteHandler } from "../aiUsageRouteHandler.js";
 import { ValidationError } from "../../errors.js";
 
@@ -174,6 +180,7 @@ describe("monthly AI usage (gh-1462)", () => {
             audioSeconds: null,
           },
         ],
+        estimated: false,
         totalCostUsd: 5,
         dailyCostUsd: [],
         dailyTokenUsage: [],
@@ -282,6 +289,7 @@ describe("monthly AI usage (gh-1462)", () => {
             audioSeconds: null,
           },
         ],
+        estimated: false,
         totalCostUsd: 1,
         dailyCostUsd: [{ day: "2024-02-01", costUsd: 1 }],
         dailyTokenUsage: [{ day: "2024-02-01", inputTokens: 10, outputTokens: 5 }],
@@ -319,5 +327,113 @@ describe("monthly AI usage (gh-1462)", () => {
     ["2024-01-01", "2024-01-01", "to"],
   ])("retains monthly range validation for %s to %s", async (from, to, field) => {
     await expect(report(from, to)).rejects.toMatchObject({ status: 400, details: { field } });
+  });
+});
+
+describe("usage units and call status (gh-1467)", () => {
+  const range = {
+    from: new Date(Date.now() - 86_400_000).toISOString(),
+    to: new Date(Date.now() + 86_400_000).toISOString(),
+  };
+
+  let db: Pool;
+
+  beforeAll(() => {
+    db = getTestPool();
+  });
+  beforeEach(async () => {
+    await resetDatabase(db);
+    await createTenantZeroUser(db);
+  });
+  afterAll(async () => {
+    await db?.end();
+  });
+
+  it("does not count a failed call and leaves the total cost unchanged", async () => {
+    await recordTokenGatewayCall(db, {
+      provider: "anthropic",
+      model: "m",
+      inputTokens: 10,
+      outputTokens: 5,
+      costUsd: 2,
+      operation: "agent_turn",
+    });
+    const before = await getAiUsageReport(db, range);
+    const failed = await reserveGatewayCall(db, {
+      provider: "anthropic",
+      model: "m",
+      estimatedCostUsd: 1,
+      operation: "agent_turn",
+    });
+    await failGatewayCall(db, failed.id);
+
+    const after = await getAiUsageReport(db, range);
+
+    expect(before.rows[0]).toMatchObject({ callCount: 1 });
+    expect(after.rows).toEqual(before.rows);
+    expect(after.totalCostUsd).toBe(before.totalCostUsd);
+    expect(after.estimated).toBe(false);
+  });
+
+  it("reports a reserved transcription call in an audio row and never in a token row", async () => {
+    await reserveGatewayCall(db, {
+      provider: "deepinfra",
+      model: "whisper",
+      estimatedCostUsd: 0.5,
+      operation: "transcription_transcribe",
+    });
+    await reserveGatewayCall(db, {
+      provider: "pyannote",
+      model: "diarize",
+      estimatedCostUsd: 0.25,
+      operation: "transcription_diarize",
+    });
+
+    const report = await getAiUsageReport(db, range);
+
+    expect(report.rows).toHaveLength(2);
+    expect(report.rows.every((row) => row.nativeUnit === "audio_seconds")).toBe(true);
+    expect(report.rows[0]).toMatchObject({
+      model: "whisper",
+      callCount: 1,
+      costUsd: 0.5,
+      audioSeconds: 0,
+      inputTokens: null,
+      outputTokens: null,
+    });
+  });
+
+  it("reports a reserved token call with zero tokens and null audio seconds", async () => {
+    await reserveGatewayCall(db, { provider: "anthropic", model: "m", estimatedCostUsd: 1 });
+
+    const report = await getAiUsageReport(db, range);
+
+    expect(report.rows).toHaveLength(1);
+    expect(report.rows[0]).toMatchObject({
+      nativeUnit: "tokens",
+      inputTokens: 0,
+      outputTokens: 0,
+      audioSeconds: null,
+    });
+  });
+
+  it("sets estimated while a call is reserved and clears it once the call is settled", async () => {
+    const reserved = await reserveGatewayCall(db, {
+      provider: "deepinfra",
+      model: "whisper",
+      estimatedCostUsd: 0.5,
+      operation: "transcription_transcribe",
+    });
+    expect((await getAiUsageReport(db, range)).estimated).toBe(true);
+
+    await settleAudioGatewayCall(db, reserved.id, { audioSeconds: 30, costUsd: 0.1 });
+
+    const settled = await getAiUsageReport(db, range);
+    expect(settled.estimated).toBe(false);
+    expect(settled.rows[0]).toMatchObject({ nativeUnit: "audio_seconds", audioSeconds: 30 });
+  });
+
+  it("is not estimated when the range holds no calls", async () => {
+    expect((await getAiUsageReport(db, range)).estimated).toBe(false);
   });
 });
