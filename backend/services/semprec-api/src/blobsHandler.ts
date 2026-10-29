@@ -8,6 +8,9 @@ import {
   getDatabaseByModuleId,
   findFileItemByBlobId,
   getBlob,
+  openBlobFromRoots,
+  primaryRootForBlob,
+  type BlobRootName,
   FILES_MODULE_ID,
   type BlobRow,
   type BlobStorageWriter,
@@ -98,19 +101,25 @@ function contentDispositionHeader(kind: "inline" | "attachment", filename: strin
  * uses), if any — its `name` property is the best available display filename for a download that
  * only knows a blob id.
  */
-async function resolveDownload(pool: Pool, blobId: string): Promise<{ blob: BlobRow; filename: string } | null> {
+async function resolveDownload(
+  pool: Pool,
+  blobId: string,
+): Promise<{ blob: BlobRow; filename: string; primaryRoot: BlobRootName } | null> {
   return withTransaction(pool, async (client) => {
     const blob = await getBlob(client, blobId);
     if (!blob) return null;
     const filesDatabase = await getDatabaseByModuleId(client, FILES_MODULE_ID);
     const item = filesDatabase ? await findFileItemByBlobId(client, filesDatabase.id, blob.id) : null;
     const name = item && typeof item.properties.name === "string" ? item.properties.name : undefined;
-    return { blob, filename: name && name.length > 0 ? name : blob.id };
+    const primaryRoot = await primaryRootForBlob(client, blob.id);
+    return { blob, filename: name && name.length > 0 ? name : blob.id, primaryRoot };
   });
 }
 
 export interface BlobsRequestListenerOptions {
-  storage: BlobStorageWriter;
+  /** The roots a blob's bytes can lie in: uploads under `files`, synced mail attachments under `mailAttachments`. */
+  files: BlobStorageWriter;
+  mailAttachments: BlobStorageWriter;
 }
 
 /**
@@ -142,7 +151,7 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
         // Decided before any conditional branch: a blob this tenant cannot see never reaches the 304 or 416 answers.
         const download = await resolveDownload(pool, blobId);
         if (!download) throw new NotFoundError(`Blob ${blobId} not found`);
-        const { blob, filename } = download;
+        const { blob, filename, primaryRoot } = download;
 
         const byteSize = Number(blob.byteSize);
         const etag = blob.contentHash ? `"${blob.contentHash}"` : undefined;
@@ -174,7 +183,14 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
         if (etag) headers.ETag = etag;
         headers["Cache-Control"] = NO_STORE;
 
-        const stream = options.storage.readStream(blob.storageKey, range);
+        // Opened before any header is written, so a missing or unreadable file still gets a JSON error status.
+        const stream = await openBlobFromRoots({
+          primary: options[primaryRoot],
+          alternate: primaryRoot === "files" ? options.mailAttachments : options.files,
+          storageKey: blob.storageKey,
+          range,
+        });
+        if (!stream) throw new NotFoundError(`Blob ${blobId} has no stored bytes`);
 
         if (range) {
           headers["Content-Range"] = `bytes ${range.start}-${range.end}/${byteSize}`;

@@ -41,6 +41,8 @@ export interface AppOptions {
   moduleRegistry: Awaited<ReturnType<typeof loadFullModuleRegistry>>;
   /** Backs `POST /api/files` and `GET /api/blobs/:id` (issue #158). */
   blobStorage: BlobStorageWriter;
+  /** Where synced mail attachments are stored; `GET /api/blobs/:id` also reads from it. Defaults to `blobStorage`. */
+  mailAttachmentStorage?: BlobStorageWriter;
   /** Issue #158's `maxFileSizeMb`, already resolved to bytes. */
   maxFileSizeBytes: number;
   /** Issue #635: forwarded to `createAuthRequestListener` — login throttling keys on the last `X-Forwarded-For` hop. */
@@ -108,7 +110,10 @@ export async function createDispatcher(
     storage: options.blobStorage,
     maxFileSizeBytes: options.maxFileSizeBytes,
   });
-  const blobsListener = createBlobsRequestListener(pool, { storage: options.blobStorage });
+  const blobsListener = createBlobsRequestListener(pool, {
+    files: options.blobStorage,
+    mailAttachments: options.mailAttachmentStorage ?? options.blobStorage,
+  });
   const graphWebhookListener = createGraphWebhookRequestListener(pool);
   const accountExportDownloadListener = createAccountExportDownloadListener(pool, { storage: options.blobStorage });
 

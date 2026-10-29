@@ -31,6 +31,7 @@ import { createBlobsRequestListener } from "../blobsHandler.js";
 
 const PASSWORD = "s3cret-password";
 const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-per-tenant-${randomUUID()}`);
+const tmpMailDir = join(tmpdir(), `semprec-test-blobs-per-tenant-mail-${randomUUID()}`);
 
 let adminPool: Pool;
 let pool: Pool;
@@ -39,6 +40,7 @@ let tenantB: string;
 let server: Server;
 let baseUrl: string;
 let storage: LocalFsBlobStorageWriter;
+let mailStorage: LocalFsBlobStorageWriter;
 
 interface Upload {
   blobId: string;
@@ -125,7 +127,8 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
     });
 
     storage = new LocalFsBlobStorageWriter(tmpBlobDir);
-    server = createServer(createBlobsRequestListener(pool, { storage }));
+    mailStorage = new LocalFsBlobStorageWriter(tmpMailDir);
+    server = createServer(createBlobsRequestListener(pool, { files: storage, mailAttachments: mailStorage }));
     await new Promise<void>((resolve) => server.listen(0, resolve));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
@@ -165,6 +168,7 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
     const aUpload = await uploadIn(tenantA, "a.txt", "tenant A bytes");
     const bHeaders = await createUserIn(tenantB);
     const readStream = vi.spyOn(storage, "readStream");
+    const mailReadStream = vi.spyOn(mailStorage, "readStream");
 
     const foreign = await download(bHeaders, aUpload.blobId);
     const random = await download(bHeaders, randomUUID());
@@ -172,6 +176,7 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
     expect(foreign).toEqual(random);
     expect(foreign.status).toBe(404);
     expect(readStream).not.toHaveBeenCalled();
+    expect(mailReadStream).not.toHaveBeenCalled();
   });
 
   it("keeps serving the caller's own blob: 200, 304, 206 and 416", async () => {
@@ -236,5 +241,97 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
     expect(res.status).toBe(200);
     expect(res.disposition).toContain(`filename="${orphan.id}"`);
     expect(res.disposition).not.toContain("b-leaked.txt");
+  });
+
+  describe("bytes in either storage root", () => {
+    /** Writes `content` under a fresh key in `target` and records the blob (and, for an attachment, its `mail_attachments` row) in tenant zero. */
+    async function seedBlob(opts: {
+      target: LocalFsBlobStorageWriter | null;
+      attachment: boolean;
+      content: string;
+    }): Promise<string> {
+      return runInTenant(tenantA, () =>
+        withTransaction(pool, async (client) => {
+          const key = `${tenantA}/roots/${randomUUID()}.txt`;
+          const written = opts.target
+            ? await opts.target.writeStream(key, Readable.from([opts.content]), { maxBytes: 1024 })
+            : { byteSize: opts.content.length, contentHash: randomUUID() };
+          const blob = await createBlob(client, {
+            mimeType: "text/plain",
+            byteSize: written.byteSize,
+            storageKey: key,
+            contentHash: written.contentHash,
+          });
+          if (opts.attachment) {
+            await client.query(
+              `INSERT INTO mail_attachments (message_item_id, blob_id, filename, content_type, disposition, byte_size)
+               VALUES ($1, $2, 'a.txt', 'text/plain', 'attachment', $3)`,
+              [randomUUID(), blob.id, written.byteSize],
+            );
+          }
+          return blob.id;
+        }),
+      );
+    }
+
+    // A mail_attachments row carries no folder, so an attachment synced into Sent has the same shape as one synced into the inbox.
+    it("serves an attachment whose bytes are only in the mail attachments root, whole and ranged", async () => {
+      const blobId = await seedBlob({ target: mailStorage, attachment: true, content: "attachment bytes" });
+      const headers = await createUserIn(tenantA);
+
+      const full = await download(headers, blobId);
+      expect(full.status).toBe(200);
+      expect(full.text).toBe("attachment bytes");
+
+      const partial = await download({ ...headers, Range: "bytes=0-9" }, blobId);
+      expect(partial.status).toBe(206);
+      expect(partial.text).toBe("attachment");
+    });
+
+    it("serves a deduplicated attachment blob whose bytes are only in the files root", async () => {
+      const blobId = await seedBlob({ target: storage, attachment: true, content: "uploaded first" });
+      const headers = await createUserIn(tenantA);
+
+      const res = await download(headers, blobId);
+      expect(res.status).toBe(200);
+      expect(res.text).toBe("uploaded first");
+    });
+
+    it("serves an uploaded blob whose bytes are only in the mail attachments root", async () => {
+      const blobId = await seedBlob({ target: mailStorage, attachment: false, content: "synced first" });
+      const headers = await createUserIn(tenantA);
+
+      const res = await download(headers, blobId);
+      expect(res.status).toBe(200);
+      expect(res.text).toBe("synced first");
+    });
+
+    it("answers 404 not_found when neither root has the file", async () => {
+      const blobId = await seedBlob({ target: null, attachment: true, content: "gone" });
+      const headers = await createUserIn(tenantA);
+
+      const res = await download(headers, blobId);
+      expect(res.status).toBe(404);
+      expect(res.text).toBe('{"error":{"code":"not_found"}}');
+    });
+
+    it("answers 500 on a non-ENOENT read error and never opens the other root", async () => {
+      const blobId = await seedBlob({ target: mailStorage, attachment: true, content: "attachment bytes" });
+      const headers = await createUserIn(tenantA);
+      vi.spyOn(mailStorage, "readStream").mockImplementation(
+        () =>
+          new Readable({
+            read() {
+              this.destroy(Object.assign(new Error("permission denied"), { code: "EACCES" }));
+            },
+          }),
+      );
+      const otherRoot = vi.spyOn(storage, "readStream");
+
+      const res = await download(headers, blobId);
+      expect(res.status).toBe(500);
+      expect(res.text).toBe('{"error":{"code":"internal_error"}}');
+      expect(otherRoot).not.toHaveBeenCalled();
+    });
   });
 });

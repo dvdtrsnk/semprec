@@ -1,10 +1,10 @@
-import { once } from "node:events";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import { escapeIdentifier, type Pool, type PoolClient } from "pg";
 import yazl from "yazl";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { tenantBlobStorageKey } from "../blobs/blobsStore.js";
+import { openBlobFromRoots } from "../blobs/openBlobFromRoots.js";
 import { requireSingleRow, withTransaction } from "../db/pool.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { forEachActiveTenant } from "./forEachActiveTenant.js";
@@ -60,10 +60,6 @@ class TenantExportInterruptedError extends Error {
 
 function errorName(err: unknown): string {
   return err instanceof Error ? err.name : typeof err;
-}
-
-function isMissingFileError(err: unknown): boolean {
-  return err instanceof Error && "code" in err && err.code === "ENOENT";
 }
 
 /**
@@ -129,22 +125,6 @@ class ArchiveWriter {
 /** An entry whose bytes come from `produce`, run lazily as yazl reads the entry. */
 function lazySource(produce: () => AsyncGenerator<Buffer>): Readable {
   return Readable.from(produce(), { objectMode: false });
-}
-
-/**
- * Opens a blob's bytes, or `null` when its file does not exist. Waits for the first `readable`
- * event so a missing file is known before the entry is added; any other read error propagates.
- */
-async function openBlob(storage: BlobStorageWriter, storageKey: string): Promise<Readable | null> {
-  const stream = storage.readStream(storageKey);
-  try {
-    await once(stream, "readable");
-  } catch (err) {
-    stream.destroy();
-    if (isMissingFileError(err)) return null;
-    throw err;
-  }
-  return stream;
 }
 
 async function* accountEntry(client: PoolClient): AsyncGenerator<Buffer> {
@@ -246,7 +226,7 @@ async function writeArchive(
         const alternate = blob.in_mail ? storages.files : storages.mailAttachments;
         // A reference selects the first root, but shared content-hash deduplication can retain
         // bytes in the other one; see ADR 2026-10-18-tenant-export-cross-root-blob-lookup.
-        const bytes = (await openBlob(storage, blob.storage_key)) ?? (await openBlob(alternate, blob.storage_key));
+        const bytes = await openBlobFromRoots({ primary: storage, alternate, storageKey: blob.storage_key });
         if (!bytes) {
           missingBlobIds.push(blob.id);
           continue;

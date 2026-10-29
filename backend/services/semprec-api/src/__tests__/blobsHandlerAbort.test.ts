@@ -48,7 +48,7 @@ describe("GET /api/blobs/:id aborted download (issue #634)", () => {
     await resetDatabase(pool);
 
     storage = new RecordingBlobStorage();
-    const listener = createBlobsRequestListener(pool, { storage });
+    const listener = createBlobsRequestListener(pool, { files: storage, mailAttachments: storage });
     server = createServer(listener);
     await new Promise<void>((resolve) => server.listen(0, resolve));
     const address = server.address();
