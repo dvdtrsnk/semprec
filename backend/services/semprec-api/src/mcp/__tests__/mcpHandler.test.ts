@@ -99,13 +99,14 @@ describe("createMcpRequestListener (issue #220)", () => {
     await pool?.end();
   });
 
-  it("rejects a non-POST method with 404", async () => {
+  it("rejects a non-POST method with 405 and Allow: POST", async () => {
     const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
     servers.push(server);
 
     const res = await fetch(`${baseUrl}/mcp`, { method: "GET" });
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("POST");
   });
 
   it("rejects an unauthenticated request", async () => {
@@ -155,6 +156,107 @@ describe("createMcpRequestListener (issue #220)", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as JsonRpcResponse;
     expect(body.error?.code).toBe(-32700);
+  });
+
+  describe("initialize", () => {
+    const initialize = (protocolVersion: unknown) => ({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "initialize",
+      params: { protocolVersion, capabilities: {}, clientInfo: { name: "c", version: "1" } },
+    });
+
+    it.each(["2025-06-18", "2025-03-26", "2024-11-05"])("echoes the supported version %s", async (version) => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+
+      const res = await rpc(baseUrl, await authHeader(), initialize(version));
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as JsonRpcResponse;
+      expect(body.id).toBe(7);
+      expect(body.result).toMatchObject({
+        protocolVersion: version,
+        capabilities: { tools: {} },
+        serverInfo: { name: "semprec", version: expect.any(String) },
+      });
+    });
+
+    it("answers the newest version for an unsupported one", async () => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+
+      const res = await rpc(baseUrl, await authHeader(), initialize("1999-01-01"));
+
+      const body = (await res.json()) as JsonRpcResponse;
+      expect((body.result as { protocolVersion: string }).protocolVersion).toBe("2025-06-18");
+    });
+
+    it.each([
+      ["missing params", undefined],
+      ["null params", null],
+      ["non-object params", "x"],
+      ["non-string protocolVersion", { protocolVersion: 5 }],
+      ["missing protocolVersion", {}],
+    ])("answers -32602 for %s", async (_label, params) => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+
+      const res = await rpc(baseUrl, await authHeader(), { jsonrpc: "2.0", id: 1, method: "initialize", params });
+
+      const body = (await res.json()) as JsonRpcResponse;
+      expect(body.error?.code).toBe(-32602);
+    });
+
+    it("is rejected without credentials exactly like tools/list", async () => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+
+      const res = await rpc(baseUrl, {}, initialize("2025-06-18"));
+
+      expect(res.status).toBe(401);
+    });
+
+    it("succeeds for a human session and writes nothing", async () => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+      const headers = await authHeader();
+      const count = async () =>
+        (await pool.query<{ n: string }>("SELECT (SELECT count(*) FROM items) + (SELECT count(*) FROM sessions) AS n"))
+          .rows[0]?.n;
+      const before = await count();
+
+      const res = await rpc(baseUrl, headers, initialize("2025-06-18"));
+
+      expect(res.status).toBe(200);
+      expect(await count()).toBe(before);
+    });
+  });
+
+  describe("notifications", () => {
+    it.each(["notifications/initialized", "notifications/anything"])("%s answers 202 with no body", async (method) => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+      const headers = await authHeader();
+
+      const res = await rpc(baseUrl, headers, { jsonrpc: "2.0", method });
+
+      expect(res.status).toBe(202);
+      expect(await res.text()).toBe("");
+
+      const list = await rpc(baseUrl, headers, { jsonrpc: "2.0", id: 1, method: "tools/list" });
+      const tools = ((await list.json()) as JsonRpcResponse).result as { tools: { name: string }[] };
+      expect(tools.tools.some((t) => t.name === "semprec.item.create")).toBe(true);
+    });
+
+    it("rejects an unauthenticated notification", async () => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+
+      const res = await rpc(baseUrl, {}, { jsonrpc: "2.0", method: "notifications/initialized" });
+
+      expect(res.status).toBe(401);
+    });
   });
 
   describe("tools/list", () => {
