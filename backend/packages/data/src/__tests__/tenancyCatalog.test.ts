@@ -69,6 +69,7 @@ const TENANT_TABLES = [
   "tenant_keys",
   "tenant_observability_checks",
   "tenant_exports",
+  "semp_problems",
   "semp_threads",
   "semp_messages",
   "value_links",
@@ -656,7 +657,7 @@ describe("tenancy classification catalog", () => {
           AND c.relnamespace = 'public'::regnamespace AND NOT c.relispartition
         ORDER BY k.conname`,
     );
-    expect(twins).toHaveLength(31);
+    expect(twins).toHaveLength(32);
     for (const twin of twins) {
       const client = await pool.connect();
       try {
