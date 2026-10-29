@@ -429,7 +429,11 @@ describe("item search create/update hooks", () => {
           "SELECT key FROM properties WHERE database_id = $1 AND type = ANY($2::text[])",
           [await db(descriptor.key), ["title", "text", "longText", "url", "select", "multi_select"]],
         );
-        for (const property of props.rows) expect(descriptor.searchFields).toContain(property.key);
+        for (const property of props.rows) {
+          // An event's place is an address or a call link; it is deliberately not searched (asserted below).
+          if (descriptor.key === "events" && property.key === "place") continue;
+          expect(descriptor.searchFields).toContain(property.key);
+        }
       }
       expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("place");
       expect(manifest.databases.find((d) => d.key === "people")?.searchFields).toContain("emails");

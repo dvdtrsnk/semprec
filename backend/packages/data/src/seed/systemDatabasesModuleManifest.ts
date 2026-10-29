@@ -94,7 +94,7 @@ export const manifest: ModuleManifest = {
     {
       key: EVENTS_MODULE_ID,
       name: "Events",
-      searchFields: ["name", "type", "project", "people"],
+      searchFields: ["name", "type", "project", "people", "description", "url"],
       icon: "calendar",
       color: "#FF3B30",
       overviewOrder: 2,
