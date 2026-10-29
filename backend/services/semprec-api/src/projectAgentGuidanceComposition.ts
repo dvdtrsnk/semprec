@@ -8,6 +8,7 @@ import {
 import {
   agentGuidanceDriftFindingsStore,
   createGuidanceManifestPort,
+  createGuidanceProblemWriter,
   createPoolClientTransactionRunner,
   guidanceDriftHeartbeatStore,
   guidanceReferenceStore,
@@ -63,6 +64,7 @@ export function createAgentGuidanceDriftActionForApi(
     references: guidanceReferenceStore,
     findings: agentGuidanceDriftFindingsStore,
     notifications: createGuidanceNotificationWriter(),
+    problems: createGuidanceProblemWriter(),
     manifest: createGuidanceManifestPort(moduleRegistry),
     gateway,
     clock: () => new Date(),
