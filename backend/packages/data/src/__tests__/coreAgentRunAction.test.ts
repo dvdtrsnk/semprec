@@ -18,7 +18,8 @@ import { hashPassword } from "../auth/passwordHash.js";
 let pool: Pool;
 
 /** Wraps the real pool so its first `connect()` calls reject with `errors`, in order; later calls delegate. */
-function poolWithFailingConnects(errors: Error[]): Pool {
+/** Each entry fails one `connect()` in order; `null` lets that call through to the real pool. */
+function poolWithFailingConnects(errors: (Error | null)[]): Pool {
   const remaining = [...errors];
   return new Proxy(pool, {
     get(target, prop, receiver) {
@@ -132,7 +133,8 @@ describe("coreAgentRunAction", () => {
 
   it("never masks the original runAgent error when the close-and-notify transaction itself fails", async () => {
     const { heartbeatId, projectItemId } = await createTestHeartbeat();
-    const failingPool = poolWithFailingConnects([new Error("db down")]);
+    // The first connect is the run-start transaction; the second is the close-and-notify one.
+    const failingPool = poolWithFailingConnects([null, new Error("db down")]);
     const handler = coreAgentRunAction(failingPool, async () => {
       throw new Error("model failed");
     });
