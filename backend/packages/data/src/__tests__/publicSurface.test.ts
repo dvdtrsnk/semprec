@@ -176,6 +176,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "assertRuntimeRole",
   "assertSourceRetypeAllowed",
   "assertTaskListMatchesAffinity",
+  "assertValidBlockInput",
   "assertValidMcpConnectionConfig",
   "assertValidProposalEnvelope",
   "backfillRollup",
