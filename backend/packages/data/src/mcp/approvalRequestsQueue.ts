@@ -1,3 +1,4 @@
+import type { RiskClass } from "@semprec/shared";
 import type { Queryable } from "../db/pool.js";
 import { getAgentRunsByIds } from "../agentRuns/agentRunsStore.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
@@ -37,7 +38,7 @@ export type ApprovalRequestSafeSummary =
 export interface ApprovalRequestQueueEntry {
   id: string;
   toolName: string;
-  riskClass: string;
+  riskClass: RiskClass;
   requestedAt: string;
   safeSummary: ApprovalRequestSafeSummary;
   agentRunId: string;
@@ -107,7 +108,7 @@ export interface ApprovalRequestDecisionView {
   decidedBy: string | null;
   executionStatus: ApprovalRequest["executionStatus"];
   toolName: string;
-  riskClass: string;
+  riskClass: RiskClass;
   requestedAt: string;
   agentRunId: string;
   safeSummary: ApprovalRequestSafeSummary;

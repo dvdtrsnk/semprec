@@ -1,4 +1,5 @@
 import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
+import { RISK_CLASSES, type RiskClass } from "@semprec/shared";
 import { assertKnownValue, assertShape } from "../dbRowValidation.js";
 
 /** Longest agent-supplied reason, in characters; mirrored by the `approval_requests_reason_length_check` constraint. */
@@ -56,7 +57,7 @@ export interface ApprovalRequest {
   id: string;
   agentRunId: string;
   toolName: string;
-  riskClass: string;
+  riskClass: RiskClass;
   payload: ApprovalRequestPayload;
   status: ApprovalRequestStatus;
   requestedAt: string;
@@ -138,7 +139,7 @@ function rowToApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
     id: row.id,
     agentRunId: row.agent_run_id,
     toolName: row.tool_name,
-    riskClass: row.risk_class,
+    riskClass: assertKnownValue(RISK_CLASSES, row.risk_class, "risk_class"),
     payload: row.payload,
     status: assertKnownValue(APPROVAL_REQUEST_STATUSES, row.status, "status"),
     requestedAt: row.requested_at,
@@ -156,7 +157,7 @@ function rowToApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
 export interface CreatePendingApprovalRequestInput {
   agentRunId: string;
   toolName: string;
-  riskClass: string;
+  riskClass: RiskClass;
   payload: ApprovalRequestPayload;
   resourceSnapshot: ApprovalResourceSnapshot;
   /** Optional agent-supplied reason (at most `APPROVAL_REQUEST_REASON_MAX_LENGTH` characters); stored as `NULL` when absent. */

@@ -50,7 +50,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
     const created = await createPendingApprovalRequest(pool, {
       agentRunId: run.id,
       toolName: "send_email",
-      riskClass: "moderate",
+      riskClass: "write",
       payload,
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
@@ -61,7 +61,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
     expect(rows[0]).toEqual({
       id: created.id,
       toolName: "send_email",
-      riskClass: "moderate",
+      riskClass: "write",
       requestedAt: created.requestedAt,
       safeSummary: {
         kind: "mcpInvoke",
@@ -83,7 +83,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
     const base = {
       agentRunId: run.id,
       toolName: "send_email",
-      riskClass: "moderate",
+      riskClass: "write" as const,
       payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     };
@@ -145,7 +145,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       const created = await createPendingApprovalRequest(pool, {
         agentRunId: run.id,
         toolName: "search_web",
-        riskClass: "moderate",
+        riskClass: "write",
         payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { q: "x" } },
         resourceSnapshot,
       });
@@ -200,7 +200,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
     await createPendingApprovalRequest(pool, {
       agentRunId: run.id,
       toolName: "login",
-      riskClass: "high",
+      riskClass: "outbound",
       payload,
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
@@ -217,7 +217,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
     await createPendingApprovalRequest(pool, {
       agentRunId: run.id,
       toolName: "noop",
-      riskClass: "low",
+      riskClass: "read",
       payload,
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
@@ -234,21 +234,21 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
     const first = await createPendingApprovalRequest(pool, {
       agentRunId: run.id,
       toolName: "first",
-      riskClass: "low",
+      riskClass: "read",
       payload,
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
     const second = await createPendingApprovalRequest(pool, {
       agentRunId: run.id,
       toolName: "second",
-      riskClass: "low",
+      riskClass: "read",
       payload,
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
     const decided = await createPendingApprovalRequest(pool, {
       agentRunId: run.id,
       toolName: "third",
-      riskClass: "low",
+      riskClass: "read",
       payload,
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });

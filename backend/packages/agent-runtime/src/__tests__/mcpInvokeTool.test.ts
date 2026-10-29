@@ -252,6 +252,26 @@ describe("MCP invoke adapter (issue #128)", () => {
       });
     });
 
+    it("snapshots a registration risk class outside the closed set as unclassified, and keeps a known one", async () => {
+      const contractServer = startStdioContractServer([SEARCH_TOOL]);
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+      const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
+
+      const riskClassOf = async (): Promise<string> => {
+        const result = await invoke({ query: "semprec" });
+        const id = result.result.match(/Approval request ([0-9a-f-]{36})/i)![1]!;
+        return (await getApprovalRequest(pool, id))!.riskClass;
+      };
+
+      await pool.query("UPDATE mcp_tool_registrations SET risk_class = 'high' WHERE id = $1", [registration.id]);
+      expect(await riskClassOf()).toBe("unclassified");
+
+      await pool.query("UPDATE mcp_tool_registrations SET risk_class = 'outbound' WHERE id = $1", [registration.id]);
+      expect(await riskClassOf()).toBe("outbound");
+    });
+
     it("stores semprecReason on the request and strips it from the stored args (issue #1420)", async () => {
       const contractServer = startStdioContractServer([SEARCH_TOOL]);
       servers.push(contractServer);

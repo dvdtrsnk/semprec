@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { isRiskClass } from "@semprec/shared";
 import { Ajv, type ValidateFunction } from "ajv";
 import {
   resolveGrantedMcpTool,
@@ -236,7 +237,7 @@ export function createApprovalGatedMcpInvokeTool(
         const created = await createPendingApprovalRequest(client, {
           agentRunId,
           toolName: target.toolName,
-          riskClass: target.riskClass,
+          riskClass: isRiskClass(target.riskClass) ? target.riskClass : "unclassified",
           payload: {
             mcpToolRegistrationId: target.mcpToolRegistrationId,
             mcpServerItemId: target.mcpServerItemId,

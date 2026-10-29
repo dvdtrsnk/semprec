@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { RISK_CLASSES } from "@semprec/shared";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import {
@@ -76,6 +79,47 @@ describe("approvalRequestsStore reason (issue #1420)", () => {
   it("accepts a reason of exactly 500 characters and rejects 501 at the database", async () => {
     expect((await insertWithReason("x".repeat(500))).reason).toHaveLength(500);
     await expect(insertWithReason("x".repeat(501))).rejects.toThrow(/approval_requests_reason_length_check/);
+  });
+});
+
+describe("approval_requests.risk_class closed set (issue #1423)", () => {
+  const migrationSql = readFileSync(
+    fileURLToPath(new URL("../db/migrations/0094_approval_requests_risk_class_check.sql", import.meta.url)),
+    "utf8",
+  );
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool, createViewTypeRegistry());
+    ownerId = await createUser();
+  });
+
+  async function insertRaw(riskClass: string): Promise<string> {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO approval_requests (agent_run_id, tool_name, risk_class, payload, resource_snapshot)
+       VALUES ($1, 'search_web', $2, '{}'::jsonb, '{"kind":"test","resourceId":"test","sha256":null}'::jsonb) RETURNING id`,
+      [run.id, riskClass],
+    );
+    return rows[0]!.id;
+  }
+
+  it("rejects an unknown class at the database", async () => {
+    await expect(insertRaw("high")).rejects.toThrow(/approval_requests_risk_class_check/);
+    for (const value of RISK_CLASSES) await insertRaw(value);
+  });
+
+  it("backfills a legacy unknown class to unclassified when the migration runs", async () => {
+    await pool.query("ALTER TABLE approval_requests DROP CONSTRAINT approval_requests_risk_class_check");
+    const legacyId = await insertRaw("high");
+    const knownId = await insertRaw("destructive");
+
+    await pool.query(migrationSql);
+
+    expect((await getApprovalRequest(pool, legacyId))!.riskClass).toBe("unclassified");
+    expect((await getApprovalRequest(pool, knownId))!.riskClass).toBe("destructive");
+    await expect(insertRaw("high")).rejects.toThrow(/approval_requests_risk_class_check/);
   });
 });
 
