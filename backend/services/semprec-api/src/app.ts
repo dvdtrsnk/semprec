@@ -4,7 +4,11 @@ import { CAPABILITY_IDS, withTraceContext } from "@semprec/shared";
 import { createGenericApplicationService, createGenericOperationGateway } from "@semprec/application";
 import type { BlobStorageWriter, InviteMailer, PasswordResetMailer, loadFullModuleRegistry } from "@semprec/data";
 import { createMcpRequestListener } from "./mcp/mcpHandler.js";
-import { mountCustomRoutes } from "./adapter/customRouteMount.js";
+import {
+  createCustomRouteDependencies,
+  mountCustomRoutes,
+  type CustomRouteDependencies,
+} from "./adapter/customRouteMount.js";
 import { mountRoutes } from "./adapter/routeTable.js";
 import { createAccountExportDownloadListener, createAccountRoutes } from "./accountHandler.js";
 import { createAdminRoutes } from "./adminHandler.js";
@@ -48,6 +52,11 @@ export interface AppOptions {
   maxFileSizeBytes: number;
   /** Issue #635: forwarded to `createAuthRequestListener` — login throttling keys on the last `X-Forwarded-For` hop. */
   trustProxy?: boolean;
+  /**
+   * Issue gh-1460: the composition root's dependencies, handed to every module custom route's factory.
+   * Absent means the empty container, so a caller that mounts no route needing a member passes nothing.
+   */
+  customRouteDependencies?: CustomRouteDependencies;
 }
 
 /**
@@ -71,7 +80,11 @@ export async function createDispatcher(
   options: AppOptions,
 ): Promise<(req: IncomingMessage, res: ServerResponse) => void> {
   const customRouteDefinitions = await options.moduleRegistry.getCustomRouteDefinitions();
-  const dispatchCustomRoute = mountCustomRoutes(pool, customRouteDefinitions);
+  const dispatchCustomRoute = mountCustomRoutes(
+    pool,
+    customRouteDefinitions,
+    options.customRouteDependencies ?? createCustomRouteDependencies(),
+  );
   // The sole neutral `GenericApplicationPort` implementation (issue #219): one instance per
   // injected `Pool`, threaded into every generic resource route family below so there is no
   // second write path — a route never constructs its own `createChokePoint(pool)`.

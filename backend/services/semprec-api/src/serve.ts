@@ -20,6 +20,13 @@ import { createTransport, type Transporter } from "nodemailer";
 import { wireRealtimeHooks } from "@semprec/realtime";
 import { installFatalHandlers, withTraceContext } from "@semprec/shared";
 import { createDispatcher } from "./app.js";
+import {
+  CustomRouteConfigurationError,
+  type CustomRouteDependencies,
+  type CustomRouteOAuthClient,
+  type MailLiveSyncControl,
+} from "./adapter/customRouteMount.js";
+import { readOAuthClient } from "./mailSyncAdapters.js";
 import { createSyncUpgradeHandler } from "./syncHandler.js";
 import { createApiQueueRuntime } from "./queueRuntime.js";
 import { createGracefulShutdown, registerShutdownSignals } from "./shutdown.js";
@@ -61,6 +68,42 @@ if (!Number.isInteger(port) || port <= 0 || port > 65535)
 // startup — a deployment that hasn't configured outbound SMTP yet still boots, and only the
 // password-reset request route fails (via `noopPasswordResetMailer`) if it's ever hit.
 const appBaseUrl = process.env.APP_BASE_URL ?? "http://localhost:3000";
+
+/**
+ * One provider's OAuth client, read with the same keys and rules `createMailSyncAdapters` applies.
+ * An unset or empty key leaves the client out, so a route that needs it fails with a configuration
+ * error when it runs (`requireCustomRouteDependency`), not at startup.
+ */
+function optionalOAuthClient(idKey: string, secretKey: string): CustomRouteOAuthClient | undefined {
+  const client = readOAuthClient(process.env, idKey, secretKey);
+  return "missingEnv" in client ? undefined : client;
+}
+
+// The mail live-sync root is created further down, after the dispatcher. It has no per-mailbox
+// control yet (only start, stop, reconcileOnce and stopTenant), so this proxy has nothing to forward
+// to: each call refuses with a configuration error that names it. Per-mailbox wiring is left to a
+// later issue.
+const mailLiveSyncProxy: MailLiveSyncControl = {
+  async startMailbox() {
+    throw new CustomRouteConfigurationError(
+      'custom route dependency "mailLiveSync.startMailbox" is not wired in this composition root yet',
+    );
+  },
+  async stopMailbox() {
+    throw new CustomRouteConfigurationError(
+      'custom route dependency "mailLiveSync.stopMailbox" is not wired in this composition root yet',
+    );
+  },
+};
+
+const customRouteDependencies: CustomRouteDependencies = {
+  oauth: {
+    gmail: optionalOAuthClient("GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET"),
+    msGraph: optionalOAuthClient("MS_GRAPH_OAUTH_CLIENT_ID", "MS_GRAPH_OAUTH_CLIENT_SECRET"),
+    redirectBaseUrl: appBaseUrl,
+  },
+  mailLiveSync: mailLiveSyncProxy,
+};
 
 /**
  * The SMTP transport and sender address the transactional mailers share, or `null` when SMTP is not
@@ -131,6 +174,7 @@ const dispatch = await createDispatcher(pool, {
   mailAttachmentStorage,
   maxFileSizeBytes: maxFileSizeMb * 1024 * 1024,
   trustProxy,
+  customRouteDependencies,
 });
 const syncServer = await createSyncUpgradeHandler(pool);
 
