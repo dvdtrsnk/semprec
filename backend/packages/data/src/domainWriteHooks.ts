@@ -15,7 +15,7 @@ import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "./mcp/mcpServe
 import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.js";
 import { TASKS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
 import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHook.js";
-import { tasksItemPreWriteTransform } from "./tasks/tasksItemPreWriteTransform.js";
+import { taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
 import { itemSearchCreateHook, itemSearchUpdateHook } from "./search/itemSearchIndexer.js";
 import {
@@ -24,7 +24,7 @@ import {
   libraryWatchedWithEdgeWriteHook,
 } from "./library/libraryRatingHooks.js";
 
-registerItemPreWriteTransform(TASKS_MODULE_ID, tasksItemPreWriteTransform);
+registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform);
 registerItemCreateHook(mcpServerItemCreateHook);
 registerItemCreateHook(itemSearchCreateHook);
 registerItemUpdateHook(mcpServerItemUpdateHook);

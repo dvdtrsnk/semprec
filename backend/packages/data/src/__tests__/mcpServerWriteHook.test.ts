@@ -31,7 +31,7 @@ import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as mcpServerWriteHook from "../mcp/mcpServerWriteHook.js";
 import * as mailMessageFlagSyncStore from "../mail/mailMessageFlagSyncStore.js";
 import * as taskRecurrenceItemUpdateHook from "../tasks/taskRecurrenceItemUpdateHook.js";
-import { tasksItemPreWriteTransform } from "../tasks/tasksItemPreWriteTransform.js";
+import { taskPreWriteTransform } from "../tasks/taskPreWriteTransform.js";
 import * as transcriptionSpeakerEdges from "../transcription/transcriptionSpeakerEdges.js";
 import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 
@@ -81,7 +81,7 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
     registerItemUpdateHook(mailMessageFlagSyncStore.mailMessageFlagsItemUpdateHook);
     registerItemUpdateHook(taskRecurrenceItemUpdateHook.taskRecurrenceItemUpdateHook);
     registerRelationEdgeWriteHook(transcriptionSpeakerEdges.transcriptSpeakerEdgeWriteHook);
-    registerItemPreWriteTransform(TASKS_MODULE_ID, tasksItemPreWriteTransform);
+    registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform);
   }
 
   it("restores all five production write hooks after a registry reset, each dispatched once when restored twice (issue #1261)", async () => {

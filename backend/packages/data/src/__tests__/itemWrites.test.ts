@@ -464,14 +464,14 @@ describe("property defaults on real item writes", () => {
       const databaseId = await database("tasks");
       const item = await chokePoint.createItem({
         databaseId,
-        properties: { timeFrom: "2026-10-27T14:00:00Z", timeTo: "2026-10-27T15:00:00Z" },
+        properties: { date: "2026-10-27", timeFrom: "14:00", timeTo: "15:00" },
       });
       const updated = await chokePoint.updateItem({
         databaseId,
         itemId: item.id,
-        propertiesPatch: { timeFrom: "2026-10-27T14:30:00Z" },
+        propertiesPatch: { timeFrom: "14:30" },
       });
-      expect(updated.previous).toEqual({ timeFrom: "2026-10-27T14:00:00Z" });
+      expect(updated.previous).toEqual({ timeFrom: "14:00" });
       expect(updated.properties.time).not.toEqual(item.properties.time);
     });
   });
