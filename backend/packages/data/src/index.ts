@@ -296,6 +296,8 @@ export * from "./journal/journalPeriods.js";
 export * from "./views/temporalSwitcherViewType.js";
 
 export * from "./inbox/inboxTickAction.js";
+export { CALENDAR_MODULE_ID } from "./calendar/calendarModuleId.js";
+export { manifest as calendarModuleManifest } from "./calendar/calendarModuleManifest.js";
 export { manifest as inboxPipelineModuleManifest } from "./inbox/inboxModuleManifest.js";
 
 export * from "./auth/types.js";

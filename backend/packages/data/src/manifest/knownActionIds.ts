@@ -1,5 +1,6 @@
 import { CORE_AGENT_RUN_ACTION_ID } from "../scheduler/actions.js";
 import { DRIFT_CHECK_ACTION_ID } from "./driftCheck.js";
+import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
 import { SEMPREC_TICK_ACTION_ID } from "../inbox/inboxTickAction.js";
 import {
   MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
@@ -48,6 +49,7 @@ export const KNOWN_HEARTBEAT_ACTION_IDS: ReadonlySet<string> = new Set([
  * `TRANSCRIPTION_OWNER_PROCESS`.
  */
 export const KNOWN_OWNER_PROCESS_IDS: ReadonlySet<string> = new Set([
+  CALENDAR_MODULE_ID,
   EMAILS_MODULE_ID,
   FOLDERS_MODULE_ID,
   INBOX_MODULE_ID,
