@@ -590,3 +590,129 @@ describe("processing proposals card-state tenant cutover (issue #1451)", () => {
     expect((await proposalShape(b)).map((row) => row.key)).not.toContain("aiProposal");
   });
 });
+
+/**
+ * Seeds the tenant, then sets its Emails.senderPeople back to one_to_many, the shape a populated install
+ * was seeded with before issue #1457. Direct SQL is the fixture: the seed now declares many_to_many.
+ */
+async function seedOneToManySender(tenantId: string): Promise<void> {
+  await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
+  await adminPool.query(
+    `UPDATE relation_definitions SET cardinality = 'one_to_many'
+      WHERE tenant_id = $1 AND id IN (
+        SELECT rd.id FROM relation_definitions rd
+          JOIN properties p ON p.id = rd.property_id_a
+          JOIN databases d ON d.id = p.database_id
+         WHERE d.owner_module_id = 'emails' AND p.key = 'senderPeople' AND d.tenant_id = $1)`,
+    [tenantId],
+  );
+}
+
+async function senderCardinality(tenantId: string): Promise<string | null> {
+  return runInTenant(tenantId, async () => {
+    const { rows } = await dataPool.query<{ cardinality: string }>(
+      `SELECT rd.cardinality FROM relation_definitions rd
+         JOIN properties p ON p.id = rd.property_id_a
+         JOIN databases d ON d.id = p.database_id
+        WHERE d.owner_module_id = 'emails' AND p.key = 'senderPeople'`,
+    );
+    return rows[0]?.cardinality ?? null;
+  });
+}
+
+/** Every relation definition of one tenant, read as the owner, so a test can see a tenant the cutover did not touch. */
+async function relationDefinitions(tenantId: string): Promise<Array<{ id: string; cardinality: string }>> {
+  const { rows } = await adminPool.query<{ id: string; cardinality: string }>(
+    "SELECT id, cardinality FROM relation_definitions WHERE tenant_id = $1 ORDER BY id",
+    [tenantId],
+  );
+  return rows;
+}
+
+describe("emails senderPeople cardinality tenant cutover (issue #1457)", () => {
+  let zero: string;
+  let b: string;
+
+  beforeAll(() => {
+    adminPool = getTestPool();
+    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(adminPool);
+    zero = getTenantZeroId();
+    b = await createTestTenant(adminPool);
+  });
+
+  afterAll(async () => {
+    await dataPool.end();
+    await adminPool.end();
+  });
+
+  it("switches a populated tenant's senderPeople to many_to_many in every tenant", async () => {
+    await seedOneToManySender(zero);
+    await seedOneToManySender(b);
+
+    await runCutovers(dataPool);
+
+    expect(await senderCardinality(zero)).toBe("many_to_many");
+    expect(await senderCardinality(b)).toBe("many_to_many");
+  });
+
+  it("is idempotent: a second call changes no row", async () => {
+    await seedOneToManySender(zero);
+    await seedOneToManySender(b);
+    await runCutovers(dataPool);
+    const before = await snapshot();
+
+    await runCutovers(dataPool);
+
+    expect(await snapshot()).toEqual(before);
+    expect(await senderCardinality(b)).toBe("many_to_many");
+  });
+
+  it("does nothing in a tenant without an Emails database", async () => {
+    await seedOneToManySender(zero);
+    await seedOneToManySender(b);
+    await runInTenant(b, () =>
+      dataPool.query("UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'emails'"),
+    );
+    const bBefore = await relationDefinitions(b);
+
+    await runCutovers(dataPool);
+
+    expect(await senderCardinality(b)).toBeNull();
+    expect(await relationDefinitions(b)).toEqual(bBefore);
+    expect(bBefore.map((row) => row.cardinality)).toContain("one_to_many");
+    expect(await senderCardinality(zero)).toBe("many_to_many");
+  });
+
+  it("fails and names the tenant when its Emails database has no senderPeople relation, and still upgrades the other tenant", async () => {
+    await seedOneToManySender(zero);
+    await seedOneToManySender(b);
+    await adminPool.query(
+      `DELETE FROM relation_definitions WHERE tenant_id = $1 AND id IN (
+         SELECT rd.id FROM relation_definitions rd
+           JOIN properties p ON p.id = rd.property_id_a
+           JOIN databases d ON d.id = p.database_id
+          WHERE d.owner_module_id = 'emails' AND p.key = 'senderPeople' AND d.tenant_id = $1)`,
+      [b],
+    );
+    await adminPool.query(
+      `DELETE FROM properties WHERE key = 'senderPeople' AND database_id IN (
+         SELECT id FROM databases WHERE owner_module_id = 'emails' AND tenant_id = $1)`,
+      [b],
+    );
+
+    const error = await runCutovers(dataPool).then(
+      () => null,
+      (err: unknown) => err,
+    );
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).message).toContain(b);
+    expect((error as AggregateError).message).not.toContain(zero);
+    expect((error as AggregateError).errors).toHaveLength(1);
+    expect(await senderCardinality(zero)).toBe("many_to_many");
+  });
+});
