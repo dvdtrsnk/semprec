@@ -2397,6 +2397,97 @@ describe("mail sync job error handling (issue #26)", () => {
     expect(item.rows[0].properties.syncStatus).toBe("ok");
   });
 
+  it("tracks the last successful sync, the failure streak and its kind, and the initial sync across passes (issue #1497)", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const moduleIds = {
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      foldersDatabaseId: foldersId,
+      mailboxesDatabaseId: mailboxesId,
+    };
+
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    await withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+    );
+    const readState = () => withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
+    const readUpdatedAt = async () => {
+      const { rows } = await pool.query(`SELECT updated_at FROM items WHERE id = $1`, [mailbox.id]);
+      return rows[0].updated_at as Date;
+    };
+    const run = (adapters: MailSyncAdapterFactory) =>
+      handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, adapters, moduleIds, noopStorage);
+
+    const emptyImap: ImapMailClient = {
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => [],
+      fetchAllUids: async () => [],
+      fetchFlagsChangedSince: async () => [],
+      setMessageFlag: async () => {},
+    };
+    const healthy: MailSyncAdapterFactory = { createImapClient: async () => emptyImap };
+    const failing = (error: Error): MailSyncAdapterFactory => ({
+      createImapClient: async () => {
+        throw error;
+      },
+    });
+
+    await run(healthy);
+    const first = await readState();
+    expect(first?.lastSuccessfulSyncAt).toBeTruthy();
+    expect(first?.initialSyncCompletedAt).toBe(first?.lastSuccessfulSyncAt);
+    expect(first?.failingSince).toBeNull();
+    expect(first?.lastFailureKind).toBeNull();
+
+    // A second identical pass moves the success timestamp, keeps the initial sync, and leaves
+    // the already-'ok' Mailboxes item untouched.
+    const updatedAfterFirst = await readUpdatedAt();
+    await run(healthy);
+    const second = await readState();
+    expect(new Date(second!.lastSuccessfulSyncAt!).getTime()).toBeGreaterThan(
+      new Date(first!.lastSuccessfulSyncAt!).getTime(),
+    );
+    expect(second?.initialSyncCompletedAt).toBe(first?.initialSyncCompletedAt);
+    expect(await readUpdatedAt()).toEqual(updatedAfterFirst);
+
+    await expect(run(failing(new Error("boom")))).rejects.toThrow("boom");
+    const afterFirstFailure = await readState();
+    expect(afterFirstFailure?.lastSuccessfulSyncAt).toBe(second?.lastSuccessfulSyncAt);
+    expect(afterFirstFailure?.failingSince).toBeTruthy();
+    expect(afterFirstFailure?.lastFailureKind).toBe("other");
+
+    await expect(run(failing(new MailReauthorizationRequiredError("revoked")))).rejects.toThrow();
+    const afterReauth = await readState();
+    expect(afterReauth?.failingSince).toBe(afterFirstFailure?.failingSince);
+    expect(afterReauth?.lastFailureKind).toBe("reauthorization");
+    expect(afterReauth?.lastSuccessfulSyncAt).toBe(second?.lastSuccessfulSyncAt);
+
+    await run(failing(new MailConnectionLimitError("Too many simultaneous connections.")));
+    const afterLimit = await readState();
+    expect(afterLimit?.failingSince).toBe(afterFirstFailure?.failingSince);
+    expect(afterLimit?.lastFailureKind).toBe("connectionLimit");
+
+    await run(healthy);
+    const recovered = await readState();
+    expect(recovered?.failingSince).toBeNull();
+    expect(recovered?.lastFailureKind).toBeNull();
+    expect(recovered?.initialSyncCompletedAt).toBe(first?.initialSyncCompletedAt);
+    expect(new Date(recovered!.lastSuccessfulSyncAt!).getTime()).toBeGreaterThan(
+      new Date(second!.lastSuccessfulSyncAt!).getTime(),
+    );
+  });
+
   it("sets Mailbox.syncStatus to 'needsReauthorization' when the adapter reports a revoked credential, without writing a mail_sync_error notification (issue #149)", async () => {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");

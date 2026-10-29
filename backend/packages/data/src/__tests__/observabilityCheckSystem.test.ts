@@ -240,7 +240,7 @@ describe("observability.checkSystem (issue #169)", () => {
     await ensureMailAccountSyncState(pool, { itemId: erroredMailbox, syncMode: "imap" });
     // A connection-limit backoff pushes next_expected_activity_at into the future while last_error
     // stays set — this account is not "due" for another sync pass, but must still alert.
-    await recordSyncError(pool, erroredMailbox, "boom");
+    await recordSyncError(pool, erroredMailbox, "boom", "other");
     await pool.query(
       `UPDATE mail_account_sync_state SET next_expected_activity_at = now() + interval '1 hour' WHERE item_id = $1`,
       [erroredMailbox],
@@ -284,7 +284,7 @@ describe("observability.checkSystem (issue #169)", () => {
     await markAllProcessesFresh();
     const mailboxItemId = randomUUID();
     await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
-    await recordSyncError(pool, mailboxItemId, "boom");
+    await recordSyncError(pool, mailboxItemId, "boom", "other");
 
     await runCheck();
     const first = await getTenantCheck(`mail:${mailboxItemId}`);
@@ -305,7 +305,7 @@ describe("observability.checkSystem (issue #169)", () => {
     await markAllProcessesFresh();
     const mailboxItemId = randomUUID();
     await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
-    await recordSyncError(pool, mailboxItemId, "boom");
+    await recordSyncError(pool, mailboxItemId, "boom", "other");
 
     await runCheck();
     expect((await getTenantCheck(`mail:${mailboxItemId}`))?.status).toBe("alerting");
@@ -624,7 +624,7 @@ describe("observability.checkSystem (issue #169)", () => {
       await runInTenant(tenantB, () =>
         withTransaction(pool, async (client) => {
           await ensureMailAccountSyncState(client, { itemId: mailboxId, syncMode: "imap" });
-          await recordSyncError(client, mailboxId, "boom");
+          await recordSyncError(client, mailboxId, "boom", "other");
         }),
       );
 
