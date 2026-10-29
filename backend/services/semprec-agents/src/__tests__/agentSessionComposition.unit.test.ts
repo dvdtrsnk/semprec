@@ -74,6 +74,7 @@ function grant(registration: string, server: string, granted = true): McpToolGra
     mcpServerName: `${server} name`,
     toolName: "search",
     description: null,
+    displayLabel: "search",
     requiresApproval: false,
     riskClass: "read",
     mcpServerOnline: true,
