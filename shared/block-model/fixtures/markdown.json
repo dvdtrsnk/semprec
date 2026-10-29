@@ -217,6 +217,23 @@
       "blocks": [{ "type": "page", "pageId": "p-1" }]
     },
     {
+      "name": "item link round trip",
+      "markdown": "Meeting: [Standup](semprec://items/3f2b8c1e-5a47-4d0b-9c61-7e2a1b9d4f10) at 9",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [
+            { "insert": "Meeting: " },
+            {
+              "insert": "Standup",
+              "attributes": { "link": { "href": "semprec://items/3f2b8c1e-5a47-4d0b-9c61-7e2a1b9d4f10" } }
+            },
+            { "insert": " at 9" }
+          ]
+        }
+      ]
+    },
+    {
       "name": "synthetic empty document writes nothing",
       "direction": "serialize",
       "markdown": "",

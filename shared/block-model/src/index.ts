@@ -23,9 +23,11 @@ export {
   type TextRun,
 } from "./pageBlocks.js";
 export {
+  collectItemLinks,
   parseMarkdown,
   serializeBlocks,
   stripMarkdown,
+  type ItemLinks,
   type ParseOptions,
   type ParsedBlock,
   type SerializableBlock,
