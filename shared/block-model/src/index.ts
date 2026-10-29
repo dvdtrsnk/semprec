@@ -23,6 +23,19 @@ export {
   type TextRun,
 } from "./pageBlocks.js";
 export {
+  BlockOperationError,
+  deleteBlocks,
+  duplicateBlocks,
+  insertBlocks,
+  mergeBlocks,
+  moveBlocks,
+  setIndent,
+  setType,
+  splitBlock,
+  type BlockOperationErrorCode,
+  type NewBlockInput,
+} from "./blockOperations.js";
+export {
   parseMarkdown,
   serializeBlocks,
   stripMarkdown,
