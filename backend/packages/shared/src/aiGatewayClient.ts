@@ -6,10 +6,25 @@
  * reaches a provider.
  */
 
+/** A text block of a multi-block message. */
+export interface AiGatewayTextBlock {
+  type: "text";
+  text: string;
+}
+
+/** An image block: `data` is the base64 of a JPEG or PNG the caller already reduced; the gateway never reads a blob store. */
+export interface AiGatewayImageBlock {
+  type: "image";
+  mimeType: "image/jpeg" | "image/png";
+  data: string;
+}
+
+export type AiGatewayContentBlock = AiGatewayTextBlock | AiGatewayImageBlock;
+
 /** A single turn in the conversation sent to the gateway's structured-completion route. */
 export interface AiGatewayMessage {
   role: "user" | "assistant";
-  content: string;
+  content: string | AiGatewayContentBlock[];
 }
 
 export interface AiGatewayCompletionInput {
