@@ -15,6 +15,7 @@ import {
   type HeartbeatRuleKindRegistry,
 } from "./rule.js";
 import {
+  CORE_AGENT_RUN_ACTION_ID,
   createActionQueueAffinity,
   resolveAgentRunLane,
   resolveHeartbeatFireTaskName,
@@ -219,6 +220,70 @@ export async function updateHeartbeatRule(
     [id, JSON.stringify(rule), nextFireAt],
   );
   return mapRow(requireSingleRow(rows, "project_heartbeats row"), moduleRuleKinds);
+}
+
+export const HEARTBEAT_NAME_MAX_LENGTH = 200;
+export const HEARTBEAT_TASK_MAX_LENGTH = 4000;
+
+/**
+ * Renames a heartbeat (`project_heartbeats.name`, the title of an automation). Touches nothing
+ * else: `rule`, `enabled` and `next_fire_at` are left as they are, so a rule whose module was
+ * deactivated does not block a rename. Returns null when no heartbeat with this id is visible
+ * to the caller's tenant.
+ */
+export async function updateHeartbeatName(
+  client: Pool | PoolClient,
+  id: string,
+  name: string,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<HeartbeatRow | null> {
+  const trimmed = typeof name === "string" ? name.trim() : "";
+  if (trimmed.length === 0 || trimmed.length > HEARTBEAT_NAME_MAX_LENGTH) {
+    throw new ValidationError(`'name' must be 1-${HEARTBEAT_NAME_MAX_LENGTH} characters after trimming`, {
+      field: "name",
+    });
+  }
+  const { rows } = await client.query<HeartbeatDbRow>(
+    `UPDATE project_heartbeats SET name = $2 WHERE id = $1 RETURNING ${COLUMNS}`,
+    [id, trimmed],
+  );
+  return rows[0] ? mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true }) : null;
+}
+
+/**
+ * Sets `action_config.task` of a `core.agentRun` heartbeat, keeping every other `action_config`
+ * key. Returns null when no heartbeat with this id is visible to the caller's tenant; a heartbeat
+ * with another action is a validation error, because only `core.agentRun` reads `task`.
+ */
+export async function updateHeartbeatTask(
+  client: Pool | PoolClient,
+  id: string,
+  task: string,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<HeartbeatRow | null> {
+  if (typeof task !== "string" || task.trim().length === 0 || task.length > HEARTBEAT_TASK_MAX_LENGTH) {
+    throw new ValidationError(`'task' must be a non-empty string of at most ${HEARTBEAT_TASK_MAX_LENGTH} characters`, {
+      field: "task",
+    });
+  }
+  // The action check is part of the UPDATE's WHERE, so a concurrent action change cannot slip
+  // between a check and the write.
+  const { rows } = await client.query<HeartbeatDbRow>(
+    `UPDATE project_heartbeats
+     SET action_config = jsonb_set(action_config, '{task}', to_jsonb($2::text))
+     WHERE id = $1 AND action_id = $3
+     RETURNING ${COLUMNS}`,
+    [id, task, CORE_AGENT_RUN_ACTION_ID],
+  );
+  if (rows[0]) return mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true });
+  const { rows: existing } = await client.query<{ action_id: string }>(
+    `SELECT action_id FROM project_heartbeats WHERE id = $1`,
+    [id],
+  );
+  if (!existing[0]) return null;
+  throw new ValidationError(`Heartbeat action '${existing[0].action_id}' has no task to change`, {
+    field: "actionId",
+  });
 }
 
 /** Disabling is a plain flag flip; re-enabling recomputes from now — occurrences missed while paused are not caught up. */
