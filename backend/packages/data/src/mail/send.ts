@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
@@ -22,6 +21,7 @@ import { buildMailPreviewFromBody } from "./mailPlainText.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 import type { MailSmtpClient } from "./smtpClient.js";
+import { generateOutgoingMessageId } from "./outgoingMime.js";
 
 /**
  * The choke point's actor distinction for `email.send` (issue #95, epic #92's "Enforcement
@@ -89,16 +89,6 @@ export interface SendEmailInput {
 export interface SendEmailResult {
   itemId: string;
   messageId: string;
-}
-
-function domainOf(address: string): string {
-  const at = address.lastIndexOf("@");
-  return at === -1 ? "semprec.local" : address.slice(at + 1);
-}
-
-/** RFC 5322 §3.6.4: generated only at send time, never at draft creation — a draft has no Message-ID until it is actually submitted (epic #92). */
-function generateOutgoingMessageId(fromAddress: string): string {
-  return `<${randomUUID()}@${domainOf(fromAddress)}>`;
 }
 
 /** True when a Postgres error is `mail_message_meta`'s primary-key (item_id) violation — mirrors chokePoint/viewsStore.ts's own `isUniqueViolation` helper. */
