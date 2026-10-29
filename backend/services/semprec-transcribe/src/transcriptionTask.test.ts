@@ -18,7 +18,6 @@ import {
   getDatabaseByModuleId,
   getItemById,
   LocalFsBlobStorageWriter,
-  NotFoundError,
   seedSystem,
   TRANSCRIPTION_OWNER_PROCESS,
   setAgentRunEventHook,
@@ -617,9 +616,8 @@ describe("transcription step 1 (prepare)", () => {
       );
     });
 
-    await expect(
-      createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
-    ).rejects.toBeInstanceOf(NotFoundError);
+    // Issue #1582: a deleted transcript is a clean stop, not a failure.
+    await createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     expect((await readSource(files.id, file.id))?.computed).not.toHaveProperty("prepare");
     expect(await readNormalizedLeftovers()).toEqual({ blobRows: 0, storedFiles: [] });
@@ -1794,6 +1792,106 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       expect(transcript.properties.status).toBe("processing");
       expect(await readAutomation(transcript.id)).toEqual({ status: "locked", error: null, attempts: 1 });
       expect(await readNotifications(transcript.id)).toEqual([]);
+    });
+
+    describe("deleted transcript or source file (issue #1582)", () => {
+      async function readStoppedState(transcriptId: string) {
+        const { rows } = await pool.query<{ status: string; error_code: string | null }>(
+          "SELECT status, error_code FROM item_automation WHERE item_id = $1",
+          [transcriptId],
+        );
+        return rows[0];
+      }
+
+      /** Soft-deletes `itemId` the moment the diarize call is made, like a user emptying it mid-run. */
+      class DeletingGateway extends FakeAudioGatewayClient {
+        constructor(public deleteWhere: (fileItemId: string) => string) {
+          super();
+        }
+
+        fileItemId = "";
+
+        override async diarize(request: DiarizeRequest): Promise<DiarizationTurn[]> {
+          await pool.query(this.deleteWhere(this.fileItemId));
+          return super.diarize(request);
+        }
+      }
+
+      const deleteTranscriptSql = (fileItemId: string) =>
+        `UPDATE items SET deleted_at = now() WHERE id = (SELECT (computed ->> 'create')::uuid FROM items WHERE id = '${fileItemId}')`;
+      const deleteSourceSql = (fileItemId: string) => `UPDATE items SET deleted_at = now() WHERE id = '${fileItemId}'`;
+
+      for (const [label, sql] of [
+        ["transcript", deleteTranscriptSql],
+        ["source file", deleteSourceSql],
+      ] as const) {
+        it(`stops without ASR or a notification and marks error/deleted when the ${label} is deleted during diarization`, async () => {
+          const { file } = await createSourceFile();
+          await createUser();
+          const gateway = new DeletingGateway(sql);
+          gateway.fileItemId = file.id;
+
+          await createTranscriptionTask(
+            pool,
+            blobStorage,
+            gateway,
+            summaryClient,
+          )({ fileItemId: file.id }, FINAL_ATTEMPT);
+
+          const transcript = await readTranscript(file.id);
+          expect(gateway.diarizeCalls).toHaveLength(1);
+          expect(gateway.transcribeCalls).toEqual([]);
+          expect(summaryClient.calls).toEqual([]);
+          expect(await readStoppedState(transcript.id)).toEqual({ status: "error", error_code: "deleted" });
+          expect(await readNotifications(transcript.id)).toEqual([]);
+        });
+      }
+
+      it("falls back to the deleted stop instead of rolling back when the last attempt fails on a trashed transcript", async () => {
+        const { file } = await createSourceFile();
+        await createUser();
+        const trashingSummary = new (class extends FakeSummaryClient {
+          override async complete(): Promise<AiGatewayCompletionResult> {
+            await pool.query(deleteTranscriptSql(file.id));
+            throw new Error("simulated summary outage");
+          }
+        })();
+
+        await createTranscriptionTask(
+          pool,
+          blobStorage,
+          gatewayClient,
+          trashingSummary,
+        )({ fileItemId: file.id }, FINAL_ATTEMPT);
+
+        const transcript = await readTranscript(file.id);
+        expect(await readStoppedState(transcript.id)).toEqual({ status: "error", error_code: "deleted" });
+        expect(await readNotifications(transcript.id)).toEqual([]);
+      });
+
+      it("runs again after the transcript is restored and the job is rerun", async () => {
+        const { file } = await createSourceFile();
+        const gateway = new DeletingGateway(deleteTranscriptSql);
+        gateway.fileItemId = file.id;
+        await createTranscriptionTask(
+          pool,
+          blobStorage,
+          gateway,
+          summaryClient,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT);
+        const transcript = await readTranscript(file.id);
+        await pool.query("UPDATE items SET deleted_at = NULL WHERE id = $1", [transcript.id]);
+        gateway.deleteWhere = () => "SELECT 1";
+
+        await createTranscriptionTask(
+          pool,
+          blobStorage,
+          gateway,
+          summaryClient,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+        expect(await readStoppedState(transcript.id)).toEqual({ status: "done", error_code: null });
+      });
     });
 
     it("retries through graphile-worker at most three times with growing backoff, then records the failure once", async () => {
