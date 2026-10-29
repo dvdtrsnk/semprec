@@ -4,6 +4,7 @@ import {
   createCatalogResolver,
   createCollectionMetadataResolver,
   resolveDatabaseName,
+  resolveDatabasePlaceholderForRow,
   resolveProperty,
   toManifestLocale,
   ValidationError,
@@ -67,6 +68,7 @@ async function resolvedDatabaseBody(
   return toDatabaseEnvelope(
     database,
     resolveDatabaseName(database.name, database.key, database.id, catalogs, locale),
+    await resolveDatabasePlaceholderForRow(catalogResolver, database, locale),
     metadataResolver.resolve(database),
   );
 }

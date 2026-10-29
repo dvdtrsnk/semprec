@@ -8,6 +8,7 @@ import type { CollectionMetadata, DatabaseRow } from "@semprec/data";
 export interface DatabaseEnvelope {
   id: string;
   name: string;
+  searchPlaceholder: string | null;
   key: string | null;
   parentItemId: string | null;
   ownerProjectItemId: string | null;
@@ -25,11 +26,13 @@ export interface DatabaseEnvelope {
 export function toDatabaseEnvelope(
   database: DatabaseRow,
   resolvedName: string,
+  searchPlaceholder: string | null,
   metadata: CollectionMetadata,
 ): DatabaseEnvelope {
   return {
     id: database.id,
     name: resolvedName,
+    searchPlaceholder,
     key: database.key,
     parentItemId: database.parentItemId,
     ownerProjectItemId: database.ownerProjectItemId,

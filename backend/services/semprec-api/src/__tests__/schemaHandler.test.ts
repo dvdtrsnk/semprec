@@ -37,6 +37,7 @@ interface SchemaProjectionBody {
     databaseId: string;
     key: string | null;
     name: string;
+    searchPlaceholder: string | null;
     icon: string | null;
     color: string | null;
     overviewOrder: number | null;
@@ -192,6 +193,20 @@ describe("createSchemaRequestListener (issue #147)", () => {
       switcherOrder: null,
       clientVisible: true,
     });
+  });
+
+  it("carries the same search placeholders as the database envelope", async () => {
+    const custom = await createChokePoint(pool).createDatabase({ name: "Custom" });
+    const get = async (locale: string): Promise<SchemaProjectionBody["databases"]> => {
+      const res = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader(locale) });
+      return ((await res.json()) as SchemaProjectionBody).databases;
+    };
+    const cs = await get("cs");
+    const en = await get("en");
+    expect(cs.find((db) => db.key === "people")?.searchPlaceholder).toBe("Hledat v Lidech");
+    expect(en.find((db) => db.key === "projects")?.searchPlaceholder).toBe("Search projects");
+    expect(cs.find((db) => db.databaseId === custom.id)?.searchPlaceholder).toBe("Hledat ve sbírce");
+    expect(en.find((db) => db.databaseId === custom.id)?.searchPlaceholder).toBe("Search collection");
   });
 
   it("resolves the same databases' names in en for a different locale", async () => {

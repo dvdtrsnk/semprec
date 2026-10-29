@@ -47,6 +47,7 @@ async function authHeader(locale = "en"): Promise<{ Authorization: string }> {
 interface DatabaseBody {
   id: string;
   name: string;
+  searchPlaceholder: string | null;
   key: string | null;
   system: boolean;
   archivedAt: string | null;
@@ -316,6 +317,32 @@ describe("database routes (issue #240)", () => {
       overviewOrder: null,
       switcherOrder: null,
     });
+  });
+
+  it("resolves the search placeholder per locale, a generic sentence for user databases and null without an entry", async () => {
+    await chokePoint.createDatabase({ name: "Custom placeholder" });
+    const list = async (locale: string): Promise<DatabaseBody[]> => {
+      const res = await fetch(`${baseUrl}/api/databases?limit=200`, { headers: await authHeader(locale) });
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { databases: DatabaseBody[] }).databases;
+    };
+    const cs = await list("cs");
+    const en = await list("en");
+    const byKey = (databases: DatabaseBody[], key: string): DatabaseBody | undefined =>
+      databases.find((db) => db.key === key);
+    expect(byKey(cs, "people")?.searchPlaceholder).toBe("Hledat v Lidech");
+    expect(byKey(cs, "movies")?.searchPlaceholder).toBe("Hledat ve filmech a seriálech");
+    expect(byKey(en, "projects")?.searchPlaceholder).toBe("Search projects");
+    expect(cs.find((db) => db.name === "Custom placeholder")?.searchPlaceholder).toBe("Hledat ve sbírce");
+    expect(en.find((db) => db.name === "Custom placeholder")?.searchPlaceholder).toBe("Search collection");
+    const internal = cs.filter((db) => db.system && !db.clientVisible);
+    expect(internal.length).toBeGreaterThan(0);
+    for (const db of internal) expect(db.searchPlaceholder, `database ${db.key}`).toBeNull();
+
+    const detail = await fetch(`${baseUrl}/api/databases/${byKey(cs, "people")?.id}`, {
+      headers: await authHeader("cs"),
+    });
+    expect(((await detail.json()) as DatabaseBody).searchPlaceholder).toBe("Hledat v Lidech");
   });
 
   it("walks every database exactly once with limit=2 and resumes after the cursor row was archived", async () => {
