@@ -212,6 +212,8 @@ async function toFetchedMessage(
       .map((a) => ({ name: a.name || undefined, address: a.address }));
   };
 
+  const replyTo = toList(parsedHeaders.replyTo);
+
   return {
     // Falls back to Gmail's own (always-unique) message id, not a fixed placeholder — two
     // different messages both missing a Message-ID header must not collide and get merged
@@ -227,6 +229,7 @@ async function toFetchedMessage(
       to: toList(parsedHeaders.to),
       cc: toList(parsedHeaders.cc),
       bcc: toList(parsedHeaders.bcc),
+      ...(replyTo.length > 0 ? { replyTo } : {}),
     },
     bodyText,
     bodyHtml,

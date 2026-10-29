@@ -179,3 +179,44 @@ describe("Gmail flag write-back", () => {
     );
   });
 });
+
+describe("Gmail Reply-To envelope", () => {
+  async function fetchWithHeaders(extra: { name: string; value: string }[]) {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: "gmail-message-1",
+            threadId: "gmail-thread-1",
+            payload: {
+              mimeType: "text/plain",
+              headers: [
+                { name: "Message-ID", value: "<gmail-message-1@example.test>" },
+                { name: "From", value: "Sender <sender@example.test>" },
+                ...extra,
+              ],
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return new GmailRestClient(async () => "test-token").fetchMessage("gmail-message-1");
+  }
+
+  it("stores the Reply-To header addresses", async () => {
+    const fetched = await fetchWithHeaders([
+      { name: "Reply-To", value: "Support <support@example.test>, other@example.test" },
+    ]);
+    expect(fetched?.message.envelope.replyTo).toEqual([
+      { name: "Support", address: "support@example.test" },
+      { name: undefined, address: "other@example.test" },
+    ]);
+  });
+
+  it("leaves replyTo absent without a Reply-To header", async () => {
+    const fetched = await fetchWithHeaders([]);
+    expect(fetched?.message.envelope).not.toHaveProperty("replyTo");
+    expect(fetched?.message.envelope.from).toEqual({ name: "Sender", address: "sender@example.test" });
+  });
+});

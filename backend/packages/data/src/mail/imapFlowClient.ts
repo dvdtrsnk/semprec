@@ -58,6 +58,10 @@ function toEnvelopeAddress(value: MessageAddressObject | undefined): MailEnvelop
   return value?.address ? { name: value.name || undefined, address: value.address } : undefined;
 }
 
+function optionalReplyTo(replyTo: MailEnvelopeAddress[]): { replyTo?: MailEnvelopeAddress[] } {
+  return replyTo.length > 0 ? { replyTo } : {};
+}
+
 function toEnvelopeAddressList(list: MessageAddressObject[] | undefined): MailEnvelopeAddress[] {
   return (list ?? []).map(toEnvelopeAddress).filter((a): a is MailEnvelopeAddress => Boolean(a));
 }
@@ -335,6 +339,7 @@ export class ImapFlowMailClient implements ImapMailClient {
         to: toEnvelopeAddressList(envelope?.to),
         cc: toEnvelopeAddressList(envelope?.cc),
         bcc: toEnvelopeAddressList(envelope?.bcc),
+        ...optionalReplyTo(toEnvelopeAddressList(envelope?.replyTo)),
       },
       bodyText,
       bodyHtml,

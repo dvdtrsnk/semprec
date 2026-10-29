@@ -17,6 +17,7 @@ interface GraphMessageResource {
   toRecipients?: { emailAddress: { name?: string; address: string } }[];
   ccRecipients?: { emailAddress: { name?: string; address: string } }[];
   bccRecipients?: { emailAddress: { name?: string; address: string } }[];
+  replyTo?: { emailAddress: { name?: string; address: string } }[];
   bodyPreview?: string;
   body?: { contentType: string; content: string };
   receivedDateTime?: string;
@@ -173,6 +174,8 @@ export async function toFetchedGraphMessage(
   });
   const contentType = parseContentTypeHeader(header(resource, "Content-Type"));
 
+  const replyTo = toEnvelopeAddressList(resource.replyTo);
+
   return {
     messageId: resource.internetMessageId ?? `<no-message-id-${resource.id}@graph-api>`,
     inReplyTo: header(resource, "In-Reply-To") ?? null,
@@ -183,6 +186,7 @@ export async function toFetchedGraphMessage(
       to: toEnvelopeAddressList(resource.toRecipients),
       cc: toEnvelopeAddressList(resource.ccRecipients),
       bcc: toEnvelopeAddressList(resource.bccRecipients),
+      ...(replyTo.length > 0 ? { replyTo } : {}),
     },
     bodyText: appendGraphNonFileAttachmentAnnotations(
       resource.body?.contentType === "text" ? resource.body.content : resource.bodyPreview,
@@ -346,7 +350,7 @@ export class GraphRestClient implements GraphMailClient {
   async fetchDelta(deltaLink: string | null): Promise<GraphDeltaResult> {
     let url =
       deltaLink ??
-      `${BASE_URL}/messages/delta?$select=internetMessageId,subject,from,toRecipients,ccRecipients,bccRecipients,body,bodyPreview,receivedDateTime,parentFolderId,internetMessageHeaders,hasAttachments,isRead,flag`;
+      `${BASE_URL}/messages/delta?$select=internetMessageId,subject,from,toRecipients,ccRecipients,bccRecipients,replyTo,body,bodyPreview,receivedDateTime,parentFolderId,internetMessageHeaders,hasAttachments,isRead,flag`;
     const changes: GraphChangedMessage[] = [];
     let newDeltaLink = "";
 
