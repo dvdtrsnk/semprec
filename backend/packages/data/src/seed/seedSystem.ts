@@ -15,6 +15,7 @@ import { registerLibraryGridViewType } from "../views/libraryGridViewType.js";
 import { registerMailboxClientViewType } from "../views/mailboxClientViewType.js";
 import { registerJournalInboxViewType } from "../views/journalInboxViewType.js";
 import { JOURNAL_INBOX_COMPUTED_KEY } from "../inbox/journalInboxCompute.js";
+import { JOURNAL_SUMMARY_COMPUTED_KEY } from "../journal/journalSummary.js";
 import {
   TRANSCRIPTION_CREATE_COMPUTED_KEY,
   TRANSCRIPTION_PREPARE_COMPUTED_KEY,
@@ -97,6 +98,8 @@ export async function seedSystem(
   // seedInboxPipelineInTransaction, which the idempotency early-return below skips after
   // the first run.
   computedKeyRegistry.add(JOURNAL_INBOX_COMPUTED_KEY);
+  // Same reasoning again (issue #1711's derived Journal title): reserved against collision on every startup too.
+  computedKeyRegistry.add(JOURNAL_SUMMARY_COMPUTED_KEY);
   // Same reasoning again (issue #180's Transcripts computed keys): reserved against
   // collision on every startup, not only the one-time DB seed.
   computedKeyRegistry.add(TRANSCRIPT_SEGMENTS_COMPUTED_KEY);
