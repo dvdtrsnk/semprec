@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import { getAiUsageReport } from "./aiUsageReport.js";
 import { ValidationError } from "../errors.js";
+import { toManifestLocale } from "../manifest/catalogResolution.js";
 
 /**
  * The custom-route handler shape this file's export is cast to by `semprec-api`'s mount (issue
@@ -10,6 +11,7 @@ import { ValidationError } from "../errors.js";
  */
 interface CustomRouteRequestContext {
   req: { url?: string };
+  identity: { user: { locale: string } };
 }
 
 type CustomRouteResult = { status: number; body: unknown };
@@ -32,7 +34,12 @@ export function createAiUsageRouteHandler(pool: Pool) {
     if (granularity !== "day" && granularity !== "month") {
       throw new ValidationError("'granularity' must be 'day' or 'month'", { field: "granularity" });
     }
-    const report = await getAiUsageReport(pool, { from, to, granularity });
+    const report = await getAiUsageReport(pool, {
+      from,
+      to,
+      granularity,
+      locale: toManifestLocale(ctx.identity.user.locale),
+    });
     return { status: 200, body: report };
   };
 }
