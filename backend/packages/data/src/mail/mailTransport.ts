@@ -24,6 +24,7 @@ import { resolveMailModuleIds, type MailModuleIds } from "./mailModuleIds.js";
 import { IMAP_SEEN_FLAG } from "./messageFlags.js";
 import { logger } from "./logger.js";
 import { createGmailMailTransport } from "./gmailTransport.js";
+import { createGraphMailTransport } from "./graphTransport.js";
 import { MailRecipientRejectedError, MailSendAuthFailedError } from "./providerTypes.js";
 import { NodemailerSmtpClient, type RawMailEnvelope } from "./smtpClient.js";
 
@@ -31,15 +32,16 @@ import { NodemailerSmtpClient, type RawMailEnvelope } from "./smtpClient.js";
  * How a mailbox submits outgoing mail. `sendDraftEmail` (mail/send.ts) builds a complete RFC 5322 message
  * once (mail/outgoingMime.ts) and hands it to the transport of the mailbox's sync mode, so each provider
  * differs only in how the bytes leave. The SMTP transport below serves `imap` mailboxes, the Gmail API
- * transport (gmailTransport.ts) serves `gmail_api` mailboxes, and the Microsoft Graph transport (#1753)
- * will implement this same interface.
+ * transport (gmailTransport.ts) serves `gmail_api` mailboxes, and the Microsoft Graph transport (graphTransport.ts)
+ * serves `graph_api` mailboxes.
  */
 export interface MailTransportMessage {
   raw: Buffer;
   envelope: RawMailEnvelope;
   /**
    * The provider's thread id of the message being replied to, for a provider that files sent mail into a
-   * conversation by id. The Gmail API transport passes it as the send's `threadId`. The SMTP transport ignores it.
+   * conversation by id. The Gmail API transport passes it as the send's `threadId`. The SMTP and Microsoft Graph
+   * transports ignore it.
    */
   providerThreadId?: string;
 }
@@ -235,7 +237,12 @@ export function createSentCopySaver(
 export interface MailTransportFactoryOptions {
   /** The Google OAuth client the `gmail_api` transport refreshes its access tokens with. Without it a Gmail mailbox cannot send. */
   gmailOAuthClient?: { clientId: string; clientSecret: string };
-  /** Replaces the global `fetch` for the Gmail transport's token endpoint and API requests. Tests inject a fake Google here. */
+  /** The Microsoft OAuth client the `graph_api` transport refreshes its access tokens with. Without it a Graph mailbox cannot send. */
+  graphOAuthClient?: { clientId: string; clientSecret: string };
+  /**
+   * Replaces the global `fetch` for the Gmail and Graph transports' token endpoints and API requests. Tests inject a
+   * fake provider here.
+   */
   fetchImpl?: typeof fetch;
   /** Replaces `openImapConnection` for the copy an `imap` send keeps in the Sent folder. Tests inject a fake IMAP server here. */
   openImapConnection?: ImapConnectionOpener;
@@ -246,7 +253,8 @@ export interface MailTransportFactoryOptions {
  * mailbox's sync mode. For `imap` it reads the mailbox's stored SMTP settings and decrypts its app-specific
  * password for the `smtp_send` purpose; `sendDraftEmail` gets the password only through this factory. The `imap`
  * transport also keeps a copy of each accepted message in the Sent folder (`createSentCopySaver`, issue #1641). For
- * `gmail_api` it builds the Gmail transport from `options.gmailOAuthClient`. `graph_api` has no transport yet (#1753).
+ * `gmail_api` it builds the Gmail transport from `options.gmailOAuthClient`, and for `graph_api` the Graph transport
+ * from `options.graphOAuthClient`.
  */
 export function createMailTransportFactory(
   pool: Pool,
@@ -267,8 +275,23 @@ export function createMailTransportFactory(
           ...(fetchImpl ? { fetchImpl } : {}),
         });
       }
+      if (syncMode === "graph_api") {
+        const { graphOAuthClient, fetchImpl } = options;
+        if (!graphOAuthClient) {
+          throw new Error("No Microsoft Graph OAuth client is configured for this composition root");
+        }
+        return createGraphMailTransport({
+          pool,
+          mailboxItemId,
+          clientId: graphOAuthClient.clientId,
+          clientSecret: graphOAuthClient.clientSecret,
+          fetchImpl,
+        });
+      }
       if (syncMode !== "imap") {
-        throw new Error(`No mail transport for sync mode ${syncMode} is available yet`);
+        // Every SYNC_MODES value has a transport above, so only a stored value outside the union reaches this line.
+        const unnamedMode: string = syncMode;
+        throw new Error(`No mail transport for sync mode ${unnamedMode} is available yet`);
       }
       const stored = await getMailServerSettings(pool, mailboxItemId);
       if (!stored?.smtp) {

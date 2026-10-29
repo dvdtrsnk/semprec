@@ -1,7 +1,13 @@
 import { Readable, Transform } from "node:stream";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { GraphChangedMessage, GraphDeltaResult, GraphFolderRef, GraphMailClient } from "./graphReconcile.js";
-import { assertJsonObject, MAX_ATTACHMENT_BYTES, type FetchedMessage } from "./providerTypes.js";
+import {
+  assertJsonObject,
+  MailReauthorizationRequiredError,
+  MailRecipientRejectedError,
+  MAX_ATTACHMENT_BYTES,
+  type FetchedMessage,
+} from "./providerTypes.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { isDeliveryStatusReport, parseContentTypeHeader } from "./dsn.js";
 
@@ -223,6 +229,121 @@ class GraphApiError extends Error {
   }
 }
 
+/** A Graph recipient in the `emailAddress` shape that `createDraft` takes. */
+export interface GraphRecipient {
+  emailAddress: { address: string; name?: string };
+}
+
+/**
+ * The draft `createDraft` posts: the message without its attachments, which follow through upload sessions.
+ * `internetMessageId` and the reply headers are set on the draft so that the sent copy keeps them.
+ */
+export interface GraphDraft {
+  subject: string;
+  body: { contentType: "html" | "text"; content: string };
+  toRecipients: GraphRecipient[];
+  ccRecipients: GraphRecipient[];
+  bccRecipients: GraphRecipient[];
+  internetMessageId: string;
+  internetMessageHeaders: { name: string; value: string }[];
+}
+
+/** One attachment of a draft, as `createUploadSession` describes it. */
+export interface GraphUploadAttachment {
+  name: string;
+  contentType: string;
+  size: number;
+  isInline: boolean;
+  contentId?: string;
+}
+
+/**
+ * The largest raw MIME `sendMime` takes. `sendMail` carries the MIME base64 encoded in a request of at most 4 MB.
+ * Read as 4 000 000 bytes, the stricter of the two readings, and since base64 turns every 3 raw bytes into 4
+ * characters, the largest raw message is 3 000 000 bytes. Larger messages take the draft path (graphTransport.ts).
+ */
+export const GRAPH_SEND_MAIL_MAX_RAW_BYTES = 3_000_000;
+
+const WRITE_REQUEST_TIMEOUT_MS = 30_000;
+/** An upload chunk is larger than a metadata call, so its deadline is longer. */
+const UPLOAD_CHUNK_TIMEOUT_MS = 120_000;
+/** The most of a failed write's body that is read. It is read only to tell a refused recipient apart from other refusals. */
+const WRITE_ERROR_BODY_READ_LIMIT = 4_096;
+/**
+ * The most of a successful write's JSON body that is read. A create response may carry the created message, body
+ * included, so this limit sits well above what a draft id needs. A response over it fails the call instead of being cut short.
+ */
+const WRITE_JSON_RESPONSE_LIMIT = 32 * 1024 * 1024;
+/**
+ * Graph text that names a refused recipient. The wording is inferred from Graph's error codes; no live refusal has
+ * been captured to confirm it, so a refusal worded differently is an ordinary failure.
+ */
+const RECIPIENT_REFUSAL = /ErrorInvalidRecipients|invalid recipient/i;
+
+/**
+ * Reads at most `limit` bytes of a response body and then releases the stream. Releasing is cleanup: its failure is
+ * dropped, because the outcome of the read is what the caller needs.
+ */
+async function readBodyUpTo(response: Response, limit: number): Promise<{ text: string; truncated: boolean }> {
+  if (!response.body) return { text: "", truncated: false };
+  const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let read = 0;
+  let truncated = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      if (read + chunk.byteLength > limit) {
+        chunks.push(chunk.subarray(0, limit - read));
+        truncated = true;
+        break;
+      }
+      chunks.push(chunk);
+      read += chunk.byteLength;
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return { text: Buffer.concat(chunks).toString("utf8"), truncated };
+}
+
+/**
+ * The error a refused Graph write with a bearer token becomes. A refusal that names an invalid recipient is
+ * `MailRecipientRejectedError` whatever its status. Otherwise a 400 or 401 is `MailReauthorizationRequiredError`, and
+ * any other status is an ordinary failure. The messages name neither the body nor any token.
+ */
+async function writeFailure(response: Response): Promise<Error> {
+  const { text } = await readBodyUpTo(response, WRITE_ERROR_BODY_READ_LIMIT);
+  if (RECIPIENT_REFUSAL.test(text)) return new MailRecipientRejectedError();
+  if (response.status === 400 || response.status === 401) {
+    return new MailReauthorizationRequiredError(`Microsoft Graph rejected the request with status ${response.status}`);
+  }
+  return new Error(`Microsoft Graph request failed with status ${response.status}`);
+}
+
+/** Parses the JSON object of a successful write. A body over the limit fails the call instead of being parsed short. */
+async function jsonObjectOf(response: Response, context: string): Promise<Record<string, unknown>> {
+  const { text, truncated } = await readBodyUpTo(response, WRITE_JSON_RESPONSE_LIMIT);
+  if (truncated) throw new Error(`${context} is over the ${WRITE_JSON_RESPONSE_LIMIT}-byte cap`);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`${context} is not valid JSON`);
+  }
+  return assertJsonObject(parsed, context);
+}
+
+function isHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Real `GraphMailClient` (graphReconcile.ts) over the Microsoft Graph REST API. CI never reaches
  * Microsoft: the semprec-api tests in `mailSyncAdapters.test.ts` run it against a fake Graph server
@@ -412,6 +533,108 @@ export class GraphRestClient implements GraphMailClient {
       signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) throw new GraphApiError(response.status);
+    await response.body?.cancel();
+  }
+
+  /** A write with a bearer token. A failed status becomes the error `writeFailure` classifies; a success returns the response. */
+  private async writeRequest(
+    url: string,
+    init: { method: "POST" | "DELETE"; body?: string; contentType?: string },
+  ): Promise<Response> {
+    const token = await this.getAccessToken();
+    const response = await this.fetchImpl(url, {
+      method: init.method,
+      headers: { Authorization: `Bearer ${token}`, ...(init.contentType ? { "Content-Type": init.contentType } : {}) },
+      ...(init.body !== undefined ? { body: init.body } : {}),
+      signal: AbortSignal.timeout(WRITE_REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) throw await writeFailure(response);
+    return response;
+  }
+
+  /**
+   * Sends a complete RFC 5322 message with `POST /me/sendMail`, base64 encoded as Graph requires for MIME. Graph files
+   * the Sent copy itself and answers 202 with no body. The caller keeps `raw` within GRAPH_SEND_MAIL_MAX_RAW_BYTES.
+   */
+  async sendMime(raw: Buffer): Promise<void> {
+    const response = await this.writeRequest(`${BASE_URL}/sendMail`, {
+      method: "POST",
+      body: raw.toString("base64"),
+      contentType: "text/plain",
+    });
+    await response.body?.cancel();
+  }
+
+  /** Creates a draft that carries the Message-ID and the reply headers. Returns the draft's id. */
+  async createDraft(draft: GraphDraft): Promise<{ id: string }> {
+    const response = await this.writeRequest(`${BASE_URL}/messages`, {
+      method: "POST",
+      body: JSON.stringify(draft),
+      contentType: "application/json",
+    });
+    const json = await jsonObjectOf(response, "Microsoft Graph draft response");
+    if (typeof json.id !== "string" || !json.id) throw new Error("Microsoft Graph draft response has no message id");
+    return { id: json.id };
+  }
+
+  /**
+   * Opens an upload session for one attachment of a draft. Returns its upload URL. The URL must be HTTPS. One that is
+   * not is refused before any byte is sent to it.
+   */
+  async createUploadSession(draftId: string, attachment: GraphUploadAttachment): Promise<{ uploadUrl: string }> {
+    const response = await this.writeRequest(
+      `${BASE_URL}/messages/${encodeURIComponent(draftId)}/attachments/createUploadSession`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          AttachmentItem: {
+            attachmentType: "file",
+            name: attachment.name,
+            size: attachment.size,
+            isInline: attachment.isInline,
+            contentType: attachment.contentType,
+            contentId: attachment.contentId,
+          },
+        }),
+        contentType: "application/json",
+      },
+    );
+    const json = await jsonObjectOf(response, "Microsoft Graph upload session response");
+    if (typeof json.uploadUrl !== "string")
+      throw new Error("Microsoft Graph upload session response has no upload URL");
+    if (!isHttpsUrl(json.uploadUrl)) throw new Error("Microsoft Graph returned an upload URL that is not HTTPS");
+    return { uploadUrl: json.uploadUrl };
+  }
+
+  /**
+   * Writes one chunk of an upload session with `PUT`. `start` is the chunk's offset in the attachment and `total` is the
+   * attachment's size. An upload URL is pre-authenticated, so no bearer token is sent to it, and a refusal is an ordinary
+   * failure rather than a credential one.
+   */
+  async uploadChunk(uploadUrl: string, chunk: Buffer, start: number, total: number): Promise<void> {
+    const response = await this.fetchImpl(uploadUrl, {
+      method: "PUT",
+      headers: { "Content-Range": `bytes ${start}-${start + chunk.byteLength - 1}/${total}` },
+      body: chunk,
+      signal: AbortSignal.timeout(UPLOAD_CHUNK_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new Error(`Microsoft Graph upload failed with status ${response.status}`);
+    await response.body?.cancel();
+  }
+
+  /** Sends a draft with `POST /me/messages/{id}/send`. Graph files the sent copy itself. */
+  async sendDraft(draftId: string): Promise<void> {
+    const response = await this.writeRequest(`${BASE_URL}/messages/${encodeURIComponent(draftId)}/send`, {
+      method: "POST",
+    });
+    await response.body?.cancel();
+  }
+
+  /** Deletes a message, here a draft that a failed large send left behind. */
+  async deleteMessage(messageId: string): Promise<void> {
+    const response = await this.writeRequest(`${BASE_URL}/messages/${encodeURIComponent(messageId)}`, {
+      method: "DELETE",
+    });
     await response.body?.cancel();
   }
 }
