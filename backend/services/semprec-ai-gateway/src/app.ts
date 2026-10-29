@@ -4,6 +4,7 @@ import type { Pool } from "pg";
 import { createCompleteRequestListener, type CompleteHandlerOptions } from "./completeHandler.js";
 import { createAudioRequestListener, type AudioHandlerOptions } from "./audioHandler.js";
 import { createAudioConcurrencyLimit, MAX_CONCURRENT_AUDIO_REQUESTS } from "./audioConcurrencyLimit.js";
+import { createTtsStreamRequestListener, TTS_STREAM_PATH, type TtsStreamHandlerOptions } from "./ttsStreamHandler.js";
 import { STT_STREAM_PATH, type SttStreamUpgradeHandler } from "./sttStreamHandler.js";
 import { createPiMessagesRequestListener, type PiMessagesHandlerOptions } from "./piMessagesHandler.js";
 
@@ -17,6 +18,7 @@ export const GATEWAY_ENDPOINTS = [
   "/internal/diarize",
   "/internal/transcribe",
   STT_STREAM_PATH,
+  TTS_STREAM_PATH,
 ] as const;
 
 export type GatewayEndpoint = (typeof GATEWAY_ENDPOINTS)[number];
@@ -37,10 +39,13 @@ export function createDispatcher(
   options: CompleteHandlerOptions,
   audioOptions: AudioHandlerOptions,
   piOptions: PiMessagesHandlerOptions,
+  ttsOptions?: TtsStreamHandlerOptions,
 ): (req: IncomingMessage, res: ServerResponse) => void {
   const completeListener = createCompleteRequestListener(pool, options);
   const audioListener = createAudioRequestListener(pool, audioOptions);
   const piMessagesListener = createPiMessagesRequestListener(pool, piOptions);
+  // Suites that never reach the synthesis route omit its options; the route then answers 404.
+  const ttsListener = ttsOptions === undefined ? undefined : createTtsStreamRequestListener(pool, ttsOptions);
   const audioLimit = createAudioConcurrencyLimit(MAX_CONCURRENT_AUDIO_REQUESTS);
 
   function handleAudio(req: IncomingMessage, res: ServerResponse): void {
@@ -63,6 +68,14 @@ export function createDispatcher(
     "/internal/pi/messages": (req, res) => void piMessagesListener(req, res),
     "/internal/diarize": handleAudio,
     "/internal/transcribe": handleAudio,
+    [TTS_STREAM_PATH]: (req, res) => {
+      if (ttsListener === undefined) {
+        res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ error: "Not found" }));
+        return;
+      }
+      ttsListener(req, res);
+    },
     // A WebSocket route: it is served by `createUpgradeDispatcher`, so a plain request is refused.
     [STT_STREAM_PATH]: (_req, res) => {
       res.writeHead(426, { "Content-Type": "application/json; charset=utf-8", Upgrade: "websocket" });

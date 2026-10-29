@@ -284,3 +284,86 @@ export function openSttStream(
     });
   });
 }
+
+/** The deadline for the whole synthesis exchange, from the request to the last audio byte. */
+const TTS_REQUEST_TIMEOUT_MS = 5 * 60_000;
+/** The gateway caps one synthesis at 4000 characters, about 5 minutes of 24 kHz PCM; this is the hard stop above it. */
+const TTS_MAX_AUDIO_BYTES = 32 * 1024 * 1024;
+
+export interface SynthesizeSpeechOptions {
+  /** The text to speak, at most 4000 characters. Never logged by the gateway. */
+  text: string;
+  /** One of the voice names the gateway's provider accepts. */
+  voice: string;
+  /** Aborting it ends the request; the gateway aborts the provider and settles the audio produced so far. */
+  signal?: AbortSignal;
+}
+
+/**
+ * Calls `semprec-ai-gateway`'s `POST /internal/tts/stream` (#1399) over loopback with the same
+ * bearer token and ambient tenant header as {@link createHttpAiGatewayClient} and resolves once
+ * the response headers have arrived, with the audio as an async iterable of raw PCM chunks
+ * (signed 16-bit little-endian, mono, 24000 Hz) that can be played while the rest is synthesized.
+ * Rejects with `AiGatewayFailedError` when the request fails: `budget_exceeded` for the gateway's
+ * budget refusal, `timeout`, or `http` for any other non-2xx answer. Reading the iterable throws
+ * `AiGatewayFailedError("http")` when the stream breaks, `timeout` at the deadline and
+ * `invalid_response` when it exceeds the audio cap. A reader that stops early cancels the request.
+ */
+export async function synthesizeSpeech(
+  config: HttpAiGatewayClientConfig,
+  options: SynthesizeSpeechOptions,
+): Promise<AsyncIterable<Uint8Array>> {
+  const deadline = AbortSignal.timeout(TTS_REQUEST_TIMEOUT_MS);
+  const cancel = new AbortController();
+  const signal = AbortSignal.any([deadline, cancel.signal, ...(options.signal ? [options.signal] : [])]);
+  const failure = (): AiGatewayFailedError => new AiGatewayFailedError(deadline.aborted ? "timeout" : "http");
+
+  let res: Response;
+  try {
+    res = await fetch(`http://127.0.0.1:${config.port}/internal/tts/stream`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${config.token}`,
+        "x-trace-id": getTraceId() ?? mintTraceId(),
+        ...tenantHeader(),
+      },
+      body: JSON.stringify({ text: options.text, voice: options.voice }),
+      signal,
+    });
+  } catch {
+    throw failure();
+  }
+  if (!res.ok) {
+    const budget = await isBudgetRejection(res);
+    cancel.abort();
+    throw new AiGatewayFailedError(budget ? "budget_exceeded" : "http");
+  }
+  const reader = res.body?.getReader();
+  if (!reader) {
+    cancel.abort();
+    throw new AiGatewayFailedError("invalid_response");
+  }
+
+  async function* read(body: ReadableStreamDefaultReader<Uint8Array>): AsyncGenerator<Uint8Array> {
+    let bytes = 0;
+    try {
+      for (;;) {
+        let result: Awaited<ReturnType<typeof body.read>>;
+        try {
+          result = await body.read();
+        } catch {
+          throw failure();
+        }
+        if (result.done) return;
+        bytes += result.value.byteLength;
+        if (bytes > TTS_MAX_AUDIO_BYTES) throw new AiGatewayFailedError("invalid_response");
+        yield result.value;
+      }
+    } finally {
+      // Runs on completion, on an error and when the reader stops early: the request ends in every case.
+      cancel.abort();
+    }
+  }
+  return read(reader);
+}

@@ -24,6 +24,7 @@ import {
 import { runInTenant } from "@semprec/shared";
 import { createDispatcher, GATEWAY_ENDPOINTS, type GatewayEndpoint } from "../app.js";
 import { STT_STREAM_PATH } from "../sttStreamHandler.js";
+import type { TtsStreamHandlerOptions } from "../ttsStreamHandler.js";
 
 /** The WebSocket route is not a POST endpoint; `sttStream.test.ts` covers its token and tenant handling. */
 type HttpGatewayEndpoint = Exclude<GatewayEndpoint, typeof STT_STREAM_PATH>;
@@ -85,6 +86,11 @@ const CASES = {
   },
   "/internal/diarize": { attributes: "none", body: () => AUDIO_BODY, headers: () => ({}) },
   "/internal/transcribe": { attributes: "none", body: () => AUDIO_BODY, headers: () => ({}) },
+  "/internal/tts/stream": {
+    attributes: "none",
+    body: () => ({ text: "Hello there.", voice: "alloy" }),
+    headers: () => ({}),
+  },
 } satisfies Record<HttpGatewayEndpoint, GatewayCase>;
 
 const ENDPOINTS: readonly HttpGatewayEndpoint[] = GATEWAY_ENDPOINTS.filter(
@@ -176,7 +182,27 @@ function startServer(globalCaps: GlobalAiCaps): Promise<void> {
       return models.streamSimple(model, context, options);
     },
   };
-  const created = createServer(createDispatcher(sidePool, complete, audio, pi));
+  const tts: TtsStreamHandlerOptions = {
+    internalToken: TOKEN,
+    provider: {
+      id: "fake-synthesizer",
+      model: "fake-model",
+      voices: ["alloy"],
+      synthesize: async () => {
+        providerCalls += 1;
+        return {
+          audio: (async function* () {
+            yield new Uint8Array(4800);
+          })(),
+          durationSeconds: () => 0.1,
+        };
+      },
+    },
+    pricePerAudioHour: 1,
+    maxConcurrentStreams: 4,
+    globalCaps,
+  };
+  const created = createServer(createDispatcher(sidePool, complete, audio, pi, tts));
   server = created;
   return new Promise<void>((resolve, reject) => {
     created.once("error", reject);

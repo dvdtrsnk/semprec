@@ -96,3 +96,33 @@ export interface StreamingTranscriptionProvider {
   readonly model: string;
   open(request: StreamingTranscriptionOpenRequest): Promise<StreamingTranscriptionSession>;
 }
+
+/** Speech audio the synthesis route returns: PCM signed 16-bit little-endian, mono, 24000 Hz (same ADR). */
+export const SYNTHESIS_AUDIO_BYTES_PER_SECOND = 24_000 * 2;
+
+export interface SpeechSynthesisRequest {
+  text: string;
+  /** One of the provider's `voices`. */
+  voice: string;
+  /** Aborting it stops the provider request, also while the audio is being read. */
+  signal?: AbortSignal;
+}
+
+export interface SpeechSynthesisStream {
+  /**
+   * The synthesized audio in order, as raw PCM (`SYNTHESIS_AUDIO_BYTES_PER_SECOND`). Reading it
+   * throws `AudioProviderCallError` when the provider fails or the request is aborted.
+   */
+  readonly audio: AsyncIterable<Uint8Array>;
+  /** Seconds of audio produced so far; once `audio` is exhausted, the duration of the whole speech. */
+  durationSeconds(): number;
+}
+
+export interface SpeechSynthesisProvider {
+  readonly id: string;
+  readonly model: string;
+  /** The voice names this provider accepts. */
+  readonly voices: readonly string[];
+  /** Starts the provider request; rejects with `AudioProviderCallError` when it cannot be started. */
+  synthesize(request: SpeechSynthesisRequest): Promise<SpeechSynthesisStream>;
+}

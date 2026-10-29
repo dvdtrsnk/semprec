@@ -30,21 +30,22 @@ export interface AudioHandlerOptions {
   globalCaps: GlobalAiCaps;
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+export function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(payload);
 }
 
-class PayloadTooLargeError extends Error {}
+export class PayloadTooLargeError extends Error {}
 
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+/** Buffers and parses a JSON request body of at most `maxBytes` (413 past it, 400 for invalid JSON). */
+export async function readJsonBody(req: IncomingMessage, maxBytes: number = MAX_BODY_BYTES): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     const buf = chunk as Buffer;
     size += buf.length;
-    if (size > MAX_BODY_BYTES) throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
+    if (size > maxBytes) throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
     chunks.push(buf);
   }
   try {
@@ -117,7 +118,7 @@ function validateBody(raw: unknown): AudioRequestBody {
  * A `ServerResponse` emits `close` both after a normal `end()` and on a premature connection loss;
  * `writableFinished` is only true for the former, so only a disconnect aborts the returned signal.
  */
-function abortOnDisconnect(res: ServerResponse): AbortSignal {
+export function abortOnDisconnect(res: ServerResponse): AbortSignal {
   const abort = new AbortController();
   res.on("close", () => {
     if (!res.writableFinished) abort.abort();

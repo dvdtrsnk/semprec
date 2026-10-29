@@ -13,6 +13,8 @@ import {
   MAX_CONCURRENT_STT_STREAMS,
   type SttStreamHandlerOptions,
 } from "./sttStreamHandler.js";
+import { createOpenAiSpeechSynthesisProvider } from "./audioProviders/openAiSpeechSynthesisProvider.js";
+import { MAX_CONCURRENT_TTS_STREAMS, type TtsStreamHandlerOptions } from "./ttsStreamHandler.js";
 import type { PiMessagesHandlerOptions } from "./piMessagesHandler.js";
 
 /** Every provider this deployment of `semprec-ai-gateway` knows how to construct, keyed by id. */
@@ -54,6 +56,7 @@ export interface StartupConfig {
   audioHandlerOptions: AudioHandlerOptions;
   piHandlerOptions: PiMessagesHandlerOptions;
   sttStreamHandlerOptions: SttStreamHandlerOptions;
+  ttsStreamHandlerOptions: TtsStreamHandlerOptions;
 }
 
 export function resolveStartupConfig(
@@ -102,6 +105,8 @@ export function resolveStartupConfig(
       ? DEFAULT_STT_CHUNK_SECONDS
       : requirePositiveFloat(env, "AI_GATEWAY_STT_CHUNK_SECONDS");
 
+  const ttsPricePerAudioHour = requirePositiveFloat(env, "AI_GATEWAY_OPENAI_TTS_PRICE_PER_AUDIO_HOUR");
+
   // The operator-wide safety caps over all tenants' spend: required, so a deploy without them
   // cannot start rather than run with no global cap.
   const globalCaps: GlobalAiCaps = {
@@ -143,6 +148,13 @@ export function resolveStartupConfig(
       pricePerAudioHour: sttPricePerAudioHour,
       chunkSeconds: sttChunkSeconds,
       maxConcurrentStreams: MAX_CONCURRENT_STT_STREAMS,
+      globalCaps,
+    },
+    ttsStreamHandlerOptions: {
+      internalToken,
+      provider: createOpenAiSpeechSynthesisProvider(requireEnv(env, "OPENAI_API_KEY")),
+      pricePerAudioHour: ttsPricePerAudioHour,
+      maxConcurrentStreams: MAX_CONCURRENT_TTS_STREAMS,
       globalCaps,
     },
   };
