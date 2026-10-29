@@ -542,9 +542,9 @@ export interface ReviseProposalInput {
  * `rejected`) proposal, per the epic's "a locked card is never recomputed again"; allowed
  * from `needsClarification`/`invalid` as well as `proposed`, since a user resolving one of
  * those into a valid envelope is exactly how a proposal is meant to leave that state. An `invalid`
- * card whose `invalidReason` is `sourceDeleted` is final and refused (issue #1482): it can only be
- * discarded. A fixable `invalid` card is revised like any other, and its `invalidReason` is cleared
- * in the same write.
+ * card whose `invalidReason` is `sourceDeleted` is refused (issue #1482): it can only be discarded,
+ * or reopened by the tick once its source is restored (issue #1604). A fixable `invalid` card is
+ * revised like any other, and its `invalidReason` is cleared in the same write.
  */
 export async function reviseProposalWithClient(
   client: PoolClient,

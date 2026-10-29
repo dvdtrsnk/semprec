@@ -1012,6 +1012,231 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     expect(await findProposalForItem(pool, proposalsId, item.id)).toBeNull();
   });
 
+  // Restoring a source returns its `sourceDeleted` card (issue #1604). Each test trashes and restores with the
+  // store calls, so the tick runs explicitly here; the heartbeat that runs it is covered in inboxTick.test.ts.
+  async function trashSource(itemId: string): Promise<void> {
+    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, itemId));
+  }
+
+  async function restoreSource(itemId: string): Promise<void> {
+    await withTransaction(pool, (client) => itemsStore.restoreItem(client, inboxId, itemId));
+  }
+
+  it("restoring an unchanged source returns its invalid card to proposed with no reason and no recompute", async () => {
+    const { item } = await createTypedItem("Buy milk");
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const proposed = await findProposalForItem(pool, proposalsId, item.id);
+
+    await trashSource(item.id);
+    await runTick(pool, databaseIds, item.id, async () => {
+      throw new Error("computeProposal must not be called for a deleted source");
+    });
+    await restoreSource(item.id);
+    await runTick(pool, databaseIds, item.id, async () => {
+      throw new Error("computeProposal must not be called when the source fingerprint is unchanged");
+    });
+
+    const reopened = await findProposalForItem(pool, proposalsId, item.id);
+    expect(reopened!.id).toBe(proposed!.id);
+    expect(reopened!.properties.status).toBe("proposed");
+    expect(reopened!.properties.invalidReason).toBeNull();
+    expect(reopened!.properties.proposal).toEqual(proposed!.properties.proposal);
+    expect(reopened!.properties.history).toHaveLength(3);
+    expect((reopened!.properties.history as Array<Record<string, unknown>>)[2]).toMatchObject({
+      author: "ai",
+      kind: "reopened",
+    });
+  });
+
+  it("a source whose text changed before it was trashed is recomputed when it is restored", async () => {
+    const { type, item } = await createTypedItem("Buy milk");
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+    await withTransaction(pool, (client) =>
+      itemsStore.updateItemProperties(client, {
+        databaseId: inboxId,
+        itemId: item.id,
+        propertiesPatch: { text: "Buy milk and eggs" },
+      }),
+    );
+    await trashSource(item.id);
+    await runTick(pool, databaseIds, item.id, async () => {
+      throw new Error("computeProposal must not be called for a deleted source");
+    });
+    await restoreSource(item.id);
+
+    const computedFor: unknown[] = [];
+    await runTick(pool, databaseIds, item.id, async (input) => {
+      computedFor.push(input.sourceItem.properties.text);
+      return { properties: { name: "Buy milk and eggs" } };
+    });
+
+    expect(computedFor).toEqual(["Buy milk and eggs"]);
+    const recomputed = await findProposalForItem(pool, proposalsId, item.id);
+    expect(recomputed!.properties.status).toBe("proposed");
+    expect(recomputed!.properties.invalidReason).toBeNull();
+    expect(recomputed!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs" }));
+    expect(recomputed!.properties.proposal).toEqual({
+      entityKind: "database",
+      target: await databaseIdFor("tasks"),
+      properties: { name: "Buy milk and eggs" },
+    });
+  });
+
+  it("a restored card whose stored envelope no longer validates goes to needsClarification, keeping its fingerprint", async () => {
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Thought",
+        emoji: "💭",
+        processingMethod: "pageContent",
+      }),
+    );
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        text: "A thought",
+        type: type.id,
+      }),
+    );
+    // Any existing item is a valid page target until it is trashed, so the envelope's page can go missing.
+    const page = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        text: "The page",
+      }),
+    );
+    await runTick(pool, databaseIds, item.id, async () => ({
+      target: page.id,
+      properties: { flavour: "paragraph", fields: { content: "A thought" } },
+    }));
+    const proposed = await findProposalForItem(pool, proposalsId, item.id);
+    expect(proposed!.properties.status).toBe("proposed");
+
+    await trashSource(item.id);
+    await runTick(pool, databaseIds, item.id, async () => {
+      throw new Error("computeProposal must not be called for a deleted source");
+    });
+    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, page.id));
+    await restoreSource(item.id);
+    await runTick(pool, databaseIds, item.id, async () => {
+      throw new Error("computeProposal must not be called when the source fingerprint is unchanged");
+    });
+
+    const card = await findProposalForItem(pool, proposalsId, item.id);
+    expect(card!.properties).toMatchObject({
+      status: "needsClarification",
+      proposal: null,
+      aiProposal: null,
+      aiVersion: 2,
+      invalidReason: null,
+      fingerprint: proposed!.properties.fingerprint,
+    });
+  });
+
+  it("a restored source with no recognized type makes its invalid card needsClarification with no reason", async () => {
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        text: "Buy milk",
+      }),
+    );
+    await runTick(pool, databaseIds, item.id, async () => {
+      throw new Error("computeProposal must not be called for an untyped item");
+    });
+
+    await trashSource(item.id);
+    await runTick(pool, databaseIds, item.id, async () => {
+      throw new Error("computeProposal must not be called for a deleted source");
+    });
+    expect((await findProposalForItem(pool, proposalsId, item.id))!.properties.invalidReason).toMatchObject({
+      code: "sourceDeleted",
+    });
+
+    await restoreSource(item.id);
+    await runTick(pool, databaseIds, item.id, async () => {
+      throw new Error("computeProposal must not be called for an untyped item");
+    });
+
+    const card = await findProposalForItem(pool, proposalsId, item.id);
+    expect(card!.properties).toMatchObject({ status: "needsClarification", invalidReason: null });
+    expect(card!.properties.history).toHaveLength(3);
+  });
+
+  it("a card invalid for targetArchived is not touched when its source is deleted and restored", async () => {
+    const { item } = await createTypedItem("Buy milk");
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const proposed = await findProposalForItem(pool, proposalsId, item.id);
+    const reason = {
+      code: "targetArchived",
+      field: "target",
+      itemId: await databaseIdFor("tasks"),
+      label: "Tasks",
+    };
+    await withTransaction(pool, (client) =>
+      itemsStore.updateItemProperties(client, {
+        databaseId: proposalsId,
+        itemId: proposed!.id,
+        propertiesPatch: { status: "invalid", invalidReason: reason },
+      }),
+    );
+    const before = await findProposalForItem(pool, proposalsId, item.id);
+
+    await trashSource(item.id);
+    await runTick(pool, databaseIds, item.id, async () => {
+      throw new Error("computeProposal must not be called for a deleted source");
+    });
+    await restoreSource(item.id);
+    await runTick(pool, databaseIds, item.id, async () => {
+      throw new Error("computeProposal must not be called when the source fingerprint is unchanged");
+    });
+
+    const after = await findProposalForItem(pool, proposalsId, item.id);
+    expect(after!.properties.status).toBe("invalid");
+    expect(after!.properties.invalidReason).toEqual(reason);
+    expect(after!.properties.history).toEqual(before!.properties.history);
+  });
+
+  it.each(["confirmed", "rejected"] as const)(
+    "a %s card keeps its status and history when its source is deleted and restored",
+    async (status) => {
+      const { item } = await createTypedItem("Buy milk");
+      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+      const proposal = await findProposalForItem(pool, proposalsId, item.id);
+      await withTransaction(pool, (client) =>
+        itemsStore.updateItemProperties(client, {
+          databaseId: proposalsId,
+          itemId: proposal!.id,
+          propertiesPatch: { status },
+        }),
+      );
+      const before = await findProposalForItem(pool, proposalsId, item.id);
+
+      await trashSource(item.id);
+      await runTick(pool, databaseIds, item.id, async () => {
+        throw new Error("computeProposal must not be called for a deleted source");
+      });
+      await restoreSource(item.id);
+      await runTick(pool, databaseIds, item.id, async () => {
+        throw new Error("computeProposal must not be called for a locked card");
+      });
+
+      const after = await findProposalForItem(pool, proposalsId, item.id);
+      expect(after!.properties).toEqual(before!.properties);
+    },
+  );
+
   it("a proposed envelope naming an unknown property on the target database fails validation and is stored as needsClarification, never as proposed", async () => {
     const { item } = await createTypedItem("Buy milk");
 
@@ -1352,6 +1577,28 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
     const after = await readCard(card.id);
     expect(after!.updatedAt).toBe(rejectedVersion);
     expect(after!.properties).toEqual({ ...card.properties, status: "rejected" });
+  });
+
+  it("restored-source path: a reject committed before the tick locks the card wins — the card is not reopened (issue #1604)", async () => {
+    const { item, card } = await seedProposedCardWithChangedSource();
+    await softDeleteSource(item.id);
+    await runTick(pool, databaseIds, item.id, async () => expect.unreachable("a deleted source is never recomputed"));
+    await withTransaction(pool, (client) => itemsStore.restoreItem(client, inboxId, item.id));
+    const invalid = await readCard(card.id);
+    expect(invalid!.properties.status).toBe("invalid");
+
+    let rejectedVersion: string | undefined;
+    const tickPool = poolRunningBeforeCardLock(card.id, async () => {
+      rejectedVersion = await rejectCard(card.id);
+    });
+    await runTick(tickPool, databaseIds, item.id, async () =>
+      expect.unreachable("a card that lost the lock is not recomputed"),
+    );
+
+    expect(rejectedVersion).toBeDefined();
+    const after = await readCard(card.id);
+    expect(after!.updatedAt).toBe(rejectedVersion);
+    expect(after!.properties).toEqual({ ...invalid!.properties, status: "rejected" });
   });
 
   it("deleted-source path: a card soft-deleted before the tick locks it is skipped without writing or throwing", async () => {

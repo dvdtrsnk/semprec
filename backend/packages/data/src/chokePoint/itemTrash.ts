@@ -85,12 +85,15 @@ export async function itemDeleteWithClient(
  * cascade delete touched shares one identical timestamp, which lets this tell "trashed
  * together with the root" apart from a row that happened to already be independently trashed
  * (earlier or later) before this subtree was ever cascaded — restoring the latter would
- * silently resurrect data the user deleted on purpose.
+ * silently resurrect data the user deleted on purpose. Each restored row triggers the `update`
+ * `onItemEvent` heartbeats of its database in this same transaction, as an edit of it does
+ * (issue #1604).
  */
 async function restoreItemWithClient(
   client: PoolClient,
   databaseId: string,
   itemId: string,
+  queueAffinity: ActionQueueAffinity,
   actingUserId?: string,
   // Accepted and carried so the restore hook can read it without a signature change; not yet consumed.
   _writer?: WriterIdentity,
@@ -114,6 +117,7 @@ async function restoreItemWithClient(
     const item = await itemsStore.restoreItem(client, row.databaseId, row.id);
     if (!item) continue;
     if (row.id === itemId) rootResult = item;
+    await triggerOnItemEventHeartbeats(client, row.databaseId, "update", row.id, queueAffinity);
     const edges = await relationsStore.listAllRelationsForItem(client, row.id);
     for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
     runAfterCommit(client, () =>
@@ -272,7 +276,9 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
       actingUserId?: string,
       writer?: WriterIdentity,
     ): Promise<ItemRow | null> {
-      return withTransaction(pool, (client) => restoreItemWithClient(client, databaseId, itemId, actingUserId, writer));
+      return withTransaction(pool, (client) =>
+        restoreItemWithClient(client, databaseId, itemId, queueAffinity, actingUserId, writer),
+      );
     },
 
     /**
