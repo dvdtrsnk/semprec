@@ -5,6 +5,7 @@ import { NotFoundError, ValidationError } from "../errors.js";
 import { getDatabase } from "../chokePoint/databasesStore.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { requireAffectedRows, requireSingleRow, withTransaction } from "../db/pool.js";
+import { assertKnownValue } from "../dbRowValidation.js";
 import { computeNextFireAt } from "./nextFireAt.js";
 import {
   isFloatingRuleKind,
@@ -22,6 +23,9 @@ import {
   type ActionQueueAffinity,
 } from "./actions.js";
 
+export const HEARTBEAT_ORIGINS = ["user", "system"] as const;
+export type HeartbeatOrigin = (typeof HEARTBEAT_ORIGINS)[number];
+
 export interface HeartbeatRow {
   id: string;
   projectItemId: string;
@@ -33,6 +37,8 @@ export interface HeartbeatRow {
   nextFireAt: string | null;
   lastFiredAt: string | null;
   lastError: string | null;
+  /** `user` when a person asked Semp to create it, `system` for seeds and internal upserts. */
+  origin: HeartbeatOrigin;
 }
 
 /** The raw `project_heartbeats` row shape this module reads back from Postgres. */
@@ -47,6 +53,7 @@ type HeartbeatDbRow = {
   next_fire_at: Date | null;
   last_fired_at: Date | null;
   last_error: string | null;
+  origin: string;
 };
 
 function mapRow(
@@ -74,11 +81,12 @@ function mapRow(
     nextFireAt: row.next_fire_at ? row.next_fire_at.toISOString() : null,
     lastFiredAt: row.last_fired_at ? row.last_fired_at.toISOString() : null,
     lastError: row.last_error,
+    origin: assertKnownValue(HEARTBEAT_ORIGINS, row.origin, "heartbeat origin"),
   };
 }
 
 const COLUMNS =
-  "id, project_item_id, name, rule, action_id, action_config, enabled, next_fire_at, last_fired_at, last_error";
+  "id, project_item_id, name, rule, action_id, action_config, enabled, next_fire_at, last_fired_at, last_error, origin";
 
 export interface CreateHeartbeatInput {
   projectItemId: string;
@@ -87,6 +95,8 @@ export interface CreateHeartbeatInput {
   actionId: string;
   actionConfig?: Record<string, unknown>;
   enabled?: boolean;
+  /** Defaults to `system`; only the heartbeat.create tool writes `user`. */
+  origin?: HeartbeatOrigin;
 }
 
 /** An `onItemEvent` rule must name a database visible in the caller's tenant; a foreign id fails like a missing one. */
@@ -111,8 +121,8 @@ export async function createHeartbeat(
     enabled && !isOnItemEventRule(rule) ? await computeNextFireAtNow(client, rule, moduleRuleKinds) : null;
 
   const { rows } = await client.query<HeartbeatDbRow>(
-    `INSERT INTO project_heartbeats (project_item_id, name, rule, action_id, action_config, enabled, next_fire_at)
-     VALUES ($1, $2, $3::jsonb, $4, $5::jsonb, $6, $7)
+    `INSERT INTO project_heartbeats (project_item_id, name, rule, action_id, action_config, enabled, next_fire_at, origin)
+     VALUES ($1, $2, $3::jsonb, $4, $5::jsonb, $6, $7, $8)
      RETURNING ${COLUMNS}`,
     [
       input.projectItemId,
@@ -122,6 +132,7 @@ export async function createHeartbeat(
       JSON.stringify(input.actionConfig ?? {}),
       enabled,
       nextFireAt,
+      input.origin ?? "system",
     ],
   );
   return mapRow(requireSingleRow(rows, "project_heartbeats row"), moduleRuleKinds);
@@ -672,12 +683,13 @@ export async function prepareHeartbeatOccurrenceFire(
       next_fire_at: Date | null;
       last_fired_at: Date | null;
       last_error: string | null;
+      origin: string;
       first_started_at: Date | null;
       generation: number;
       rules_match: boolean;
     }>(
       `SELECT h.id, h.project_item_id, h.name, h.rule, h.action_id, h.action_config, h.enabled,
-              h.next_fire_at, h.last_fired_at, h.last_error,
+              h.next_fire_at, h.last_fired_at, h.last_error, h.origin,
               o.first_started_at, o.generation, (h.rule = o.rule_snapshot) AS rules_match
        FROM heartbeat_occurrences o
        JOIN project_heartbeats h ON h.id = o.heartbeat_id
