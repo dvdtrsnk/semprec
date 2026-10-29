@@ -4,7 +4,12 @@ import type { Pool } from "pg";
 import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
-import { createPendingApprovalRequest, decideApprovalRequest } from "../mcp/approvalRequestsStore.js";
+import {
+  createPendingApprovalRequest,
+  decideApprovalRequest,
+  getApprovalRequest,
+  terminalizeApprovalRequestAsConflict,
+} from "../mcp/approvalRequestsStore.js";
 import { listApprovalRequestsQueue, toApprovalRequestDecisionView } from "../mcp/approvalRequestsQueue.js";
 import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
@@ -96,6 +101,39 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
 
     expect((await toApprovalRequestDecisionView(pool, withReason)).reason).toBe("Customer asked for a quote");
     expect((await toApprovalRequestDecisionView(pool, withoutReason)).reason).toBeNull();
+  });
+
+  it("exposes conflictReason on the decision view as a key only, null unless conflicted", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const base = {
+      agentRunId: run.id,
+      toolName: "send_email",
+      riskClass: "write" as const,
+      payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: { secret: "arg-value" } },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    };
+    const pending = await createPendingApprovalRequest(pool, base);
+    expect((await toApprovalRequestDecisionView(pool, pending)).conflictReason).toBeNull();
+
+    // Terminalizing requires the `queued` state a decided request is in while its execution is pending.
+    const changed = await createPendingApprovalRequest(pool, base);
+    const archived = await createPendingApprovalRequest(pool, base);
+    await pool.query(`UPDATE approval_requests SET execution_status = 'queued' WHERE id = ANY($1)`, [
+      [changed.id, archived.id],
+    ]);
+    await withTransaction(pool, (client) =>
+      terminalizeApprovalRequestAsConflict(client, changed.id, { currentResource: { name: "resource-value" } }),
+    );
+    await withTransaction(pool, (client) =>
+      terminalizeApprovalRequestAsConflict(client, archived.id, { reason: "database_archived" }),
+    );
+
+    const changedView = await toApprovalRequestDecisionView(pool, (await getApprovalRequest(pool, changed.id))!);
+    const archivedView = await toApprovalRequestDecisionView(pool, (await getApprovalRequest(pool, archived.id))!);
+    expect(changedView.conflictReason).toEqual({ key: "approval.conflict.changed" });
+    expect(archivedView.conflictReason).toEqual({ key: "approval.conflict.archived" });
+    expect(JSON.stringify(changedView)).not.toContain("resource-value");
+    expect(JSON.stringify(changedView)).not.toContain("arg-value");
   });
 
   it("summarizes a generic-operation-originated request with its operationName, never mcp fields (issue #220)", async () => {
