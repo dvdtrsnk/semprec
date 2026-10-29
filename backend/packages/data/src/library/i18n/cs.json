@@ -1,5 +1,6 @@
 {
   "database.books.name": "Knihy",
+  "database.books.searchPlaceholder": "Hledat v knihách",
   "property.books.name.name": "Název",
   "property.books.author.name": "Autor",
   "property.books.cover.name": "Obálka",
@@ -10,6 +11,7 @@
   "property.books.status.option.read": "Přečteno",
 
   "database.movies.name": "Filmy a seriály",
+  "database.movies.searchPlaceholder": "Hledat ve filmech a seriálech",
   "property.movies.name.name": "Název",
   "property.movies.year.name": "Rok",
   "property.movies.type.name": "Typ",

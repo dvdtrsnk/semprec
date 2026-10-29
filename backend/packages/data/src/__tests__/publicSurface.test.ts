@@ -494,6 +494,8 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "resolveAgentRunLane",
   "resolveBlobStorageDir",
   "resolveDatabaseName",
+  "resolveDatabasePlaceholderForRow",
+  "resolveDatabaseSearchPlaceholder",
   "resolveDocHistoryRetentionDays",
   "resolveFindingsNotIn",
   "resolveGrantedMcpTool",

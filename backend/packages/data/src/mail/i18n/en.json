@@ -34,6 +34,7 @@
   "property.folders.emails.name": "Emails",
 
   "database.emails.name": "Emails",
+  "database.emails.searchPlaceholder": "Search emails",
   "property.emails.name.name": "Subject",
   "property.emails.sender.name": "Sender",
   "property.emails.recipients.name": "Recipients",

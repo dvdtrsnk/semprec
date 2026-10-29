@@ -1,5 +1,7 @@
 {
+  "collection.custom.searchPlaceholder": "Search collection",
   "database.areas.name": "Areas",
+  "database.areas.searchPlaceholder": "Search areas",
   "property.areas.name.name": "Name",
   "property.areas.active.name": "Active",
   "property.areas.note.name": "Note",
@@ -8,6 +10,7 @@
   "property.areas.healthRecord.name": "Health records",
 
   "database.projects.name": "Projects",
+  "database.projects.searchPlaceholder": "Search projects",
   "property.projects.name.name": "Name",
   "property.projects.pinned.name": "Pinned",
   "property.projects.status.name": "Status",
@@ -28,6 +31,7 @@
   "property.projects.healthRecords.name": "Health records",
 
   "database.tasks.name": "Tasks",
+  "database.tasks.searchPlaceholder": "Search tasks",
   "property.tasks.name.name": "Name",
   "property.tasks.status.name": "Status",
   "property.tasks.status.option.notDone": "Not done",
@@ -42,6 +46,7 @@
   "property.tasks.project.name": "Project",
 
   "database.people.name": "People",
+  "database.people.searchPlaceholder": "Search people",
   "property.people.name.name": "Name",
   "property.people.relationship.name": "Relationship",
   "property.people.relationship.option.parent": "Parent",
@@ -58,6 +63,7 @@
   "property.people.emails.name": "Emails",
 
   "database.files.name": "Files",
+  "database.files.searchPlaceholder": "Search files",
   "property.files.name.name": "Name",
   "property.files.type.name": "Type",
   "property.files.type.option.pdf": "PDF",
@@ -75,6 +81,7 @@
   "property.files.companies.name": "Companies",
 
   "database.events.name": "Events",
+  "database.events.searchPlaceholder": "Search events",
   "property.events.name.name": "Name",
   "property.events.type.name": "Type",
   "property.events.type.option.event": "Event",
@@ -88,6 +95,7 @@
   "property.events.company.name": "Company",
 
   "database.healthRecords.name": "Health records",
+  "database.healthRecords.searchPlaceholder": "Search records",
   "property.healthRecords.name.name": "Name",
   "property.healthRecords.date.name": "Date",
   "property.healthRecords.status.name": "Status",
@@ -108,6 +116,7 @@
   "property.healthRecords.projects.name": "Projects",
 
   "database.companies.name": "Companies",
+  "database.companies.searchPlaceholder": "Search companies",
   "property.companies.name.name": "Name",
   "property.companies.ico.name": "ICO",
   "property.companies.web.name": "Web",
@@ -118,6 +127,7 @@
   "property.companies.meetings.name": "Meetings",
 
   "database.transcripts.name": "Transcripts",
+  "database.transcripts.searchPlaceholder": "Search transcripts",
   "property.transcripts.name.name": "Name",
   "property.transcripts.status.name": "Status",
   "property.transcripts.status.option.recording": "Recording",
@@ -137,6 +147,7 @@
   "property.people.transcripts.name": "Transcripts",
 
   "database.journal.name": "Journal",
+  "database.journal.searchPlaceholder": "Search journal",
   "property.journal.name.name": "Name",
   "property.journal.type.name": "Type",
   "property.journal.type.option.year": "Year",

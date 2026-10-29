@@ -8,6 +8,7 @@ import { createCollectionMetadataResolver } from "./collectionMetadata.js";
 import {
   createCatalogResolver,
   resolveDatabaseName,
+  resolveDatabasePlaceholderForRow,
   resolveProperty,
   type ManifestLocale,
   type ResolvedProperty,
@@ -18,6 +19,8 @@ export interface SchemaDatabaseProjection {
   /** The stable canonical key (issue #235/#147) — `null` for a user-authored database, which has no catalog entry and never will. */
   key: string | null;
   name: string;
+  /** The whole-sentence search placeholder; `null` when the catalog has no entry (never the key). */
+  searchPlaceholder: string | null;
   icon: string | null;
   color: string | null;
   overviewOrder: number | null;
@@ -108,6 +111,7 @@ export async function generateSchemaProjection(
       databaseId: db.id,
       key: db.key,
       name: resolveDatabaseName(db.name, db.key, db.id, catalogs, locale),
+      searchPlaceholder: await resolveDatabasePlaceholderForRow(catalogResolver, db, locale),
       ...metadataResolver.resolve(db),
       properties: properties.map((p) => resolveProperty(p, db.key, catalogs, locale, relationDefinitions)),
     });

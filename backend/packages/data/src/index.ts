@@ -109,6 +109,8 @@ export * from "./manifest/knownActionIds.js";
 export {
   createCatalogResolver,
   resolveDatabaseName,
+  resolveDatabasePlaceholderForRow,
+  resolveDatabaseSearchPlaceholder,
   resolveProperty,
   toManifestLocale,
   type CatalogResolver,

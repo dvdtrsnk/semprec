@@ -50,7 +50,11 @@ export interface ResolvedProperty {
 
 export interface CatalogResolver {
   getCatalogsForDbKey(dbKey: string | null): Promise<ModuleCatalogs | undefined>;
+  getCatalogsForModuleId(moduleId: string): Promise<ModuleCatalogs | undefined>;
 }
+
+/** Module that owns the generic `collection.custom.searchPlaceholder` entry. */
+const SYSTEM_DATABASES_MODULE_ID = "systemDatabases";
 
 /**
  * Builds the dbKey -> catalogs lookup shared by every locale-aware projection (issue #147),
@@ -64,23 +68,31 @@ export interface CatalogResolver {
  */
 export async function createCatalogResolver(moduleRegistry: ModuleRegistry | undefined): Promise<CatalogResolver> {
   if (!moduleRegistry) {
-    return { getCatalogsForDbKey: () => Promise.resolve(undefined) };
+    return {
+      getCatalogsForDbKey: () => Promise.resolve(undefined),
+      getCatalogsForModuleId: () => Promise.resolve(undefined),
+    };
   }
 
   const allDbs = await moduleRegistry.getDatabases();
   const dbKeyToModuleId = new Map(allDbs.map((d) => [d.key, d.moduleId]));
   const catalogsByModuleId = new Map<string, ModuleCatalogs | undefined>();
 
+  const getCatalogsForModuleId = async (moduleId: string): Promise<ModuleCatalogs | undefined> => {
+    if (!catalogsByModuleId.has(moduleId)) {
+      catalogsByModuleId.set(moduleId, await moduleRegistry.getCatalogs(moduleId));
+    }
+    return catalogsByModuleId.get(moduleId);
+  };
+
   return {
     async getCatalogsForDbKey(dbKey) {
       if (!dbKey) return undefined;
       const moduleId = dbKeyToModuleId.get(dbKey);
       if (!moduleId) return undefined;
-      if (!catalogsByModuleId.has(moduleId)) {
-        catalogsByModuleId.set(moduleId, await moduleRegistry.getCatalogs(moduleId));
-      }
-      return catalogsByModuleId.get(moduleId);
+      return getCatalogsForModuleId(moduleId);
     },
+    getCatalogsForModuleId,
   };
 }
 
@@ -115,6 +127,39 @@ export function resolveDatabaseName(
   return catalogs
     ? resolveCatalogLabel(dbName, catalogs[locale], catalogs.en, `database.${dbKey}.name`)
     : rawKeyFallback(dbName, dbKey, dbId);
+}
+
+/**
+ * The search-field placeholder of a collection: the requested locale, then English, then `null`
+ * (never the raw key). `dbKey` is the entry's database key, or `null` for a user-created
+ * database, which reads the generic `collection.custom.searchPlaceholder` entry of `catalogs`.
+ */
+export function resolveDatabaseSearchPlaceholder(
+  dbKey: string | null,
+  catalogs: ModuleCatalogs | undefined,
+  locale: ManifestLocale,
+): string | null {
+  if (!catalogs) return null;
+  const catalogKey = dbKey === null ? "collection.custom.searchPlaceholder" : `database.${dbKey}.searchPlaceholder`;
+  return catalogs[locale][catalogKey] ?? catalogs.en[catalogKey] ?? null;
+}
+
+/**
+ * `resolveDatabaseSearchPlaceholder` for a database row: a keyed database reads its owning
+ * module's catalog, a user-created one (no key, not a system database) the system databases
+ * module's generic entry. A keyless system database has no entry and resolves to `null`.
+ */
+export async function resolveDatabasePlaceholderForRow(
+  catalogResolver: CatalogResolver,
+  database: { key: string | null; system: boolean },
+  locale: ManifestLocale,
+): Promise<string | null> {
+  if (database.key === null && database.system) return null;
+  const catalogs =
+    database.key === null
+      ? await catalogResolver.getCatalogsForModuleId(SYSTEM_DATABASES_MODULE_ID)
+      : await catalogResolver.getCatalogsForDbKey(database.key);
+  return resolveDatabaseSearchPlaceholder(database.key, catalogs, locale);
 }
 
 const ALWAYS_FILTERABLE_TYPES: readonly PropertyType[] = ["select", "multi_select", "relation", "date", "checkbox"];

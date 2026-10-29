@@ -1,5 +1,7 @@
 {
+  "collection.custom.searchPlaceholder": "Hledat ve sbírce",
   "database.areas.name": "Oblasti",
+  "database.areas.searchPlaceholder": "Hledat v Oblastech",
   "property.areas.name.name": "Název",
   "property.areas.active.name": "Aktivní",
   "property.areas.note.name": "Poznámka",
@@ -8,6 +10,7 @@
   "property.areas.healthRecord.name": "Zdravotní záznamy",
 
   "database.projects.name": "Projekty",
+  "database.projects.searchPlaceholder": "Hledat v Projektech",
   "property.projects.name.name": "Název",
   "property.projects.pinned.name": "Připnuto",
   "property.projects.status.name": "Stav",
@@ -28,6 +31,7 @@
   "property.projects.healthRecords.name": "Zdravotní záznamy",
 
   "database.tasks.name": "Úkoly",
+  "database.tasks.searchPlaceholder": "Hledat v Úkolech",
   "property.tasks.name.name": "Název",
   "property.tasks.status.name": "Stav",
   "property.tasks.status.option.notDone": "Nesplněno",
@@ -42,6 +46,7 @@
   "property.tasks.project.name": "Projekt",
 
   "database.people.name": "Lidé",
+  "database.people.searchPlaceholder": "Hledat v Lidech",
   "property.people.name.name": "Jméno",
   "property.people.relationship.name": "Vztah",
   "property.people.relationship.option.parent": "Rodič",
@@ -58,6 +63,7 @@
   "property.people.emails.name": "E-maily",
 
   "database.files.name": "Soubory",
+  "database.files.searchPlaceholder": "Hledat v Souborech",
   "property.files.name.name": "Název",
   "property.files.type.name": "Typ",
   "property.files.type.option.pdf": "PDF",
@@ -75,6 +81,7 @@
   "property.files.companies.name": "Firmy",
 
   "database.events.name": "Události",
+  "database.events.searchPlaceholder": "Hledat v Událostech",
   "property.events.name.name": "Název",
   "property.events.type.name": "Typ",
   "property.events.type.option.event": "Událost",
@@ -88,6 +95,7 @@
   "property.events.company.name": "Firma",
 
   "database.healthRecords.name": "Zdravotní záznamy",
+  "database.healthRecords.searchPlaceholder": "Hledat v záznamech",
   "property.healthRecords.name.name": "Název",
   "property.healthRecords.date.name": "Datum",
   "property.healthRecords.status.name": "Stav",
@@ -108,6 +116,7 @@
   "property.healthRecords.projects.name": "Projekty",
 
   "database.companies.name": "Firmy",
+  "database.companies.searchPlaceholder": "Hledat ve Firmách",
   "property.companies.name.name": "Název",
   "property.companies.ico.name": "IČO",
   "property.companies.web.name": "Web",
@@ -118,6 +127,7 @@
   "property.companies.meetings.name": "Schůzky",
 
   "database.transcripts.name": "Přepisy",
+  "database.transcripts.searchPlaceholder": "Hledat v Přepisech",
   "property.transcripts.name.name": "Název",
   "property.transcripts.status.name": "Stav",
   "property.transcripts.status.option.recording": "Nahrávání",
@@ -137,6 +147,7 @@
   "property.people.transcripts.name": "Přepisy",
 
   "database.journal.name": "Deník",
+  "database.journal.searchPlaceholder": "Hledat v Deníku",
   "property.journal.name.name": "Název",
   "property.journal.type.name": "Období",
   "property.journal.type.option.year": "Rok",
