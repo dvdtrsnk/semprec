@@ -2,7 +2,13 @@ import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, type AgentTaskName, type CoreTaskName } from "@semprec/queue";
 import { createLogger, withTraceContext } from "@semprec/shared";
 import { agentRunErrorCodeOf } from "../agentRuns/agentRunErrorCodes.js";
-import { createAgentRun, finishAgentRun } from "../agentRuns/agentRunsStore.js";
+import {
+  createAgentRun,
+  createChainedAgentRun,
+  finishAgentRun,
+  getLatestRunOfOccurrence,
+  type AgentRunRow,
+} from "../agentRuns/agentRunsStore.js";
 import { publishSempThreadInvalidation } from "../realtimeHook.js";
 import { finishTickRunWithMessage, getOrCreateTickThread } from "../semp/sempTickThreadStore.js";
 import { withTransaction } from "../db/pool.js";
@@ -24,6 +30,10 @@ export interface ActionContext {
    * for a caller outside the queue (treated as final — a direct caller has no retry).
    */
   isFinalAttempt?: boolean;
+  /** Set for a run fired from a scheduled heartbeat occurrence (issue #1458); unset for a manual fire or an item event. */
+  occurrenceId?: string;
+  /** The queue attempt number (1-based) of the occurrence's fire job; set together with `occurrenceId`. */
+  attempt?: number;
 }
 
 export type ActionHandler = (actionConfig: Record<string, unknown>, context: ActionContext) => Promise<void>;
@@ -95,14 +105,35 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
     // to it in the same transaction; subscribers are told once that transaction commits.
     const { run, thread } = await withTransaction(pool, async (client) => {
       const tickThread = await getOrCreateTickThread(client, context.heartbeatId);
-      const created = await createAgentRun(client, {
+      const runInput = {
         projectItemId: context.projectItemId,
         parentRunId: context.triggeredByRunId ?? null,
         heartbeatId: context.heartbeatId,
         threadId: tickThread.id,
-        triggeredBy: "heartbeat",
+        triggeredBy: "heartbeat" as const,
         task,
-      });
+      };
+      let created: AgentRunRow;
+      if (context.occurrenceId === undefined) {
+        created = await createAgentRun(client, runInput);
+      } else {
+        const occurrenceInput = {
+          ...runInput,
+          heartbeatOccurrenceId: context.occurrenceId,
+          attempt: context.attempt ?? 1,
+        };
+        const previous = await getLatestRunOfOccurrence(client, context.occurrenceId);
+        const chained = previous
+          ? await createChainedAgentRun(client, { ...occurrenceInput, retryOfRunId: previous.id })
+          : null;
+        if (previous && !chained) {
+          logger.warn(
+            { heartbeatId: context.heartbeatId, occurrenceId: context.occurrenceId, retryOfRunId: previous.id },
+            "core.agentRun: the previous attempt already has a successor; creating the run unchained",
+          );
+        }
+        created = chained ?? (await createAgentRun(client, occurrenceInput));
+      }
       publishSempThreadInvalidation(client, tickThread.tenantId, tickThread.id);
       return { run: created, thread: tickThread };
     });

@@ -25,6 +25,8 @@ export interface AgentRunRow {
   retryOfRunId: string | null;
   /** The attempt number: 1 unless the creator gave another one (issue #1448). */
   attempt: number;
+  /** The scheduled heartbeat occurrence this run was started for (issue #1458); `null` for a manual or item-event run. */
+  heartbeatOccurrenceId: string | null;
   /** The Semp thread this run belongs to (issue #1452); `null` for an MCP run or a run with no thread. */
   threadId: string | null;
   triggeredBy: TriggeredBy;
@@ -56,6 +58,7 @@ type AgentRunDbRow = {
   parent_run_id: string | null;
   heartbeat_id: string | null;
   retry_of_run_id: string | null;
+  heartbeat_occurrence_id: string | null;
   attempt: number;
   thread_id: string | null;
   triggered_by: string;
@@ -71,7 +74,7 @@ type AgentRunDbRow = {
 };
 
 const AGENT_RUN_ROW_COLUMNS =
-  "id, project_item_id, parent_run_id, heartbeat_id, retry_of_run_id, attempt, thread_id, triggered_by, unit, task, status, result, error_code, error_detail, started_at, finished_at, actor_user_id";
+  "id, project_item_id, parent_run_id, heartbeat_id, retry_of_run_id, attempt, heartbeat_occurrence_id, thread_id, triggered_by, unit, task, status, result, error_code, error_detail, started_at, finished_at, actor_user_id";
 
 function mapErrorCode(row: AgentRunDbRow): AgentRunErrorCode | null {
   if (row.error_code !== null) return assertKnownValue(AGENT_RUN_ERROR_CODES, row.error_code, "error_code");
@@ -86,6 +89,7 @@ function mapRow(row: AgentRunDbRow): AgentRunRow {
     heartbeatId: row.heartbeat_id,
     retryOfRunId: row.retry_of_run_id,
     attempt: row.attempt,
+    heartbeatOccurrenceId: row.heartbeat_occurrence_id,
     threadId: row.thread_id,
     triggeredBy: assertKnownValue(TRIGGERED_BY_VALUES, row.triggered_by, "triggered_by"),
     unit: assertKnownValue(AGENT_RUN_UNITS, row.unit, "unit"),
@@ -108,6 +112,8 @@ export interface CreateAgentRunInput {
   retryOfRunId?: string | null;
   /** The attempt number (issue #1448). Defaults to 1. */
   attempt?: number;
+  /** The scheduled heartbeat occurrence the run is started for (issue #1458). Defaults to null. */
+  heartbeatOccurrenceId?: string | null;
   /**
    * The Semp thread the run belongs to (issue #1452). When omitted and `parentRunId` is set, the
    * store copies the parent run's `thread_id`, so every delegation path inherits it; an MCP run
@@ -159,8 +165,8 @@ export async function createAgentRun(client: Pool | PoolClient, input: CreateAge
   const actorUserId = await resolveActorUserId(client, parent, input.userId);
   const threadId = input.threadId ?? parent?.threadId ?? null;
   const { rows } = await client.query<AgentRunDbRow>(
-    `INSERT INTO agent_runs (project_item_id, parent_run_id, heartbeat_id, retry_of_run_id, attempt, thread_id, triggered_by, unit, task, actor_user_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    `INSERT INTO agent_runs (project_item_id, parent_run_id, heartbeat_id, retry_of_run_id, attempt, heartbeat_occurrence_id, thread_id, triggered_by, unit, task, actor_user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING ${AGENT_RUN_ROW_COLUMNS}`,
     [
       input.projectItemId ?? null,
@@ -168,6 +174,7 @@ export async function createAgentRun(client: Pool | PoolClient, input: CreateAge
       input.heartbeatId ?? null,
       input.retryOfRunId ?? null,
       input.attempt ?? 1,
+      input.heartbeatOccurrenceId ?? null,
       threadId,
       input.triggeredBy,
       input.unit ?? "invocation",
@@ -190,8 +197,8 @@ export async function createChainedAgentRun(
   input: CreateAgentRunInput & { retryOfRunId: string },
 ): Promise<AgentRunRow | null> {
   const { rows } = await client.query<AgentRunDbRow>(
-    `INSERT INTO agent_runs (project_item_id, parent_run_id, heartbeat_id, retry_of_run_id, attempt, thread_id, triggered_by, unit, task, actor_user_id)
-     SELECT $2, $3, $4, r.id, $5, $6, $7, $8, $9, r.actor_user_id
+    `INSERT INTO agent_runs (project_item_id, parent_run_id, heartbeat_id, retry_of_run_id, attempt, heartbeat_occurrence_id, thread_id, triggered_by, unit, task, actor_user_id)
+     SELECT $2, $3, $4, r.id, $5, $6, $7, $8, $9, $10, r.actor_user_id
      FROM agent_runs r WHERE r.id = $1
      ON CONFLICT (tenant_id, retry_of_run_id) DO NOTHING
      RETURNING ${AGENT_RUN_ROW_COLUMNS}`,
@@ -201,6 +208,7 @@ export async function createChainedAgentRun(
       input.parentRunId ?? null,
       input.heartbeatId ?? null,
       input.attempt ?? 1,
+      input.heartbeatOccurrenceId ?? null,
       input.threadId ?? null,
       input.triggeredBy,
       input.unit ?? "invocation",
@@ -218,6 +226,25 @@ export async function createChainedAgentRun(
 export async function getRetrySuccessorId(client: Pool | PoolClient, runId: string): Promise<string | null> {
   const { rows } = await client.query<{ id: string }>("SELECT id FROM agent_runs WHERE retry_of_run_id = $1", [runId]);
   return rows[0]?.id ?? null;
+}
+
+/**
+ * The run of a heartbeat occurrence with the highest `attempt` (ties by `started_at`), or `null`
+ * when no run was started for it yet (issue #1458).
+ */
+export async function getLatestRunOfOccurrence(
+  client: Pool | PoolClient,
+  occurrenceId: string,
+): Promise<AgentRunRow | null> {
+  const { rows } = await client.query<AgentRunDbRow>(
+    `SELECT ${AGENT_RUN_ROW_COLUMNS}
+     FROM agent_runs
+     WHERE heartbeat_occurrence_id = $1
+     ORDER BY attempt DESC, started_at DESC
+     LIMIT 1`,
+    [occurrenceId],
+  );
+  return rows[0] ? mapRow(rows[0]) : null;
 }
 
 /**

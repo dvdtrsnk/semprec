@@ -40,6 +40,7 @@ interface Parents {
   docId: string;
   heartbeatId: string;
   agentRunId: string;
+  occurrenceId: string;
   threadId: string;
   blobId: string;
   notificationId: string;
@@ -88,6 +89,11 @@ async function seedParents(tenantId: string): Promise<Parents> {
       enabled: false,
     });
     const agentRun = await createAgentRun(client, { triggeredBy: "user", task: "probe", userId: user.id });
+    const { rows: occurrenceRows } = await client.query<{ id: string }>(
+      `INSERT INTO heartbeat_occurrences (heartbeat_id, scheduled_for, rule_snapshot, status)
+       VALUES ($1, now(), '{}', 'queued') RETURNING id`,
+      [heartbeat.id],
+    );
     const thread = await createMailThread(client, "Probe");
     const blob = await createBlob(client, { mimeType: "text/plain", byteSize: 1, storageKey: `${tenantId}/probe` });
     const notificationId = await writeNotification(client, {
@@ -119,6 +125,7 @@ async function seedParents(tenantId: string): Promise<Parents> {
       docId: doc.id,
       heartbeatId: heartbeat.id,
       agentRunId: agentRun.id,
+      occurrenceId: occurrenceRows[0]!.id,
       threadId: thread.id,
       blobId: blob.id,
       notificationId,
@@ -224,6 +231,18 @@ const REFERENCES: Reference[] = [
     insert: (client, id, own) =>
       client.query(
         "INSERT INTO agent_runs (retry_of_run_id, attempt, triggered_by, unit, task, actor_user_id) VALUES ($1, 2, 'user', 'invocation', 'probe', $2)",
+        [id, own.userId],
+      ),
+  },
+  {
+    parent: "heartbeat occurrence",
+    constraint: "agent_runs_heartbeat_occurrence_id_fkey",
+    table: "agent_runs",
+    column: "heartbeat_occurrence_id",
+    parentId: (p) => p.occurrenceId,
+    insert: (client, id, own) =>
+      client.query(
+        "INSERT INTO agent_runs (heartbeat_occurrence_id, triggered_by, unit, task, actor_user_id) VALUES ($1, 'heartbeat', 'invocation', 'probe', $2)",
         [id, own.userId],
       ),
   },
