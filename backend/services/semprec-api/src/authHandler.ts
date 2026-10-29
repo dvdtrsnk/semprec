@@ -273,6 +273,8 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
         }
         reservation.release();
 
+        // Same shape as the user `GET /api/auth/session` returns: the public user plus its role (#1387).
+        const user = { ...result.user, role: result.role };
         // Per #141: a browser must never see its token in a readable response body — only the
         // `httpOnly` cookie carries it. iOS/macOS get it back in the body for Keychain storage
         // and use it as `Authorization: Bearer` on every later request; they get no cookie.
@@ -280,11 +282,11 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
           sendJson(
             res,
             200,
-            { user: result.user },
+            { user },
             { "Set-Cookie": sessionCookieHeader(result.token, SESSION_MAX_LIFETIME_SECONDS) },
           );
         } else {
-          sendJson(res, 200, { token: result.token, user: result.user });
+          sendJson(res, 200, { token: result.token, user });
         }
         return;
       }

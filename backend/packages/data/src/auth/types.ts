@@ -27,6 +27,8 @@ export type UserRole = "admin" | "member";
 export interface UserRow {
   id: string;
   email: string;
+  /** The person's display name; `null` until one is set (`users.display_name`, #1387). */
+  displayName: string | null;
   passwordHash: string;
   locale: string;
   createdAt: string;

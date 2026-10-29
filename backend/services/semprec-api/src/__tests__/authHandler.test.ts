@@ -109,6 +109,58 @@ describe("createAuthRequestListener", () => {
       expect(res.headers.get("set-cookie")).toBeNull();
     });
 
+    it("returns a null displayName and the role in the web login body", async () => {
+      const user = await makeUser();
+
+      const res = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "web" }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { user: { displayName: string | null; role: string } };
+      expect(body.user.displayName).toBeNull();
+      expect(body.user.role).toBe("member");
+    });
+
+    it("returns a null displayName and the role in the native login body", async () => {
+      const user = await makeUser();
+
+      const res = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "ios" }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { user: { displayName: string | null; role: string } };
+      expect(body.user.displayName).toBeNull();
+      expect(body.user.role).toBe("member");
+    });
+
+    it("returns the stored displayName and an admin's role in the native login body", async () => {
+      const user = await createUser(pool, {
+        tenantId: await tenantForNextTestUser(pool),
+        email: "admin@example.com",
+        passwordHash: await hashPassword(PASSWORD),
+        role: "admin",
+      });
+      // Nothing writes the name yet (#1513 does, at account creation), so the test sets the column directly.
+      await pool.query("UPDATE users SET display_name = $2 WHERE id = $1", [user.id, "Ada Lovelace"]);
+
+      const res = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "ios" }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { user: { displayName: string | null; role: string } };
+      expect(body.user.displayName).toBe("Ada Lovelace");
+      expect(body.user.role).toBe("admin");
+    });
+
     it("returns 401 for a wrong password", async () => {
       const user = await makeUser();
       const res = await fetch(`${baseUrl}/api/auth/login`, {
@@ -360,6 +412,38 @@ describe("createAuthRequestListener", () => {
       const res = await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } });
       const body = (await res.json()) as { user: { role: string } };
       expect(body.user.role).toBe("admin");
+    });
+
+    it("returns a null displayName for an account without one", async () => {
+      const user = await makeUser();
+      const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "ios" }),
+      });
+      const { token } = (await loginRes.json()) as { token: string };
+
+      const res = await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { user: { displayName: string | null } };
+      expect(body.user.displayName).toBeNull();
+    });
+
+    it("returns the stored displayName", async () => {
+      const user = await makeUser();
+      // Nothing writes the name yet (#1513 does, at account creation), so the test sets the column directly.
+      await pool.query("UPDATE users SET display_name = $2 WHERE id = $1", [user.id, "Ada Lovelace"]);
+      const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "ios" }),
+      });
+      const { token } = (await loginRes.json()) as { token: string };
+
+      const res = await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { user: { displayName: string | null } };
+      expect(body.user.displayName).toBe("Ada Lovelace");
     });
 
     it("authenticates with the session cookie set by login", async () => {
