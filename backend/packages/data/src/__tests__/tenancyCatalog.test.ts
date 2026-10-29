@@ -60,6 +60,7 @@ const TENANT_TABLES = [
   "mail_drafts",
   "mail_folder_sync_state",
   "mail_threads",
+  "mail_thread_aliases",
   "mail_message_meta",
   "mail_attachments",
   "mail_message_flag_sync_state",
@@ -667,7 +668,7 @@ describe("tenancy classification catalog", () => {
           AND c.relnamespace = 'public'::regnamespace AND NOT c.relispartition
         ORDER BY k.conname`,
     );
-    expect(twins).toHaveLength(33);
+    expect(twins).toHaveLength(34);
     for (const twin of twins) {
       const client = await pool.connect();
       try {
