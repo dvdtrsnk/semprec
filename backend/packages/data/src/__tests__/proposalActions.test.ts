@@ -350,6 +350,33 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     expect(history[0]).toMatchObject({ author: "user", message: "Not needed" });
   });
 
+  it("appendHistoryEntry keeps legacy entries byte-identical and adds no kind without extra", () => {
+    const legacy = { author: "user", message: "Old", at: "2026-08-28T09:00:00.000Z" };
+
+    const history = appendHistoryEntry([legacy], "New");
+
+    expect(JSON.stringify(history[0])).toBe(JSON.stringify(legacy));
+    expect(Object.keys(history[1]!).sort()).toEqual(["at", "author", "message"]);
+  });
+
+  it("appendHistoryEntry keeps a userEdit entry with keys across further appends", () => {
+    let history = appendHistoryEntry([], "Edited title", "user", { kind: "userEdit", keys: ["primary.title"] });
+    const first = JSON.stringify(history[0]);
+    history = appendHistoryEntry(history, "Second");
+    history = appendHistoryEntry(history, "Third", "user");
+
+    expect(history).toHaveLength(3);
+    expect(JSON.stringify(history[0])).toBe(first);
+    expect(history[0]).toMatchObject({ kind: "userEdit", keys: ["primary.title"], author: "user" });
+  });
+
+  it("appendHistoryEntry keeps threadRevision thread and message ids", () => {
+    let history = appendHistoryEntry([], "Revised", "ai", { kind: "threadRevision", threadId: "t1", messageId: "m1" });
+    history = appendHistoryEntry(history, "Later");
+
+    expect(history[0]).toMatchObject({ kind: "threadRevision", threadId: "t1", messageId: "m1" });
+  });
+
   it("reject locks rejected and writes no target", async () => {
     const proposal = await createDatabaseProposal("Buy milk");
 
