@@ -89,15 +89,15 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
     },
 
     async createDatabase(actor, input) {
-      return chokePoint.createDatabase({ name: input.name, parentItemId: input.parentItemId }, actor.userId);
+      return chokePoint.createDatabase(
+        { name: input.name, parentItemId: input.parentItemId, icon: input.icon, color: input.color },
+        actor.userId,
+      );
     },
 
     async patchDatabase(actor, input) {
       assertNonEmptyPatch(input.patch);
-      // `input.patch` is `.strict()` with `name` as its only field, so a non-empty patch means
-      // `name` is present — TypeScript can't see that through `assertNonEmptyPatch`'s generic
-      // `Record<string, unknown>` parameter, hence the assertion rather than a real narrowing check.
-      return chokePoint.renameDatabase(input.databaseId, input.patch.name!, actor.userId);
+      return chokePoint.patchDatabase(input.databaseId, input.patch, actor.userId);
     },
 
     async archiveDatabase(actor, input) {

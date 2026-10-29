@@ -43,6 +43,9 @@ export interface Database {
   ownerModuleId: string | null;
   schemaLocked: boolean;
   system: boolean;
+  /** Stored pick of a user-created database; null when none was made or for a system database. */
+  icon: string | null;
+  color: string | null;
   archivedAt: string | null;
 }
 

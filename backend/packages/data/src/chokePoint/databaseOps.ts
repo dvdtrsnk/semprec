@@ -66,6 +66,15 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool">) {
         return database;
       });
     },
+    async patchDatabase(id: string, patch: databasesStore.DatabasePatch, actingUserId?: string): Promise<DatabaseRow> {
+      return withTransaction(pool, async (client) => {
+        const database = await databasesStore.patchDatabase(client, id, patch);
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
+        );
+        return database;
+      });
+    },
     async renameDatabase(id: string, name: string, actingUserId?: string): Promise<DatabaseRow> {
       return withTransaction(pool, async (client) => {
         const database = await databasesStore.renameDatabase(client, id, name);

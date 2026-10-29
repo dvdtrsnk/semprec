@@ -25,10 +25,20 @@ export type DatabaseListInput = z.infer<typeof DatabaseListInputSchema>;
 export const DatabaseGetInputSchema = z.object({ databaseId: z.string() }).strict();
 export type DatabaseGetInput = z.infer<typeof DatabaseGetInputSchema>;
 
+/** Lower-case kebab-case icon name; the clients own which names they can render. */
+const DatabaseIconSchema = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/, "icon must be lower-case kebab-case");
+/** `#RRGGBB` in either case, normalized to upper case before it is stored. */
+const DatabaseColorSchema = z
+  .string()
+  .regex(/^#[0-9A-Fa-f]{6}$/, "color must be #RRGGBB")
+  .transform((color) => color.toUpperCase());
+
 export const DatabaseCreateInputSchema = z
   .object({
     name: z.string().min(1),
     parentItemId: z.string().optional(),
+    icon: DatabaseIconSchema.optional(),
+    color: DatabaseColorSchema.optional(),
   })
   .strict();
 export type DatabaseCreateInput = z.infer<typeof DatabaseCreateInputSchema>;
@@ -36,7 +46,13 @@ export type DatabaseCreateInput = z.infer<typeof DatabaseCreateInputSchema>;
 export const DatabasePatchInputSchema = z
   .object({
     databaseId: z.string(),
-    patch: z.object({ name: z.string().min(1).optional() }).strict(),
+    patch: z
+      .object({
+        name: z.string().min(1).optional(),
+        icon: DatabaseIconSchema.nullable().optional(),
+        color: DatabaseColorSchema.nullable().optional(),
+      })
+      .strict(),
   })
   .strict();
 export type DatabasePatchInput = z.infer<typeof DatabasePatchInputSchema>;

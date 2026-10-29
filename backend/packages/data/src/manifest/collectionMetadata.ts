@@ -10,8 +10,14 @@ export interface CollectionMetadata {
   clientVisible: boolean;
 }
 
+/** Appearance of a user-created database without a stored pick; applied when reading, never written (issue #1528). */
+export const DEFAULT_DATABASE_ICON = "database";
+export const DEFAULT_DATABASE_COLOR = "#FF9500";
+
 export interface CollectionMetadataResolver {
-  resolve(database: Pick<DatabaseRow, "key" | "system">): CollectionMetadata;
+  resolve(
+    database: Pick<DatabaseRow, "key" | "system"> & Partial<Pick<DatabaseRow, "icon" | "color">>,
+  ): CollectionMetadata;
 }
 
 const NO_METADATA: CollectionMetadata = {
@@ -25,7 +31,7 @@ const NO_METADATA: CollectionMetadata = {
 /**
  * Reads `getDatabases()` once and resolves a database row to its declared metadata. A system
  * database without a descriptor is not client-visible; a user-created database is client-visible
- * with no icon, color or order.
+ * with its stored or default icon and color and no order.
  */
 export async function createCollectionMetadataResolver(
   moduleRegistry: ModuleRegistry,
@@ -33,7 +39,14 @@ export async function createCollectionMetadataResolver(
   const descriptors = new Map((await moduleRegistry.getDatabases()).map((db) => [db.key, db]));
   return {
     resolve(database) {
-      if (!database.system) return { ...NO_METADATA, clientVisible: true };
+      if (!database.system) {
+        return {
+          ...NO_METADATA,
+          icon: database.icon ?? DEFAULT_DATABASE_ICON,
+          color: database.color ?? DEFAULT_DATABASE_COLOR,
+          clientVisible: true,
+        };
+      }
       const descriptor = database.key === null ? undefined : descriptors.get(database.key);
       if (descriptor === undefined) return { ...NO_METADATA };
       const overviewOrder = descriptor.overviewOrder ?? null;

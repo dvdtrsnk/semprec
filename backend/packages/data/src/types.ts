@@ -52,6 +52,8 @@ export interface DatabaseRow {
   ownerModuleId: string | null;
   schemaLocked: boolean;
   system: boolean;
+  icon: string | null;
+  color: string | null;
   archivedAt: string | null;
 }
 

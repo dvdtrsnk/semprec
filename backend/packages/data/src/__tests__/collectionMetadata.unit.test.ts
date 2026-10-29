@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { ModuleRegistry } from "@semprec/module-registry";
-import { compareCollections, createCollectionMetadataResolver } from "../manifest/collectionMetadata.js";
+import {
+  compareCollections,
+  createCollectionMetadataResolver,
+  DEFAULT_DATABASE_COLOR,
+  DEFAULT_DATABASE_ICON,
+} from "../manifest/collectionMetadata.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 
 describe("collection metadata resolver (issue #1407)", () => {
@@ -45,8 +50,8 @@ describe("collection metadata resolver (issue #1407)", () => {
       });
     }
     expect(resolver.resolve({ key: null, system: false })).toEqual({
-      icon: null,
-      color: null,
+      icon: DEFAULT_DATABASE_ICON,
+      color: DEFAULT_DATABASE_COLOR,
       overviewOrder: null,
       switcherOrder: null,
       clientVisible: true,

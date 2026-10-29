@@ -312,8 +312,8 @@ describe("database routes (issue #240)", () => {
     expect(custom).toMatchObject({
       system: false,
       clientVisible: true,
-      icon: null,
-      color: null,
+      icon: "database",
+      color: "#FF9500",
       overviewOrder: null,
       switcherOrder: null,
     });
@@ -397,6 +397,77 @@ describe("database routes (issue #240)", () => {
         (route) => route.method === "GET" && route.path === "/api/databases/:id/properties",
       ),
     ).toHaveLength(1);
+  });
+
+  it("stores icon and color on create and serves the read-time defaults for a bare create", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const picked = await fetch(`${baseUrl}/api/databases`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "Gift ideas", icon: "gift", color: "#34c759" }),
+    });
+    expect(picked.status).toBe(201);
+    expect(await picked.json()).toMatchObject({ icon: "gift", color: "#34C759" });
+
+    const bare = await fetch(`${baseUrl}/api/databases`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "Bare" }),
+    });
+    const bareBody = (await bare.json()) as DatabaseBody;
+    expect(bareBody).toMatchObject({ icon: "database", color: "#FF9500" });
+    const { rows } = await pool.query("SELECT icon, color FROM databases WHERE id = $1", [bareBody.id]);
+    expect(rows[0]).toEqual({ icon: null, color: null });
+  });
+
+  it("patches only the color, resets the icon with null and rejects bad formats", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const created = (await (
+      await fetch(`${baseUrl}/api/databases`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ name: "Gift ideas", icon: "gift", color: "#34C759" }),
+      })
+    ).json()) as DatabaseBody;
+    const patch = (body: unknown) =>
+      fetch(`${baseUrl}/api/databases/${created.id}`, { method: "PATCH", headers, body: JSON.stringify(body) });
+
+    const recolored = await patch({ color: "#007AFF" });
+    expect(recolored.status).toBe(200);
+    expect(await recolored.json()).toMatchObject({ name: "Gift ideas", icon: "gift", color: "#007AFF" });
+
+    const reset = await patch({ icon: null });
+    expect(reset.status).toBe(200);
+    expect(await reset.json()).toMatchObject({ icon: "database", color: "#007AFF" });
+
+    for (const bad of [{ color: "red" }, { color: "#12345" }, { icon: "my icon" }, { icon: "Gift" }]) {
+      const res = await patch(bad);
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: { code: string } }).error.code).toBe("validation_failed");
+    }
+    const create = await fetch(`${baseUrl}/api/databases`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "X", color: "red" }),
+    });
+    expect(create.status).toBe(400);
+  });
+
+  it("forbids icon and color changes on a system database but still renames it", async () => {
+    const system = await findSystemDatabase();
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const patch = (body: unknown) =>
+      fetch(`${baseUrl}/api/databases/${system.id}`, { method: "PATCH", headers, body: JSON.stringify(body) });
+
+    const before = (await (await fetch(`${baseUrl}/api/databases/${system.id}`, { headers })).json()) as DatabaseBody;
+    expect((await patch({ color: "#007AFF" })).status).toBe(403);
+    expect((await patch({ icon: "gift" })).status).toBe(403);
+    const renamed = await patch({ name: "Renamed system" });
+    expect(renamed.status).toBe(200);
+    const after = (await renamed.json()) as DatabaseBody;
+    expect(after.name).toBe("Renamed system");
+    expect(after.icon).toBe(before.icon);
+    expect(after.color).toBe(before.color);
   });
 
   it("forbids archiving/deleting a system database with 403", async () => {

@@ -194,6 +194,8 @@ export function createDatabaseRoutes(
         const database = await dispatchGenericOperation(service, "database.create", restActor(ctx.identity.user.id), {
           name: body.name,
           parentItemId: body.parentItemId,
+          icon: body.icon,
+          color: body.color,
         });
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
@@ -223,6 +225,8 @@ export function createDatabaseRoutes(
         const body = requireJsonObjectBody(ctx.body);
         const patch: Record<string, unknown> = {};
         if (body.name !== undefined) patch.name = body.name;
+        if (body.icon !== undefined) patch.icon = body.icon;
+        if (body.color !== undefined) patch.color = body.color;
         const database = await dispatchGenericOperation(service, "database.patch", restActor(ctx.identity.user.id), {
           databaseId,
           patch,
