@@ -2,7 +2,6 @@ import { createServer } from "node:http";
 import {
   assertRuntimeRole,
   createMailLiveSyncRoot,
-  createNoopMailLiveSyncLifecycleFactory,
   createPool,
   LocalFsBlobStorageWriter,
   loadFullModuleRegistry,
@@ -26,6 +25,7 @@ import {
   type CustomRouteOAuthClient,
   type MailLiveSyncControl,
 } from "./adapter/customRouteMount.js";
+import { createImapIdleLifecycleFactory, createMailLiveSyncLifecycleFactory } from "./mailLiveSyncLifecycles.js";
 import { readOAuthClient } from "./mailSyncAdapters.js";
 import { createSyncUpgradeHandler } from "./syncHandler.js";
 import { createApiQueueRuntime } from "./queueRuntime.js";
@@ -184,13 +184,18 @@ const queueRuntime = await createApiQueueRuntime(pool, moduleRegistry);
 
 // Issue #650: this long-lived process hosts the one mail live-sync root that
 // `createMailLiveSyncRoot`'s contract requires. The root discovers each active tenant's
-// Mailboxes database itself. Until real transports exist, every account gets the noop
-// lifecycle, whose `start()` enqueues one immediate `mailAccountSync`.
-const mailLiveSync = createMailLiveSyncRoot(pool, createNoopMailLiveSyncLifecycleFactory(pool), {
-  onLifecycleError: (mailboxItemId, phase, err) => {
-    logger.error({ err, mailboxItemId, phase }, "Mail live-sync lifecycle failed");
+// Mailboxes database itself. IMAP accounts get the IDLE lifecycle (issue #1550). Every other
+// sync mode gets the noop lifecycle, whose `start()` enqueues one immediate `mailAccountSync`,
+// until the Gmail and Graph lifecycles are hosted (#1739, #1745).
+const mailLiveSync = createMailLiveSyncRoot(
+  pool,
+  createMailLiveSyncLifecycleFactory({ pool, hosted: { imap: createImapIdleLifecycleFactory(pool) } }),
+  {
+    onLifecycleError: (mailboxItemId, phase, err) => {
+      logger.error({ err, mailboxItemId, phase }, "Mail live-sync lifecycle failed");
+    },
   },
-});
+);
 await mailLiveSync.start();
 
 // Issue #1042: a tenant leaving `active` ends its sockets and its hosted mailbox lifecycles in this

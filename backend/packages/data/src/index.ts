@@ -256,11 +256,26 @@ export {
 export {
   createSmtpTransporter,
   openImapConnection,
+  openImapFlow,
   type MailServerConnectionOptions,
   type MailServerConnectionSettings,
   type MailServerCredential,
   type MailSmtpTransporter,
 } from "./mail/mailServerConnections.js";
+export {
+  createBoundedImapIdleLifecycleFactory,
+  type CreateBoundedImapIdleLifecycleFactoryOptions,
+  type ImapIdleConnection,
+  type ImapIdleFolderTarget,
+  type ImapIdleTransport,
+} from "./mail/imapIdleLifecycle.js";
+export {
+  createImapFlowIdleTransport,
+  type CreateIdleTunedImapFlowClient,
+  type ImapIdleFlowOptions,
+} from "./mail/imapIdleClient.js";
+export { imapConnectionLimitForProvider, sharedImapConnectionLimiter } from "./mail/imapConnectionLimiter.js";
+export { getDecryptedCredential } from "./credentials/externalCredentialsStore.js";
 export {
   MailConnectionLimitError,
   MailReauthorizationRequiredError,
