@@ -37,6 +37,8 @@ import { getSystemTimezone, getSystemSettingsItemId } from "../systemSettings.js
 import { deriveTaskTime } from "../tasks/deriveTaskTime.js";
 import { runItemCreateHooks, runItemUpdateHooks } from "./hooks.js";
 import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
+import { assertValueLinkHandoff, breakValueLinks, VALUE_LINKS_OWNER_PROCESS } from "./valueLinkWrites.js";
+import { isDeepStrictEqual } from "node:util";
 
 interface AssertWritablePropertiesOptions {
   /**
@@ -341,6 +343,10 @@ export async function updateItemWithClient(
   const patchKeys = Object.keys(input.propertiesPatch);
   assertWritableProperties(properties, patchKeys, options);
   assertColorValues(properties, input.propertiesPatch);
+  // The declared handoff: the valueLinks process may write a user-owned value only while its link is on.
+  if (options.systemOwnerProcess === VALUE_LINKS_OWNER_PROCESS) {
+    for (const key of patchKeys) await assertValueLinkHandoff(client, { itemId: input.itemId, propertyKey: key });
+  }
 
   const database = await databasesStore.getDatabase(client, input.databaseId);
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
@@ -380,6 +386,12 @@ export async function updateItemWithClient(
     itemId: input.itemId,
     propertiesPatch,
     ifVersion: input.ifVersion,
+  });
+  // A user or agent write that changes a linked value ends its link, in this transaction.
+  await breakValueLinks(client, {
+    itemId: item.id,
+    propertyKeys: patchKeys.filter((key) => !isDeepStrictEqual(previous[key], input.propertiesPatch[key])),
+    writerKind: (options.writer ?? SYSTEM_WRITER).writerKind,
   });
   // Every domain's transactional side effect on this write (the Tasks recurrence advance on a
   // `status: 'done'` write, the Emails flag-sync write, ...) runs here, in the same transaction,

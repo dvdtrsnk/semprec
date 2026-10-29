@@ -166,6 +166,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY",
   "UNKNOWN_HEARTBEAT_ACTION_FINDING_KIND",
   "UnauthorizedError",
+  "VALUE_LINKS_OWNER_PROCESS",
   "ValidationError",
   "advanceTaskRecurrence",
   "agentGuidanceDriftFindingsStore",
