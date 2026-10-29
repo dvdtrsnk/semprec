@@ -28,27 +28,38 @@ export const SEMP_BUSY_ERROR_MESSAGE = "Semp is already handling another message
 
 export type SempTurnResult = { ok: true; message: string | null } | { ok: false; error: string };
 
+/** What a reconstruction needs to know about the thread being woken: the thread to read and the project its run will belong to. */
+export interface SempThreadWake {
+  threadId: string;
+  projectItemId: string;
+}
+
 /**
- * Wake-time inheritance port: given the pool and Semp's own project item id, returns prior
+ * The thread a turn belongs to. A tick thread's runs belong to its heartbeat's project, so it
+ * carries that project item id; chat and item threads run in the Semprec project, which the
+ * registry resolves per wake.
+ */
+export type SempThread =
+  { threadId: string; kind: "chat" | "item" } | { threadId: string; kind: "tick"; projectItemId: string };
+
+/**
+ * Wake-time inheritance port: given the pool and the woken thread, returns prior
  * conversation context to seed a freshly woken session's `initialState.messages` with, or null
  * when there is none to inherit (a conversation's very first-ever wake). #119's real
  * implementation, `createReconstructConversationHistory`, enumerates this conversation's prior
- * `agent_runs` rows (every row with `triggered_by='user'`, `unit='session'`, and this
- * `projectItemId`, in order), folds their `agent_run_events` into an `Entry[]` tree, and
+ * `agent_runs` rows (every row with `triggered_by='user'`, `unit='session'`, no parent and this
+ * thread's `thread_id`, in order), folds their `agent_run_events` into an `Entry[]` tree, and
  * compacts it when oversized. Options without a `compaction` adapter fall back to a stub that
  * always returns null, matching the pre-#119 behavior.
  */
-export type ReconstructConversationHistory = (
-  pool: Pool,
-  projectItemId: string,
-) => Promise<ReconstructedHistory | null>;
+export type ReconstructConversationHistory = (pool: Pool, wake: SempThreadWake) => Promise<ReconstructedHistory | null>;
 
 const stubReconstructConversationHistory: ReconstructConversationHistory = async () => null;
 
 /** #119's real `ReconstructConversationHistory`: closes over a `CompactionAdapter` so `SempConversationOptions` only needs the plain two-arg seam shape every caller (and every existing test) already expects. */
 export function createReconstructConversationHistory(compaction: CompactionAdapter): ReconstructConversationHistory {
-  return (pool, projectItemId) =>
-    reconstructHistoryEntries(pool, { projectItemId, triggeredBy: "user", parentRunId: null }, compaction);
+  return (pool, { threadId }) =>
+    reconstructHistoryEntries(pool, { threadId, triggeredBy: "user", parentRunId: null }, compaction);
 }
 
 interface ConversationRegistryEntry {
@@ -107,7 +118,8 @@ export interface SempConversationOptions {
   createAgentSessionForRun: (run: AgentRunRow) => Promise<CreateAgentSession>;
   /**
    * Resolves the waking tenant's own Semprec project item id — `agent_runs.project_item_id` for
-   * that tenant's wake run. Called once per wake, inside the caller's tenant scope, before
+   * a chat or item thread's wake run (a tick thread supplies its heartbeat's project instead and
+   * this is not called). Called once per such wake, inside the caller's tenant scope, before
    * history reconstruction and run creation.
    */
   resolveProjectItemId: (pool: Pool) => Promise<string>;
@@ -131,7 +143,9 @@ export interface SempSendOptions {
   onTurnStart?: (turn: SempTurnStart) => Promise<void> | void;
 }
 
-interface TenantConversation {
+interface ThreadConversation {
+  tenantId: string;
+  threadId: string;
   entry: ConversationRegistryEntry | null;
   /** Set for the span of a brand-new wake, before it has an entry to be `busy` on its own behalf. */
   waking: boolean;
@@ -145,6 +159,10 @@ interface TenantConversation {
 
 /** The error a wake run is closed with when its tenant is deactivated. */
 const ACCOUNT_DEACTIVATED_MESSAGE = "account deactivated";
+
+function conversationKey(tenantId: string, threadId: string): string {
+  return `${tenantId}:${threadId}`;
+}
 
 function errorName(err: unknown): string {
   return err instanceof Error ? err.name : typeof err;
@@ -169,13 +187,15 @@ class PauseSupersededByDrop extends Error {
  * indefinitely: there is no persisted "closed" state for it to be in, and no caller-supplied key
  * to resume it by — the next `send()` call, a minute or a month later, just resumes it.
  *
- * One conversation per tenant, multiplexed by the tenant id of the scope `send()` runs in: each
- * tenant has its own in-memory session, busy flag and TTL timer, and its own project (resolved
- * on every wake). Tenants never wait on each other.
+ * One conversation per thread, multiplexed by the tenant id of the scope `send()` runs in and the
+ * thread id it is given: each `(tenant, thread)` has its own in-memory session, busy flag, waking
+ * flag, dropped flag and TTL timer. Threads and tenants never wait on each other; a second
+ * concurrent turn in the same thread is rejected as busy. Ordering of turns within a thread is
+ * the turn queue's job, not this registry's.
  */
 export class SempConversation {
-  /** Keyed by tenant id; holds only live conversations (a key is deleted once its state is idle again). */
-  private readonly conversations = new Map<string, TenantConversation>();
+  /** Keyed by `conversationKey(tenantId, threadId)`; holds only live conversations (a key is deleted once its state is idle again). */
+  private readonly conversations = new Map<string, ThreadConversation>();
 
   constructor(
     private readonly pool: Pool,
@@ -183,7 +203,7 @@ export class SempConversation {
     private readonly ttlMs: number = DEFAULT_TTL_MS,
   ) {}
 
-  /** Test/shutdown seam: cancels every tenant's pending TTL timer so a process can exit cleanly. */
+  /** Test/shutdown seam: cancels every thread's pending TTL timer so a process can exit cleanly. */
   clear(): void {
     for (const state of this.conversations.values()) {
       if (state.entry) clearTimeout(state.entry.ttlTimer);
@@ -192,7 +212,8 @@ export class SempConversation {
   }
 
   /**
-   * Discards `tenantId`'s conversation after its tenant was deactivated, clearing its TTL timer.
+   * Discards every thread conversation of `tenantId` after its tenant was deactivated, clearing
+   * their TTL timers; other tenants are untouched. Each thread is then handled independently.
    * With no turn in flight, the wake run is closed as `error` ("account deactivated") and the entry
    * removed. With a turn in flight (`busy` or `waking`), the conversation is marked dropped and the
    * turn is not aborted: once it settles, its run is closed as `error` and its entry discarded
@@ -208,24 +229,25 @@ export class SempConversation {
    * nothing.
    */
   async dropTenant(tenantId: string): Promise<void> {
-    const state = this.conversations.get(tenantId);
-    if (!state || state.dropped) return;
+    const states = [...this.conversations.values()].filter((state) => state.tenantId === tenantId);
+    await Promise.all(states.map((state) => this.dropThread(state)));
+  }
+
+  private async dropThread(state: ThreadConversation): Promise<void> {
+    if (state.dropped) return;
     state.dropped = true;
     const entry = state.entry;
     if (entry) clearTimeout(entry.ttlTimer);
     if (state.waking || entry?.busy || !entry) return;
-    await this.closeDropped(tenantId, state, entry);
+    await this.closeDropped(state, entry);
   }
 
   /**
    * Closes a dropped conversation's run as `error` inside its tenant, then removes its entry. On a
    * failure the entry stays, holding a timer that runs this again.
    */
-  private async closeDropped(
-    tenantId: string,
-    state: TenantConversation,
-    entry: ConversationRegistryEntry,
-  ): Promise<void> {
+  private async closeDropped(state: ThreadConversation, entry: ConversationRegistryEntry): Promise<void> {
+    const { tenantId, threadId } = state;
     entry.busy = true;
     try {
       await runInTenant(tenantId, async () => {
@@ -238,19 +260,22 @@ export class SempConversation {
         await pushClosedRunStatus(this.pool, entry.agentRunId, closed, "error");
       });
       if (state.entry === entry) state.entry = null;
-      this.releaseIfIdle(tenantId);
+      this.releaseIfIdle(state);
     } catch (err) {
       // Only the error's name: a Postgres error's detail can carry the failing `agent_runs` row,
       // whose `task` is the user's prompt, and logs are not tenant-scoped.
       logger.error(
-        { errorName: errorName(err), tenantId, agentRunId: entry.agentRunId },
+        { errorName: errorName(err), tenantId, threadId, agentRunId: entry.agentRunId },
         "SempConversation: failed to close dropped run, will retry",
       );
       entry.busy = false;
       const timer = setTimeout(
         () => {
-          this.closeDropped(tenantId, state, entry).catch((retryErr) => {
-            logger.error({ errorName: errorName(retryErr), tenantId }, "SempConversation: dropped run retry failed");
+          this.closeDropped(state, entry).catch((retryErr) => {
+            logger.error(
+              { errorName: errorName(retryErr), tenantId, threadId },
+              "SempConversation: dropped run retry failed",
+            );
           });
         },
         Math.min(this.ttlMs, DROPPED_RUN_RETRY_MAX_MS),
@@ -260,13 +285,13 @@ export class SempConversation {
     }
   }
 
-  /** Drops the tenant's key once it is back to `{ entry: null, waking: false }`. */
-  private releaseIfIdle(tenantId: string): void {
-    const state = this.conversations.get(tenantId);
-    if (state && !state.entry && !state.waking) this.conversations.delete(tenantId);
+  /** Drops the thread's key once it is back to `{ entry: null, waking: false }`. */
+  private releaseIfIdle(state: ThreadConversation): void {
+    const key = conversationKey(state.tenantId, state.threadId);
+    if (this.conversations.get(key) === state && !state.entry && !state.waking) this.conversations.delete(key);
   }
 
-  async send(task: string, sendOptions: SempSendOptions = {}): Promise<SempTurnResult> {
+  async send(task: string, thread: SempThread, sendOptions: SempSendOptions = {}): Promise<SempTurnResult> {
     const { signal, onTurnStart } = sendOptions;
     // Read synchronously, before any `await`: nothing is read or written without a tenant.
     const scope = currentTenantScope();
@@ -275,7 +300,8 @@ export class SempConversation {
     }
     const tenantId = scope.tenantId;
 
-    const state = this.conversations.get(tenantId);
+    const key = conversationKey(tenantId, thread.threadId);
+    const state = this.conversations.get(key);
 
     // Busy check and reservation happen synchronously, before any `await` below, so a
     // concurrent call in the same tenant always observes one of these and is rejected rather
@@ -311,14 +337,14 @@ export class SempConversation {
             // unaffected: the next send() just wakes a fresh run, same as after a TTL pause.
             state.entry = null;
             clearTimeout(entry.ttlTimer);
-            this.releaseIfIdle(tenantId);
+            this.releaseIfIdle(state);
             await failRun(this.pool, entry.agentRunId, err);
             throw err;
           }
           if (state.dropped) {
-            await this.closeDropped(tenantId, state, entry);
+            await this.closeDropped(state, entry);
           } else {
-            this.touch(tenantId, entry);
+            this.touch(state, entry);
           }
           return { ok: true, message: extractResultSnapshot(lastMessage) };
         });
@@ -327,16 +353,17 @@ export class SempConversation {
       }
     }
 
-    const wakeState: TenantConversation = { entry: null, waking: false };
-    wakeState.waking = true;
-    this.conversations.set(tenantId, wakeState);
+    const wakeState: ThreadConversation = { tenantId, threadId: thread.threadId, entry: null, waking: true };
+    this.conversations.set(key, wakeState);
     try {
-      const projectItemId = await this.options.resolveProjectItemId(this.pool);
+      const projectItemId =
+        thread.kind === "tick" ? thread.projectItemId : await this.options.resolveProjectItemId(this.pool);
       const reconstruct = this.options.reconstructHistory ?? stubReconstructConversationHistory;
-      const priorHistory = await reconstruct(this.pool, projectItemId);
+      const priorHistory = await reconstruct(this.pool, { threadId: thread.threadId, projectItemId });
 
       const run = await createAgentRun(this.pool, {
         projectItemId,
+        threadId: thread.threadId,
         triggeredBy: "user",
         unit: "session",
         task,
@@ -377,13 +404,13 @@ export class SempConversation {
         if (wakeState.dropped) {
           const entry: ConversationRegistryEntry = { agentRunId: run.id, session, busy: true, ttlTimer: undefined };
           wakeState.entry = entry;
-          await this.closeDropped(tenantId, wakeState, entry);
+          await this.closeDropped(wakeState, entry);
         } else {
           wakeState.entry = {
             agentRunId: run.id,
             session,
             busy: false,
-            ttlTimer: this.scheduleTtl(tenantId),
+            ttlTimer: this.scheduleTtl(wakeState),
           };
         }
 
@@ -391,20 +418,21 @@ export class SempConversation {
       });
     } finally {
       wakeState.waking = false;
-      this.releaseIfIdle(tenantId);
+      this.releaseIfIdle(wakeState);
     }
   }
 
-  private touch(tenantId: string, entry: ConversationRegistryEntry): void {
+  private touch(state: ThreadConversation, entry: ConversationRegistryEntry): void {
     clearTimeout(entry.ttlTimer);
-    entry.ttlTimer = this.scheduleTtl(tenantId);
+    entry.ttlTimer = this.scheduleTtl(state);
   }
 
   /** The callback re-enters the tenant explicitly: it never relies on whatever scope is active when the timer fires. */
-  private scheduleTtl(tenantId: string): ReturnType<typeof setTimeout> {
+  private scheduleTtl(state: ThreadConversation): ReturnType<typeof setTimeout> {
+    const { tenantId, threadId } = state;
     const timer = setTimeout(() => {
-      runInTenant(tenantId, () => this.pause(tenantId)).catch((err) => {
-        logger.error({ err, tenantId }, "SempConversation: pause failed");
+      runInTenant(tenantId, () => this.pause(state)).catch((err) => {
+        logger.error({ err, tenantId, threadId }, "SempConversation: pause failed");
       });
     }, this.ttlMs);
     // Never keep a process alive solely to fire a TTL sweep.
@@ -432,10 +460,9 @@ export class SempConversation {
    * session whose run this is in the middle of finishing as `done`; it observes `busy` and is
    * rejected instead, same as if a turn were in flight.
    */
-  private async pause(tenantId: string): Promise<void> {
-    const state = this.conversations.get(tenantId);
-    const entry = state?.entry;
-    if (!state || !entry || entry.busy) return;
+  private async pause(state: ThreadConversation): Promise<void> {
+    const entry = state.entry;
+    if (!entry || entry.busy) return;
     entry.busy = true;
     try {
       const closed = await withTransaction(this.pool, async (client) => {
@@ -447,7 +474,7 @@ export class SempConversation {
       });
       await pushClosedRunStatus(this.pool, entry.agentRunId, closed, "done");
       state.entry = null;
-      this.releaseIfIdle(tenantId);
+      this.releaseIfIdle(state);
     } catch (err) {
       if (!(err instanceof PauseSupersededByDrop)) {
         logger.error({ err, agentRunId: entry.agentRunId }, "SempConversation: failed to close paused run, will retry");
@@ -455,10 +482,10 @@ export class SempConversation {
       entry.busy = false;
       // A tenant dropped while this pause held the entry closes its run as `error` instead.
       if (state.dropped) {
-        await this.closeDropped(tenantId, state, entry);
+        await this.closeDropped(state, entry);
         return;
       }
-      entry.ttlTimer = this.scheduleTtl(tenantId);
+      entry.ttlTimer = this.scheduleTtl(state);
     }
   }
 }
