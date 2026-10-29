@@ -104,16 +104,45 @@ describe("Inbox pipeline databases (issue #101)", () => {
 
     const proposalProps = await chokePoint.listProperties(proposalsId);
     expect(proposalProps.map((p) => p.key).sort()).toEqual([
+      "aiProposal",
+      "aiVersion",
+      "candidates",
+      "context",
       "fingerprint",
       "history",
+      "invalidReason",
       "kind",
       "proposal",
+      "reason",
+      "recognizedTypeId",
+      "referencedItemIds",
       "resultItemId",
       "resultLabel",
+      "results",
       "sourceInbox",
       "sourceTranscript",
       "status",
+      "typeCandidates",
+      "userEditedKeys",
+      "userOverrides",
     ]);
+    // Card state (issue #1451): every new property is system-owned and typed as declared.
+    for (const key of [
+      "aiProposal",
+      "userOverrides",
+      "userEditedKeys",
+      "invalidReason",
+      "referencedItemIds",
+      "results",
+      "candidates",
+      "typeCandidates",
+      "context",
+    ]) {
+      expect(proposalProps.find((p) => p.key === key)).toMatchObject({ type: "json", owner: "system" });
+    }
+    expect(proposalProps.find((p) => p.key === "aiVersion")).toMatchObject({ type: "number", owner: "system" });
+    expect(proposalProps.find((p) => p.key === "reason")).toMatchObject({ type: "text", owner: "system" });
+    expect(proposalProps.find((p) => p.key === "recognizedTypeId")).toMatchObject({ type: "text", owner: "system" });
     expect(proposalProps.find((p) => p.key === "kind")).toMatchObject({
       type: "select",
       owner: "system",
@@ -136,6 +165,8 @@ describe("Inbox pipeline databases (issue #101)", () => {
           { key: "confirmed" },
           { key: "rejected" },
           { key: "invalid" },
+          { key: "computing" },
+          { key: "computeFailed" },
         ],
       },
     });

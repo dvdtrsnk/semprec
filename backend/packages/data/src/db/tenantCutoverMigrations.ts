@@ -6,6 +6,7 @@ import { runTranscriptsCatalogCutoverMigration } from "../transcription/transcri
 import { runTranscriptionRequeueHeartbeatCutoverMigration } from "../transcription/transcriptionRequeueHeartbeatCutoverMigration.js";
 import { runEventsCalendarPropertiesCutoverMigration } from "../calendar/eventsCalendarPropertiesCutoverMigration.js";
 import { runProjectAgentGuidanceCutoverMigration } from "../projectAgentGuidance/projectAgentGuidanceCutoverMigration.js";
+import { runProcessingProposalsCardStateCutoverMigration } from "../inbox/processingProposalsCardStateCutoverMigration.js";
 
 /**
  * Runs the data-driven post-migration cutovers — the ones that read and write tenant rows — once
@@ -24,5 +25,6 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runFilesTypeOptionsCutoverMigration(pool);
     await runEventsCalendarPropertiesCutoverMigration(pool);
     await runProjectAgentGuidanceCutoverMigration(pool);
+    await runProcessingProposalsCardStateCutoverMigration(pool);
   });
 }

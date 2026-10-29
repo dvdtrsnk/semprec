@@ -1,9 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
-import { createPool } from "../db/pool.js";
+import { createPool, withTransaction } from "../db/pool.js";
 import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
+import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
+import { ForbiddenError } from "../errors.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 import { TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID } from "../transcription/transcriptionActions.js";
@@ -309,5 +312,281 @@ describe("property defaults tenant cutover", () => {
       );
       expect(rows[0]?.n).toBe(4);
     });
+  });
+});
+
+/** Card-state properties issue #1451 adds to Processing proposals, with their types. */
+const CARD_STATE_TYPES: Record<string, string> = {
+  aiProposal: "json",
+  userOverrides: "json",
+  userEditedKeys: "json",
+  aiVersion: "number",
+  reason: "text",
+  recognizedTypeId: "text",
+  typeCandidates: "json",
+  candidates: "json",
+  invalidReason: "json",
+  referencedItemIds: "json",
+  results: "json",
+  context: "json",
+};
+const CARD_STATE_KEYS = Object.keys(CARD_STATE_TYPES);
+const PRE_CARD_STATE_STATUS_OPTIONS = ["needsClarification", "proposed", "confirmed", "rejected", "invalid"];
+const CARD_STATE_STATUS_OPTIONS = [...PRE_CARD_STATE_STATUS_OPTIONS, "computing", "computeFailed"];
+
+interface ProposalPropertyRow {
+  key: string;
+  name: string;
+  type: string;
+  owner: string;
+  owner_process: string | null;
+  /** The stored config, except a relation's, which is replaced by the owner module of its target. */
+  config: { options?: Array<{ key: string }>; target?: string | null };
+}
+
+async function proposalsDatabaseId(tenantId: string): Promise<string> {
+  return runInTenant(tenantId, async () => {
+    const { rows } = await dataPool.query<{ id: string }>(
+      "SELECT id FROM databases WHERE owner_module_id = 'processingProposals'",
+    );
+    if (!rows[0]) throw new Error("Database 'processingProposals' was not seeded");
+    return rows[0].id;
+  });
+}
+
+/** Seeds the tenant, then rebuilds its Processing proposals database in the shape it had before issue #1451. */
+async function seedPreCardStateShape(tenantId: string): Promise<string> {
+  await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
+  const databaseId = await proposalsDatabaseId(tenantId);
+  // Direct SQL is the fixture: the public property writer refuses this schema-locked database, and a
+  // populated install was left in exactly this shape before the card-state properties existed.
+  await adminPool.query("DELETE FROM properties WHERE database_id = $1 AND key = ANY($2::text[])", [
+    databaseId,
+    CARD_STATE_KEYS,
+  ]);
+  await adminPool.query(
+    `UPDATE properties SET config = jsonb_set(config, '{options}', $2::jsonb) WHERE database_id = $1 AND key = 'status'`,
+    [databaseId, JSON.stringify(PRE_CARD_STATE_STATUS_OPTIONS.map((key) => ({ key })))],
+  );
+  return databaseId;
+}
+
+/**
+ * Writes a card through the item store. The generic writer refuses system-owned keys, and the
+ * producers of these cards are later issues, so the store stands in for them, as inboxPipeline.test.ts does.
+ */
+async function insertCard(tenantId: string, databaseId: string, properties: Record<string, unknown>): Promise<string> {
+  return runInTenant(tenantId, async () => {
+    const item = await withTransaction(dataPool, (client) => itemsStore.insertItem(client, { databaseId, properties }));
+    return item.id;
+  });
+}
+
+async function cardsByFingerprint(tenantId: string, databaseId: string): Promise<Map<string, Record<string, unknown>>> {
+  return runInTenant(tenantId, async () => {
+    const { rows } = await dataPool.query<{ properties: Record<string, unknown> }>(
+      "SELECT properties FROM items WHERE database_id = $1 ORDER BY id",
+      [databaseId],
+    );
+    return new Map(rows.map((row) => [String(row.properties.fingerprint), row.properties]));
+  });
+}
+
+/**
+ * The Processing proposals properties of a tenant, with each relation's generated ids replaced by the
+ * owner module of its target database. Two tenants built the same way differ only in those ids, so
+ * this compares what the schema says, not the uuids it was created with.
+ */
+async function proposalShape(tenantId: string): Promise<ProposalPropertyRow[]> {
+  return runInTenant(tenantId, async () => {
+    const { rows } = await dataPool.query<ProposalPropertyRow>(
+      `SELECT p.key, p.name, p.type, p.owner, p.owner_process,
+              CASE WHEN p.type = 'relation' THEN jsonb_build_object('target', target.owner_module_id)
+                   ELSE p.config END AS config
+         FROM properties p
+         JOIN databases d ON d.id = p.database_id
+         LEFT JOIN databases target ON target.id = (p.config ->> 'targetDatabaseId')::uuid
+        WHERE d.owner_module_id = 'processingProposals'
+        ORDER BY p.key`,
+    );
+    return rows;
+  });
+}
+
+/** The rows a cutover may change for one database: its properties and its items, read as the owner. */
+async function proposalSnapshot(databaseId: string): Promise<unknown[]> {
+  const { rows: properties } = await adminPool.query<{ row: unknown }>(
+    "SELECT to_jsonb(t) AS row FROM properties t WHERE database_id = $1 ORDER BY id",
+    [databaseId],
+  );
+  const { rows: items } = await adminPool.query<{ row: unknown }>(
+    "SELECT to_jsonb(t) AS row FROM items t WHERE database_id = $1 ORDER BY id",
+    [databaseId],
+  );
+  return [properties, items];
+}
+
+describe("processing proposals card-state tenant cutover (issue #1451)", () => {
+  let zero: string;
+  let b: string;
+  let chokePoint: ChokePoint;
+
+  beforeAll(() => {
+    adminPool = getTestPool();
+    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+    chokePoint = createChokePoint(dataPool, undefined, createViewTypeRegistry());
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(adminPool);
+    zero = getTenantZeroId();
+    b = await createTestTenant(adminPool);
+  });
+
+  afterAll(async () => {
+    await dataPool.end();
+    await adminPool.end();
+  });
+
+  /** Tenant b as an existing install leaves it: the pre-#1451 shape with five cards, one per case the backfill decides on. */
+  async function populatedTenant(): Promise<string> {
+    const databaseId = await seedPreCardStateShape(b);
+    await insertCard(b, databaseId, {
+      kind: "inbox",
+      fingerprint: "with-proposal",
+      proposal: { target: "tasks" },
+      history: [],
+      status: "proposed",
+    });
+    await insertCard(b, databaseId, {
+      kind: "inbox",
+      fingerprint: "without-proposal",
+      history: [],
+      status: "needsClarification",
+    });
+    await insertCard(b, databaseId, {
+      kind: "inbox",
+      fingerprint: "null-proposal",
+      proposal: null,
+      history: [],
+      status: "needsClarification",
+    });
+    await insertCard(b, databaseId, {
+      kind: "inbox",
+      fingerprint: "ai-already-set",
+      proposal: { target: "people" },
+      aiProposal: { target: "areas" },
+      history: [],
+      status: "proposed",
+    });
+    await insertCard(b, databaseId, {
+      kind: "inbox",
+      fingerprint: "ai-null",
+      proposal: { target: "events" },
+      aiProposal: null,
+      history: [],
+      status: "proposed",
+    });
+    return databaseId;
+  }
+
+  it("adds every card-state property, system-owned, and both status options to a populated tenant", async () => {
+    await populatedTenant();
+
+    await runCutovers(dataPool);
+
+    const shape = await proposalShape(b);
+    for (const [key, type] of Object.entries(CARD_STATE_TYPES)) {
+      expect(shape.find((row) => row.key === key)).toMatchObject({ type, owner: "system", owner_process: null });
+    }
+    expect(shape.find((row) => row.key === "status")?.config.options?.map((option) => option.key)).toEqual(
+      CARD_STATE_STATUS_OPTIONS,
+    );
+  });
+
+  it("leaves a populated tenant with the same Processing proposals shape as a fresh seed", async () => {
+    await runInTenant(zero, () => seedSystem(dataPool, createViewTypeRegistry()));
+    await populatedTenant();
+
+    await runCutovers(dataPool);
+
+    expect(await proposalShape(b)).toEqual(await proposalShape(zero));
+  });
+
+  it("backfills aiProposal from proposal only where proposal is set and aiProposal is empty", async () => {
+    const databaseId = await populatedTenant();
+
+    await runCutovers(dataPool);
+
+    const cards = await cardsByFingerprint(b, databaseId);
+    expect(cards.get("with-proposal")?.aiProposal).toEqual({ target: "tasks" });
+    expect(cards.get("with-proposal")?.proposal).toEqual({ target: "tasks" });
+    expect(cards.get("ai-null")?.aiProposal).toEqual({ target: "events" });
+    expect(cards.get("ai-already-set")?.aiProposal).toEqual({ target: "areas" });
+    expect(cards.get("without-proposal")).not.toHaveProperty("aiProposal");
+    expect(cards.get("null-proposal")).not.toHaveProperty("aiProposal");
+  });
+
+  it("a second run changes no property, option or item", async () => {
+    const databaseId = await populatedTenant();
+    await runCutovers(dataPool);
+    const proposalBefore = await proposalSnapshot(databaseId);
+    const before = await snapshot();
+
+    await runCutovers(dataPool);
+
+    expect(await proposalSnapshot(databaseId)).toEqual(proposalBefore);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("does nothing in a tenant without a Processing proposals database", async () => {
+    await seedPreCardStateShape(b);
+    await runInTenant(b, () =>
+      dataPool.query("UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'processingProposals'"),
+    );
+    const before = await snapshot();
+
+    await runCutovers(dataPool);
+
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("refuses a generic item update to any card-state property and writes nothing", async () => {
+    const databaseId = await seedPreCardStateShape(b);
+    const cardId = await insertCard(b, databaseId, {
+      kind: "inbox",
+      fingerprint: "card",
+      history: [],
+      status: "proposed",
+    });
+    await runCutovers(dataPool);
+    const before = await proposalSnapshot(databaseId);
+
+    // The PATCH route reaches this same choke-point call with no allowedSystemKeys, so the owner check
+    // is what refuses each key here.
+    await runInTenant(b, async () => {
+      for (const key of CARD_STATE_KEYS) {
+        await expect(
+          chokePoint.updateItem({ databaseId, itemId: cardId, propertiesPatch: { [key]: "written by a client" } }),
+        ).rejects.toBeInstanceOf(ForbiddenError);
+      }
+    });
+
+    expect(await proposalSnapshot(databaseId)).toEqual(before);
+  });
+
+  it("fails and names the tenant when its Processing proposals database has no status property, rolling back its shape", async () => {
+    const databaseId = await seedPreCardStateShape(b);
+    await adminPool.query("DELETE FROM properties WHERE database_id = $1 AND key = 'status'", [databaseId]);
+
+    const error = await runCutovers(dataPool).then(
+      () => null,
+      (err: unknown) => err,
+    );
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).message).toContain(b);
+    expect((error as AggregateError).message).not.toContain(zero);
+    expect((await proposalShape(b)).map((row) => row.key)).not.toContain("aiProposal");
   });
 });
