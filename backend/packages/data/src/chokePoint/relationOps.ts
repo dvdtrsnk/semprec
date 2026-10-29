@@ -23,6 +23,7 @@ import * as relationsStore from "./relationsStore.js";
 import {
   assertRelationDatabasesNotArchived,
   assertRelationPropertyWritable,
+  assertRelationValueLinkHandoff,
   loadRelationEdgeContext,
   normalizeRelationSides,
   type RelationEdgeContext,
@@ -30,6 +31,7 @@ import {
 } from "./relationEdgeContext.js";
 import { runRelationEdgeDeleteHooks, runRelationEdgeWriteHooks } from "./hooks.js";
 import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
+import { breakValueLinksForRelationEdge } from "./valueLinkWrites.js";
 
 /** The normalized public shape of a stored edge — same fields as `relationsStore.ItemRelationRow`, named here to match the choke-point's own edge contract. */
 export type RelationEdge = ItemRelationRow;
@@ -93,6 +95,7 @@ async function loadCreatableRelationEdgeContext(
   context: SystemRelationWriteContext | undefined,
 ): Promise<RelationEdgeContext> {
   const edgeContext = await loadWritableRelationEdgeContext(client, input.relationPropertyId, context);
+  await assertRelationValueLinkHandoff(client, edgeContext.property, context, input.callerItemId);
   await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
   return edgeContext;
 }
@@ -222,12 +225,20 @@ export async function createRelationWithClient(
     input.callerItemId,
     input.targetItemId,
   );
-  const edge = await relationsStore.createItemRelation(client, {
+  const { edge, inserted } = await relationsStore.createItemRelationReportingInsert(client, {
     relationDefinitionId: edgeContext.reldef.id,
     itemA,
     itemB,
     metadata: input.metadata,
   });
+  if (inserted) {
+    await breakValueLinksForRelationEdge(client, {
+      reldef: edgeContext.reldef,
+      itemA,
+      itemB,
+      writerKind: writer.writerKind,
+    });
+  }
   await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
   return edge;
 }
@@ -242,6 +253,7 @@ export async function updateRelationWithClient(
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
   await assertRelationDatabasesNotArchived(client, edgeContext);
   assertRelationPropertyWritable(edgeContext.property, context);
+  await assertRelationValueLinkHandoff(client, edgeContext.property, context, input.callerItemId);
   await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
   await runRelationEdgeWriteHooks({
     client,
@@ -300,6 +312,7 @@ export async function deleteRelationWithClient(
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
   await assertRelationDatabasesNotArchived(client, edgeContext);
   assertRelationPropertyWritable(edgeContext.property, context);
+  await assertRelationValueLinkHandoff(client, edgeContext.property, context, input.callerItemId);
   const { itemA, itemB } = normalizeRelationSides(
     edgeContext.reldef,
     input.relationPropertyId,
@@ -315,6 +328,14 @@ export async function deleteRelationWithClient(
     writer,
   });
   const edge = await relationsStore.deleteItemRelation(client, edgeContext.reldef.id, itemA, itemB);
+  if (edge) {
+    await breakValueLinksForRelationEdge(client, {
+      reldef: edgeContext.reldef,
+      itemA,
+      itemB,
+      writerKind: writer.writerKind,
+    });
+  }
   await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
   return edge;
 }

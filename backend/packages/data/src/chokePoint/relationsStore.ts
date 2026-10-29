@@ -124,18 +124,27 @@ export interface CreateItemRelationInput {
 }
 
 export async function createItemRelation(client: PoolClient, input: CreateItemRelationInput): Promise<ItemRelationRow> {
+  return (await createItemRelationReportingInsert(client, input)).edge;
+}
+
+/** `createItemRelation` that also reports whether this call inserted the edge (false: it existed and only its metadata was replaced). */
+export async function createItemRelationReportingInsert(
+  client: PoolClient,
+  input: CreateItemRelationInput,
+): Promise<{ edge: ItemRelationRow; inserted: boolean }> {
   const definition = await getRelationDefinition(client, input.relationDefinitionId);
   if (!definition) throw new NotFoundError(`Relation definition ${input.relationDefinitionId} not found`);
 
   try {
-    const { rows } = await client.query<ItemRelationDbRow>(
+    const { rows } = await client.query<ItemRelationDbRow & { inserted: boolean }>(
       `INSERT INTO item_relations (relation_definition_id, item_a, item_b, metadata)
        VALUES ($1, $2, $3, $4::jsonb)
        ON CONFLICT (relation_definition_id, item_a, item_b) DO UPDATE SET metadata = EXCLUDED.metadata
-       RETURNING id, relation_definition_id, item_a, item_b, metadata`,
+       RETURNING id, relation_definition_id, item_a, item_b, metadata, (xmax = 0) AS inserted`,
       [input.relationDefinitionId, input.itemA, input.itemB, JSON.stringify(input.metadata ?? {})],
     );
-    return mapItemRelationRow(requireSingleRow(rows, "relation row"));
+    const row = requireSingleRow(rows, "relation row");
+    return { edge: mapItemRelationRow(row), inserted: row.inserted };
   } catch (err) {
     if (isCardinalityViolation(err)) {
       throw new CardinalityViolationError(

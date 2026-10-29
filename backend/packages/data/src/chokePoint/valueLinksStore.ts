@@ -157,3 +157,31 @@ export async function listValueLinkSourcesByLinkIds(
   );
   return rows.map(mapValueLinkSourceRow);
 }
+
+/**
+ * Ends the links of the given item and keys that are still `on`, in one statement. A missing row
+ * and an already broken row are untouched, so the first writer to end a link stays recorded.
+ * Returns the property keys whose state changed.
+ */
+export async function breakOnValueLinks(
+  client: PoolClient,
+  input: { itemId: string; propertyKeys: string[]; brokenBy: ValueLinkBrokenBy },
+): Promise<string[]> {
+  if (input.propertyKeys.length === 0) return [];
+  const { rows } = await client.query<{ property_key: string }>(
+    `UPDATE value_links SET state = 'broken', broken_by = $3, broken_at = now(), updated_at = now()
+     WHERE item_id = $1 AND property_key = ANY($2::text[]) AND state = 'on'
+     RETURNING property_key`,
+    [input.itemId, input.propertyKeys, input.brokenBy],
+  );
+  return rows.map((row) => row.property_key);
+}
+
+/** Locks the `on` link of one item property against a concurrent break and reports whether it exists. */
+export async function lockOnValueLink(client: PoolClient, itemId: string, propertyKey: string): Promise<boolean> {
+  const { rows } = await client.query(
+    `SELECT 1 FROM value_links WHERE item_id = $1 AND property_key = $2 AND state = 'on' FOR SHARE`,
+    [itemId, propertyKey],
+  );
+  return rows.length > 0;
+}
