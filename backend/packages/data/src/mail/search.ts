@@ -1,6 +1,7 @@
 import type { Queryable } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
-import { FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY } from "./messageFlags.js";
+import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
+import { DRAFTS_AND_SENT_SPECIAL_PURPOSES, FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY } from "./messageFlags.js";
 
 /**
  * Full-text search over synced message content (issue #26's scope: Emails only — the
@@ -192,6 +193,20 @@ export async function searchItems(client: Queryable, input: SearchItemsInput): P
   if (parsed.read !== undefined) {
     params.push(parsed.read);
     conditions.push(`coalesce((i.properties ->> '${READ_PROPERTY_KEY}')::boolean, false) = $${params.length}`);
+    if (parsed.read === false) {
+      // is:unread leaves out a message linked to any Drafts or Sent folder (issue #1461): those are read by
+      // definition, so a Sent message that was never marked read is not unread. The check is per edge, so a
+      // message that is also in an Inbox is left out too.
+      params.push(FOLDERS_MODULE_ID, DRAFTS_AND_SENT_SPECIAL_PURPOSES);
+      conditions.push(`NOT EXISTS (
+        SELECT 1 FROM item_relations r
+        JOIN items f ON f.id = CASE WHEN r.item_a = s.item_id THEN r.item_b ELSE r.item_a END
+        WHERE (r.item_a = s.item_id OR r.item_b = s.item_id)
+          AND f.database_id = (SELECT id FROM databases WHERE owner_module_id = $${params.length - 1})
+          AND f.deleted_at IS NULL
+          AND f.properties ->> 'specialPurpose' = ANY($${params.length}::text[])
+      )`);
+    }
   }
   if (parsed.flagged !== undefined) {
     params.push(parsed.flagged);

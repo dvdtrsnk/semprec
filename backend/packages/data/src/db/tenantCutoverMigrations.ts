@@ -9,6 +9,7 @@ import { runProjectAgentGuidanceCutoverMigration } from "../projectAgentGuidance
 import { runProcessingProposalsCardStateCutoverMigration } from "../inbox/processingProposalsCardStateCutoverMigration.js";
 import { runMailboxAddressesOwnerCutoverMigration } from "../mail/mailboxAddressesOwnerCutoverMigration.js";
 import { runEmailsSenderPeopleCardinalityCutoverMigration } from "../mail/emailsSenderPeopleCardinalityCutoverMigration.js";
+import { runMailDraftsAndSentReadBackfill } from "../mail/mailDraftsAndSentReadBackfill.js";
 
 /**
  * Runs the data-driven post-migration cutovers — the ones that read and write tenant rows — once
@@ -30,5 +31,6 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runProcessingProposalsCardStateCutoverMigration(pool);
     await runMailboxAddressesOwnerCutoverMigration(pool);
     await runEmailsSenderPeopleCardinalityCutoverMigration(pool);
+    await runMailDraftsAndSentReadBackfill(pool);
   });
 }

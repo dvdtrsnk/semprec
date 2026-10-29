@@ -33,7 +33,9 @@ export interface CreateEmailDraftInput {
  * a draft populates the exact same owner:'system' display fields a synced message does, this
  * function is just a second declared writer of those fields (see seedEmailModule.ts). Carries
  * no Message-ID/mail_message_meta row — that's only generated once the draft is actually sent
- * (mail/send.ts), matching real Message-ID semantics.
+ * (mail/send.ts), matching real Message-ID semantics. The draft is created with `read: true` (issue #1461):
+ * the user wrote it, and sending keeps this same item, so the item stays read. The `is:unread` search also
+ * leaves Drafts and Sent messages out; see `DRAFTS_AND_SENT_SPECIAL_PURPOSES` in messageFlags.ts.
  */
 export async function createEmailDraft(client: PoolClient, input: CreateEmailDraftInput): Promise<ItemRow> {
   const item = await createItemWithClient(
@@ -46,6 +48,7 @@ export async function createEmailDraft(client: PoolClient, input: CreateEmailDra
         recipients: formatAddressList(input.to ?? input.metadata?.to),
         body: input.bodyHtml ?? input.bodyText ?? "",
         date: (input.date ?? new Date()).toISOString(),
+        read: true,
       },
     },
     { allowedSystemKeys: EMAIL_INGEST_ALLOWED_SYSTEM_KEYS },
