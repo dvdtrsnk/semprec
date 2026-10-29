@@ -11,6 +11,7 @@ import { ValidationError } from "../errors.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import {
@@ -595,12 +596,18 @@ describe("createMailTransportFactory (issue #1634)", () => {
       "mailboxes",
     ]);
     const mailboxesId = rows[0]!.id;
-    mailboxId = await withTransaction(pool, (client) =>
-      createItemWithClient(client, {
+    mailboxId = await withTransaction(pool, async (client) => {
+      const mailbox = await createItemWithClient(client, {
         databaseId: mailboxesId,
-        properties: { name: "Test", provider: "generic", addresses: "me@mail.test" },
-      }),
-    ).then((item) => item.id);
+        properties: { name: "Test", provider: "generic" },
+      });
+      await writeMailboxAddresses(client, {
+        mailboxesDatabaseId: mailboxesId,
+        mailboxItemId: mailbox.id,
+        address: "me@mail.test",
+      });
+      return mailbox.id;
+    });
   });
 
   afterAll(async () => {
@@ -768,13 +775,24 @@ async function addSentFolder(pool: Pool, mailboxItemId: string, providerId: stri
   });
 }
 
-/** Creates a Mailboxes item the way production does, with the given user properties. */
-async function createMailbox(pool: Pool, properties: Record<string, unknown>): Promise<string> {
+/**
+ * Creates a Mailboxes item the way production does, with the given user properties. `addresses` is system-owned,
+ * so it goes through the sanctioned writer in the same transaction.
+ */
+async function createMailbox(
+  pool: Pool,
+  { addresses, ...properties }: { addresses: string } & Record<string, unknown>,
+): Promise<string> {
   const moduleIds = await withTransaction(pool, (client) => resolveMailModuleIds(client));
-  const item = await withTransaction(pool, (client) =>
-    createItemWithClient(client, { databaseId: moduleIds.mailboxesDatabaseId, properties }),
-  );
-  return item.id;
+  return withTransaction(pool, async (client) => {
+    const item = await createItemWithClient(client, { databaseId: moduleIds.mailboxesDatabaseId, properties });
+    await writeMailboxAddresses(client, {
+      mailboxesDatabaseId: moduleIds.mailboxesDatabaseId,
+      mailboxItemId: item.id,
+      address: addresses,
+    });
+    return item.id;
+  });
 }
 
 describe("Sent-folder copy of an accepted SMTP send (issue #1641)", () => {

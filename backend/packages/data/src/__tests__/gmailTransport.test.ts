@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { GMAIL_SEND_PURPOSE } from "../mail/gmailTransport.js";
 import { createMailTransportFactory } from "../mail/mailTransport.js";
@@ -96,12 +97,18 @@ describe("Gmail API mail transport (issue #1637)", () => {
       "mailboxes",
     ]);
     const mailboxesId = rows[0]!.id;
-    mailboxId = await withTransaction(pool, (client) =>
-      createItemWithClient(client, {
+    mailboxId = await withTransaction(pool, async (client) => {
+      const mailbox = await createItemWithClient(client, {
         databaseId: mailboxesId,
-        properties: { name: "Gmail", provider: "gmail", addresses: "me@gmail.test" },
-      }),
-    ).then((item) => item.id);
+        properties: { name: "Gmail", provider: "gmail" },
+      });
+      await writeMailboxAddresses(client, {
+        mailboxesDatabaseId: mailboxesId,
+        mailboxItemId: mailbox.id,
+        address: "me@gmail.test",
+      });
+      return mailbox.id;
+    });
     await storeCredential(pool, {
       itemId: mailboxId,
       credentialType: "oauth2_refresh_token",
