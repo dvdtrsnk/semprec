@@ -18,6 +18,8 @@ export interface AgentRunRow {
   projectItemId: string | null;
   parentRunId: string | null;
   heartbeatId: string | null;
+  /** The Semp thread this run belongs to (issue #1452); `null` for an MCP run or a run with no thread. */
+  threadId: string | null;
   triggeredBy: TriggeredBy;
   unit: AgentRunUnit;
   task: string;
@@ -42,6 +44,7 @@ type AgentRunDbRow = {
   project_item_id: string | null;
   parent_run_id: string | null;
   heartbeat_id: string | null;
+  thread_id: string | null;
   triggered_by: string;
   unit: string;
   task: string;
@@ -53,7 +56,7 @@ type AgentRunDbRow = {
 };
 
 const AGENT_RUN_ROW_COLUMNS =
-  "id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at, actor_user_id";
+  "id, project_item_id, parent_run_id, heartbeat_id, thread_id, triggered_by, unit, task, status, result, started_at, finished_at, actor_user_id";
 
 function mapRow(row: AgentRunDbRow): AgentRunRow {
   return {
@@ -61,6 +64,7 @@ function mapRow(row: AgentRunDbRow): AgentRunRow {
     projectItemId: row.project_item_id,
     parentRunId: row.parent_run_id,
     heartbeatId: row.heartbeat_id,
+    threadId: row.thread_id,
     triggeredBy: assertKnownValue(TRIGGERED_BY_VALUES, row.triggered_by, "triggered_by"),
     unit: assertKnownValue(AGENT_RUN_UNITS, row.unit, "unit"),
     task: row.task,
@@ -76,6 +80,12 @@ export interface CreateAgentRunInput {
   projectItemId?: string | null;
   parentRunId?: string | null;
   heartbeatId?: string | null;
+  /**
+   * The Semp thread the run belongs to (issue #1452). When omitted and `parentRunId` is set, the
+   * store copies the parent run's `thread_id`, so every delegation path inherits it; an MCP run
+   * leaves it unset and stays NULL.
+   */
+  threadId?: string | null;
   triggeredBy: TriggeredBy;
   unit?: AgentRunUnit;
   task: string;
@@ -100,14 +110,10 @@ export interface CreateAgentRunInput {
  */
 async function resolveActorUserId(
   client: Pool | PoolClient,
-  parentRunId: string | null | undefined,
+  parent: AgentRunRow | null,
   userId: string | undefined,
 ): Promise<string> {
-  if (parentRunId) {
-    const parent = await getAgentRun(client, parentRunId);
-    if (!parent) throw new Error(`Cannot create a delegated agent run: parent run '${parentRunId}' does not exist`);
-    return parent.actorUserId;
-  }
+  if (parent) return parent.actorUserId;
   if (userId) return userId;
   const tenantUserId = await getTenantUserId(client);
   if (!tenantUserId) throw new Error("Cannot create an agent run: the current tenant has no user");
@@ -115,15 +121,24 @@ async function resolveActorUserId(
 }
 
 export async function createAgentRun(client: Pool | PoolClient, input: CreateAgentRunInput): Promise<AgentRunRow> {
-  const actorUserId = await resolveActorUserId(client, input.parentRunId, input.userId);
+  let parent: AgentRunRow | null = null;
+  if (input.parentRunId) {
+    parent = await getAgentRun(client, input.parentRunId);
+    if (!parent) {
+      throw new Error(`Cannot create a delegated agent run: parent run '${input.parentRunId}' does not exist`);
+    }
+  }
+  const actorUserId = await resolveActorUserId(client, parent, input.userId);
+  const threadId = input.threadId ?? parent?.threadId ?? null;
   const { rows } = await client.query<AgentRunDbRow>(
-    `INSERT INTO agent_runs (project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, actor_user_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO agent_runs (project_item_id, parent_run_id, heartbeat_id, thread_id, triggered_by, unit, task, actor_user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING ${AGENT_RUN_ROW_COLUMNS}`,
     [
       input.projectItemId ?? null,
       input.parentRunId ?? null,
       input.heartbeatId ?? null,
+      threadId,
       input.triggeredBy,
       input.unit ?? "invocation",
       input.task,
