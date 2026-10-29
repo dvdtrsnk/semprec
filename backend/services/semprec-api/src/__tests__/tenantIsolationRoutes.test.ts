@@ -141,6 +141,8 @@ interface TenantFixture {
   mcpToolRegistrationId: string;
   transcriptItemId: string;
   proposalItemId: string;
+  /** A Mailboxes item of the tenant, the target of the removal-impact route (issue gh-1501). */
+  mailboxItemId: string;
   pushSubscriptionId: string;
   pushDeviceToken: string;
   exportId: string;
@@ -686,6 +688,7 @@ async function seedTenant(): Promise<TenantFixture> {
     ...scoped,
     transcriptItemId,
     proposalItemId,
+    mailboxItemId,
     pushSubscriptionId,
     pushDeviceToken,
     exportId,
@@ -1000,6 +1003,14 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   },
   "system health report": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/system-health" });
+  },
+  // A's mailbox answers B exactly as a random id does, and both answers are the 404 of an unknown mailbox (issue gh-1501).
+  "mailbox removal impact": async () => {
+    const answer = await expectForeignLikeRandom(b.member, [a.mailboxItemId], ([id]) => ({
+      method: "GET",
+      path: entryPath("mailbox removal impact", id!),
+    }));
+    expect(answer.status).toBe(404);
   },
   "confirm proposal": () =>
     leavesAUnchanged(async () => {
@@ -1544,6 +1555,12 @@ function ownerProbes(): OwnerProbe[] {
     return (values: readonly string[]): Request => ({ method, path: path(values), body });
   };
   return [
+    {
+      label: "mailbox removal impact",
+      ids: [a.mailboxItemId],
+      build: get(([id]) => `/api/mail/mailboxes/${id}/removal-impact`),
+      status: 200,
+    },
     { label: "database detail", ids: [a.databaseId], build: get(([id]) => `/api/databases/${id}`), status: 200 },
     {
       label: "archived database detail",

@@ -753,6 +753,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "mailbox removal impact",
+    method: "GET",
+    path: "/api/mail/mailboxes/00000000-0000-0000-0000-000000000000/removal-impact",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "Microsoft Graph mail webhook",
     method: "POST",
     path: "/api/mail/graph/webhook",

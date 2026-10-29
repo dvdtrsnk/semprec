@@ -358,6 +358,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "getLatestRunOfOccurrence",
   "getMailDraft",
   "getMailServerSettings",
+  "getMailboxRemovalImpact",
   "getMcpConnectionStates",
   "getMcpToolRegistration",
   "getModelDisplayCatalogs",

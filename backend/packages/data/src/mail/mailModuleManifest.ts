@@ -4,6 +4,7 @@ import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID } from "../see
 import { MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, MAIL_REINDEX_PERSON_EMAILS_ACTION_ID } from "./personLinkingActions.js";
 
 export { createNoopMailLiveSyncLifecycleFactory } from "./mailLiveSyncRoot.js";
+export { createMailboxRemovalImpactRouteHandler } from "./mailboxRemovalImpact.js";
 
 /**
  * Retrofit manifest (module-contract issue #227) for mail sync and mailbox (issue #26):
@@ -52,4 +53,15 @@ export const manifest: ModuleManifest = {
   heartbeatActions: [MAIL_REINDEX_PERSON_EMAILS_ACTION_ID, MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID],
   workers: [{ name: "semprec-mailsync", handlerExport: "createNoopMailLiveSyncLifecycleFactory" }],
   migrations: ["0006_mail_sync.sql", "0007_mail_delivered_to_and_dsn.sql"],
+  customRoutes: [
+    {
+      name: "mailboxRemovalImpact",
+      method: "GET",
+      path: "/api/mail/mailboxes/:id/removal-impact",
+      handlerExport: "createMailboxRemovalImpactRouteHandler",
+      // Shaped for exactly one consumer, the mailbox removal confirmation (issue gh-1501): four counts
+      // from one statement over Emails, Folders, mail_message_meta and mail_attachments.
+      justification: "single-consumer-read",
+    },
+  ],
 };
