@@ -239,6 +239,42 @@ export function diarize<T extends AudioCallResult>(
   return withAudioAccounting(pool, ctx, invoke);
 }
 
+/** Internal: `synthesizeSpeech`'s `produce` returned no audio, so the row is failed. */
+class SpeechNotProducedError extends Error {}
+
+/**
+ * Speech synthesis egress point (docs/adr/2026-10-28-live-voice-chains-speech-to-text-agent-turn-and-text-to-speech.md).
+ * Records exactly one ai_gateway_calls row per invocation. The text length gives the price up
+ * front, so the row is reserved at `ctx.estimatedCostUsd` through the same reserve step as every
+ * other call (a refusal propagates before `produce` runs, leaving no row), then settled with the
+ * seconds and cost `produce` reports. `produce` streams the audio itself and resolves with what was
+ * actually produced, also when the caller disconnected part-way; a result with no audio
+ * (`audioSeconds <= 0`) marks the row `failed`, and so does a rejection, which is rethrown.
+ */
+export async function synthesizeSpeech(
+  pool: Pool,
+  ctx: GatewayCallContext,
+  produce: () => Promise<AudioCallResult>,
+): Promise<AudioCallResult> {
+  const reservation = await reserve(pool, ctx);
+  const result = await invokeReserved(pool, ctx, reservation, async () => {
+    const produced = await produce();
+    if (!(produced.audioSeconds > 0)) throw new SpeechNotProducedError();
+    return produced;
+  }).catch((err: unknown) => {
+    // A call that produced nothing is not an error of its own: the row is failed, the caller sees the result.
+    if (err instanceof SpeechNotProducedError) return null;
+    throw err;
+  });
+  if (result === null) return { audioSeconds: 0, costUsd: 0 };
+  await settleWithRetry(
+    reservation,
+    () => settleAudioGatewayCall(pool, reservation.id, { audioSeconds: result.audioSeconds, costUsd: result.costUsd }),
+    ctx,
+  );
+  return result;
+}
+
 /**
  * One reserved slice of a streamed audio call (see `reserveAudioStreamChunk`). Exactly one of
  * `settle` and `fail` takes effect; later calls are no-ops. Neither ever rejects.

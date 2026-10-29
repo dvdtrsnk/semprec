@@ -22,7 +22,13 @@ const heartbeat = startProcessHeartbeat(
   { onError: (err) => logger.error({ err }, "Failed to record this process's heartbeat") },
 );
 
-const dispatch = createDispatcher(pool, config.handlerOptions, config.audioHandlerOptions, config.piHandlerOptions);
+const dispatch = createDispatcher(
+  pool,
+  config.handlerOptions,
+  config.audioHandlerOptions,
+  config.piHandlerOptions,
+  config.ttsStreamHandlerOptions,
+);
 
 const server = createServer(dispatch);
 
