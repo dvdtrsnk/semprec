@@ -1,0 +1,6 @@
+{
+  "model.claudeSonnet": "Claude Sonnet",
+  "model.claudeHaiku": "Claude Haiku",
+  "model.whisper": "Whisper",
+  "model.diarization": "Diarizace"
+}
