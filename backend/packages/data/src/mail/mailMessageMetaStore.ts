@@ -11,6 +11,8 @@ export interface MailEnvelope {
   to?: MailEnvelopeAddress[];
   cc?: MailEnvelopeAddress[];
   bcc?: MailEnvelopeAddress[];
+  /** Reply-To addresses; absent when the message has none (and for messages synced before this field existed). */
+  replyTo?: MailEnvelopeAddress[];
 }
 
 export type MailMessageKind = "message" | "dsn";

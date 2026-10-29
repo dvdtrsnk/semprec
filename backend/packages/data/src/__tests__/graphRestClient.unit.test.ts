@@ -99,3 +99,25 @@ describe("Graph non-file attachments (issue #203)", () => {
     expect(message.bodyHtml).toBe("<p>[referenceAttachment: link]</p>");
   });
 });
+
+describe("Graph Reply-To envelope", () => {
+  const noAttachments = async () => [];
+  const noStream = async () => Readable.from("");
+
+  it("stores the replyTo recipients", async () => {
+    const message = await toFetchedGraphMessage(
+      {
+        id: "message-1",
+        replyTo: [{ emailAddress: { name: "Support", address: "support@example.test" } }],
+      },
+      noAttachments,
+      noStream,
+    );
+    expect(message.envelope.replyTo).toEqual([{ name: "Support", address: "support@example.test" }]);
+  });
+
+  it("leaves replyTo absent when Graph returns none", async () => {
+    const message = await toFetchedGraphMessage({ id: "message-1", replyTo: [] }, noAttachments, noStream);
+    expect(message.envelope).not.toHaveProperty("replyTo");
+  });
+});
