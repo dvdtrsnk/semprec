@@ -316,7 +316,8 @@ export { manifest as docsModuleManifest } from "./docs/docsModuleManifest.js";
 
 export * from "./blobs/blobsStore.js";
 export type { IngestUploadedFileInput, IngestUploadedFileResult } from "./blobs/fileUploadStore.js";
-export { ingestUploadedFile } from "./blobs/fileUploadStore.js";
+export { ingestUploadedFile, ingestUploadedBlob } from "./blobs/fileUploadStore.js";
+export { sweepUnreferencedBlobs, handleBlobsUnreferencedSweepTask } from "./blobs/unreferencedBlobSweep.js";
 export { openBlobFromRoots, primaryRootForBlob } from "./blobs/openBlobFromRoots.js";
 export type { BlobRootName, OpenBlobFromRootsInput } from "./blobs/openBlobFromRoots.js";
 export { loadBlobMetadataForItems } from "./blobs/blobMetadata.js";

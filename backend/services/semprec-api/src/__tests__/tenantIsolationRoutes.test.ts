@@ -1269,6 +1269,22 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       expect(random.status).toBe(201);
       expect(foreign.status, foreign.text).toBe(random.status);
     }),
+  "upload blob": () =>
+    leavesAUnchanged(async () => {
+      // B uploading bytes A already stored must never be handed A's blob. The status is not
+      // compared: an earlier case may already have stored the same bytes in B.
+      const upload = (content: string): Request => ({
+        method: "POST",
+        path: "/api/blobs",
+        body: content,
+        headers: { "Content-Type": "image/png" },
+      });
+      const foreign = await send(b.member, upload(a.fileContent));
+      expectNoneOf(foreign.text, a.ids, "blob upload of A's bytes");
+      const random = await expectExcludesA(b.member, upload(`image bytes of ${randomUUID()}`));
+      expect(random.status).toBe(201);
+      expect(foreign.text).not.toContain(a.blobId);
+    }),
   "download blob": async () => {
     await expectForeignLikeRandom(b.member, [a.blobId], ([id]) => ({ method: "GET", path: `/api/blobs/${id}` }));
     // The conditional branches answer 304 with A's ETag and 416 with A's size to A itself, so

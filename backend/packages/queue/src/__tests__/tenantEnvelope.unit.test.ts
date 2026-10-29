@@ -39,6 +39,7 @@ const SYSTEM_TASKS = [
   "queueFailedJobsPrune",
   "tenantExportExpirySweep",
   "tenantPurge",
+  "blobsUnreferencedSweep",
 ];
 
 interface FakeHelperOptions {

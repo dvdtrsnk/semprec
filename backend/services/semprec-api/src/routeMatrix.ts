@@ -540,6 +540,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "upload blob",
+    method: "POST",
+    path: "/api/blobs",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "download blob",
     method: "GET",
     path: `/api/blobs/${EXAMPLE_ID}`,

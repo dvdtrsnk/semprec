@@ -46,6 +46,7 @@ import {
 } from "./mcp/approvalRequestExecution.js";
 import { handleNotificationFanoutTask } from "./notifications/notificationFanoutJob.js";
 import type { PushSenders } from "./push/pushSenders.js";
+import { handleBlobsUnreferencedSweepTask } from "./blobs/unreferencedBlobSweep.js";
 import { handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
 import { handleObservabilityCheckSystemTask } from "./observability/observabilityCheckSystem.js";
 import { handleMailOauthStatesSweepTask } from "./mail/mailOauthStatesSweep.js";
@@ -98,6 +99,7 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 10 * * * * ${CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP}
 */10 * * * * ${CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP}
 40 4 * * * ${CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP}
+50 4 * * * ${CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP}
 * * * * * ${CORE_TASK_NAMES.TENANT_PURGE}
 `;
 
@@ -228,6 +230,10 @@ export function createCoreTaskList(
     // `itemTrashPurgeSweep`, distinct in name but not in effect — it runs the same purge sweep.
     [CORE_TASK_NAMES.TRASH_PURGE]: async () => {
       await handleItemTrashPurgeSweepTask(pool, mailBlobStorage);
+    },
+    // Issue #1401: removes standalone upload blobs nothing references 24 hours after creation.
+    [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: async () => {
+      await handleBlobsUnreferencedSweepTask(pool, filesBlobStorage);
     },
     [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: async (_payload, taskHelpers) => {
       await handleObservabilityCheckSystemTask(pool, { job: { id: taskHelpers.job.id } });

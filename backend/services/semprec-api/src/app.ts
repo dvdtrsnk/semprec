@@ -22,6 +22,7 @@ import { createHealthzRequestListener } from "./healthzHandler.js";
 import { createServerInfoRequestListener } from "./serverInfoHandler.js";
 import { createSchemaRequestListener } from "./schemaHandler.js";
 import { createFilesRequestListener } from "./filesHandler.js";
+import { createBlobUploadRequestListener } from "./blobUploadHandler.js";
 import { createBlobsRequestListener } from "./blobsHandler.js";
 import { createGraphWebhookRequestListener } from "./graphWebhookHandler.js";
 import { sendJson } from "./adapter/http.js";
@@ -110,6 +111,10 @@ export async function createDispatcher(
     storage: options.blobStorage,
     maxFileSizeBytes: options.maxFileSizeBytes,
   });
+  const blobUploadListener = createBlobUploadRequestListener(pool, {
+    storage: options.blobStorage,
+    maxFileSizeBytes: options.maxFileSizeBytes,
+  });
   const blobsListener = createBlobsRequestListener(pool, {
     files: options.blobStorage,
     mailAttachments: options.mailAttachmentStorage ?? options.blobStorage,
@@ -176,6 +181,10 @@ export async function createDispatcher(
     }
     if (pathname === "/api/files" && req.method === "POST") {
       void filesListener(req, res);
+      return;
+    }
+    if (pathname === "/api/blobs" && req.method === "POST") {
+      void blobUploadListener(req, res);
       return;
     }
     if (pathname.startsWith("/api/blobs/") && req.method === "GET") {
