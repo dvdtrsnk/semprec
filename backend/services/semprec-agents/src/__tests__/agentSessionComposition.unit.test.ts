@@ -2,7 +2,7 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Pool, Client } from "pg";
 import { ModuleRegistry } from "@semprec/module-registry";
-import type { AgentRunRow, McpToolGrantForProject } from "@semprec/data";
+import type { AgentRunRow, McpInvokeResult, McpToolGrantForProject } from "@semprec/data";
 import { Type, fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { createAgentSessionFactoryForRun, withUniqueNames } from "../agentSessionComposition.js";
 import { logger } from "../logger.js";
@@ -49,6 +49,7 @@ const fixtures = vi.hoisted(() => ({
   calls: [] as unknown[][],
   locale: null as string | null,
   guidance: null as string | null,
+  mcpResult: null as McpInvokeResult | null,
 }));
 vi.mock("@semprec/data", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@semprec/data")>()),
@@ -66,7 +67,7 @@ vi.mock("@semprec/agent-runtime", async (importOriginal) => ({
       return { result: "deferred", error: false };
     },
   }),
-  createApprovalGatedMcpInvokeTool: () => async () => ({ result: "found", error: false }),
+  createApprovalGatedMcpInvokeTool: () => async () => fixtures.mcpResult ?? { result: "found", error: false },
   createProjectAgentGuidanceSystemPromptOverride: async () => (prompt: string) =>
     fixtures.guidance ? `${prompt}\n${fixtures.guidance}` : prompt,
 }));
@@ -357,5 +358,78 @@ describe("agent language instruction (issue #1388)", () => {
     const prompt = await composedPrompt("en", "project-1");
     expect(prompt.indexOf(EN)).toBeGreaterThan(-1);
     expect(prompt.indexOf("Project guidance: be brief.")).toBeGreaterThan(prompt.indexOf(EN));
+  });
+});
+
+describe("MCP failure classification in the tool result (issue #1444)", () => {
+  const run: AgentRunRow = {
+    id: "run-1",
+    projectItemId: "project-1",
+    parentRunId: null,
+    heartbeatId: null,
+    triggeredBy: "user",
+    unit: "invocation",
+    task: "run",
+    status: "running",
+    result: null,
+    startedAt: "2026-10-27T00:00:00Z",
+    finishedAt: null,
+    actorUserId: "user-1",
+  };
+
+  async function mcpToolResultDetails(mcpResult: typeof fixtures.mcpResult, args: unknown = { databaseId: "db-1" }) {
+    fixtures.grants = [grant("first-reg", "first-server")];
+    fixtures.mcpResult = mcpResult;
+    const pool = new Pool();
+    const faux = fauxProvider();
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("mcp_search", args as Record<string, unknown>, { id: "call" })], {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("done"),
+    ]);
+    try {
+      const factory = await createAgentSessionFactoryForRun(
+        pool,
+        new ModuleRegistry(() => new Set<string>()),
+        { model: faux.getModel(), streamFn: (m, context, options) => faux.provider.streamSimple(m, context, options) },
+        run,
+      );
+      for await (const event of factory({ task: run.task }).messages()) {
+        if (event.kind === "tool_result") return (event.result as { details: unknown }).details;
+      }
+      throw new Error("no tool_result event");
+    } finally {
+      fixtures.mcpResult = null;
+      await pool.end();
+    }
+  }
+
+  it("writes failureKind, mcpServerItemId, connectorName and timeoutMs for a timeout", async () => {
+    const details = await mcpToolResultDetails({
+      result: "x",
+      error: true,
+      failure: { failureKind: "timeout", mcpServerItemId: "first-server", timeoutMs: 60000 },
+    });
+    expect(details).toEqual({
+      error: true,
+      failureKind: "timeout",
+      mcpServerItemId: "first-server",
+      connectorName: "first-server name",
+      timeoutMs: 60000,
+    });
+  });
+
+  it("omits the keys that are absent from the failure (unavailable without a server item)", async () => {
+    const details = await mcpToolResultDetails({
+      result: "x",
+      error: true,
+      failure: { failureKind: "unavailable" },
+    });
+    expect(details).toEqual({ error: true, failureKind: "unavailable", connectorName: "first-server name" });
+  });
+
+  it("carries none of the classification keys for a successful call", async () => {
+    expect(await mcpToolResultDetails({ result: "found", error: false })).toEqual({ error: false });
   });
 });

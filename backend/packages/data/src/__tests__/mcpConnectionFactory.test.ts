@@ -326,6 +326,21 @@ describe("MCP connection factory (issue #231)", () => {
       expect(rows[0]?.count).toBe("0");
     });
 
+    it("raises connect_timeout when the handshake does not finish in time", async () => {
+      await makeSoleTenantAdmin();
+      // `sleep` never speaks MCP, so the handshake can only end by the connect timeout.
+      const item = await createMcpServerItem({ transport: "stdio", command: "sleep", args: ["30"] });
+
+      let thrown: unknown;
+      try {
+        await connectMcpServer(pool, item, { connectTimeoutMs: 200 });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(McpConnectionError);
+      expect((thrown as McpConnectionError).reason).toBe("connect_timeout");
+    });
+
     it("leaves no child process running after a failed connect", async () => {
       await makeSoleTenantAdmin();
       const item = await createMcpServerItem({ transport: "stdio", command: "definitely-not-a-real-binary-xyz" });

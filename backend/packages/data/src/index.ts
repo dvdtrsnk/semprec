@@ -389,8 +389,14 @@ export type {
 export type { ApprovalConflictReason } from "./mcp/approvalConflictReason.js";
 export { approvalConflictReason } from "./mcp/approvalConflictReason.js";
 export { listApprovalRequestsQueue, toApprovalRequestDecisionView } from "./mcp/approvalRequestsQueue.js";
-export type { McpInvokeResult, McpInvokeArgs, McpInvokeOptions } from "./mcp/mcpToolExecution.js";
-export { executeMcpInvocation } from "./mcp/mcpToolExecution.js";
+export type {
+  McpInvokeResult,
+  McpInvokeArgs,
+  McpInvokeOptions,
+  McpInvokeFailure,
+  McpFailureKind,
+} from "./mcp/mcpToolExecution.js";
+export { executeMcpInvocation, MCP_FAILURE_KINDS } from "./mcp/mcpToolExecution.js";
 export type { GenericOperationApprovalReplay } from "./mcp/approvalRequestExecution.js";
 // `approvalRequestsStore.ts`'s `decideApprovalRequest` is deliberately NOT exported here — see
 // that file's header comment (issue #131), same convention as `mcpGrantsAdminStore.ts`. Only
