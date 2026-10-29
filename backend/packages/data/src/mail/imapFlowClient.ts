@@ -41,6 +41,10 @@ const IMAP_LOGOUT_TIMEOUT_MS = 10_000;
 // flag fetch is itself a long-lived `for await` rather than one bounded request.
 const IMAP_FLAG_FETCH_STEP_TIMEOUT_MS = 30_000;
 
+// APPEND sends a whole message in one command. A minute is twice the SMTP send deadline (smtpClient.ts), and it bounds a
+// copy of a sent message that a server never acknowledges (issue #1641).
+const IMAP_APPEND_TIMEOUT_MS = 60_000;
+
 /**
  * `MAX_ATTACHMENT_BYTES` (providerTypes.ts, shared with the Gmail/Graph adapters) is passed to
  * `download()`'s own `maxBytes` below, enforced by the streaming decoder pipeline itself (not
@@ -511,6 +515,29 @@ export class ImapFlowMailClient implements ImapMailClient {
     await this.client.mailboxOpen(path);
     if (value) await this.client.messageFlagsAdd(String(uid), [flag], { uid: true });
     else await this.client.messageFlagsRemove(String(uid), [flag], { uid: true });
+  }
+
+  /**
+   * IMAP APPEND of one complete message with its flags (issue #1641): the copy of a sent message that mailTransport.ts
+   * keeps in the Sent folder. The whole message travels in one command, so the call races a timer, the same way
+   * `fetchOneWithTimeout` does. A timeout rejects while the command may still be in flight on the socket; the caller's
+   * `close()` ends it. A server refusal rejects with imapflow's own error.
+   */
+  async appendMessage(path: string, raw: Buffer, flags: readonly WritableImapFlag[]): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        this.client.append(path, raw, [...flags]),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`IMAP append timed out after ${IMAP_APPEND_TIMEOUT_MS}ms`)),
+            IMAP_APPEND_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
