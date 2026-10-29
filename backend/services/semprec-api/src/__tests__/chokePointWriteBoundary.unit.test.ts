@@ -89,6 +89,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "delete relation": "services/semprec-api/src/itemsHandler.ts",
   "query view": "services/semprec-api/src/viewsHandler.ts",
   "upload file": "services/semprec-api/src/filesHandler.ts",
+  "upload blob": "services/semprec-api/src/blobUploadHandler.ts",
   "download blob": "services/semprec-api/src/blobsHandler.ts",
   "Microsoft Graph mail webhook": "services/semprec-api/src/graphWebhookHandler.ts",
 };

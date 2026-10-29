@@ -424,6 +424,24 @@ describe("purgeExpiredTrash (issue #156)", () => {
       expect(deleteMock).not.toHaveBeenCalled();
     });
 
+    it("keeps a blob an image property of a live item names and never deletes its bytes", async () => {
+      const filesDb = await chokePoint.createDatabase({ name: "Files" });
+      const recipes = await chokePoint.createDatabase({ name: "Recipes" });
+      await chokePoint.createProperty({ databaseId: recipes.id, key: "photo", name: "Photo", type: "image" });
+      const blob = await createBlob(pool, { mimeType: "image/png", byteSize: 3, storageKey: "image-key" });
+      const purgedFile = await makeFilesItem(filesDb.id, blob.id);
+      await chokePoint.createItem({ databaseId: recipes.id, properties: { photo: { blobId: blob.id } } });
+      await chokePoint.softDeleteItem(filesDb.id, purgedFile.id);
+      await ageDeletion(purgedFile.id, 31, filesDb.id);
+
+      const { storage, deleteMock } = fakeStorage();
+      const purgedCount = await purgeExpiredTrash(pool, storage);
+
+      expect(purgedCount).toBe(1);
+      expect(await countRows("blobs WHERE id = $1", [blob.id])).toBe(1);
+      expect(deleteMock).not.toHaveBeenCalled();
+    });
+
     it("deletes an unshared blob's row in the purge transaction and its bytes after that transaction commits", async () => {
       const db = await chokePoint.createDatabase({ name: "Files" });
       const blob = await createBlob(pool, { mimeType: "text/plain", byteSize: 3, storageKey: "unshared-key" });

@@ -1,9 +1,10 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
+import { readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
@@ -190,6 +191,62 @@ describe("files and blobs routes (issue #158)", () => {
       expect(second.status).toBe(200);
       const secondBody = (await second.json()) as ItemBody;
       expect(secondBody.id).toBe(firstBody.id);
+    });
+  });
+
+  describe("POST /api/blobs (issue #1401)", () => {
+    async function uploadBlob(body: string, contentType = "image/png", authenticated = true) {
+      const headers: Record<string, string> = {
+        ...(authenticated ? await authHeader() : {}),
+        "Content-Type": contentType,
+      };
+      return fetch(`${baseUrl}/api/blobs`, { method: "POST", headers, body, duplex: "half" });
+    }
+
+    async function storedFileCount(): Promise<number> {
+      try {
+        return (await readdir(tmpBlobDir, { recursive: true, withFileTypes: true })).filter((e) => e.isFile()).length;
+      } catch {
+        return 0;
+      }
+    }
+
+    it("rejects an unauthenticated request", async () => {
+      expect((await uploadBlob("png", "image/png", false)).status).toBe(401);
+    });
+
+    it("stores an image as a blob, 201, without creating a Files item", async () => {
+      const res = await uploadBlob("image bytes");
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { blobId: string; byteSize: number; mimeType: string };
+      expect(body).toEqual({ blobId: expect.any(String), byteSize: 11, mimeType: "image/png" });
+      const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE properties ? 'file'");
+      expect(rows[0].n).toBe(0);
+      expect(await storedFileCount()).toBe(1);
+    });
+
+    it("normalises Content-Type parameters and returns the same blob with 200 for identical bytes", async () => {
+      const first = (await (await uploadBlob("same image")).json()) as { blobId: string };
+      const res = await uploadBlob("same image", "Image/PNG; charset=binary");
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { blobId: string; mimeType: string }).blobId).toBe(first.blobId);
+      // The duplicate's bytes are removed after the commit, without the response waiting for it.
+      await vi.waitFor(async () => expect(await storedFileCount()).toBe(1));
+    });
+
+    it("rejects a non-image Content-Type with 400 on the Content-Type field and stores nothing", async () => {
+      const res = await uploadBlob("hello", "text/plain");
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as ErrorBody;
+      expect(body.error.details).toMatchObject({ field: "Content-Type" });
+      expect(await storedFileCount()).toBe(0);
+    });
+
+    it("rejects an oversized body with 413 and stores nothing", async () => {
+      const res = await uploadBlob("x".repeat(MAX_FILE_SIZE_BYTES + 100));
+      expect(res.status).toBe(413);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("payload_too_large");
+      expect(await storedFileCount()).toBe(0);
     });
   });
 
