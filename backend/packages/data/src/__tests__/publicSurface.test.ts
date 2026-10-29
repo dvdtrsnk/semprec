@@ -473,6 +473,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "noopAgentQueueTask",
   "noopPasswordResetMailer",
   "normalizeEmail",
+  "normalizeWallClockTime",
   "notificationFanoutJobKey",
   "notifyAgentRunEvent",
   "notifyDocUpdate",

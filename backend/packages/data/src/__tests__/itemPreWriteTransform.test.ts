@@ -11,7 +11,7 @@ import {
 import { ForbiddenError, ValidationError } from "../errors.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { EVENTS_MODULE_ID, TASKS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
-import { tasksItemPreWriteTransform } from "../tasks/tasksItemPreWriteTransform.js";
+import { taskPreWriteTransform } from "../tasks/taskPreWriteTransform.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 // A probe module id that owns the databases these tests create. Its transforms are registered per test.
@@ -274,7 +274,7 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
   });
 
   it("leaves Tasks time untouched on an update that names neither timeFrom nor timeTo", async () => {
-    registerItemPreWriteTransform(TASKS_MODULE_ID, tasksItemPreWriteTransform);
+    registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform);
     const tasksId = await databaseIdFor(TASKS_MODULE_ID);
     // insertItem bypasses the transform on purpose: it stores a stale derived value, so the update below
     // proves the Tasks transform did not recompute `time` for a patch that names neither source.

@@ -25,29 +25,33 @@ describe("Tasks derived time (issue #193)", () => {
     await pool?.end();
   });
 
-  it("derives both, from-only, to-only, and neither values when creating Tasks", async () => {
+  it("derives both, from-only and neither values when creating Tasks", async () => {
     await expect(
-      chokePoint.createItem({ databaseId: tasksDatabaseId, properties: { timeFrom: "9:05", timeTo: "17:3" } }),
+      chokePoint.createItem({
+        databaseId: tasksDatabaseId,
+        properties: { date: "2026-10-13", timeFrom: "9:05", timeTo: "17:03" },
+      }),
     ).resolves.toMatchObject({ properties: { time: "09:05–17:03" } });
     await expect(
-      chokePoint.createItem({ databaseId: tasksDatabaseId, properties: { timeFrom: "9:05" } }),
+      chokePoint.createItem({ databaseId: tasksDatabaseId, properties: { date: "2026-10-13", timeFrom: "9:05" } }),
     ).resolves.toMatchObject({
       properties: { time: "09:05" },
-    });
-    await expect(
-      chokePoint.createItem({ databaseId: tasksDatabaseId, properties: { timeTo: "17:3" } }),
-    ).resolves.toMatchObject({
-      properties: { time: "17:03" },
     });
     await expect(chokePoint.createItem({ databaseId: tasksDatabaseId, properties: {} })).resolves.toMatchObject({
       properties: { time: null },
     });
   });
 
+  it("refuses an end time without a start time when creating Tasks", async () => {
+    await expect(
+      chokePoint.createItem({ databaseId: tasksDatabaseId, properties: { date: "2026-10-13", timeTo: "17:30" } }),
+    ).rejects.toMatchObject({ status: 400, details: { field: "timeTo" } });
+  });
+
   it("recomputes the effective pair atomically when sources change or clear", async () => {
     const task = await chokePoint.createItem({
       databaseId: tasksDatabaseId,
-      properties: { timeFrom: "09:00", timeTo: "10:00" },
+      properties: { date: "2026-10-13", timeFrom: "09:00", timeTo: "10:00" },
     });
 
     const changed = await chokePoint.updateItem({
@@ -57,17 +61,20 @@ describe("Tasks derived time (issue #193)", () => {
     });
     expect(changed.properties).toMatchObject({ timeFrom: "09:00", timeTo: "11:30", time: "09:00–11:30" });
 
-    const fromCleared = await chokePoint.updateItem({
-      databaseId: tasksDatabaseId,
-      itemId: task.id,
-      propertiesPatch: { timeFrom: null },
+    // An end time needs a start time, so the start cannot be cleared while the end stays.
+    await expect(
+      chokePoint.updateItem({ databaseId: tasksDatabaseId, itemId: task.id, propertiesPatch: { timeFrom: null } }),
+    ).rejects.toMatchObject({ status: 400, details: { field: "timeTo" } });
+    expect((await chokePoint.getItem(tasksDatabaseId, task.id))!.properties).toMatchObject({
+      timeFrom: "09:00",
+      timeTo: "11:30",
+      time: "09:00–11:30",
     });
-    expect(fromCleared.properties).toMatchObject({ timeFrom: null, timeTo: "11:30", time: "11:30" });
 
     const bothCleared = await chokePoint.updateItem({
       databaseId: tasksDatabaseId,
       itemId: task.id,
-      propertiesPatch: { timeTo: null },
+      propertiesPatch: { timeFrom: null, timeTo: null },
     });
     expect(bothCleared.properties).toMatchObject({ timeFrom: null, timeTo: null, time: null });
   });

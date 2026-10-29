@@ -5,6 +5,7 @@ export { assertRuntimeRole, RuntimeRoleAssertionError } from "./db/runtimeRoleAs
 export { runMigrations } from "./db/migrate.js";
 export * from "./errors.js";
 export * from "./types.js";
+export { normalizeWallClockTime } from "./timezone.js";
 export { indexItem } from "./search/itemSearchIndexer.js";
 export { enqueueItemSearchBackfill, type ItemSearchBackfillOptions } from "./search/itemSearchBackfill.js";
 export { enqueueMailGmailPseudoFolderCleanup } from "./mail/gmailPseudoFolderCleanupJob.js";
