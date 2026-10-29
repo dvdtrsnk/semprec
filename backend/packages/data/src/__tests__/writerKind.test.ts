@@ -195,7 +195,6 @@ describe("writer identity threaded into item and relation writes (issue #1415)",
     const inboxId = await databaseIdFor("inbox");
     const typesId = await databaseIdFor("inboxItemTypes");
     const proposalsId = await databaseIdFor("processingProposals");
-    const journalId = await databaseIdFor("journal");
     createdBy.length = 0;
     updatedBy.length = 0;
 
@@ -211,8 +210,6 @@ describe("writer identity threaded into item and relation writes (issue #1415)",
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "Buy milk",
@@ -234,7 +231,6 @@ describe("writer identity threaded into item and relation writes (issue #1415)",
     const inboxId = await databaseIdFor("inbox");
     const typesId = await databaseIdFor("inboxItemTypes");
     const proposalsId = await databaseIdFor("processingProposals");
-    const journalId = await databaseIdFor("journal");
     const type = await withTransaction(pool, (client) =>
       createInboxTypeWithClient(client, {
         inboxItemTypesDatabaseId: typesId,
@@ -247,8 +243,6 @@ describe("writer identity threaded into item and relation writes (issue #1415)",
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "Buy milk",

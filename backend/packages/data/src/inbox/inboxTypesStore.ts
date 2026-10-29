@@ -24,7 +24,7 @@ export type ProcessingMethod = (typeof PROCESSING_METHODS)[number];
 /**
  * Cross-field validation for `processingMethod`/`targetDatabase` — the schema engine has no
  * generic cross-field concept (see chokePoint.ts's `assertWritableProperties`), the same
- * reason `inboxStore.ts`'s `createInboxItemWithClient` hand-validates `date`/`time`.
+ * reason `inboxCreateHook.ts` hand-validates `date`/`time`.
  * `processingMethod` and `targetDatabase` are both `select` properties (not `relation` — a
  * relation's target database is fixed at property-creation time, but this must point at any
  * one of the ten hardcoded databases; see seedInboxPipeline.ts's comment), so nothing about

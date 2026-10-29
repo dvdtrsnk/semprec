@@ -32,7 +32,6 @@ describe("inbox custom route handlers (issue #239)", () => {
   let inboxId: string;
   let typesId: string;
   let proposalsId: string;
-  let journalId: string;
 
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -42,7 +41,6 @@ describe("inbox custom route handlers (issue #239)", () => {
     inboxId = await databaseIdFor("inbox");
     typesId = await databaseIdFor("inboxItemTypes");
     proposalsId = await databaseIdFor("processingProposals");
-    journalId = await databaseIdFor("journal");
   });
 
   afterAll(async () => {
@@ -62,8 +60,6 @@ describe("inbox custom route handlers (issue #239)", () => {
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text,

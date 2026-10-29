@@ -45,7 +45,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
   let inboxId: string;
   let typesId: string;
   let proposalsId: string;
-  let journalId: string;
   let tasksId: string;
 
   beforeEach(async () => {
@@ -57,7 +56,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     inboxId = await databaseIdFor("inbox");
     typesId = await databaseIdFor("inboxItemTypes");
     proposalsId = await databaseIdFor("processingProposals");
-    journalId = await databaseIdFor("journal");
     tasksId = await databaseIdFor("tasks");
   });
 
@@ -96,8 +94,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text,
@@ -120,8 +116,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text,
@@ -192,8 +186,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "no type",
@@ -916,8 +908,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "no type",

@@ -38,12 +38,9 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 
 async function createInboxItem(text: string): Promise<ItemRow> {
   const inboxDatabaseId = await databaseIdFor("inbox");
-  const journalDatabaseId = await databaseIdFor("journal");
   return withTransaction(pool, (client) =>
     createInboxItemWithClient(client, {
       inboxDatabaseId,
-      journalDatabaseId,
-      timezone: "Europe/Prague",
       date: "2026-08-28",
       time: "09:00",
       text,

@@ -102,7 +102,6 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
   let inboxId: string;
   let typesId: string;
   let proposalsId: string;
-  let journalId: string;
   let databaseIds: TickDatabaseIds;
 
   beforeEach(async () => {
@@ -113,7 +112,6 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     inboxId = await databaseIdFor("inbox");
     typesId = await databaseIdFor("inboxItemTypes");
     proposalsId = await databaseIdFor("processingProposals");
-    journalId = await databaseIdFor("journal");
     databaseIds = {
       inboxDatabaseId: inboxId,
       inboxItemTypesDatabaseId: typesId,
@@ -134,8 +132,6 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "Buy milk",
@@ -186,8 +182,6 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       const item = await withTransaction(pool, (client) =>
         createInboxItemWithClient(client, {
           inboxDatabaseId: inboxId,
-          journalDatabaseId: journalId,
-          timezone: "Europe/Prague",
           date: "2026-08-28",
           time: "09:00",
           text: "Buy milk",
@@ -239,8 +233,6 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "A thought",
@@ -275,8 +267,6 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "Buy milk",
@@ -307,8 +297,6 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "Buy milk",
@@ -359,8 +347,6 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       return withTransaction(pool, (client) =>
         createInboxItemWithClient(client, {
           inboxDatabaseId: inboxId,
-          journalDatabaseId: journalId,
-          timezone: "Europe/Prague",
           date: "2026-08-28",
           time: "09:00",
           text,
@@ -597,8 +583,6 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       const item = await withTransaction(pool, (client) =>
         createInboxItemWithClient(client, {
           inboxDatabaseId: inboxId,
-          journalDatabaseId: journalId,
-          timezone: "Europe/Prague",
           date: "2026-08-28",
           time: "09:00",
           text: "Buy milk",
@@ -646,8 +630,6 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "Buy milk",
@@ -697,8 +679,6 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "no type",
@@ -721,8 +701,6 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "no type",
@@ -753,8 +731,6 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "Buy milk",
@@ -780,7 +756,6 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
   let inboxId: string;
   let typesId: string;
   let proposalsId: string;
-  let journalId: string;
   let databaseIds: TickDatabaseIds;
 
   beforeEach(async () => {
@@ -791,7 +766,6 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     inboxId = await databaseIdFor("inbox");
     typesId = await databaseIdFor("inboxItemTypes");
     proposalsId = await databaseIdFor("processingProposals");
-    journalId = await databaseIdFor("journal");
     databaseIds = {
       inboxDatabaseId: inboxId,
       inboxItemTypesDatabaseId: typesId,
@@ -812,8 +786,6 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text,
@@ -849,8 +821,6 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "Buy milk",
@@ -1008,8 +978,6 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "A thought",
@@ -1038,8 +1006,6 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "A thought",
@@ -1068,8 +1034,6 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "A thought",
@@ -1098,8 +1062,6 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "A thought",
@@ -1138,7 +1100,6 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
   let inboxId: string;
   let typesId: string;
   let proposalsId: string;
-  let journalId: string;
   let databaseIds: TickDatabaseIds;
 
   beforeEach(async () => {
@@ -1149,7 +1110,6 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
     inboxId = await databaseIdFor("inbox");
     typesId = await databaseIdFor("inboxItemTypes");
     proposalsId = await databaseIdFor("processingProposals");
-    journalId = await databaseIdFor("journal");
     databaseIds = {
       inboxDatabaseId: inboxId,
       inboxItemTypesDatabaseId: typesId,
@@ -1171,8 +1131,6 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "Buy milk",
@@ -1403,7 +1361,6 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
   let inboxId: string;
   let typesId: string;
   let proposalsId: string;
-  let journalId: string;
 
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -1413,7 +1370,6 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     inboxId = await databaseIdFor("inbox");
     typesId = await databaseIdFor("inboxItemTypes");
     proposalsId = await databaseIdFor("processingProposals");
-    journalId = await databaseIdFor("journal");
   });
 
   async function createTypedItem(text: string) {
@@ -1429,8 +1385,6 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text,
@@ -1550,7 +1504,6 @@ describe("semprec.tick records a failed proposal computation on the card (issue 
   let inboxId: string;
   let typesId: string;
   let proposalsId: string;
-  let journalId: string;
   let databaseIds: TickDatabaseIds;
 
   beforeEach(async () => {
@@ -1561,7 +1514,6 @@ describe("semprec.tick records a failed proposal computation on the card (issue 
     inboxId = await databaseIdFor("inbox");
     typesId = await databaseIdFor("inboxItemTypes");
     proposalsId = await databaseIdFor("processingProposals");
-    journalId = await databaseIdFor("journal");
     databaseIds = {
       inboxDatabaseId: inboxId,
       inboxItemTypesDatabaseId: typesId,
@@ -1583,8 +1535,6 @@ describe("semprec.tick records a failed proposal computation on the card (issue 
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "Buy milk",
@@ -2167,7 +2117,6 @@ describe("aiProposal and aiVersion on the tick's writes (issue #1471)", () => {
   let inboxId: string;
   let typesId: string;
   let proposalsId: string;
-  let journalId: string;
   let databaseIds: TickDatabaseIds;
 
   beforeEach(async () => {
@@ -2178,7 +2127,6 @@ describe("aiProposal and aiVersion on the tick's writes (issue #1471)", () => {
     inboxId = await databaseIdFor("inbox");
     typesId = await databaseIdFor("inboxItemTypes");
     proposalsId = await databaseIdFor("processingProposals");
-    journalId = await databaseIdFor("journal");
     databaseIds = {
       inboxDatabaseId: inboxId,
       inboxItemTypesDatabaseId: typesId,
@@ -2202,8 +2150,6 @@ describe("aiProposal and aiVersion on the tick's writes (issue #1471)", () => {
     return withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text,
@@ -2257,8 +2203,6 @@ describe("aiProposal and aiVersion on the tick's writes (issue #1471)", () => {
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "no type",

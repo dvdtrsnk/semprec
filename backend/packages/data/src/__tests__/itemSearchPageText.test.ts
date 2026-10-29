@@ -119,16 +119,13 @@ async function journalDay(): Promise<string> {
   });
 }
 async function addInboxEntry(text: string): Promise<string> {
-  const journalDatabaseId = await db("journal");
   const inboxDatabaseId = await db("inbox");
   return inTenant(async () => {
     const entry = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId,
-        journalDatabaseId,
         date: "2026-10-27",
         time: "12:00",
-        timezone: "UTC",
         text,
       }),
     );

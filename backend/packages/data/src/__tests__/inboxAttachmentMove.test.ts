@@ -28,7 +28,6 @@ import type { ItemRow } from "../types.js";
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
 let inboxId: string;
-let journalId: string;
 let typesId: string;
 let proposalsId: string;
 let filesId: string;
@@ -90,8 +89,6 @@ async function plainInboxItem(text: string): Promise<string> {
   const item = await withTransaction(pool, (client) =>
     createInboxItemWithClient(client, {
       inboxDatabaseId: inboxId,
-      journalDatabaseId: journalId,
-      timezone: "Europe/Prague",
       date: "2026-10-29",
       time: "09:00",
       text,
@@ -105,8 +102,6 @@ async function inboxItemWithCard(text: string): Promise<{ inboxItemId: string; c
   const item = await withTransaction(pool, (client) =>
     createInboxItemWithClient(client, {
       inboxDatabaseId: inboxId,
-      journalDatabaseId: journalId,
-      timezone: "Europe/Prague",
       date: "2026-10-29",
       time: "09:00",
       text,
@@ -245,7 +240,6 @@ describe("file from attachment on confirm (issue #1703)", () => {
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
     inboxId = await databaseIdFor("inbox");
-    journalId = await databaseIdFor("journal");
     typesId = await databaseIdFor("inboxItemTypes");
     proposalsId = await databaseIdFor("processingProposals");
     filesId = await databaseIdFor("files");
