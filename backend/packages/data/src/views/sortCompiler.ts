@@ -18,6 +18,18 @@ export function sortKeyCast(property: Pick<PropertyRow, "type" | "config">): "::
   return property.type === "number" ? "::numeric" : property.type === "date" ? "::timestamptz" : "";
 }
 
+const DATE_ONLY_SORT_PATTERN = "^\\d{4}-\\d{2}-\\d{2}$";
+
+/**
+ * Applies a sort key's cast to the SQL text `valueSql`. A `::timestamptz` key reads a date-only
+ * string through `::date` first and places it at midnight UTC explicitly, so it sorts by day
+ * whatever the session's zone (a plain `date::timestamptz` would use the session zone).
+ */
+function castSortKey(valueSql: string, cast: ReturnType<typeof sortKeyCast>): string {
+  if (cast !== "::timestamptz") return `(${valueSql})${cast}`;
+  return `(CASE WHEN (${valueSql}) ~ '${DATE_ONLY_SORT_PATTERN}' THEN (${valueSql})::date::timestamp AT TIME ZONE 'UTC' ELSE (${valueSql})::timestamptz END)`;
+}
+
 /** The ICU collations a text sort may use; the SQL names come only from this closed list. */
 export type SortCollation = "cs-x-icu" | "und-x-icu";
 
@@ -63,7 +75,7 @@ function sortKeyExpression(
   params.push(sort.property);
   if (optionKeys) return optionPosition(keysIndex, `properties ->> $${params.length}`);
   const column = property.type === "rollup" ? "computed" : "properties";
-  return `(${column} ->> $${params.length})${sortKeyCast(property)}${collateClause(property, collation)}`;
+  return `${castSortKey(`${column} ->> $${params.length}`, sortKeyCast(property))}${collateClause(property, collation)}`;
 }
 
 /**
@@ -138,7 +150,7 @@ export function compileSortKeyset(
     if (value === null) return { after: "FALSE", same: `${expression} IS NULL` };
     params.push(JSON.stringify(value));
     const boundText = `$${params.length}::jsonb #>> '{}'`;
-    let bound = `(${boundText})${sortKeyCast(property)}${collateClause(property, collation)}`;
+    let bound = `${castSortKey(boundText, sortKeyCast(property))}${collateClause(property, collation)}`;
     if (optionKeys) {
       params.push(optionKeys);
       bound = optionPosition(params.length, boundText);

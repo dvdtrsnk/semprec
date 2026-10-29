@@ -1,0 +1,119 @@
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { Pool } from "pg";
+import { runAsSystem } from "@semprec/shared";
+import { createPool } from "../db/pool.js";
+import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { tenantZeroSessionOptions } from "../testSupport/tenantFixtures.js";
+import type { FilterNode } from "../views/filterTree.js";
+
+const ZONES = ["UTC", "Pacific/Auckland", "America/Los_Angeles"] as const;
+const pools: Pool[] = [];
+
+function connectionString(): string {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("TEST_DATABASE_URL is not set — is vitest's globalSetup wired up?");
+  return url;
+}
+
+function poolInZone(zone: string): Pool {
+  const pool = new Pool({
+    connectionString: connectionString(),
+    options: `${tenantZeroSessionOptions()} -c TimeZone=${zone}`,
+  });
+  pools.push(pool);
+  return pool;
+}
+
+afterAll(async () => {
+  await Promise.all(pools.map((pool) => pool.end()));
+});
+
+describe("createPool session time zone", () => {
+  it("reports UTC on a plain pool", async () => {
+    const pool = createPool(connectionString());
+    pools.push(pool);
+    const result = await runAsSystem("test", () => pool.query<{ TimeZone: string }>("SHOW TimeZone"));
+    expect(result.rows[0]?.TimeZone).toBe("UTC");
+  });
+
+  it("reports UTC on a pool with the role option", async () => {
+    const pool = createPool(connectionString(), { role: "semprec_data" });
+    pools.push(pool);
+    const result = await runAsSystem("test", () =>
+      pool.query<{ zone: string; role: string }>("SELECT current_setting('TimeZone') AS zone, current_user AS role"),
+    );
+    expect(result.rows[0]).toEqual({ zone: "UTC", role: "semprec_data" });
+  });
+});
+
+describe("view filters and sorts do not depend on the session time zone", () => {
+  let chokePoints: Map<string, ChokePoint>;
+  let databaseId: string;
+
+  beforeEach(async () => {
+    const admin = getTestPool();
+    pools.push(admin);
+    await resetDatabase(admin);
+    chokePoints = new Map(ZONES.map((zone) => [zone, createChokePoint(poolInZone(zone))]));
+    const utc = chokePoints.get("UTC")!;
+    databaseId = (await utc.createDatabase({ name: "Events" })).id;
+    await utc.createProperty({ databaseId, key: "date", name: "Date", type: "date" });
+    await utc.createProperty({ databaseId, key: "name", name: "Name", type: "text" });
+    const seed = [
+      ["day15", "2026-10-15"],
+      ["day16", "2026-10-16"],
+      ["day17", "2026-10-17"],
+      ["lateUtc", "2026-10-16T23:30:00Z"],
+      ["offset", "2026-10-16T01:00:00+02:00"],
+    ] as const;
+    for (const [name, date] of seed) await utc.createItem({ databaseId, properties: { name, date } });
+  });
+
+  async function names(zone: string, filter?: FilterNode, direction: "asc" | "desc" = "asc"): Promise<string[]> {
+    const result = await chokePoints
+      .get(zone)!
+      .queryDatabaseItems(databaseId, { filter, sort: [{ property: "date", direction }] });
+    return result.items.map((item) => String(item.properties.name));
+  }
+
+  /** Restricts a condition to the stored values that carry a time and an offset or `Z`. */
+  const withTime = (condition: FilterNode): FilterNode => ({
+    type: "and",
+    nodes: [condition, { type: "contains", property: "date", value: "T" }],
+  });
+
+  const filters: Array<[string, FilterNode, string[]]> = [
+    [
+      "date-only on_or_after",
+      { type: "on_or_after", property: "date", value: "2026-10-16" },
+      ["offset", "day16", "lateUtc", "day17"],
+    ],
+    ["date-only before", { type: "before", property: "date", value: "2026-10-16" }, ["day15"]],
+    [
+      "date-only date_range of one day",
+      { type: "date_range", property: "date", value: { from: "2026-10-16", to: "2026-10-16" } },
+      ["offset", "day16", "lateUtc"],
+    ],
+    [
+      "datetime with offset after",
+      withTime({ type: "after", property: "date", value: "2026-10-16T00:00:00+02:00" }),
+      ["offset", "lateUtc"],
+    ],
+    [
+      "datetime on_or_after",
+      withTime({ type: "on_or_after", property: "date", value: "2026-10-16T23:00:00Z" }),
+      ["lateUtc"],
+    ],
+  ];
+
+  it.each(filters)("%s returns the expected rows in every zone", async (_label, filter, expected) => {
+    for (const zone of ZONES) expect(await names(zone, filter)).toEqual(expected);
+  });
+
+  it.each(["asc", "desc"] as const)("sorts by date identically in every zone (%s)", async (direction) => {
+    const expected = ["day15", "offset", "day16", "lateUtc", "day17"];
+    if (direction === "desc") expected.reverse();
+    for (const zone of ZONES) expect(await names(zone, undefined, direction)).toEqual(expected);
+  });
+});
