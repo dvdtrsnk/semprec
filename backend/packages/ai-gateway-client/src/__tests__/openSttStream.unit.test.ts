@@ -29,7 +29,7 @@ async function startServer(): Promise<Harness> {
     }),
   );
   const address = wss.address();
-  if (typeof address === "string") throw new Error("expected a TCP address");
+  if (address === null || typeof address === "string") throw new Error("expected a TCP address");
   return { port: address.port, requests, sockets, connected };
 }
 
