@@ -36,6 +36,7 @@ import {
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   provisionTenant,
+  recordTokenGatewayCall,
   setProjectMcpGrantForAgentPage,
   upsertMcpToolRegistration,
   withTransaction,
@@ -945,6 +946,21 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   },
   "ai usage report": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/ai-usage?from=2026-01-01&to=2026-12-31" });
+  },
+  // A's spend goes through the gateway's own accounting writer, so B's summary must show none of it:
+  // B has no spend of its own in this fixture, and its figures stay at zero.
+  "ai usage summary": async () => {
+    await runInTenant(a.tenantId, () =>
+      recordTokenGatewayCall(pool, {
+        provider: "anthropic",
+        model: "isolation-test",
+        inputTokens: 1,
+        outputTokens: 1,
+        costUsd: 7,
+      }),
+    );
+    const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/ai-usage/summary" });
+    expect(JSON.parse(answer.text)).toMatchObject({ spentTodayUsd: 0, spentMonthUsd: 0 });
   },
   "system health report": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/system-health" });

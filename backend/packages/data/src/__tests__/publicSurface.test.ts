@@ -323,6 +323,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "getAgentRunEventById",
   "getAgentRunsByIds",
   "getAiUsageReport",
+  "getAiUsageSummary",
   "getApprovalRequest",
   "getBlob",
   "getBlobByContentHash",

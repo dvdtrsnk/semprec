@@ -233,6 +233,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "ai usage summary",
+    method: "GET",
+    path: "/api/ai-usage/summary",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "system health report",
     method: "GET",
     path: "/api/system-health",
