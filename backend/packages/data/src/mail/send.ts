@@ -17,6 +17,7 @@ import {
   type MailEnvelope,
   type MailEnvelopeAddress,
 } from "./mailMessageMetaStore.js";
+import { resolveThreadId } from "./threading.js";
 import { buildMailPreviewFromBody } from "./mailPlainText.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
@@ -213,18 +214,27 @@ export async function sendDraftEmail(
   const envelope: MailEnvelope = { from: input.from, to: input.to, cc: input.cc, bcc: input.bcc };
 
   try {
-    await withTransaction(pool, (client) =>
-      upsertMailMessageMeta(client, {
+    await withTransaction(pool, async (client) => {
+      // Resolved in the claim transaction and before the claim row exists (see resolveThreadId),
+      // so a rolled-back claim also rolls back any thread created here.
+      const threadId = await resolveThreadId(client, {
+        messageId,
+        inReplyTo: input.inReplyTo,
+        references: input.references,
+        subjectHint: input.subject,
+      });
+      await upsertMailMessageMeta(client, {
         itemId: input.draftItemId,
         mailboxItemId: input.mailboxItemId,
         messageId,
+        threadId,
         envelope,
         inReplyTo: input.inReplyTo,
         references: input.references,
         previewText: buildMailPreviewFromBody(input.bodyText, input.bodyHtml),
         ingestedAt: new Date(),
-      }),
-    );
+      });
+    });
   } catch (err) {
     if (isItemAlreadyClaimedError(err)) {
       throw new ConflictError(`Draft ${input.draftItemId} is already being sent or was already sent`);
