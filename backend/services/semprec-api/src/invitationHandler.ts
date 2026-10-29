@@ -25,17 +25,20 @@ function errorName(err: unknown): string {
   return err instanceof Error ? err.name : typeof err;
 }
 
-/** The body's `token` and `password`, both non-empty strings; anything else is a 400 naming the field. */
-function parseAcceptBody(raw: unknown): { token: string; password: string } {
+/**
+ * The body's `token` and `password`, both non-empty strings, and its optional `displayName`, which
+ * `acceptInvitation` validates before any lookup; anything else is a 400 naming the field.
+ */
+function parseAcceptBody(raw: unknown): { token: string; password: string; displayName: unknown } {
   if (!isRecord(raw)) throw new ValidationError("Request body must be a JSON object");
-  const { token, password } = raw;
+  const { token, password, displayName } = raw;
   if (typeof token !== "string" || token.length === 0) {
     throw new ValidationError("'token' must be a non-empty string", { field: "token" });
   }
   if (typeof password !== "string" || password.length === 0) {
     throw new ValidationError("'password' must be a non-empty string", { field: "password" });
   }
-  return { token, password };
+  return { token, password, displayName };
 }
 
 /**

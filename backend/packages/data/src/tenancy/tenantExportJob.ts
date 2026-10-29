@@ -133,12 +133,22 @@ function lazySource(produce: () => AsyncGenerator<Buffer>): Readable {
 }
 
 async function* accountEntry(client: PoolClient): AsyncGenerator<Buffer> {
-  const { rows } = await client.query<{ email: string; locale: string; role: string; created_at: Date }>(
-    "SELECT email, locale, role, created_at FROM users WHERE tenant_id = app_current_tenant()",
-  );
+  const { rows } = await client.query<{
+    email: string;
+    display_name: string | null;
+    locale: string;
+    role: string;
+    created_at: Date;
+  }>("SELECT email, display_name, locale, role, created_at FROM users WHERE tenant_id = app_current_tenant()");
   const user = rows[0];
   if (!user) throw new Error("The tenant in scope has no account to export");
-  const account = { email: user.email, locale: user.locale, role: user.role, createdAt: user.created_at.toISOString() };
+  const account = {
+    email: user.email,
+    displayName: user.display_name,
+    locale: user.locale,
+    role: user.role,
+    createdAt: user.created_at.toISOString(),
+  };
   yield Buffer.from(JSON.stringify(account, null, 2));
 }
 

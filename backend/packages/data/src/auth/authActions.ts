@@ -54,6 +54,8 @@ export const MIN_PASSWORD_LENGTH = 8;
 interface CreateAccountInput {
   email: string;
   password: string;
+  /** Already validated by `normalizeDisplayName`; `null` or omitted stores NULL. */
+  displayName?: string | null;
   tenantId: string;
   role: UserRole;
 }
@@ -61,7 +63,8 @@ interface CreateAccountInput {
 /**
  * Turns an email/password pair into a `users` row for `bootstrapFirstAccount` (#233).
  * Normalizes the email (see `normalizeEmail`), validates both fields, and hashes the password
- * with Argon2id (`hashPassword`) before handing off to `createUser`.
+ * with Argon2id (`hashPassword`) before handing off to `createUser`. The display name arrives
+ * already validated (issue #1513) and is stored as given.
  */
 async function createAccount(client: Pool | PoolClient, input: CreateAccountInput): Promise<PublicUser> {
   const email = normalizeEmail(input.email);
@@ -73,7 +76,13 @@ async function createAccount(client: Pool | PoolClient, input: CreateAccountInpu
   }
 
   const passwordHash = await hashPassword(input.password);
-  const user = await createUser(client, { email, passwordHash, tenantId: input.tenantId, role: input.role });
+  const user = await createUser(client, {
+    email,
+    passwordHash,
+    tenantId: input.tenantId,
+    role: input.role,
+    displayName: input.displayName ?? undefined,
+  });
   return toPublicUser(user);
 }
 
@@ -201,6 +210,8 @@ function tokensMatch(provided: string, expected: string): boolean {
 export interface BootstrapFirstAccountInput {
   email: string;
   password: string;
+  /** Already validated by `normalizeDisplayName` at the setup route (issue #1513); `null` or omitted stores NULL. */
+  displayName?: string | null;
 }
 
 /**
@@ -237,7 +248,13 @@ export async function bootstrapFirstAccount(
     if (!tokensMatch(providedToken, expectedToken)) throw new NotFoundError("Not found");
 
     const tenantId = await getSoleTenantId(client);
-    const user = await createAccount(client, { email: input.email, password: input.password, tenantId, role: "admin" });
+    const user = await createAccount(client, {
+      email: input.email,
+      password: input.password,
+      displayName: input.displayName,
+      tenantId,
+      role: "admin",
+    });
     return { tenantId, user };
   });
   await seedAccountSystemProjectGuidance(pool, created.tenantId, created.user.id);

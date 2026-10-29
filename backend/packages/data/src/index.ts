@@ -390,6 +390,9 @@ export * from "./auth/sessionsStore.js";
 export * from "./auth/userAgentDevice.js";
 export * from "./auth/loginAttemptsStore.js";
 export * from "./auth/emailNormalization.js";
+// Explicit so the length constant (`DISPLAY_NAME_MAX_LENGTH`) stays out of the frozen public surface
+// (`publicSurface.test.ts`); the routes only need the validator.
+export { normalizeDisplayName } from "./auth/displayName.js";
 export * from "./auth/loginLockout.js";
 export * from "./auth/authActions.js";
 export * from "./auth/nativeBridge.js";

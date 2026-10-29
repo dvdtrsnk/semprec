@@ -93,6 +93,26 @@ describe("invitation acceptance, end to end (issue #1087)", () => {
     return stringField(await jsonObject(res), "token");
   }
 
+  it("returns the display name given at setup from GET /api/auth/session", async () => {
+    const ownerEmail = `owner-${randomUUID()}@example.test`;
+
+    const setup = await fetch(`${baseUrl}/api/setup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer invitation-e2e-setup-token" },
+      body: JSON.stringify({ email: ownerEmail, password: PASSWORD, displayName: "  Ada  " }),
+    });
+    expect(setup.status).toBe(200);
+
+    const ownerToken = await signIn(ownerEmail);
+    const session = await fetch(`${baseUrl}/api/auth/session`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    expect(session.status).toBe(200);
+    const sessionUser = (await jsonObject(session))["user"];
+    if (!isRecord(sessionUser)) throw new Error("expected a 'user' object in the session body");
+    expect(sessionUser["displayName"]).toBe("Ada");
+  });
+
   it("creates the invitee's own tenant and shows the invitee only that tenant's system databases", async () => {
     const adminEmail = `admin-${randomUUID()}@example.test`;
     const inviteeEmail = `novak-${randomUUID()}@example.cz`;
@@ -118,11 +138,18 @@ describe("invitation acceptance, end to end (issue #1087)", () => {
     const accepted = await fetch(`${baseUrl}/api/invitations/accept`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token, password: PASSWORD }),
+      body: JSON.stringify({ token, password: PASSWORD, displayName: "  Novak  " }),
     });
     expect(accepted.status).toBe(200);
 
     const inviteeToken = await signIn(inviteeEmail);
+    const session = await fetch(`${baseUrl}/api/auth/session`, {
+      headers: { Authorization: `Bearer ${inviteeToken}` },
+    });
+    expect(session.status).toBe(200);
+    const sessionUser = (await jsonObject(session))["user"];
+    if (!isRecord(sessionUser)) throw new Error("expected a 'user' object in the session body");
+    expect(sessionUser["displayName"]).toBe("Novak");
     const listed = await fetch(`${baseUrl}/api/databases`, {
       headers: { Authorization: `Bearer ${inviteeToken}` },
     });
