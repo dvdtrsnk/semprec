@@ -252,6 +252,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "deviceFromUserAgent",
   "docsModuleManifest",
   "enqueueItemSearchBackfill",
+  "enqueueMailMessagePreviewBackfill",
   "enqueueNotificationFanout",
   "enqueuePropertyTypeMigration",
   "enqueueRollupBackfill",

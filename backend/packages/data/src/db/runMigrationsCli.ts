@@ -12,6 +12,7 @@ import { runLegacyJobEnvelopeStampMigration } from "../tenancy/legacyJobEnvelope
 import { runTenantCutoverMigrations } from "./tenantCutoverMigrations.js";
 import { activateCzechHunspellSearch } from "../mail/czechHunspellSearch.js";
 import { runItemSearchBackfillCutover } from "../search/itemSearchBackfill.js";
+import { enqueueMailMessagePreviewBackfill } from "../mail/mailMessagePreviewBackfillJob.js";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -47,6 +48,7 @@ try {
     await ensureQueueSchema(pool);
     await grantQueueSchemaPrivileges(pool);
     await runItemSearchBackfillCutover(tenantPool);
+    await enqueueMailMessagePreviewBackfill(pool);
     // Issue #222: needs graphile_worker's own schema/functions, which don't exist until the two
     // calls above create them — unlike the cutover migrations above, which run before them.
     await runHeartbeatFireQueueSplitMigration(pool);

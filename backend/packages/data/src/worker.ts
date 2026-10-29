@@ -11,6 +11,7 @@ import {
 } from "./scheduler/sweep.js";
 import { handleRollupRecomputeTask, handleRollupRecomputeFullTask } from "./rollup/recompute.js";
 import { handleJournalInboxRecomputeTask } from "./inbox/journalInboxCompute.js";
+import { handleMailMessagePreviewBackfillTask } from "./mail/mailMessagePreviewBackfillJob.js";
 import { handleItemSearchBackfillTask } from "./search/itemSearchBackfill.js";
 import { handlePropertyTypeMigrationTask } from "./migrationJob/propertyTypeMigration.js";
 import { handleDocCompactionSweepTask } from "./docs/docPersistence.js";
@@ -186,6 +187,9 @@ export function createCoreTaskList(
           job: { id: helpers.job.id },
         }),
       );
+    },
+    [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: async () => {
+      await handleMailMessagePreviewBackfillTask(pool);
     },
     [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: async () => {
       await handleMailSearchReindexSweepTask(pool);

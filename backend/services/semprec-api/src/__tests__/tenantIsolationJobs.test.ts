@@ -865,6 +865,29 @@ const cases: Record<string, TaskCase> = {
       });
     },
   },
+  [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const { itemId } = await createEmail(tenant);
+      // A row from before preview_text/ingested_at existed: no production path writes one without them.
+      await inTenant(tenant, () =>
+        pool.query(`INSERT INTO mail_message_meta (item_id, message_id, envelope) VALUES ($1, $2, '{}'::jsonb)`, [
+          itemId,
+          `<${randomUUID()}@example.com>`,
+        ]),
+      );
+      return marked([itemId], async () => {
+        expect(
+          await rows(
+            tenant,
+            "SELECT preview_text IS NOT NULL AS has_preview, ingested_at IS NOT NULL AS has_time FROM mail_message_meta WHERE item_id = $1",
+            [itemId],
+          ),
+        ).toEqual([{ has_preview: true, has_time: true }]);
+      });
+    },
+  },
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: {
     tenancy: "system",
     touchesTenantTables: true,

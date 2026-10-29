@@ -17,6 +17,7 @@ import {
   type MailEnvelope,
   type MailEnvelopeAddress,
 } from "./mailMessageMetaStore.js";
+import { buildMailPreviewFromBody } from "./mailPlainText.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 import type { MailSmtpClient } from "./smtpClient.js";
@@ -220,6 +221,8 @@ export async function sendDraftEmail(
         envelope,
         inReplyTo: input.inReplyTo,
         references: input.references,
+        previewText: buildMailPreviewFromBody(input.bodyText, input.bodyHtml),
+        ingestedAt: new Date(),
       }),
     );
   } catch (err) {
