@@ -9,6 +9,8 @@ export type {
   ModuleHeartbeatRuleKindDescriptor,
   ModuleDataMigrationDescriptor,
   ModuleCustomRouteDescriptor,
+  ModuleLinkRuleDescriptor,
+  ModuleLinkRuleEndpoint,
   CustomRouteMethod,
   CustomRouteJustification,
 } from "./manifest.js";
@@ -32,4 +34,5 @@ export {
   type ModuleHeartbeatRuleKindDefinition,
   type ModuleDataMigrationDefinition,
   type ModuleCustomRouteDefinition,
+  type ModuleLinkRuleProjection,
 } from "./registry.js";

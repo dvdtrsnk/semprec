@@ -36,5 +36,6 @@ export async function loadFullModuleRegistry(): Promise<ModuleRegistry> {
   for (const path of MANIFEST_PATHS) {
     await registry.loadModule(path);
   }
+  registry.validateLinkRules();
   return registry;
 }
