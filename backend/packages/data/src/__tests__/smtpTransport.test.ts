@@ -23,6 +23,7 @@ import {
 import { ensureFolderItem } from "../mail/folderDiscovery.js";
 import type { ImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import type { ImapMailClient } from "../mail/imapReconcile.js";
+import type { SyncMode } from "../mail/mailAccountSyncStateStore.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { logger } from "../mail/logger.js";
 import {
@@ -633,9 +634,12 @@ describe("createMailTransportFactory (issue #1634)", () => {
     expect(stub.calls).toEqual(["mail.test"]);
   });
 
-  it("refuses a sync mode with no transport yet, before reading anything", async () => {
-    await expect(createMailTransportFactory(pool).forMailbox(mailboxId, "graph_api")).rejects.toThrow(
-      /No mail transport for sync mode graph_api/,
+  it("refuses a sync mode that names no transport, before reading anything", async () => {
+    // Every SYNC_MODES value now has a transport, so this value is outside the union, the way a stored row that
+    // the store's type does not describe would reach the factory.
+    const unnamedMode = "unsupported_mode" as unknown as SyncMode;
+    await expect(createMailTransportFactory(pool).forMailbox(mailboxId, unnamedMode)).rejects.toThrow(
+      /No mail transport for sync mode unsupported_mode/,
     );
   });
 
