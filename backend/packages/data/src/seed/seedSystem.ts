@@ -36,6 +36,7 @@ import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
 import { seedInboxPipelineInTransaction } from "./seedInboxPipeline.js";
 import { seedMcpModuleInTransaction } from "./seedMcpModule.js";
+import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
 import { runModuleDataMigrations } from "../migrationJob/moduleDataMigration.js";
 
 export { PROJECTS_MODULE_ID } from "./tenDatabaseKeys.js";
@@ -154,11 +155,7 @@ export async function seedSystem(
       properties: {
         name: "Semprec",
         systemActive: true,
-        agents:
-          "Purpose: supervise Semprec, the personal life-organization system, and delegate to project agents.\n" +
-          "Allowed: read the schema-derived permission manifest for any project and delegate tasks to its agent.\n" +
-          "Not allowed: write any property whose owner is 'system', or change a locked/schema_locked database.\n" +
-          "General instructions: keep delegated tasks and their results terse; the manifest is the source of truth for what is allowed.",
+        agents: SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS[SYSTEM_SETTINGS_MODULE_ID],
       },
     });
 

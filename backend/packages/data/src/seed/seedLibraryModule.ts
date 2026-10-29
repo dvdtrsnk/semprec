@@ -22,6 +22,7 @@ import {
 } from "../library/libraryModuleContract.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./libraryModuleKeys.js";
+import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
 
 // Issue #145: every shipped catalog option `s` becomes `{ key: s }` — see seedTenDatabases.ts's
 // copy of this helper for the full rationale.
@@ -106,11 +107,7 @@ export async function seedLibraryModuleInTransaction(
     properties: {
       name: "Books",
       systemActive: true,
-      agents:
-        "Purpose: catalog books the user is reading or has read.\n" +
-        "Allowed: create a Books item (name/author/rating/status) via the generic create-item endpoint.\n" +
-        "Not allowed: write 'cover' — owner: 'system', reserved for the metadata heartbeat regardless of who requests the write.\n" +
-        "General instructions: use the same create-item path as the UI; there is no separate AI path.",
+      agents: SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS[BOOKS_MODULE_ID],
     },
   });
   const books = await createDb(client, BOOKS_MODULE_ID, booksProject.id);
@@ -134,11 +131,7 @@ export async function seedLibraryModuleInTransaction(
     properties: {
       name: "Movies/TV",
       systemActive: true,
-      agents:
-        "Purpose: catalog movies and TV series watched or planned to watch.\n" +
-        "Allowed: create a Movies/TV item (name/year/type/rating/status) via the generic create-item endpoint, and link 'Watched with' to a Person with a 1-5 rating on the relation.\n" +
-        "Not allowed: write 'cover'/'secondaryRating'/'sourceUrl' — owner: 'system', reserved for the metadata heartbeat regardless of who requests the write.\n" +
-        "General instructions: use the same create-item path as the UI; there is no separate AI path.",
+      agents: SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS[MOVIES_MODULE_ID],
     },
   });
   const movies = await createDb(client, MOVIES_MODULE_ID, moviesProject.id);

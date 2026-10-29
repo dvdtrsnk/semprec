@@ -4,6 +4,7 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { MCP_SERVERS_MODULE_ID } from "./mcpModuleKeys.js";
+import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
 
 // Issue #145: every shipped catalog option `s` becomes `{ key: s }` — see seedTenDatabases.ts's
 // copy of this helper for the full rationale.
@@ -65,11 +66,7 @@ export async function seedMcpModuleInTransaction(
     properties: {
       name: "MCP",
       systemActive: true,
-      agents:
-        "Purpose: host MCP (Model Context Protocol) server connections as a system resource.\n" +
-        "Allowed: propose a new MCP server's name and connectionConfig via the standard database proposal/confirm path; a human supplies the credential (if any) and confirms.\n" +
-        "Not allowed: writing connectionConfig fields that carry a credential (rejected outright, never stored on the item), writing syncStatus/lastSynced/syncError (owner: 'system', written only by the human-triggered Synchronize tools action), or triggering a sync itself — that action has no agent-reachable path at all.\n" +
-        "General instructions: this project exists only to host MCP server items; tool discovery/grants/invocation are later issues.",
+      agents: SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS[MCP_SERVERS_MODULE_ID],
     },
   });
 
