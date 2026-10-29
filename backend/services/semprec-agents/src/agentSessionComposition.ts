@@ -137,8 +137,9 @@ async function createGenericOperationTools(
 async function createMcpTools(pool: Pool, runId: string, projectItemId: string): Promise<ComposedAgentTool[]> {
   // The agent never shows `displayLabel` to a person, so the locale only picks the (unused) label fallback.
   const grants = await withClient(pool, (client) => listMcpToolGrantsForProject(client, projectItemId, "en"));
+  // The listing keeps tools of switched-off servers for the settings screen; a run only offers tools that can run.
   return grants
-    .filter((grant) => grant.granted)
+    .filter((grant) => grant.granted && grant.mcpServerOnline)
     .map((grant) => {
       const invoke = createApprovalGatedMcpInvokeTool(pool, runId, projectItemId, grant.mcpToolRegistrationId);
       return {
