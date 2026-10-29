@@ -45,5 +45,16 @@
   "property.processingProposals.sourceInbox.name": "Zdrojová položka Inboxu",
   "property.processingProposals.sourceTranscript.name": "Zdrojový přepis",
 
-  "viewType.journal-inbox.name": "Inbox deníku"
+  "viewType.journal-inbox.name": "Inbox deníku",
+
+  "editor.mcp.name.label": "Název",
+  "editor.mcp.name.placeholder": "Název serveru",
+  "editor.mcp.transport.label": "Přenos",
+  "editor.mcp.url.label": "URL",
+  "editor.mcp.url.placeholder": "https://example.com/mcp",
+  "editor.mcp.command.label": "Příkaz",
+  "editor.mcp.command.placeholder": "npx -y @example/server",
+  "editor.mcp.credential.label": "Přihlašovací údaje",
+  "editor.mcp.credential.placeholder": "API klíč nebo token",
+  "editor.mcp.mcpProjects.label": "Projekty"
 }

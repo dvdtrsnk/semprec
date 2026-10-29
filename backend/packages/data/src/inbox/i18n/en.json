@@ -45,5 +45,16 @@
   "property.processingProposals.sourceInbox.name": "Source inbox item",
   "property.processingProposals.sourceTranscript.name": "Source transcript",
 
-  "viewType.journal-inbox.name": "Journal inbox"
+  "viewType.journal-inbox.name": "Journal inbox",
+
+  "editor.mcp.name.label": "Name",
+  "editor.mcp.name.placeholder": "Server name",
+  "editor.mcp.transport.label": "Transport",
+  "editor.mcp.url.label": "URL",
+  "editor.mcp.url.placeholder": "https://example.com/mcp",
+  "editor.mcp.command.label": "Command",
+  "editor.mcp.command.placeholder": "npx -y @example/server",
+  "editor.mcp.credential.label": "Credential",
+  "editor.mcp.credential.placeholder": "API key or token",
+  "editor.mcp.mcpProjects.label": "Projects"
 }

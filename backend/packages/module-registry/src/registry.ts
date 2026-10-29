@@ -2,6 +2,7 @@ import { loadModuleCatalogs, type ModuleCatalogs } from "./catalog.js";
 import {
   moduleManifestSchema,
   type CustomRouteMethod,
+  type EditorSchemaDescriptor,
   type ModuleLinkRuleDescriptor,
   type ModuleManifest,
   type ModuleTaskAffinity,
@@ -9,6 +10,13 @@ import {
 
 export interface ModuleLinkRuleProjection extends ModuleLinkRuleDescriptor {
   moduleId: string;
+}
+
+/** A module's editor schema for one base kind, of an active module. */
+export interface ModuleEditorSchemaProjection {
+  moduleId: string;
+  baseKind: string;
+  schema: EditorSchemaDescriptor;
 }
 
 export interface ModuleDatabaseProjection {
@@ -172,6 +180,8 @@ export class ModuleRegistry {
   private readonly heartbeatRuleKindOwners = new Map<string, string>();
   /** Keyed by `"<method> <path>"` — the fail-fast collision surface issue #239's Task requires. */
   private readonly customRouteOwners = new Map<string, string>();
+  /** Keyed by a card's base kind; one owner per base kind across every loaded module. */
+  private readonly editorSchemaBaseKindOwners = new Map<string, string>();
   private readonly linkRuleKeyOwners = new Map<string, string>();
   private readonly catalogsById = new Map<string, ModuleCatalogs>();
   private readonly catalogKeyOwners = new Map<string, string>();
@@ -224,9 +234,11 @@ export class ModuleRegistry {
 
     this.assertCatalogKeysAvailable(path, catalogs);
     this.assertCustomRoutesAvailable(path, manifest);
+    this.assertEditorSchemaBaseKindsAvailable(path, manifest);
     this.claimCrossModuleIdentifiers(path, manifest);
     this.commitCatalogKeys(manifest.id, catalogs);
     this.commitCustomRoutes(manifest);
+    this.commitEditorSchemaBaseKinds(manifest);
 
     this.modulesById.set(manifest.id, { manifest, exports: imported });
     this.moduleIdByName.set(manifest.name, manifest.id);
@@ -289,6 +301,28 @@ export class ModuleRegistry {
   private commitCustomRoutes(manifest: ModuleManifest): void {
     for (const route of manifest.customRoutes ?? []) {
       this.customRouteOwners.set(`${route.method} ${route.path}`, manifest.id);
+    }
+  }
+
+  /**
+   * A base kind may only ever be declared by one loaded module, whether or not that module is
+   * active: the owner is fixed at load time, as for custom routes, and checked before anything
+   * commits so a rejected module never leaves a base kind claimed.
+   */
+  private assertEditorSchemaBaseKindsAvailable(path: string, manifest: ModuleManifest): void {
+    for (const baseKind of Object.keys(manifest.editorSchemas ?? {})) {
+      const existingOwner = this.editorSchemaBaseKindOwners.get(baseKind);
+      if (existingOwner !== undefined) {
+        throw new Error(
+          `Duplicate editor schema base kind "${baseKind}" loading "${path}": module "${manifest.id}" and module "${existingOwner}" both declare it`,
+        );
+      }
+    }
+  }
+
+  private commitEditorSchemaBaseKinds(manifest: ModuleManifest): void {
+    for (const baseKind of Object.keys(manifest.editorSchemas ?? {})) {
+      this.editorSchemaBaseKindOwners.set(baseKind, manifest.id);
     }
   }
 
@@ -675,6 +709,21 @@ export class ModuleRegistry {
         method: route.method,
         path: route.path,
         handler: loaded.exports[route.handlerExport],
+      })),
+    );
+  }
+
+  /**
+   * Editor schemas of active modules, in load order then declaration order. Each schema is a deep
+   * copy, so a caller cannot change what the registry holds.
+   */
+  async getEditorSchemas(): Promise<ModuleEditorSchemaProjection[]> {
+    const active = await this.getActiveModules();
+    return active.flatMap((loaded) =>
+      Object.entries(loaded.manifest.editorSchemas ?? {}).map(([baseKind, schema]) => ({
+        moduleId: loaded.manifest.id,
+        baseKind,
+        schema: structuredClone(schema),
       })),
     );
   }

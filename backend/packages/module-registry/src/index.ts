@@ -13,12 +13,21 @@ export type {
   ModuleLinkRuleEndpoint,
   CustomRouteMethod,
   CustomRouteJustification,
+  EditorSchemaDescriptor,
+  EditorGroupDescriptor,
+  EditorFieldDescriptor,
+  EditorFieldCondition,
+  EditorFieldControl,
+  EditorFieldInputType,
+  EditorFieldValue,
 } from "./manifest.js";
 export {
   moduleManifestSchema,
   CUSTOM_ROUTE_METHODS,
   CUSTOM_ROUTE_JUSTIFICATIONS,
   MODULE_TASK_AFFINITIES,
+  EDITOR_FIELD_CONTROLS,
+  EDITOR_FIELD_INPUT_TYPES,
 } from "./manifest.js";
 export {
   ModuleRegistry,
@@ -37,4 +46,5 @@ export {
   type ModuleDataMigrationConverterContext,
   type ModuleCustomRouteDefinition,
   type ModuleLinkRuleProjection,
+  type ModuleEditorSchemaProjection,
 } from "./registry.js";

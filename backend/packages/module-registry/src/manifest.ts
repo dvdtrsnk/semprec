@@ -138,6 +138,74 @@ export interface ModuleLinkRuleDescriptor {
   via: { databaseKey: string; relationKey: string };
 }
 
+/**
+ * The controls a card editor field may declare. The server owns the editor schema so that
+ * required-ness and conditions can be enforced on confirm (#1928, #1934) with the same rules the
+ * client renders (`docs/adr/2026-10-25-server-driven-inbox-editor-schema.md`).
+ */
+export const EDITOR_FIELD_CONTROLS = [
+  "text",
+  "area",
+  "date",
+  "datetime",
+  "select",
+  "multi",
+  "toggle",
+  "seg",
+  "color",
+  "secret",
+  "info",
+  "choice",
+  "tile",
+] as const;
+export type EditorFieldControl = (typeof EDITOR_FIELD_CONTROLS)[number];
+
+/** The `inputType` of a `text` editor control. */
+export const EDITOR_FIELD_INPUT_TYPES = ["text", "email", "url", "tel"] as const;
+export type EditorFieldInputType = (typeof EDITOR_FIELD_INPUT_TYPES)[number];
+
+/** A static option value, a value a condition compares against, or an info parameter. */
+export type EditorFieldValue = string | number | boolean;
+
+/**
+ * `{ field, equals }` or `{ field, notEquals }`: holds when the named field of the same card has
+ * (or does not have) the value. `when` declares the condition under which a field applies, and
+ * `timeHiddenWhen` the one under which only the time part of a `datetime` field is hidden. Nothing
+ * evaluates either until #1928 and #1934.
+ */
+export type EditorFieldCondition =
+  { field: string; equals: EditorFieldValue } | { field: string; notEquals: EditorFieldValue };
+
+/**
+ * One editor control of a card. `key` is a property key, a relation key, or a pseudo field key;
+ * the manifest schema checks only that it is non-empty. `labelKey`, `placeholderKey` and `infoKey`
+ * are catalog keys of the declaring module's own `i18n` catalogs. `options` lists the static values
+ * of a `seg` control; `optionsSource` names the field whose options come from the options route.
+ */
+export interface EditorFieldDescriptor {
+  key: string;
+  control: EditorFieldControl;
+  inputType?: EditorFieldInputType;
+  labelKey: string;
+  placeholderKey?: string;
+  required?: boolean;
+  when?: EditorFieldCondition;
+  timeHiddenWhen?: EditorFieldCondition;
+  optionsSource?: string;
+  options?: string[];
+  infoKey?: string;
+  params?: Record<string, EditorFieldValue>;
+}
+
+export interface EditorGroupDescriptor {
+  key: string;
+  fields: EditorFieldDescriptor[];
+}
+
+export interface EditorSchemaDescriptor {
+  groups: EditorGroupDescriptor[];
+}
+
 export interface ModuleManifest {
   id: string;
   version: string;
@@ -156,6 +224,11 @@ export interface ModuleManifest {
   dataMigrations?: ModuleDataMigrationDescriptor[];
   customRoutes?: ModuleCustomRouteDescriptor[];
   linkRules?: ModuleLinkRuleDescriptor[];
+  /**
+   * Editor schemas of the cards this module declares, keyed by base kind (the kind of thing the
+   * card creates). Two loaded modules may not declare the same base kind.
+   */
+  editorSchemas?: Record<string, EditorSchemaDescriptor>;
 }
 
 const moduleTaskDescriptorSchema = z.object({
@@ -228,6 +301,62 @@ const moduleLinkRuleDescriptorSchema = z.strictObject({
   via: z.strictObject({ databaseKey: z.string().min(1), relationKey: z.string().min(1) }),
 });
 
+const editorFieldValueSchema = z.union([z.string(), z.number(), z.boolean()]);
+
+const editorConditionSchema = z.union([
+  z.strictObject({ field: z.string().min(1), equals: editorFieldValueSchema }),
+  z.strictObject({ field: z.string().min(1), notEquals: editorFieldValueSchema }),
+]);
+
+/**
+ * An attribute that applies to one control only (`timeHiddenWhen` on `datetime`, `inputType` on
+ * `text`, `options` on `seg`), and the `infoKey` every `info` row needs, are checked here, so a
+ * declaration that pairs an attribute with a control it does not apply to, or an `info` row without
+ * `infoKey`, fails at load time.
+ */
+const editorFieldDescriptorSchema = z
+  .strictObject({
+    key: z.string().min(1),
+    control: z.enum(EDITOR_FIELD_CONTROLS),
+    inputType: z.enum(EDITOR_FIELD_INPUT_TYPES).optional(),
+    labelKey: z.string().min(1),
+    placeholderKey: z.string().min(1).optional(),
+    required: z.boolean().optional(),
+    when: editorConditionSchema.optional(),
+    timeHiddenWhen: editorConditionSchema.optional(),
+    optionsSource: z.string().min(1).optional(),
+    options: z.array(z.string().min(1)).min(1).optional(),
+    infoKey: z.string().min(1).optional(),
+    params: z.record(z.string().min(1), editorFieldValueSchema).optional(),
+  })
+  .superRefine((field, ctx) => {
+    if (field.timeHiddenWhen !== undefined && field.control !== "datetime") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["timeHiddenWhen"],
+        message: 'timeHiddenWhen is only valid on a "datetime" control',
+      });
+    }
+    if (field.inputType !== undefined && field.control !== "text") {
+      ctx.addIssue({ code: "custom", path: ["inputType"], message: 'inputType is only valid on a "text" control' });
+    }
+    if (field.options !== undefined && field.control !== "seg") {
+      ctx.addIssue({ code: "custom", path: ["options"], message: 'options is only valid on a "seg" control' });
+    }
+    if (field.control === "info" && field.infoKey === undefined) {
+      ctx.addIssue({ code: "custom", path: ["infoKey"], message: 'an "info" control requires infoKey' });
+    }
+  });
+
+const editorGroupDescriptorSchema = z.strictObject({
+  key: z.string().min(1),
+  fields: z.array(editorFieldDescriptorSchema).min(1),
+});
+
+const editorSchemaDescriptorSchema = z.strictObject({
+  groups: z.array(editorGroupDescriptorSchema),
+});
+
 export const moduleManifestSchema = z.object({
   id: z.string().min(1),
   version: z.string().min(1),
@@ -246,4 +375,5 @@ export const moduleManifestSchema = z.object({
   dataMigrations: z.array(moduleDataMigrationDescriptorSchema).optional(),
   customRoutes: z.array(moduleCustomRouteDescriptorSchema).optional(),
   linkRules: z.array(moduleLinkRuleDescriptorSchema).optional(),
+  editorSchemas: z.record(z.string().min(1), editorSchemaDescriptorSchema).optional(),
 });

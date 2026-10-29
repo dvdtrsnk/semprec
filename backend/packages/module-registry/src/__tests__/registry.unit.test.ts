@@ -446,3 +446,67 @@ describe("ModuleRegistry.loadModule check ordering (issue #783)", () => {
     });
   });
 });
+
+describe("ModuleRegistry editor schemas (issue #1417)", () => {
+  const editorSchema = {
+    groups: [
+      {
+        key: "server",
+        fields: [{ key: "name", control: "text", labelKey: "fixture.editor.name.label", required: true }],
+      },
+    ],
+  };
+
+  it("projects the editor schema of an active module", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-editor"]));
+    await registry.loadModule(fixturePath("editorSchemaModule.js"));
+
+    expect(await registry.getEditorSchemas()).toEqual([
+      { moduleId: "fixture-editor", baseKind: "mcp", schema: editorSchema },
+    ]);
+  });
+
+  it("omits the editor schema of an inactive module while the module stays loaded", async () => {
+    const registry = new ModuleRegistry(() => new Set());
+    await registry.loadModule(fixturePath("editorSchemaModule.js"));
+
+    expect(await registry.getEditorSchemas()).toEqual([]);
+    expect(registry.listModuleIds()).toEqual(["fixture-editor"]);
+  });
+
+  it("returns a copy, so changing a projected schema leaves the registry's schema unchanged", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-editor"]));
+    await registry.loadModule(fixturePath("editorSchemaModule.js"));
+
+    const [first] = await registry.getEditorSchemas();
+    const firstField = first?.schema.groups[0]?.fields[0];
+    if (firstField === undefined) throw new Error("expected the fixture's first field");
+    firstField.required = false;
+
+    expect(await registry.getEditorSchemas()).toEqual([
+      { moduleId: "fixture-editor", baseKind: "mcp", schema: editorSchema },
+    ]);
+  });
+
+  it("rejects a second module declaring the same base kind, naming both modules, and keeps the first module registered", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-editor", "fixture-editor-duplicate"]));
+    await registry.loadModule(fixturePath("editorSchemaModule.js"));
+
+    await expect(registry.loadModule(fixturePath("editorSchemaDuplicateModule.js"))).rejects.toThrow(
+      /Duplicate editor schema base kind "mcp" loading .*: module "fixture-editor-duplicate" and module "fixture-editor" both declare it/,
+    );
+    expect(registry.listModuleIds()).toEqual(["fixture-editor"]);
+    expect(await registry.getEditorSchemas()).toEqual([
+      { moduleId: "fixture-editor", baseKind: "mcp", schema: editorSchema },
+    ]);
+  });
+
+  it("rejects the duplicate base kind even while the first declaring module is inactive", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-editor-duplicate"]));
+    await registry.loadModule(fixturePath("editorSchemaModule.js"));
+
+    await expect(registry.loadModule(fixturePath("editorSchemaDuplicateModule.js"))).rejects.toThrow(
+      /Duplicate editor schema base kind "mcp"/,
+    );
+  });
+});
