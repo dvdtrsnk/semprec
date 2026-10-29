@@ -290,6 +290,7 @@ export * from "./tasks/taskRecurrenceStore.js";
 export { advanceTaskRecurrence, type AdvanceTaskRecurrenceInput } from "./tasks/advanceTaskRecurrence.js";
 
 export * from "./journal/journalStore.js";
+export * from "./journal/journalPeriods.js";
 export * from "./views/temporalSwitcherViewType.js";
 
 export * from "./inbox/inboxTickAction.js";
