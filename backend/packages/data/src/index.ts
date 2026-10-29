@@ -183,6 +183,7 @@ export {
   markItemAutomationDone,
   recordItemAutomationFailure,
   startItemAutomationAttempt,
+  type ItemAutomationErrorCode,
 } from "./library/itemAutomationStore.js";
 export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTenDatabases.js";
 export { manifest as systemDatabasesModuleManifest } from "./seed/systemDatabasesModuleManifest.js";

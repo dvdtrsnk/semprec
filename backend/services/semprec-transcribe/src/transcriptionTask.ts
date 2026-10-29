@@ -44,11 +44,12 @@ import {
 } from "@semprec/data";
 import type { BlobStorageWriter } from "@semprec/data";
 import { NotFoundError, ValidationError } from "@semprec/data";
-import type { ItemRow } from "@semprec/data";
+import type { ItemAutomationErrorCode, ItemRow } from "@semprec/data";
 import {
   discardStoredAudio,
   downloadToTempFile,
   extractAudioChunkBytes,
+  MediaToolError,
   normalizeAudio,
   probeMedia,
   probeNormalizedDuration,
@@ -61,6 +62,7 @@ import { AiGatewayFailedError, type AiGatewayClientPort } from "@semprec/shared"
 import { computeAsrChunkBoundaries } from "./asrChunking.js";
 import {
   AudioGatewayBudgetExceededError,
+  AudioGatewayCallError,
   createHttpAudioGatewayClient,
   type AudioGatewayClient,
 } from "./audioGatewayClient.js";
@@ -732,6 +734,17 @@ async function startTranscriptionAttempt({
 }
 
 /** A rejection by the gateway's budget caps: no retry can succeed until the cap resets, so the failure is permanent at once. */
+/**
+ * Maps a pipeline failure onto the stable code stored beside its diagnostic message: budget
+ * exhaustion, an `ffmpeg`/`ffprobe` failure, any other gateway failure, otherwise `unknown`.
+ */
+export function classifyTranscriptionFailure(err: unknown): ItemAutomationErrorCode {
+  if (isBudgetRejection(err)) return "budgetExceeded";
+  if (err instanceof MediaToolError) return "mediaUnreadable";
+  if (err instanceof AudioGatewayCallError || err instanceof AiGatewayFailedError) return "providerFailed";
+  return "unknown";
+}
+
 function isBudgetRejection(err: unknown): boolean {
   return (
     err instanceof AudioGatewayBudgetExceededError ||
@@ -741,7 +754,7 @@ function isBudgetRejection(err: unknown): boolean {
 
 /**
  * Records a failed attempt on the Transcriptions row, all in one transaction. While retries
- * remain, only `item_automation.error` is written and the row stays `pending`/`processing`. A
+ * remain, only `item_automation.error` and `error_code` are written and the row stays `pending`/`processing`. A
  * permanent failure also sets `item_automation.status = 'error'` and `status = error`, and writes
  * one `automation_error` notification keyed by the cumulative attempt count, so replaying the same
  * attempt's failure never adds a second one while every later permanent failure gets its own.
@@ -751,11 +764,18 @@ async function recordTranscriptionFailure(
   client: PoolClient,
   transcriptId: string,
   message: string,
+  errorCode: ItemAutomationErrorCode,
   permanent: boolean,
 ): Promise<boolean> {
   const automation = await lockItemAutomation(client, transcriptId);
   if (!automation || automation.status === "locked") return false;
-  const written = await recordItemAutomationFailure(client, transcriptId, message, permanent ? "error" : "pending");
+  const written = await recordItemAutomationFailure(
+    client,
+    transcriptId,
+    message,
+    permanent ? "error" : "pending",
+    errorCode,
+  );
   if (!written) throw new Error(`item_automation row for item ${transcriptId} was not updated while locked`);
   if (!permanent) return true;
 
@@ -776,8 +796,7 @@ async function recordTranscriptionFailure(
   await writeNotification(client, {
     userId,
     kind: "automation_error",
-    // Transcriptions have no dedicated page to link to yet.
-    linkHref: null,
+    linkHref: `?page=transcript&id=${transcriptId}`,
     sourceTable: "item_automation",
     sourceId: transcriptId,
     transitionInstance: `attempt:${automation.attempts}`,
@@ -888,15 +907,18 @@ export function createTranscriptionTask(
       const budgetRejected = isBudgetRejection(err);
       const permanent = budgetRejected || helpers.job.attempts >= helpers.job.max_attempts;
       const message = err instanceof Error ? err.message : String(err);
+      const errorCode = classifyTranscriptionFailure(err);
       try {
-        await withTransaction(pool, (client) => recordTranscriptionFailure(client, transcriptId, message, permanent));
+        await withTransaction(pool, (client) =>
+          recordTranscriptionFailure(client, transcriptId, message, errorCode, permanent),
+        );
       } catch (recordErr) {
         // The attempt's own failure is what the caller must see; this one is only logged.
         logger.error({ err: recordErr, transcriptId }, "Failed to record a transcription failure");
         throw err;
       }
       if (budgetRejected) {
-        logger.warn({ err, transcriptId }, "Transcription rejected by the gateway budget; not retrying");
+        logger.warn({ errorCode, transcriptId }, "Transcription rejected by the gateway budget; not retrying");
         return;
       }
       throw err;
