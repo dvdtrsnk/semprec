@@ -71,7 +71,7 @@ vi.mock("@semprec/agent-runtime", async (importOriginal) => ({
     fixtures.guidance ? `${prompt}\n${fixtures.guidance}` : prompt,
 }));
 
-function grant(registration: string, server: string, granted = true): McpToolGrantForProject {
+function grant(registration: string, server: string, granted = true, online = true): McpToolGrantForProject {
   return {
     mcpToolRegistrationId: registration,
     mcpServerItemId: server,
@@ -81,7 +81,7 @@ function grant(registration: string, server: string, granted = true): McpToolGra
     displayLabel: "search",
     requiresApproval: false,
     riskClass: "read",
-    mcpServerOnline: true,
+    mcpServerOnline: online,
     granted,
   };
 }
@@ -164,6 +164,63 @@ it.each([true, false])(
     }
   },
 );
+
+describe("MCP tool catalog of inactive servers (issue #1447)", () => {
+  async function offeredToolNames(): Promise<string[]> {
+    const pool = new Pool();
+    const faux = fauxProvider();
+    let names: string[] = [];
+    faux.setResponses([
+      (context) => {
+        names = context.tools?.map((tool) => tool.name) ?? [];
+        return fauxAssistantMessage("done");
+      },
+    ]);
+    try {
+      const factory = await createAgentSessionFactoryForRun(
+        pool,
+        new ModuleRegistry(() => new Set<string>()),
+        { model: faux.getModel(), streamFn: (m, context, options) => faux.provider.streamSimple(m, context, options) },
+        {
+          id: "run-1",
+          projectItemId: "project-1",
+          parentRunId: null,
+          heartbeatId: null,
+          triggeredBy: "user",
+          unit: "invocation",
+          task: "run",
+          status: "running",
+          result: null,
+          startedAt: "2026-10-27T00:00:00Z",
+          finishedAt: null,
+          actorUserId: "user-1",
+        },
+      );
+      for await (const event of factory({ task: "run" }).messages()) void event;
+      return names.filter((name) => name.startsWith("mcp_"));
+    } finally {
+      await pool.end();
+    }
+  }
+
+  it("leaves out a granted tool of an inactive server, keeps the grant and offers it again once active", async () => {
+    const inactive = grant("off-reg", "off-server", true, false);
+    fixtures.grants = [inactive];
+    expect(await offeredToolNames()).toEqual([]);
+    expect(fixtures.grants).toEqual([inactive]);
+    expect(inactive.granted).toBe(true);
+
+    fixtures.grants = [grant("off-reg", "off-server", true, true)];
+    expect(await offeredToolNames()).toEqual(["mcp_search"]);
+  });
+
+  it("keeps a granted tool of an active server and drops an ungranted one", async () => {
+    fixtures.grants = [grant("on-reg", "on-server", true, true)];
+    expect(await offeredToolNames()).toEqual(["mcp_search"]);
+    fixtures.grants = [grant("on-reg", "on-server", false, true)];
+    expect(await offeredToolNames()).toEqual([]);
+  });
+});
 
 describe("agent-only approval reason (issue #1420)", () => {
   const run: AgentRunRow = {
