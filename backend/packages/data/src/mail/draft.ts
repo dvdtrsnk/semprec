@@ -5,6 +5,7 @@ import type { ItemRow } from "../types.js";
 import { EMAIL_INGEST_ALLOWED_SYSTEM_KEYS, formatAddress, formatAddressList } from "./ingest.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
+import { insertMailDraft, type InsertMailDraftInput } from "./mailDraftsStore.js";
 
 export interface CreateEmailDraftInput {
   emailsDatabaseId: string;
@@ -15,6 +16,14 @@ export interface CreateEmailDraftInput {
   to?: MailEnvelopeAddress[];
   bodyText?: string;
   bodyHtml?: string;
+  /** The `date` of the Email item; defaults to now. */
+  date?: Date;
+  /**
+   * Structured metadata. When given, the `mail_drafts` row is written on the same client as the
+   * item and its Drafts folder edge, so the caller must run inside one transaction. Without it no
+   * row is written and the draft stays a plain Email (read-only for Semprec).
+   */
+  metadata?: Omit<InsertMailDraftInput, "emailItemId">;
 }
 
 /**
@@ -34,8 +43,9 @@ export async function createEmailDraft(client: PoolClient, input: CreateEmailDra
       properties: {
         name: input.subject ?? "(no subject)",
         sender: input.from ? formatAddress(input.from) : "",
-        recipients: formatAddressList(input.to),
+        recipients: formatAddressList(input.to ?? input.metadata?.to),
         body: input.bodyHtml ?? input.bodyText ?? "",
+        date: (input.date ?? new Date()).toISOString(),
       },
     },
     { allowedSystemKeys: EMAIL_INGEST_ALLOWED_SYSTEM_KEYS },
@@ -50,6 +60,8 @@ export async function createEmailDraft(client: PoolClient, input: CreateEmailDra
     },
     EMAILS_RELATION_CONTEXT,
   );
+
+  if (input.metadata) await insertMailDraft(client, { ...input.metadata, emailItemId: item.id });
 
   return item;
 }

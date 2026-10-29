@@ -242,6 +242,19 @@ export {
   type MailServerSettings,
   type MailServerSettingsInput,
 } from "./mail/mailServerSettingsStore.js";
+export {
+  getMailDraft,
+  insertMailDraft,
+  markMailDraftSent,
+  updateMailDraft,
+  MailDraftThreadConflictError,
+  type InsertMailDraftInput,
+  type MailDraft,
+  type MailDraftActor,
+  type MailDraftMode,
+  type MailDraftRecipient,
+  type UpdateMailDraftInput,
+} from "./mail/mailDraftsStore.js";
 export { manifest as mailModuleManifest } from "./mail/mailModuleManifest.js";
 export {
   refreshAndPersistAccessToken,

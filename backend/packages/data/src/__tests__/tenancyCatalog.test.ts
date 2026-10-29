@@ -57,6 +57,7 @@ const TENANT_TABLES = [
   "push_deliveries",
   "mail_account_sync_state",
   "mail_account_server_settings",
+  "mail_drafts",
   "mail_folder_sync_state",
   "mail_threads",
   "mail_message_meta",
@@ -129,6 +130,7 @@ const PERMANENT_EXCEPTIONS: { table: string; columns: string[]; reason: string }
   { table: "task_recurrence", columns: ["item_id"], reason: "scoped by the server-generated item id" },
   { table: "item_automation", columns: ["item_id"], reason: "scoped by the server-generated item id" },
   { table: "mail_account_sync_state", columns: ["item_id"], reason: "scoped by the server-generated item id" },
+  { table: "mail_drafts", columns: ["email_item_id"], reason: "scoped by the server-generated email item id" },
   {
     table: "mail_account_server_settings",
     columns: ["mailbox_item_id"],
