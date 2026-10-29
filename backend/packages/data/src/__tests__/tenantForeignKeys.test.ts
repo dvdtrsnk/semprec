@@ -216,6 +216,18 @@ const REFERENCES: Reference[] = [
       client.query("INSERT INTO agent_run_events (agent_run_id, kind, payload) VALUES ($1, 'message', '{}')", [id]),
   },
   {
+    parent: "agent run",
+    constraint: "agent_runs_retry_of_run_id_fkey",
+    table: "agent_runs",
+    column: "retry_of_run_id",
+    parentId: (p) => p.agentRunId,
+    insert: (client, id, own) =>
+      client.query(
+        "INSERT INTO agent_runs (retry_of_run_id, attempt, triggered_by, unit, task, actor_user_id) VALUES ($1, 2, 'user', 'invocation', 'probe', $2)",
+        [id, own.userId],
+      ),
+  },
+  {
     parent: "thread",
     constraint: "mail_message_meta_thread_id_tenant_fkey",
     table: "mail_message_meta",
