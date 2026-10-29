@@ -12,7 +12,8 @@ import { filesTypeForMimeType } from "../blobs/fileTypeDetection.js";
 import { FILES_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { parseFileFromAttachmentProperties } from "./fileAttachmentStep.js";
 import { deleteInboxAttachment, getInboxAttachment } from "./inboxAttachmentsStore.js";
-import { selectActiveSteps, type ProposalStep } from "./inboxTickAction.js";
+import type { ProposalStep } from "./inboxTickAction.js";
+import { selectActiveSteps } from "./proposalStepGraph.js";
 
 /** What a `fileFromAttachment` step resolved to: the Files item, the attachment it moved, and whether this step created the item. */
 export interface FileFromAttachmentResult {
