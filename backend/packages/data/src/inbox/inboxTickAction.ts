@@ -22,7 +22,6 @@ export {
 import { isDeepStrictEqual } from "node:util";
 import type { Pool, PoolClient } from "pg";
 import { AiGatewayFailedError, createLogger, type AiGatewayFailureReason, type Logger } from "@semprec/shared";
-import { withTransaction } from "../db/pool.js";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
@@ -46,6 +45,7 @@ import { assertValidMcpServerProposalProperties } from "../mcp/mcpServerProposal
 import { parseFileFromAttachmentProperties } from "./fileAttachmentStep.js";
 import { assertNoRefCycle, selectActiveSteps, stepError } from "./proposalStepGraph.js";
 import { appendHistoryEntry } from "./proposalHistory.js";
+import { isSerializationFailure, withTickTransaction } from "./tickTransaction.js";
 import { CardinalityViolationError, ForbiddenError, ValidationError } from "../errors.js";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
@@ -243,11 +243,6 @@ async function lockUnlockedProposal(
     return null;
   }
   return locked;
-}
-
-/** True when `err` is Postgres' `serialization_failure` (SQLSTATE 40001). */
-function isSerializationFailure(err: unknown): boolean {
-  return typeof err === "object" && err !== null && "code" in err && err.code === "40001";
 }
 
 /**
@@ -1215,9 +1210,7 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
     const config = semprecTickActionConfigSchema.parse(actionConfig);
     const sourceItemId = context.itemId;
 
-    const snapshot = await withTransaction(pool, (client) => readTickSnapshot(client, config, sourceItemId), {
-      isolation: "repeatable_read",
-    });
+    const snapshot = await withTickTransaction(pool, (client) => readTickSnapshot(client, config, sourceItemId));
     if (!snapshot) return;
 
     let result: ProposalComputationResult;
@@ -1239,15 +1232,11 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
       // queue retries the job.
       if (reason !== "budget_exceeded" && context.isFinalAttempt !== true) throw err;
       logger.warn({ sourceItemId, reason }, "Recording a failed proposal computation on the card");
-      await withTransaction(pool, (client) => writeComputeFailure(client, config, snapshot, reason), {
-        isolation: "repeatable_read",
-      });
+      await withTickTransaction(pool, (client) => writeComputeFailure(client, config, snapshot, reason));
       return;
     }
     const envelope = buildProposalEnvelope(snapshot, result);
 
-    await withTransaction(pool, (client) => writeTickResult(client, config, snapshot, envelope), {
-      isolation: "repeatable_read",
-    });
+    await withTickTransaction(pool, (client) => writeTickResult(client, config, snapshot, envelope));
   };
 }
