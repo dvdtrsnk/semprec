@@ -253,6 +253,15 @@ export {
   type MailServerSettingsInput,
 } from "./mail/mailServerSettingsStore.js";
 export {
+  createSmtpTransporter,
+  openImapConnection,
+  type MailServerConnectionOptions,
+  type MailServerConnectionSettings,
+  type MailServerCredential,
+  type MailSmtpTransporter,
+} from "./mail/mailServerConnections.js";
+export { MailServerUnreachableError } from "./mail/providerTypes.js";
+export {
   getMailDraft,
   insertMailDraft,
   markMailDraftSent,

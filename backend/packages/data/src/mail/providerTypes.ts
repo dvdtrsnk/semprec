@@ -54,6 +54,23 @@ export class MailAdminConsentRequiredError extends Error {
 export class MailConnectionLimitError extends Error {}
 
 /**
+ * Thrown by the connection factories in mail/mailServerConnections.ts when a tenant-chosen IMAP or
+ * SMTP host cannot be connected to: its address was refused by the outbound address policy, or the
+ * connection was refused, timed out, failed name resolution or failed TLS. Every such failure gets
+ * this one error with no cause and no address in its message, so a refused address and an unreachable
+ * server look identical to the caller (docs/adr/2026-10-29-mail-connections-through-the-outbound-address-policy.md).
+ * Authentication failures are not mapped to it.
+ */
+export class MailServerUnreachableError extends Error {
+  readonly code = "mail_server_unreachable";
+
+  constructor() {
+    super("The mail server could not be reached");
+    this.name = "MailServerUnreachableError";
+  }
+}
+
+/**
  * Shared upper bound on a single attachment part's *decoded* size, enforced identically by
  * all three adapters (issue #26's provider limits table tops out at iCloud's 20MB baseline /
  * Gmail's 25MB) — generous enough to never bind on a real attachment, but a hard backstop

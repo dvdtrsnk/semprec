@@ -177,7 +177,7 @@ export function allowLoopbackOutboundForTests(): () => void {
  * socket the vetted address (or, when the socket asks for `all`, the vetted list), so the socket
  * never resolves the name a second time.
  */
-function createPolicyLookup(policy: OutboundAddressPolicy): LookupFunction {
+export function createPolicyLookup(policy: OutboundAddressPolicy): LookupFunction {
   return (hostname, options, callback) => {
     dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
       if (err) {
