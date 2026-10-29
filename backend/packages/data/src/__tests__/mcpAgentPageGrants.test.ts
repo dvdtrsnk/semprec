@@ -47,12 +47,13 @@ describe("listMcpToolGrantsForProject (issue #127)", () => {
     });
     const projectItemId = randomUUID();
 
-    const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, projectItemId));
+    const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, projectItemId, "cs"));
     expect(rows).toEqual([
       {
         mcpToolRegistrationId: registration.id,
         toolName: "search_web",
         description: "Search the web",
+        displayLabel: "search_web",
         requiresApproval: true,
         riskClass: "unclassified",
         mcpServerItemId: server.id,
@@ -76,7 +77,7 @@ describe("listMcpToolGrantsForProject (issue #127)", () => {
       setProjectMcpGrantForAgentPage(client, { projectItemId, mcpToolRegistrationId: registration.id, granted: true }),
     );
 
-    const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, projectItemId));
+    const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, projectItemId, "cs"));
     expect(rows).toHaveLength(1);
     expect(rows[0]!.granted).toBe(true);
   });
@@ -90,7 +91,7 @@ describe("listMcpToolGrantsForProject (issue #127)", () => {
       active: false,
     });
 
-    const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, randomUUID()));
+    const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, randomUUID(), "cs"));
     expect(rows).toEqual([]);
   });
 
@@ -102,7 +103,7 @@ describe("listMcpToolGrantsForProject (issue #127)", () => {
       toolSchema: {},
     });
 
-    const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, randomUUID()));
+    const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, randomUUID(), "cs"));
     expect(rows).toEqual([expect.objectContaining({ mcpToolRegistrationId: registration.id, mcpServerOnline: false })]);
   });
 
@@ -120,7 +121,7 @@ describe("listMcpToolGrantsForProject (issue #127)", () => {
       toolSchema: {},
     });
 
-    const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, randomUUID()));
+    const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, randomUUID(), "cs"));
     expect(rows.map((r) => r.mcpToolRegistrationId).sort()).toEqual([toolA.id, toolB.id].sort());
   });
 });

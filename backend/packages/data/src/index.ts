@@ -318,7 +318,11 @@ export * from "./push/pushSubscriptionActions.js";
 
 // `mcpGrantsAdminStore.ts`'s user-only grant/risk-class/approval mutations are deliberately
 // NOT exported here — see that file's header comment (issue #124).
-export type { McpToolRegistration, UpsertMcpToolRegistrationInput } from "./mcp/mcpToolRegistrationsStore.js";
+export type {
+  McpToolDisplayLabel,
+  McpToolRegistration,
+  UpsertMcpToolRegistrationInput,
+} from "./mcp/mcpToolRegistrationsStore.js";
 export {
   upsertMcpToolRegistration,
   getMcpToolRegistration,
