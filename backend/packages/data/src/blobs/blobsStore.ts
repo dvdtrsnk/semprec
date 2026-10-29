@@ -136,3 +136,17 @@ export async function deleteBlobIfUnreferenced(client: Queryable, id: string): P
   );
   return rows[0]?.storage_key ?? null;
 }
+
+/**
+ * Deletes blob `id` unconditionally and returns its `storage_key` so the caller can remove the
+ * bytes after the commit, or null when the row is absent. Only for a derived blob owned one-to-one
+ * by the item being purged (the normalized or playback audio of a recording); a blob that
+ * content-hash dedup may share between items goes through `deleteBlobIfUnreferenced` instead.
+ */
+export async function deleteDerivedBlob(client: Queryable, id: string): Promise<string | null> {
+  const { rows } = await client.query<{ storage_key: string }>(
+    "DELETE FROM blobs WHERE id = $1 RETURNING storage_key",
+    [id],
+  );
+  return rows[0]?.storage_key ?? null;
+}
