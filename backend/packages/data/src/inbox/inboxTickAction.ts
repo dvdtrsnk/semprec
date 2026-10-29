@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { createLogger, type Logger } from "@semprec/shared";
@@ -16,7 +17,7 @@ import { enqueueJournalInboxRecomputeForInboxItem } from "./journalInboxCompute.
 import { SEMPREC_READ_ONLY_MODULE_IDS, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { assertValidMcpServerProposalProperties } from "../mcp/mcpServerProposal.js";
-import { ValidationError } from "../errors.js";
+import { CardinalityViolationError, ForbiddenError, ValidationError } from "../errors.js";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import type { DatabaseRow, ItemRow, PropertyRow } from "../types.js";
 
@@ -53,6 +54,43 @@ export type ProposalEntityKind = "pageContent" | "database" | "relation";
 /** The entity kinds the Inbox tick itself computes, one per `processingMethod`. */
 type ComputedProposalEntityKind = Exclude<ProposalEntityKind, "relation">;
 
+/** A relation target inside a step: an existing item id, or the `ref` of another step of the same proposal. */
+const stepRelationTargetSchema = z.union([z.string().min(1), z.object({ ref: z.string().min(1) })]);
+
+const stepRelationsSchema = z.record(z.string(), z.array(stepRelationTargetSchema));
+
+/**
+ * One step of a multi-step envelope (`docs/adr/2026-10-25-multi-step-proposal-envelope.md`).
+ * `create` names its database by `databaseKey`; `update` and `link` name an existing item by `itemId`.
+ * `enabled` defaults to true and `optional` to false when absent. `before` holds the current values
+ * of the properties and relations an `update` step changes, `after` the values it writes.
+ */
+const proposalStepSchema = z.object({
+  ref: z.string().min(1),
+  op: z.enum(["create", "update", "link"]),
+  databaseKey: z.string().min(1).optional(),
+  itemId: z.string().min(1).optional(),
+  properties: z.record(z.string(), z.unknown()).optional(),
+  relations: stepRelationsSchema.optional(),
+  role: z.enum(["primary", "secondary"]),
+  optional: z.boolean().optional(),
+  enabled: z.boolean().optional(),
+  before: z
+    .object({
+      properties: z.record(z.string(), z.unknown()).optional(),
+      relations: z.record(z.string(), z.array(z.string().min(1))).optional(),
+    })
+    .optional(),
+  after: z
+    .object({
+      properties: z.record(z.string(), z.unknown()).optional(),
+      relations: stepRelationsSchema.optional(),
+    })
+    .optional(),
+});
+
+export type ProposalStep = z.infer<typeof proposalStepSchema>;
+
 export const proposalEnvelopeSchema = z.object({
   entityKind: z.enum(["pageContent", "database", "relation"]),
   target: z.string().min(1),
@@ -62,6 +100,11 @@ export const proposalEnvelopeSchema = z.object({
    * database. An empty array means no edge. Written on confirm, not by this module.
    */
   relations: z.record(z.string(), z.array(z.string().min(1))).optional(),
+  /**
+   * Every step of a multi-step proposal, the primary one included; the top-level `entityKind`,
+   * `target` and `properties` mirror the primary step. Absent for a single-step envelope.
+   */
+  operations: z.array(proposalStepSchema).optional(),
 });
 
 export type ProposalEnvelope = z.infer<typeof proposalEnvelopeSchema>;
@@ -363,6 +406,263 @@ async function assertValidEnvelopeRelations(
   }
 }
 
+/** Checks that every key of `properties` is a writable, user-owned, non-relation, non-rollup property of the database. */
+function assertWritableProposalPropertyKeys(
+  properties: Record<string, unknown>,
+  propertiesByKey: ReadonlyMap<string, PropertyRow>,
+  databaseId: string,
+): void {
+  for (const key of Object.keys(properties)) {
+    const property = propertiesByKey.get(key);
+    if (!property) {
+      throw new ValidationError(
+        `Proposal properties reference unknown property '${key}' on target database ${databaseId}`,
+        { field: key },
+      );
+    }
+    if (property.type === "relation") {
+      throw new ValidationError(`Proposal properties cannot set relation property '${key}' directly`, { field: key });
+    }
+    if (property.type === "rollup") {
+      throw new ValidationError(`Proposal properties cannot set read-only rollup property '${key}'`, { field: key });
+    }
+    if (property.owner === "system") {
+      throw new ValidationError(`Proposal properties cannot set system-owned property '${key}'`, { field: key });
+    }
+  }
+}
+
+function stepError(step: ProposalStep, message: string, field: string): ValidationError {
+  return new ValidationError(`Proposal step '${step.ref}': ${message}`, { ref: step.ref, field });
+}
+
+function errorDetails(err: { details?: unknown }): Record<string, unknown> {
+  return typeof err.details === "object" && err.details !== null ? { ...err.details } : {};
+}
+
+/**
+ * Runs a check that was written for one item and re-raises its validation, permission and
+ * cardinality failures with the step's `ref` added to their `details`; any other error propagates untouched.
+ */
+async function withStepRef<T>(ref: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (err instanceof ValidationError) throw new ValidationError(err.message, { ...errorDetails(err), ref });
+    if (err instanceof CardinalityViolationError) {
+      throw new CardinalityViolationError(err.message, { ...errorDetails(err), ref });
+    }
+    if (err instanceof ForbiddenError) throw new ForbiddenError(err.message, { ...errorDetails(err), ref }, err.code);
+    throw err;
+  }
+}
+
+/** The `{ ref }` targets of a step's relations, with the relation key each sits under. */
+function stepRefTargets(step: ProposalStep): Array<{ key: string; ref: string }> {
+  const targets: Array<{ key: string; ref: string }> = [];
+  for (const [key, list] of Object.entries(step.relations ?? {})) {
+    for (const target of list) if (typeof target !== "string") targets.push({ key, ref: target.ref });
+  }
+  return targets;
+}
+
+/** A step's relations with the `{ ref }` targets dropped (they name items that do not exist yet); a key holding only refs stays, as an empty list. */
+function existingItemRelations(
+  step: ProposalStep,
+  alreadyLinked: Record<string, string[]> = {},
+): Record<string, string[]> {
+  return Object.fromEntries(
+    Object.entries(step.relations ?? {}).map(([key, list]) => [
+      key,
+      list.filter((target): target is string => typeof target === "string" && !alreadyLinked[key]?.includes(target)),
+    ]),
+  );
+}
+
+/**
+ * The steps that are validated: a disabled step is skipped, and so is an `optional` step that no
+ * active step refers to, or that refers to a skipped step. A non-optional step that refers to a
+ * skipped step, or to no step at all, is a `ValidationError`.
+ */
+function selectActiveSteps(steps: ProposalStep[]): ProposalStep[] {
+  const refs = new Set<string>();
+  for (const step of steps) {
+    if (step.ref.trim().length === 0) throw stepError(step, "ref must not be empty", "ref");
+    if (refs.has(step.ref)) throw stepError(step, "ref is used by more than one step", "ref");
+    refs.add(step.ref);
+  }
+  const primaries = steps.filter((step) => step.role === "primary");
+  if (primaries.length !== 1) {
+    const offender = primaries[1] ?? steps[0]!;
+    throw stepError(offender, `exactly one step must have role 'primary', found ${primaries.length}`, "role");
+  }
+  const active = new Set(steps.filter((step) => step.enabled !== false).map((step) => step.ref));
+  if (!active.has(primaries[0]!.ref)) throw stepError(primaries[0]!, "the primary step cannot be disabled", "enabled");
+
+  for (const step of steps) {
+    if (!active.has(step.ref)) continue;
+    for (const { key, ref } of stepRefTargets(step)) {
+      if (!refs.has(ref)) throw stepError(step, `relation '${key}' refers to '${ref}', which is not a step`, key);
+      if (ref === step.ref) throw stepError(step, `relation '${key}' refers to the step itself`, key);
+    }
+  }
+
+  const isReferred = (ref: string) =>
+    steps.some(
+      (other) => other.ref !== ref && active.has(other.ref) && stepRefTargets(other).some((t) => t.ref === ref),
+    );
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const step of steps) {
+      if (!active.has(step.ref)) continue;
+      const skipped = stepRefTargets(step).find((target) => !active.has(target.ref));
+      const removable = step.optional === true && step.role !== "primary";
+      if (skipped && !removable) {
+        throw stepError(step, `relation '${skipped.key}' refers to the skipped step '${skipped.ref}'`, skipped.key);
+      }
+      if (removable && (skipped || !isReferred(step.ref))) {
+        active.delete(step.ref);
+        changed = true;
+      }
+    }
+  }
+  return steps.filter((step) => active.has(step.ref));
+}
+
+/** Rejects a cycle in the ref graph of the active steps. */
+function assertNoRefCycle(activeSteps: ProposalStep[]): void {
+  const byRef = new Map(activeSteps.map((step) => [step.ref, step]));
+  const state = new Map<string, "visiting" | "done">();
+  const visit = (step: ProposalStep): void => {
+    state.set(step.ref, "visiting");
+    for (const { key, ref } of stepRefTargets(step)) {
+      const next = byRef.get(ref);
+      if (!next) continue;
+      if (state.get(ref) === "visiting")
+        throw stepError(step, `relation '${key}' closes a cycle through '${ref}'`, key);
+      if (!state.has(ref)) visit(next);
+    }
+    state.set(step.ref, "done");
+  };
+  for (const step of activeSteps) if (!state.has(step.ref)) visit(step);
+}
+
+/** The database a step writes to must exist, be unarchived, and not be one of the read-only modules'. */
+function assertStepDatabaseWritable(step: ProposalStep, database: DatabaseRow | null, field: string): DatabaseRow {
+  if (!database || database.archivedAt) throw stepError(step, "its database does not exist or is archived", field);
+  if (database.ownerModuleId && SEMPREC_READ_ONLY_MODULE_IDS.includes(database.ownerModuleId)) {
+    throw stepError(step, "its database is not a writable target database", field);
+  }
+  return database;
+}
+
+/** Validates one active step as a single-step envelope would be; resolves to the database the step writes to. */
+async function assertValidStep(client: PoolClient, step: ProposalStep): Promise<DatabaseRow> {
+  const properties = step.properties ?? {};
+  if (step.op === "create") {
+    if (step.itemId !== undefined) throw stepError(step, "a create step cannot name an itemId", "itemId");
+    if (step.databaseKey === undefined) throw stepError(step, "a create step needs a databaseKey", "databaseKey");
+    const database = assertStepDatabaseWritable(
+      step,
+      await databasesStore.getDatabaseByKey(client, step.databaseKey),
+      "databaseKey",
+    );
+    await withStepRef(step.ref, async () => {
+      if (database.ownerModuleId === MCP_SERVERS_MODULE_ID) assertValidMcpServerProposalProperties(properties);
+      const byKey = new Map(
+        (await propertiesStore.listPropertiesByDatabase(client, database.id)).map((property) => [
+          property.key,
+          property,
+        ]),
+      );
+      assertWritableProposalPropertyKeys(properties, byKey, database.id);
+      await assertValidEnvelopeRelations(client, database.id, byKey, existingItemRelations(step));
+    });
+    return database;
+  }
+
+  if (step.databaseKey !== undefined)
+    throw stepError(step, `an ${step.op} step cannot name a databaseKey`, "databaseKey");
+  if (step.itemId === undefined || !UUID_RE.test(step.itemId)) {
+    throw stepError(step, `an ${step.op} step needs an itemId`, "itemId");
+  }
+  const [item] = await itemsStore.getItemsByIds(client, [step.itemId]);
+  if (!item) throw stepError(step, `item '${step.itemId}' does not exist`, "itemId");
+  const database = assertStepDatabaseWritable(
+    step,
+    await databasesStore.getDatabase(client, item.databaseId),
+    "itemId",
+  );
+  if (step.op === "link" && Object.keys(properties).length > 0) {
+    throw stepError(step, "a link step cannot write properties", "properties");
+  }
+  await withStepRef(step.ref, async () => {
+    const byKey = new Map(
+      (await propertiesStore.listPropertiesByDatabase(client, database.id)).map((property) => [property.key, property]),
+    );
+    assertWritableProposalPropertyKeys(properties, byKey, database.id);
+    // A target the item already holds is not re-linked, so the cardinality check skips it.
+    await assertValidEnvelopeRelations(client, database.id, byKey, existingItemRelations(step, step.before?.relations));
+  });
+  if (step.op === "update") {
+    for (const key of Object.keys(properties)) {
+      if (!Object.hasOwn(step.before?.properties ?? {}, key)) {
+        throw stepError(step, `before does not hold the current value of property '${key}'`, key);
+      }
+      if (!Object.hasOwn(step.after?.properties ?? {}, key)) {
+        throw stepError(step, `after does not hold the new value of property '${key}'`, key);
+      }
+    }
+    for (const key of Object.keys(step.relations ?? {})) {
+      if (!Object.hasOwn(step.before?.relations ?? {}, key)) {
+        throw stepError(step, `before does not hold the current targets of relation '${key}'`, key);
+      }
+      if (!Object.hasOwn(step.after?.relations ?? {}, key)) {
+        throw stepError(step, `after does not hold the new targets of relation '${key}'`, key);
+      }
+    }
+  }
+  return database;
+}
+
+/**
+ * Validates the `operations` of a multi-step envelope: refs unique, one primary that mirrors the
+ * top level, same-proposal acyclic refs, and every active step valid on its own (disabled and
+ * unreferenced optional steps are skipped). Failures carry `details: { ref, field }`.
+ */
+async function assertValidEnvelopeOperations(
+  client: PoolClient,
+  envelope: ProposalEnvelope,
+  steps: ProposalStep[],
+): Promise<void> {
+  if (envelope.entityKind !== "database") {
+    throw new ValidationError("Proposal envelope operations are only valid for entityKind 'database'", {
+      field: "operations",
+    });
+  }
+  if (steps.length === 0)
+    throw new ValidationError("Proposal envelope operations must not be empty", { field: "operations" });
+
+  const activeSteps = selectActiveSteps(steps);
+  assertNoRefCycle(activeSteps);
+  for (const step of activeSteps) {
+    const database = await assertValidStep(client, step);
+    if (step.role !== "primary") continue;
+    if (step.op === "link") throw stepError(step, "the primary step cannot be a link step", "op");
+    if (database.id !== envelope.target) {
+      throw stepError(
+        step,
+        "its database differs from the envelope target",
+        step.op === "create" ? "databaseKey" : "itemId",
+      );
+    }
+    if (!isDeepStrictEqual(step.properties ?? {}, envelope.properties)) {
+      throw stepError(step, "its properties differ from the envelope properties", "properties");
+    }
+  }
+}
+
 /**
  * Validates a computed envelope against its destination's own requirements (issue #104) —
  * never against the generic choke-point schema engine's write path, since a proposal is
@@ -384,6 +684,10 @@ export async function assertValidProposalEnvelope(
     throw new ValidationError(`Proposal envelope has unknown entityKind '${String(envelope.entityKind)}'`, {
       field: "entityKind",
     });
+  }
+
+  if (envelope.operations !== undefined) {
+    await assertValidEnvelopeOperations(client, envelope, envelope.operations);
   }
 
   if (envelope.entityKind === "database") {
@@ -419,24 +723,7 @@ export async function assertValidProposalEnvelope(
 
     const targetProperties = await propertiesStore.listPropertiesByDatabase(client, targetDatabase.id);
     const byKey = new Map(targetProperties.map((property) => [property.key, property]));
-    for (const key of Object.keys(envelope.properties)) {
-      const property = byKey.get(key);
-      if (!property) {
-        throw new ValidationError(
-          `Proposal properties reference unknown property '${key}' on target database ${targetDatabase.id}`,
-          { field: key },
-        );
-      }
-      if (property.type === "relation") {
-        throw new ValidationError(`Proposal properties cannot set relation property '${key}' directly`, { field: key });
-      }
-      if (property.type === "rollup") {
-        throw new ValidationError(`Proposal properties cannot set read-only rollup property '${key}'`, { field: key });
-      }
-      if (property.owner === "system") {
-        throw new ValidationError(`Proposal properties cannot set system-owned property '${key}'`, { field: key });
-      }
-    }
+    assertWritableProposalPropertyKeys(envelope.properties, byKey, targetDatabase.id);
     if (envelope.relations !== undefined) {
       await assertValidEnvelopeRelations(client, targetDatabase.id, byKey, envelope.relations);
     }
