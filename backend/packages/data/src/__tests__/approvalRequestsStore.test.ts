@@ -16,6 +16,7 @@ import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/vie
 import { seedSystem } from "../seed/seedSystem.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import {
+  type ApprovalDescription,
   createPendingApprovalRequest,
   getApprovalRequest,
   getApprovalRequestForOwner,
@@ -176,6 +177,63 @@ describe("approvalRequestsStore toolCallId (issue #1618)", () => {
     const b1 = await insert(runB.id, "call_1");
     const a2 = await insert(runA.id, "call_2");
     expect(new Set([a1.id, b1.id, a2.id]).size).toBe(3);
+  });
+});
+
+describe("approvalRequestsStore description (issue #1683)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool, createViewTypeRegistry());
+    ownerId = await createUser();
+  });
+
+  async function insert(runId: string, description?: ApprovalDescription) {
+    return createPendingApprovalRequest(pool, {
+      agentRunId: runId,
+      toolName: "search_web",
+      riskClass: "unclassified",
+      payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      ...(description === undefined ? {} : { description }),
+    });
+  }
+
+  it("stores the description and reads it back", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+    const description: ApprovalDescription = {
+      key: "approval.viewDelete",
+      params: { viewName: "Open", databaseName: null, count: 3 },
+    };
+    const created = await insert(run.id, description);
+    expect(created.description).toEqual(description);
+    expect((await getApprovalRequest(pool, created.id))!.description).toEqual(description);
+  });
+
+  it("returns null for a row without a description and leaves every other field unchanged", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+    const created = await insert(run.id);
+    await pool.query(`UPDATE approval_requests SET description = NULL WHERE id = $1`, [created.id]);
+    const read = await getApprovalRequest(pool, created.id);
+    expect(read).toEqual(created);
+    expect(read!.description).toBeNull();
+    expect(read!.toolName).toBe("search_web");
+  });
+
+  it.each([
+    ["a non-object", "approval.x"],
+    ["a missing key", { params: {} }],
+    ["missing params", { key: "approval.x" }],
+    ["a nested param value", { key: "approval.x", params: { a: { b: 1 } } }],
+    ["a malformed endsInheritance", { key: "approval.x", params: {}, endsInheritance: [{ itemId: 1 }] }],
+  ])("rejects a row whose description is %s", async (_label, description) => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+    const created = await insert(run.id);
+    await pool.query(`UPDATE approval_requests SET description = $2::jsonb WHERE id = $1`, [
+      created.id,
+      JSON.stringify(description),
+    ]);
+    await expect(getApprovalRequest(pool, created.id)).rejects.toThrow("Malformed description in database row");
   });
 });
 

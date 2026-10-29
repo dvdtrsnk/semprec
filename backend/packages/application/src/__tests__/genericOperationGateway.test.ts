@@ -669,6 +669,126 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
   });
 
+  describe("approval description snapshot (issue #1683)", () => {
+    async function makeActor(): Promise<AuthenticatedActor> {
+      const projectItemId = await createRealAgentProjectItemId();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "describe" });
+      return { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+    }
+
+    async function descriptionOf(requestId: string) {
+      return (await getApprovalRequest(pool, requestId))!.description;
+    }
+
+    it("property.delete snapshots names and the count of items with a value, unchanged by later edits", async () => {
+      const database = await chokePoint.createDatabase({ name: "Journal" });
+      const property = await chokePoint.createProperty({
+        databaseId: database.id,
+        key: "mood",
+        name: "Mood",
+        type: "text",
+      });
+      await chokePoint.createItem({ databaseId: database.id, properties: { mood: "ok" } });
+      await chokePoint.createItem({ databaseId: database.id, properties: { mood: "great" } });
+      await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      const actor = await makeActor();
+
+      const requestId = await approveDestructive("property.delete", actor, { propertyId: property.id });
+      const expected = {
+        key: "approval.propertyDelete",
+        params: { propertyName: "Mood", databaseKey: null, databaseName: "Journal", affectedCount: 2 },
+      };
+      expect(await descriptionOf(requestId)).toEqual(expected);
+
+      await pool.query(`UPDATE properties SET name = 'Renamed' WHERE id = $1`, [property.id]);
+      await chokePoint.createItem({ databaseId: database.id, properties: { mood: "late" } });
+      expect(await descriptionOf(requestId)).toEqual(expected);
+    });
+
+    it("item.delete snapshots the name, database key, linked count and trash retention, without ids", async () => {
+      const tasks = await chokePoint.createDatabase({ name: "Tasks" });
+      const people = await chokePoint.createDatabase({ name: "People" });
+      await chokePoint.createProperty({ databaseId: tasks.id, key: "name", name: "Name", type: "text" });
+      const { property: assignedTo } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: tasks.id,
+        key: "assignedTo",
+        name: "Assigned To",
+        targetDatabaseId: people.id,
+        inverse: { key: "assignedTasks", name: "Assigned Tasks" },
+      });
+      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { name: "Tax return" } });
+      const person = await chokePoint.createItem({ databaseId: people.id, properties: {} });
+      await chokePoint.createRelation({
+        relationPropertyId: assignedTo.id,
+        callerItemId: task.id,
+        targetItemId: person.id,
+      });
+      const actor = await makeActor();
+
+      const requestId = await approveDestructive("item.delete", actor, { itemId: task.id });
+      const description = await descriptionOf(requestId);
+
+      expect(description).toEqual({
+        key: "approval.itemDelete",
+        params: {
+          itemName: "Tax return",
+          databaseKey: null,
+          databaseName: "Tasks",
+          linkedCount: 1,
+          restorableDays: 30,
+        },
+      });
+      expect(JSON.stringify(description)).not.toContain(task.id);
+    });
+
+    it("database.archive, view.delete and relation.delete store their templates", async () => {
+      const tasks = await chokePoint.createDatabase({ name: "Tasks" });
+      const people = await chokePoint.createDatabase({ name: "People" });
+      await chokePoint.createProperty({ databaseId: tasks.id, key: "name", name: "Name", type: "text" });
+      await chokePoint.createProperty({ databaseId: people.id, key: "name", name: "Name", type: "text" });
+      const { property: assignedTo } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: tasks.id,
+        key: "assignedTo",
+        name: "Assigned To",
+        targetDatabaseId: people.id,
+        inverse: { key: "assignedTasks", name: "Assigned Tasks" },
+      });
+      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { name: "Tax return" } });
+      const person = await chokePoint.createItem({ databaseId: people.id, properties: { name: "Eva" } });
+      await chokePoint.createRelation({
+        relationPropertyId: assignedTo.id,
+        callerItemId: task.id,
+        targetItemId: person.id,
+      });
+      const actor = await makeActor();
+      const view = await chokePoint.createView(
+        { databaseId: tasks.id, type: "table", name: "Open tasks" },
+        { type: "ai_agent", agentProjectItemId: actor.agentProjectItemId },
+      );
+
+      const archiveId = await approveDestructive("database.archive", actor, { databaseId: tasks.id });
+      const viewId = await approveDestructive("view.delete", actor, { viewId: view.id });
+      const relationId = await approveDestructive("relation.delete", actor, {
+        relationPropertyId: assignedTo.id,
+        callerItemId: task.id,
+        targetItemId: person.id,
+      });
+
+      expect(await descriptionOf(archiveId)).toEqual({
+        key: "approval.databaseArchive",
+        params: { databaseName: "Tasks", affectedCount: 1 },
+      });
+      expect(await descriptionOf(viewId)).toEqual({
+        key: "approval.viewDelete",
+        params: { viewName: "Open tasks", databaseName: "Tasks" },
+      });
+      expect(await descriptionOf(relationId)).toEqual({
+        key: "approval.relationDelete",
+        params: { fromItemName: "Tax return", fromDatabaseKey: null, toItemName: "Eva", toDatabaseKey: null },
+      });
+    });
+  });
+
   describe("replay parity for all five destructive operations (issue #89 acceptance criteria)", () => {
     async function makeAgentActor(): Promise<AuthenticatedActor> {
       const projectItemId = await createRealAgentProjectItemId();

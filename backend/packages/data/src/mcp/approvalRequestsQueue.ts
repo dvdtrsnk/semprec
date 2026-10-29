@@ -7,6 +7,7 @@ import { getMcpToolRegistrationsByIds } from "./mcpToolRegistrationsStore.js";
 import {
   isGenericOperationApprovalRequestPayload,
   listPendingApprovalRequests,
+  type ApprovalDescription,
   type ApprovalRequest,
 } from "./approvalRequestsStore.js";
 
@@ -49,6 +50,8 @@ export interface ApprovalRequestQueueEntry {
   projectName: string | null;
   /** The agent's own explanation of why it asked; `null` when it gave none. */
   reason: string | null;
+  /** The snapshotted template key and parameters clients render; `null` for requests created before issue #1683. */
+  description: ApprovalDescription | null;
 }
 
 interface ResolvedMcpNames {
@@ -116,6 +119,7 @@ export interface ApprovalRequestDecisionView {
   agentRunId: string;
   safeSummary: ApprovalRequestSafeSummary;
   reason: string | null;
+  description: ApprovalDescription | null;
 }
 
 export async function toApprovalRequestDecisionView(
@@ -136,6 +140,7 @@ export async function toApprovalRequestDecisionView(
     agentRunId: request.agentRunId,
     safeSummary: safeSummaryOf(request.payload, names),
     reason: request.reason,
+    description: request.description,
   };
 }
 
@@ -179,6 +184,7 @@ export async function listApprovalRequestsQueue(
       projectItemId,
       projectName: projectItemId ? (projectNameById.get(projectItemId) ?? null) : null,
       reason: request.reason,
+      description: request.description,
     };
   });
 }

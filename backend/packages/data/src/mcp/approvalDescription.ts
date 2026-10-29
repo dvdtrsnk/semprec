@@ -1,0 +1,147 @@
+// Builds the snapshotted, localisable description of a new approval request (issue #1683).
+//
+// Template contract (read by the web catalog `web/src/i18n/messages.ts`, `approval.*` keys, in
+// English and Czech; push notifications render the same keys):
+// - The stored `key` is an English camelCase template key and `params` hold names and counts taken
+//   at the moment of the request. The description is never rendered text and never changes later.
+// - Names are display names, never ids. `databaseKey` is the canonical database key (null for a
+//   user-created database) so a client can choose the word and its grammatical form; the backend
+//   does not know singular forms or declension of a database name.
+// - A description never carries argument values (an MCP request only names its server and tool).
+// - `endsInheritance` is omitted here; the value-link work (#1713, #1791) fills it later.
+// Templates and params:
+//   approval.itemDelete       {itemName, databaseKey, databaseName, projectName?, linkedCount, restorableDays}
+//   approval.propertyDelete   {propertyName, databaseKey, databaseName, affectedCount}
+//   approval.databaseArchive  {databaseName, affectedCount}
+//   approval.viewDelete       {viewName, databaseName}
+//   approval.relationDelete   {fromItemName, fromDatabaseKey, toItemName, toDatabaseKey}
+//   approval.mcpInvoke        {serverName, toolName}
+// Constrained by: docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
+import type { PoolClient } from "pg";
+import type { DestructiveOperationCheck } from "../chokePoint/destructiveProjection.js";
+import * as databasesStore from "../chokePoint/databasesStore.js";
+import * as itemsStore from "../chokePoint/itemsStore.js";
+import * as propertiesStore from "../chokePoint/propertiesStore.js";
+import * as relationsStore from "../chokePoint/relationsStore.js";
+import * as viewsStore from "../chokePoint/viewsStore.js";
+import { NotFoundError } from "../errors.js";
+import { TRASH_RETENTION_DAYS } from "../trash/purgeExpiredTrash.js";
+import type { ApprovalDescription } from "./approvalRequestsStore.js";
+
+type DescriptionParams = ApprovalDescription["params"];
+
+function nameOf(properties: Record<string, unknown>): string | null {
+  return typeof properties.name === "string" ? properties.name : null;
+}
+
+async function requireDatabase(client: PoolClient, id: string) {
+  const database = await databasesStore.getDatabase(client, id);
+  if (!database) throw new NotFoundError(`Database ${id} not found`);
+  return database;
+}
+
+/** The database's display name; a system database without a name override falls back to its key. */
+function databaseDisplayName(database: { name: string | null; key: string | null }): string {
+  return database.name ?? database.key ?? "";
+}
+
+async function requireItem(client: PoolClient, id: string) {
+  const [item] = await itemsStore.getItemsByIds(client, [id]);
+  if (!item) throw new NotFoundError(`Item ${id} not found`);
+  return item;
+}
+
+/** Live items of a database; with a `propertyKey`, only those holding a non-null value for it. */
+async function countLiveItems(client: PoolClient, databaseId: string, propertyKey: string | null): Promise<number> {
+  const { rows } = await client.query<{ count: string }>(
+    `SELECT count(*) AS count FROM items
+      WHERE database_id = $1 AND deleted_at IS NULL
+        AND ($2::text IS NULL OR COALESCE(jsonb_typeof(properties -> $2::text), 'null') <> 'null')`,
+    [databaseId, propertyKey],
+  );
+  return Number(rows[0]?.count ?? 0);
+}
+
+/**
+ * The description of one of the five destructive generic operations, read on the same client (and
+ * so in the same transaction) as the request insert that stores it.
+ */
+export async function buildDestructiveApprovalDescription(
+  client: PoolClient,
+  check: DestructiveOperationCheck,
+): Promise<ApprovalDescription> {
+  switch (check.operation) {
+    case "item.delete": {
+      const item = await requireItem(client, check.input.itemId);
+      const database = await requireDatabase(client, item.databaseId);
+      const params: DescriptionParams = {
+        itemName: nameOf(item.properties),
+        databaseKey: database.key,
+        databaseName: databaseDisplayName(database),
+        linkedCount: (await relationsStore.listAllRelationsForItem(client, item.id)).length,
+        restorableDays: TRASH_RETENTION_DAYS,
+      };
+      if (database.ownerProjectItemId) {
+        const [project] = await itemsStore.getItemsByIds(client, [database.ownerProjectItemId]);
+        const projectName = project ? nameOf(project.properties) : null;
+        if (projectName !== null) params.projectName = projectName;
+      }
+      return { key: "approval.itemDelete", params };
+    }
+    case "property.delete": {
+      const property = await propertiesStore.getProperty(client, check.input.propertyId);
+      if (!property) throw new NotFoundError(`Property ${check.input.propertyId} not found`);
+      const database = await requireDatabase(client, property.databaseId);
+      return {
+        key: "approval.propertyDelete",
+        params: {
+          propertyName: property.name ?? property.key,
+          databaseKey: database.key,
+          databaseName: databaseDisplayName(database),
+          affectedCount: await countLiveItems(client, database.id, property.key),
+        },
+      };
+    }
+    case "database.archive": {
+      const database = await requireDatabase(client, check.input.databaseId);
+      return {
+        key: "approval.databaseArchive",
+        params: {
+          databaseName: databaseDisplayName(database),
+          affectedCount: await countLiveItems(client, database.id, null),
+        },
+      };
+    }
+    case "view.delete": {
+      const view = await viewsStore.getView(client, check.input.viewId);
+      if (!view) throw new NotFoundError(`View ${check.input.viewId} not found`);
+      const database = view.databaseId ? await requireDatabase(client, view.databaseId) : null;
+      return {
+        key: "approval.viewDelete",
+        params: { viewName: view.name, databaseName: database ? databaseDisplayName(database) : null },
+      };
+    }
+    case "relation.delete": {
+      const from = await requireItem(client, check.input.callerItemId);
+      const to = await requireItem(client, check.input.targetItemId);
+      const [fromDatabase, toDatabase] = await Promise.all([
+        requireDatabase(client, from.databaseId),
+        requireDatabase(client, to.databaseId),
+      ]);
+      return {
+        key: "approval.relationDelete",
+        params: {
+          fromItemName: nameOf(from.properties),
+          fromDatabaseKey: fromDatabase.key,
+          toItemName: nameOf(to.properties),
+          toDatabaseKey: toDatabase.key,
+        },
+      };
+    }
+  }
+}
+
+/** The description of a deferred MCP tool call: only the server and tool names, never argument values. */
+export function buildMcpInvokeApprovalDescription(serverName: string | null, toolName: string): ApprovalDescription {
+  return { key: "approval.mcpInvoke", params: { serverName, toolName } };
+}

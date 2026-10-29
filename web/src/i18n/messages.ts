@@ -173,6 +173,15 @@ export const en = {
   "approvalQueue.decided.race": "This request was already decided before your action went through",
   "approvalQueue.actionError": "Could not save: {message}",
   "approvalQueue.malformed": "This request could not be displayed (malformed data)",
+  "approval.itemDelete":
+    'Delete the item "{itemName}" in the database "{databaseName}" - affects {linkedCount} linked items, restorable for {restorableDays} days',
+  "approval.propertyDelete":
+    'Delete the property "{propertyName}" in the database "{databaseName}" - clears values on {affectedCount} items',
+  "approval.databaseArchive": 'Archive the database "{databaseName}" with {affectedCount} items',
+  "approval.viewDelete": 'Delete the view "{viewName}" in the database "{databaseName}"',
+  "approval.relationDelete":
+    'Remove the link between "{fromItemName}" ({fromDatabaseKey}) and "{toItemName}" ({toDatabaseKey})',
+  "approval.mcpInvoke": 'Call the tool "{toolName}" on the MCP server "{serverName}"',
   "setup.title": "Set up your account",
   "setup.email": "Email",
   "setup.password": "Password",
@@ -486,6 +495,15 @@ export const cs: Messages = {
   "approvalQueue.decided.race": "Tato žádost byla rozhodnuta dříve, než se provedla vaše akce",
   "approvalQueue.actionError": "Nepodařilo se uložit: {message}",
   "approvalQueue.malformed": "Tuto žádost nelze zobrazit (poškozená data)",
+  "approval.itemDelete":
+    "Smazat položku „{itemName}“ v databázi „{databaseName}“ - dotkne se {linkedCount} propojených položek, lze obnovit {restorableDays} dní",
+  "approval.propertyDelete":
+    "Smazat vlastnost „{propertyName}“ v databázi „{databaseName}“ - smaže hodnoty u {affectedCount} položek",
+  "approval.databaseArchive": "Archivovat databázi „{databaseName}“ s {affectedCount} položkami",
+  "approval.viewDelete": "Smazat pohled „{viewName}“ v databázi „{databaseName}“",
+  "approval.relationDelete":
+    "Odebrat propojení mezi „{fromItemName}“ ({fromDatabaseKey}) a „{toItemName}“ ({toDatabaseKey})",
+  "approval.mcpInvoke": "Zavolat nástroj „{toolName}“ na MCP serveru „{serverName}“",
   "setup.title": "Nastavení účtu",
   "setup.email": "E-mail",
   "setup.password": "Heslo",
