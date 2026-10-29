@@ -12,6 +12,37 @@ import type { BulkMailHeaders } from "./bulkMail.js";
 export class MailReauthorizationRequiredError extends Error {}
 
 /**
+ * Thrown by `exchangeAuthorizationCode` when the provider answered 400/401: the authorization
+ * code (or PKCE verifier) was rejected. `providerError` is the provider's short `error` code
+ * (for example `invalid_grant`) when it is a plain token, never free text.
+ */
+export class MailAuthorizationCodeRejectedError extends Error {
+  constructor(
+    message: string,
+    readonly providerError: string | null,
+  ) {
+    super(message);
+    this.name = "MailAuthorizationCodeRejectedError";
+  }
+}
+
+/**
+ * Thrown by `exchangeAuthorizationCode` when Microsoft refuses the code because the tenant
+ * requires administrator approval for the application (`consent_required`, or `invalid_grant`
+ * with AADSTS65001/AADSTS90094). Distinct from `MailAuthorizationCodeRejectedError` so the
+ * connect flow can ask for admin consent instead of a retry.
+ */
+export class MailAdminConsentRequiredError extends Error {
+  constructor(
+    message: string,
+    readonly providerError: string | null,
+  ) {
+    super(message);
+    this.name = "MailAdminConsentRequiredError";
+  }
+}
+
+/**
  * Thrown by an adapter's `createImapClient` when the provider rejected the connection purely
  * for having too many of this account's IMAP sessions open at once (Gmail's well-known
  * "Too many simultaneous connections" `BYE`, detected via `imapFlowClient.ts`'s
