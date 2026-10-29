@@ -156,13 +156,14 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     const events = await runEvents(run.id);
     expect(events.map((event) => event.kind)).toEqual([
       "run_status",
+      "user_message",
       "turn_start",
       "message",
       "turn_end",
       "run_status",
     ]);
     expect(events[0]?.payload).toMatchObject({ status: "running" });
-    expect(events[4]?.payload).toMatchObject({ status: "done" });
+    expect(events[5]?.payload).toMatchObject({ status: "done" });
     expect(requestHeaders).toEqual([expect.objectContaining({ "x-semprec-agent-run-id": run.id })]);
     await waitFor(async () => (await jobCount(AGENT_TASK_NAMES.AGENT_RUN)) === 0);
   });
@@ -280,12 +281,13 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     const events = await runEvents(runs[0]!.id);
     expect(events.map((event) => event.kind)).toEqual([
       "run_status",
+      "user_message",
       "turn_start",
       "message",
       "turn_end",
       "run_status",
     ]);
-    expect(events[4]?.payload).toMatchObject({ status: "done" });
+    expect(events[5]?.payload).toMatchObject({ status: "done" });
 
     const { rows: heartbeats } = await pool.query<{ last_error: string | null }>(
       `SELECT last_error FROM project_heartbeats WHERE id = $1`,
