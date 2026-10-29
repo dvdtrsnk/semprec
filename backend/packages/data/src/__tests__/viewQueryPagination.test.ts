@@ -29,6 +29,10 @@ function encodeCursor(payload: unknown): string {
   return Buffer.from(JSON.stringify(payload)).toString("base64url");
 }
 
+afterAll(async () => {
+  await pool?.end();
+});
+
 describe("sorted view query pagination (issue #664)", () => {
   let databaseId: string;
   const ids: Record<string, string> = {};
@@ -42,7 +46,13 @@ describe("sorted view query pagination (issue #664)", () => {
     databaseId = db.id;
     await chokePoint.createProperty({ databaseId, key: "rank", name: "Rank", type: "number" });
     await chokePoint.createProperty({ databaseId, key: "due", name: "Due", type: "date" });
-    await chokePoint.createProperty({ databaseId, key: "status", name: "Status", type: "select" });
+    await chokePoint.createProperty({
+      databaseId,
+      key: "status",
+      name: "Status",
+      type: "select",
+      config: { options: [{ key: "done" }, { key: "open" }] },
+    });
 
     const seed: Record<string, Record<string, unknown>> = {
       a: { rank: 3, due: "2026-01-03T00:00:00Z", status: "open" },
@@ -56,10 +66,6 @@ describe("sorted view query pagination (issue #664)", () => {
     for (const [name, properties] of Object.entries(seed)) {
       ids[name] = (await chokePoint.createItem({ databaseId, properties })).id;
     }
-  });
-
-  afterAll(async () => {
-    await pool?.end();
   });
 
   /** Ties inside a sort key resolve by item id, so an expected order lists tied rows id-sorted. */
@@ -177,5 +183,92 @@ describe("sorted view query pagination (issue #664)", () => {
       chokePoint.queryDatabaseItems(databaseId, { limit: 3, cursor }),
     );
     expect(paged).toEqual(Object.values(ids).sort());
+  });
+});
+
+describe("select option-order sort (issue #1408)", () => {
+  let databaseId: string;
+  const ids: Record<string, string> = {};
+  const optionOrder = ["inProgress", "longTerm", "done", "archived"];
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint = createChokePoint(pool);
+    await resetDatabase(pool);
+
+    databaseId = (await chokePoint.createDatabase({ name: "Projects" })).id;
+    await chokePoint.createProperty({
+      databaseId,
+      key: "status",
+      name: "Status",
+      type: "select",
+      config: { options: optionOrder.map((key) => ({ key })) },
+    });
+    // Created out of option order so an alphabetical or insertion order cannot pass by accident.
+    const seed: Record<string, Record<string, unknown>> = {
+      archived: { status: "archived" },
+      done: { status: "done" },
+      none: {},
+      longTerm: { status: "longTerm" },
+      removed: { status: "removedOption" },
+      inProgress: { status: "inProgress" },
+      inProgress2: { status: "inProgress" },
+    };
+    for (const [name, properties] of Object.entries(seed)) {
+      ids[name] = (await chokePoint.createItem({ databaseId, properties })).id;
+    }
+  });
+
+  function byId(...names: string[]): string[] {
+    return names.map((name) => ids[name]!).sort();
+  }
+
+  const ascending = () => [
+    ...byId("inProgress", "inProgress2"),
+    ids.longTerm!,
+    ids.done!,
+    ids.archived!,
+    ...byId("none", "removed"),
+  ];
+  const descending = () => [
+    ids.archived!,
+    ids.done!,
+    ids.longTerm!,
+    ...byId("inProgress", "inProgress2"),
+    ...byId("none", "removed"),
+  ];
+
+  it.each([
+    ["asc", ascending],
+    ["desc", descending],
+  ] as const)("sorts %s in option order with empty and unknown values last", async (direction, expected) => {
+    const result = await chokePoint.queryDatabaseItems(databaseId, { sort: [{ property: "status", direction }] });
+    expect(result.items.map((item) => item.id)).toEqual(expected());
+  });
+
+  it.each([
+    ["asc", ascending],
+    ["desc", descending],
+  ] as const)(
+    "pages a %s select sort in three pages without missing or repeating a row",
+    async (direction, expected) => {
+      const sort = [{ property: "status", direction }];
+      const { ids: paged, pages } = await collectPages((cursor) =>
+        chokePoint.queryDatabaseItems(databaseId, { sort, limit: 3, cursor }),
+      );
+      expect(paged).toEqual(expected());
+      expect(pages).toBe(3);
+    },
+  );
+
+  it("orders the groups of a grouped view by option order, through every page", async () => {
+    const view = await chokePoint.createView({
+      databaseId,
+      type: "table",
+      name: "By status",
+      config: { groupBy: "status" },
+    });
+    const { ids: paged } = await collectPages((cursor) => chokePoint.queryViewItems(view.id, { limit: 2, cursor }));
+    expect(paged).toEqual(ascending());
   });
 });
