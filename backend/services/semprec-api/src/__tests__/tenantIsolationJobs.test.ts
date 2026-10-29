@@ -901,6 +901,25 @@ const cases: Record<string, TaskCase> = {
       });
     },
   },
+  [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const stateId = randomUUID();
+      // The row is inserted already expired; production only creates states valid for ten minutes.
+      await inTenant(tenant, () =>
+        pool.query(
+          `INSERT INTO mail_oauth_states
+             (id, user_id, provider, state_hash, code_verifier_ciphertext, code_verifier_nonce, expires_at)
+           VALUES ($1, $2, 'gmail', $3, $4, $5, now() - interval '1 minute')`,
+          [stateId, tenant.userId, randomUUID(), Buffer.from("ciphertext"), Buffer.from("nonce")],
+        ),
+      );
+      return marked([stateId], async () => {
+        expect(await rows(tenant, "SELECT 1 FROM mail_oauth_states WHERE id = $1", [stateId])).toEqual([]);
+      });
+    },
+  },
   [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: {
     tenancy: "system",
     touchesTenantTables: true,

@@ -309,6 +309,7 @@ describe("getAiUsageReport across tenants (issue #1048)", () => {
         "timezone",
         "budgets",
         "byModel",
+        "byOperation",
         "dailyCostUsd",
         "dailyTokenUsage",
         "estimated",
