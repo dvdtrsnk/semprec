@@ -231,7 +231,7 @@ async function preflightDestructiveApproval(
     const created = await createPendingApprovalRequest(client, {
       agentRunId: actor.runId!,
       toolName: operation,
-      riskClass: metadata.riskClass!,
+      riskClass: metadata.riskClass,
       payload,
       resourceSnapshot: snapshot,
       reason,

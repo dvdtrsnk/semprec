@@ -13,6 +13,14 @@ describe("i18n", () => {
     expect(Object.keys(cs).sort()).toEqual(Object.keys(en).sort());
   });
 
+  it("has Czech and English labels for all six risk classes", () => {
+    for (const value of ["unclassified", "read", "write", "destructive", "outbound", "breaksLink"]) {
+      const key = `riskClass.${value}` as keyof typeof en;
+      expect(en[key]).toBeTruthy();
+      expect(cs[key]).toBeTruthy();
+    }
+  });
+
   it("interpolates values into a message", () => {
     expect(createTranslate("en")("mailbox.unreadCount", { count: 3 })).toBe("3 unread");
     expect(createTranslate("cs")("mailbox.unreadCount", { count: 3 })).toBe("3 nepřečtených");

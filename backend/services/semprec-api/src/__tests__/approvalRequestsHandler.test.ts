@@ -363,7 +363,7 @@ describe("createApprovalRequestsRequestListener", () => {
       await createPendingApprovalRequest(pool, {
         agentRunId: run.id,
         toolName: "send_email",
-        riskClass: "moderate",
+        riskClass: "write",
         payload,
         resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
       });
@@ -376,7 +376,7 @@ describe("createApprovalRequestsRequestListener", () => {
       expect(body.rows).toHaveLength(1);
       expect(body.rows[0]).toMatchObject({
         toolName: "send_email",
-        riskClass: "moderate",
+        riskClass: "write",
         agentRunId: run.id,
         projectItemId: projectItem.id,
         projectName: "Kitchen",
