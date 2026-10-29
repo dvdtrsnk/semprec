@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool, type PoolClient } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
+import { createUser } from "../auth/usersStore.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
@@ -133,6 +135,61 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       properties: { name: "Buy milk" },
     });
     expect(Object.keys(proposal!.properties.proposal as object).sort()).toEqual(["entityKind", "properties", "target"]);
+  });
+
+  describe("locale passed to computeProposal", () => {
+    async function createTaskInboxItem(): Promise<string> {
+      const type = await withTransaction(pool, (client) =>
+        createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name: "Task",
+          emoji: "☑️",
+          processingMethod: "database",
+          targetDatabase: "tasks",
+        }),
+      );
+      const item = await withTransaction(pool, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: inboxId,
+          journalDatabaseId: journalId,
+          timezone: "Europe/Prague",
+          date: "2026-08-28",
+          time: "09:00",
+          text: "Buy milk",
+          type: type.id,
+        }),
+      );
+      return item.id;
+    }
+
+    it("passes the bound user's locale", async () => {
+      await runInTenant(getTenantZeroId(), () =>
+        createUser(pool, { email: "en@example.com", passwordHash: "x", locale: "en", tenantId: getTenantZeroId() }),
+      );
+      const itemId = await createTaskInboxItem();
+
+      const locales: string[] = [];
+      await runInTenant(getTenantZeroId(), () =>
+        runTick(pool, databaseIds, itemId, async (input) => {
+          locales.push(input.locale);
+          return { properties: { name: "Buy milk" } };
+        }),
+      );
+      expect(locales).toEqual(["en"]);
+    });
+
+    it("falls back to cs when the tenant has no bound user", async () => {
+      const itemId = await createTaskInboxItem();
+
+      const locales: string[] = [];
+      await runInTenant(getTenantZeroId(), () =>
+        runTick(pool, databaseIds, itemId, async (input) => {
+          locales.push(input.locale);
+          return { properties: { name: "Buy milk" } };
+        }),
+      );
+      expect(locales).toEqual(["cs"]);
+    });
   });
 
   it("uses the injected function's target for a 'pageContent' type", async () => {

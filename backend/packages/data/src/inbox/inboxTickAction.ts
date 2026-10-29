@@ -17,6 +17,7 @@ import { SEMPREC_READ_ONLY_MODULE_IDS, PROCESSING_PROPOSALS_MODULE_ID } from "..
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { assertValidMcpServerProposalProperties } from "../mcp/mcpServerProposal.js";
 import { ValidationError } from "../errors.js";
+import { getTenantUserLocale } from "../auth/usersStore.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 
 const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = {
@@ -111,6 +112,8 @@ export interface ProposalComputationInput {
   entityKind: ComputedProposalEntityKind;
   /** Resolved target database id for `entityKind: 'database'`; absent for `'pageContent'`, where the target page is itself part of the content decision. */
   targetDatabaseId?: string;
+  /** The language (the person's `users.locale`, e.g. `cs`) the proposal's person-facing texts must be written in. */
+  locale: string;
 }
 
 export interface ProposalComputationResult {
@@ -261,6 +264,7 @@ interface TickSnapshot {
   targetDatabaseId?: string;
   existingProposal: ItemRow | null;
   fingerprint: string;
+  locale: string;
 }
 
 /** Combines the external call's result with the snapshot into a stored envelope — no I/O. */
@@ -613,7 +617,10 @@ async function readTickSnapshot(
     targetDatabaseId = targetDatabase.id;
   }
 
-  return { item, type, processingMethod, entityKind, targetDatabaseId, existingProposal, fingerprint };
+  // `cs` is the `users.locale` column default, used when the tenant has no bound user.
+  const locale = (await getTenantUserLocale(client)) ?? "cs";
+
+  return { item, type, processingMethod, entityKind, targetDatabaseId, existingProposal, fingerprint, locale };
 }
 
 /** Revises `existing` with `envelope`, through the locked re-check — a no-op if it lost the race. */
@@ -770,6 +777,7 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
       type: snapshot.type,
       entityKind: snapshot.entityKind,
       targetDatabaseId: snapshot.targetDatabaseId,
+      locale: snapshot.locale,
     });
     const envelope = buildProposalEnvelope(snapshot, result);
 
