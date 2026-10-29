@@ -25,7 +25,12 @@ import {
  */
 
 /** Tenant-classified tables never exported: credential ciphertext, the wrapped tenant data key, and the exports themselves. */
-export const EXPORT_EXCLUDED_TABLES = ["external_credentials", "tenant_keys", "tenant_exports"] as const;
+export const EXPORT_EXCLUDED_TABLES = [
+  "external_credentials",
+  "tenant_keys",
+  "tenant_exports",
+  "mail_oauth_states",
+] as const;
 
 /** The archive layout version written to `manifest.json`. */
 const EXPORT_FORMAT_VERSION = 1;

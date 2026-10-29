@@ -33,6 +33,7 @@ const SYSTEM_TASKS = [
   "trashPurge",
   "observabilityCheckSystem",
   "mcpRunCredentialExpirySweep",
+  "mailOauthStatesSweep",
   "agentRunEventsRetention",
   "queueFailedJobsPrune",
   "tenantExportExpirySweep",

@@ -47,6 +47,7 @@ import { handleNotificationFanoutTask } from "./notifications/notificationFanout
 import type { PushSenders } from "./push/pushSenders.js";
 import { handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
 import { handleObservabilityCheckSystemTask } from "./observability/observabilityCheckSystem.js";
+import { handleMailOauthStatesSweepTask } from "./mail/mailOauthStatesSweep.js";
 import { handleMcpRunCredentialExpirySweepTask } from "./mcp/mcpRunCredentialExpiry.js";
 import { handleAgentRunEventsRetentionTask } from "./agentRuns/agentRunEventsRetention.js";
 import { handleQueueFailedJobsPruneTask } from "./observability/queueFailedJobsPrune.js";
@@ -94,6 +95,7 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 20 4 * * * ${CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION}
 20 4 * * * ${CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE}
 10 * * * * ${CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP}
+*/10 * * * * ${CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP}
 40 4 * * * ${CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP}
 * * * * * ${CORE_TASK_NAMES.TENANT_PURGE}
 `;
@@ -228,6 +230,9 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: async () => {
       await handleMcpRunCredentialExpirySweepTask(pool);
+    },
+    [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: async () => {
+      await handleMailOauthStatesSweepTask(pool);
     },
     [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: async () => {
       await handleAgentRunEventsRetentionTask(pool);
