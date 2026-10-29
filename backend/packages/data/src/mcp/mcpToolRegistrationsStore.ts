@@ -109,6 +109,16 @@ export async function getMcpToolRegistration(client: Queryable, id: string): Pro
   return rows[0] ? rowToRegistration(rows[0]) : null;
 }
 
+/** Batched `getMcpToolRegistration`: the rows that exist for `ids`, in no particular order. */
+export async function getMcpToolRegistrationsByIds(client: Queryable, ids: string[]): Promise<McpToolRegistration[]> {
+  if (ids.length === 0) return [];
+  const { rows } = await client.query<McpToolRegistrationRow>(
+    `SELECT * FROM mcp_tool_registrations WHERE id = ANY($1::uuid[])`,
+    [ids],
+  );
+  return rows.map(rowToRegistration);
+}
+
 export async function listMcpToolRegistrationsForServer(
   client: Queryable,
   mcpServerItemId: string,
