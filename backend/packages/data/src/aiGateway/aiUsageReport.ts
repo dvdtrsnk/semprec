@@ -5,6 +5,9 @@ import type { AgentRunUnit } from "../agentRuns/agentRunsStore.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { getCurrentTenantAiBudget } from "./tenantAiBudgetsStore.js";
 
+/** Operations whose native unit is audio seconds; every other operation (including NULL) is token-native. */
+const AUDIO_OPERATIONS: readonly string[] = ["transcription_transcribe", "transcription_diarize"];
+
 const AGENT_RUN_UNITS: readonly AgentRunUnit[] = ["invocation", "session"];
 
 /** Daily reports retain the existing range cap; monthly reports span account history. */
@@ -28,10 +31,10 @@ export interface AiUsageReportRow {
   runUnit: AgentRunUnit | null;
   callCount: number;
   costUsd: number;
-  /** null (not 0) when this group's native unit isn't tokens — no token concept applies. */
+  /** A number for a token group (0 while every call is reserved); null when this group's native unit isn't tokens. */
   inputTokens: number | null;
   outputTokens: number | null;
-  /** null (not 0) when this group's native unit isn't audio_seconds. */
+  /** A number for an audio group (0 while every call is reserved); null when this group's native unit isn't audio_seconds. */
   audioSeconds: number | null;
 }
 
@@ -69,6 +72,8 @@ export interface AiUsageReport {
   to: string;
   /** One row per (provider, model, nativeUnit, runUnit) combination — kept as separate axes because they're not comparable: audio seconds can't be summed with tokens, and an 'invocation' run's spend isn't 1:1 with a long-lived 'session' run's. */
   rows: AiUsageReportRow[];
+  /** True when any non-failed call in [from, to) is still `reserved`, so its cost is an estimate. */
+  estimated: boolean;
   /** Total cost across every row, the one number that IS comparable regardless of native/run unit. */
   totalCostUsd: number;
   /** Daily granularity: one point per calendar day in [from, to); empty for monthly reports. */
@@ -103,6 +108,7 @@ interface UsageRow {
   input_tokens: string | null;
   output_tokens: string | null;
   audio_seconds: string | null;
+  has_reserved: boolean;
 }
 
 interface MonthlyRow {
@@ -136,22 +142,36 @@ export async function getAiUsageReport(client: Queryable, input: AiUsageReportIn
   const accountStartedAt = requireSingleRow(accountRows, "AI usage account start").account_started_at;
 
   const { rows } = await client.query<UsageRow>(
-    `SELECT
-       c.provider,
-       c.model,
-       CASE WHEN c.audio_seconds IS NOT NULL THEN 'audio_seconds' ELSE 'tokens' END AS native_unit,
-       r.unit AS run_unit,
+    `WITH classified AS (
+       SELECT
+         c.provider,
+         c.model,
+         COALESCE(c.operation = ANY($3::text[]), false) AS is_audio,
+         r.unit AS run_unit,
+         c.cost_usd,
+         c.input_tokens,
+         c.output_tokens,
+         c.audio_seconds,
+         c.status
+       FROM ai_gateway_calls c
+       LEFT JOIN agent_runs r ON r.id = c.agent_run_id
+       WHERE c.at >= $1 AND c.at < $2 AND c.status <> 'failed'
+     )
+     SELECT
+       provider,
+       model,
+       CASE WHEN is_audio THEN 'audio_seconds' ELSE 'tokens' END AS native_unit,
+       run_unit,
        COUNT(*) AS call_count,
-       SUM(c.cost_usd) AS cost_usd,
-       SUM(c.input_tokens) AS input_tokens,
-       SUM(c.output_tokens) AS output_tokens,
-       SUM(c.audio_seconds) AS audio_seconds
-     FROM ai_gateway_calls c
-     LEFT JOIN agent_runs r ON r.id = c.agent_run_id
-     WHERE c.at >= $1 AND c.at < $2
-     GROUP BY c.provider, c.model, native_unit, r.unit
-     ORDER BY c.provider, c.model, native_unit, r.unit`,
-    [fromDate.toISOString(), toDate.toISOString()],
+       SUM(cost_usd) AS cost_usd,
+       CASE WHEN is_audio THEN NULL ELSE COALESCE(SUM(input_tokens), 0) END AS input_tokens,
+       CASE WHEN is_audio THEN NULL ELSE COALESCE(SUM(output_tokens), 0) END AS output_tokens,
+       CASE WHEN is_audio THEN COALESCE(SUM(audio_seconds), 0) ELSE NULL END AS audio_seconds,
+       BOOL_OR(status = 'reserved') AS has_reserved
+     FROM classified
+     GROUP BY provider, model, is_audio, run_unit
+     ORDER BY provider, model, native_unit, run_unit`,
+    [fromDate.toISOString(), toDate.toISOString(), AUDIO_OPERATIONS],
   );
 
   const reportRows: AiUsageReportRow[] = rows.map((row) => ({
@@ -232,6 +252,7 @@ export async function getAiUsageReport(client: Queryable, input: AiUsageReportIn
     inputTokens: row.input_tokens === null ? 0 : Number(row.input_tokens),
     outputTokens: row.output_tokens === null ? 0 : Number(row.output_tokens),
   }));
+  const estimated = rows.some((row) => row.has_reserved);
   const totalCostUsd = reportRows.reduce((sum, row) => sum + row.costUsd, 0);
   // A tenant without a tenant_ai_budgets row may not spend (the gateway refuses every call), so its
   // effective cap is 0, never null: null would render as "uncapped".
@@ -246,6 +267,7 @@ export async function getAiUsageReport(client: Queryable, input: AiUsageReportIn
     from: fromDate.toISOString(),
     to: toDate.toISOString(),
     rows: reportRows,
+    estimated,
     totalCostUsd,
     dailyCostUsd,
     dailyTokenUsage,
