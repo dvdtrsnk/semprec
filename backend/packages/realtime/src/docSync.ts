@@ -6,7 +6,7 @@ import * as Y from "yjs";
 import * as syncProtocol from "y-protocols/sync.js";
 import { runInTenant } from "@semprec/shared";
 import { getDocById, getDocUpdateById, loadYDoc, mutateYDoc, type CreatedBy } from "@semprec/data";
-import { buildBinaryFrame } from "./protocolV1.js";
+import { buildBinaryFrame, readClientUpdateId, type OutboundFrame } from "./protocolV1.js";
 import { sendWithBackpressure } from "./backpressure.js";
 import { logger } from "./logger.js";
 
@@ -256,6 +256,9 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
           } catch {
             return;
           }
+          // Optional trailing correlation id; absent or invalid means the update is stored but
+          // never acknowledged.
+          const clientUpdateId = readClientUpdateId(decoder);
           // `mutateYDoc` loads the current doc, applies `update` inside a transaction, and
           // persists the resulting diff as a new `doc_updates` row (mirrored into
           // `doc_history_updates`) before firing the after-commit NOTIFY this same registry's
@@ -268,6 +271,13 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
               Y.applyUpdate(ydoc, update, DOC_SYNC_CREATED_BY);
             }),
           );
+          // Reached only once `mutateYDoc` resolved (its transaction committed); a throw
+          // propagates to the caller and sends no ack. A replay that added nothing is still
+          // durable, so it is acknowledged too. `sendWithBackpressure` skips a closed socket.
+          if (clientUpdateId !== null) {
+            const ack: OutboundFrame = { type: "doc:ack", docId, clientUpdateId };
+            sendWithBackpressure(ws, JSON.stringify(ack));
+          }
           return;
         }
         default:

@@ -1,5 +1,5 @@
 import type { AgentRunEventRow, NotificationRow } from "@semprec/data";
-import type { AgentDeltaChunk, OutboundFrame } from "@semprec/realtime";
+import { isClientUpdateId, type AgentDeltaChunk, type OutboundFrame } from "@semprec/realtime";
 
 function isNonNullObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -87,6 +87,12 @@ export function parseServerFrame(raw: string): OutboundFrame | null {
       if (typeof agentRunId !== "string") return null;
       if (chunk === undefined) return { type: "agent:delta", agentRunId, delta };
       return isAgentDeltaChunk(chunk) ? { type: "agent:delta", agentRunId, delta, chunk } : null;
+    }
+    case "doc:ack": {
+      const { docId, clientUpdateId } = parsed;
+      return typeof docId === "string" && isClientUpdateId(clientUpdateId)
+        ? { type: "doc:ack", docId, clientUpdateId }
+        : null;
     }
     default:
       return null;
