@@ -10,6 +10,7 @@ import { withTransaction } from "../db/pool.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { generatePermissionManifest } from "../manifest/permissionManifest.js";
 import { createEmailDraft } from "../mail/draft.js";
+import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
 import { getMailMessageMetaByItemId, getMailMessageMetaByMailboxAndMessageId } from "../mail/mailMessageMetaStore.js";
 import {
@@ -73,12 +74,18 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     );
     emailProjectId = emailProjectRows[0]!.id;
 
-    mailboxId = await withTransaction(pool, (client) =>
-      createItemWithClient(client, {
+    mailboxId = await withTransaction(pool, async (client) => {
+      const mailbox = await createItemWithClient(client, {
         databaseId: mailboxesId,
-        properties: { name: "Test", provider: "generic", addresses: "me@example.com" },
-      }),
-    ).then((item) => item.id);
+        properties: { name: "Test", provider: "generic" },
+      });
+      await writeMailboxAddresses(client, {
+        mailboxesDatabaseId: mailboxesId,
+        mailboxItemId: mailbox.id,
+        address: "me@example.com",
+      });
+      return mailbox.id;
+    });
 
     await withTransaction(pool, async (client) => {
       const drafts = await createItemWithClient(
