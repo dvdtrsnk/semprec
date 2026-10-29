@@ -258,6 +258,7 @@ export * from "./realtimeHook.js";
 
 export { createDocStore, type DocStore, type DocVersion } from "./docs/docStore.js";
 export type { BlockInput, BlockData } from "./docs/blocks.js";
+export { assertValidBlockInput } from "./docs/assertValidBlockInput.js";
 export {
   CANVAS_ELEMENT_TYPES,
   type CanvasElementType,
