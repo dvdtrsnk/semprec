@@ -4,7 +4,8 @@ import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
-import { deleteItemOrigin, insertItemOrigins, withFromInbox } from "../inbox/itemOriginsStore.js";
+import { withFromInbox } from "../chokePoint/itemOriginReads.js";
+import { deleteItemOrigin, insertItemOrigins } from "../inbox/itemOriginsStore.js";
 
 /** Issue #1716: the read-time `fromInbox` flag on item reads and queries. */
 let pool: Pool;

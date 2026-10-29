@@ -13,7 +13,7 @@ import type { ItemRow } from "../types.js";
 import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as itemsStore from "./itemsStore.js";
-import { withFromInbox } from "../inbox/itemOriginsStore.js";
+import { withFromInbox } from "./itemOriginReads.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import { compileFilterNode, resolveFilterCompileContext } from "../views/filterCompiler.js";
 import { buildFilterProperties } from "../views/filterProperties.js";

@@ -4,7 +4,7 @@
 // Constrained by: docs/adr/2026-09-17-generic-application-service-port.md
 import type { PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
-import { withFromInbox } from "../inbox/itemOriginsStore.js";
+import { withFromInbox } from "./itemOriginReads.js";
 import * as viewQuery from "../views/viewQuery.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 
