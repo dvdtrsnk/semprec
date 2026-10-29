@@ -150,6 +150,15 @@ function compileRelationPathCondition(
   )`;
 }
 
+/**
+ * The cast a date condition compares under: `::date` when every operand is a date-only string, so
+ * the comparison never goes through an instant and never depends on a time zone; `::timestamptz`
+ * as soon as one operand carries a time.
+ */
+function dateComparisonCast(operands: string[]): "::date" | "::timestamptz" {
+  return operands.every((operand) => new RegExp(DATE_ONLY_PATTERN).test(operand)) ? "::date" : "::timestamptz";
+}
+
 /** The calendar day of a stored date value in the tenant zone: a date-only string as written, a timestamp via AT TIME ZONE; empty or missing is NULL. */
 function dayExpression(field: string, zoneParam: number): string {
   return `(CASE WHEN NULLIF(${field}, '') IS NULL THEN NULL WHEN ${field} ~ '${DATE_ONLY_PATTERN}' THEN (${field})::date ELSE ((${field})::timestamptz AT TIME ZONE $${zoneParam}::text)::date END)`;
@@ -284,24 +293,33 @@ function compileCondition(
       return isMultiSelect
         ? `(${jsonField} IS NOT NULL AND ${jsonField} != 'null'::jsonb AND ${jsonField} != '[]'::jsonb)`
         : `(${textField} IS NOT NULL AND ${textField} != '')`;
-    case "before":
+    case "before": {
       params.push(node.value);
-      return `(${textField})::timestamptz < $${params.length}::timestamptz`;
-    case "after":
+      const cast = dateComparisonCast([node.value]);
+      return `(${textField})${cast} < $${params.length}${cast}`;
+    }
+    case "after": {
       params.push(node.value);
-      return `(${textField})::timestamptz > $${params.length}::timestamptz`;
-    case "on_or_before":
+      const cast = dateComparisonCast([node.value]);
+      return `(${textField})${cast} > $${params.length}${cast}`;
+    }
+    case "on_or_before": {
       params.push(node.value);
-      return `(${textField})::timestamptz <= $${params.length}::timestamptz`;
-    case "on_or_after":
+      const cast = dateComparisonCast([node.value]);
+      return `(${textField})${cast} <= $${params.length}${cast}`;
+    }
+    case "on_or_after": {
       params.push(node.value);
-      return `(${textField})::timestamptz >= $${params.length}::timestamptz`;
+      const cast = dateComparisonCast([node.value]);
+      return `(${textField})${cast} >= $${params.length}${cast}`;
+    }
     case "date_range": {
       params.push(node.value.from);
       const from = params.length;
       params.push(node.value.to);
       const to = params.length;
-      return `(${textField})::timestamptz BETWEEN $${from}::timestamptz AND $${to}::timestamptz`;
+      const cast = dateComparisonCast([node.value.from, node.value.to]);
+      return `(${textField})${cast} BETWEEN $${from}${cast} AND $${to}${cast}`;
     }
     case "in": {
       params.push(node.value);
