@@ -3,12 +3,18 @@
 // definition management (creating, updating or deleting views and their manual items), belongs here.
 // Constrained by: docs/adr/2026-09-17-generic-application-service-port.md
 import { withTransaction } from "../db/pool.js";
+import { getUserById } from "../auth/usersStore.js";
 import * as viewQuery from "../views/viewQuery.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 
 export function createViewQueryOps(deps: Pick<ChokePointDeps, "pool">) {
   const { pool } = deps;
   return {
+    /** The `users.locale` of a user, or `undefined` when the user row is not visible; callers pass it as the query `locale` so text sorts follow the user's collation. */
+    async findUserLocale(userId: string): Promise<string | undefined> {
+      return withTransaction(pool, async (client) => (await getUserById(client, userId))?.locale);
+    },
+
     async queryView(viewId: string, options?: viewQuery.QueryViewOptions): Promise<viewQuery.QueryViewResult> {
       return withTransaction(pool, (client) => viewQuery.queryView(client, viewId, options));
     },

@@ -612,6 +612,7 @@ const EXPECTED_CHOKE_POINT_METHODS = [
   "findItem",
   "findItemIncludingDeleted",
   "findPropertiesByKey",
+  "findUserLocale",
   "getDatabase",
   "getItem",
   "getItemPath",

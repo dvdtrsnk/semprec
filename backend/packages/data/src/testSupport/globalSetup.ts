@@ -70,6 +70,9 @@ export default async function setup(): Promise<() => Promise<void>> {
     password: "postgres",
     port,
     persistent: false,
+    // ICU collations (`cs-x-icu`, `und-x-icu`; issue #1524) are unusable in a SQL_ASCII database,
+    // which is what initdb picks on a host with the C locale; production (postgres:16-alpine) is UTF8.
+    initdbFlags: ["--encoding=UTF8"],
   });
 
   async function removeDatabaseDir(): Promise<void> {
