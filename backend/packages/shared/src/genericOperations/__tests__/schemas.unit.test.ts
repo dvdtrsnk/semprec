@@ -21,6 +21,7 @@ import {
   RelationDeleteInputSchema,
   RelationListInputSchema,
   RelationPutInputSchema,
+  PageRestoreVersionInputSchema,
   ViewCreateInputSchema,
   ViewDeleteInputSchema,
   ViewGetInputSchema,
@@ -63,6 +64,7 @@ const ALL_SCHEMAS = [
   RelationPutInputSchema,
   RelationDeleteInputSchema,
   RelationListInputSchema,
+  PageRestoreVersionInputSchema,
 ];
 
 describe("every generic-operation input schema", () => {
@@ -305,6 +307,31 @@ describe("RelationListInputSchema (issue #1404)", () => {
   it("rejects an unknown key, such as a relation direction or a metadata field", () => {
     expect(RelationListInputSchema.safeParse({ itemId: "i1", propertyKey: "assignedTo" }).success).toBe(false);
     expect(RelationListInputSchema.safeParse({ itemId: "i1", direction: "out" }).success).toBe(false);
+  });
+});
+
+describe("PageRestoreVersionInputSchema (issue #1617)", () => {
+  it("requires an itemId and an ISO 8601 timestamp with an offset", () => {
+    expect(PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "2026-10-01T10:00:00Z" }).success).toBe(true);
+    expect(PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "2026-10-01T10:00:00.250+02:00" }).success).toBe(
+      true,
+    );
+  });
+
+  it("rejects a missing itemId, a missing or non-ISO at, and an at without an offset", () => {
+    expect(PageRestoreVersionInputSchema.safeParse({ at: "2026-10-01T10:00:00Z" }).success).toBe(false);
+    expect(PageRestoreVersionInputSchema.safeParse({ itemId: "i1" }).success).toBe(false);
+    expect(PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "yesterday" }).success).toBe(false);
+    expect(PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "2026-10-01T10:00:00" }).success).toBe(false);
+  });
+
+  it("rejects an unknown key, such as a page id or a userId", () => {
+    expect(
+      PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "2026-10-01T10:00:00Z", pageId: "p" }).success,
+    ).toBe(false);
+    expect(
+      PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "2026-10-01T10:00:00Z", userId: "u" }).success,
+    ).toBe(false);
   });
 });
 

@@ -1298,6 +1298,15 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   },
 
   // --- tenant: files, exports, account deletion ----------------------------------------------
+  "restore page version": () =>
+    leavesAUnchanged(async () => {
+      // A foreign item answers exactly as a random one does, and nothing of A's page is written.
+      await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+        method: "POST",
+        path: `/api/items/${id}/page/restore`,
+        body: { at: new Date(Date.now() - 60 * 1000).toISOString() },
+      }));
+    }),
   "upload file": () =>
     leavesAUnchanged(async () => {
       // The bodies differ by the created ids, so the statuses are compared: B uploading bytes A
@@ -1795,6 +1804,12 @@ const MCP_CASES = {
   },
   "relation.list": async (p) => {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId }));
+  },
+  "page.restoreVersion": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({
+      itemId,
+      at: new Date(Date.now() - 60 * 1000).toISOString(),
+    }));
   },
 } satisfies Record<GenericOperationName, McpCase>;
 

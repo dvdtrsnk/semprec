@@ -13,6 +13,7 @@ import {
 } from "@semprec/data/testSupport";
 import {
   createChokePoint,
+  createDocStore,
   createUser,
   hashPassword,
   insertValueLink,
@@ -1458,5 +1459,93 @@ describe("item routes (issue #241)", () => {
         expect(lookups).toEqual([{ databaseId, key: propertyKey, type: "relation" }]);
       },
     );
+  });
+
+  describe("page restore (issue #1617)", () => {
+    const HALF_HOUR_MS = 30 * 60 * 1000;
+
+    /**
+     * A page with block `b1`: its history opens two hours before the database clock, and `b1` is dated an
+     * hour before it, so an instant half an hour back sits between the two.
+     */
+    async function pageWithBlock(): Promise<{ itemId: string; now: Date }> {
+      const { rows } = await pool.query<{ now: Date }>(`SELECT transaction_timestamp() AS now`);
+      const now = rows[0]!.now;
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Chapter" } });
+      const docStore = createDocStore(pool);
+      const doc = await docStore.getOrCreateDoc(item.id, "page");
+      const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+      const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+      await pool.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [doc.id, twoHoursAgo]);
+      await pool.query(
+        `UPDATE doc_snapshot_history SET represented_at = $2 WHERE doc_id = $1 AND through_update_id = 0`,
+        [doc.id, twoHoursAgo],
+      );
+      await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph", fields: { content: "first" } }, "user");
+      await pool.query(`UPDATE doc_updates SET created_at = $2 WHERE doc_id = $1`, [doc.id, oneHourAgo]);
+      await pool.query(`UPDATE doc_history_updates SET created_at = $2 WHERE doc_id = $1`, [doc.id, oneHourAgo]);
+      return { itemId: item.id, now };
+    }
+
+    async function restore(itemId: string, body: unknown): Promise<Response> {
+      return fetch(`${baseUrl}/api/items/${itemId}/page/restore`, {
+        method: "POST",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it("rejects an unauthenticated request", async () => {
+      const res = await fetch(`${baseUrl}/api/items/${randomUUID()}/page/restore`, { method: "POST" });
+      expect(res.status).toBe(401);
+    });
+
+    it("restores the page to the instant and returns its block ids", async () => {
+      const page = await pageWithBlock();
+      const at = new Date(page.now.getTime() - HALF_HOUR_MS).toISOString();
+
+      const res = await restore(page.itemId, { at });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ itemId: page.itemId, at, blockIds: ["b1"] });
+    });
+
+    it("answers an unknown item with 404", async () => {
+      const res = await restore(randomUUID(), { at: new Date(Date.now() - HALF_HOUR_MS).toISOString() });
+
+      expect(res.status).toBe(404);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("not_found");
+    });
+
+    it("answers an item that has no page with 404", async () => {
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "No page" } });
+
+      const res = await restore(item.id, { at: new Date(Date.now() - HALF_HOUR_MS).toISOString() });
+
+      expect(res.status).toBe(404);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("not_found");
+    });
+
+    it("answers an instant before the retained history with 410 history_not_retained", async () => {
+      const page = await pageWithBlock();
+
+      const res = await restore(page.itemId, { at: new Date(page.now.getTime() - 24 * 60 * 60 * 1000).toISOString() });
+
+      expect(res.status).toBe(410);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("history_not_retained");
+    });
+
+    it("answers a future instant and a malformed or missing at with 400", async () => {
+      const page = await pageWithBlock();
+      const future = new Date(page.now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+
+      for (const body of [{ at: future }, { at: "yesterday" }, {}]) {
+        const res = await restore(page.itemId, body);
+        expect(res.status, JSON.stringify(body)).toBe(400);
+        expect(((await res.json()) as ErrorBody).error.code).toBe("validation_failed");
+      }
+    });
   });
 });

@@ -4,6 +4,7 @@ import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/
 import {
   createAgentRun,
   createChokePoint,
+  createDocStore,
   createViewTypeRegistry,
   loadFullModuleRegistry,
   seedSystem,
@@ -99,7 +100,7 @@ interface Case {
 }
 
 /**
- * One AgentTool call per operation in the closed 30-operation catalog, mirroring
+ * One AgentTool call per operation in the closed 31-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern and `mcpGenericOperationsContract.test.ts`'s
  * MCP pattern one adapter over (the code-review finding on issue #220's diff: parameterized
  * contract tests across all of the then-28 operations were missing for the AgentTool adapter). Every
@@ -168,6 +169,25 @@ const CASES: Record<GenericOperationName, Case> = {
     }),
   },
   "relation.list": { args: (fx) => ({ itemId: fx.itemA.id }) },
+  "page.restoreVersion": {
+    // The instant sits inside the history `prepare` opens, so only the approval gate stands between the call and the restore.
+    args: (fx) => ({ itemId: fx.itemA.id, at: new Date(Date.now() - 30 * 60 * 1000).toISOString() }),
+    prepare: async (fx) => {
+      await createDocStore(pool).putBlock(
+        fx.itemA.id,
+        { id: "b1", flavour: "paragraph", fields: { content: "first" } },
+        "user",
+      );
+      await pool.query(`UPDATE docs SET history_available_from = now() - interval '1 hour' WHERE item_id = $1`, [
+        fx.itemA.id,
+      ]);
+      await pool.query(
+        `UPDATE doc_snapshot_history SET represented_at = now() - interval '1 hour'
+         WHERE through_update_id = 0 AND doc_id = (SELECT id FROM docs WHERE item_id = $1)`,
+        [fx.itemA.id],
+      );
+    },
+  },
 };
 
 describe("generic operation AgentTools contract (issue #220)", () => {

@@ -69,7 +69,8 @@ async function resolveRelationProperty(
  * /api/databases/:id/items`, `GET /api/items/:id` (with optional `?include=path`), `PATCH
  * /api/items/:id` with `ifVersion`-checked optimistic concurrency, `DELETE /api/items/:id` and
  * `POST /api/items/:id/restore`, `POST /api/databases/:id/query`, `GET /api/items/:id/relations`
- * (with optional `?propertyKey=`), and `PUT`/`DELETE /api/items/:id/relations/:propertyKey/:targetItemId`.
+ * (with optional `?propertyKey=`), `PUT`/`DELETE /api/items/:id/relations/:propertyKey/:targetItemId`, and
+ * `POST /api/items/:id/page/restore` (issue #1617, the page's `at` body field).
  * Every route assembles a canonical command object and dispatches it through
  * `dispatchGenericOperation` against the injected `GenericApplicationPort` — no route constructs its
  * own `createChokePoint(pool)` for an operation the 30-operation catalog covers. `?include=path`'s breadcrumb chain
@@ -239,6 +240,24 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
           targetItemId,
         });
         return { status: 200, body: toRelationEnvelope(edge) };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/items/:id/page/restore",
+      handler: async (ctx) => {
+        const id = requireUuidParam(ctx.params, "id");
+        const body = requireJsonObjectBody(ctx.body);
+        const restored = await dispatchGenericOperation(
+          service,
+          "page.restoreVersion",
+          restActor(ctx.identity.user.id),
+          {
+            itemId: id,
+            at: body.at,
+          },
+        );
+        return { status: 200, body: restored };
       },
     },
   ];

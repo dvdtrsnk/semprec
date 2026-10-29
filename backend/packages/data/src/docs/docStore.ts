@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
+import type { PageRestoreOutput } from "@semprec/shared";
 import type { CreatedBy, DocKind, DocRow } from "../types.js";
 import * as docsStore from "./docsStore.js";
 import { loadDoc, mutateDoc, mutateDocWithClient } from "./docPersistence.js";
@@ -9,6 +10,7 @@ import type { BlockInput, BlockData } from "./blocks.js";
 import * as canvas from "./canvas.js";
 import type { CanvasElementInput, CanvasElementData } from "./canvas.js";
 import { openDocVersionAt } from "./docHistory.js";
+import { restorePageVersionWithClient } from "./docPageRestore.js";
 
 function assertKind(doc: DocRow, expected: DocKind): void {
   if (doc.kind !== expected) {
@@ -134,6 +136,11 @@ export function createDocStore(pool: Pool) {
       const doc = await openDocVersionAt(pool, docRow.id, at);
       if (docRow.kind === "page") return { kind: "page", blocks: blocks.listBlocks(doc) };
       return { kind: "canvas", elements: canvas.listCanvasElements(doc) };
+    },
+
+    /** Restores the page of `itemId` to `at` as one `user` update (issue #1617); see `docPageRestore.ts`. */
+    async restoreVersion(itemId: string, at: Date): Promise<PageRestoreOutput> {
+      return withTransaction(pool, (client) => restorePageVersionWithClient(client, itemId, at));
     },
   };
 }

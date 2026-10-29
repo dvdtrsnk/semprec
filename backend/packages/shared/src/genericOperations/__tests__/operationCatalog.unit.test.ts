@@ -47,6 +47,7 @@ const EXPECTED_ROWS: Record<
   "relation.put": { schema: schemas.RelationPutInputSchema, method: "putRelation" },
   "relation.delete": { schema: schemas.RelationDeleteInputSchema, method: "deleteRelation" },
   "relation.list": { schema: schemas.RelationListInputSchema, method: "listRelations" },
+  "page.restoreVersion": { schema: schemas.PageRestoreVersionInputSchema, method: "restorePageVersion" },
 };
 
 const EXPECTED_METADATA: Record<
@@ -213,17 +214,23 @@ const EXPECTED_METADATA: Record<
     riskClass: "read",
     reversible: true,
   },
+  "page.restoreVersion": {
+    requiresCapability: "core.item.write",
+    requiresApproval: true,
+    riskClass: "destructive",
+    reversible: true,
+  },
 };
 
 describe("GENERIC_OPERATION_NAMES", () => {
-  it("has exactly 30 entries with no duplicates", () => {
-    expect(GENERIC_OPERATION_NAMES).toHaveLength(30);
-    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(30);
+  it("has exactly 31 entries with no duplicates", () => {
+    expect(GENERIC_OPERATION_NAMES).toHaveLength(31);
+    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(31);
   });
 });
 
 describe("GENERIC_OPERATION_BINDINGS", () => {
-  it("has exactly the 30 catalog rows and no others", () => {
+  it("has exactly the 31 catalog rows and no others", () => {
     expect(Object.keys(GENERIC_OPERATION_BINDINGS).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 
@@ -289,6 +296,7 @@ describe("deriveApprovalRiskLevel", () => {
     ["property.delete", { riskClass: "destructive", operationName: "property.delete" }, "irreversible"],
     ["view.delete", { riskClass: "destructive", operationName: "view.delete" }, "irreversible"],
     ["relation.delete", { riskClass: "destructive", operationName: "relation.delete" }, "irreversible"],
+    ["page.restoreVersion", { riskClass: "destructive", operationName: "page.restoreVersion" }, "write"],
     ["MCP destructive tool", { riskClass: "destructive" }, "irreversible"],
     ["destructive unknown operation name", { riskClass: "destructive", operationName: "toString" }, "irreversible"],
     ["outbound tool", { riskClass: "outbound" }, "outbound"],

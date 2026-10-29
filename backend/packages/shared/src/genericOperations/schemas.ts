@@ -325,7 +325,16 @@ export const RelationListInputSchema = z
   .strict();
 export type RelationListInput = z.infer<typeof RelationListInputSchema>;
 
-/** Exhaustive mapped type over the 30 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
+/** Restores the page of `itemId` to its state at `at` (issue #1617); a future or unretained `at` is refused by the operation, not by this schema. */
+export const PageRestoreVersionInputSchema = z
+  .object({
+    itemId: z.string(),
+    at: z.iso.datetime({ offset: true }),
+  })
+  .strict();
+export type PageRestoreVersionInput = z.infer<typeof PageRestoreVersionInputSchema>;
+
+/** Exhaustive mapped type over the 31 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
 export interface InputByOperation {
   "database.list": DatabaseListInput;
   "database.get": DatabaseGetInput;
@@ -357,6 +366,7 @@ export interface InputByOperation {
   "relation.put": RelationPutInput;
   "relation.delete": RelationDeleteInput;
   "relation.list": RelationListInput;
+  "page.restoreVersion": PageRestoreVersionInput;
 }
 
 /** Fails to compile if `InputByOperation`'s keys and `GenericOperationName`'s literals ever diverge in either direction. */

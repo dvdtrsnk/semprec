@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import {
   ApprovalRequiredError,
   ChokePointError,
@@ -6,6 +6,7 @@ import {
   NotFoundError,
   ValidationError,
   computeDestructiveResourceProjection,
+  computePageRestoreProjection,
   createActionQueueAffinity,
   createPendingApprovalRequest,
   buildDestructiveApprovalDescription,
@@ -18,6 +19,7 @@ import {
   itemDeleteWithClient,
   markApprovalRequestExecutionSucceeded,
   propertyDeleteWithClient,
+  restorePageVersionWithClient,
   terminalizeApprovalRequestAsConflict,
   viewDeleteWithClient,
   withTransaction,
@@ -26,7 +28,9 @@ import {
   type WriterIdentity,
   type ApprovalRequest,
   type DestructiveOperationCheck,
+  type DestructiveResourceProjection,
   type GenericOperationApprovalRequestPayload,
+  type PageRestoreCheck,
 } from "@semprec/data";
 import {
   GENERIC_OPERATION_BINDINGS,
@@ -43,9 +47,9 @@ import {
 } from "@semprec/shared";
 import { createGenericApplicationService, toActor } from "./genericApplicationService.js";
 
-/** The five destructive operations issue #89 covers — every other catalog entry never reaches this gate (`OPERATION_METADATA[...].requiresApproval` is `false`). */
+/** The six destructive operations: issue #89's five, plus `page.restoreVersion` (issue #1617). Every other catalog entry never reaches this gate (`OPERATION_METADATA[...].requiresApproval` is `false`). */
 type DestructiveOperationName =
-  "database.archive" | "property.delete" | "view.delete" | "item.delete" | "relation.delete";
+  "database.archive" | "property.delete" | "view.delete" | "item.delete" | "relation.delete" | "page.restoreVersion";
 
 function isDestructiveOperationName(operation: GenericOperationName): operation is DestructiveOperationName {
   return (
@@ -53,17 +57,26 @@ function isDestructiveOperationName(operation: GenericOperationName): operation 
     operation === "property.delete" ||
     operation === "view.delete" ||
     operation === "item.delete" ||
-    operation === "relation.delete"
+    operation === "relation.delete" ||
+    operation === "page.restoreVersion"
   );
 }
 
+/** A destructive check the choke point's own projection covers, or the page restore's, which the docs module projects (`chokePoint` may not import `docs`). */
+type GatewayCheck = DestructiveOperationCheck | PageRestoreCheck;
+
+/** The approval snapshot of one destructive check, computed by the module that owns the resource. */
+function projectCheck(client: PoolClient, check: GatewayCheck): Promise<DestructiveResourceProjection> {
+  return check.operation === "page.restoreVersion"
+    ? computePageRestoreProjection(client, check)
+    : computeDestructiveResourceProjection(client, check);
+}
+
 /** Maps one destructive operation's already-validated input (plus the data-layer `Actor` form of the caller, needed only by `view.delete`'s writability check) onto the shared projection/authorization check both request-time snapshotting and execution-time revalidation run. */
-function buildDestructiveCheck(
-  operation: DestructiveOperationName,
-  input: unknown,
-  actor: Actor,
-): DestructiveOperationCheck {
+function buildDestructiveCheck(operation: DestructiveOperationName, input: unknown, actor: Actor): GatewayCheck {
   switch (operation) {
+    case "page.restoreVersion":
+      return { operation, input: input as { itemId: string; at: string } };
     case "database.archive":
       return { operation, input: input as { databaseId: string } };
     case "property.delete":
@@ -82,7 +95,7 @@ function buildDestructiveCheck(
 
 /** Runs the actual destructive mutation on the caller's own transaction — the same `*WithClient` function the choke-point's public API delegates to, so approval-gated execution and a direct call share one implementation. */
 async function executeDestructiveWithClient(
-  client: Parameters<typeof databaseArchiveWithClient>[0],
+  client: PoolClient,
   operation: DestructiveOperationName,
   input: unknown,
   actor: Actor,
@@ -91,6 +104,11 @@ async function executeDestructiveWithClient(
   writer: WriterIdentity,
 ): Promise<unknown> {
   switch (operation) {
+    case "page.restoreVersion": {
+      // Authored `user`: the approver's decision is the user's (issue #1617).
+      const { itemId, at } = input as { itemId: string; at: string };
+      return restorePageVersionWithClient(client, itemId, new Date(at));
+    }
     case "database.archive":
       return databaseArchiveWithClient(client, (input as { databaseId: string }).databaseId, actingUserId);
     case "property.delete":
@@ -222,7 +240,7 @@ async function preflightDestructiveApproval(
     }
 
     const check = buildDestructiveCheck(operation, input, toActor(actor));
-    const { snapshot } = await computeDestructiveResourceProjection(client, check);
+    const { snapshot } = await projectCheck(client, check);
 
     const payload: GenericOperationApprovalRequestPayload = {
       operationName: operation,
@@ -311,7 +329,7 @@ export function createGenericOperationGateway(pool: Pool): GenericOperationGatew
       if (metadata.requiresApproval && actor.runId !== undefined && actor.agentProjectItemId !== undefined) {
         if (!isDestructiveOperationName(operation)) {
           throw new ValidationError(
-            `Operation '${operation}' is flagged as approval-requiring but is not one of the five destructive kinds`,
+            `Operation '${operation}' is flagged as approval-requiring but is not a destructive kind`,
           );
         }
         const request = await preflightDestructiveApproval(
@@ -417,7 +435,7 @@ export async function replayApprovedGenericOperation(
 
       const dataActor = toActor({ userId: actor.userId, agentProjectItemId: actor.agentProjectItemId });
       const check = buildDestructiveCheck(operation, input, dataActor);
-      const { currentResource, snapshot } = await computeDestructiveResourceProjection(client, check);
+      const { currentResource, snapshot } = await projectCheck(client, check);
 
       if (
         snapshot.kind !== locked.resourceSnapshot.kind ||

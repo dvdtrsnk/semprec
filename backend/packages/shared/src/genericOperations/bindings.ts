@@ -5,6 +5,7 @@ import type { GenericOperationName } from "./operationNames.js";
 import type { InputByOperation } from "./schemas.js";
 import {
   DatabaseArchiveInputSchema,
+  PageRestoreVersionInputSchema,
   DatabaseCreateInputSchema,
   DatabaseGetInputSchema,
   DatabaseListInputSchema,
@@ -180,5 +181,9 @@ export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
   "relation.list": {
     input: RelationListInputSchema,
     invoke: (service, actor, input) => service.listRelations(actor, input),
+  },
+  "page.restoreVersion": {
+    input: PageRestoreVersionInputSchema,
+    invoke: (service, actor, input) => service.restorePageVersion(actor, input),
   },
 };

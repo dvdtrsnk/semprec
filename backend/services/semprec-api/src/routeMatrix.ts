@@ -556,6 +556,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "restore page version",
+    method: "POST",
+    path: `/api/items/${EXAMPLE_ID}/page/restore`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "upload file",
     method: "POST",
     path: "/api/files",
