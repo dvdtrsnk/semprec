@@ -508,7 +508,7 @@ function existingItemRelations(
  * active step refers to, or that refers to a skipped step. A non-optional step that refers to a
  * skipped step, or to no step at all, is a `ValidationError`.
  */
-function selectActiveSteps(steps: ProposalStep[]): ProposalStep[] {
+export function selectActiveSteps(steps: ProposalStep[]): ProposalStep[] {
   const refs = new Set<string>();
   for (const step of steps) {
     if (step.ref.trim().length === 0) throw stepError(step, "ref must not be empty", "ref");

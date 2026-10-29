@@ -1,5 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
+import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
@@ -91,6 +93,22 @@ describe("inbox custom route handlers (issue #239)", () => {
       expect(result.status).toBe(200);
       expect("item" in result && result.item.properties.status).toBe("confirmed");
       expect("item" in result && typeof result.item.properties.resultItemId).toBe("string");
+    });
+
+    it("addresses realtime invalidation to the authenticated user", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const handler = createConfirmProposalRouteHandler(pool);
+      const userId = randomUUID();
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await handler({ params: { id: proposalId }, body: {}, identity: { user: { id: userId } } });
+      } finally {
+        setInvalidationHook(() => {});
+      }
+      const itemEvents = events.filter((event) => event.scope === "item");
+      expect(itemEvents.length).toBeGreaterThanOrEqual(2);
+      expect(itemEvents.every((event) => event.userId === userId)).toBe(true);
     });
 
     it("rejects a request with no `id` path parameter", async () => {
