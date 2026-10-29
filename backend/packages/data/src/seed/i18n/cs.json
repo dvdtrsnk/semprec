@@ -129,6 +129,12 @@
   "property.transcripts.link.name": "Odkaz",
   "property.transcripts.event.name": "Událost",
   "property.transcripts.speakers.name": "Mluvčí",
+  "property.transcripts.project.name": "Projekt",
+  "property.projects.transcripts.name": "Přepisy",
+  "property.transcripts.company.name": "Firma",
+  "property.companies.transcripts.name": "Přepisy",
+  "property.transcripts.people.name": "Lidé",
+  "property.people.transcripts.name": "Přepisy",
 
   "database.journal.name": "Deník",
   "property.journal.name.name": "Název",

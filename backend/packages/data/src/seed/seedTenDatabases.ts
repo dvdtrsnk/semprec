@@ -442,6 +442,33 @@ export async function seedTenDatabasesInTransaction(
     targetDatabaseId: people.id,
     cardinality: "many_to_many",
   });
+  // Transcripts <-> Projects / Companies: a transcript has at most one of each, so the "many"
+  // side (`Projects.transcripts`, `Companies.transcripts`) is property A of `one_to_many`.
+  await relate({
+    sourceDatabaseId: projects.id,
+    key: "transcripts",
+    name: "Transcripts",
+    targetDatabaseId: transcripts.id,
+    cardinality: "one_to_many",
+    inverse: { key: "project", name: "Project" },
+  });
+  await relate({
+    sourceDatabaseId: companies.id,
+    key: "transcripts",
+    name: "Transcripts",
+    targetDatabaseId: transcripts.id,
+    cardinality: "one_to_many",
+    inverse: { key: "company", name: "Company" },
+  });
+  // Transcripts <-> People ("people"): the recording's participants, separate from the mapped `speakers`.
+  await relate({
+    sourceDatabaseId: transcripts.id,
+    key: "people",
+    name: "People",
+    targetDatabaseId: people.id,
+    cardinality: "many_to_many",
+    inverse: { key: "transcripts", name: "Transcripts" },
+  });
   // Journal -> Areas: optional, nullable, one-directional; no default value (issue's fix — the
   // mock hardwired every entry to a single "Osobní" area, which this issue explicitly rejects).
   // `many_to_many`, not `one_to_many` (issue #82) — same reasoning as Files.area above.
