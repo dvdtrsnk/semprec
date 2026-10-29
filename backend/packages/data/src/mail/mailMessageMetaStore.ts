@@ -262,8 +262,39 @@ export async function createMailThread(client: Queryable, subjectHint?: string):
   return { id: thread.id, subjectHint: thread.subject_hint };
 }
 
-/** Moves every message out of `fromThreadId` into `toThreadId`, then deletes the now-empty `mail_threads` row — nothing else references `mail_threads` except this table's own `thread_id`, so once this UPDATE runs, `fromThreadId` is guaranteed to have zero remaining referencers. Leaving it would accumulate an orphaned row on every dummy-container merge (threading.ts's self-heal path). */
+/**
+ * Moves every message out of `fromThreadId` into `toThreadId`, records the alias `fromThreadId -> toThreadId`,
+ * repoints every alias that already targeted `fromThreadId`, then deletes the now-empty `mail_threads` row. Run it
+ * in one transaction. Nothing else references `mail_threads` except `mail_message_meta.thread_id` and the aliases,
+ * so after these statements `fromThreadId` has no remaining referencer; leaving it would accumulate an orphaned row on
+ * every dummy-container merge (threading.ts's self-heal path). Merging a thread with itself does nothing.
+ */
 export async function reassignThread(client: Queryable, fromThreadId: string, toThreadId: string): Promise<void> {
+  if (fromThreadId === toThreadId) return;
   await client.query(`UPDATE mail_message_meta SET thread_id = $2 WHERE thread_id = $1`, [fromThreadId, toThreadId]);
+  await client.query(
+    `INSERT INTO mail_thread_aliases (from_thread_id, to_thread_id) VALUES ($1, $2)
+     ON CONFLICT (tenant_id, from_thread_id) DO UPDATE SET to_thread_id = EXCLUDED.to_thread_id`,
+    [fromThreadId, toThreadId],
+  );
+  await client.query(`UPDATE mail_thread_aliases SET to_thread_id = $2 WHERE to_thread_id = $1`, [
+    fromThreadId,
+    toThreadId,
+  ]);
   await client.query(`DELETE FROM mail_threads WHERE id = $1`, [fromThreadId]);
+}
+
+/**
+ * Translates a possibly merged-away thread id to the live one in a single query: the alias target, the input id
+ * when it is a live `mail_threads` row, or `null` when it is neither (aliases are always one step, see `reassignThread`).
+ */
+export async function resolveMergedThreadId(client: Queryable, threadId: string): Promise<string | null> {
+  const { rows } = await client.query<{ id: string }>(
+    `SELECT to_thread_id AS id FROM mail_thread_aliases WHERE from_thread_id = $1
+     UNION ALL
+     SELECT id FROM mail_threads WHERE id = $1
+     LIMIT 1`,
+    [threadId],
+  );
+  return rows[0]?.id ?? null;
 }
