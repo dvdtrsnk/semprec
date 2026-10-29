@@ -890,6 +890,27 @@ const cases: Record<string, TaskCase> = {
       });
     },
   },
+  [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const itemId = randomUUID();
+      // A sent message stored before #1474 gave sends a thread. No production writer leaves thread_id NULL now.
+      await inTenant(tenant, () =>
+        pool.query(`INSERT INTO mail_message_meta (item_id, message_id, envelope) VALUES ($1, $2, '{}'::jsonb)`, [
+          itemId,
+          `<${randomUUID()}@example.com>`,
+        ]),
+      );
+      return marked([itemId], async () => {
+        expect(
+          await rows(tenant, "SELECT thread_id IS NOT NULL AS threaded FROM mail_message_meta WHERE item_id = $1", [
+            itemId,
+          ]),
+        ).toEqual([{ threaded: true }]);
+      });
+    },
+  },
   [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: {
     tenancy: "system",
     touchesTenantTables: true,

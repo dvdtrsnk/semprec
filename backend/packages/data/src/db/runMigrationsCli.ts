@@ -14,6 +14,7 @@ import { activateCzechHunspellSearch } from "../mail/czechHunspellSearch.js";
 import { runItemSearchBackfillCutover } from "../search/itemSearchBackfill.js";
 import { enqueueMailGmailPseudoFolderCleanup } from "../mail/gmailPseudoFolderCleanupJob.js";
 import { enqueueMailMessagePreviewBackfill } from "../mail/mailMessagePreviewBackfillJob.js";
+import { enqueueMailThreadBackfill } from "../mail/mailThreadBackfillJob.js";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -51,6 +52,7 @@ try {
     await runItemSearchBackfillCutover(tenantPool);
     await enqueueMailMessagePreviewBackfill(pool);
     await enqueueMailGmailPseudoFolderCleanup(pool);
+    await enqueueMailThreadBackfill(pool);
     // Issue #222: needs graphile_worker's own schema/functions, which don't exist until the two
     // calls above create them — unlike the cutover migrations above, which run before them.
     await runHeartbeatFireQueueSplitMigration(pool);
