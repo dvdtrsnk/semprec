@@ -4,6 +4,7 @@ import { getSystemTimezone } from "../systemSettings.js";
 import type { AgentRunUnit } from "../agentRuns/agentRunsStore.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { getCurrentTenantAiBudget } from "./tenantAiBudgetsStore.js";
+import { getModelDisplayCatalogs, resolveModelDisplayName } from "./modelDisplayNames.js";
 
 /** Operations whose native unit is audio seconds; every other operation (including NULL) is token-native. */
 const AUDIO_OPERATIONS: readonly string[] = ["transcription_transcribe", "transcription_diarize"];
@@ -19,6 +20,8 @@ export interface AiUsageReportInput {
   /** Exclusive upper bound, ISO 8601 timestamp. */
   to: string;
   granularity?: "day" | "month";
+  /** Locale of the caller's `users.locale`, used for model display names; defaults to `en`. */
+  locale?: string;
 }
 
 export type NativeUnit = "tokens" | "audio_seconds";
@@ -65,6 +68,23 @@ export interface MonthlyCostPoint {
   costUsd: number;
 }
 
+/** One line per (provider, model) over the range, run units merged. */
+export interface AiUsageByModel {
+  provider: string;
+  model: string;
+  /** Localized model family name; the raw model id when the family is not recognized. */
+  displayName: string;
+  callCount: number;
+  costUsd: number;
+  /** null for an audio-only model. */
+  inputTokens: number | null;
+  outputTokens: number | null;
+  /** null for a token-only model. */
+  audioSeconds: number | null;
+  /** Sorted distinct operation keys the model was used for; a NULL operation is reported as `other`. */
+  operations: string[];
+}
+
 export interface AiUsageReport {
   accountStartedAt: string;
   timezone: string;
@@ -72,6 +92,8 @@ export interface AiUsageReport {
   to: string;
   /** One row per (provider, model, nativeUnit, runUnit) combination — kept as separate axes because they're not comparable: audio seconds can't be summed with tokens, and an 'invocation' run's spend isn't 1:1 with a long-lived 'session' run's. */
   rows: AiUsageReportRow[];
+  /** One entry per (provider, model), ordered by cost descending then model. */
+  byModel: AiUsageByModel[];
   /** True when any non-failed call in [from, to) is still `reserved`, so its cost is an estimate. */
   estimated: boolean;
   /** Total cost across every row, the one number that IS comparable regardless of native/run unit. */
@@ -109,6 +131,17 @@ interface UsageRow {
   output_tokens: string | null;
   audio_seconds: string | null;
   has_reserved: boolean;
+}
+
+interface ByModelRow {
+  provider: string;
+  model: string;
+  call_count: string;
+  cost_usd: string;
+  input_tokens: string | null;
+  output_tokens: string | null;
+  audio_seconds: string | null;
+  operations: string[];
 }
 
 interface MonthlyRow {
@@ -184,6 +217,48 @@ export async function getAiUsageReport(client: Queryable, input: AiUsageReportIn
     inputTokens: row.input_tokens === null ? null : Number(row.input_tokens),
     outputTokens: row.output_tokens === null ? null : Number(row.output_tokens),
     audioSeconds: row.audio_seconds === null ? null : Number(row.audio_seconds),
+  }));
+
+  const { rows: modelRows } = await client.query<ByModelRow>(
+    `WITH classified AS (
+       SELECT
+         provider,
+         model,
+         COALESCE(operation, 'other') AS operation,
+         COALESCE(operation = ANY($3::text[]), false) AS is_audio,
+         cost_usd,
+         input_tokens,
+         output_tokens,
+         audio_seconds
+       FROM ai_gateway_calls
+       WHERE at >= $1 AND at < $2 AND status <> 'failed'
+     )
+     SELECT
+       provider,
+       model,
+       COUNT(*) AS call_count,
+       SUM(cost_usd) AS cost_usd,
+       CASE WHEN BOOL_AND(is_audio) THEN NULL ELSE COALESCE(SUM(input_tokens) FILTER (WHERE NOT is_audio), 0) END AS input_tokens,
+       CASE WHEN BOOL_AND(is_audio) THEN NULL ELSE COALESCE(SUM(output_tokens) FILTER (WHERE NOT is_audio), 0) END AS output_tokens,
+       CASE WHEN BOOL_OR(is_audio) THEN COALESCE(SUM(audio_seconds) FILTER (WHERE is_audio), 0) ELSE NULL END AS audio_seconds,
+       ARRAY_AGG(DISTINCT operation ORDER BY operation) AS operations
+     FROM classified
+     GROUP BY provider, model
+     ORDER BY SUM(cost_usd) DESC, model, provider`,
+    [fromDate.toISOString(), toDate.toISOString(), AUDIO_OPERATIONS],
+  );
+  const catalogs = await getModelDisplayCatalogs();
+  const locale = input.locale ?? "en";
+  const byModel: AiUsageByModel[] = modelRows.map((row) => ({
+    provider: row.provider,
+    model: row.model,
+    displayName: resolveModelDisplayName(catalogs, locale, row.model),
+    callCount: Number(row.call_count),
+    costUsd: Number(row.cost_usd),
+    inputTokens: row.input_tokens === null ? null : Number(row.input_tokens),
+    outputTokens: row.output_tokens === null ? null : Number(row.output_tokens),
+    audioSeconds: row.audio_seconds === null ? null : Number(row.audio_seconds),
+    operations: row.operations,
   }));
 
   let monthlyCostUsd: MonthlyCostPoint[] | undefined;
@@ -267,6 +342,7 @@ export async function getAiUsageReport(client: Queryable, input: AiUsageReportIn
     from: fromDate.toISOString(),
     to: toDate.toISOString(),
     rows: reportRows,
+    byModel,
     estimated,
     totalCostUsd,
     dailyCostUsd,
