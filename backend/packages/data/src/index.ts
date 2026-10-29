@@ -268,6 +268,9 @@ export {
   type RefreshAndPersistAccessTokenInput,
   type RefreshedAccessToken,
 } from "./mail/mailOAuthAccess.js";
+export { GOOGLE_TOKEN_URL } from "./mail/oauthTokenExchange.js";
+export { GmailRestClient } from "./mail/gmailRestClient.js";
+export type { MailSyncAdapterFactory } from "./mail/mailSyncJob.js";
 export {
   createImapMailFlagWritebackAdapter,
   createGmailMailFlagWritebackAdapter,

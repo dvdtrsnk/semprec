@@ -18,6 +18,8 @@ export interface RefreshAccessTokenInput {
   clientSecret: string;
   refreshToken: string;
   scope?: string;
+  /** Replaces the global `fetch` for the token request. Tests inject a fake endpoint here; production leaves it unset. */
+  fetchImpl?: typeof fetch;
 }
 
 export interface AccessToken {
@@ -37,7 +39,8 @@ export async function refreshAccessToken(input: RefreshAccessTokenInput): Promis
     ...(input.scope ? { scope: input.scope } : {}),
   });
 
-  const response = await fetch(input.tokenUrl, {
+  const doFetch = input.fetchImpl ?? fetch;
+  const response = await doFetch(input.tokenUrl, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
