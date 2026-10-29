@@ -162,6 +162,19 @@ describe("compileFilterNode", () => {
     expect(scalarParams).toEqual(["title", ["a", "b"]]);
   });
 
+  it("compiles `in status [monitoring]` against the option key, independent of the option's display label", () => {
+    const props = properties([["status", { type: "select" }]]);
+    const params: unknown[] = [];
+    const sql = compileFilterNode(
+      parseFilterNode({ type: "in", property: "status", value: ["monitoring"] }),
+      props,
+      params,
+    );
+
+    expect(sql).toBe("properties ->> $1 = ANY($2::text[])");
+    expect(params).toEqual(["status", ["monitoring"]]);
+  });
+
   it("reads a rollup property from computed and every other property from properties", () => {
     const props = properties([
       ["total", { type: "rollup" }],
