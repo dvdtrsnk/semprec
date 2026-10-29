@@ -842,16 +842,64 @@ async function writeNeedsClarification(
 }
 
 /**
+ * Why a Processing proposal is `invalid` (issue #1482), stored in its `invalidReason` system
+ * property. `sourceDeleted` is final: the card can only be discarded. `targetArchived` and
+ * `targetDeleted` are fixable: revising the card to a valid target returns it to `proposed`.
+ * `field` is the editor field concerned (empty for the source), `itemId` the item that caused
+ * it, and `label` that item's name when the reason was written. The warning sentence is not
+ * stored; `renderInvalidReason` renders it from the code and the label.
+ */
+export const invalidReasonSchema = z.object({
+  code: z.enum(["sourceDeleted", "targetArchived", "targetDeleted"]),
+  field: z.string(),
+  itemId: z.string().min(1),
+  label: z.string(),
+});
+
+export type InvalidReason = z.infer<typeof invalidReasonSchema>;
+
+/**
+ * True when a Processing proposal is `invalid` for a reason no revise can repair: its source Inbox
+ * item was deleted (issue #1482). A legacy `invalid` card with no `invalidReason` is not final, so
+ * it stays revisable.
+ */
+export function isFinalInvalid(properties: Record<string, unknown>): boolean {
+  if (properties.status !== "invalid") return false;
+  const parsed = invalidReasonSchema.safeParse(properties.invalidReason);
+  return parsed.success && parsed.data.code === "sourceDeleted";
+}
+
+/** The most characters (code points, not UTF-16 units) an `invalidReason` label keeps, ellipsis included. */
+const INVALID_REASON_LABEL_MAX = 80;
+
+/**
+ * The source Inbox item's text as an `invalidReason` label (issue #1482): its first line, trimmed,
+ * and at most `INVALID_REASON_LABEL_MAX` characters, a longer one ending with an ellipsis. Cut by
+ * code point, so an emoji is never split. An item with no text, or none at all (a hard-deleted
+ * source), gives the empty label.
+ */
+function invalidReasonLabel(item: ItemRow | null): string {
+  const text = typeof item?.properties.text === "string" ? item.properties.text : "";
+  const characters = Array.from((text.split("\n")[0] ?? "").trim());
+  return characters.length > INVALID_REASON_LABEL_MAX
+    ? `${characters.slice(0, INVALID_REASON_LABEL_MAX - 1).join("")}…`
+    : characters.join("");
+}
+
+/**
  * Puts an unlocked proposal into `invalid` (issue #104) when its source Inbox item no longer
- * exists. A locked (`confirmed`/`rejected`) proposal, or one with no proposal row at all, is
- * left untouched — per the epic's "a locked card is never recomputed again" rule and because
- * there is nothing to invalidate. A no-op if already `invalid`, so a source deleted more than
- * once (e.g. soft-deleted, then its delete event re-fires) doesn't spam history.
+ * exists, and stores why as the `sourceDeleted` `invalidReason` (issue #1482). A locked
+ * (`confirmed`/`rejected`) proposal, or one with no proposal row at all, is left untouched — per
+ * the epic's "a locked card is never recomputed again" rule and because there is nothing to
+ * invalidate. A no-op if already `invalid`, so a source deleted more than once (e.g. soft-deleted,
+ * then its delete event re-fires) doesn't spam history.
  */
 async function invalidateProposalForDeletedSource(
   client: PoolClient,
   config: SemprecTickActionConfig,
   existingProposal: ItemRow | null,
+  sourceItemId: string,
+  sourceItem: ItemRow | null,
 ): Promise<void> {
   if (!existingProposal) return;
   const status = existingProposal.properties.status;
@@ -860,6 +908,12 @@ async function invalidateProposalForDeletedSource(
 
   const locked = await lockUnlockedProposal(client, config, existingProposal);
   if (!locked) return;
+  const invalidReason: InvalidReason = {
+    code: "sourceDeleted",
+    field: "",
+    itemId: sourceItemId,
+    label: invalidReasonLabel(sourceItem),
+  };
   await updateItemWithClient(
     client,
     {
@@ -868,10 +922,13 @@ async function invalidateProposalForDeletedSource(
       ifVersion: locked.updatedAt,
       propertiesPatch: {
         status: "invalid",
-        history: appendHistoryEntry(locked.properties.history, "Source Inbox item was deleted."),
+        invalidReason,
+        history: appendHistoryEntry(locked.properties.history, "Source Inbox item was deleted.", "ai", {
+          kind: "invalidated",
+        }),
       },
     },
-    { allowedSystemKeys: ["status", "history"] },
+    { allowedSystemKeys: ["status", "invalidReason", "history"] },
   );
 }
 
@@ -936,7 +993,7 @@ async function readTickSnapshot(
   if (item) await enqueueJournalInboxRecomputeForInboxItem(client, item.id);
 
   if (!item || item.deletedAt) {
-    await invalidateProposalForDeletedSource(client, config, existingProposal);
+    await invalidateProposalForDeletedSource(client, config, existingProposal, sourceItemId, item);
     return null;
   }
 

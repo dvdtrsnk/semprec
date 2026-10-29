@@ -1011,6 +1011,129 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     expect((untouched!.properties.proposal as { target: string }).target).toBe(tasksId);
   });
 
+  describe("invalidReason on revise (issue #1482)", () => {
+    async function readCard(id: string) {
+      return withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));
+    }
+
+    /** Stores `status` `invalid` (with `invalidReason` when given) through the choke point, the state #1916 will write reactively. */
+    async function markInvalid(proposalId: string, invalidReason?: Record<string, unknown>) {
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          {
+            databaseId: proposalsId,
+            itemId: proposalId,
+            propertiesPatch: { status: "invalid", ...(invalidReason ? { invalidReason } : {}) },
+          },
+          { allowedSystemKeys: ["status", "invalidReason"] },
+        ),
+      );
+    }
+
+    /** A card whose source Inbox item was soft-deleted, so the tick makes it `invalid` with `sourceDeleted`. */
+    async function createSourceDeletedCard() {
+      const type = await withTransaction(pool, (client) =>
+        createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name: "Task",
+          emoji: "☑️",
+          processingMethod: "database",
+          targetDatabase: "tasks",
+        }),
+      );
+      const item = await withTransaction(pool, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: inboxId,
+          journalDatabaseId: journalId,
+          timezone: "Europe/Prague",
+          date: "2026-08-28",
+          time: "09:00",
+          text: "Buy milk",
+          type: type.id,
+        }),
+      );
+      await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+      await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, item.id));
+      await runTick(item.id, async () => {
+        throw new Error("computeProposal must not be called for a deleted source");
+      });
+      return (await findProposalForItem(item.id))!;
+    }
+
+    it("a card invalid for a deleted source is refused on revise, and the card is left unchanged", async () => {
+      const card = await createSourceDeletedCard();
+      expect(card.properties.status).toBe("invalid");
+      expect(card.properties.invalidReason).toMatchObject({ code: "sourceDeleted" });
+      const before = await readCard(card.id);
+
+      const attempt = withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card.id, {
+          message: "Use Tasks instead",
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Buy milk" },
+        }),
+      );
+      const error = await attempt.then(
+        () => null,
+        (err: unknown) => err,
+      );
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toHaveProperty("details", { field: "status" });
+
+      const after = await readCard(card.id);
+      expect(after!.properties).toEqual(before!.properties);
+      expect(after!.updatedAt).toEqual(before!.updatedAt);
+    });
+
+    it("revising a fixable targetArchived card returns it to proposed and clears its reason in the same write", async () => {
+      const card = await createDatabaseProposal("Buy milk");
+      await markInvalid(card.id, {
+        code: "targetArchived",
+        field: "project",
+        itemId: randomUUID(),
+        label: "Website redesign",
+      });
+      expect((await readCard(card.id))!.properties.invalidReason).toMatchObject({ code: "targetArchived" });
+
+      const revised = await withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card.id, {
+          message: "Moved it to Tasks",
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Buy milk" },
+        }),
+      );
+
+      expect(revised.properties.status).toBe("proposed");
+      expect(revised.properties.invalidReason).toBeNull();
+      expect(revised.properties.proposal).toEqual({
+        entityKind: "database",
+        target: tasksId,
+        properties: { name: "Buy milk" },
+      });
+    });
+
+    it("a legacy invalid card with no invalidReason is treated as fixable and can be revised", async () => {
+      const card = await createDatabaseProposal("Buy milk");
+      await markInvalid(card.id);
+      expect((await readCard(card.id))!.properties.invalidReason).toBeUndefined();
+
+      const revised = await withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card.id, {
+          message: "Renamed the task",
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Buy oat milk" },
+        }),
+      );
+
+      expect(revised.properties.status).toBe("proposed");
+      expect(revised.properties.invalidReason).toBeNull();
+    });
+  });
+
   describe("aiProposal and aiVersion (issue #1471)", () => {
     async function readProposal(id: string) {
       return withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));

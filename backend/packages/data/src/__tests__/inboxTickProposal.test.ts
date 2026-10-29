@@ -911,7 +911,50 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     expect(invalidated!.id).toBe(proposed!.id);
     expect(invalidated!.properties.status).toBe("invalid");
     expect(invalidated!.properties.history).toHaveLength(2);
-    expect((invalidated!.properties.history as Array<Record<string, unknown>>)[1]).toMatchObject({ author: "ai" });
+    expect((invalidated!.properties.history as Array<Record<string, unknown>>)[1]).toMatchObject({
+      author: "ai",
+      kind: "invalidated",
+    });
+    expect(invalidated!.properties.invalidReason).toEqual({
+      code: "sourceDeleted",
+      field: "",
+      itemId: item.id,
+      label: "Buy milk",
+    });
+  });
+
+  it("a deleted source's reason label is its trimmed first line, cut by code point to 80 characters", async () => {
+    // Emoji are two UTF-16 units each: a cut by unit would split one at the 79th position.
+    const longFirstLine = `  ${"🙂".repeat(120)}  `;
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
+    );
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        text: `${longFirstLine}\nsecond line`,
+        type: type.id,
+      }),
+    );
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Long" } }));
+    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, item.id));
+    await runTick(pool, databaseIds, item.id, async () => {
+      throw new Error("computeProposal must not be called for a deleted source");
+    });
+
+    const invalidated = await findProposalForItem(pool, proposalsId, item.id);
+    const reason = invalidated!.properties.invalidReason as { label: string };
+    expect(reason.label).toBe(`${"🙂".repeat(79)}…`);
   });
 
   it("a confirmed proposal keeps its status when its source item is deleted", async () => {
