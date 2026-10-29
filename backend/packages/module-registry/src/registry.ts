@@ -2,9 +2,14 @@ import { loadModuleCatalogs, type ModuleCatalogs } from "./catalog.js";
 import {
   moduleManifestSchema,
   type CustomRouteMethod,
+  type ModuleLinkRuleDescriptor,
   type ModuleManifest,
   type ModuleTaskAffinity,
 } from "./manifest.js";
+
+export interface ModuleLinkRuleProjection extends ModuleLinkRuleDescriptor {
+  moduleId: string;
+}
 
 export interface ModuleDatabaseProjection {
   moduleId: string;
@@ -142,6 +147,7 @@ export class ModuleRegistry {
   private readonly heartbeatRuleKindOwners = new Map<string, string>();
   /** Keyed by `"<method> <path>"` — the fail-fast collision surface issue #239's Task requires. */
   private readonly customRouteOwners = new Map<string, string>();
+  private readonly linkRuleKeyOwners = new Map<string, string>();
   private readonly catalogsById = new Map<string, ModuleCatalogs>();
   private readonly catalogKeyOwners = new Map<string, string>();
   private readonly reservedTaskNames: ReadonlySet<string>;
@@ -383,6 +389,11 @@ export class ModuleRegistry {
         label: "heartbeat rule kind",
         reserved: this.reservedHeartbeatRuleKinds,
       })),
+      ...(manifest.linkRules ?? []).map((rule) => ({
+        owners: this.linkRuleKeyOwners,
+        key: rule.key,
+        label: "link rule key",
+      })),
     ];
 
     // Two entries of the same kind declared twice within this one manifest (e.g. two
@@ -442,6 +453,73 @@ export class ModuleRegistry {
         ...(db.clientVisible !== undefined ? { clientVisible: db.clientVisible } : {}),
       })),
     );
+  }
+
+  /** Link rules of active modules, in load order then manifest order. */
+  async getLinkRules(): Promise<ModuleLinkRuleProjection[]> {
+    const active = await this.getActiveModules();
+    return active.flatMap((loaded) =>
+      (loaded.manifest.linkRules ?? []).map((rule) => ({
+        moduleId: loaded.manifest.id,
+        key: rule.key,
+        source: { ...rule.source },
+        target: { ...rule.target },
+        via: { ...rule.via },
+      })),
+    );
+  }
+
+  /**
+   * Validates every loaded module's link rules together, once all modules are loaded: a rule
+   * may name a database of another module, which a single `loadModule` cannot see. Covers all
+   * loaded modules regardless of activation. Throws on an unknown database key, a `via`
+   * database that is neither the source's nor the target's, or a cycle in the property graph
+   * (one node per `databaseKey.propertyKey`, one edge per rule from source to target).
+   */
+  validateLinkRules(): void {
+    const rules = [...this.modulesById.values()].flatMap((loaded) => loaded.manifest.linkRules ?? []);
+    for (const rule of rules) {
+      for (const [role, databaseKey] of [
+        ["source", rule.source.databaseKey],
+        ["target", rule.target.databaseKey],
+        ["via", rule.via.databaseKey],
+      ] as const) {
+        if (!this.databaseKeyOwners.has(databaseKey)) {
+          throw new Error(`Link rule "${rule.key}" ${role} names unknown database key "${databaseKey}"`);
+        }
+      }
+      if (rule.via.databaseKey !== rule.source.databaseKey && rule.via.databaseKey !== rule.target.databaseKey) {
+        throw new Error(
+          `Link rule "${rule.key}" via database "${rule.via.databaseKey}" is neither its source database "${rule.source.databaseKey}" nor its target database "${rule.target.databaseKey}"`,
+        );
+      }
+    }
+
+    const nodeOf = (endpoint: { databaseKey: string; propertyKey: string }): string =>
+      `${endpoint.databaseKey}.${endpoint.propertyKey}`;
+    const outgoing = new Map<string, Array<{ rule: string; to: string }>>();
+    for (const rule of rules) {
+      const from = nodeOf(rule.source);
+      const edges = outgoing.get(from) ?? [];
+      edges.push({ rule: rule.key, to: nodeOf(rule.target) });
+      outgoing.set(from, edges);
+    }
+
+    const done = new Set<string>();
+    const stack: Array<{ node: string; viaRule: string }> = [];
+    const visit = (node: string, viaRule: string): void => {
+      const onStackAt = stack.findIndex((entry) => entry.node === node);
+      if (onStackAt !== -1) {
+        const cycleRules = [...stack.slice(onStackAt + 1).map((entry) => entry.viaRule), viaRule];
+        throw new Error(`Link rules form a cycle: ${cycleRules.map((key) => `"${key}"`).join(" -> ")}`);
+      }
+      if (done.has(node)) return;
+      stack.push({ node, viaRule });
+      for (const edge of outgoing.get(node) ?? []) visit(edge.to, edge.rule);
+      stack.pop();
+      done.add(node);
+    };
+    for (const node of outgoing.keys()) visit(node, "");
   }
 
   async getCapabilities(): Promise<string[]> {

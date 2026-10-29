@@ -118,6 +118,25 @@ export interface ModuleCustomRouteDescriptor {
   justification: CustomRouteJustification;
 }
 
+/** One end of a link rule: a property of a database. */
+export interface ModuleLinkRuleEndpoint {
+  databaseKey: string;
+  propertyKey: string;
+}
+
+/**
+ * Copies `source.propertyKey` of a source item to `target.propertyKey` of a target item along
+ * the relation property `via.relationKey` of `via.databaseKey`. `via.databaseKey` is the
+ * target's or the source's database and the relation leads to the other one. `key` is unique
+ * across all modules.
+ */
+export interface ModuleLinkRuleDescriptor {
+  key: string;
+  source: ModuleLinkRuleEndpoint;
+  target: ModuleLinkRuleEndpoint;
+  via: { databaseKey: string; relationKey: string };
+}
+
 export interface ModuleManifest {
   id: string;
   version: string;
@@ -135,6 +154,7 @@ export interface ModuleManifest {
   migrations?: string[];
   dataMigrations?: ModuleDataMigrationDescriptor[];
   customRoutes?: ModuleCustomRouteDescriptor[];
+  linkRules?: ModuleLinkRuleDescriptor[];
 }
 
 const moduleTaskDescriptorSchema = z.object({
@@ -195,6 +215,18 @@ const moduleCustomRouteDescriptorSchema = z.object({
   justification: z.enum(CUSTOM_ROUTE_JUSTIFICATIONS),
 });
 
+const moduleLinkRuleEndpointSchema = z.strictObject({
+  databaseKey: z.string().min(1),
+  propertyKey: z.string().min(1),
+});
+
+const moduleLinkRuleDescriptorSchema = z.strictObject({
+  key: z.string().min(1),
+  source: moduleLinkRuleEndpointSchema,
+  target: moduleLinkRuleEndpointSchema,
+  via: z.strictObject({ databaseKey: z.string().min(1), relationKey: z.string().min(1) }),
+});
+
 export const moduleManifestSchema = z.object({
   id: z.string().min(1),
   version: z.string().min(1),
@@ -212,4 +244,5 @@ export const moduleManifestSchema = z.object({
   migrations: z.array(z.string().min(1)).optional(),
   dataMigrations: z.array(moduleDataMigrationDescriptorSchema).optional(),
   customRoutes: z.array(moduleCustomRouteDescriptorSchema).optional(),
+  linkRules: z.array(moduleLinkRuleDescriptorSchema).optional(),
 });
