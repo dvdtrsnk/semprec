@@ -63,7 +63,7 @@ describe("getApnsConfigFromEnv", () => {
 
 describe("sendApnsNotification (issue #703)", () => {
   const target = { deviceToken: "device-1", apnsEnvironment: "sandbox" as const };
-  const payload = { notificationId: "notif-1", title: "Title", linkHref: null };
+  const payload = { notificationId: "notif-1", title: "Title", body: null, linkHref: null };
 
   it("resolves not-configured naming the missing variable when APNS_* is unset, without making an HTTP/2 request", async () => {
     for (const key of ENV_KEYS) delete process.env[key];
@@ -178,6 +178,7 @@ describe("sendApnsNotification interruption level (issue #1443)", () => {
     const { result, wire } = await sendAndReadBody({
       notificationId: "notif-1",
       title: "Title",
+      body: null,
       linkHref: null,
       interruptionLevel: "time-sensitive",
     });
@@ -191,7 +192,12 @@ describe("sendApnsNotification interruption level (issue #1443)", () => {
   });
 
   it("leaves interruption-level off the wire when the payload carries none, so APNs uses its default", async () => {
-    const { result, wire } = await sendAndReadBody({ notificationId: "notif-2", title: "Title", linkHref: null });
+    const { result, wire } = await sendAndReadBody({
+      notificationId: "notif-2",
+      title: "Title",
+      body: null,
+      linkHref: null,
+    });
 
     expect(result).toEqual({ outcome: "delivered" });
     expect(wire).toEqual({
@@ -199,6 +205,49 @@ describe("sendApnsNotification interruption level (issue #1443)", () => {
       link_href: null,
       notification_id: "notif-2",
     });
+  });
+});
+
+describe("sendApnsNotification body (issue #1773)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Sends through a fake session and returns the JSON body the adapter put on the wire. */
+  async function sendAndReadWire(payload: NotificationPushPayload): Promise<unknown> {
+    const session = new FakeApnsSession();
+    vi.spyOn(http2, "connect").mockImplementation(() => session as unknown as http2.ClientHttp2Session);
+
+    await sendApnsNotification(apnsTarget, payload, apnsTestConfig);
+
+    expect(session.requests).toHaveLength(1);
+    return JSON.parse(session.requests[0]!.body);
+  }
+
+  it("sends aps.alert.body beside the title when the notification has a body", async () => {
+    const wire = await sendAndReadWire({
+      notificationId: "notif-3",
+      title: "Semp needs approval",
+      body: 'Delete the item "Tax return" in the database "Tasks". This action is irreversible.',
+      linkHref: "?page=approvals&user=u1",
+    });
+
+    expect(wire).toEqual({
+      aps: {
+        alert: {
+          title: "Semp needs approval",
+          body: 'Delete the item "Tax return" in the database "Tasks". This action is irreversible.',
+        },
+      },
+      link_href: "?page=approvals&user=u1",
+      notification_id: "notif-3",
+    });
+  });
+
+  it("leaves aps.alert.body off the wire, not null, when the notification has none", async () => {
+    const wire = await sendAndReadWire({ notificationId: "notif-4", title: "Title", body: null, linkHref: null });
+
+    expect(wire).toEqual({ aps: { alert: { title: "Title" } }, link_href: null, notification_id: "notif-4" });
   });
 });
 
@@ -306,7 +355,7 @@ describe("sendApnsNotification push headers (issue #1445)", () => {
 
     await sendApnsNotification(
       apnsTarget,
-      { notificationId: "notif-3", title: "Title", linkHref: null },
+      { notificationId: "notif-3", title: "Title", body: null, linkHref: null },
       apnsTestConfig,
     );
 

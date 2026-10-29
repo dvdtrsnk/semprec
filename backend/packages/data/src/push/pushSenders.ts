@@ -6,6 +6,8 @@ export type NotificationInterruptionLevel = "passive" | "active" | "time-sensiti
 export interface NotificationPushPayload {
   notificationId: string;
   title: string;
+  /** The notification's rendered body (issue #1773); `null` when it has none, and then no push carries one. */
+  body: string | null;
   linkHref: string | null;
   /** Decided by the fanout job from the user's preferences and the kind's policy (issue #1443). */
   interruptionLevel?: NotificationInterruptionLevel;

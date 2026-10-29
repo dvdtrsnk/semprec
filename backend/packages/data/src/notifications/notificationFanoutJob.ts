@@ -195,6 +195,7 @@ export async function handleNotificationFanoutTask(
   const payload: NotificationPushPayload = {
     notificationId: notification.id,
     title: notification.title,
+    body: notification.body,
     linkHref: notification.linkHref,
     interruptionLevel,
   };

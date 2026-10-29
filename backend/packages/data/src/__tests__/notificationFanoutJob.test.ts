@@ -150,12 +150,24 @@ describe("notificationFanout job (issue #151)", () => {
     expect(sendWebPush).toHaveBeenCalledTimes(1);
     expect(sendWebPush).toHaveBeenCalledWith(
       { endpoint: "https://push.example/web-1", p256dh: "p256dh-key", authSecret: "auth-secret" },
-      { notificationId, title: expect.any(String), linkHref: "?page=mailbox", interruptionLevel: "time-sensitive" },
+      {
+        notificationId,
+        title: expect.any(String),
+        body: null,
+        linkHref: "?page=mailbox",
+        interruptionLevel: "time-sensitive",
+      },
     );
     expect(sendApns).toHaveBeenCalledTimes(1);
     expect(sendApns).toHaveBeenCalledWith(
       { deviceToken: "device-token-1", apnsEnvironment: "sandbox" },
-      { notificationId, title: expect.any(String), linkHref: "?page=mailbox", interruptionLevel: "time-sensitive" },
+      {
+        notificationId,
+        title: expect.any(String),
+        body: null,
+        linkHref: "?page=mailbox",
+        interruptionLevel: "time-sensitive",
+      },
     );
 
     const { rows } = await pool.query(
@@ -165,6 +177,40 @@ describe("notificationFanout job (issue #151)", () => {
     expect(rows).toHaveLength(2);
     const deliveredIds = rows.filter((row) => row.delivered_at !== null).map((row) => row.push_subscription_id);
     expect(deliveredIds.sort()).toEqual([webPush.id, apns.id].sort());
+  });
+
+  it("sends the body rendered at write time in the recipient's locale, beside the title (issue #1773)", async () => {
+    const userId = await createTestUser();
+    await upsertWebPushSubscription(pool, {
+      userId,
+      sessionId: null,
+      endpoint: "https://push.example/web-body",
+      p256dh: "p256dh-key",
+      authSecret: "auth-secret",
+    });
+    const notificationId = await withTransaction(pool, (client) =>
+      writeNotification(client, {
+        userId,
+        kind: "approval_pending",
+        linkHref: `?page=approvals&user=${userId}`,
+        sourceTable: "approval_requests",
+        sourceId: "approval-body-push",
+        transitionInstance: "approval-body-push",
+        bodyKey: "notification.approval_pending.body.viewDelete",
+        bodyParams: { viewName: "Open tasks" },
+      }),
+    );
+
+    const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+    await handleNotificationFanoutTask(pool, { notificationId }, { sendWebPush, sendApns: vi.fn() });
+
+    expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
+      notificationId,
+      title: "Semp potřebuje schválení",
+      body: "Smazat pohled „Open tasks“. Tuto akci nelze vzít zpět.",
+      linkHref: `?page=approvals&user=${userId}`,
+      interruptionLevel: "time-sensitive",
+    });
   });
 
   it("never dispatches an already-revoked registration", async () => {
@@ -417,6 +463,7 @@ describe("notificationFanout job (issue #151)", () => {
       expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
         notificationId,
         title: expect.any(String),
+        body: null,
         linkHref: "?page=mailbox",
         interruptionLevel: "time-sensitive",
       });
@@ -443,6 +490,7 @@ describe("notificationFanout job (issue #151)", () => {
       expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
         notificationId: criticalId,
         title: expect.any(String),
+        body: null,
         linkHref: "?page=mailbox",
         interruptionLevel: "time-sensitive",
       });
@@ -460,6 +508,7 @@ describe("notificationFanout job (issue #151)", () => {
       expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
         notificationId,
         title: expect.any(String),
+        body: null,
         linkHref: "?page=mailbox",
         interruptionLevel: "active",
       });
@@ -504,6 +553,7 @@ describe("notificationFanout job (issue #151)", () => {
       expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
         notificationId: criticalId,
         title: expect.any(String),
+        body: null,
         linkHref: "?page=mailbox",
         interruptionLevel: "time-sensitive",
       });
@@ -543,6 +593,7 @@ describe("notificationFanout job (issue #151)", () => {
       expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
         notificationId: warningId,
         title: expect.any(String),
+        body: null,
         linkHref: "?page=mailbox",
         interruptionLevel: "passive",
       });

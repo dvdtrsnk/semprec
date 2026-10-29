@@ -138,6 +138,7 @@ export * from "./notifications/notify.js";
 export * from "./notifications/notificationsStore.js";
 export * from "./notifications/notificationPreferencesStore.js";
 export * from "./notifications/notificationFanoutJob.js";
+export { approvalNotificationBody } from "./notifications/approvalNotificationBody.js";
 
 export * from "./agentRuns/agentRunsStore.js";
 export { AgentRunError, AiBudgetExceededError, agentRunErrorCodeOf } from "./agentRuns/agentRunErrorCodes.js";

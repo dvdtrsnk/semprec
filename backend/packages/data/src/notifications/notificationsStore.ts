@@ -9,6 +9,8 @@ export interface NotificationRow {
   userId: string;
   kind: NotificationKind;
   title: string;
+  /** The rendered body, in the recipient's locale at write time; `null` for a kind that has none (issue #1773). */
+  body: string | null;
   linkHref: string | null;
   sourceTable: string;
   sourceId: string;
@@ -24,6 +26,7 @@ interface NotificationDbRow {
   user_id: string;
   kind: string;
   title: string;
+  body: string | null;
   link_href: string | null;
   source_table: string;
   source_id: string;
@@ -40,6 +43,7 @@ function mapRow(row: NotificationDbRow): NotificationRow {
     userId: row.user_id,
     kind: assertKnownValue(NOTIFICATION_KINDS, row.kind, "kind"),
     title: row.title,
+    body: row.body,
     linkHref: row.link_href,
     sourceTable: row.source_table,
     sourceId: row.source_id,
@@ -52,7 +56,7 @@ function mapRow(row: NotificationDbRow): NotificationRow {
 }
 
 const NOTIFICATION_COLUMNS =
-  "id, user_id, kind, title, link_href, source_table, source_id, transition_instance, payload, created_at, read_at, resolved_at";
+  "id, user_id, kind, title, body, link_href, source_table, source_id, transition_instance, payload, created_at, read_at, resolved_at";
 
 /**
  * Caps how many unread rows a single reconnect-recovery fetch or mark-all-read sweep touches in

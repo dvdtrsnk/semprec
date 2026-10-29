@@ -9,6 +9,7 @@ import {
   computePageRestoreProjection,
   createActionQueueAffinity,
   createPendingApprovalRequest,
+  approvalNotificationBody,
   buildDestructiveApprovalDescription,
   databaseArchiveWithClient,
   deleteRelationWithClient,
@@ -265,7 +266,7 @@ async function preflightDestructiveApproval(
       await writeNotification(client, {
         userId,
         kind: "approval_pending",
-        titleParams: { toolName: created.toolName },
+        ...approvalNotificationBody(created.description),
         linkHref: `?page=approvals&user=${userId}`,
         sourceTable: "approval_requests",
         sourceId: created.id,

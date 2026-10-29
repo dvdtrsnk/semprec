@@ -4,6 +4,7 @@ import { Ajv, type ValidateFunction } from "ajv";
 import {
   resolveGrantedMcpTool,
   createPendingApprovalRequest,
+  approvalNotificationBody,
   buildMcpInvokeApprovalDescription,
   APPROVAL_REQUEST_REASON_MAX_LENGTH,
   withTransaction,
@@ -272,7 +273,7 @@ export function createApprovalGatedMcpInvokeTool(
           await writeNotification(client, {
             userId,
             kind: "approval_pending",
-            titleParams: { toolName: created.toolName },
+            ...approvalNotificationBody(created.description),
             linkHref: `?page=approvals&user=${userId}`,
             sourceTable: "approval_requests",
             sourceId: created.id,

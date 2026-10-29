@@ -1,6 +1,6 @@
 {
   "notification.heartbeat_error.title": "Heartbeat \"{name}\" failed",
-  "notification.approval_pending.title": "\"{toolName}\" needs approval",
+  "notification.approval_pending.title": "Semp needs approval",
   "notification.agent_run_error.title": "Agent run failed",
   "notification.automation_error.title": "Item automation failed",
   "notification.mail_sync_error.title": "Mail sync failed",
@@ -10,5 +10,13 @@
   "notification.queue_backlog.title": "Job queue is backed up",
   "notification.mail_sync_stalled.title": "Mail sync has stalled",
   "notification.backup_restore_failed.title": "Backup restore test failed",
-  "notification.semp_problem.title": "Something needs your attention"
+  "notification.semp_problem.title": "Something needs your attention",
+  "notification.approval_pending.body.itemDelete": "Delete the item \"{itemName}\" in the database \"{databaseName}\". This can be undone later.",
+  "notification.approval_pending.body.propertyDelete": "Delete the property \"{propertyName}\" in the database \"{databaseName}\". This action is irreversible.",
+  "notification.approval_pending.body.databaseArchive": "Archive the database \"{databaseName}\". This can be undone later.",
+  "notification.approval_pending.body.viewDelete": "Delete the view \"{viewName}\". This action is irreversible.",
+  "notification.approval_pending.body.relationDelete": "Remove the link between \"{fromItemName}\" and \"{toItemName}\". This action is irreversible.",
+  "notification.approval_pending.body.pageRestore": "Restore the page \"{itemName}\" in the database \"{databaseName}\" to an earlier version. This can be undone later.",
+  "notification.approval_pending.body.mcpInvoke": "Call the tool \"{toolName}\" on the MCP server \"{serverName}\". This action is irreversible.",
+  "notification.body.unnamed": "unnamed"
 }
