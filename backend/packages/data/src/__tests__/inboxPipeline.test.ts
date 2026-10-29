@@ -312,7 +312,7 @@ describe("Inbox pipeline databases (issue #101)", () => {
     expect(linkedInboxItemId).toBe(item.id);
   });
 
-  it("GET /api/inbox-types equivalent: lists only active types as { id, emoji, label }, never by emoji", async () => {
+  it("GET /api/inbox-types equivalent: lists only active types as { id, emoji, label, processingMethod, targetDatabaseKey }, never by emoji", async () => {
     const typesId = await databaseIdFor("inboxItemTypes");
     const active = await chokePoint.createItem({
       databaseId: typesId,
@@ -321,7 +321,9 @@ describe("Inbox pipeline databases (issue #101)", () => {
     await chokePoint.createItem({ databaseId: typesId, properties: { name: "Old", emoji: "🗑️", status: "archived" } });
 
     const types = await withTransaction(pool, (client) => listActiveInboxTypes(client, typesId));
-    expect(types).toEqual([{ id: active.id, emoji: "☑️", label: "Task" }]);
+    expect(types).toEqual([
+      { id: active.id, emoji: "☑️", label: "Task", processingMethod: null, targetDatabaseKey: null },
+    ]);
   });
 
   it("returns every active type, not a silently truncated first page", async () => {
