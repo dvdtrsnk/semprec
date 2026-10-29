@@ -11,6 +11,7 @@ import {
 } from "@semprec/agent-runtime";
 import {
   createPoolClientTransactionRunner,
+  getTenantUserLocale,
   APPROVAL_REQUEST_REASON_MAX_LENGTH,
   listMcpToolGrantsForProject,
   projectAgentGuidanceStore,
@@ -22,6 +23,15 @@ import { OPERATION_METADATA, operationInputJsonSchema, type GenericOperationName
 import type { GatewayModel } from "./modelComposition.js";
 import { createPiAgentSessionFactory } from "./piAgentSession.js";
 import { logger } from "./logger.js";
+
+const LANGUAGE_INSTRUCTIONS: Readonly<Record<"cs" | "en", string>> = {
+  cs: "Answer and write all user-visible text in Czech.",
+  en: "Answer and write all user-visible text in English.",
+};
+
+function languageInstruction(locale: string | null): string | undefined {
+  return locale === "cs" || locale === "en" ? LANGUAGE_INSTRUCTIONS[locale] : undefined;
+}
 
 const AGENT_BASE_SYSTEM_PROMPT = [
   "You are an agent inside Semprec, a personal life-organization system.",
@@ -187,7 +197,9 @@ export async function createAgentSessionFactoryForRun(
   run: AgentRunRow,
 ): Promise<CreateAgentSession> {
   const tools = await createGenericOperationTools(pool, moduleRegistry, run.id);
-  let systemPrompt = AGENT_BASE_SYSTEM_PROMPT;
+  // Read once per run: a locale change applies from the next run, a running one keeps its prompt.
+  const instruction = languageInstruction(await getTenantUserLocale(pool));
+  let systemPrompt = instruction ? `${AGENT_BASE_SYSTEM_PROMPT}\n${instruction}` : AGENT_BASE_SYSTEM_PROMPT;
 
   if (run.projectItemId) {
     tools.push(...(await createMcpTools(pool, run.id, run.projectItemId)));
