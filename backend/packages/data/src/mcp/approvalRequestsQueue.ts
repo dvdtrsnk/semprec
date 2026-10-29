@@ -2,6 +2,7 @@ import type { RiskClass } from "@semprec/shared";
 import type { Queryable } from "../db/pool.js";
 import { getAgentRunsByIds } from "../agentRuns/agentRunsStore.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
+import { approvalConflictReason, type ApprovalConflictReason } from "./approvalConflictReason.js";
 import { getMcpToolRegistrationsByIds } from "./mcpToolRegistrationsStore.js";
 import {
   isGenericOperationApprovalRequestPayload,
@@ -107,6 +108,8 @@ export interface ApprovalRequestDecisionView {
   decidedAt: string | null;
   decidedBy: string | null;
   executionStatus: ApprovalRequest["executionStatus"];
+  /** Why an approved request was not carried out; `null` unless `executionStatus` is `conflict`. */
+  conflictReason: ApprovalConflictReason | null;
   toolName: string;
   riskClass: RiskClass;
   requestedAt: string;
@@ -126,6 +129,7 @@ export async function toApprovalRequestDecisionView(
     decidedAt: request.decidedAt,
     decidedBy: request.decidedBy,
     executionStatus: request.executionStatus,
+    conflictReason: approvalConflictReason(request.executionStatus, request.executionResult),
     toolName: request.toolName,
     riskClass: request.riskClass,
     requestedAt: request.requestedAt,

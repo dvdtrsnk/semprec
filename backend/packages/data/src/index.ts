@@ -384,6 +384,8 @@ export type {
   ApprovalRequestSafeSummary,
   ApprovalRequestDecisionView,
 } from "./mcp/approvalRequestsQueue.js";
+export type { ApprovalConflictReason } from "./mcp/approvalConflictReason.js";
+export { approvalConflictReason } from "./mcp/approvalConflictReason.js";
 export { listApprovalRequestsQueue, toApprovalRequestDecisionView } from "./mcp/approvalRequestsQueue.js";
 export type { McpInvokeResult, McpInvokeArgs, McpInvokeOptions } from "./mcp/mcpToolExecution.js";
 export { executeMcpInvocation } from "./mcp/mcpToolExecution.js";

@@ -1,6 +1,7 @@
 import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
 import { RISK_CLASSES, type RiskClass } from "@semprec/shared";
 import { assertKnownValue, assertShape } from "../dbRowValidation.js";
+import type { ApprovalOutcomeKind } from "./approvalConflictReason.js";
 
 /** Longest agent-supplied reason, in characters; mirrored by the `approval_requests_reason_length_check` constraint. */
 export const APPROVAL_REQUEST_REASON_MAX_LENGTH = 500;
@@ -294,6 +295,11 @@ export async function claimApprovalRequestExecution(client: Queryable, id: strin
 export interface ApprovalRequestOutcome {
   error: boolean;
   result: string;
+  /**
+   * Why a failed MCP outcome failed. When set, `execution_result_jsonb` holds `{ text, outcomeKind }`
+   * so `approvalConflictReason` can tell the causes apart; when absent it holds the plain text.
+   */
+  outcomeKind?: ApprovalOutcomeKind;
 }
 
 /**
@@ -327,7 +333,11 @@ export async function recordApprovalRequestOutcome(
             execution_status = CASE WHEN $2 THEN 'conflict' ELSE 'succeeded' END,
             executed_at = COALESCE(executed_at, now())
       WHERE id = $1 AND execution_status = 'queued'`,
-    [id, outcome.error, JSON.stringify(outcome.result)],
+    [
+      id,
+      outcome.error,
+      JSON.stringify(outcome.outcomeKind ? { text: outcome.result, outcomeKind: outcome.outcomeKind } : outcome.result),
+    ],
   );
   return result.rowCount === 1;
 }
@@ -356,14 +366,16 @@ export async function settleStaleApprovalRequestClaim(
   id: string,
   staleAfterMs: number,
 ): Promise<StaleApprovalClaimSettlement> {
-  const unknownOutcomeText =
-    "The deferred MCP tool call was claimed by an earlier delivery that never recorded its outcome; the tool may or may not have run.";
+  const unknownOutcome: { text: string; outcomeKind: ApprovalOutcomeKind } = {
+    text: "The deferred MCP tool call was claimed by an earlier delivery that never recorded its outcome; the tool may or may not have run.",
+    outcomeKind: "staleClaim",
+  };
   const result = await client.query(
     `UPDATE approval_requests
         SET execution_status = 'conflict', execution_error = true, execution_result_jsonb = $2::jsonb
       WHERE id = $1 AND status = 'approved' AND execution_status = 'queued' AND executed_at IS NOT NULL
         AND executed_at < now() - make_interval(secs => $3 / 1000.0)`,
-    [id, JSON.stringify(unknownOutcomeText), staleAfterMs],
+    [id, JSON.stringify(unknownOutcome), staleAfterMs],
   );
   if (result.rowCount === 1) return "settled";
 

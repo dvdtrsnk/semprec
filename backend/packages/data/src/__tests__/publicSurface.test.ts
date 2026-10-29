@@ -154,6 +154,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "agentGuidanceDriftFindingsStore",
   "anyUserExists",
   "appendHistoryEntry",
+  "approvalConflictReason",
   "assertAggregationCompatibleWithType",
   "assertAnotherActiveAdminRemains",
   "assertGatewayTenantActive",
