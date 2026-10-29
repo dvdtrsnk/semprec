@@ -162,7 +162,22 @@ async function createMcpTools(pool: Pool, runId: string, projectItemId: string):
             };
           }
           const result = await invoke(params, signal);
-          return { content: [{ type: "text", text: result.result }], details: { error: result.error } };
+          return {
+            content: [{ type: "text", text: result.result }],
+            details: {
+              error: result.error,
+              ...(result.failure
+                ? {
+                    failureKind: result.failure.failureKind,
+                    ...(result.failure.mcpServerItemId !== undefined
+                      ? { mcpServerItemId: result.failure.mcpServerItemId }
+                      : {}),
+                    connectorName: grant.mcpServerName,
+                    ...(result.failure.timeoutMs !== undefined ? { timeoutMs: result.failure.timeoutMs } : {}),
+                  }
+                : {}),
+            },
+          };
         },
       } satisfies ComposedAgentTool;
     });

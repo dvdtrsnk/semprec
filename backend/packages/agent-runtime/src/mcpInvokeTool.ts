@@ -111,8 +111,8 @@ function validateArguments(target: McpToolInvocationTarget, args: McpInvokeArgs)
   return errors.map((e) => `${e.instancePath || "(root)"} ${e.message ?? "is invalid"}`).join("; ");
 }
 
-function rejection(result: string): RejectedMcpInvocation {
-  return { ok: false, result: { error: true, result } };
+function rejection(result: string, failure?: McpInvokeResult["failure"]): RejectedMcpInvocation {
+  return { ok: false, result: { error: true, result, ...(failure ? { failure } : {}) } };
 }
 
 /**
@@ -132,7 +132,10 @@ export async function resolveMcpInvocation(
     resolveGrantedMcpTool(client, projectItemId, mcpToolRegistrationId),
   );
   if (!target) {
-    return rejection("This MCP tool is unavailable: it is unknown, inactive, or no longer granted to this project.");
+    // No registration was resolved, so no server item id is known to attach.
+    return rejection("This MCP tool is unavailable: it is unknown, inactive, or no longer granted to this project.", {
+      failureKind: "unavailable",
+    });
   }
 
   const validationError = validateArguments(target, args);
