@@ -352,6 +352,13 @@ rest of provisioning still completes. Once an operator sets `SEMPREC_DOMAIN` and
 `provision.sh`, it writes `/etc/caddy/semprec.env`, enables and (re)loads `caddy.service`, and
 validates the rendered config. Rerunning with an unchanged domain is a no-op on the rendered file.
 
+To let the iOS app open the password-reset link, the operator sets `SEMPREC_APPLE_TEAM_ID` and
+`SEMPREC_IOS_BUNDLE_ID` (both from the Apple Developer account) in `monitor.env` and reruns
+`provision.sh`. It then renders `/etc/caddy/apple-app-site-association`, which Caddy serves at
+`/.well-known/apple-app-site-association` as `application/json` and which claims only
+`/?page=password-reset`. While either key is empty no file is rendered, provisioning warns with
+the key name, and the path answers 404.
+
 `PORT=8080` must also be set in `api.env` — `Caddyfile`'s `reverse_proxy` targets
 `127.0.0.1:8080` and `semprec-api` listens on `PORT`, so the two values have to agree.
 

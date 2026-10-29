@@ -45,6 +45,17 @@
 		reverse_proxy 127.0.0.1:8080
 	}
 
+	# Apple App Site Association for the iOS app's Universal Link (the password-reset link only).
+	# provision.sh renders the file into /etc/caddy from the `monitor` group's Apple keys; with no
+	# file the path is a 404, never the SPA fallback below. The directory is overridable like the
+	# domain so the hermetic test can point it at a scratch directory.
+	handle /.well-known/apple-app-site-association {
+		root * {$SEMPREC_AASA_DIR:/etc/caddy}
+		rewrite * /apple-app-site-association
+		header Content-Type application/json
+		file_server
+	}
+
 	# Everything else is the web client: static files from the current release, and the SPA's
 	# index.html for any path it does not have a file for (every client route is a query
 	# parameter on /).
