@@ -1,8 +1,13 @@
-import { fingerprintGuidanceDriftContradiction, validateGuidanceDriftContradiction } from "@semprec/shared";
+import {
+  compareByCodePoint,
+  fingerprintGuidanceDriftSubject,
+  validateGuidanceDriftContradiction,
+} from "@semprec/shared";
 import type {
   AiGatewayClientPort,
   GuidanceDriftContradiction,
   GuidanceDriftFindingStore,
+  GuidanceDriftPermissionSubject,
   GuidanceManifestPort,
   GuidanceNotificationWriter,
   GuidanceReferenceStore,
@@ -15,7 +20,10 @@ export const AGENT_GUIDANCE_DRIFT_OPERATION = "agent_guidance_drift";
 
 const AGENT_GUIDANCE_DRIFT_SYSTEM_INSTRUCTION =
   "Compare project guidance with mechanically enforced manifest facts. Return only schema-valid " +
-  "contradictions; do not infer permissions absent from the manifest.";
+  "contradictions; do not infer permissions absent from the manifest. For each contradiction set " +
+  "subject.operation to the manifest operation the guidance contradicts and subject.databaseId to the " +
+  "target database id, or null when the contradiction is not database specific. Copy both values " +
+  "verbatim from the manifest; never invent them.";
 
 /** Draft 2020-12 JSON Schema for the gateway's structured completion (validated server-side, issue #215). */
 const AGENT_GUIDANCE_DRIFT_RESPONSE_SCHEMA = {
@@ -28,8 +36,17 @@ const AGENT_GUIDANCE_DRIFT_RESPONSE_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["claim", "guidanceExcerpt", "manifestFacts", "severity"],
+        required: ["claim", "guidanceExcerpt", "manifestFacts", "severity", "subject"],
         properties: {
+          subject: {
+            type: "object",
+            additionalProperties: false,
+            required: ["operation", "databaseId"],
+            properties: {
+              operation: { type: "string", minLength: 1 },
+              databaseId: { type: ["string", "null"], minLength: 1 },
+            },
+          },
           claim: { type: "string", minLength: 1 },
           guidanceExcerpt: { type: "string", minLength: 1 },
           manifestFacts: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
@@ -132,12 +149,9 @@ export function createAgentGuidanceDriftAction<Tx>(
         throw new GuidanceContextChangedError(projectItemId);
       }
 
-      const ranked = contradictions
-        .map((contradiction) => ({
-          contradiction,
-          fingerprint: fingerprintGuidanceDriftContradiction(contradiction),
-        }))
-        .sort((a, b) => (a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0));
+      const ranked = [...dedupeBySubject(projectItemId, contradictions).values()].sort((a, b) =>
+        a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0,
+      );
 
       const reportedFingerprints = new Set(ranked.map((entry) => entry.fingerprint));
       const linkHref = `/projects/${projectItemId}/agent-guidance`;
@@ -210,7 +224,42 @@ function validateContradictions(content: unknown): GuidanceDriftContradiction[] 
   if (!Array.isArray(contradictions)) {
     throw new Error("agent guidance drift: gateway response contradictions is not an array");
   }
-  return contradictions.map((entry, index) =>
-    validateGuidanceDriftContradiction(entry, `agent guidance drift: contradiction ${index}`),
-  );
+  return contradictions.map((entry, index) => {
+    const context = `agent guidance drift: contradiction ${index}`;
+    const contradiction = validateGuidanceDriftContradiction(entry, context);
+    if (contradiction.subject === null) throw new Error(`${context}: contradiction is missing its subject`);
+    return contradiction;
+  });
+}
+
+interface RankedContradiction {
+  contradiction: GuidanceDriftContradiction;
+  fingerprint: string;
+}
+
+/**
+ * Findings are unique per fingerprint, so contradictions sharing a subject collapse into one:
+ * the higher severity wins, and equal severities fall back to the smaller claim so the outcome
+ * does not depend on the AI's report order.
+ */
+function dedupeBySubject(
+  projectItemId: string,
+  contradictions: GuidanceDriftContradiction[],
+): Map<string, RankedContradiction> {
+  const byFingerprint = new Map<string, RankedContradiction>();
+  for (const contradiction of contradictions) {
+    // validateContradictions has rejected every contradiction without a subject.
+    const subject = contradiction.subject as GuidanceDriftPermissionSubject;
+    const fingerprint = fingerprintGuidanceDriftSubject(projectItemId, contradiction.kind, subject);
+    const kept = byFingerprint.get(fingerprint);
+    if (!kept || outranks(contradiction, kept.contradiction)) {
+      byFingerprint.set(fingerprint, { contradiction, fingerprint });
+    }
+  }
+  return byFingerprint;
+}
+
+function outranks(candidate: GuidanceDriftContradiction, kept: GuidanceDriftContradiction): boolean {
+  if (candidate.severity !== kept.severity) return candidate.severity === "blocking";
+  return compareByCodePoint(candidate.claim, kept.claim) < 0;
 }
