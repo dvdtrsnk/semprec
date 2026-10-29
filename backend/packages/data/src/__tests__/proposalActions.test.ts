@@ -1035,8 +1035,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const item = await withTransaction(pool, (client) =>
         createInboxItemWithClient(client, {
           inboxDatabaseId: inboxId,
-          journalDatabaseId: journalId,
-          timezone: "Europe/Prague",
           date: "2026-08-28",
           time: "09:00",
           text: "Buy milk",
