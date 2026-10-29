@@ -347,6 +347,12 @@ export class ImapFlowMailClient implements ImapMailClient {
       deliveredToHeaders: headerValues(headerList, "delivered-to"),
       xOriginalTo: headerValues(headerList, "x-original-to")[0] ?? null,
       envelopeTo: headerValues(headerList, "envelope-to")[0] ?? null,
+      bulkHeaders: {
+        listUnsubscribe: headerValues(headerList, "list-unsubscribe")[0] ?? null,
+        listId: headerValues(headerList, "list-id")[0] ?? null,
+        precedence: headerValues(headerList, "precedence")[0] ?? null,
+        autoSubmitted: headerValues(headerList, "auto-submitted")[0] ?? null,
+      },
       isDsn: isDeliveryStatusReport(raw.bodyStructure?.type, raw.bodyStructure?.parameters),
       // The `\Seen`/`\Flagged` state a message already has on the server — mail/ingest.ts
       // seeds a newly ingested message's read/flag properties from it (mail/messageFlags.ts).
@@ -371,7 +377,16 @@ export class ImapFlowMailClient implements ImapMailClient {
         envelope: true,
         bodyStructure: true,
         flags: true,
-        headers: ["references", "delivered-to", "x-original-to", "envelope-to"],
+        headers: [
+          "references",
+          "delivered-to",
+          "x-original-to",
+          "envelope-to",
+          "list-unsubscribe",
+          "list-id",
+          "precedence",
+          "auto-submitted",
+        ],
         labels: true,
       },
       { uid: true },

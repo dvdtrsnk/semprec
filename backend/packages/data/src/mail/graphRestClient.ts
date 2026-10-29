@@ -196,6 +196,12 @@ export async function toFetchedGraphMessage(
     deliveredToHeaders: headerValues(resource, "Delivered-To"),
     xOriginalTo: headerValues(resource, "X-Original-To")[0] ?? null,
     envelopeTo: headerValues(resource, "Envelope-To")[0] ?? null,
+    bulkHeaders: {
+      listUnsubscribe: header(resource, "List-Unsubscribe") ?? null,
+      listId: header(resource, "List-Id") ?? null,
+      precedence: header(resource, "Precedence") ?? null,
+      autoSubmitted: header(resource, "Auto-Submitted") ?? null,
+    },
     isDsn: isDeliveryStatusReport(contentType?.type, contentType?.params),
     // Delta links created before `isRead` was added to our `$select` do not carry that field.
     // Preserve the stored observation in that case instead of treating the incomplete payload

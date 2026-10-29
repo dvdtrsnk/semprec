@@ -15,6 +15,7 @@ import {
 import { ingestAttachments, type ClassifiedAttachment } from "./attachments.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import { reindexItemSearch } from "./search.js";
+import { detectBulkMail, type BulkMailHeaders } from "./bulkMail.js";
 import { resolveDeliveredToAddress } from "./deliveredTo.js";
 import { messageFlagProperties } from "./messageFlags.js";
 import { recordObservedMailMessageFlags } from "./mailMessageFlagSyncStore.js";
@@ -66,6 +67,8 @@ export interface IngestEmailMessageInput {
   deliveredToHeaders?: string[];
   xOriginalTo?: string | null;
   envelopeTo?: string | null;
+  /** The raw bulk-mail headers — see FetchedMessage.bulkHeaders (providerTypes.ts). */
+  bulkHeaders?: BulkMailHeaders;
   /** True for a multipart/report;report-type=delivery-status DSN/bounce (mail/dsn.ts) — distinguished from an ordinary human reply. */
   isDsn?: boolean;
   /** The message's IMAP flags, when the adapter reports them — see FetchedMessage.flags (providerTypes.ts). */
@@ -171,6 +174,9 @@ export async function ingestEmailMessage(
         envelope: input.envelope,
         deliveredToAddress: deliveredToAddress ?? null,
         messageKind: input.isDsn ? "dsn" : "message",
+        // Computed only on this first-ingest path: the upsert's DO UPDATE never touches is_bulk, so a
+        // later pass over the same message keeps the stored value.
+        isBulk: detectBulkMail({ ...input.bulkHeaders, senderAddress: input.envelope.from?.address }),
         dsnOriginalMessageId,
       });
 

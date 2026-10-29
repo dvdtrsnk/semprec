@@ -33,6 +33,38 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("Gmail bulk-mail headers (issue #1502)", () => {
+  it("captures the four raw headers from the payload and null when absent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              id: "gmail-message-1",
+              payload: {
+                mimeType: "text/plain",
+                headers: [
+                  { name: "Message-ID", value: "<m@example.test>" },
+                  { name: "List-Unsubscribe", value: "<mailto:u@example.test>" },
+                  { name: "precedence", value: "bulk" },
+                ],
+              },
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+    const fetched = await new GmailRestClient(async () => "t").fetchMessage("gmail-message-1");
+    expect(fetched?.message.bulkHeaders).toEqual({
+      listUnsubscribe: "<mailto:u@example.test>",
+      listId: null,
+      precedence: "bulk",
+      autoSubmitted: null,
+    });
+  });
+});
+
 describe("Gmail Drive replacement attachments", () => {
   it("keeps Gmail's rendered HTML Drive link and label without creating an attachment candidate", async () => {
     const shareUrl = "https://drive.google.com/file/d/drive-file-1/view?usp=drive_link";

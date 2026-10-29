@@ -35,6 +35,8 @@ export interface MailMessageMetaRow {
   dsnOriginalMessageId: string | null;
   /** 'stable' = a normal ingest; 'partial'/'done' = produced by the legacy-Emails backfill job (migrationJob/mailLegacyEmailMigration.ts). */
   migrationStatus: MailMessageMigrationStatus;
+  /** Bulk or automatic mail, decided once at ingest (mail/bulkMail.ts); `false` for rows ingested before issue #1502. */
+  isBulk: boolean;
 }
 
 /** The raw `mail_message_meta` row shape this module reads back from Postgres. */
@@ -52,6 +54,7 @@ type MailMessageMetaDbRow = {
   message_kind: MailMessageKind;
   dsn_original_message_id: string | null;
   migration_status: MailMessageMigrationStatus;
+  is_bulk: boolean;
 };
 
 function mapRow(row: MailMessageMetaDbRow): MailMessageMetaRow {
@@ -69,12 +72,13 @@ function mapRow(row: MailMessageMetaDbRow): MailMessageMetaRow {
     messageKind: row.message_kind,
     dsnOriginalMessageId: row.dsn_original_message_id,
     migrationStatus: row.migration_status,
+    isBulk: row.is_bulk,
   };
 }
 
 const COLUMNS =
   'item_id, mailbox_item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope, ' +
-  "delivered_to_address, message_kind, dsn_original_message_id, migration_status";
+  "delivered_to_address, message_kind, dsn_original_message_id, migration_status, is_bulk";
 
 export interface UpsertMailMessageMetaInput {
   itemId: string;
@@ -91,6 +95,8 @@ export interface UpsertMailMessageMetaInput {
   messageKind?: MailMessageKind;
   dsnOriginalMessageId?: string | null;
   migrationStatus?: MailMessageMigrationStatus;
+  /** Written on insert only; a conflicting upsert keeps the stored value. Defaults to `false`. */
+  isBulk?: boolean;
 }
 
 /**
@@ -108,8 +114,8 @@ export async function upsertMailMessageMeta(
 ): Promise<MailMessageMetaRow> {
   const { rows } = await client.query<MailMessageMetaDbRow>(
     `INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope,
-                                     delivered_to_address, message_kind, dsn_original_message_id, migration_status, mailbox_item_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13)
+                                     delivered_to_address, message_kind, dsn_original_message_id, migration_status, mailbox_item_id, is_bulk)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14)
      ON CONFLICT (mailbox_item_id, message_id) DO UPDATE SET
        thread_id = COALESCE(EXCLUDED.thread_id, mail_message_meta.thread_id),
        provider_thread_id = COALESCE(EXCLUDED.provider_thread_id, mail_message_meta.provider_thread_id),
@@ -131,6 +137,7 @@ export async function upsertMailMessageMeta(
       input.dsnOriginalMessageId ?? null,
       input.migrationStatus ?? "stable",
       input.mailboxItemId,
+      input.isBulk ?? false,
     ],
   );
   return mapRow(requireSingleRow(rows, "mail_message_meta row"));

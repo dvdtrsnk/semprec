@@ -45,6 +45,28 @@ describe("Graph flag write-back", () => {
   });
 });
 
+describe("Graph bulk-mail headers (issue #1502)", () => {
+  it("captures the four raw headers from internetMessageHeaders and null when absent", async () => {
+    const message = await toFetchedGraphMessage(
+      {
+        id: "message-1",
+        internetMessageHeaders: [
+          { name: "List-Id", value: "<list.example.test>" },
+          { name: "Auto-Submitted", value: "auto-generated" },
+        ],
+      },
+      async () => [],
+      async () => Readable.from(""),
+    );
+    expect(message.bulkHeaders).toEqual({
+      listUnsubscribe: null,
+      listId: "<list.example.test>",
+      precedence: null,
+      autoSubmitted: "auto-generated",
+    });
+  });
+});
+
 describe("Graph non-file attachments (issue #203)", () => {
   it("streams file attachments while appending item/reference annotations in deterministic safe order", async () => {
     const message = await toFetchedGraphMessage(
