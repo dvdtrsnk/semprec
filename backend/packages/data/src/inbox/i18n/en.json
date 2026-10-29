@@ -58,6 +58,9 @@
   "property.processingProposals.referencedItemIds.name": "Referenced item IDs",
   "property.processingProposals.results.name": "Results",
   "property.processingProposals.context.name": "Context",
+  "invalidReason.sourceDeleted": "The source Inbox item “{label}” was deleted, so this proposal can no longer be completed.",
+  "invalidReason.targetArchived": "The target “{label}” was archived, so this proposal has nowhere to go. Choose another target or ask Semp to recompute.",
+  "invalidReason.targetDeleted": "The target “{label}” was deleted, so this proposal has nowhere to go. Choose another target or ask Semp to recompute.",
 
   "viewType.journal-inbox.name": "Journal inbox",
 

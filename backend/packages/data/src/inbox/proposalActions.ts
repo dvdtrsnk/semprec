@@ -13,6 +13,7 @@ import {
   aiProposalPatch,
   appendHistoryEntry,
   assertValidProposalEnvelope,
+  isFinalInvalid,
   parseStoredProposalEnvelope,
   unknownStoredEntityKind,
   type ProposalEntityKind,
@@ -540,7 +541,10 @@ export interface ReviseProposalInput {
  * refused here with its canonical error rather than only at confirm. Refused on a locked (`confirmed`/
  * `rejected`) proposal, per the epic's "a locked card is never recomputed again"; allowed
  * from `needsClarification`/`invalid` as well as `proposed`, since a user resolving one of
- * those into a valid envelope is exactly how a proposal is meant to leave that state.
+ * those into a valid envelope is exactly how a proposal is meant to leave that state. An `invalid`
+ * card whose `invalidReason` is `sourceDeleted` is final and refused (issue #1482): it can only be
+ * discarded. A fixable `invalid` card is revised like any other, and its `invalidReason` is cleared
+ * in the same write.
  */
 export async function reviseProposalWithClient(
   client: PoolClient,
@@ -552,6 +556,9 @@ export async function reviseProposalWithClient(
   const status = proposal.properties.status;
   if (typeof status === "string" && LOCKED_PROPOSAL_STATUSES.has(status)) {
     throw new ValidationError(`Cannot revise a locked proposal (status '${status}')`, { field: "status" });
+  }
+  if (isFinalInvalid(proposal.properties)) {
+    throw new ValidationError("Cannot revise a proposal whose source Inbox item was deleted", { field: "status" });
   }
 
   const storedUnknownKind = unknownStoredEntityKind(proposal.properties.proposal);
@@ -565,6 +572,8 @@ export async function reviseProposalWithClient(
   };
   await assertValidEnvelopeForCard(client, config, proposal, envelope);
 
+  // A fixable invalid card leaves `invalid` here, so its reason goes with it in this same write.
+  const clearedReason = status === "invalid" ? { invalidReason: null } : {};
   const updated = await updateItemWithClient(
     client,
     {
@@ -574,10 +583,11 @@ export async function reviseProposalWithClient(
         proposal: envelope,
         ...aiProposalPatch(proposal.properties, envelope),
         status: "proposed",
+        ...clearedReason,
         history: appendHistoryEntry(proposal.properties.history, input.message, "user"),
       },
     },
-    { allowedSystemKeys: ["proposal", "aiProposal", "aiVersion", "status", "history"] },
+    { allowedSystemKeys: ["proposal", "aiProposal", "aiVersion", "status", "invalidReason", "history"] },
   );
   await enqueueJournalInboxRecomputeForProposal(client, proposal.id);
   return updated;
