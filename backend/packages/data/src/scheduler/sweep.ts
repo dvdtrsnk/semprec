@@ -318,6 +318,8 @@ async function runScheduledOccurrenceFire(
       heartbeatId: heartbeat.id,
       projectItemId: heartbeat.projectItemId,
       isFinalAttempt,
+      occurrenceId,
+      attempt: helpers.job.attempts,
     });
     await withTransaction(pool, async (client) => {
       await recordHeartbeatSuccess(client, heartbeat.id);
