@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, type AgentTaskName, type CoreTaskName } from "@semprec/queue";
 import { createLogger, withTraceContext } from "@semprec/shared";
+import { agentRunErrorCodeOf } from "../agentRuns/agentRunErrorCodes.js";
 import { createAgentRun, finishAgentRun, finishAgentRunWithErrorNotification } from "../agentRuns/agentRunsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { tenantLane } from "../tenancy/tenantLane.js";
@@ -99,6 +100,7 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
         await finishAgentRun(pool, run.id, "done", outcome?.result ?? null);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        const errorCode = agentRunErrorCodeOf(err);
         // A non-final attempt closes its run silently: only the last attempt of a failed
         // occurrence writes the `agent_run_error` notification, so three retries of the same
         // occurrence produce exactly one notification (linking to the last attempt's run)
@@ -106,11 +108,13 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
         // the queue, with no retries) keeps the pre-existing single-notification behaviour.
         try {
           if (context.isFinalAttempt === false) {
-            await finishAgentRun(pool, run.id, "error", message);
+            await finishAgentRun(pool, run.id, "error", message, errorCode);
           } else {
             // Same transaction as the source write, per issue #149: a crash between closing the
             // run and writing its `agent_run_error` notification never leaves one without the other.
-            await withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, run.id, message));
+            await withTransaction(pool, (client) =>
+              finishAgentRunWithErrorNotification(client, run.id, message, errorCode),
+            );
           }
         } catch (closeErr) {
           // The close/notify write failing must never replace `err` — the caller's retry

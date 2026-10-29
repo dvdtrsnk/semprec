@@ -25,7 +25,7 @@ let pool: Pool;
 async function seedErroredAgentRun(tenantId: string, userId: string, ageDays = 0): Promise<void> {
   await withTenantTransaction(pool, tenantId, async (client) => {
     const run = await createAgentRun(client, { triggeredBy: "user", task: "fixture", unit: "invocation", userId });
-    await finishAgentRun(client, run.id, "error", "boom");
+    await finishAgentRun(client, run.id, "error", "boom", "internal");
     if (ageDays > 0) {
       await client.query(`UPDATE agent_runs SET started_at = now() - make_interval(days => $2) WHERE id = $1`, [
         run.id,

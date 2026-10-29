@@ -157,11 +157,12 @@ describe("runAgentSession", () => {
       runAgentSession(pool, { createAgentSession, task: "fails", triggeredBy: "supervisor" }),
     ).rejects.toThrow("boom");
 
-    const { rows } = await pool.query<{ status: string; result: string | null }>(
-      "SELECT status, result FROM agent_runs WHERE task = 'fails'",
+    const { rows } = await pool.query<{ status: string; result: string | null; error_code: string | null }>(
+      "SELECT status, result, error_code FROM agent_runs WHERE task = 'fails'",
     );
     expect(rows[0]!.status).toBe("error");
     expect(rows[0]!.result).toBe("boom");
+    expect(rows[0]!.error_code).toBe("internal");
   });
 
   it("announces durable events as thin references and sends message_update only on the ephemeral stream", async () => {
@@ -474,6 +475,28 @@ describe("runAgentTurn cancellation", () => {
     );
     expect(session.nextCalls()).toBe(0);
     expect(session.returnCalls()).toBe(1);
+  });
+
+  it("closes a run stopped by AgentRunCancelledError with the cancelled code", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { createAgentSession } = {
+      createAgentSession: (() => ({ messages: async function* () {} })) as CreateAgentSession,
+    };
+
+    await expect(
+      runAgentSession(pool, {
+        createAgentSession,
+        task: "cancelled run",
+        triggeredBy: "supervisor",
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(AgentRunCancelledError);
+
+    const { rows } = await pool.query<{ status: string; error_code: string | null }>(
+      "SELECT status, error_code FROM agent_runs WHERE task = 'cancelled run'",
+    );
+    expect(rows).toEqual([{ status: "error", error_code: "cancelled" }]);
   });
 
   it("stops before the next message when the signal aborts while a message is being recorded", async () => {

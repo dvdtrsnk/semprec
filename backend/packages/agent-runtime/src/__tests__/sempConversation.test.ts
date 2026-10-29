@@ -335,7 +335,7 @@ describe("SempConversation", () => {
       SEMPREC_PROJECT_ITEM_ID,
     ]);
     const runId = runs[0]!.id;
-    expect(await finishAgentRun(pool, runId, "error", "closed elsewhere")).toBe(true);
+    expect(await finishAgentRun(pool, runId, "error", "closed elsewhere", "internal")).toBe(true);
 
     await new Promise((resolve) => setTimeout(resolve, ttlMs + 150));
 
@@ -485,13 +485,14 @@ describe("SempConversation", () => {
 
     await expect(sendInTenantZero(conversation, "fails")).rejects.toThrow("boom");
 
-    const { rows } = await pool.query<{ status: string; result: string | null }>(
-      `SELECT status, result FROM agent_runs WHERE project_item_id = $1`,
+    const { rows } = await pool.query<{ status: string; result: string | null; error_code: string | null }>(
+      `SELECT status, result, error_code FROM agent_runs WHERE project_item_id = $1`,
       [SEMPREC_PROJECT_ITEM_ID],
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe("error");
     expect(rows[0]!.result).toBe("boom");
+    expect(rows[0]!.error_code).toBe("internal");
 
     conversation.clear();
   });
@@ -1011,6 +1012,11 @@ describe("SempConversation across tenants", () => {
       expect(await runRowsOf(tenantB)).toEqual([
         expect.objectContaining({ status: "error", result: "account deactivated" }),
       ]);
+      const { rows: codes } = await adminPool.query<{ error_code: string | null }>(
+        `SELECT error_code FROM agent_runs WHERE tenant_id = $1`,
+        [tenantB],
+      );
+      expect(codes).toEqual([{ error_code: "cancelled" }]);
       expect((await runRowsOf(tenantA)).map((r) => r.status)).toEqual(["running"]);
 
       // B's entry is gone: its next send wakes a new session and run. A's continues its own.

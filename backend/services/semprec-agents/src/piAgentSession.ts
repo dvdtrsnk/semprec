@@ -1,6 +1,7 @@
 import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type { AgentMessage, AgentSession, CreateAgentSession, ToolEventMetadata } from "@semprec/agent-runtime";
+import { AgentRunError } from "@semprec/data";
 import { logger } from "./logger.js";
 import { toPiMessages } from "./piConversationHistory.js";
 
@@ -108,7 +109,7 @@ function assertModelSucceeded(agent: Agent): void {
   const last = agent.state.messages.at(-1);
   if (!isAssistantMessage(last)) return;
   if (last.stopReason === "error" || last.stopReason === "aborted") {
-    throw new Error(last.errorMessage ?? `model call ended with stopReason '${last.stopReason}'`);
+    throw new AgentRunError("modelError", last.errorMessage ?? `model call ended with stopReason '${last.stopReason}'`);
   }
 }
 

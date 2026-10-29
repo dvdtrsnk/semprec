@@ -42,13 +42,42 @@ describe("finishAgentRun", () => {
     ["error", "done"],
   ] as const)("keeps the first close (%s) when a second one (%s) arrives and returns false", async (first, second) => {
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "do the thing" });
-    await expect(finishAgentRun(pool, run.id, first, "first")).resolves.toBe(true);
+    const close = (status: "done" | "error", result: string) =>
+      status === "done"
+        ? finishAgentRun(pool, run.id, "done", result)
+        : finishAgentRun(pool, run.id, "error", result, "internal");
+    await expect(close(first, "first")).resolves.toBe(true);
     const afterFirst = await getAgentRun(pool, run.id);
 
-    await expect(finishAgentRun(pool, run.id, second, "second")).resolves.toBe(false);
+    await expect(close(second, "second")).resolves.toBe(false);
 
     const afterSecond = await getAgentRun(pool, run.id);
     expect(afterSecond).toMatchObject({ status: first, result: "first", finishedAt: afterFirst!.finishedAt });
+  });
+
+  it("stores the error code and detail in the same update as the status, and reads null for a done run", async () => {
+    const failed = await createAgentRun(pool, { triggeredBy: "user", task: "fails" });
+    await finishAgentRun(pool, failed.id, "error", "boom", "modelError", { attempt: 2 });
+    expect(await getAgentRun(pool, failed.id)).toMatchObject({
+      status: "error",
+      errorCode: "modelError",
+      errorDetail: { attempt: 2 },
+    });
+
+    const done = await createAgentRun(pool, { triggeredBy: "user", task: "works" });
+    await finishAgentRun(pool, done.id, "done", "ok");
+    expect(await getAgentRun(pool, done.id)).toMatchObject({ errorCode: null, errorDetail: null });
+  });
+
+  it("reads a row closed as error without a code (previous release) as internal", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "legacy" });
+    await pool.query(`UPDATE agent_runs SET status = 'error', result = 'old' WHERE id = $1`, [run.id]);
+    expect(await getAgentRun(pool, run.id)).toMatchObject({ errorCode: "internal", errorDetail: null });
+  });
+
+  it("rejects a code outside the closed set at the database", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "bad" });
+    await expect(pool.query(`UPDATE agent_runs SET error_code = 'nope' WHERE id = $1`, [run.id])).rejects.toThrow();
   });
 
   it("throws NotFoundError for an unknown run id", async () => {

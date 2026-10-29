@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
 import { Type, fauxAssistantMessage, fauxProvider, fauxToolCall, type Context } from "@earendil-works/pi-ai";
 import type { AgentMessage, ToolEventMetadata } from "@semprec/agent-runtime";
+import { agentRunErrorCodeOf } from "@semprec/data";
 import { toPiMessages } from "../piConversationHistory.js";
 import { createPiAgentSessionFactory } from "../piAgentSession.js";
 
@@ -203,7 +204,10 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
       systemPrompt: "base",
     });
 
-    await expect(collect(createSession({ task: "t" }).messages())).rejects.toThrow("gateway refused: budget");
+    const failure = await collect(createSession({ task: "t" }).messages()).catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe("gateway refused: budget");
+    expect(agentRunErrorCodeOf(failure)).toBe("modelError");
   });
 
   it("fails the session with the tool's own error when a tool throws", async () => {

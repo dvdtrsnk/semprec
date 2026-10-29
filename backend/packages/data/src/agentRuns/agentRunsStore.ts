@@ -4,6 +4,9 @@ import { getTenantUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
 import { withTransaction, requireSingleRow } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
+import { AGENT_RUN_ERROR_CODES, type AgentRunErrorCode } from "./agentRunErrorCodes.js";
+
+export { AGENT_RUN_ERROR_CODES, type AgentRunErrorCode };
 
 export type TriggeredBy = "user" | "heartbeat" | "supervisor" | "mcp";
 export type AgentRunUnit = "invocation" | "session";
@@ -25,6 +28,10 @@ export interface AgentRunRow {
   task: string;
   status: AgentRunStatus;
   result: string | null;
+  /** Why the run failed: set for `status = 'error'` (a row closed before the column existed reads `internal`), `null` otherwise. */
+  errorCode: AgentRunErrorCode | null;
+  /** Plain object of ids and counters (no user content) a closer attached to the failure, if any. */
+  errorDetail: Record<string, unknown> | null;
   startedAt: string;
   finishedAt: string | null;
   /**
@@ -50,13 +57,20 @@ type AgentRunDbRow = {
   task: string;
   status: string;
   result: string | null;
+  error_code: string | null;
+  error_detail: Record<string, unknown> | null;
   started_at: Date;
   finished_at: Date | null;
   actor_user_id: string;
 };
 
 const AGENT_RUN_ROW_COLUMNS =
-  "id, project_item_id, parent_run_id, heartbeat_id, thread_id, triggered_by, unit, task, status, result, started_at, finished_at, actor_user_id";
+  "id, project_item_id, parent_run_id, heartbeat_id, thread_id, triggered_by, unit, task, status, result, error_code, error_detail, started_at, finished_at, actor_user_id";
+
+function mapErrorCode(row: AgentRunDbRow): AgentRunErrorCode | null {
+  if (row.error_code !== null) return assertKnownValue(AGENT_RUN_ERROR_CODES, row.error_code, "error_code");
+  return row.status === "error" ? "internal" : null;
+}
 
 function mapRow(row: AgentRunDbRow): AgentRunRow {
   return {
@@ -70,6 +84,8 @@ function mapRow(row: AgentRunDbRow): AgentRunRow {
     task: row.task,
     status: assertKnownValue(AGENT_RUN_STATUSES, row.status, "status"),
     result: row.result,
+    errorCode: mapErrorCode(row),
+    errorDetail: row.error_detail,
     startedAt: row.started_at.toISOString(),
     finishedAt: row.finished_at ? row.finished_at.toISOString() : null,
     actorUserId: row.actor_user_id,
@@ -155,15 +171,32 @@ export async function createAgentRun(client: Pool | PoolClient, input: CreateAge
  * already `done`/`error`) is a normal outcome the caller logs, not an error: it returns `false`.
  * Throws `NotFoundError` only when no run with that id exists at all.
  */
+export function finishAgentRun(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  status: "done",
+  result: string | null,
+): Promise<boolean>;
+export function finishAgentRun(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  status: "error",
+  result: string | null,
+  errorCode: AgentRunErrorCode,
+  errorDetail?: Record<string, unknown>,
+): Promise<boolean>;
 export async function finishAgentRun(
   client: Pool | PoolClient,
   agentRunId: string,
   status: "done" | "error",
   result: string | null,
+  errorCode?: AgentRunErrorCode,
+  errorDetail?: Record<string, unknown>,
 ): Promise<boolean> {
   const updated = await client.query(
-    `UPDATE agent_runs SET status = $2, result = $3, finished_at = now() WHERE id = $1 AND status = 'running'`,
-    [agentRunId, status, result],
+    `UPDATE agent_runs SET status = $2, result = $3, error_code = $4, error_detail = $5, finished_at = now()
+     WHERE id = $1 AND status = 'running'`,
+    [agentRunId, status, result, status === "error" ? (errorCode ?? null) : null, errorDetail ?? null],
   );
   if (updated.rowCount === 1) return true;
   const { rows } = await client.query<{ status: string }>(`SELECT status FROM agent_runs WHERE id = $1`, [agentRunId]);
@@ -193,14 +226,18 @@ export async function finishAgentRunWithErrorNotification(
   client: Pool | PoolClient,
   agentRunId: string,
   result: string | null,
+  errorCode: AgentRunErrorCode,
+  errorDetail?: Record<string, unknown>,
 ): Promise<boolean> {
   // `writeNotification` requires an actual transaction client (it's meant to run alongside the
   // source write it dedupes against) — a caller that only has a bare `pool` gets one opened here
   // so the close and the notification still land atomically together.
   if (client instanceof Pool) {
-    return withTransaction(client, (c) => finishAgentRunWithErrorNotification(c, agentRunId, result));
+    return withTransaction(client, (c) =>
+      finishAgentRunWithErrorNotification(c, agentRunId, result, errorCode, errorDetail),
+    );
   }
-  const closed = await finishAgentRun(client, agentRunId, "error", result);
+  const closed = await finishAgentRun(client, agentRunId, "error", result, errorCode, errorDetail);
   if (!closed) return false;
   const userId = await getTenantUserId(client);
   if (!userId) return true;

@@ -102,7 +102,7 @@ async function repairCurrentTenant(pool: Pool): Promise<string[]> {
         await insertAgentRunEvent(client, run.id, "tool_result", interruptedToolResult(toolUsePayload));
       }
 
-      await finishAgentRunWithErrorNotification(client, run.id, INTERRUPTED_REASON);
+      await finishAgentRunWithErrorNotification(client, run.id, INTERRUPTED_REASON, "interrupted");
     }
 
     return orphaned.map((run) => run.id);

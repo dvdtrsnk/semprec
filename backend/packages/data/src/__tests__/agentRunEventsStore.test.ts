@@ -273,7 +273,7 @@ describe("agentRunEventsStore", () => {
 
   it("refuses a non-run_status event on a run finished as error", async () => {
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "errored" });
-    await finishAgentRun(pool, run.id, "error", "boom");
+    await finishAgentRun(pool, run.id, "error", "boom", "internal");
 
     await expect(insertAgentRunEvent(pool, run.id, "tool_result", { kind: "tool_result" })).rejects.toThrow(
       `agent run ${run.id} is error; only run_status events may be appended to a finished run`,
