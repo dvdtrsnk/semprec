@@ -236,13 +236,16 @@ export async function seedEmailModuleInTransaction(
   );
   // People's schema is likewise already locked — both People-facing relations below are
   // one-directional for the same reason.
+  // A person may send many emails (issue #1457), so this is many_to_many. Cardinality does not
+  // keep "one message, one sender"; today mail/personLinkingActions.ts is the only writer of this
+  // edge. Populated installs are switched by mail/emailsSenderPeopleCardinalityCutoverMigration.ts.
   await relate(
     {
       sourceDatabaseId: emails.id,
       key: "senderPeople",
       name: "Sender",
       targetDatabaseId: peopleDatabaseId,
-      cardinality: "one_to_many",
+      cardinality: "many_to_many",
       owner: "system",
       ownerProcess: EMAILS_MODULE_ID,
     },
