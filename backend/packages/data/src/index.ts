@@ -231,6 +231,15 @@ export {
   type MailLiveSyncRootOptions,
 } from "./mail/mailLiveSyncRoot.js";
 export { resolveMailModuleIds, type MailModuleIds } from "./mail/mailModuleIds.js";
+export {
+  deleteMailServerSettings,
+  getMailServerSettings,
+  upsertMailServerSettings,
+  type MailServerEndpoint,
+  type MailServerSecurity,
+  type MailServerSettings,
+  type MailServerSettingsInput,
+} from "./mail/mailServerSettingsStore.js";
 export { manifest as mailModuleManifest } from "./mail/mailModuleManifest.js";
 export {
   createImapMailFlagWritebackAdapter,
