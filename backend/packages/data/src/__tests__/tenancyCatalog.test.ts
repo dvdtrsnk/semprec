@@ -81,6 +81,7 @@ const TENANT_TABLES = [
   "value_link_sources",
   "item_origins",
   "inbox_attachments",
+  "notification_preferences",
 ];
 
 type Queryable = Pick<Pool | PoolClient, "query">;
@@ -670,7 +671,7 @@ describe("tenancy classification catalog", () => {
           AND c.relnamespace = 'public'::regnamespace AND NOT c.relispartition
         ORDER BY k.conname`,
     );
-    expect(twins).toHaveLength(34);
+    expect(twins).toHaveLength(35);
     for (const twin of twins) {
       const client = await pool.connect();
       try {

@@ -193,6 +193,22 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "get notification preferences",
+    method: "GET",
+    path: "/api/notification-preferences",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "patch notification preferences",
+    method: "PATCH",
+    path: "/api/notification-preferences",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "schema projection",
     method: "GET",
     path: "/api/schema",

@@ -896,6 +896,40 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         b.notificationId,
       ]);
     }),
+  // Preferences hold no ids, so these cases compare values: A stores values away from the defaults,
+  // and B must read its own defaults and change only its own row (issue #1441).
+  "get notification preferences": async () => {
+    await sendOk(a.member, { method: "PATCH", path: "/api/notification-preferences", body: { badgeInbox: true } });
+    try {
+      const own: unknown = JSON.parse(await sendOk(a.member, { method: "GET", path: "/api/notification-preferences" }));
+      expect(own).toMatchObject({ badgeInbox: true });
+      const foreign = await expectExcludesA(b.member, { method: "GET", path: "/api/notification-preferences" });
+      const foreignBody: unknown = JSON.parse(foreign.text);
+      expect(foreignBody).toMatchObject({ approvals: true, badgeInbox: false });
+    } finally {
+      await sendOk(a.member, { method: "PATCH", path: "/api/notification-preferences", body: { badgeInbox: false } });
+    }
+  },
+  "patch notification preferences": async () => {
+    const aBefore = await sendOk(a.member, { method: "GET", path: "/api/notification-preferences" });
+    try {
+      const own: unknown = JSON.parse(
+        await sendOk(b.member, {
+          method: "PATCH",
+          path: "/api/notification-preferences",
+          body: { approvals: false, badgeApprovals: false },
+        }),
+      );
+      expect(own).toMatchObject({ approvals: false, badgeApprovals: false });
+      expect(await sendOk(a.member, { method: "GET", path: "/api/notification-preferences" })).toEqual(aBefore);
+    } finally {
+      await sendOk(b.member, {
+        method: "PATCH",
+        path: "/api/notification-preferences",
+        body: { approvals: true, badgeApprovals: true },
+      });
+    }
+  },
   "schema projection": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/schema" });
   },
