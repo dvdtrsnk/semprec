@@ -73,12 +73,13 @@ export async function getUserByEmailWithTenantStatus(
   const { rows } = await client.query<{
     id: string;
     email: string;
+    display_name: string | null;
     password_hash: string;
     locale: string;
     created_at: Date;
     tenant_status: unknown;
   }>(
-    `SELECT u.id, u.email, u.password_hash, u.locale, u.created_at, t.status AS tenant_status
+    `SELECT u.id, u.email, u.display_name, u.password_hash, u.locale, u.created_at, t.status AS tenant_status
        FROM users u LEFT JOIN tenants t ON t.id = u.tenant_id
       WHERE u.email = $1`,
     [email],
@@ -88,6 +89,7 @@ export async function getUserByEmailWithTenantStatus(
   const user: UserRow = {
     id: row.id,
     email: row.email,
+    displayName: row.display_name,
     passwordHash: row.password_hash,
     locale: row.locale,
     createdAt: row.created_at.toISOString(),

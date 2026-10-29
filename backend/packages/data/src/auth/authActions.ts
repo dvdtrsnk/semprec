@@ -103,6 +103,8 @@ export interface LoginResult {
   token: string;
   session: SessionRow;
   user: PublicUser;
+  /** The user's role in their tenant, read by the same locked query that re-checks the tenant (#1387). */
+  role: UserRole;
 }
 
 /**
@@ -128,7 +130,8 @@ export interface LoginResult {
  * never engage. Only the success path — the new session row and the streak-resetting success
  * row — runs in one `withTransaction`, so those two still commit or roll back together. That
  * transaction re-reads the tenant status through `lockUserTenantBinding`, so a session is never
- * created for a tenant a concurrent suspension has already left non-active.
+ * created for a tenant a concurrent suspension has already left non-active. The `role` in the result
+ * is read by that same locked query.
  */
 export async function login(pool: Pool, input: LoginInput): Promise<LoginResult> {
   const email = normalizeEmail(input.email);
@@ -157,7 +160,7 @@ export async function login(pool: Pool, input: LoginInput): Promise<LoginResult>
 
   const { token, tokenHash } = generateOpaqueToken();
   const expiresAt = new Date(Date.now() + SESSION_IDLE_TTL_SECONDS_BY_PLATFORM[input.platform] * 1000);
-  const session = await withTransaction(pool, async (client) => {
+  const granted = await withTransaction(pool, async (client) => {
     // Re-checked under lock: a suspension that committed after the read above is seen here, and
     // one that has not yet locked the user waits for this commit and then revokes this session.
     const locked = await lockUserTenantBinding(client, user.id);
@@ -171,14 +174,14 @@ export async function login(pool: Pool, input: LoginInput): Promise<LoginResult>
       ...input.device,
     });
     await recordLoginAttempt(client, { email, ip: input.ip, succeeded: true });
-    return created;
+    return { session: created, role: locked.role };
   });
-  if (!session) {
+  if (!granted) {
     await recordLoginAttempt(pool, { email, ip: input.ip, succeeded: false });
     throw new UnauthorizedError();
   }
 
-  return { token, session, user: toPublicUser(user) };
+  return { token, session: granted.session, user: toPublicUser(user), role: granted.role };
 }
 
 /**

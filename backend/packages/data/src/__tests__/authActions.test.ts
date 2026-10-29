@@ -46,7 +46,14 @@ describe("auth actions (issue #140)", () => {
         ip: "127.0.0.1",
       });
 
-      expect(result.user).toEqual({ id: user.id, email: user.email, locale: user.locale, createdAt: user.createdAt });
+      expect(result.user).toEqual({
+        id: user.id,
+        email: user.email,
+        displayName: null,
+        locale: user.locale,
+        createdAt: user.createdAt,
+      });
+      expect(result.role).toBe("member");
       expect(result.token).toBeTruthy();
       expect((result.user as { passwordHash?: unknown }).passwordHash).toBeUndefined();
 
@@ -128,6 +135,56 @@ describe("auth actions (issue #140)", () => {
       expect(first.session.id).not.toBe(second.session.id);
       const sessions = await listSessionsForUser(pool, user.id);
       expect(sessions).toHaveLength(2);
+    });
+  });
+
+  describe("display name and role (issue #1387)", () => {
+    it("createUser returns a null displayName for an account created without one", async () => {
+      const user = await makeUser();
+      expect(user.displayName).toBeNull();
+    });
+
+    it("login and verifySessionToken return the displayName stored on the account", async () => {
+      const user = await makeUser();
+      // Nothing writes the name yet (#1513 does, at account creation), so the test sets the column directly.
+      await pool.query("UPDATE users SET display_name = $2 WHERE id = $1", [user.id, "Ada Lovelace"]);
+
+      const result = await login(pool, {
+        email: user.email,
+        password: "s3cret-password",
+        platform: "web",
+        ip: "1.2.3.4",
+      });
+      expect(result.user.displayName).toBe("Ada Lovelace");
+
+      const identity = await verifySessionToken(pool, result.token);
+      expect(identity.user.displayName).toBe("Ada Lovelace");
+    });
+
+    it("login returns the role of the account, admin or member", async () => {
+      const admin = await createUser(pool, {
+        tenantId: await tenantForNextTestUser(pool),
+        email: "admin@example.com",
+        passwordHash: await hashPassword("s3cret-password"),
+        role: "admin",
+      });
+      const member = await makeUser("member@example.com");
+
+      const adminLogin = await login(pool, {
+        email: admin.email,
+        password: "s3cret-password",
+        platform: "web",
+        ip: "1.2.3.4",
+      });
+      const memberLogin = await login(pool, {
+        email: member.email,
+        password: "s3cret-password",
+        platform: "web",
+        ip: "1.2.3.4",
+      });
+
+      expect(adminLogin.role).toBe("admin");
+      expect(memberLogin.role).toBe("member");
     });
   });
 
