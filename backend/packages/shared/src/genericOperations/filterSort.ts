@@ -21,6 +21,7 @@ export const FILTER_CONDITION_TYPES = [
   "on_or_before",
   "on_or_after",
   "date_range",
+  "date_relative",
   "in",
   "relation_contains",
   "relation_not_contains",
@@ -28,12 +29,33 @@ export const FILTER_CONDITION_TYPES = [
 ] as const;
 export type FilterConditionType = (typeof FILTER_CONDITION_TYPES)[number];
 
+export const DATE_RELATIVE_PRESETS = [
+  "today",
+  "tomorrow",
+  "thisWeek",
+  "nextWeek",
+  "thisMonth",
+  "upcoming",
+  "past",
+  "onOrBeforeToday",
+  "last7",
+  "last30",
+  "thisYear",
+  "olderThan30",
+  "beforeNow",
+] as const;
+export type DateRelativePresetName = (typeof DATE_RELATIVE_PRESETS)[number];
+/** Days relative to today, inclusive; negative is the past; no `toDays` means no upper bound. */
+export type DateRelativeRange = { fromDays: number; toDays?: number };
+export type DateRelativePreset = DateRelativePresetName | DateRelativeRange;
+
 export type FilterCondition =
   | { type: "equals" | "not_equals"; property: string; value: string | number | boolean }
   | { type: "contains" | "not_contains" | "starts_with" | "ends_with"; property: string; value: string }
   | { type: "is_empty" | "is_not_empty"; property: string }
   | { type: "before" | "after" | "on_or_before" | "on_or_after"; property: string; value: string }
   | { type: "date_range"; property: string; value: { from: string; to: string } }
+  | { type: "date_relative"; property: string; endProperty?: string; preset: DateRelativePreset }
   | { type: "in"; property: string; value: string[] }
   /** `value` must be a UUID string — `filterConditionSchema` validates it with `z.uuid()`. */
   | { type: "relation_contains" | "relation_not_contains"; property: string; value: string }
@@ -71,6 +93,18 @@ const relationPathCondition = relationPathConditionSchema.refine(() => false, {
   params: { relationPathFilter: true },
 });
 
+const RELATIVE_DAYS_LIMIT = 36500;
+const relativeDays = z.number().int().min(-RELATIVE_DAYS_LIMIT).max(RELATIVE_DAYS_LIMIT);
+const dateRelativePreset = z.union([
+  z.enum(DATE_RELATIVE_PRESETS),
+  z
+    .object({ fromDays: relativeDays, toDays: relativeDays.optional() })
+    .strict()
+    .refine((range) => range.toDays === undefined || range.fromDays <= range.toDays, {
+      message: "fromDays must not exceed toDays",
+    }),
+]);
+
 const filterConditionSchema = z.union([
   z.object({ type: z.enum(["equals", "not_equals"]), property: filterProperty, value: filterScalarValue }).strict(),
   z
@@ -93,6 +127,14 @@ const filterConditionSchema = z.union([
       type: z.literal("date_range"),
       property: filterProperty,
       value: z.object({ from: z.string(), to: z.string() }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("date_relative"),
+      property: filterProperty,
+      endProperty: filterProperty.optional(),
+      preset: dateRelativePreset,
     })
     .strict(),
   z.object({ type: z.literal("in"), property: filterProperty, value: z.array(z.string()).min(1) }).strict(),

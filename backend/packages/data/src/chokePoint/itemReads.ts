@@ -14,7 +14,7 @@ import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
-import { compileFilterNode } from "../views/filterCompiler.js";
+import { compileFilterNode, resolveFilterCompileContext } from "../views/filterCompiler.js";
 import { buildFilterProperties } from "../views/filterProperties.js";
 import { parseFilterNode } from "../views/filterTree.js";
 
@@ -28,20 +28,25 @@ async function buildFilterSqlForDatabase(
   client: PoolClient,
   databaseId: string,
   filter: unknown,
+  now: Date | undefined,
 ): Promise<(params: unknown[]) => string> {
   const properties = await propertiesStore.listPropertiesByDatabase(client, databaseId);
   const filterProperties = await buildFilterProperties(client, properties);
   const node = parseFilterNode(filter);
-  return (params) => compileFilterNode(node, filterProperties, params);
+  const context = await resolveFilterCompileContext(client, node, now);
+  return (params) => compileFilterNode(node, filterProperties, params, context);
 }
 
 export interface ListItemsInput extends itemsStore.ListItemsOptions {
   /** A filter tree (views/filterTree.ts), as a transport adapter receives it — validated here, never trusted. */
   filter?: unknown;
+  /** The clock `date_relative` conditions are evaluated at; defaults to the current time. */
+  now?: Date;
 }
 
 export interface CountItemsInput extends Pick<itemsStore.ListItemsOptions, "includeDeleted" | "buildFilterSql"> {
   filter?: unknown;
+  now?: Date;
 }
 
 /**
@@ -53,13 +58,13 @@ export interface CountItemsInput extends Pick<itemsStore.ListItemsOptions, "incl
 async function resolveFilterSql(
   client: PoolClient,
   databaseId: string,
-  options: { filter?: unknown; buildFilterSql?: (params: unknown[]) => string | undefined },
+  options: { filter?: unknown; now?: Date; buildFilterSql?: (params: unknown[]) => string | undefined },
 ): Promise<((params: unknown[]) => string | undefined) | undefined> {
   if (options.filter === undefined) return options.buildFilterSql;
   if (options.buildFilterSql) {
     throw new ValidationError("Pass either 'filter' or 'buildFilterSql', not both", { field: "filter" });
   }
-  return buildFilterSqlForDatabase(client, databaseId, options.filter);
+  return buildFilterSqlForDatabase(client, databaseId, options.filter, options.now);
 }
 
 export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
@@ -134,9 +139,10 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
     async listItems(databaseId: string, options?: ListItemsInput) {
       return withTransaction(pool, async (client) => {
         // `filter` is consumed by resolveFilterSql; `rest` is what the store itself takes.
-        const { filter, ...rest } = options ?? {};
+        const { filter, now, ...rest } = options ?? {};
         const buildFilterSql = await resolveFilterSql(client, databaseId, {
           filter,
+          now,
           buildFilterSql: rest.buildFilterSql,
         });
         return itemsStore.listItems(client, databaseId, { ...rest, buildFilterSql });
@@ -146,9 +152,10 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
     /** The matching count for the same `filter` `listItems` takes — a count without paging the rows in. */
     async countItems(databaseId: string, options?: CountItemsInput): Promise<number> {
       return withTransaction(pool, async (client) => {
-        const { filter, ...rest } = options ?? {};
+        const { filter, now, ...rest } = options ?? {};
         const buildFilterSql = await resolveFilterSql(client, databaseId, {
           filter,
+          now,
           buildFilterSql: rest.buildFilterSql,
         });
         return itemsStore.countItems(client, databaseId, { ...rest, buildFilterSql });
