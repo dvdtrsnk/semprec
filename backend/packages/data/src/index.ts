@@ -417,6 +417,7 @@ export {
   reclassifyMcpTool,
 } from "./mcp/mcpAgentPageGrants.js";
 export type {
+  ApprovalDescription,
   ApprovalRequest,
   ApprovalRequestPayload,
   McpInvokeApprovalRequestPayload,
@@ -440,6 +441,7 @@ export type {
   ApprovalRequestSafeSummary,
   ApprovalRequestDecisionView,
 } from "./mcp/approvalRequestsQueue.js";
+export { buildDestructiveApprovalDescription, buildMcpInvokeApprovalDescription } from "./mcp/approvalDescription.js";
 export type { ApprovalConflictReason } from "./mcp/approvalConflictReason.js";
 export { approvalConflictReason } from "./mcp/approvalConflictReason.js";
 export { listApprovalRequestsQueue, toApprovalRequestDecisionView } from "./mcp/approvalRequestsQueue.js";

@@ -316,6 +316,29 @@ describe("MCP invoke adapter (issue #128)", () => {
       expect(rows[0].n).toBe(2);
     });
 
+    it("stores an mcpInvoke description with only the server and tool names (issue #1683)", async () => {
+      const contractServer = startStdioContractServer([SEARCH_TOOL]);
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+
+      const result = await createApprovalGatedMcpInvokeTool(
+        pool,
+        run.id,
+        projectItemId,
+        registration.id,
+      )({
+        query: "secret-value",
+      });
+
+      const request = await getApprovalRequest(pool, result.approvalRequestId!);
+      expect(request!.description).toEqual({
+        key: "approval.mcpInvoke",
+        params: { serverName: "Contract server", toolName: registration.toolName },
+      });
+      expect(JSON.stringify(request!.description)).not.toContain("secret-value");
+    });
+
     it("creates no request and returns an error for a semprecReason over 500 characters (issue #1420)", async () => {
       const contractServer = startStdioContractServer([SEARCH_TOOL]);
       servers.push(contractServer);

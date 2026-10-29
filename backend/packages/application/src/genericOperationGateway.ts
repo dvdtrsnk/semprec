@@ -8,6 +8,7 @@ import {
   computeDestructiveResourceProjection,
   createActionQueueAffinity,
   createPendingApprovalRequest,
+  buildDestructiveApprovalDescription,
   databaseArchiveWithClient,
   deleteRelationWithClient,
   getAgentRun,
@@ -229,6 +230,7 @@ async function preflightDestructiveApproval(
       actor: { runId: actor.runId!, agentProjectItemId: actor.agentProjectItemId, userId: actor.userId },
       resourceSnapshot: snapshot,
     };
+    const description = await buildDestructiveApprovalDescription(client, check);
     const created = await createPendingApprovalRequest(client, {
       agentRunId: actor.runId!,
       toolName: operation,
@@ -237,6 +239,7 @@ async function preflightDestructiveApproval(
       resourceSnapshot: snapshot,
       reason,
       toolCallId,
+      description,
     });
 
     const userId = await getTenantUserId(client);

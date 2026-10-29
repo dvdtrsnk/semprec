@@ -5,7 +5,8 @@ import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { logger } from "./logger.js";
 
-const DEFAULT_RETENTION_DAYS = 30;
+/** How long a trashed item stays restorable before the purge sweep removes it. */
+export const TRASH_RETENTION_DAYS = 30;
 const CANDIDATE_PAGE_SIZE = 500;
 
 /**
@@ -32,7 +33,7 @@ const CANDIDATE_PAGE_SIZE = 500;
 export async function purgeExpiredTrash(
   pool: Pool,
   storage: BlobStorageWriter,
-  retentionDays = DEFAULT_RETENTION_DAYS,
+  retentionDays = TRASH_RETENTION_DAYS,
 ): Promise<number> {
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
   const chokePoint = createChokePoint(pool);

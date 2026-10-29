@@ -80,6 +80,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       projectItemId: projectItem.id,
       projectName: "Renovate the kitchen",
       reason: null,
+      description: null,
     });
   });
 

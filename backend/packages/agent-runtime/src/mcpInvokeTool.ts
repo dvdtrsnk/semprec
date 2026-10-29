@@ -4,6 +4,7 @@ import { Ajv, type ValidateFunction } from "ajv";
 import {
   resolveGrantedMcpTool,
   createPendingApprovalRequest,
+  buildMcpInvokeApprovalDescription,
   APPROVAL_REQUEST_REASON_MAX_LENGTH,
   withTransaction,
   executeMcpInvocation,
@@ -261,6 +262,10 @@ export function createApprovalGatedMcpInvokeTool(
           resourceSnapshot: { kind: "mcp_invoke", resourceId: mcpToolRegistrationId, sha256: null },
           reason,
           toolCallId: invokeOptions?.toolCallId ?? null,
+          description: buildMcpInvokeApprovalDescription(
+            typeof target.serverItem.properties.name === "string" ? target.serverItem.properties.name : null,
+            target.toolName,
+          ),
         });
         const userId = await getTenantUserId(client);
         if (userId) {

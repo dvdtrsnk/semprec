@@ -45,6 +45,45 @@ export interface ApprovalResourceSnapshot {
 }
 
 /**
+ * The localisable description snapshotted on a request (issue #1683): a template key plus
+ * parameters, never rendered text. The template contract is documented next to the builders in
+ * `approvalDescription.ts`.
+ */
+export interface ApprovalDescription {
+  key: string;
+  params: Record<string, string | number | null>;
+  /** Links the action would end; filled by the value-link work, omitted until then. */
+  endsInheritance?: Array<{ itemId: string; propertyKey: string; sourceName: string }>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isInheritanceEntry(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.itemId === "string" &&
+    typeof value.propertyKey === "string" &&
+    typeof value.sourceName === "string"
+  );
+}
+
+function assertDescriptionShape(value: unknown): ApprovalDescription | null {
+  if (value === null) return null;
+  assertShape(
+    isRecord(value) &&
+      typeof value.key === "string" &&
+      isRecord(value.params) &&
+      Object.values(value.params).every((v) => v === null || typeof v === "string" || typeof v === "number") &&
+      (value.endsInheritance === undefined ||
+        (Array.isArray(value.endsInheritance) && value.endsInheritance.every(isInheritanceEntry))),
+    "description",
+  );
+  return value as unknown as ApprovalDescription;
+}
+
+/**
  * `approval_requests` (issue #130 baseline): one immutable, invocation-time snapshot per
  * deferred MCP tool call. `payload` is exactly what a later issue needs to execute the
  * approved call unchanged — the resolved target's identity plus the model-supplied
@@ -74,6 +113,8 @@ export interface ApprovalRequest {
   reason: string | null;
   /** The model-runtime tool call that created the request; `null` for older requests and paths without one. */
   toolCallId: string | null;
+  /** What the request asks, as a template key and parameters snapshotted at creation; `null` for requests created before issue #1683. */
+  description: ApprovalDescription | null;
 }
 
 /** The outbound third-party-MCP-tool-invoke payload shape (issue #130) — the resolved target's identity plus the model-supplied arguments. */
@@ -124,6 +165,7 @@ interface ApprovalRequestRow {
   execution_result_jsonb: unknown;
   reason: string | null;
   tool_call_id: string | null;
+  description: unknown;
 }
 
 function assertResourceSnapshotShape(value: ApprovalResourceSnapshot): ApprovalResourceSnapshot {
@@ -161,6 +203,7 @@ function rowToApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
     executionResult: row.execution_result_jsonb,
     reason: row.reason,
     toolCallId: assertNullableString(row.tool_call_id, "tool_call_id"),
+    description: assertDescriptionShape(row.description),
   };
 }
 
@@ -174,6 +217,8 @@ export interface CreatePendingApprovalRequestInput {
   reason?: string | null;
   /** The model-runtime tool call that produced the request; stored as `NULL` when absent. */
   toolCallId?: string | null;
+  /** The localisable description, computed by the caller in the same transaction; stored as `NULL` when absent. */
+  description?: ApprovalDescription | null;
 }
 
 /**
@@ -186,8 +231,8 @@ export async function createPendingApprovalRequest(
 ): Promise<ApprovalRequest> {
   const toolCallId = input.toolCallId ?? null;
   const { rows } = await client.query<ApprovalRequestRow>(
-    `INSERT INTO approval_requests (agent_run_id, tool_name, risk_class, payload, resource_snapshot, reason, tool_call_id)
-     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)
+    `INSERT INTO approval_requests (agent_run_id, tool_name, risk_class, payload, resource_snapshot, reason, tool_call_id, description)
+     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8::jsonb)
      ON CONFLICT (tenant_id, agent_run_id, tool_call_id) WHERE tool_call_id IS NOT NULL DO NOTHING
      RETURNING *`,
     [
@@ -198,6 +243,7 @@ export async function createPendingApprovalRequest(
       JSON.stringify(input.resourceSnapshot),
       input.reason ?? null,
       toolCallId,
+      input.description ? JSON.stringify(input.description) : null,
     ],
   );
   if (rows.length === 0 && toolCallId !== null) {
