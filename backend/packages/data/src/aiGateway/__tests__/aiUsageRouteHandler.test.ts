@@ -188,6 +188,7 @@ describe("monthly AI usage (gh-1462)", () => {
             audioSeconds: null,
           },
         ],
+        byOperation: expect.any(Array),
         byModel: [
           {
             provider: "anthropic",
@@ -313,6 +314,7 @@ describe("monthly AI usage (gh-1462)", () => {
             audioSeconds: null,
           },
         ],
+        byOperation: expect.any(Array),
         byModel: [
           {
             provider: "anthropic",
@@ -594,6 +596,88 @@ describe("usage by model (gh-1472)", () => {
         audioSeconds: 30,
         operations: ["transcription_transcribe"],
       }),
+    ]);
+  });
+});
+
+describe("usage by operation (gh-1477)", () => {
+  const range = {
+    from: new Date(Date.now() - 86_400_000).toISOString(),
+    to: new Date(Date.now() + 86_400_000).toISOString(),
+  };
+
+  let db: Pool;
+
+  beforeAll(() => {
+    db = getTestPool();
+  });
+  beforeEach(async () => {
+    await resetDatabase(db);
+    await createTenantZeroUser(db);
+  });
+  afterAll(async () => {
+    await db?.end();
+  });
+
+  async function record(operation: string | undefined, costUsd: number): Promise<void> {
+    await recordTokenGatewayCall(db, {
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      inputTokens: 1,
+      outputTokens: 1,
+      costUsd,
+      ...(operation === undefined ? {} : { operation }),
+    });
+  }
+
+  it("groups, merges aliases, maps NULL to other, keeps unknown keys and sums to the total", async () => {
+    await record("agent_turn", 4);
+    await record("agent_guidance_drift", 1);
+    await record("agent_behavior_drift", 1);
+    await record("voice_transcribe_stream", 1);
+    await record("voice_synthesize", 1);
+    await record(undefined, 0.5);
+    await record("mystery_op", 0.5);
+    const failed = await reserveGatewayCall(db, {
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      estimatedCostUsd: 9,
+      operation: "agent_turn",
+    });
+    await failGatewayCall(db, failed.id);
+
+    const cs = await getAiUsageReport(db, { ...range, locale: "cs" });
+    const en = await getAiUsageReport(db, { ...range, locale: "en" });
+
+    expect(cs.byOperation.map((entry) => [entry.operation, entry.label, entry.costUsd, entry.callCount])).toEqual([
+      ["agent_turn", "Semp – chat a automatické úlohy", 4, 1],
+      ["agent_guidance_drift", "Kontrola instrukcí AGENT.md", 2, 2],
+      ["voice", "Hlas", 2, 2],
+      ["mystery_op", "mystery_op", 0.5, 1],
+      ["other", "Ostatní", 0.5, 1],
+    ]);
+    expect(en.byOperation.map((entry) => entry.label)).toEqual([
+      "Semp - chat and automatic tasks",
+      "AGENT.md instruction check",
+      "Voice",
+      "mystery_op",
+      "Other",
+    ]);
+    expect(cs.byOperation.reduce((sum, entry) => sum + entry.costUsd, 0)).toBeCloseTo(cs.totalCostUsd, 9);
+    expect(cs.byOperation.reduce((sum, entry) => sum + entry.share, 0)).toBeCloseTo(1, 9);
+    expect(cs.byOperation[0]?.share).toBeCloseTo(4 / 9, 9);
+  });
+
+  it("reports share 0 for every entry when the total is 0", async () => {
+    await record("agent_turn", 0);
+    await record("transcript_summary", 0);
+
+    const report = await getAiUsageReport(db, range);
+
+    expect(report.totalCostUsd).toBe(0);
+    expect(report.byOperation.map((entry) => [entry.operation, entry.share])).toEqual([
+      ["agent_turn", 0],
+      ["transcript_summary", 0],
     ]);
   });
 });

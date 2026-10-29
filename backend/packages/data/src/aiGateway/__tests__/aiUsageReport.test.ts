@@ -169,6 +169,7 @@ describe("AI usage account metadata (gh-1376)", () => {
             audioSeconds: null,
           },
         ],
+        byOperation: [{ operation: "other", label: "Other", costUsd: 1, share: 1, callCount: 1 }],
         byModel: [
           {
             provider: "anthropic",
