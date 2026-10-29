@@ -8,7 +8,7 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
-import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import { assertRelationTargetLinkableWithClient, createRelationWithClient } from "../chokePoint/relationOps.js";
 import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import { PROCESSING_METHODS, LOCKED_PROPOSAL_STATUSES, type ProcessingMethod } from "./inboxTypesStore.js";
 import { computeInboxFingerprint } from "./fingerprint.js";
@@ -18,7 +18,7 @@ import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { assertValidMcpServerProposalProperties } from "../mcp/mcpServerProposal.js";
 import { ValidationError } from "../errors.js";
 import { getTenantUserLocale } from "../auth/usersStore.js";
-import type { DatabaseRow, ItemRow } from "../types.js";
+import type { DatabaseRow, ItemRow, PropertyRow } from "../types.js";
 
 const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = {
   ownerProcess: PROCESSING_PROPOSALS_MODULE_ID,
@@ -40,7 +40,8 @@ export const semprecTickActionConfigSchema = z.object({
 export type SemprecTickActionConfig = z.infer<typeof semprecTickActionConfigSchema>;
 
 /**
- * The generic proposal envelope (issue #100/#223): exactly `entityKind`, `target`, `properties`.
+ * The generic proposal envelope (issue #100/#223): `entityKind`, `target`, `properties` and, for
+ * `'database'` only, optional `relations`.
  * `'relation'` (issue #184) links the card's source item to the existing item `target` through the
  * relation property named by `properties.propertyKey`, with `properties.metadata` (optional) as
  * the edge's metadata — never computed by the Inbox tick. A transcript card reaches the
@@ -56,6 +57,11 @@ export const proposalEnvelopeSchema = z.object({
   entityKind: z.enum(["pageContent", "database", "relation"]),
   target: z.string().min(1),
   properties: z.record(z.string(), z.unknown()),
+  /**
+   * `'database'` envelopes only: item ids of the targets per relation property key on the target
+   * database. An empty array means no edge. Written on confirm, not by this module.
+   */
+  relations: z.record(z.string(), z.array(z.string().min(1))).optional(),
 });
 
 export type ProposalEnvelope = z.infer<typeof proposalEnvelopeSchema>;
@@ -327,6 +333,30 @@ export function appendHistoryEntry(
   return [...existing, { author, message, at: new Date().toISOString(), ...extra }];
 }
 
+/** Checks a `'database'` envelope's `relations`: each key a relation property of the target database, unique target ids, every target linkable. */
+async function assertValidEnvelopeRelations(
+  client: PoolClient,
+  targetDatabaseId: string,
+  propertiesByKey: ReadonlyMap<string, PropertyRow>,
+  relations: NonNullable<ProposalEnvelope["relations"]>,
+): Promise<void> {
+  for (const [key, targetItemIds] of Object.entries(relations)) {
+    const property = propertiesByKey.get(key);
+    if (!property || property.type !== "relation") {
+      throw new ValidationError(
+        `Proposal relations reference '${key}', which is not a relation property of target database ${targetDatabaseId}`,
+        { field: key },
+      );
+    }
+    if (new Set(targetItemIds).size !== targetItemIds.length) {
+      throw new ValidationError(`Proposal relations for '${key}' list the same target more than once`, { field: key });
+    }
+    for (const targetItemId of targetItemIds) {
+      await assertRelationTargetLinkableWithClient(client, { relationPropertyId: property.id, targetItemId });
+    }
+  }
+}
+
 /**
  * Validates a computed envelope against its destination's own requirements (issue #104) —
  * never against the generic choke-point schema engine's write path, since a proposal is
@@ -401,7 +431,16 @@ export async function assertValidProposalEnvelope(
         throw new ValidationError(`Proposal properties cannot set system-owned property '${key}'`, { field: key });
       }
     }
+    if (envelope.relations !== undefined) {
+      await assertValidEnvelopeRelations(client, targetDatabase.id, byKey, envelope.relations);
+    }
     return targetDatabase;
+  }
+
+  if (envelope.relations !== undefined) {
+    throw new ValidationError(`Proposal envelope relations are only valid for entityKind 'database'`, {
+      field: "relations",
+    });
   }
 
   if (envelope.entityKind === "relation") {
