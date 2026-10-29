@@ -1,3 +1,4 @@
+import { WebSocket } from "ws";
 import {
   AiGatewayFailedError,
   currentTenantScope,
@@ -138,4 +139,148 @@ export function createHttpAiGatewayClient(config: HttpAiGatewayClientConfig): Ai
       return body;
     },
   };
+}
+
+/** Handshake deadline for `/internal/stt/stream` (a loopback connect; anything slower is a hung gateway). */
+const STT_OPEN_TIMEOUT_MS = 10_000;
+/** The gateway's messages are tiny JSON objects; a larger frame is a protocol violation. */
+const STT_MAX_MESSAGE_BYTES = 64 * 1024;
+
+/** The `code` of a gateway `{type: "error"}` message on `/internal/stt/stream`. */
+export type SttStreamErrorCode =
+  "budget_exceeded" | "provider_error" | "capacity" | "session_limit" | "idle_timeout" | "invalid_frame";
+
+const STT_ERROR_CODES: readonly string[] = [
+  "budget_exceeded",
+  "provider_error",
+  "capacity",
+  "session_limit",
+  "idle_timeout",
+  "invalid_frame",
+];
+
+export interface SttStreamEvents {
+  /** The running text of the utterance being spoken; replaces the previous partial. */
+  onPartial(text: string): void;
+  /** The finished text of one utterance. */
+  onFinal(text: string): void;
+  /** The gateway ended the stream with an error; `onClose` follows. */
+  onError(code: SttStreamErrorCode): void;
+  /** The stream is over, whichever side ended it. Called exactly once after a successful open. */
+  onClose(): void;
+}
+
+export interface SttStream {
+  /** One frame of raw PCM s16le, mono, 16 kHz. At most 16 KiB and an even byte length. */
+  sendAudio(pcm: Uint8Array): void;
+  /** Signals the end of the audio; the gateway then sends the last finals and closes. */
+  end(): void;
+  /** Drops the stream at once; the gateway aborts the provider session and settles the open chunk row. */
+  close(): void;
+}
+
+export interface OpenSttStreamOptions {
+  /** ISO 639-1 code; omit to let the provider detect the language. */
+  language?: string;
+  /** Aborting it closes the stream, also while it is still opening. */
+  signal?: AbortSignal;
+}
+
+type SttMessage = { type: "partial" | "final"; text: string } | { type: "error"; code: SttStreamErrorCode };
+
+function parseSttMessage(raw: string): SttMessage | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+  const message = value as { type?: unknown; text?: unknown; code?: unknown };
+  if ((message.type === "partial" || message.type === "final") && typeof message.text === "string") {
+    return { type: message.type, text: message.text };
+  }
+  if (message.type === "error" && typeof message.code === "string" && STT_ERROR_CODES.includes(message.code)) {
+    return { type: "error", code: message.code as SttStreamErrorCode };
+  }
+  return null;
+}
+
+/**
+ * Opens `semprec-ai-gateway`'s streaming speech-to-text route (`/internal/stt/stream`, #1396) over
+ * loopback with the same bearer token and ambient tenant header as {@link createHttpAiGatewayClient}.
+ * The tenant must be in scope: the gateway refuses a stream without one. Rejects with
+ * `AiGatewayFailedError` when the connection cannot be opened (`timeout` or `http`); once open,
+ * every outcome is reported through `events`, and an unparseable gateway message ends the stream
+ * as a `provider_error`.
+ */
+export function openSttStream(
+  config: HttpAiGatewayClientConfig,
+  options: OpenSttStreamOptions,
+  events: SttStreamEvents,
+): Promise<SttStream> {
+  const query = options.language === undefined ? "" : `?language=${encodeURIComponent(options.language)}`;
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${config.port}/internal/stt/stream${query}`, {
+      headers: {
+        authorization: `Bearer ${config.token}`,
+        "x-trace-id": getTraceId() ?? mintTraceId(),
+        ...tenantHeader(),
+      },
+      maxPayload: STT_MAX_MESSAGE_BYTES,
+      handshakeTimeout: STT_OPEN_TIMEOUT_MS,
+    });
+    let opened = false;
+    let closed = false;
+
+    const close = (): void => {
+      options.signal?.removeEventListener("abort", close);
+      ws.terminate();
+    };
+    options.signal?.addEventListener("abort", close, { once: true });
+    if (options.signal?.aborted) close();
+
+    ws.on("error", (err) => {
+      if (opened) return; // the `close` event that follows reports the end of an open stream
+      reject(new AiGatewayFailedError(err.message.includes("timed out") ? "timeout" : "http"));
+    });
+    ws.on("unexpected-response", (_req, res) => {
+      res.resume();
+      reject(new AiGatewayFailedError("http"));
+      ws.terminate();
+    });
+    ws.on("open", () => {
+      opened = true;
+      resolve({
+        sendAudio: (pcm) => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(pcm, { binary: true });
+        },
+        end: () => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "end" }));
+        },
+        close,
+      });
+    });
+    ws.on("message", (data, isBinary) => {
+      const message = isBinary ? null : parseSttMessage((data as Buffer).toString("utf8"));
+      if (message === null) {
+        events.onError("provider_error");
+        close();
+        return;
+      }
+      if (message.type === "error") events.onError(message.code);
+      else if (message.type === "partial") events.onPartial(message.text);
+      else events.onFinal(message.text);
+    });
+    ws.on("close", () => {
+      options.signal?.removeEventListener("abort", close);
+      if (!opened) {
+        reject(new AiGatewayFailedError("http"));
+        return;
+      }
+      if (closed) return;
+      closed = true;
+      events.onClose();
+    });
+  });
 }

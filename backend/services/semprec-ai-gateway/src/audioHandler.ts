@@ -55,13 +55,13 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 /** Constant-time so a network caller can't recover `AI_GATEWAY_INTERNAL_TOKEN` byte-by-byte from response timing. */
-function tokensMatch(provided: string, expected: string): boolean {
+export function tokensMatch(provided: string, expected: string): boolean {
   const providedBuf = Buffer.from(provided);
   const expectedBuf = Buffer.from(expected);
   return providedBuf.length === expectedBuf.length && timingSafeEqual(providedBuf, expectedBuf);
 }
 
-function extractBearerToken(req: IncomingMessage): string {
+export function extractBearerToken(req: IncomingMessage): string {
   const header = req.headers.authorization;
   if (!header || !header.startsWith("Bearer ")) return "";
   return header.slice("Bearer ".length);

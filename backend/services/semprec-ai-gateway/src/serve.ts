@@ -1,7 +1,8 @@
 import { createServer } from "node:http";
 import { assertRuntimeRole, createPool, startProcessHeartbeat } from "@semprec/data";
 import { installFatalHandlers } from "@semprec/shared";
-import { createDispatcher } from "./app.js";
+import { createDispatcher, createUpgradeDispatcher } from "./app.js";
+import { createSttStreamUpgradeHandler } from "./sttStreamHandler.js";
 import { resolveStartupConfig } from "./startupConfig.js";
 import { createGracefulShutdown, registerShutdownSignals } from "./shutdown.js";
 import { logger } from "./logger.js";
@@ -25,7 +26,10 @@ const dispatch = createDispatcher(pool, config.handlerOptions, config.audioHandl
 
 const server = createServer(dispatch);
 
-const shutdown = createGracefulShutdown({ server, pool, heartbeat, logger });
+const sttStreams = createSttStreamUpgradeHandler(pool, config.sttStreamHandlerOptions);
+server.on("upgrade", createUpgradeDispatcher(sttStreams));
+
+const shutdown = createGracefulShutdown({ server, pool, heartbeat, logger, closeStreams: () => sttStreams.closeAll() });
 registerShutdownSignals(shutdown);
 
 // Issue #174: bound to loopback explicitly — this process is never a public entry point, only

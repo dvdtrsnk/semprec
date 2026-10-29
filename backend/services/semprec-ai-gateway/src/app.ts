@@ -1,8 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Duplex } from "node:stream";
 import type { Pool } from "pg";
 import { createCompleteRequestListener, type CompleteHandlerOptions } from "./completeHandler.js";
 import { createAudioRequestListener, type AudioHandlerOptions } from "./audioHandler.js";
 import { createAudioConcurrencyLimit, MAX_CONCURRENT_AUDIO_REQUESTS } from "./audioConcurrencyLimit.js";
+import { STT_STREAM_PATH, type SttStreamUpgradeHandler } from "./sttStreamHandler.js";
 import { createPiMessagesRequestListener, type PiMessagesHandlerOptions } from "./piMessagesHandler.js";
 
 /**
@@ -14,6 +16,7 @@ export const GATEWAY_ENDPOINTS = [
   "/internal/pi/messages",
   "/internal/diarize",
   "/internal/transcribe",
+  STT_STREAM_PATH,
 ] as const;
 
 export type GatewayEndpoint = (typeof GATEWAY_ENDPOINTS)[number];
@@ -60,6 +63,11 @@ export function createDispatcher(
     "/internal/pi/messages": (req, res) => void piMessagesListener(req, res),
     "/internal/diarize": handleAudio,
     "/internal/transcribe": handleAudio,
+    // A WebSocket route: it is served by `createUpgradeDispatcher`, so a plain request is refused.
+    [STT_STREAM_PATH]: (_req, res) => {
+      res.writeHead(426, { "Content-Type": "application/json; charset=utf-8", Upgrade: "websocket" });
+      res.end(JSON.stringify({ error: "Upgrade required", code: "upgrade_required" }));
+    },
   };
 
   return function dispatch(req: IncomingMessage, res: ServerResponse): void {
@@ -70,5 +78,23 @@ export function createDispatcher(
     }
     res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify({ error: "Not found" }));
+  };
+}
+
+/**
+ * The `upgrade` listener `serve.ts` hands to the HTTP server: `/internal/stt/stream` goes to the
+ * streaming speech-to-text handler, any other path is refused and its socket closed.
+ */
+export function createUpgradeDispatcher(
+  stt: SttStreamUpgradeHandler,
+): (req: IncomingMessage, socket: Duplex, head: Buffer) => void {
+  return function dispatchUpgrade(req, socket, head): void {
+    const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    if (pathname === STT_STREAM_PATH) {
+      stt.handleUpgrade(req, socket, head);
+      return;
+    }
+    socket.on("error", () => undefined);
+    socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
   };
 }

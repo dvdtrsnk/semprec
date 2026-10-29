@@ -238,3 +238,50 @@ export function diarize<T extends AudioCallResult>(
 ): Promise<T> {
   return withAudioAccounting(pool, ctx, invoke);
 }
+
+/**
+ * One reserved slice of a streamed audio call (see `reserveAudioStreamChunk`). Exactly one of
+ * `settle` and `fail` takes effect; later calls are no-ops. Neither ever rejects.
+ */
+export interface AudioStreamChunk {
+  /** Settles the row with the audio seconds actually used, retrying a transient database failure. */
+  settle(audioSeconds: number, costUsd: number): Promise<void>;
+  /** Marks the row `failed` (cost 0); a failure of that cleanup is logged, never thrown. */
+  fail(): Promise<void>;
+}
+
+/**
+ * Streaming audio egress point (docs/adr/2026-10-28-live-voice-chains-speech-to-text-agent-turn-and-text-to-speech.md):
+ * the audio length is unknown up front, so the stream reserves it chunk by chunk. Each call runs the
+ * same reserve step as every other call (advisory lock, tenant-active check, tenant and global
+ * caps) and records one `ai_gateway_calls` row at `ctx.estimatedCostUsd`, which the caller sets to
+ * the price of one full chunk. A `BudgetExceededError` propagates and leaves no row. The caller
+ * must settle or fail every chunk it receives, including on disconnect.
+ */
+export async function reserveAudioStreamChunk(pool: Pool, ctx: GatewayCallContext): Promise<AudioStreamChunk> {
+  const reservation = await reserve(pool, ctx);
+  let finished = false;
+  return {
+    async settle(audioSeconds, costUsd) {
+      if (finished) return;
+      finished = true;
+      await settleWithRetry(
+        reservation,
+        () => settleAudioGatewayCall(pool, reservation.id, { audioSeconds, costUsd }),
+        ctx,
+      );
+    },
+    async fail() {
+      if (finished) return;
+      finished = true;
+      try {
+        await failGatewayCall(pool, reservation.id);
+      } catch (err) {
+        logger.error(
+          { err, callId: reservation.id, provider: ctx.provider, model: ctx.model },
+          "Failed to mark the AI gateway stream chunk reservation failed",
+        );
+      }
+    },
+  };
+}
