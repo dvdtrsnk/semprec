@@ -479,6 +479,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "resolveMailModuleIds",
   "resolveMcpRunCredential",
   "resolveModelDisplayName",
+  "resolveNotificationsBySource",
   "resolveProblem",
   "resolveProperty",
   "resolveTaskAffinitySets",
