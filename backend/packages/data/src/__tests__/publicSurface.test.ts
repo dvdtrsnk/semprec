@@ -370,6 +370,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "listMcpToolRegistrationsForServer",
   "listPendingApprovalRequests",
   "listProjectMcpGrants",
+  "listPropertiesByDatabase",
   "listPushSubscriptionsForUser",
   "listRunningAgentRuns",
   "listSessionAgentRunEventsFromLastCompaction",

@@ -115,6 +115,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     let calls = 0;
     await runTick(pool, databaseIds, item.id, async (input) => {
       calls++;
+      expect(input.projectItemId).toBe("proj");
       expect(input.entityKind).toBe("database");
       expect(input.targetDatabaseId).toBeTruthy();
       return { properties: { name: "Buy milk" } };
