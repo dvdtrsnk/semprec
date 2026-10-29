@@ -38,18 +38,22 @@ export interface OperationMetadata {
   requiresCapability: CapabilityId;
   requiresApproval: boolean;
   riskClass: RiskClass;
+  /** Whether a finished call can be undone through another operation (trash restore, `database.restore`). */
+  reversible: boolean;
 }
 
 const nonDestructive = (requiresCapability: CapabilityId, riskClass: "read" | "write"): OperationMetadata => ({
   requiresCapability,
   requiresApproval: false,
   riskClass,
+  reversible: true,
 });
 
-const destructive = (requiresCapability: CapabilityId): OperationMetadata => ({
+const destructive = (requiresCapability: CapabilityId, reversible: boolean): OperationMetadata => ({
   requiresCapability,
   requiresApproval: true,
   riskClass: "destructive",
+  reversible,
 });
 
 /**
@@ -64,28 +68,55 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   "database.query": nonDestructive("core.database.read", "read"),
   "database.create": nonDestructive("core.database.write", "write"),
   "database.patch": nonDestructive("core.database.write", "write"),
-  "database.archive": destructive("core.database.write"),
+  "database.archive": destructive("core.database.write", true),
   "database.restore": nonDestructive("core.database.write", "write"),
   "property.list": nonDestructive("core.schema.read", "read"),
   "property.get": nonDestructive("core.schema.read", "read"),
   "property.getByKey": nonDestructive("core.schema.read", "read"),
   "property.create": nonDestructive("core.schema.write", "write"),
   "property.patch": nonDestructive("core.schema.write", "write"),
-  "property.delete": destructive("core.schema.write"),
+  "property.delete": destructive("core.schema.write", false),
   "view.list": nonDestructive("core.view.read", "read"),
   "view.get": nonDestructive("core.view.read", "read"),
   "view.query": nonDestructive("core.view.read", "read"),
   "view.create": nonDestructive("core.view.write", "write"),
   "view.patch": nonDestructive("core.view.write", "write"),
-  "view.delete": destructive("core.view.write"),
+  "view.delete": destructive("core.view.write", false),
   "viewItem.add": nonDestructive("core.view.write", "write"),
   "viewItem.remove": nonDestructive("core.view.write", "write"),
   "viewItem.reorder": nonDestructive("core.view.write", "write"),
   "item.get": nonDestructive("core.item.read", "read"),
   "item.create": nonDestructive("core.item.write", "write"),
   "item.patch": nonDestructive("core.item.write", "write"),
-  "item.delete": destructive("core.item.write"),
+  "item.delete": destructive("core.item.write", true),
   "item.restore": nonDestructive("core.item.write", "write"),
   "relation.put": nonDestructive("core.item.write", "write"),
-  "relation.delete": destructive("core.item.write"),
+  "relation.delete": destructive("core.item.write", false),
 };
+
+export const APPROVAL_RISK_LEVELS = ["irreversible", "outbound", "breaksLink", "write"] as const;
+export type ApprovalRiskLevel = (typeof APPROVAL_RISK_LEVELS)[number];
+
+/**
+ * The closed key an approval screen renders as a risk label. A `destructive` request is
+ * `irreversible` unless it names a generic operation flagged `reversible`; every other class
+ * (`write`, `read`, `unclassified`) is a plain `write`.
+ */
+export function deriveApprovalRiskLevel(input: { riskClass: RiskClass; operationName?: string }): ApprovalRiskLevel {
+  switch (input.riskClass) {
+    case "breaksLink":
+      return "breaksLink";
+    case "outbound":
+      return "outbound";
+    case "destructive": {
+      const name = input.operationName;
+      const reversible =
+        name !== undefined &&
+        Object.hasOwn(OPERATION_METADATA, name) &&
+        OPERATION_METADATA[name as GenericOperationName].reversible;
+      return reversible ? "write" : "irreversible";
+    }
+    default:
+      return "write";
+  }
+}
