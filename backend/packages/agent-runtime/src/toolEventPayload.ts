@@ -23,9 +23,46 @@ export interface ToolUseEventPayload extends ToolEventPayload {
   arguments: unknown;
 }
 
+/** One changed property of a successful `item.patch`; `before`/`after` are absent for `longText` and `before` also when the operation reported no previous value. */
+export interface ToolResultChange {
+  key: string;
+  before?: unknown;
+  after?: unknown;
+}
+
+/** Structured fields of the stored pi result's `details`, so readers never parse the result text. */
+export interface ToolResultDetails {
+  approvalRequestId?: string;
+  changes?: ToolResultChange[];
+}
+
 export interface ToolResultEventPayload extends ToolEventPayload {
   result: unknown;
   isError: boolean;
+  details?: ToolResultDetails;
+}
+
+function parseChange(value: unknown): ToolResultChange | null {
+  if (!isRecord(value) || typeof value.key !== "string") return null;
+  return {
+    key: value.key,
+    ...(Object.hasOwn(value, "before") ? { before: value.before } : {}),
+    ...(Object.hasOwn(value, "after") ? { after: value.after } : {}),
+  };
+}
+
+/** Lenient on purpose: a malformed `changes` entry is dropped, a malformed field is ignored, nothing throws. */
+function parseResultDetails(result: unknown): ToolResultDetails | undefined {
+  if (!isRecord(result) || !isRecord(result.details)) return undefined;
+  const { approvalRequestId, changes } = result.details;
+  const parsedChanges = Array.isArray(changes)
+    ? changes.map(parseChange).filter((change): change is ToolResultChange => change !== null)
+    : undefined;
+  const details: ToolResultDetails = {
+    ...(typeof approvalRequestId === "string" ? { approvalRequestId } : {}),
+    ...(parsedChanges !== undefined ? { changes: parsedChanges } : {}),
+  };
+  return Object.keys(details).length > 0 ? details : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -71,7 +108,8 @@ export function parseToolEventPayload(
   };
   if (kind === "tool_use" && Object.hasOwn(payload, "arguments")) return { ...common, arguments: payload.arguments };
   if (kind === "tool_result" && Object.hasOwn(payload, "result") && typeof payload.isError === "boolean") {
-    return { ...common, result: payload.result, isError: payload.isError };
+    const details = parseResultDetails(payload.result);
+    return { ...common, result: payload.result, isError: payload.isError, ...(details ? { details } : {}) };
   }
   return null;
 }
