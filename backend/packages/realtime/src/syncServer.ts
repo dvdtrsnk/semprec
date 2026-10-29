@@ -126,6 +126,8 @@ function rejectUpgrade(socket: Duplex): void {
  *   write carries no single acting user, so it reaches every socket of the envelope's tenant — and
  *   never another tenant's. Every client refetches the referenced row itself over REST and a client
  *   with nothing cached for it just ignores the frame.
+ * - `invalidation` with `scope: "sempThread"` sends a thin frame naming the thread to every socket
+ *   of the envelope's tenant, best effort and without replay.
  * - `notification_created` and `notification_read_state` fetch the referenced row(s)' current,
  *   complete state via `getNotificationById` and broadcast a `notification` frame only to sockets
  *   authenticated as that notification's own `userId` — the one place this server sends a full row
@@ -390,6 +392,11 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
           return;
         }
         case "invalidation": {
+          if (parsed.scope === "sempThread") {
+            // Tenant-wide, best effort, no replay: the client refetches the thread.
+            sendToTenant(tenantId, { type: "invalidate", scope: "sempThread", threadId: parsed.threadId });
+            return;
+          }
           const frame: OutboundFrame =
             parsed.scope === "item"
               ? {
