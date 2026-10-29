@@ -313,12 +313,22 @@ export async function listAgentRunsByHeartbeat(
  * entry belongs to) pass to `@semprec/data`'s `listSessionAgentRunEventsFromLastCompaction`
  * (`agentRunEventsStore.ts`) to rebuild an `Entry[]` tree for a freshly woken session (#119).
  */
-export interface SessionAgentRunsFilter {
-  projectItemId: string;
-  triggeredBy: TriggeredBy;
-  /** `null` for Semp's own conversation (never delegated); a supervisor run id for a delegated one. */
-  parentRunId: string | null;
-}
+export type SessionAgentRunsFilter =
+  | {
+      projectItemId: string;
+      triggeredBy: TriggeredBy;
+      /** `null` for Semp's own conversation (never delegated); a supervisor run id for a delegated one. */
+      parentRunId: string | null;
+    }
+  | {
+      /**
+       * A thread's main conversation (#1560): the user runs of `threadId` with no parent. A delegated
+       * session inherits `thread_id` (#1452) but has a `parent_run_id`, so it never matches this form.
+       */
+      threadId: string;
+      triggeredBy: "user";
+      parentRunId: null;
+    };
 
 /**
  * Every run still marked `running` that is visible in the current tenant scope — orphaned after a

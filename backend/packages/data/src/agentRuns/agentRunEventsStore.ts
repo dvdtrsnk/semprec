@@ -166,10 +166,20 @@ export async function listSessionAgentRunEventsFromLastCompaction(
   client: Pool | PoolClient,
   filter: SessionAgentRunsFilter,
 ): Promise<AgentRunEventRow[]> {
+  // A thread's main conversation is keyed by `thread_id` (agent_runs_thread_wake_idx); the project-item
+  // form never picks those runs up, so a thread's runs and a non-thread session of the same project
+  // item stay separate conversations.
+  const isThread = "threadId" in filter;
+  const sessionRunsWhere = isThread
+    ? `thread_id = $1 AND unit = 'session' AND triggered_by = 'user' AND parent_run_id IS NULL`
+    : `project_item_id = $1 AND unit = 'session' AND triggered_by = $2 AND parent_run_id IS NOT DISTINCT FROM $3
+       AND NOT (thread_id IS NOT NULL AND triggered_by = 'user' AND parent_run_id IS NULL)`;
+  const params =
+    "threadId" in filter ? [filter.threadId] : [filter.projectItemId, filter.triggeredBy, filter.parentRunId];
   const { rows } = await client.query<AgentRunEventDbRow>(
     `WITH session_runs AS (
        SELECT id, wake_seq FROM agent_runs
-       WHERE project_item_id = $1 AND unit = 'session' AND triggered_by = $2 AND parent_run_id IS NOT DISTINCT FROM $3
+       WHERE ${sessionRunsWhere}
      ),
      latest_compaction AS (
        SELECT max(e.id) AS id FROM agent_run_events e JOIN session_runs r ON r.id = e.agent_run_id WHERE e.kind = 'compaction'
@@ -178,7 +188,7 @@ export async function listSessionAgentRunEventsFromLastCompaction(
      FROM agent_run_events e JOIN session_runs r ON r.id = e.agent_run_id
      WHERE e.id >= COALESCE((SELECT id FROM latest_compaction), 0)
      ORDER BY r.wake_seq ASC, e.id ASC`,
-    [filter.projectItemId, filter.triggeredBy, filter.parentRunId],
+    params,
   );
   return rows.map(mapRow);
 }
