@@ -47,11 +47,14 @@ const fixtures = vi.hoisted(() => ({
   grants: [] as McpToolGrantForProject[],
   operations: ["item.patch"] as string[],
   calls: [] as unknown[][],
+  locale: null as string | null,
+  guidance: null as string | null,
 }));
 vi.mock("@semprec/data", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@semprec/data")>()),
   withClient: async (_pool: Pool, fn: (client: Client) => Promise<unknown>) => fn(new Client()),
   listMcpToolGrantsForProject: async () => fixtures.grants,
+  getTenantUserLocale: async () => fixtures.locale,
 }));
 vi.mock("@semprec/agent-runtime", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@semprec/agent-runtime")>()),
@@ -64,7 +67,8 @@ vi.mock("@semprec/agent-runtime", async (importOriginal) => ({
     },
   }),
   createApprovalGatedMcpInvokeTool: () => async () => ({ result: "found", error: false }),
-  createProjectAgentGuidanceSystemPromptOverride: async () => (prompt: string) => prompt,
+  createProjectAgentGuidanceSystemPromptOverride: async () => (prompt: string) =>
+    fixtures.guidance ? `${prompt}\n${fixtures.guidance}` : prompt,
 }));
 
 function grant(registration: string, server: string, granted = true): McpToolGrantForProject {
@@ -224,5 +228,77 @@ describe("agent-only approval reason (issue #1420)", () => {
     const { results } = await runCalls({ itemId: "item-1", reason: "x".repeat(501) });
     expect(fixtures.calls).toEqual([]);
     expect(results.join()).toMatch(/reason/);
+  });
+});
+
+describe("agent language instruction (issue #1388)", () => {
+  const CS = "Answer and write all user-visible text in Czech.";
+  const EN = "Answer and write all user-visible text in English.";
+
+  async function composedPrompt(locale: string | null, projectItemId: string | null = null): Promise<string> {
+    fixtures.locale = locale;
+    const pool = new Pool();
+    const faux = fauxProvider();
+    let prompt = "";
+    faux.setResponses([
+      (context) => {
+        prompt = context.systemPrompt ?? "";
+        return fauxAssistantMessage("done");
+      },
+    ]);
+    const run: AgentRunRow = {
+      id: "run-1",
+      projectItemId,
+      parentRunId: null,
+      heartbeatId: null,
+      triggeredBy: "user",
+      unit: "invocation",
+      task: "run",
+      status: "running",
+      result: null,
+      startedAt: "2026-10-27T00:00:00Z",
+      finishedAt: null,
+      actorUserId: "user-1",
+    };
+    try {
+      const factory = await createAgentSessionFactoryForRun(
+        pool,
+        new ModuleRegistry(() => new Set<string>()),
+        { model: faux.getModel(), streamFn: (m, context, options) => faux.provider.streamSimple(m, context, options) },
+        run,
+      );
+      for await (const event of factory({ task: run.task }).messages()) void event;
+      return prompt;
+    } finally {
+      fixtures.locale = null;
+      fixtures.guidance = null;
+      await pool.end();
+    }
+  }
+
+  it("adds the Czech sentence for cs and not the English one", async () => {
+    const prompt = await composedPrompt("cs");
+    expect(prompt).toContain(CS);
+    expect(prompt).not.toContain(EN);
+  });
+
+  it("adds the English sentence for en and not the Czech one", async () => {
+    const prompt = await composedPrompt("en");
+    expect(prompt).toContain(EN);
+    expect(prompt).not.toContain(CS);
+  });
+
+  it.each([null, "de"])("leaves the base prompt unchanged for locale %s", async (locale) => {
+    const prompt = await composedPrompt(locale);
+    expect(prompt).not.toContain("Answer and write all user-visible text");
+    expect(prompt).toBe(await composedPrompt(null));
+    expect(prompt.endsWith("instead of retrying it.")).toBe(true);
+  });
+
+  it("applies the project guidance after the language sentence", async () => {
+    fixtures.guidance = "Project guidance: be brief.";
+    const prompt = await composedPrompt("en", "project-1");
+    expect(prompt.indexOf(EN)).toBeGreaterThan(-1);
+    expect(prompt.indexOf("Project guidance: be brief.")).toBeGreaterThan(prompt.indexOf(EN));
   });
 });
