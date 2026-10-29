@@ -9,5 +9,6 @@
   "notification.process_stale.title": "A process stopped reporting",
   "notification.queue_backlog.title": "Job queue is backed up",
   "notification.mail_sync_stalled.title": "Mail sync has stalled",
-  "notification.backup_restore_failed.title": "Backup restore test failed"
+  "notification.backup_restore_failed.title": "Backup restore test failed",
+  "notification.semp_problem.title": "Something needs your attention"
 }

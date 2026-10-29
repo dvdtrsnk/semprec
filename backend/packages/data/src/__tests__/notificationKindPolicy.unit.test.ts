@@ -22,24 +22,28 @@ describe("notification kind policy", () => {
       const policy = policyForKind(kind);
       expect(NOTIFICATION_CATEGORIES).toContain(policy.category);
       if (policy.category === "problems") {
-        expect(NOTIFICATION_SEVERITIES).toContain(policy.severity);
+        // `semp_problem` takes its severity from its payload, so its policy names no severity (issue #1466).
+        expect([...NOTIFICATION_SEVERITIES, "payload"]).toContain(policy.severity);
       } else {
         expect("severity" in policy).toBe(false);
       }
     }
   });
 
-  it("never pushes info kinds and pushes every other kind", () => {
+  it("never pushes info kinds, and pushes only approvals and Semp problems (issue #1466)", () => {
     for (const kind of NOTIFICATION_KINDS) {
       const policy = policyForKind(kind);
       const isInfo = policy.category === "problems" && policy.severity === "info";
-      expect(policy.push, kind).toBe(!isInfo);
+      expect(policy.push && isInfo, kind).toBe(false);
     }
+    const pushed = NOTIFICATION_KINDS.filter((kind) => policyForKind(kind).push).sort();
+    expect(pushed).toEqual(["approval_pending", "semp_problem"]);
   });
 
   it("classifies the listed kinds", () => {
     const expected: Record<NotificationKind, string> = {
       approval_pending: "approvals",
+      semp_problem: "problems/payload",
       mail_sync_error: "problems/critical",
       mail_sync_stalled: "problems/critical",
       backup_restore_failed: "problems/critical",

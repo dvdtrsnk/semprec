@@ -33,14 +33,16 @@ async function createTestUser(): Promise<string> {
 }
 
 /**
- * Writes one notification and returns its id. The default is a critical problem, which the default
- * preferences push; pass a warning or an approval to test the other rules.
+ * Writes one notification and returns its id. The default is a critical Semp problem
+ * (`semp_problem`, severity in its payload), which the default preferences push; pass a warning
+ * problem or an approval to test the other rules.
  */
 async function writeTestNotification(
   userId: string,
   sourceId: string,
-  kind: NotificationKind = "mail_sync_error",
-  sourceTable = "mail_account_sync_state",
+  kind: NotificationKind = "semp_problem",
+  sourceTable = "semp_problems",
+  payload: Record<string, unknown> = { severity: "critical" },
 ): Promise<string> {
   await withTransaction(pool, (client) =>
     writeNotification(client, {
@@ -50,6 +52,7 @@ async function writeTestNotification(
       sourceTable,
       sourceId,
       transitionInstance: "job-1",
+      payload,
     }),
   );
   const { rows } = await pool.query<{ id: string }>(`SELECT id FROM notifications WHERE source_id = $1`, [sourceId]);
@@ -381,6 +384,7 @@ describe("notificationFanout job (issue #151)", () => {
         "approval-off",
         "approval_pending",
         "approval_requests",
+        {},
       );
 
       const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
@@ -403,6 +407,7 @@ describe("notificationFanout job (issue #151)", () => {
         "approval-on",
         "approval_pending",
         "approval_requests",
+        {},
       );
 
       const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
@@ -421,7 +426,9 @@ describe("notificationFanout job (issue #151)", () => {
       const userId = await createTestUser();
       await addWebPushRegistration(userId, "problems-critical");
       await setPreferences(userId, { problemsLevel: "critical", problemsSummary: true });
-      const warningId = await writeTestNotification(userId, "problem-warning", "heartbeat_error", "project_heartbeats");
+      const warningId = await writeTestNotification(userId, "problem-warning", "semp_problem", "semp_problems", {
+        severity: "warning",
+      });
       const criticalId = await writeTestNotification(userId, "problem-critical");
 
       const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
@@ -467,6 +474,7 @@ describe("notificationFanout job (issue #151)", () => {
         "info-resolved",
         "agent_guidance_drift_resolved",
         "agent_guidance_drift_findings",
+        {},
       );
 
       const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
@@ -483,7 +491,9 @@ describe("notificationFanout job (issue #151)", () => {
       const userId = await createTestUser();
       await addWebPushRegistration(userId, "no-row");
       const criticalId = await writeTestNotification(userId, "no-row-critical");
-      const warningId = await writeTestNotification(userId, "no-row-warning", "heartbeat_error", "project_heartbeats");
+      const warningId = await writeTestNotification(userId, "no-row-warning", "semp_problem", "semp_problems", {
+        severity: "warning",
+      });
 
       const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
       const senders: PushSenders = { sendWebPush, sendApns: vi.fn() };
@@ -513,6 +523,66 @@ describe("notificationFanout job (issue #151)", () => {
 
       expect(sendWebPush).not.toHaveBeenCalled();
       expect(await countRows(`SELECT count(*) FROM notifications WHERE id = $1`, [notificationId])).toBe(1);
+      expect(await countRows(`SELECT count(*) FROM push_deliveries WHERE notification_id = $1`, [notificationId])).toBe(
+        0,
+      );
+    });
+
+    it("reads a semp_problem's severity from its payload, so a warning passes at the all level as passive (issue #1466)", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "payload-warning");
+      await setPreferences(userId, { problemsLevel: "all" });
+      const warningId = await writeTestNotification(userId, "payload-warning", "semp_problem", "semp_problems", {
+        severity: "warning",
+      });
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      await handleNotificationFanoutTask(pool, { notificationId: warningId }, { sendWebPush, sendApns: vi.fn() });
+
+      expect(sendWebPush).toHaveBeenCalledTimes(1);
+      expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
+        notificationId: warningId,
+        title: expect.any(String),
+        linkHref: "?page=mailbox",
+        interruptionLevel: "passive",
+      });
+    });
+
+    it("fails the job, sends nothing and claims no delivery when a semp_problem payload has no severity (issue #1466)", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "payload-missing");
+      const notificationId = await writeTestNotification(
+        userId,
+        "payload-missing",
+        "semp_problem",
+        "semp_problems",
+        {},
+      );
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      await expect(
+        handleNotificationFanoutTask(pool, { notificationId }, { sendWebPush, sendApns: vi.fn() }),
+      ).rejects.toThrow("has no severity in its payload");
+
+      expect(sendWebPush).not.toHaveBeenCalled();
+      expect(await countRows(`SELECT count(*) FROM push_deliveries WHERE notification_id = $1`, [notificationId])).toBe(
+        0,
+      );
+    });
+
+    it("fails the job, sends nothing and claims no delivery when a semp_problem payload names a severity no problem has (issue #1466)", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "payload-info");
+      const notificationId = await writeTestNotification(userId, "payload-info", "semp_problem", "semp_problems", {
+        severity: "info",
+      });
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      await expect(
+        handleNotificationFanoutTask(pool, { notificationId }, { sendWebPush, sendApns: vi.fn() }),
+      ).rejects.toThrow("Unknown payload.severity");
+
+      expect(sendWebPush).not.toHaveBeenCalled();
       expect(await countRows(`SELECT count(*) FROM push_deliveries WHERE notification_id = $1`, [notificationId])).toBe(
         0,
       );
