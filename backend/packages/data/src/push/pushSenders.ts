@@ -1,9 +1,14 @@
 import type { ApnsEnvironment } from "./types.js";
 
+/** The APNs `interruption-level` the device should use for this push. Web Push ignores it. */
+export type NotificationInterruptionLevel = "passive" | "active" | "time-sensitive";
+
 export interface NotificationPushPayload {
   notificationId: string;
   title: string;
   linkHref: string | null;
+  /** Decided by the fanout job from the user's preferences and the kind's policy (issue #1443). */
+  interruptionLevel?: NotificationInterruptionLevel;
 }
 
 export interface WebPushTarget {

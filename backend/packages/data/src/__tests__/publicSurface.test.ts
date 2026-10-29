@@ -496,6 +496,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "publishSempThreadInvalidation",
   "publishTenantDeactivated",
   "purgeExpiredTrash",
+  "pushInterruptionLevelFor",
   "raiseProblem",
   "reactivateAccount",
   "readBlobId",
