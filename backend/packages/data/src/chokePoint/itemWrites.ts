@@ -53,6 +53,24 @@ interface AssertWritablePropertiesOptions {
   systemOwnerProcess?: string;
 }
 
+const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
+
+/**
+ * Value check for `color` properties: `null` clears the color, anything else must be `#RRGGBB`.
+ * Inspects only the keys present in the write, so rows already stored in another format stay
+ * untouched until that key is written again. Runs unconditionally, independent of the
+ * `allowedSystemKeys` escape hatch.
+ */
+function assertColorValues(properties: PropertyRow[], values: Record<string, unknown>): void {
+  const byKey = new Map(properties.map((p) => [p.key, p]));
+  for (const [key, value] of Object.entries(values)) {
+    if (byKey.get(key)?.type !== "color" || value === null) continue;
+    if (typeof value !== "string" || !HEX_COLOR.test(value)) {
+      throw new ValidationError(`Property '${key}' must be a color in #RRGGBB format or null`, { field: key });
+    }
+  }
+}
+
 /** Keys the generic write path never accepts: relation values live only in item_relations, and computed is internal-only. */
 function assertWritableProperties(
   properties: PropertyRow[],
@@ -168,6 +186,7 @@ export async function createItemWithClient(
 
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   assertWritableProperties(properties, Object.keys(input.properties ?? {}), options);
+  assertColorValues(properties, input.properties ?? {});
 
   const database = await databasesStore.getDatabase(client, input.databaseId);
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
@@ -296,6 +315,7 @@ export async function updateItemWithClient(
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   const patchKeys = Object.keys(input.propertiesPatch);
   assertWritableProperties(properties, patchKeys, options);
+  assertColorValues(properties, input.propertiesPatch);
 
   const database = await databasesStore.getDatabase(client, input.databaseId);
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);

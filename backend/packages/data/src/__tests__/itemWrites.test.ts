@@ -617,4 +617,90 @@ describe("property defaults on real item writes", () => {
       }
     });
   });
+
+  describe("color value validation", () => {
+    async function makeProjectsDb() {
+      const db = await chokePoint.createDatabase({ name: "Projects" });
+      await chokePoint.createProperty({ databaseId: db.id, key: "name", name: "Name", type: "text" });
+      await chokePoint.createProperty({ databaseId: db.id, key: "color", name: "Color", type: "color" });
+      return db;
+    }
+
+    it("accepts upper and lower case #RRGGBB on create and update and stores the value as written", async () => {
+      const db = await makeProjectsDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { color: "#FF3B30" } });
+      expect(item.properties.color).toBe("#FF3B30");
+      const updated = await chokePoint.updateItem({
+        databaseId: db.id,
+        itemId: item.id,
+        propertiesPatch: { color: "#ff3b30" },
+      });
+      expect(updated.properties.color).toBe("#ff3b30");
+    });
+
+    it("rejects non-hex values on create and update with the key as field (HTTP 400 validation_failed)", async () => {
+      const db = await makeProjectsDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { color: "#FF3B30" } });
+      const expected = { status: 400, code: "validation_failed", details: { field: "color" } };
+      for (const bad of ["Červená", "red", "#FFF", "", 7, { hex: "#FF3B30" }, "#FF3B3G", " #FF3B30"]) {
+        await expect(chokePoint.createItem({ databaseId: db.id, properties: { color: bad } })).rejects.toMatchObject(
+          expected,
+        );
+        await expect(
+          chokePoint.updateItem({ databaseId: db.id, itemId: item.id, propertiesPatch: { color: bad } }),
+        ).rejects.toMatchObject(expected);
+      }
+      const { rows } = await pool.query<{ properties: Record<string, unknown> }>(
+        "SELECT properties FROM items WHERE id = $1",
+        [item.id],
+      );
+      expect(rows[0]?.properties.color).toBe("#FF3B30");
+    });
+
+    it("null clears the color", async () => {
+      const db = await makeProjectsDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { color: "#FF3B30" } });
+      const updated = await chokePoint.updateItem({
+        databaseId: db.id,
+        itemId: item.id,
+        propertiesPatch: { color: null },
+      });
+      expect(updated.properties.color ?? null).toBeNull();
+    });
+
+    it("does not inspect keys absent from the write: a stored 'red' survives an update of another key", async () => {
+      const db = await makeProjectsDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { name: "Old" } });
+      await pool.query(`UPDATE items SET properties = properties || '{"color":"red"}'::jsonb WHERE id = $1`, [item.id]);
+      const updated = await chokePoint.updateItem({
+        databaseId: db.id,
+        itemId: item.id,
+        propertiesPatch: { name: "New" },
+      });
+      expect(updated.properties).toEqual({ name: "New", color: "red" });
+    });
+
+    it("also applies to the client-level writers and to calls that pass allowedSystemKeys", async () => {
+      const db = await makeProjectsDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { name: "P" } });
+      await expect(
+        withTransaction(pool, (client) =>
+          createItemWithClient(
+            client,
+            { databaseId: db.id, properties: { color: "red" } },
+            { allowedSystemKeys: ["color"] },
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "validation_failed", details: { field: "color" } });
+      await expect(
+        withTransaction(pool, (client) =>
+          updateItemWithClient(
+            client,
+            { databaseId: db.id, itemId: item.id, propertiesPatch: { color: "red" } },
+            { allowedSystemKeys: ["color"] },
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "validation_failed", details: { field: "color" } });
+    });
+  });
 });
