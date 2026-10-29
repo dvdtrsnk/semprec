@@ -6,7 +6,7 @@ import { notifyAgentRunEvent } from "../realtimeHook.js";
 import type { SessionAgentRunsFilter } from "./agentRunsStore.js";
 
 export type AgentRunEventKind =
-  "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "compaction";
+  "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "compaction" | "user_message";
 
 const AGENT_RUN_EVENT_KINDS: readonly AgentRunEventKind[] = [
   "turn_start",
@@ -16,6 +16,7 @@ const AGENT_RUN_EVENT_KINDS: readonly AgentRunEventKind[] = [
   "turn_end",
   "run_status",
   "compaction",
+  "user_message",
 ];
 
 export interface AgentRunEventRow {
@@ -48,7 +49,7 @@ function mapRow(row: AgentRunEventDbRow): AgentRunEventRow {
 const MAX_AGENT_RUN_EVENT_PAYLOAD_BYTES = 1024 * 1024;
 
 /**
- * One row per turn_start/message/tool_use/tool_result/turn_end/run_status — never for
+ * One row per turn_start/user_message/message/tool_use/tool_result/turn_end/run_status — never for
  * message_update deltas. 'compaction' is the one kind never written by the turn loop itself:
  * `@semprec/agent-runtime`'s reconstruction path (#119) inserts it directly, as a checkpoint
  * of a compacted `Entry[]` continuation.

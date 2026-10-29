@@ -1,6 +1,12 @@
 import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import type { AgentMessage, AgentSession, CreateAgentSession, ToolEventMetadata } from "@semprec/agent-runtime";
+import type {
+  AgentMessage,
+  AgentSession,
+  CreateAgentSession,
+  ToolEventMetadata,
+  UserTurnContextRef,
+} from "@semprec/agent-runtime";
 import { AgentRunError } from "@semprec/data";
 import { logger } from "./logger.js";
 import { toPiMessages } from "./piConversationHistory.js";
@@ -12,6 +18,11 @@ export interface PiAgentSessionFactoryOptions {
   toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>;
   /** The default prompt a session's `systemPromptOverride` receives, and the one used without it. */
   systemPrompt: string;
+  /**
+   * Pending system messages of the thread since the last turn (approval outcomes), prepended to
+   * the next prompt text. Called once per turn; absent means none.
+   */
+  pendingSystemMessages?: () => readonly string[];
 }
 
 function isAssistantMessage(message: unknown): message is AssistantMessage {
@@ -28,7 +39,7 @@ function assistantText(message: AssistantMessage): string {
 /**
  * Maps one pi-agent-core `AgentEvent` onto the runtime's `AgentMessage` vocabulary, or `null` for
  * an event the run log does not record: agent/message start markers, a tool's partial progress,
- * and every non-assistant `message_end` — the prompt is already `agent_runs.task`, and a tool
+ * and every non-assistant `message_end` — a user message is persisted by `promptMessages` itself, and a tool
  * result message duplicates the `tool_result` its `tool_execution_end` produced.
  */
 function toAgentMessage(
@@ -122,10 +133,15 @@ function assertModelSucceeded(agent: Agent): void {
 async function* promptMessages(
   agent: Agent,
   task: string,
+  context: readonly UserTurnContextRef[],
+  promptText: string,
   toolFailure: { error: Error | undefined },
   toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>,
   signal?: AbortSignal,
 ): AsyncGenerator<AgentMessage> {
+  signal?.throwIfAborted();
+  // Yielded (and so persisted by the consumer) before the prompt is sent to the model.
+  yield { kind: "user_message", text: task, context };
   signal?.throwIfAborted();
   const queue: AgentMessage[] = [];
   let wake: (() => void) | null = null;
@@ -142,7 +158,7 @@ async function* promptMessages(
     queue.push(message);
     notify();
   });
-  const prompt = agent.prompt(task).finally(() => {
+  const prompt = agent.prompt(promptText).finally(() => {
     settled = true;
     notify();
   });
@@ -225,12 +241,21 @@ export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOption
 
     // Each prompt starts with no recorded tool failure; only one runs at a time (pi refuses a
     // second `prompt()` while one is active).
-    const prompt = (task: string): AsyncIterable<AgentMessage> => {
+    const prompt = (task: string, context: readonly UserTurnContextRef[] = []): AsyncIterable<AgentMessage> => {
       toolFailure.error = undefined;
-      return promptMessages(piAgent, task, toolFailure, options.toolEventMetadata, sessionOptions.signal);
+      const promptText = [...(options.pendingSystemMessages?.() ?? []), task].join("\n\n");
+      return promptMessages(
+        piAgent,
+        task,
+        context,
+        promptText,
+        toolFailure,
+        options.toolEventMetadata,
+        sessionOptions.signal,
+      );
     };
     const session: AgentSession = {
-      messages: () => prompt(sessionOptions.task),
+      messages: () => prompt(sessionOptions.task, sessionOptions.context),
       send: prompt,
     };
     return session;

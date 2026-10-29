@@ -430,4 +430,36 @@ describe("reconstructConversationHistory", () => {
     expect(texts(await reconstructConversationHistory(pool, filterA, noopCompaction))).toEqual(["summary of A"]);
     expect(texts(await reconstructConversationHistory(pool, filterB, noopCompaction))).toEqual(["from B"]);
   });
+
+  it("reconstructs a woken conversation as question then answer, with follow-up turns, in order", async () => {
+    const run = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "first question",
+    });
+    const refs = [{ label: "Budget", kind: "item", id: "i1" }];
+    await insertAgentRunEvent(pool, run.id, "user_message", {
+      kind: "user_message",
+      text: "first question",
+      context: refs,
+    });
+    await insertAgentRunEvent(pool, run.id, "message", { kind: "message", text: "first answer" });
+    await insertAgentRunEvent(pool, run.id, "user_message", { kind: "user_message", text: "follow-up", context: [] });
+    await insertAgentRunEvent(pool, run.id, "message", { kind: "message", text: "second answer" });
+
+    const history = await reconstructConversationHistory(
+      pool,
+      { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", parentRunId: null },
+      noopCompaction,
+    );
+
+    expect(history!.entries.map((e) => [e.message.kind, (e.message as { text?: string }).text])).toEqual([
+      ["user_message", "first question"],
+      ["message", "first answer"],
+      ["user_message", "follow-up"],
+      ["message", "second answer"],
+    ]);
+    expect(history!.entries[0]!.message.context).toEqual(refs);
+  });
 });

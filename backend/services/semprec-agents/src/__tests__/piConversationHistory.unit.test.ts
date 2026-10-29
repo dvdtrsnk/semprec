@@ -112,6 +112,25 @@ describe("toPiMessages (issue #647)", () => {
     });
   });
 
+  it("converts a user_message to a pi user message without expanding its refs", () => {
+    const converted = toPiMessages(
+      entries(
+        { kind: "user_message", text: "question", context: [{ label: "Budget" }] },
+        assistantToolCall,
+        toolResult,
+      ),
+      model,
+    );
+    expect(converted[0]).toEqual({ role: "user", content: "question", timestamp: 100 });
+    expect(converted).toHaveLength(3);
+  });
+
+  it("throws on a user_message without text", () => {
+    expect(() => toPiMessages(entries({ kind: "user_message", context: [] }), model)).toThrow(
+      "conversation entry e0 (kind 'user_message') has a non-string user message text",
+    );
+  });
+
   it("returns no messages for empty history", () => {
     expect(toPiMessages([], model)).toEqual([]);
   });
