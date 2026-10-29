@@ -528,6 +528,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "secureCompare",
   "seedSystem",
   "seedTenDatabasesInTransaction",
+  "selectActiveSteps",
   "semprecTickActionConfigSchema",
   "setAgentRunEventHook",
   "setDocUpdateHook",

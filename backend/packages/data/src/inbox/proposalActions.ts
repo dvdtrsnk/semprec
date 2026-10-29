@@ -15,6 +15,7 @@ import {
   type ProposalEntityKind,
   type ProposalEnvelope,
 } from "./inboxTickAction.js";
+import { executeProposalSteps } from "./proposalSteps.js";
 import { enqueueJournalInboxRecomputeForProposal } from "./journalInboxCompute.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
@@ -297,6 +298,7 @@ export async function confirmProposalWithClient(
   config: ProposalActionConfig,
   proposalId: string,
   credential?: ConfirmProposalCredentialInput,
+  actingUserId?: string,
 ): Promise<ItemRow> {
   const proposal = await lockLiveProposal(client, config.processingProposalsDatabaseId, proposalId);
   const status = proposal.properties.status;
@@ -320,13 +322,27 @@ export async function confirmProposalWithClient(
         });
       }
     }
-    const created = await createItemWithClient(
-      client,
-      { databaseId: envelope.target, properties: envelope.properties },
-      { writer: CONFIRMING_USER_WRITER },
-    );
+    // A multi-step envelope writes every active step; a single-step one keeps the direct path below.
+    let created: ItemRow;
+    let resultDatabaseId = envelope.target;
+    if (envelope.operations) {
+      const executed = await executeProposalSteps(client, envelope.operations, {
+        writer: CONFIRMING_USER_WRITER,
+        actingUserId,
+      });
+      const [primaryItem] = await itemsStore.getItemsByIds(client, [executed.primaryItemId]);
+      if (!primaryItem) throw new Error(`Primary step item ${executed.primaryItemId} disappeared during confirm`);
+      created = primaryItem;
+      resultDatabaseId = executed.primaryDatabaseId;
+    } else {
+      created = await createItemWithClient(
+        client,
+        { databaseId: envelope.target, properties: envelope.properties },
+        { writer: CONFIRMING_USER_WRITER, actingUserId },
+      );
+    }
     resultItemId = created.id;
-    resultLabel = await resolveResultLabel(client, envelope.target, created);
+    resultLabel = await resolveResultLabel(client, resultDatabaseId, created);
     if (credential) {
       await storeCredential(client, {
         itemId: created.id,
@@ -347,7 +363,10 @@ export async function confirmProposalWithClient(
         CONFIRMING_USER_WRITER,
       );
     }
-    await writeEnvelopeRelations(client, envelope.target, created.id, envelope.relations);
+    // A multi-step envelope's relations live on its steps and were written by them.
+    if (!envelope.operations) {
+      await writeEnvelopeRelations(client, envelope.target, created.id, envelope.relations);
+    }
   } else if (envelope.entityKind === "relation") {
     // `assertValidEnvelopeForCard` above only accepts a 'relation' envelope on a transcript
     // card, through the Transcripts `event` or `speakers` property — so `transcriptCardEdge`
@@ -395,7 +414,11 @@ export async function confirmProposalWithClient(
         history: appendHistoryEntry(proposal.properties.history, "Confirmed by user.", "user"),
       },
     },
-    { allowedSystemKeys: ["status", "resultItemId", "resultLabel", "history"], writer: CONFIRMING_USER_WRITER },
+    {
+      allowedSystemKeys: ["status", "resultItemId", "resultLabel", "history"],
+      writer: CONFIRMING_USER_WRITER,
+      actingUserId,
+    },
   );
   // Issue #106's "proposal transition" invalidation trigger: confirm/reject/revise change
   // the source Inbox item's displayed status but never touch the Inbox item itself, so

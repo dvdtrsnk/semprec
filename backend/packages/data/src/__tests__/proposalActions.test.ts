@@ -5,7 +5,10 @@ import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/vie
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { ConflictError, ValidationError } from "../errors.js";
-import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { randomUUID } from "node:crypto";
+import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import {
@@ -13,6 +16,7 @@ import {
   createSemprecTickAction,
   parseStoredProposalEnvelope,
   type ComputeSemprecProposalFn,
+  type ProposalEnvelope,
 } from "../inbox/inboxTickAction.js";
 import {
   confirmProposalWithClient,
@@ -563,6 +567,231 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(await countEdges()).toBe(before);
       const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposal.id));
       expect(card!.properties.status).toBe("proposed");
+    });
+  });
+
+  describe("multi-step proposals on confirm (issue #1486)", () => {
+    type Step = NonNullable<ProposalEnvelope["operations"]>[number];
+    const confirm = (proposalId: string, actingUserId?: string) =>
+      withTransaction(pool, (client) =>
+        confirmProposalWithClient(
+          client,
+          { processingProposalsDatabaseId: proposalsId },
+          proposalId,
+          undefined,
+          actingUserId,
+        ),
+      );
+    const countItems = async (moduleId: string) =>
+      (
+        await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+          await databaseIdFor(moduleId),
+        ])
+      ).rows[0]!.n;
+    const edgeExists = async (a: string, b: string) =>
+      (
+        await pool.query(
+          "SELECT 1 FROM item_relations WHERE (item_a = $1 AND item_b = $2) OR (item_a = $2 AND item_b = $1)",
+          [a, b],
+        )
+      ).rows.length === 1;
+    const createIn = (moduleId: string, properties: Record<string, unknown>) =>
+      databaseIdFor(moduleId).then((databaseId) =>
+        withTransaction(pool, async (client) => (await createItemWithClient(client, { databaseId, properties })).id),
+      );
+    const cardStatus = async (cardId: string) =>
+      (await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, cardId)))!.properties.status;
+
+    /** Stores a multi-step envelope on a fresh card the way the tick will (system-owned `proposal`). */
+    async function cardWithSteps(primaryDatabase: string, steps: Step[]): Promise<string> {
+      const card = await createDatabaseProposal("seed");
+      const primary = steps.find((step) => step.role === "primary")!;
+      const target = await databaseIdFor(primaryDatabase);
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          {
+            databaseId: proposalsId,
+            itemId: card.id,
+            propertiesPatch: {
+              proposal: {
+                entityKind: "database",
+                target,
+                properties: primary.properties ?? {},
+                operations: steps,
+              },
+            },
+          },
+          { allowedSystemKeys: ["proposal"] },
+        ),
+      );
+      return card.id;
+    }
+
+    const companyAndPerson = (personName = "Jane"): Step[] => [
+      { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
+      {
+        ref: "person",
+        op: "create",
+        databaseKey: "people",
+        role: "secondary",
+        properties: { name: personName },
+        relations: { companies: [{ ref: "company" }] },
+      },
+    ];
+    // The person is listed before the company it refers to, so execution order must come from the refs.
+    const personFirst = (): Step[] => companyAndPerson().reverse();
+
+    it("creates company, person and the People.companies edge in one transaction; the result is the primary's", async () => {
+      const card = await cardWithSteps("companies", personFirst());
+      const confirmed = await confirm(card);
+
+      expect(await countItems("companies")).toBe(1);
+      expect(await countItems("people")).toBe(1);
+      const personId = (
+        await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [await databaseIdFor("people")])
+      ).rows[0]!.id;
+      expect(confirmed.properties.resultItemId).not.toBe(personId);
+      expect(confirmed.properties.resultLabel).toBe("Acme");
+      expect(await edgeExists(personId, confirmed.properties.resultItemId as string)).toBe(true);
+      expect(confirmed.properties.status).toBe("confirmed");
+    });
+
+    it("rolls back company and edge when the person fails, and the 400 names the person step", async () => {
+      // A wrong value type passes envelope validation and fails only in the choke point's write.
+      const failing = companyAndPerson();
+      failing[1] = { ...failing[1]!, properties: { name: 42 } };
+      const failingCard = await cardWithSteps("companies", failing);
+      const edgesBefore = (await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM item_relations")).rows[0]!.n;
+
+      const error = await confirm(failingCard).catch((e: unknown) => e);
+      expect(error).toMatchObject({ status: 400, details: { ref: "person" } });
+      expect(await countItems("companies")).toBe(0);
+      expect(await countItems("people")).toBe(0);
+      expect((await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM item_relations")).rows[0]!.n).toBe(
+        edgesBefore,
+      );
+      expect(await cardStatus(failingCard)).toBe("proposed");
+    });
+
+    it("writes only the health record when its follow-up task step is disabled", async () => {
+      const card = await cardWithSteps("healthRecords", [
+        { ref: "record", op: "create", databaseKey: "healthRecords", role: "primary", properties: { name: "Flu" } },
+        {
+          ref: "followUp",
+          op: "create",
+          databaseKey: "tasks",
+          role: "secondary",
+          enabled: false,
+          properties: { name: "Call the doctor" },
+        },
+      ]);
+      await confirm(card);
+      expect(await countItems("healthRecords")).toBe(1);
+      expect(await countItems("tasks")).toBe(0);
+    });
+
+    it("creates no person when the optional new person is not referenced", async () => {
+      const steps = companyAndPerson();
+      steps[1] = { ...steps[1]!, optional: true, relations: {} };
+      const card = await cardWithSteps("companies", steps);
+      await confirm(card);
+      expect(await countItems("companies")).toBe(1);
+      expect(await countItems("people")).toBe(0);
+    });
+
+    it("an update step moves a project to another area: old edge gone, new edge present", async () => {
+      const oldArea = await createIn("areas", { name: "Home" });
+      const newArea = await createIn("areas", { name: "Work" });
+      const project = await createIn("projects", { name: "Move" });
+      await withTransaction(pool, async (client) => {
+        const projectsDb = await databaseIdFor("projects");
+        const property = await propertiesStore.getPropertyByKey(client, projectsDb, "area");
+        await createRelationWithClient(client, {
+          relationPropertyId: property!.id,
+          callerItemId: project,
+          targetItemId: oldArea,
+        });
+      });
+      const card = await cardWithSteps("projects", [
+        {
+          ref: "project",
+          op: "update",
+          itemId: project,
+          role: "primary",
+          properties: { name: "Move" },
+          relations: { area: [newArea] },
+          before: { properties: { name: "Move" }, relations: { area: [oldArea] } },
+          after: { properties: { name: "Move" }, relations: { area: [newArea] } },
+        },
+      ]);
+
+      const confirmed = await confirm(card);
+      expect(confirmed.properties.resultItemId).toBe(project);
+      expect(await edgeExists(project, oldArea)).toBe(false);
+      expect(await edgeExists(project, newArea)).toBe(true);
+    });
+
+    it("an update step's status goes through the choke point; a failing later step restores the old status and edge", async () => {
+      const project = await createIn("projects", { name: "Ship" });
+      const area = await createIn("areas", { name: "Work" });
+      const update: Step = {
+        ref: "project",
+        op: "update",
+        itemId: project,
+        role: "primary",
+        properties: { status: "done" },
+        relations: { area: [area] },
+        before: { properties: { status: "inProgress" }, relations: { area: [] } },
+        after: { properties: { status: "done" }, relations: { area: [area] } },
+      };
+      const statusOf = async () =>
+        (
+          await pool.query<{ status: string }>("SELECT properties->>'status' AS status FROM items WHERE id = $1", [
+            project,
+          ])
+        ).rows[0]!.status;
+
+      const failingCard = await cardWithSteps("projects", [
+        update,
+        {
+          ref: "person",
+          op: "create",
+          databaseKey: "people",
+          role: "secondary",
+          properties: { name: 42 },
+        },
+      ]);
+      await expect(confirm(failingCard)).rejects.toMatchObject({ details: { ref: "person" } });
+      expect(await statusOf()).toBe("inProgress");
+      expect(await edgeExists(project, area)).toBe(false);
+
+      const okCard = await cardWithSteps("projects", [update]);
+      await confirm(okCard);
+      expect(await statusOf()).toBe("done");
+    });
+
+    it("a repeated confirm returns the confirmed card and creates nothing twice", async () => {
+      const card = await cardWithSteps("companies", companyAndPerson());
+      await confirm(card);
+      await confirm(card);
+      expect(await countItems("companies")).toBe(1);
+      expect(await countItems("people")).toBe(1);
+    });
+
+    it("addresses every realtime invalidation of a confirm to the acting user", async () => {
+      const card = await cardWithSteps("companies", companyAndPerson());
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        const actingUserId = randomUUID();
+        await confirm(card, actingUserId);
+        const itemEvents = events.filter((event) => event.scope === "item");
+        expect(itemEvents.length).toBeGreaterThanOrEqual(3);
+        expect(itemEvents.every((event) => event.userId === actingUserId)).toBe(true);
+      } finally {
+        setInvalidationHook(() => {});
+      }
     });
   });
 

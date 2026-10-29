@@ -17,6 +17,8 @@ import type { ItemRow } from "../types.js";
 interface CustomRouteRequestContext {
   params: Record<string, string>;
   body: unknown;
+  /** The authenticated caller; only the confirm route reads it. */
+  identity?: { user: { id: string } };
 }
 
 type CustomRouteResult = { status: number; item: ItemRow } | { status: number; body: unknown };
@@ -69,9 +71,10 @@ export function createConfirmProposalRouteHandler(pool: Pool) {
   return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     const credential = parseConfirmCredential(ctx.body);
+    const actingUserId = ctx.identity?.user.id;
     const item = await withTransaction(pool, async (client) => {
       const processingProposalsDatabaseId = await resolveDatabaseIdByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
-      return confirmProposalWithClient(client, { processingProposalsDatabaseId }, proposalId, credential);
+      return confirmProposalWithClient(client, { processingProposalsDatabaseId }, proposalId, credential, actingUserId);
     });
     return { status: 200, item };
   };
