@@ -773,10 +773,10 @@ const cases: Record<string, TaskCase> = {
         const notificationId = await withTransaction(pool, (client) =>
           writeNotification(client, {
             userId: tenant.userId,
-            kind: "heartbeat_error",
-            titleParams: { name: "Daily digest" },
+            // A critical problem: the default preferences push it, a warning would not be pushed (issue #1443).
+            kind: "mail_sync_error",
             linkHref: null,
-            sourceTable: "project_heartbeats",
+            sourceTable: "mail_account_sync_state",
             sourceId: randomUUID(),
             transitionInstance: randomUUID(),
           }),

@@ -5,7 +5,17 @@ import { withTransaction } from "../db/pool.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { writeNotification } from "../notifications/notify.js";
-import { handleNotificationFanoutTask, notificationFanoutJobKey } from "../notifications/notificationFanoutJob.js";
+import {
+  handleNotificationFanoutTask,
+  notificationFanoutJobKey,
+  pushInterruptionLevelFor,
+} from "../notifications/notificationFanoutJob.js";
+import type { NotificationKind, NotificationKindPolicy } from "../notifications/notificationKinds.js";
+import {
+  patchNotificationPreferences,
+  type NotificationPreferences,
+  type NotificationPreferencesPatch,
+} from "../notifications/notificationPreferencesStore.js";
 import { upsertApnsSubscription, upsertWebPushSubscription } from "../push/pushSubscriptionsStore.js";
 import type { PushSenders } from "../push/pushSenders.js";
 
@@ -22,20 +32,33 @@ async function createTestUser(): Promise<string> {
   return user.id;
 }
 
-async function writeTestNotification(userId: string, sourceId: string): Promise<string> {
+/**
+ * Writes one notification and returns its id. The default is a critical problem, which the default
+ * preferences push; pass a warning or an approval to test the other rules.
+ */
+async function writeTestNotification(
+  userId: string,
+  sourceId: string,
+  kind: NotificationKind = "mail_sync_error",
+  sourceTable = "mail_account_sync_state",
+): Promise<string> {
   await withTransaction(pool, (client) =>
     writeNotification(client, {
       userId,
-      kind: "heartbeat_error",
-      titleParams: { name: "Daily digest" },
-      linkHref: "?page=heartbeats",
-      sourceTable: "project_heartbeats",
+      kind,
+      linkHref: "?page=mailbox",
+      sourceTable,
       sourceId,
       transitionInstance: "job-1",
     }),
   );
   const { rows } = await pool.query<{ id: string }>(`SELECT id FROM notifications WHERE source_id = $1`, [sourceId]);
   return rows[0]!.id;
+}
+
+async function countRows(text: string, values: unknown[]): Promise<number> {
+  const { rows } = await pool.query<{ count: string }>(text, values);
+  return Number(rows[0]!.count);
 }
 
 interface FanoutJobRow {
@@ -124,12 +147,12 @@ describe("notificationFanout job (issue #151)", () => {
     expect(sendWebPush).toHaveBeenCalledTimes(1);
     expect(sendWebPush).toHaveBeenCalledWith(
       { endpoint: "https://push.example/web-1", p256dh: "p256dh-key", authSecret: "auth-secret" },
-      { notificationId, title: expect.any(String), linkHref: "?page=heartbeats" },
+      { notificationId, title: expect.any(String), linkHref: "?page=mailbox", interruptionLevel: "time-sensitive" },
     );
     expect(sendApns).toHaveBeenCalledTimes(1);
     expect(sendApns).toHaveBeenCalledWith(
       { deviceToken: "device-token-1", apnsEnvironment: "sandbox" },
-      { notificationId, title: expect.any(String), linkHref: "?page=heartbeats" },
+      { notificationId, title: expect.any(String), linkHref: "?page=mailbox", interruptionLevel: "time-sensitive" },
     );
 
     const { rows } = await pool.query(
@@ -332,5 +355,235 @@ describe("notificationFanout job (issue #151)", () => {
     ).resolves.toBeUndefined();
     expect(sendWebPush).not.toHaveBeenCalled();
     expect(sendApns).not.toHaveBeenCalled();
+  });
+
+  describe("honors preferences and sets the interruption level (issue #1443)", () => {
+    async function addWebPushRegistration(userId: string, label: string): Promise<void> {
+      await upsertWebPushSubscription(pool, {
+        userId,
+        sessionId: null,
+        endpoint: `https://push.example/${label}`,
+        p256dh: "p256dh-key",
+        authSecret: "auth-secret",
+      });
+    }
+
+    async function setPreferences(userId: string, patch: NotificationPreferencesPatch): Promise<void> {
+      await withTransaction(pool, (client) => patchNotificationPreferences(client, userId, patch));
+    }
+
+    it("stores an approval and sends nothing when approvals are switched off", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "approvals-off");
+      await setPreferences(userId, { approvals: false });
+      const notificationId = await writeTestNotification(
+        userId,
+        "approval-off",
+        "approval_pending",
+        "approval_requests",
+      );
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      const sendApns = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      await handleNotificationFanoutTask(pool, { notificationId }, { sendWebPush, sendApns });
+
+      expect(sendWebPush).not.toHaveBeenCalled();
+      expect(sendApns).not.toHaveBeenCalled();
+      expect(await countRows(`SELECT count(*) FROM notifications WHERE id = $1`, [notificationId])).toBe(1);
+      expect(await countRows(`SELECT count(*) FROM push_deliveries WHERE notification_id = $1`, [notificationId])).toBe(
+        0,
+      );
+    });
+
+    it("sends an approval as time-sensitive while approvals are switched on", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "approvals-on");
+      const notificationId = await writeTestNotification(
+        userId,
+        "approval-on",
+        "approval_pending",
+        "approval_requests",
+      );
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      await handleNotificationFanoutTask(pool, { notificationId }, { sendWebPush, sendApns: vi.fn() });
+
+      expect(sendWebPush).toHaveBeenCalledTimes(1);
+      expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
+        notificationId,
+        title: expect.any(String),
+        linkHref: "?page=mailbox",
+        interruptionLevel: "time-sensitive",
+      });
+    });
+
+    it("drops a warning problem at the default critical level and sends a critical one time-sensitive with the summary on", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "problems-critical");
+      await setPreferences(userId, { problemsLevel: "critical", problemsSummary: true });
+      const warningId = await writeTestNotification(userId, "problem-warning", "heartbeat_error", "project_heartbeats");
+      const criticalId = await writeTestNotification(userId, "problem-critical");
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      const senders: PushSenders = { sendWebPush, sendApns: vi.fn() };
+
+      await handleNotificationFanoutTask(pool, { notificationId: warningId }, senders);
+      expect(sendWebPush).not.toHaveBeenCalled();
+      expect(await countRows(`SELECT count(*) FROM push_deliveries WHERE notification_id = $1`, [warningId])).toBe(0);
+
+      await handleNotificationFanoutTask(pool, { notificationId: criticalId }, senders);
+      expect(sendWebPush).toHaveBeenCalledTimes(1);
+      expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
+        notificationId: criticalId,
+        title: expect.any(String),
+        linkHref: "?page=mailbox",
+        interruptionLevel: "time-sensitive",
+      });
+    });
+
+    it("sends a critical problem as active when the summary is switched off", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "summary-off");
+      await setPreferences(userId, { problemsSummary: false });
+      const notificationId = await writeTestNotification(userId, "problem-summary-off");
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      await handleNotificationFanoutTask(pool, { notificationId }, { sendWebPush, sendApns: vi.fn() });
+
+      expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
+        notificationId,
+        title: expect.any(String),
+        linkHref: "?page=mailbox",
+        interruptionLevel: "active",
+      });
+    });
+
+    it("never pushes an info kind, even when the problems level is all", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "info-kind");
+      await setPreferences(userId, { problemsLevel: "all" });
+      const notificationId = await writeTestNotification(
+        userId,
+        "info-resolved",
+        "agent_guidance_drift_resolved",
+        "agent_guidance_drift_findings",
+      );
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      await handleNotificationFanoutTask(pool, { notificationId }, { sendWebPush, sendApns: vi.fn() });
+
+      expect(sendWebPush).not.toHaveBeenCalled();
+      expect(await countRows(`SELECT count(*) FROM notifications WHERE id = $1`, [notificationId])).toBe(1);
+      expect(await countRows(`SELECT count(*) FROM push_deliveries WHERE notification_id = $1`, [notificationId])).toBe(
+        0,
+      );
+    });
+
+    it("applies the defaults to a user with no preferences row, and a read does not create one", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "no-row");
+      const criticalId = await writeTestNotification(userId, "no-row-critical");
+      const warningId = await writeTestNotification(userId, "no-row-warning", "heartbeat_error", "project_heartbeats");
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      const senders: PushSenders = { sendWebPush, sendApns: vi.fn() };
+      await handleNotificationFanoutTask(pool, { notificationId: criticalId }, senders);
+      await handleNotificationFanoutTask(pool, { notificationId: warningId }, senders);
+
+      expect(sendWebPush).toHaveBeenCalledTimes(1);
+      expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
+        notificationId: criticalId,
+        title: expect.any(String),
+        linkHref: "?page=mailbox",
+        interruptionLevel: "time-sensitive",
+      });
+      expect(await countRows(`SELECT count(*) FROM notification_preferences WHERE user_id = $1`, [userId])).toBe(0);
+    });
+
+    it("honors a preference changed after the notification was enqueued", async () => {
+      const userId = await createTestUser();
+      await addWebPushRegistration(userId, "changed-after-enqueue");
+      const notificationId = await writeTestNotification(userId, "changed-after-enqueue");
+      expect(await fanoutJobs()).toHaveLength(1);
+
+      await setPreferences(userId, { problemsLevel: "off" });
+
+      const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+      await handleNotificationFanoutTask(pool, { notificationId }, { sendWebPush, sendApns: vi.fn() });
+
+      expect(sendWebPush).not.toHaveBeenCalled();
+      expect(await countRows(`SELECT count(*) FROM notifications WHERE id = $1`, [notificationId])).toBe(1);
+      expect(await countRows(`SELECT count(*) FROM push_deliveries WHERE notification_id = $1`, [notificationId])).toBe(
+        0,
+      );
+    });
+  });
+});
+
+/**
+ * Pure rule table for `pushInterruptionLevelFor`. No kind uses the invites or reminders category yet,
+ * so their switches can only be tested on synthetic policies here; the invitation and reminder kinds
+ * that add a real policy will test them end to end through the job.
+ */
+describe("pushInterruptionLevelFor (issue #1443)", () => {
+  const defaults: NotificationPreferences = {
+    approvals: true,
+    invites: true,
+    reminders: true,
+    problemsLevel: "critical",
+    problemsSummary: true,
+    badgeApprovals: true,
+    badgeInvites: true,
+    badgeInbox: false,
+    updatedAt: null,
+  };
+  const approvals: NotificationKindPolicy = { category: "approvals", push: true };
+  const invites: NotificationKindPolicy = { category: "invites", push: true };
+  const reminders: NotificationKindPolicy = { category: "reminders", push: true };
+  const critical: NotificationKindPolicy = { category: "problems", severity: "critical", push: true };
+  const warning: NotificationKindPolicy = { category: "problems", severity: "warning", push: true };
+  const info: NotificationKindPolicy = { category: "problems", severity: "info", push: false };
+
+  it("sends an approval as time-sensitive only while the approvals switch is on", () => {
+    expect(pushInterruptionLevelFor(approvals, defaults)).toBe("time-sensitive");
+    expect(pushInterruptionLevelFor(approvals, { ...defaults, approvals: false })).toBeNull();
+  });
+
+  it("follows the invites and reminders switches and sends them active", () => {
+    expect(pushInterruptionLevelFor(invites, defaults)).toBe("active");
+    expect(pushInterruptionLevelFor(invites, { ...defaults, invites: false })).toBeNull();
+    expect(pushInterruptionLevelFor(reminders, defaults)).toBe("active");
+    expect(pushInterruptionLevelFor(reminders, { ...defaults, reminders: false })).toBeNull();
+  });
+
+  it("never pushes an info policy, whatever the problems level", () => {
+    for (const problemsLevel of ["off", "critical", "all"] as const) {
+      expect(pushInterruptionLevelFor(info, { ...defaults, problemsLevel })).toBeNull();
+    }
+  });
+
+  it("honors the push flag on its own, even when the category switch is on", () => {
+    const approvalsWithoutPush: NotificationKindPolicy = { category: "approvals", push: false };
+    expect(pushInterruptionLevelFor(approvalsWithoutPush, defaults)).toBeNull();
+  });
+
+  it("sends no problem at all when the problems level is off", () => {
+    const off = { ...defaults, problemsLevel: "off" as const };
+    expect(pushInterruptionLevelFor(critical, off)).toBeNull();
+    expect(pushInterruptionLevelFor(warning, off)).toBeNull();
+  });
+
+  it("passes only critical problems at the critical level, time-sensitive with the summary on and active with it off", () => {
+    expect(pushInterruptionLevelFor(warning, defaults)).toBeNull();
+    expect(pushInterruptionLevelFor(critical, defaults)).toBe("time-sensitive");
+    expect(pushInterruptionLevelFor(critical, { ...defaults, problemsSummary: false })).toBe("active");
+  });
+
+  it("passes critical and warning problems at the all level, warning passive with the summary on and active with it off", () => {
+    const all = { ...defaults, problemsLevel: "all" as const };
+    expect(pushInterruptionLevelFor(critical, all)).toBe("time-sensitive");
+    expect(pushInterruptionLevelFor(warning, all)).toBe("passive");
+    expect(pushInterruptionLevelFor(critical, { ...all, problemsSummary: false })).toBe("active");
+    expect(pushInterruptionLevelFor(warning, { ...all, problemsSummary: false })).toBe("active");
   });
 });
