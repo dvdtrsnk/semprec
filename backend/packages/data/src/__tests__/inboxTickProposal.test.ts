@@ -20,6 +20,8 @@ import {
   createSemprecTickAction,
   parseStoredProposalEnvelope,
   type ComputeSemprecProposalFn,
+  type ProposalEnvelope,
+  type ProposalStep,
 } from "../inbox/inboxTickAction.js";
 import { confirmProposalWithClient } from "../inbox/proposalActions.js";
 
@@ -1412,6 +1414,235 @@ describe("assertValidProposalEnvelope validates envelope relations (issue #1426)
 
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).details).toEqual({ field: "relations" });
+  });
+});
+
+describe("assertValidProposalEnvelope validates multi-step envelopes (issue #1479)", () => {
+  let peopleDbId: string;
+  let companiesDbId: string;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    viewTypeRegistry = createViewTypeRegistry();
+    await resetDatabase(pool);
+    await seedSystem(pool, viewTypeRegistry);
+    peopleDbId = await databaseIdFor("people");
+    companiesDbId = await databaseIdFor("companies");
+  });
+
+  const companyStep = {
+    ref: "company",
+    op: "create" as const,
+    databaseKey: "companies",
+    properties: { name: "Acme" },
+    role: "secondary" as const,
+  };
+  const personStep = {
+    ref: "person",
+    op: "create" as const,
+    databaseKey: "people",
+    properties: { name: "Jane" },
+    relations: { companies: [{ ref: "company" }] },
+    role: "primary" as const,
+  };
+
+  function envelopeOf(operations: ProposalStep[], primary = operations.find((s) => s.role === "primary")!) {
+    return {
+      entityKind: "database" as const,
+      target: primary.databaseKey === "people" ? peopleDbId : companiesDbId,
+      properties: primary.properties ?? {},
+      operations,
+    };
+  }
+
+  function validate(envelope: ProposalEnvelope) {
+    return withTransaction(pool, (client) => assertValidProposalEnvelope(client, envelope));
+  }
+
+  async function failure(envelope: ProposalEnvelope): Promise<ValidationError> {
+    const error = await validate(envelope).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ValidationError);
+    return error as ValidationError;
+  }
+
+  async function createItem(moduleId: string, properties: Record<string, unknown>): Promise<string> {
+    const databaseId = await databaseIdFor(moduleId);
+    return withTransaction(pool, async (client) => (await createItemWithClient(client, { databaseId, properties })).id);
+  }
+
+  it("parses and validates a company plus a new person", async () => {
+    const stored = envelopeOf([companyStep, personStep]);
+
+    const parsed = parseStoredProposalEnvelope(JSON.parse(JSON.stringify(stored)), "p1") as ProposalEnvelope;
+
+    expect(parsed.operations).toEqual(stored.operations);
+    expect((await validate(parsed))!.id).toBe(peopleDbId);
+  });
+
+  it("leaves a single-step envelope byte for byte unchanged by parse and stringify", () => {
+    const stored = {
+      entityKind: "database",
+      target: peopleDbId,
+      properties: { name: "Jane" },
+      relations: { companies: ["a"] },
+    };
+    const json = JSON.stringify(stored);
+
+    expect(JSON.stringify(parseStoredProposalEnvelope(JSON.parse(json), "p1"))).toBe(json);
+  });
+
+  it("reports the ref and field of a failing step", async () => {
+    const error = await failure(envelopeOf([{ ...companyStep, properties: { name: "Acme", bogus: 1 } }, personStep]));
+
+    expect(error.details).toEqual({ ref: "company", field: "bogus" });
+  });
+
+  it("rejects a cycle between steps", async () => {
+    const error = await failure(
+      envelopeOf([{ ...companyStep, relations: { people: [{ ref: "person" }] } }, personStep]),
+    );
+
+    expect(error.details).toMatchObject({ field: expect.any(String) });
+    expect(error.message).toContain("cycle");
+  });
+
+  it("rejects a ref to a missing step", async () => {
+    const error = await failure(envelopeOf([{ ...personStep, relations: { companies: [{ ref: "nope" }] } }]));
+
+    expect(error.details).toEqual({ ref: "person", field: "companies" });
+  });
+
+  it("rejects two primary steps and duplicate refs", async () => {
+    const twoPrimaries = await failure(envelopeOf([{ ...companyStep, role: "primary" }, personStep], personStep));
+    const duplicate = await failure(envelopeOf([{ ...companyStep, ref: "person" }, personStep]));
+
+    expect(twoPrimaries.details).toMatchObject({ field: "role" });
+    expect(duplicate.details).toEqual({ ref: "person", field: "ref" });
+  });
+
+  it("rejects a primary step that differs from the top level", async () => {
+    const envelope = { ...envelopeOf([companyStep, personStep]), properties: { name: "Other" } };
+
+    expect((await failure(envelope)).details).toEqual({ ref: "person", field: "properties" });
+  });
+
+  it("ignores a disabled step with an invalid payload", async () => {
+    const disabled = { ...companyStep, enabled: false, properties: { bogus: 1 } };
+
+    await validate(envelopeOf([disabled, { ...personStep, relations: undefined }]));
+  });
+
+  it("ignores an optional step nobody refers to, but validates it once referred to", async () => {
+    const optional = { ...companyStep, optional: true, properties: { bogus: 1 } };
+
+    await validate(envelopeOf([optional, { ...personStep, relations: undefined }]));
+    const error = await failure(envelopeOf([optional, personStep]));
+
+    expect(error.details).toEqual({ ref: "company", field: "bogus" });
+  });
+
+  it("skips an optional step that refers to a disabled step, but rejects a required one", async () => {
+    const disabled = { ...companyStep, enabled: false };
+    const optionalReferrer = {
+      ref: "second",
+      op: "create" as const,
+      databaseKey: "companies",
+      properties: { bogus: 1 },
+      relations: { people: [{ ref: "company" }] },
+      role: "secondary" as const,
+      optional: true,
+    };
+
+    await validate(envelopeOf([disabled, optionalReferrer, { ...personStep, relations: undefined }]));
+    const error = await failure(envelopeOf([disabled, personStep]));
+
+    expect(error.details).toEqual({ ref: "person", field: "companies" });
+  });
+
+  describe("update steps", () => {
+    async function updateEnvelope(step: Partial<ProposalStep>, itemId: string, moduleId = "projects") {
+      const primary: ProposalStep = {
+        ref: "move",
+        op: "update",
+        itemId,
+        properties: step.properties ?? {},
+        role: "primary",
+        ...step,
+      };
+      return {
+        entityKind: "database" as const,
+        target: await databaseIdFor(moduleId),
+        properties: primary.properties ?? {},
+        operations: [primary],
+      };
+    }
+
+    it("accepts an update step changing a project's status", async () => {
+      const project = await createItem("projects", { name: "Home", status: "inProgress" });
+
+      await validate(
+        await updateEnvelope(
+          {
+            properties: { status: "done" },
+            before: { properties: { status: "inProgress" } },
+            after: { properties: { status: "done" } },
+          },
+          project,
+        ),
+      );
+    });
+
+    it("accepts an update step moving a project to another area", async () => {
+      const oldArea = await createItem("areas", { name: "Old" });
+      const newArea = await createItem("areas", { name: "New" });
+      const project = await createItem("projects", { name: "Home" });
+
+      await validate(
+        await updateEnvelope(
+          {
+            relations: { area: [newArea] },
+            before: { relations: { area: [oldArea] } },
+            after: { relations: { area: [newArea] } },
+          },
+          project,
+        ),
+      );
+    });
+
+    it("rejects a system-owned property with the step's ref and field", async () => {
+      const task = await createItem("tasks", { name: "Buy milk" });
+
+      const error = await failure(
+        await updateEnvelope(
+          { properties: { time: "x" }, before: { properties: { time: null } }, after: { properties: { time: "x" } } },
+          task,
+          "tasks",
+        ),
+      );
+
+      expect(error.details).toEqual({ ref: "move", field: "time" });
+    });
+
+    it("rejects a changed key that is missing from before", async () => {
+      const project = await createItem("projects", { name: "Home", status: "inProgress" });
+
+      const error = await failure(
+        await updateEnvelope(
+          { properties: { status: "done" }, before: {}, after: { properties: { status: "done" } } },
+          project,
+        ),
+      );
+
+      expect(error.details).toEqual({ ref: "move", field: "status" });
+    });
+
+    it("rejects an item that does not exist", async () => {
+      const error = await failure(
+        await updateEnvelope({ properties: { status: "done" } }, "00000000-0000-4000-8000-000000000001"),
+      );
+
+      expect(error.details).toEqual({ ref: "move", field: "itemId" });
+    });
   });
 });
 
