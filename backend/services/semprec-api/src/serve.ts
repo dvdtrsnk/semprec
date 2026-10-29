@@ -101,6 +101,7 @@ if (!Number.isFinite(maxFileSizeMb) || maxFileSizeMb <= 0) {
   throw new Error(`MAX_FILE_SIZE_MB is not a valid positive number: ${process.env.MAX_FILE_SIZE_MB}`);
 }
 const blobStorage = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR"));
+const mailAttachmentStorage = new LocalFsBlobStorageWriter(resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR"));
 
 // Issue #635: this process sits behind Caddy on loopback, so the socket peer is always 127.0.0.1.
 // Only the exact string "1" trusts the proxy's `X-Forwarded-For`; any other value, or unset, is false.
@@ -127,6 +128,7 @@ const dispatch = await createDispatcher(pool, {
   setupToken,
   moduleRegistry,
   blobStorage,
+  mailAttachmentStorage,
   maxFileSizeBytes: maxFileSizeMb * 1024 * 1024,
   trustProxy,
 });
