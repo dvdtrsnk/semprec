@@ -158,7 +158,10 @@ describe("createGenericOperationGateway (issue #220)", () => {
         { status: "rejected", reason: expect.any(NotFoundError) },
       ]);
       await runInTenant(tenantA, async () => {
-        expect(await createChokePoint(runtimePool).getItem(fixture.db.id, fixture.item.id)).toEqual(fixture.item);
+        expect(await createChokePoint(runtimePool).getItem(fixture.db.id, fixture.item.id)).toEqual({
+          ...fixture.item,
+          fromInbox: false,
+        });
         const result = await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, input);
         expect(result.previous).toEqual({ title: "Private" });
         expect(result.properties).toEqual({ title: "Changed" });
