@@ -298,3 +298,86 @@ export async function resolveMergedThreadId(client: Queryable, threadId: string)
   );
   return rows[0]?.id ?? null;
 }
+
+/** One `mail_message_meta` row that has no thread yet, with its item's subject for `resolveThreadId`'s hint. */
+export interface UnthreadedMailMessage {
+  itemId: string;
+  messageId: string;
+  inReplyTo: string | null;
+  references: string[];
+  subject: string | null;
+}
+
+/**
+ * The next keyset page (`item_id` order, after `afterItemId`) of rows whose `thread_id` is still NULL, locked
+ * with `FOR UPDATE OF m` for the caller's transaction, so no concurrent writer can thread a row between this read
+ * and the `thread_id` write that follows it. A `LEFT JOIN` keeps a row whose item is missing: it is still threaded,
+ * just without a subject hint.
+ */
+export async function listUnthreadedMailMessagePage(
+  client: Queryable,
+  afterItemId: string | null,
+  limit: number,
+): Promise<UnthreadedMailMessage[]> {
+  const { rows } = await client.query<{
+    item_id: string;
+    message_id: string;
+    in_reply_to: string | null;
+    references: string[] | null;
+    subject: string | null;
+  }>(
+    `SELECT m.item_id, m.message_id, m.in_reply_to, m."references", i.properties ->> 'name' AS subject
+       FROM mail_message_meta m
+       LEFT JOIN items i ON i.id = m.item_id
+      WHERE m.thread_id IS NULL AND ($1::uuid IS NULL OR m.item_id > $1::uuid)
+      ORDER BY m.item_id
+      LIMIT $2
+        FOR UPDATE OF m`,
+    [afterItemId, limit],
+  );
+  return rows.map((row) => ({
+    itemId: row.item_id,
+    messageId: row.message_id,
+    inReplyTo: row.in_reply_to,
+    references: row.references ?? [],
+    subject: row.subject,
+  }));
+}
+
+/**
+ * The next keyset page (`message_id` order, after `afterMessageId`) of `Message-ID`s that occur in more than one
+ * mailbox and whose rows name more than one thread. A candidate list only: the caller re-reads each one with
+ * `lockMailMessageThreads` and decides on that locked read, not on this one.
+ */
+export async function listSplitMailMessageIdPage(
+  client: Queryable,
+  afterMessageId: string | null,
+  limit: number,
+): Promise<string[]> {
+  const { rows } = await client.query<{ message_id: string }>(
+    `SELECT message_id
+       FROM mail_message_meta
+      WHERE thread_id IS NOT NULL AND ($1::text IS NULL OR message_id > $1::text)
+      GROUP BY message_id
+     HAVING COUNT(DISTINCT mailbox_item_id) > 1 AND COUNT(DISTINCT thread_id) > 1
+      ORDER BY message_id
+      LIMIT $2`,
+    [afterMessageId, limit],
+  );
+  return rows.map((row) => row.message_id);
+}
+
+/**
+ * Locks every row of one `Message-ID` (`FOR UPDATE`) for the caller's transaction and returns its distinct thread
+ * ids, lowest first, the order `resolveThreadId` uses to pick a merge target. An empty or one-element result means
+ * there is nothing left to merge.
+ */
+export async function lockMailMessageThreads(client: Queryable, messageId: string): Promise<string[]> {
+  const { rows } = await client.query<{ thread_id: string | null }>(
+    `SELECT thread_id FROM mail_message_meta WHERE message_id = $1 ORDER BY thread_id FOR UPDATE`,
+    [messageId],
+  );
+  const threadIds = new Set<string>();
+  for (const row of rows) if (row.thread_id) threadIds.add(row.thread_id);
+  return [...threadIds];
+}

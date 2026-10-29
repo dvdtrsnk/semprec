@@ -30,6 +30,7 @@ const SYSTEM_TASKS = [
   "mailSearchReindexSweep",
   "mailMessagePreviewBackfill",
   "mailGmailPseudoFolderCleanup",
+  "mailThreadBackfill",
   "itemTrashPurgeSweep",
   "trashPurge",
   "observabilityCheckSystem",

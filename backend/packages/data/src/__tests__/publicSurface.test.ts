@@ -278,6 +278,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "enqueueItemSearchBackfill",
   "enqueueMailGmailPseudoFolderCleanup",
   "enqueueMailMessagePreviewBackfill",
+  "enqueueMailThreadBackfill",
   "enqueueNotificationFanout",
   "enqueuePropertyTypeMigration",
   "enqueueRollupBackfill",
