@@ -21,7 +21,12 @@ export { executeMcpInvocation } from "@semprec/data";
 /** An MCP result that also names the approval request the call created, when it was deferred to a human. */
 export type McpInvokeToolResult = McpInvokeResult & { approvalRequestId?: string };
 
-export type McpInvokeTool = (args: McpInvokeArgs, signal?: AbortSignal) => Promise<McpInvokeToolResult>;
+export type McpInvokeTool = (
+  args: McpInvokeArgs,
+  signal?: AbortSignal,
+  /** `toolCallId`: the model-runtime tool call, stored on an approval request the call creates. */
+  invokeOptions?: { toolCallId?: string },
+) => Promise<McpInvokeToolResult>;
 
 /**
  * The outbound MCP-invoke adapter (issue #128): resolves `mcpToolRegistrationId` against
@@ -230,7 +235,7 @@ export function createApprovalGatedMcpInvokeTool(
   mcpToolRegistrationId: string,
   options: McpInvokeOptions = {},
 ): McpInvokeTool {
-  return async function invoke(rawArgs, signal) {
+  return async function invoke(rawArgs, signal, invokeOptions) {
     const extracted = extractReason(rawArgs);
     if (!extracted.ok) return { error: true, result: extracted.error };
     const { args, reason } = extracted;
@@ -255,6 +260,7 @@ export function createApprovalGatedMcpInvokeTool(
           // satisfies the column's `NOT NULL` constraint without claiming a hash that doesn't exist.
           resourceSnapshot: { kind: "mcp_invoke", resourceId: mcpToolRegistrationId, sha256: null },
           reason,
+          toolCallId: invokeOptions?.toolCallId ?? null,
         });
         const userId = await getTenantUserId(client);
         if (userId) {

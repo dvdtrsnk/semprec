@@ -82,8 +82,8 @@ async function buildPatchChanges(pool: Pool, output: unknown, args: unknown): Pr
 export type GenericOperationAgentTool = (
   currentRunId: string,
   args: unknown,
-  /** The agent's reason for an approval-gated call, removed from `args` by the caller; reaches the approval request only. */
-  options?: { reason?: string },
+  /** `reason`: the agent's reason for an approval-gated call, removed from `args` by the caller; reaches the approval request only. `toolCallId`: the model-runtime tool call, stored on a created approval request. */
+  options?: { reason?: string; toolCallId?: string },
 ) => Promise<GenericOperationAgentToolResult>;
 
 interface AgentContext {

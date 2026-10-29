@@ -72,6 +72,8 @@ export interface ApprovalRequest {
   executionResult: unknown;
   /** The agent's own explanation of why it asked, as plain text; `null` when it gave none. */
   reason: string | null;
+  /** The model-runtime tool call that created the request; `null` for older requests and paths without one. */
+  toolCallId: string | null;
 }
 
 /** The outbound third-party-MCP-tool-invoke payload shape (issue #130) — the resolved target's identity plus the model-supplied arguments. */
@@ -121,6 +123,7 @@ interface ApprovalRequestRow {
   execution_error: boolean | null;
   execution_result_jsonb: unknown;
   reason: string | null;
+  tool_call_id: string | null;
 }
 
 function assertResourceSnapshotShape(value: ApprovalResourceSnapshot): ApprovalResourceSnapshot {
@@ -133,6 +136,11 @@ function assertResourceSnapshotShape(value: ApprovalResourceSnapshot): ApprovalR
     "resource_snapshot",
   );
   return value;
+}
+
+function assertNullableString(value: unknown, column: string): string | null {
+  assertShape(value === null || typeof value === "string", column);
+  return value as string | null;
 }
 
 function rowToApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
@@ -152,6 +160,7 @@ function rowToApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
     executionError: row.execution_error,
     executionResult: row.execution_result_jsonb,
     reason: row.reason,
+    toolCallId: assertNullableString(row.tool_call_id, "tool_call_id"),
   };
 }
 
@@ -163,16 +172,23 @@ export interface CreatePendingApprovalRequestInput {
   resourceSnapshot: ApprovalResourceSnapshot;
   /** Optional agent-supplied reason (at most `APPROVAL_REQUEST_REASON_MAX_LENGTH` characters); stored as `NULL` when absent. */
   reason?: string | null;
+  /** The model-runtime tool call that produced the request; stored as `NULL` when absent. */
+  toolCallId?: string | null;
 }
 
-/** Inserts one `pending` request. The caller is responsible for running this inside the same transaction as whatever it must be atomic with. */
+/**
+ * Inserts one `pending` request. The caller is responsible for running this inside the same transaction as whatever it must be atomic with.
+ * A repeated creation for the same `(agentRunId, toolCallId)` returns the existing request instead of inserting a second row.
+ */
 export async function createPendingApprovalRequest(
   client: Queryable,
   input: CreatePendingApprovalRequestInput,
 ): Promise<ApprovalRequest> {
+  const toolCallId = input.toolCallId ?? null;
   const { rows } = await client.query<ApprovalRequestRow>(
-    `INSERT INTO approval_requests (agent_run_id, tool_name, risk_class, payload, resource_snapshot, reason)
-     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)
+    `INSERT INTO approval_requests (agent_run_id, tool_name, risk_class, payload, resource_snapshot, reason, tool_call_id)
+     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)
+     ON CONFLICT (tenant_id, agent_run_id, tool_call_id) WHERE tool_call_id IS NOT NULL DO NOTHING
      RETURNING *`,
     [
       input.agentRunId,
@@ -181,8 +197,16 @@ export async function createPendingApprovalRequest(
       JSON.stringify(input.payload),
       JSON.stringify(input.resourceSnapshot),
       input.reason ?? null,
+      toolCallId,
     ],
   );
+  if (rows.length === 0 && toolCallId !== null) {
+    const existing = await client.query<ApprovalRequestRow>(
+      `SELECT * FROM approval_requests WHERE agent_run_id = $1 AND tool_call_id = $2`,
+      [input.agentRunId, toolCallId],
+    );
+    return rowToApprovalRequest(requireSingleRow(existing.rows, "approval_requests tool call lookup"));
+  }
   return rowToApprovalRequest(requireSingleRow(rows, "approval_requests insert RETURNING"));
 }
 
