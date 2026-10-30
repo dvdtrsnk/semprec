@@ -182,5 +182,21 @@ export function clearHooksForTests(): void {
   itemUpdateHooks.clear();
   relationEdgeWriteHooks.clear();
   relationEdgeDeleteHooks.clear();
+  itemReadProjections.clear();
   itemPreWriteTransforms.clear();
+}
+
+export interface ItemReadProjection {
+  ownerModuleId: string;
+  project: (item: ItemRow) => ItemRow;
+}
+const itemReadProjections = new Map<string, ItemReadProjection>();
+
+export function registerItemReadProjection(projection: ItemReadProjection): void {
+  itemReadProjections.set(projection.ownerModuleId, projection);
+}
+
+export function projectItemForRead<T extends ItemRow>(item: T, ownerModuleId: string | null): T {
+  const projection = ownerModuleId === null ? undefined : itemReadProjections.get(ownerModuleId);
+  return projection ? { ...item, ...projection.project(item) } : item;
 }

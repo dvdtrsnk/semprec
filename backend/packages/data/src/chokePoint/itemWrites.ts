@@ -1,3 +1,6 @@
+import { ConflictError } from "../errors.js";
+import { projectItemsForRead } from "./itemReadProjection.js";
+import { z } from "zod";
 // Owns the choke point's item writes: `createItem` / `updateItem` and their transaction-scoped
 // `createItemWithClient` / `updateItemWithClient` counterparts, the property writability checks
 // they share, the archived-database create guard with its idempotent-replay exception, the
@@ -566,9 +569,15 @@ export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
       humanWriterUserId?: string,
       writer?: WriterIdentity,
     ): Promise<ItemRow> {
-      return withTransaction(pool, (client) =>
-        createItemWithClient(client, input, { queueAffinity, actingUserId, humanWriterUserId, writer }),
-      );
+      return withTransaction(pool, async (client) => {
+        const item = await createItemWithClient(client, input, {
+          queueAffinity,
+          actingUserId,
+          humanWriterUserId,
+          writer,
+        });
+        return (await projectItemsForRead(client, [item]))[0]!;
+      });
     },
 
     async updateItem(
@@ -577,9 +586,37 @@ export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
       humanWriterUserId?: string,
       writer?: WriterIdentity,
     ): Promise<itemsStore.UpdateItemResult> {
-      return withTransaction(pool, (client) =>
-        updateItemWithClient(client, input, { queueAffinity, actingUserId, humanWriterUserId, writer }),
-      );
+      return withTransaction(pool, async (client) => {
+        try {
+          const item = await updateItemWithClient(client, input, {
+            queueAffinity,
+            actingUserId,
+            humanWriterUserId,
+            writer,
+          });
+          return (await projectItemsForRead(client, [item]))[0]!;
+        } catch (error) {
+          if (!(error instanceof ConflictError)) throw error;
+          const details = z
+            .object({
+              current: z
+                .object({
+                  id: z.string(),
+                  databaseId: z.string(),
+                  properties: z.record(z.string(), z.unknown()),
+                  computed: z.record(z.string(), z.unknown()),
+                  updatedAt: z.string(),
+                  deletedAt: z.string().nullable(),
+                })
+                .passthrough(),
+            })
+            .passthrough()
+            .safeParse(error.details);
+          if (!details.success) throw error;
+          const current = (await projectItemsForRead(client, [details.data.current]))[0]!;
+          throw new ConflictError(error.message, { ...details.data, current });
+        }
+      });
     },
   };
 }

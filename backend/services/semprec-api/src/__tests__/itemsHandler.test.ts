@@ -1,3 +1,5 @@
+import { createItemWithClient, getDatabaseByModuleId } from "@semprec/data";
+import { z } from "zod";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -113,6 +115,69 @@ describe("item routes (issue #241)", () => {
   afterAll(async () => {
     await pool?.end();
   });
+
+  it.each(["item get", "database query", "view query", "patch", "conflict"])(
+    "sanitizes Emails.body on REST %s",
+    async (path) => {
+      await seedSystem(pool, createViewTypeRegistry());
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+
+      const raw = '<p onclick="evil()">safe</p><script>evil()</script><img src="https://tracker.example/pixel">';
+      const item = await withTransaction(pool, async (client) => {
+        const database = await getDatabaseByModuleId(client, "emails");
+        if (!database) throw new Error("Emails not seeded");
+        return createItemWithClient(
+          client,
+          { databaseId: database.id, properties: { body: raw } },
+          { allowedSystemKeys: ["body"], systemOwnerProcess: "emails" },
+        );
+      });
+
+      let url = `/api/items/${item.id}`;
+      let method = "GET";
+      let payload: unknown;
+      if (path === "database query") {
+        url = `/api/databases/${item.databaseId}/query`;
+        method = "POST";
+        payload = {};
+      }
+      if (path === "view query") {
+        const view = await chokePoint.createView({
+          databaseId: item.databaseId,
+          type: "list",
+          name: "Projection test",
+          config: {},
+        });
+        url = `/api/views/${view.id}/query`;
+        method = "POST";
+        payload = {};
+      }
+      if (path === "patch" || path === "conflict") {
+        method = "PATCH";
+        payload = {
+          properties: { read: true },
+          ifVersion: path === "conflict" ? "2000-01-01T00:00:00.000Z" : item.updatedAt,
+        };
+      }
+      const response = await fetch(`${baseUrl}${url}`, {
+        method,
+        headers,
+        ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
+      });
+      expect(response.status).toBe(path === "conflict" ? 409 : 200);
+      const body: unknown = await response.json();
+      const envelope = z.object({ properties: z.object({ body: z.string() }) });
+      let html: string;
+      if (path === "conflict")
+        html = z.object({ error: z.object({ details: z.object({ currentItem: envelope }) }) }).parse(body).error.details
+          .currentItem.properties.body;
+      else if (path.endsWith("query"))
+        html = z.object({ items: z.array(envelope).min(1) }).parse(body).items[0]!.properties.body;
+      else html = envelope.parse(body).properties.body;
+      expect(html).toContain("safe");
+      expect(html).not.toMatch(/<script|onclick|https:\/\/tracker/i);
+    },
+  );
 
   async function makeMoviesDb() {
     const db = await chokePoint.createDatabase({ name: "Movies" });

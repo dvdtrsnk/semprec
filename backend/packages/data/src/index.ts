@@ -599,3 +599,5 @@ export {
   type TenantExportStatus,
   type TenantExportSummary,
 } from "./tenancy/tenantExportsStore.js";
+
+export { registerItemReadProjection, projectItemForRead, type ItemReadProjection } from "./chokePoint/hooks.js";

@@ -1,3 +1,4 @@
+import { createItemWithClient, getDatabaseByModuleId } from "@semprec/data";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -342,6 +343,26 @@ const CASES: Record<GenericOperationName, Case> = {
 describe("generic operation MCP contract (issue #220)", () => {
   let servers: Server[] = [];
 
+  it("sanitizes Emails.body on MCP item.get", async () => {
+    const raw = '<p onclick="evil()">safe</p><script>evil()</script><img src="https://tracker.example/pixel">';
+    const item = await withTransaction(pool, async (client) => {
+      const database = await getDatabaseByModuleId(client, "emails");
+      if (!database) throw new Error("Emails not seeded");
+      return createItemWithClient(
+        client,
+        { databaseId: database.id, properties: { body: raw } },
+        { allowedSystemKeys: ["body"], systemOwnerProcess: "emails" },
+      );
+    });
+
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const body = await rpc(baseUrl, await authHeader(), "semprec.item.get", { itemId: item.id });
+    expect(body.error).toBeUndefined();
+    const text = body.result?.content.map((part) => part.text).join("");
+    expect(text).toContain("safe");
+    expect(text).not.toMatch(/<script|onclick|https:\/\/tracker/i);
+  });
   beforeEach(async () => {
     pool ??= getTestPool();
     chokePoint ??= createChokePoint(pool);

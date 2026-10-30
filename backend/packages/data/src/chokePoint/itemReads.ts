@@ -1,3 +1,4 @@
+import { projectItemsForRead } from "./itemReadProjection.js";
 // Owns the choke point's item reads: single-item lookups (`getItem`, `findItem`,
 // `findItemIncludingDeleted`), the breadcrumb walk `getItemPath`, and filtered `listItems` /
 // `countItems` together with the filter-tree-to-SQL resolution they share. It does not own item
@@ -76,7 +77,7 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
         const item = await itemsStore.getItemById(client, databaseId, itemId);
         if (!item) return null;
         const [stamped] = await withFromInbox(client, [item]);
-        return stamped ?? item;
+        return (await projectItemsForRead(client, [stamped ?? item]))[0]!;
       });
     },
 
@@ -91,7 +92,7 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
         const [item] = await itemsStore.getItemsByIds(client, [itemId]);
         if (!item) return null;
         const [stamped] = await withFromInbox(client, [item]);
-        return stamped ?? item;
+        return (await projectItemsForRead(client, [stamped ?? item]))[0]!;
       });
     },
 
@@ -104,7 +105,7 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
     async findItemIncludingDeleted(itemId: string): Promise<ItemRow | null> {
       return withTransaction(pool, async (client) => {
         const [item] = await itemsStore.getItemsByIdsIncludingDeleted(client, [itemId]);
-        return item ?? null;
+        return item ? (await projectItemsForRead(client, [item]))[0]! : null;
       });
     },
 
@@ -139,7 +140,7 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
           const database = await databasesStore.getDatabase(client, item.databaseId);
           currentId = database?.parentItemId ?? undefined;
         }
-        return chain;
+        return projectItemsForRead(client, chain);
       });
     },
 
@@ -154,7 +155,7 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
           buildFilterSql: rest.buildFilterSql,
         });
         const page = await itemsStore.listItems(client, databaseId, { ...rest, buildFilterSql });
-        return { ...page, items: await withFromInbox(client, page.items) };
+        return { ...page, items: await projectItemsForRead(client, await withFromInbox(client, page.items)) };
       });
     },
 

@@ -2,8 +2,7 @@ import sanitizeHtml from "sanitize-html";
 
 /**
  * Serve-time sanitization (issue #26) of untrusted HTML message bodies — called by
- * whatever reads a message body for display (issue #27's reading view; there is no such
- * caller yet in this issue's scope, but the function itself is exercised directly below).
+ * the Emails projection on generic item reads (issue #1490).
  * Deliberately *not* run once at ingest and stored sanitized: running at serve time lets the
  * allowlist improve later without a backfill over every already-stored message.
  *

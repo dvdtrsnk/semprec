@@ -1,3 +1,4 @@
+import { createItemWithClient, getDatabaseByModuleId, withTransaction } from "@semprec/data";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
@@ -191,6 +192,26 @@ const CASES: Record<GenericOperationName, Case> = {
 };
 
 describe("generic operation AgentTools contract (issue #220)", () => {
+  it("sanitizes Emails.body on the agent item.get tool", async () => {
+    const raw = '<p onclick="evil()">safe</p><script>evil()</script><img src="https://tracker.example/pixel">';
+    const item = await withTransaction(pool, async (client) => {
+      const database = await getDatabaseByModuleId(client, "emails");
+      if (!database) throw new Error("Emails not seeded");
+      return createItemWithClient(
+        client,
+        { databaseId: database.id, properties: { body: raw } },
+        { allowedSystemKeys: ["body"], systemOwnerProcess: "emails" },
+      );
+    });
+
+    const projectItemId = await createProjectItem();
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "read email" });
+    const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+    const result = await tools["item.get"](run.id, { itemId: item.id });
+    expect(result.error).toBeFalsy();
+    expect(result.result).toContain("safe");
+    expect(result.result).not.toMatch(/<script|onclick|https:\/\/tracker/i);
+  });
   beforeEach(async () => {
     pool ??= getTestPool();
     chokePoint ??= createChokePoint(pool);
