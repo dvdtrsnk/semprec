@@ -1,3 +1,4 @@
+export { createMailContactsRouteHandler } from "./mailContactsRoute.js";
 import type { ModuleManifest } from "@semprec/module-registry";
 import { MAILBOX_CLIENT_VIEW_TYPE } from "../views/mailboxClientViewType.js";
 import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
@@ -54,6 +55,13 @@ export const manifest: ModuleManifest = {
   workers: [{ name: "semprec-mailsync", handlerExport: "createNoopMailLiveSyncLifecycleFactory" }],
   migrations: ["0006_mail_sync.sql", "0007_mail_delivered_to_and_dsn.sql"],
   customRoutes: [
+    {
+      name: "mailContacts",
+      method: "GET",
+      path: "/api/mail/contacts",
+      handlerExport: "createMailContactsRouteHandler",
+      justification: "single-consumer-read",
+    },
     {
       name: "mailboxRemovalImpact",
       method: "GET",

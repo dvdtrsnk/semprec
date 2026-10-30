@@ -1005,6 +1005,20 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     await expectExcludesA(b.member, { method: "GET", path: "/api/system-health" });
   },
   // A's mailbox answers B exactly as a random id does, and both answers are the 404 of an unknown mailbox (issue gh-1501).
+  "mail contacts": async () => {
+    async function person(tenantId: string, email: string) {
+      return inTenantTransaction(tenantId, async (client) => {
+        const db = await getDatabaseByModuleId(client, "people");
+        if (!db) throw new Error("People not seeded");
+        return createItemWithClient(client, { databaseId: db.id, properties: { name: "Contact", emails: email } });
+      });
+    }
+    const foreign = await person(a.tenantId, "foreign-contact@example.com");
+    const own = await person(b.tenantId, "own-contact@example.com");
+    const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/mail/contacts?q=contact" }, [own.id]);
+    expect(answer.text).not.toContain(foreign.id);
+    expect(answer.text).not.toContain("foreign-contact@example.com");
+  },
   "mailbox removal impact": async () => {
     const answer = await expectForeignLikeRandom(b.member, [a.mailboxItemId], ([id]) => ({
       method: "GET",

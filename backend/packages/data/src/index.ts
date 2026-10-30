@@ -603,3 +603,5 @@ export {
 export { registerItemReadProjection, projectItemForRead, type ItemReadProjection } from "./chokePoint/hooks.js";
 
 export { filterRecognitionCandidates, RECOGNITION_TARGETS } from "./inbox/inboxRecognition.js";
+
+export { createMailContactsRouteHandler } from "./mail/mailContactsRoute.js";
