@@ -6,7 +6,9 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import { seedSystem } from "../seed/seedSystem.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { withTransaction } from "../db/pool.js";
+import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { createMailContactsRouteHandler } from "../mail/mailContactsRoute.js";
 let admin: Pool;
 let pool: Pool;
@@ -52,7 +54,16 @@ describe("mail contacts", () => {
   it("excludes own mailbox addresses and normalized exclude entries", async () => {
     await runInTenant(tenant, async () => {
       await create("people", { name: "Contact", emails: "own@example.com\nexcluded@example.com\nkeep@example.com" });
-      await create("mailboxes", { name: "Account", addresses: " \tOWN@EXAMPLE.COM\t " });
+      await withTransaction(pool, async (client) => {
+        const mailboxes = await getDatabaseByModuleId(client, "mailboxes");
+        if (!mailboxes) throw new Error("Missing seeded database");
+        const mailbox = await createItemWithClient(client, { databaseId: mailboxes.id, properties: { name: "Account" } });
+        await writeMailboxAddresses(client, {
+          mailboxesDatabaseId: mailboxes.id,
+          mailboxItemId: mailbox.id,
+          address: " \tOWN@EXAMPLE.COM\t ",
+        });
+      });
     });
     const response = await request("q=contact&exclude=%20EXCLUDED%40example.com%20");
     expect(response.body).toMatchObject({ contacts: [{ email: "keep@example.com", relationship: null }] });
