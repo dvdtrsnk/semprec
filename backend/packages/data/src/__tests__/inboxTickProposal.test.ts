@@ -175,6 +175,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
         createInboxTypeWithClient(client, {
           inboxItemTypesDatabaseId: typesId,
           name: "Recognized task",
+          status: "active",
           emoji: "T",
           processingMethod: "database",
           targetDatabase: "tasks",
@@ -254,9 +255,24 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       );
       await runTick(pool, databaseIds, item.id, compute);
       expect(calls).toBe(2);
+      expect((await findProposalForItem(pool, proposalsId, item.id))?.properties).toMatchObject({
+        status: "proposed",
+        recognizedTypeId: kind === "type" ? type.id : null,
+        typeCandidates: [],
+      });
     });
     it("offers padded distinct candidates and the model reason below threshold", async () => {
       const { type, item } = await fixture();
+      const second = await withTransaction(pool, (client) =>
+        createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name: "Alternative task",
+          status: "active",
+          emoji: "A",
+          processingMethod: "database",
+          targetDatabase: "tasks",
+        }),
+      );
       await runTick(pool, databaseIds, item.id, async () => ({
         properties: {},
         reason: "Choose a type",
@@ -268,10 +284,30 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       const card = await findProposalForItem(pool, proposalsId, item.id);
       expect(card?.properties).toMatchObject({ status: "needsClarification", recognizedTypeId: null, proposal: null });
       const choices = z.array(z.object({ typeId: z.string() })).parse(card?.properties.typeCandidates);
-      expect(choices.length).toBeGreaterThanOrEqual(2);
-      expect(choices.length).toBeLessThanOrEqual(4);
+      expect(choices.map((choice) => choice.typeId)).toEqual([type.id, second.id]);
+      expect(card?.properties.reason).toBe("Choose a type");
       expect(new Set(choices.map((choice) => choice.typeId)).size).toBe(choices.length);
       expect(choices.map((choice) => choice.typeId)).not.toContain("unknown");
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(client, {
+          databaseId: inboxId,
+          itemId: item.id,
+          propertiesPatch: { text: "A different uncertain item" },
+        }),
+      );
+      await runTick(pool, databaseIds, item.id, async () => ({
+        properties: {},
+        candidates: [{ typeId: second.id, confidence: 0.5 }],
+        reason: "Another choice",
+      }));
+      const revised = await findProposalForItem(pool, proposalsId, item.id);
+      expect(revised?.id).toBe(card?.id);
+      expect(revised?.properties).toMatchObject({
+        status: "needsClarification",
+        recognizedTypeId: null,
+        reason: "Another choice",
+        typeCandidates: [{ typeId: second.id }, { typeId: type.id }],
+      });
     });
     it("discards recognition when text changes during the call", async () => {
       const { type, item } = await fixture();
@@ -1120,10 +1156,11 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     );
 
     await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called once the type is deleted");
+      return { properties: {}, candidates: [] };
     });
 
     const proposal = await findProposalForItem(pool, proposalsId, item.id);
+    expect(proposal!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: "", text: "Buy milk" }));
     expect(proposal!.properties.status).toBe("needsClarification");
     expect(proposal!.properties.proposal).toBeNull();
     expect(proposal!.properties.history).toHaveLength(1);
@@ -1144,7 +1181,7 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     });
     const needsClarification = await findProposalForItem(pool, proposalsId, item.id);
     expect(needsClarification!.properties.status).toBe("needsClarification");
-    expect(needsClarification!.properties.fingerprint).toBeNull();
+    expect(needsClarification!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: "", text: "Buy milk" }));
 
     const type = await withTransaction(pool, (client) =>
       createInboxTypeWithClient(client, {

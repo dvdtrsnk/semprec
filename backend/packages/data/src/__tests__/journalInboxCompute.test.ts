@@ -277,7 +277,7 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     const item = await captureItem("A thought");
     const dayId = await journalDayIdFor(item.id);
     await runTick(item.id, async () => {
-      throw new Error("computeProposal should not be called for an untyped item");
+      return { properties: {}, candidates: [] };
     });
     const proposal = (await findProposalForItem(item.id))!;
     expect(proposal.properties.status).toBe("needsClarification");

@@ -323,7 +323,7 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
       }),
     );
     await createSemprecTickAction(pool, async () => {
-      throw new Error("must not be called for an untyped item");
+      return { properties: {}, candidates: [] };
     })(
       {
         inboxDatabaseId: inboxId,
@@ -372,7 +372,7 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
       }),
     );
     await createSemprecTickAction(pool, async () => {
-      throw new Error("must not be called for an untyped item");
+      return { properties: {}, candidates: [] };
     })(
       {
         inboxDatabaseId: inboxId,

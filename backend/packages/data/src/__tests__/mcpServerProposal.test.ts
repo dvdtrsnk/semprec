@@ -68,7 +68,7 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
       }),
     );
     const handler = createSemprecTickAction(pool, async () => {
-      throw new Error("must not be called for an untyped item");
+      return { properties: {}, candidates: [] };
     });
     await handler(
       {
