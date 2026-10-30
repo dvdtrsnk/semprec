@@ -1,3 +1,4 @@
+import { createCollectionMetadataResolver } from "@semprec/data";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { CAPABILITY_IDS, withTraceContext } from "@semprec/shared";
@@ -89,14 +90,15 @@ export async function createDispatcher(
   // The sole neutral `GenericApplicationPort` implementation (issue #219): one instance per
   // injected `Pool`, threaded into every generic resource route family below so there is no
   // second write path — a route never constructs its own `createChokePoint(pool)`.
-  const genericApplicationService = createGenericApplicationService(pool);
+  const collectionMetadataResolver = await createCollectionMetadataResolver(options.moduleRegistry);
+  const genericApplicationService = createGenericApplicationService(pool, collectionMetadataResolver);
   const dispatchResourceRoute = mountRoutes(pool, [
     ...createAccountRoutes(pool, options),
     ...createAdminRoutes(pool, options),
     ...createDatabaseRoutes(genericApplicationService, options.moduleRegistry),
     ...createPropertyRoutes(genericApplicationService, options.moduleRegistry),
     ...createViewRoutes(genericApplicationService, pool),
-    ...createItemRoutes(genericApplicationService, pool),
+    ...createItemRoutes(genericApplicationService, pool, collectionMetadataResolver),
   ]);
   // Issue #220's own composition root over the same generic catalog: a second
   // `GenericOperationGateway` instance over this process's one `Pool`, never sharing state with
@@ -104,7 +106,7 @@ export async function createDispatcher(
   // MCP each own their own instance). `grantedCapabilities` is the schema core module's own
   // registered capabilities (an authenticated MCP session has no project to compute a per-run
   // manifest against, unlike an AgentTool run).
-  const mcpGateway = createGenericOperationGateway(pool);
+  const mcpGateway = createGenericOperationGateway(pool, collectionMetadataResolver);
   const registeredModuleCapabilities = await options.moduleRegistry.getCapabilities();
   const mcpGrantedCapabilities = new Set(CAPABILITY_IDS.filter((id) => registeredModuleCapabilities.includes(id)));
   const mcpListener = createMcpRequestListener(pool, mcpGateway, mcpGrantedCapabilities);

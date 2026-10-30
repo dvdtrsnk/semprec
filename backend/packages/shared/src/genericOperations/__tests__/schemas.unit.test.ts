@@ -1,3 +1,4 @@
+import { validationIssueField } from "../validationIssueField.js";
 import { describe, expect, it } from "vitest";
 import {
   DatabaseArchiveInputSchema,
@@ -345,4 +346,47 @@ describe("include on item reads (issue #1403)", () => {
     expect(schema.safeParse(base).success).toBe(true);
     expect(schema.safeParse({ ...base, include: ["comments"] }).success).toBe(false);
   });
+});
+
+describe("relation expansion include contract", () => {
+  for (const [schema, base] of [
+    [ItemGetInputSchema, { itemId: "i" }],
+    [DatabaseQueryInputSchema, { databaseId: "d" }],
+    [ViewQueryInputSchema, { viewId: "v" }],
+  ] as const) {
+    it("accepts legacy links and combined object includes", () => {
+      for (const include of [
+        [],
+        ["links"],
+        { links: true },
+        { links: false },
+        { relations: {} },
+        { links: true, relations: { projects: ["area"] } },
+      ]) {
+        expect(schema.safeParse({ ...base, include }).success).toBe(true);
+      }
+    });
+    it("bounds keys/projections and rejects malformed object includes", () => {
+      for (const include of [
+        { relations: Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`r${i}`, []])) },
+        { relations: { projects: Array(11).fill("name") } },
+        { relations: { projects: [""] } },
+        { unknown: true },
+        { links: "yes" },
+      ]) {
+        expect(schema.safeParse({ ...base, include }).success).toBe(false);
+      }
+    });
+  }
+});
+
+it("names the offending relation include field in schema failures", () => {
+  for (const [relations, field] of [
+    [Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`r${i}`, []])), "include.relations"],
+    [{ companies: Array(11).fill("name") }, "include.relations.companies"],
+  ] as const) {
+    const parsed = ItemGetInputSchema.safeParse({ itemId: "id", include: { relations } });
+    if (parsed.success) throw new Error("Expected invalid relation include");
+    expect(validationIssueField(parsed.error.issues)).toBe(field);
+  }
 });

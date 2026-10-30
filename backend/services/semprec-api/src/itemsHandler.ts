@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import type { Pool } from "pg";
 import { createChokePoint, NotFoundError } from "@semprec/data";
 import type { GenericApplicationPort, Property } from "@semprec/shared";
@@ -77,7 +78,11 @@ async function resolveRelationProperty(
  * (`chokePoint.getItemPath`) is the one read this family still reaches `pool` for directly: it has
  * no corresponding generic operation, so there is no binding to rebase it onto.
  */
-export function createItemRoutes(service: GenericApplicationPort, pool: Pool): RouteDefinition[] {
+export function createItemRoutes(
+  service: GenericApplicationPort,
+  pool: Pool,
+  resolver: CollectionMetadataResolver,
+): RouteDefinition[] {
   const chokePoint = createChokePoint(pool);
 
   return [
@@ -106,25 +111,44 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
         const includePath = includes.includes("path");
         const includeLinks = includes.includes("links");
 
-        if (!includePath) {
-          const item = await dispatchGenericOperation(service, "item.get", restActor(ctx.identity.user.id), {
-            itemId: id,
-            include: includeLinks ? ["links"] : undefined,
-          });
-          return { status: 200, body: await toItemEnvelopeWithBlobs(pool, item) };
+        const params = requestUrl(ctx.req.url).searchParams;
+        let relations: Record<string, string[]> | undefined;
+        if (includes.includes("relations")) {
+          const entries = [...params].filter(([key]) => key.startsWith("relations."));
+          if (entries.length) {
+            relations = Object.fromEntries(
+              entries.map(([key, value]) => [key.slice("relations.".length), value === "" ? [] : value.split(",")]),
+            );
+          } else {
+            const existing = await chokePoint.findItem(id);
+            if (!existing) throw new NotFoundError(`Item ${id} not found`);
+            relations = Object.fromEntries(
+              (await chokePoint.listProperties(existing.databaseId))
+                .filter((p) => p.type === "relation")
+                .map((p) => [p.key, []]),
+            );
+          }
         }
-
-        // `getItemPath`'s chain already ends with `id` itself (or is empty if it doesn't exist),
-        // so deriving the item from it — rather than a separate lookup — keeps both reads inside
-        // `getItemPath`'s one transaction instead of two, which would otherwise let the item be
-        // deleted or changed in the gap between them.
-        const path = await chokePoint.getItemPath(id);
-        const item = path.at(-1);
-        if (!item) throw new NotFoundError(`Item ${id} not found`);
-        const detail = { ...toItemDetailEnvelope(item, path), ...(await toItemEnvelopeWithBlobs(pool, item)) };
-        if (!includeLinks) return { status: 200, body: detail };
-        const links = (await chokePoint.getValueLinksForItems([id])).get(id) ?? {};
-        return { status: 200, body: { ...detail, links } };
+        if (includePath) {
+          const path = await chokePoint.getItemPath(id, relations === undefined ? undefined : { relations, resolver });
+          const last = path.at(-1);
+          if (!last) throw new NotFoundError(`Item ${id} not found`);
+          const links = includeLinks ? ((await chokePoint.getValueLinksForItems([id])).get(id) ?? {}) : undefined;
+          return {
+            status: 200,
+            body: {
+              ...toItemDetailEnvelope(last, path),
+              ...(await toItemEnvelopeWithBlobs(pool, last)),
+              ...(links === undefined ? {} : { links }),
+            },
+          };
+        }
+        const item = await dispatchGenericOperation(service, "item.get", restActor(ctx.identity.user.id), {
+          itemId: id,
+          include: { links: includeLinks, ...(relations === undefined ? {} : { relations }) },
+        });
+        const envelope = await toItemEnvelopeWithBlobs(pool, item);
+        return { status: 200, body: envelope };
       },
     },
     {

@@ -7,6 +7,10 @@ import { Type, fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendi
 import { createAgentSessionFactoryForRun, mcpModelToolName, withUniqueNames } from "../agentSessionComposition.js";
 import { logger } from "../logger.js";
 
+const testMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
+
 function fakeTool(name: string, label: string): AgentTool {
   return {
     name,
@@ -47,6 +51,7 @@ const fixtures = vi.hoisted(() => ({
   grants: [] as McpToolGrantForProject[],
   operations: ["item.patch"] as string[],
   calls: [] as unknown[][],
+  resolverCalls: [] as unknown[],
   locale: null as string | null,
   guidance: null as string | null,
   mcpResult: null as (McpInvokeResult & { approvalRequestId?: string }) | null,
@@ -54,20 +59,27 @@ const fixtures = vi.hoisted(() => ({
 }));
 vi.mock("@semprec/data", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@semprec/data")>()),
+  createCollectionMetadataResolver: async () => testMetadataResolver,
   withClient: async (_pool: Pool, fn: (client: Client) => Promise<unknown>) => fn(new Client()),
   listMcpToolGrantsForProject: async () => fixtures.grants,
   getTenantUserLocale: async () => fixtures.locale,
 }));
 vi.mock("@semprec/agent-runtime", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@semprec/agent-runtime")>()),
-  listGrantedGenericOperationAgentTools: async () => fixtures.operations,
-  createGenericOperationAgentTools: () => ({
-    "item.patch": async () => ({ result: "patched", error: false }),
-    "item.delete": async (...call: unknown[]) => {
-      fixtures.calls.push(call);
-      return { result: "deferred", error: false, ...fixtures.structured };
-    },
-  }),
+  listGrantedGenericOperationAgentTools: async (...args: unknown[]) => {
+    fixtures.resolverCalls.push(args.at(-1));
+    return fixtures.operations;
+  },
+  createGenericOperationAgentTools: (...args: unknown[]) => {
+    fixtures.resolverCalls.push(args.at(-1));
+    return {
+      "item.patch": async () => ({ result: "patched", error: false }),
+      "item.delete": async (...call: unknown[]) => {
+        fixtures.calls.push(call);
+        return { result: "deferred", error: false, ...fixtures.structured };
+      },
+    };
+  },
   createApprovalGatedMcpInvokeTool: () => async () => fixtures.mcpResult ?? { result: "found", error: false },
   createProjectAgentGuidanceSystemPromptOverride: async () => (prompt: string) =>
     fixtures.guidance ? `${prompt}\n${fixtures.guidance}` : prompt,
@@ -152,6 +164,8 @@ it.each([true, false])(
       for await (const event of factory({ task: run.task }).messages()) {
         if (event.kind === "tool_use" || event.kind === "tool_result") events.push(event);
       }
+      expect(fixtures.resolverCalls.length).toBeGreaterThanOrEqual(2);
+      expect(fixtures.resolverCalls.every((resolver) => resolver === testMetadataResolver)).toBe(true);
       expect(names).toEqual([
         hasProject
           ? ["item_patch", mcpModelToolName("search", "first-server"), mcpModelToolName("search", "second-server")]

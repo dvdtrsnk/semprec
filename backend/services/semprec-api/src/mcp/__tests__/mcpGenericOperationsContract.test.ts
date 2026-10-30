@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import { createItemWithClient, getDatabaseByModuleId } from "@semprec/data";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -34,6 +35,10 @@ import {
   type GenericOperationName,
 } from "@semprec/shared";
 import { createMcpRequestListener } from "../mcpHandler.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 const PASSWORD = "s3cret-password";
 const ALL_CAPABILITIES: ReadonlySet<CapabilityId> = new Set(CAPABILITY_IDS);
@@ -368,7 +373,7 @@ describe("generic operation MCP contract (issue #220)", () => {
     chokePoint ??= createChokePoint(pool);
     await resetDatabase(pool);
     await seedSystem(pool, createViewTypeRegistry());
-    gateway = createGenericOperationGateway(pool);
+    gateway = createGenericOperationGateway(pool, testMetadataResolver);
     servers = [];
   });
 

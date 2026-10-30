@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +26,10 @@ import { createGenericOperationGateway, type GenericOperationGateway } from "@se
 import { CAPABILITY_IDS, currentTenantScope, type CapabilityId } from "@semprec/shared";
 import { createMcpRequestListener } from "../mcpHandler.js";
 import { SESSION_COOKIE_NAME } from "../../authHandler.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 const PASSWORD = "s3cret-password";
 const ALL_CAPABILITIES: ReadonlySet<CapabilityId> = new Set(CAPABILITY_IDS);
@@ -87,7 +92,7 @@ describe("createMcpRequestListener (issue #220)", () => {
     chokePoint ??= createChokePoint(pool);
     await resetDatabase(pool);
     await seedSystem(pool, createViewTypeRegistry());
-    gateway = createGenericOperationGateway(pool);
+    gateway = createGenericOperationGateway(pool, testMetadataResolver);
     servers = [];
   });
 

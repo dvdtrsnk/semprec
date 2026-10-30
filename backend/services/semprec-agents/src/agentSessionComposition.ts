@@ -1,3 +1,4 @@
+import { createCollectionMetadataResolver } from "@semprec/data";
 import type { Pool } from "pg";
 import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
@@ -126,8 +127,9 @@ async function createGenericOperationTools(
   moduleRegistry: ModuleRegistry,
   runId: string,
 ): Promise<ComposedAgentTool[]> {
-  const operations = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, runId);
-  const implementations = createGenericOperationAgentTools(pool, moduleRegistry);
+  const resolver = await createCollectionMetadataResolver(moduleRegistry);
+  const operations = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, runId, resolver);
+  const implementations = createGenericOperationAgentTools(pool, moduleRegistry, resolver);
   return operations.map((operation) => ({
     name: toModelToolName(operation),
     label: operation,

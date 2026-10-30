@@ -1,3 +1,4 @@
+import type { ExpandedRelationTarget } from "@semprec/shared";
 import type { Pool } from "pg";
 import { loadBlobMetadataForItems, withTransaction } from "@semprec/data";
 import type { ItemBlobMetadata, ItemRow, ItemValueLinks } from "@semprec/data";
@@ -10,6 +11,8 @@ import type { ItemBlobMetadata, ItemRow, ItemValueLinks } from "@semprec/data";
  * counter.
  */
 export interface ItemEnvelope {
+  relations?: Record<string, ExpandedRelationTarget[]>;
+  relationsTruncated?: string[];
   id: string;
   databaseId: string;
   properties: Record<string, unknown>;
@@ -27,8 +30,17 @@ export interface ItemEnvelope {
 }
 
 /** The one place an `ItemRow` (the choke-point's internal row shape) is projected onto the public envelope. */
-export function toItemEnvelope(item: ItemRow & { links?: ItemValueLinks }): ItemEnvelope {
+export function toItemEnvelope(
+  item: ItemRow & {
+    links?: ItemValueLinks;
+    relations?: Record<string, ExpandedRelationTarget[]>;
+    relationsTruncated?: string[];
+  },
+): ItemEnvelope {
   return {
+    ...(item.relations === undefined
+      ? {}
+      : { relations: item.relations, relationsTruncated: item.relationsTruncated ?? [] }),
     id: item.id,
     databaseId: item.databaseId,
     properties: item.properties,
@@ -59,7 +71,11 @@ export async function toItemEnvelopes(
 /** Single-item form of `toItemEnvelopes`. */
 export async function toItemEnvelopeWithBlobs(
   pool: Pool,
-  item: ItemRow & { links?: ItemValueLinks },
+  item: ItemRow & {
+    links?: ItemValueLinks;
+    relations?: Record<string, ExpandedRelationTarget[]>;
+    relationsTruncated?: string[];
+  },
 ): Promise<ItemEnvelope> {
   const [envelope] = await toItemEnvelopes(pool, [item]);
   if (envelope === undefined) throw new Error("toItemEnvelopes returned no envelope for one item");

@@ -225,10 +225,16 @@ export type ViewDeleteInput = z.infer<typeof ViewDeleteInputSchema>;
 const MAX_SORT_SPECS = 10;
 
 /** Opt-in extras on an item read (issue #1403); a read without `include` returns exactly what it did before. */
+export const RelationIncludeSchema = z
+  .record(z.string().min(1), z.array(z.string().min(1)).max(10))
+  .refine((relations) => Object.keys(relations).length <= 5, "At most five relation keys are allowed");
 const includeField = z
-  .array(z.enum(["links"]))
-  .max(1)
+  .union([
+    z.object({ links: z.boolean().optional(), relations: RelationIncludeSchema.optional() }).strict(),
+    z.array(z.enum(["links"])).max(1),
+  ])
   .optional();
+export type ItemReadInclude = z.infer<typeof includeField>;
 
 const queryFields = {
   include: includeField,

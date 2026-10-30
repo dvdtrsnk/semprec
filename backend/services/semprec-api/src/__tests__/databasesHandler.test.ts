@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -22,6 +23,10 @@ import {
 import { createGenericApplicationService } from "@semprec/application";
 import { createDispatcher } from "../app.js";
 import { createDatabaseRoutes } from "../databasesHandler.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 const PASSWORD = "s3cret-password";
 const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
@@ -394,7 +399,7 @@ describe("database routes (issue #240)", () => {
 
   it("registers exactly one property-catalog route handler", () => {
     expect(
-      createDatabaseRoutes(createGenericApplicationService(pool), moduleRegistry).filter(
+      createDatabaseRoutes(createGenericApplicationService(pool, testMetadataResolver), moduleRegistry).filter(
         (route) => route.method === "GET" && route.path === "/api/databases/:id/properties",
       ),
     ).toHaveLength(1);
@@ -493,7 +498,7 @@ describe("database routes (issue #240)", () => {
     });
 
     it("forbids a non-REST actor from sending properties, writes nothing, and still allows a bare create", async () => {
-      const service = createGenericApplicationService(pool);
+      const service = createGenericApplicationService(pool, testMetadataResolver);
       const agent = { userId: randomUUID(), runId: randomUUID(), agentProjectItemId: randomUUID() };
       const before = await footprint();
       await expect(

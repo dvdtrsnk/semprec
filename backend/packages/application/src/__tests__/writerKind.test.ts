@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import {
@@ -22,6 +23,10 @@ import {
 import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
 import { createGenericOperationGateway } from "../genericOperationGateway.js";
 import { writerIdentityOf } from "../genericApplicationService.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -98,7 +103,7 @@ describe("writer identity derived from the authenticated actor (issue #1415)", (
   it("item.patch and item.create reach the hooks as user for a REST session", async () => {
     await inTenantZero(async () => {
       const { a, itemA } = await fixture();
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId, restSession: true };
       createdBy.length = 0;
       updatedBy.length = 0;
@@ -118,7 +123,7 @@ describe("writer identity derived from the authenticated actor (issue #1415)", (
   it("item.patch and item.create reach the hooks as an agent without run ids, bound to the session's user, for /mcp on a human session", async () => {
     await inTenantZero(async () => {
       const { a, itemA } = await fixture();
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId };
       createdBy.length = 0;
       updatedBy.length = 0;
@@ -141,7 +146,7 @@ describe("writer identity derived from the authenticated actor (issue #1415)", (
   it("item.create on the Journal is refused with 403 for a REST session, a human /mcp session and an agent run, and stores no entry", async () => {
     await inTenantZero(async () => {
       await fixture();
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const journal = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "journal"));
       const projectItemId = await agentProjectItemId();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "journal" });
@@ -169,7 +174,7 @@ describe("writer identity derived from the authenticated actor (issue #1415)", (
   it("item.patch reaches the hooks as an agent with run id, project item and onBehalfOfUserId for an agent run", async () => {
     await inTenantZero(async () => {
       const { itemA } = await fixture();
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const projectItemId = await agentProjectItemId();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "patch" });
       const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
@@ -195,7 +200,7 @@ describe("writer identity derived from the authenticated actor (issue #1415)", (
   it("relation.put by an agent run reaches the edge write hook with agent and the run id", async () => {
     await inTenantZero(async () => {
       const { itemA, itemB, relationPropertyId } = await fixture();
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const projectItemId = await agentProjectItemId();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "link" });
       const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
@@ -221,7 +226,7 @@ describe("writer identity derived from the authenticated actor (issue #1415)", (
   it("relation.put by a REST session and by a human /mcp session reach the edge write hook as user and as agent", async () => {
     await inTenantZero(async () => {
       const { itemA, itemB, relationPropertyId } = await fixture();
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const input = { relationPropertyId, callerItemId: itemA.id, targetItemId: itemB.id };
       edgesBy.length = 0;
 

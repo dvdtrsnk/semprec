@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import { createItemWithClient, getDatabaseByModuleId } from "@semprec/data";
 import { z } from "zod";
 import { createServer, type IncomingMessage, type Server } from "node:http";
@@ -33,6 +34,10 @@ import {
 import { createGenericApplicationService } from "@semprec/application";
 import { createDispatcher } from "../app.js";
 import { createItemRoutes } from "../itemsHandler.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 const PASSWORD = "s3cret-password";
 const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
@@ -1504,13 +1509,13 @@ describe("item routes (issue #241)", () => {
       const item = await chokePoint.createItem({ databaseId: source.id, properties: {} });
       const lookups: unknown[] = [];
       const service = {
-        ...createGenericApplicationService(pool),
+        ...createGenericApplicationService(pool, testMetadataResolver),
         async getPropertyByKey(_actor: unknown, input: unknown) {
           lookups.push(input);
           return [property, { ...property, id: randomUUID() }];
         },
       };
-      const route = createItemRoutes(service, pool).find((candidate) =>
+      const route = createItemRoutes(service, pool, testMetadataResolver).find((candidate) =>
         method === "GET"
           ? candidate.method === "GET" && candidate.path === "/api/items/:id/relations"
           : candidate.method === method && candidate.path.includes("/relations/"),

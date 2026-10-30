@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import {
@@ -25,6 +26,10 @@ import {
 } from "@semprec/data";
 import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
 import { createGenericOperationGateway, replayApprovedGenericOperation } from "../genericOperationGateway.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 // The approved-operation executor calls these two data-layer functions by name; wrapping them
 // (still running the real implementation) records the writer it passes.
@@ -58,7 +63,7 @@ async function makeAgentActor(): Promise<AuthenticatedActor> {
 async function approve(operation: "item.delete" | "relation.delete", actor: AuthenticatedActor, input: unknown) {
   let requestId = "";
   try {
-    await createGenericOperationGateway(pool).invoke(operation, actor, ALL_CAPABILITIES, input);
+    await createGenericOperationGateway(pool, testMetadataResolver).invoke(operation, actor, ALL_CAPABILITIES, input);
     expect.unreachable("expected ApprovalRequiredError");
   } catch (err) {
     requestId = (err as ApprovalRequiredError).details.approvalRequestId;
