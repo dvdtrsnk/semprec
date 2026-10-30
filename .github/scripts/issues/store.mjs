@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { link, lstat, mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
 import { resolve, dirname, basename } from "node:path";
@@ -130,22 +128,21 @@ export function reopenIssue(issue, now = new Date().toISOString()) {
   return issue;
 }
 
-/** A reviewed branch carries completion; it becomes authoritative only when merged. */
-export async function completeIssue(root, id, expectedSha256, { handover, commit, pullRequests = [], at = new Date().toISOString() }) {
+/** Closing is recorded on the implementation branch and becomes canonical when its pull request merges. */
+export async function completeIssue(root, id, expectedSha256, { handover, pullRequest, commit, at = new Date().toISOString() }) {
   identifier(id);
   if (typeof handover !== "string" || !handover.trim() || Buffer.byteLength(handover) > 1_000_000) throw new Error("A bounded nonempty handover is required");
+  if (!Number.isSafeInteger(pullRequest) || pullRequest < 1) throw new Error("A pull request number is required");
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error("Implementation commit SHA is required");
-  if (!Array.isArray(pullRequests) || pullRequests.length > 100 || pullRequests.some(number => !Number.isSafeInteger(number) || number < 1)) throw new Error("Invalid completion PR references");
-  await promisify(execFile)("git", ["merge-base", "--is-ancestor", commit, "HEAD"], { cwd: root, timeout: 30000, maxBuffer: 10000 });
-  // Orphan handovers cannot unblock an open issue if the guarded mutation fails.
+  // The handover is written first so a failed guarded mutation cannot leave a closed issue without one.
   await writeImportedFile(resolve(root, `issues/handovers/${id}.md`), handover);
   return mutateIssue(root, id, expectedSha256, issue => {
     if (issue.metadata.state !== "open" || issue.metadata.kind !== "implementation" || issue.metadata.approval?.specSha256 !== specDigest(issue))
       throw new Error("Completion requires the current approved open specification");
     issue.metadata.state = "closed"; issue.metadata.stateReason = "completed";
     issue.metadata.closedAt = at; issue.metadata.updatedAt = at;
-    issue.metadata.labels = issue.metadata.labels.filter(label => !["agent:ready", "agent:blocked", "agent:needs-human-action", "relay:needs-human-action"].includes(label));
-    issue.metadata.resolution = { pullRequests, commit, at };
+    issue.metadata.labels = issue.metadata.labels.filter(label => !["agent:ready", "agent:blocked", "agent:needs-human-action"].includes(label));
+    issue.metadata.resolution = { pullRequests: [pullRequest], commit, at };
     return issue;
   });
 }

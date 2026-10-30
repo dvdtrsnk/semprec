@@ -33,14 +33,6 @@ the `ci` triggers on both branches, the `promotion-source` check, and this docum
 | `code-review`       | the code-review bot's own Check Run (`GH_CHECK_NAME` in `code-review.yml`) — the review verdict                                                                                                                             | `develop`, `main` |
 | `promotion-source`  | `.github/workflows/ci.yml`, job `promotion-source` — fails a pull request into `main` whose head is not this repository's `develop`                                                                                         | `main`            |
 
-`protected-paths` (`.github/workflows/protected-paths.yml`) reports on every pull request
-but is not a required context.
-
-Relay's `merge-pull-request` workflow waits for these same contexts before it merges
-(`names:` of its `wait-checks` step in `.relay/workflows/merge-pull-request.md`). Adding a
-required context without adding it there makes Relay attempt the merge while that check is
-still running, and GitHub refuses it.
-
 The required jobs in `ci.yml` run on every pull-request update and on every push to
 `develop` and `main`, so every commit on either branch carries its required results.
 
@@ -60,42 +52,4 @@ Swift simulator tests and XCUITest execution report NOT RUN. Apple UI tests stil
 A failure uploads `mobile/build/verify/`. A `mobile-changes` job compares the pull request
 with its merge base, or a push with its `before` commit; an initial push compares with
 an empty tree. Without a mobile change the two build jobs are skipped. These jobs are
-not added to branch protection, Relay's `wait-checks` or the release command's required
-checks.
-
-## Why there is no separate "is this head up to date" check
-
-With `implement-issue` and `merge-pull-request` both running with more than one
-worker at a time (docs/adr/2026-09-24-issue-batches-as-dependency-dags.md), two pull
-requests can legitimately race to merge into the same base branch. That race needs no
-extra CI job: branch protection's `strict` mode already refuses to merge a head that
-is not up to date with the base, and `merge-pull-request`'s own steps
-(`rebase` → `resolve-conflicts` → `verify`/`verify-web` → `rebased-check`'s
-`git merge-base --is-ancestor origin/{{baseBranch}} HEAD` → `push` with
-`force-with-lease`) already rebase onto the latest base, re-verify, and confirm the
-result is an ancestor-clean fast-forward before ever attempting the merge. A losing
-pull request in the race simply gets rebased and re-reviewed on its next
-`merge-pull-request` run; adding a redundant "is this branch current" job would only
-duplicate a guarantee GitHub and this workflow already enforce.
-
-## Owner-controlled review pause
-
-The owner has temporarily paused automated code review in
-[`.relay/review-policy.json`](../../.relay/review-policy.json) because provider quota
-is exhausted. `review` and `code-review` stay required. Actions completes `review`
-and publishes an explicitly labelled **neutral** `code-review` result; this is a
-waiver, not a successful bot verdict. Builds, tests and conversation resolution are
-still enforced. Manual merges require a local review.
-
-Relay reads the same policy: implementation skips pre-review and continues to
-verification; the review workflow reads base policy and publishes a neutral check
-before its existing `review:passed` routing label. That label denotes the waiver
-while paused. Captured runs keep their existing workflow graph.
-
-To restore: set `enabled` to `true` and update `reason` in the policy, then commit,
-verify and merge. New runs invoke the original bot path. Update open PR branches onto the restored base (including its enabled policy), then
-refresh review checks with a push or a Code Review dispatch. Actions reads the PR
-head policy, so dispatching an old branch that still has enabled=false keeps the
-pause. A previous neutral result is not a new review. Missing or malformed policy fails closed. No branch-protection edits or
-provider-account changes are needed. See
-[decision](../adr/2026-10-26-owner-controlled-review-bot-pause.md).
+not added to branch protection or the release command's required checks.

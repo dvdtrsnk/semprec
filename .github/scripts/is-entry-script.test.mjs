@@ -7,11 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 
 const scripts = [
-  ["backfill-model-tiers.mjs", /Use --manifest/],
-  ["review-followups/harvest.mjs", /HARVEST_MIN_PR must be a positive integer/],
-  ["review-followups/prepare.mjs", /usage: node prepare.mjs/],
-  ["review-followups/validate.mjs", /missing argument --input/],
-  ["review-followups/publish.mjs", /usage: node publish.mjs/],
+  ["issues.mjs", /Usage: node \.github\/scripts\/issues\.mjs/],
 ];
 
 function scratch(t) {

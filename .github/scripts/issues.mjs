@@ -52,8 +52,8 @@ export async function main(args = process.argv.slice(2), root = process.cwd(), o
     return;
   }
   if (command === "complete") {
-    if (rest.length < 4 || rest.length > 5) throw new Error("complete <id> <expected-file-sha256> <handover.md> <implementation-commit> [pr-number]");
-    await completeIssue(root, id, rest[1], { handover: await readBounded(resolve(root, rest[2])), commit: rest[3], pullRequests: rest[4] ? [Number(rest[4])] : [] });
+    if (rest.length !== 5) throw new Error("complete <id> <expected-file-sha256> <handover.md> <pull-request> <implementation-commit>");
+    await completeIssue(root, id, rest[1], { handover: await readBounded(resolve(root, rest[2])), pullRequest: Number(rest[3]), commit: rest[4] });
     output(id); return;
   }
   if (rest.length !== (command === "approve" ? 3 : 2)) throw new Error(`${command} <id> <expected-file-sha256>${command === "approve" ? " <actor>" : ""}`);

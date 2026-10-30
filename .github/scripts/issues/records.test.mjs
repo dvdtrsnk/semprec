@@ -39,9 +39,9 @@ test("metadata rejects missing fields, bad dates, foreign source and contradicto
     const value = issue(); change(value.metadata); assert.throws(() => validateMetadata(value.metadata));
   }
 });
-test("implementation specification requires ordered unique sections, scope and canonical model metadata", () => {
+test("implementation specification requires ordered unique sections and scope", () => {
   assert.doesNotThrow(() => validateSpecification(issue()));
-  for (const text of [body.replace("## Task", "## Tasks"), body.replace("### Out of scope", "### Later"), body.replace("**Model tier:** medium", "**Model tier:** unknown"), body.replace("## Task", "## Context\n## Task"), body.replace("**Blocked by:** none", "Blocked later"), body.replace("## Context", "## Task").replace("## Task\nImplement", "## Context\nImplement")]) {
+  for (const text of [body.replace("## Task", "## Tasks"), body.replace("### Out of scope", "### Later"), body.replace("## Task", "## Context\n## Task"), body.replace("**Blocked by:** none", "Blocked later"), body.replace("## Context", "## Task").replace("## Task\nImplement", "## Context\nImplement")]) {
     const value = issue(); value.body = text; assert.throws(() => validateSpecification(value));
   }
 });
@@ -198,19 +198,6 @@ test("CLI creates unqueued epics with parent relationships and rejects invalid o
   for (const args of [["--kind", "unknown"], ["--unknown", "x"], ["--kind", "epic", "--kind", "epic"], ["--parent", "../bad"]])
     await assert.rejects(main(["create", "Invalid", "epic.md", ...args], root, output));
   assert.equal((await loadCatalog(root)).size, 2);
-});
-
-test("existing model-tier CLI validates raw bodies and repository envelopes", async t => {
-  const root = await fixture(t); const value = issue();
-  const rawPath = join(root, "body.md"); const wrappedPath = join(root, "record.md");
-  await writeFile(rawPath, body); await writeFile(wrappedPath, serializeRecord(value));
-  const cli = fileURLToPath(new URL("../validate-issue-model-tier.mjs", import.meta.url));
-  const result = spawnSync(process.execPath, [cli, rawPath, wrappedPath], { encoding: "utf8" });
-  assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout.match(/: medium/g)?.length, 2);
-  value.body = value.body.replace("**Model tier:** medium", "**Model tier:** invalid");
-  await writeFile(wrappedPath, serializeRecord(value));
-  const invalid = spawnSync(process.execPath, [cli, wrappedPath], { encoding: "utf8" });
-  assert.equal(invalid.status, 1); assert.match(invalid.stderr, /model tier/);
 });
 
 test("checked-in JSON schema covers exactly the serialized metadata fields", async () => {

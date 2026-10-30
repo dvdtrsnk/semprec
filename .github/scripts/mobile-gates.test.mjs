@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const workflowNames = ["implement-issue", "fix-review-findings", "merge-pull-request", "recover-blocked-issue"];
 const ci = readFileSync(new URL("../workflows/ci.yml", import.meta.url), "utf8");
 const detection = ci.match(/      - name: Detect mobile changes[\s\S]*?        run: \|\n((?:          .*\n)+)/)?.[1];
 assert.ok(detection, "CI change detector must exist");
@@ -95,52 +94,3 @@ test("CI skips non-mobile pushes and fails closed on invalid revisions", (t) => 
   assert.notEqual(result.status, 0);
   assert.equal(result.output, "");
 });
-
-for (const name of workflowNames) {
-  const text = readFileSync(new URL(`../../.relay/workflows/${name}.md`, import.meta.url), "utf8");
-  const step = text.match(/  - id: verify-mobile\n[\s\S]*?    run: \|\n((?:      .*\n)+)    on-failure: \{ goto: ([\w-]+), max-rounds: (\d+) \}/);
-  assert.ok(step, `${name} needs verify-mobile`);
-  const script = step[1].replace(/^      /gm, "");
-  test(`${name}: ordering, repair route and mobile instructions`, () => {
-    assert.ok(text.indexOf("id: verify-web") < text.indexOf("id: verify-mobile"));
-    const preceding = text.slice(0, text.indexOf("  - id: verify-mobile")).trimEnd();
-    assert.match(preceding, /id: verify-web[\s\S]*on-failure: \{ goto: [\w-]+, max-rounds: 3 \}[^\n]*$/);
-    assert.equal(step[2], name === "fix-review-findings" ? "fix-verify" : "fix");
-    assert.equal(step[3], "3");
-    assert.match(text, /mobile\/build\/verify\/<run>\//);
-    assert.match(text, /timeout-minutes: 120/);
-  });
-  test(`${name}: no mobile change skips the build`, (t) => {
-    const f = fixture(t);
-    f.commit("backend/file.ts");
-    const result = run(script, f);
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /No mobile\/ change found/);
-  });
-  test(`${name}: fresh remote comparison detects a mobile branch with stale local develop and propagates build failure`, (t) => {
-    const f = fixture(t);
-    const remoteHead = f.commit("backend/remote.ts");
-    f.git("push", "origin", "HEAD:develop");
-    f.git("checkout", "-b", "feature");
-    f.git("branch", "-f", "develop", f.base);
-    f.git("update-ref", "refs/remotes/origin/develop", f.base);
-    f.commit("mobile/source.kt");
-    mkdirSync(join(f.cwd, "mobile/scripts"), { recursive: true });
-    const verify = join(f.cwd, "mobile/scripts/verify");
-    writeFileSync(verify, '#!/bin/sh\nprintf "%s\\n" "$*"\nexit 23\n', { mode: 0o755 });
-    const result = run(script, f);
-    assert.equal(result.status, 23, result.stderr);
-    assert.match(result.stdout, /architecture shared android apple/);
-    assert.equal(f.git("rev-parse", "origin/develop"), remoteHead);
-    assert.equal(f.git("rev-parse", "develop"), f.base);
-    writeFileSync(verify, '#!/bin/sh\nprintf "%s\\n" "$*"\n', { mode: 0o755 });
-    assert.equal(run(script, f).status, 0, "a repaired build must be re-run successfully");
-  });
-  test(`${name}: failed fetch does not become a skipped build`, (t) => {
-    const f = fixture(t);
-    f.git("remote", "set-url", "origin", join(f.root, "missing.git"));
-    const result = run(script, f);
-    assert.notEqual(result.status, 0);
-    assert.doesNotMatch(result.stdout, /No mobile\/ change found/);
-  });
-}

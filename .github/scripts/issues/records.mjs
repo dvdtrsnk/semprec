@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
-import { validateIssueModelMetadata } from "../model-tier.mjs";
 
 export const ID_PATTERN = /^(?:gh-[1-9]\d*|sp-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
 export const BODY_LIMIT = 1_000_000;
@@ -197,8 +196,6 @@ export function blockers(issue) {
 
 export function validateSpecification(issue) {
   if (issue.metadata.kind !== "implementation") return;
-  const tier = validateIssueModelMetadata(issue.body);
-  if (!tier.ok) throw new Error(`Model tier: ${tier.error}`);
   const sections = ["Context", "Task", "Touches", "Scope", "Acceptance criteria"];
   let previous = -1;
   for (const section of sections) {
