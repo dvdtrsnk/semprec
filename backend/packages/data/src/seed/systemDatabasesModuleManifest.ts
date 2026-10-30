@@ -1,3 +1,4 @@
+import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./libraryModuleKeys.js";
 import type { ModuleManifest } from "@semprec/module-registry";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
 import {
@@ -47,6 +48,21 @@ export const manifest: ModuleManifest = {
   databases: [
     {
       key: AREAS_MODULE_ID,
+      relatedOrder: {
+        order: [
+          PROJECTS_MODULE_ID,
+          TASKS_MODULE_ID,
+          EVENTS_MODULE_ID,
+          FILES_MODULE_ID,
+          "threads",
+          HEALTH_RECORDS_MODULE_ID,
+          COMPANIES_MODULE_ID,
+          PEOPLE_MODULE_ID,
+          BOOKS_MODULE_ID,
+          MOVIES_MODULE_ID,
+        ],
+        omit: [JOURNAL_MODULE_ID],
+      },
       name: "Areas",
       searchFields: ["name", "note"],
       icon: "compass",
@@ -57,6 +73,19 @@ export const manifest: ModuleManifest = {
     },
     {
       key: PROJECTS_MODULE_ID,
+      relatedOrder: {
+        order: [
+          PROJECTS_MODULE_ID,
+          EVENTS_MODULE_ID,
+          FILES_MODULE_ID,
+          "threads",
+          TRANSCRIPTS_MODULE_ID,
+          COMPANIES_MODULE_ID,
+          PEOPLE_MODULE_ID,
+          JOURNAL_MODULE_ID,
+        ],
+        omit: [TASKS_MODULE_ID],
+      },
       name: "Projects",
       searchFields: ["name", "status", "agents", "area", "company"],
       icon: "folder",
@@ -75,6 +104,19 @@ export const manifest: ModuleManifest = {
     },
     {
       key: PEOPLE_MODULE_ID,
+      relatedOrder: {
+        order: [
+          PROJECTS_MODULE_ID,
+          TASKS_MODULE_ID,
+          EVENTS_MODULE_ID,
+          FILES_MODULE_ID,
+          "threads",
+          TRANSCRIPTS_MODULE_ID,
+          COMPANIES_MODULE_ID,
+          PEOPLE_MODULE_ID,
+          JOURNAL_MODULE_ID,
+        ],
+      },
       name: "People",
       searchFields: ["name", "relationship", "contact", "emails", "companies"],
       icon: "person",

@@ -5,6 +5,7 @@ import {
   type EditorSchemaDescriptor,
   type ModuleLinkRuleDescriptor,
   type ModuleManifest,
+  type ModuleRelatedOrderDescriptor,
   type ModuleTaskAffinity,
 } from "./manifest.js";
 
@@ -25,6 +26,7 @@ export interface ModuleDatabaseProjection {
   name: string;
   defaultViewType?: string;
   searchFields?: string[];
+  relatedOrder?: ModuleRelatedOrderDescriptor;
   icon?: string;
   color?: string;
   overviewOrder?: number | null;
@@ -505,6 +507,7 @@ export class ModuleRegistry {
         name: db.name,
         ...(db.defaultViewType !== undefined ? { defaultViewType: db.defaultViewType } : {}),
         ...(db.searchFields !== undefined ? { searchFields: [...db.searchFields] } : {}),
+        ...(db.relatedOrder !== undefined ? { relatedOrder: structuredClone(db.relatedOrder) } : {}),
         ...(db.icon !== undefined ? { icon: db.icon } : {}),
         ...(db.color !== undefined ? { color: db.color } : {}),
         ...(db.overviewOrder !== undefined ? { overviewOrder: db.overviewOrder } : {}),
@@ -512,6 +515,18 @@ export class ModuleRegistry {
         ...(db.clientVisible !== undefined ? { clientVisible: db.clientVisible } : {}),
       })),
     );
+  }
+
+  /** Declared related order of an active database, retaining only known, active database keys. */
+  async getRelatedOrder(databaseKey: string): Promise<Required<ModuleRelatedOrderDescriptor> | undefined> {
+    const databases = await this.getDatabases();
+    const declared = databases.find((db) => db.key === databaseKey)?.relatedOrder;
+    if (declared === undefined) return undefined;
+    const activeKeys = new Set(databases.map((db) => db.key));
+    return {
+      order: declared.order.filter((key) => activeKeys.has(key)),
+      omit: (declared.omit ?? []).filter((key) => activeKeys.has(key)),
+    };
   }
 
   /** Link rules of active modules, in load order then manifest order. */

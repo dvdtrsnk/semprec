@@ -2,6 +2,7 @@ export { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalog, type Modul
 export type {
   ModuleManifest,
   ModuleDatabaseDescriptor,
+  ModuleRelatedOrderDescriptor,
   ModuleAgentToolDescriptor,
   ModuleTaskDescriptor,
   ModuleTaskAffinity,
