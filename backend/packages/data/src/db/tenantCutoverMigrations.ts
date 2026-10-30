@@ -1,3 +1,4 @@
+import { runSelfPersonCutoverMigration } from "../tenancy/selfPersonCutoverMigration.js";
 import { runTranscriptionLanguageCodeCutoverMigration } from "../transcription/transcriptionLanguageCodeCutoverMigration.js";
 import { runTranscriptDurationBackfillCutoverMigration } from "../transcription/transcriptDurationBackfillCutoverMigration.js";
 import { runPropertyDefaultsCutoverMigration } from "../seed/propertyDefaultsCutoverMigration.js";
@@ -38,5 +39,6 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runMailboxAddressesOwnerCutoverMigration(pool);
     await runEmailsSenderPeopleCardinalityCutoverMigration(pool);
     await runMailDraftsAndSentReadBackfill(pool);
+    await runSelfPersonCutoverMigration(pool);
   });
 }

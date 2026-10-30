@@ -155,6 +155,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     tenancy: "account",
   },
   {
+    name: "set self person",
+    method: "PUT",
+    path: "/api/auth/self-person",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "current session",
     method: "GET",
     path: "/api/auth/session",
