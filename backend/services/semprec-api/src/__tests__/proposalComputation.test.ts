@@ -207,6 +207,37 @@ describe("createProposalComputation (issue #1434)", () => {
     expect(await proposalCards()).toHaveLength(0);
   });
 
+  it("recognizes and proposes in one gateway call and filters invalid candidates", async () => {
+    const itemId = await createTaskItem("Buy milk");
+    const item = await withTransaction(pool, (client) => getItemById(client, config.inboxDatabaseId, itemId));
+    if (!item) throw new Error("Missing item");
+    const gateway = stubGateway({
+      properties: { name: "Task" },
+      candidates: [
+        { typeId: "unknown", confidence: 1 },
+        { typeId: "active", confidence: 0.9 },
+        { targetDatabaseKey: "invalid", confidence: 1 },
+      ],
+    });
+    const compute = createProposalComputation({ pool, gateway });
+    const result = await compute({
+      sourceItem: item,
+      type: null,
+      entityKind: "pageContent",
+      recognition: true,
+      activeTypes: [
+        { id: "active", label: "Task", emoji: "T", processingMethod: "database", targetDatabaseKey: "tasks" },
+      ],
+      locale: "en",
+      projectItemId: semprecProjectId,
+    });
+    expect(result.candidates).toEqual([{ typeId: "active", confidence: 0.9 }]);
+    expect(gateway.calls).toHaveLength(1);
+    expect(gateway.calls[0]?.system).toContain("Recognize the untyped item");
+    expect(JSON.stringify(gateway.calls[0]?.messages)).toContain("active");
+    expect(gateway.openTransactionsDuringCall).toEqual([0]);
+  });
+
   it("issues no write statement and calls the gateway with no transaction open", async () => {
     const itemId = await createTaskItem("Buy milk");
     const statements: string[] = [];

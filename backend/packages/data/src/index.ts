@@ -601,3 +601,5 @@ export {
 } from "./tenancy/tenantExportsStore.js";
 
 export { registerItemReadProjection, projectItemForRead, type ItemReadProjection } from "./chokePoint/hooks.js";
+
+export { filterRecognitionCandidates, RECOGNITION_TARGETS } from "./inbox/inboxRecognition.js";

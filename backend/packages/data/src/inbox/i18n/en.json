@@ -5,7 +5,6 @@
   "property.inbox.text.name": "Text",
   "property.inbox.type.name": "Type",
   "property.inbox.journalDay.name": "Journal day",
-
   "database.inboxItemTypes.name": "Inbox item types",
   "property.inboxItemTypes.name.name": "Name",
   "property.inboxItemTypes.emoji.name": "Emoji",
@@ -26,7 +25,6 @@
   "property.inboxItemTypes.targetDatabase.option.companies": "Companies",
   "property.inboxItemTypes.targetDatabase.option.transcripts": "Transcripts",
   "property.inboxItemTypes.targetDatabase.option.journal": "Journal",
-
   "database.processingProposals.name": "Processing proposals",
   "property.processingProposals.kind.name": "Kind",
   "property.processingProposals.kind.option.inbox": "Inbox",
@@ -61,9 +59,7 @@
   "invalidReason.sourceDeleted": "The source Inbox item “{label}” was deleted, so this proposal can no longer be completed.",
   "invalidReason.targetArchived": "The target “{label}” was archived, so this proposal has nowhere to go. Choose another target or ask Semp to recompute.",
   "invalidReason.targetDeleted": "The target “{label}” was deleted, so this proposal has nowhere to go. Choose another target or ask Semp to recompute.",
-
   "viewType.journal-inbox.name": "Journal inbox",
-
   "editor.mcp.name.label": "Name",
   "editor.mcp.name.placeholder": "Server name",
   "editor.mcp.transport.label": "Transport",
@@ -73,5 +69,7 @@
   "editor.mcp.command.placeholder": "npx -y @example/server",
   "editor.mcp.credential.label": "Credential",
   "editor.mcp.credential.placeholder": "API key or token",
-  "editor.mcp.mcpProjects.label": "Projects"
+  "editor.mcp.mcpProjects.label": "Projects",
+  "inbox.recognition.chooseType": "Choose an item type.",
+  "inbox.recognition.typeShortage": "Fewer than two valid active types are available."
 }

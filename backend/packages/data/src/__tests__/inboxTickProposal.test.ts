@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { createHash } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool, type PoolClient } from "pg";
@@ -166,6 +167,243 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       properties: { name: "Buy milk" },
     });
     expect(Object.keys(proposal!.properties.proposal as object).sort()).toEqual(["entityKind", "properties", "target"]);
+  });
+
+  describe("untyped recognition", () => {
+    async function fixture() {
+      const type = await withTransaction(pool, (client) =>
+        createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name: "Recognized task",
+          emoji: "T",
+          processingMethod: "database",
+          targetDatabase: "tasks",
+        }),
+      );
+      const item = await withTransaction(pool, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: inboxId,
+          date: "2026-08-28",
+          time: "09:00",
+          text: "Buy milk",
+        }),
+      );
+      return { type, item };
+    }
+    it.each(["type", "direct"])(
+      "recognizes a %s candidate without writing the source type and reuses the fingerprint",
+      async (kind) => {
+        const { type, item } = await fixture();
+        let calls = 0;
+        const compute: ComputeSemprecProposalFn = async (input) => {
+          calls++;
+          expect(input.recognition).toBe(true);
+          return {
+            properties: { name: "Buy milk" },
+            candidates: [
+              kind === "type" ? { typeId: type.id, confidence: 0.9 } : { targetDatabaseKey: "tasks", confidence: 0.9 },
+            ],
+          };
+        };
+        await runTick(pool, databaseIds, item.id, compute);
+        const card = await findProposalForItem(pool, proposalsId, item.id);
+        expect(card?.properties).toMatchObject({
+          status: "proposed",
+          recognizedTypeId: kind === "type" ? type.id : null,
+          typeCandidates: [],
+          fingerprint: fingerprintV2Of({ typeId: "", text: "Buy milk" }),
+        });
+        await withTransaction(pool, (client) =>
+          updateItemWithClient(client, {
+            databaseId: inboxId,
+            itemId: item.id,
+            propertiesPatch: { date: "2026-08-28" },
+          }),
+        );
+        await runTick(pool, databaseIds, item.id, compute);
+        expect(calls).toBe(1);
+        expect(await findProposalForItem(pool, proposalsId, item.id)).toEqual(card);
+        const property = await withTransaction(pool, (client) =>
+          propertiesStore.getPropertyByKey(client, inboxId, "type"),
+        );
+        if (!property) throw new Error("Missing type property");
+        const definition = await withTransaction(pool, (client) =>
+          relationsStore.getRelationDefinitionByPropertyId(client, property.id),
+        );
+        if (!definition) throw new Error("Missing type definition");
+        expect(
+          await withTransaction(pool, (client) => relationsStore.listRelationsForItem(client, definition.id, item.id)),
+        ).toEqual([]);
+      },
+    );
+    it.each(["type", "direct"])("reruns %s recognition after text changes", async (kind) => {
+      const { type, item } = await fixture();
+      let calls = 0;
+      const compute: ComputeSemprecProposalFn = async () => {
+        calls++;
+        return {
+          properties: { name: "Task" },
+          candidates: [
+            kind === "type" ? { typeId: type.id, confidence: 0.7 } : { targetDatabaseKey: "tasks", confidence: 0.7 },
+          ],
+        };
+      };
+      await runTick(pool, databaseIds, item.id, compute);
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(client, { databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "Buy eggs" } }),
+      );
+      await runTick(pool, databaseIds, item.id, compute);
+      expect(calls).toBe(2);
+    });
+    it("offers padded distinct candidates and the model reason below threshold", async () => {
+      const { type, item } = await fixture();
+      await runTick(pool, databaseIds, item.id, async () => ({
+        properties: {},
+        reason: "Choose a type",
+        candidates: [
+          { typeId: type.id, confidence: 0.5 },
+          { typeId: "unknown", confidence: 1 },
+        ],
+      }));
+      const card = await findProposalForItem(pool, proposalsId, item.id);
+      expect(card?.properties).toMatchObject({ status: "needsClarification", recognizedTypeId: null, proposal: null });
+      const choices = z.array(z.object({ typeId: z.string() })).parse(card?.properties.typeCandidates);
+      expect(choices.length).toBeGreaterThanOrEqual(2);
+      expect(choices.length).toBeLessThanOrEqual(4);
+      expect(new Set(choices.map((choice) => choice.typeId)).size).toBe(choices.length);
+      expect(choices.map((choice) => choice.typeId)).not.toContain("unknown");
+    });
+    it("discards recognition when text changes during the call", async () => {
+      const { type, item } = await fixture();
+      await runTick(pool, databaseIds, item.id, async () => {
+        await withTransaction(pool, (client) =>
+          updateItemWithClient(client, { databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "Changed" } }),
+        );
+        return { properties: { name: "Stale" }, candidates: [{ typeId: type.id, confidence: 0.9 }] };
+      });
+      expect(await findProposalForItem(pool, proposalsId, item.id)).toBeNull();
+    });
+    it.each(["date", "time", "attachment"])("reruns recognition after a %s change", async (field) => {
+      const { type, item } = await fixture();
+      let calls = 0;
+      const compute: ComputeSemprecProposalFn = async () => {
+        calls++;
+        return { properties: { name: "Task" }, candidates: [{ typeId: type.id, confidence: 0.9 }] };
+      };
+      await runTick(pool, databaseIds, item.id, compute);
+      if (field === "attachment") {
+        const blob = await createBlob(pool, {
+          mimeType: "image/png",
+          byteSize: 1,
+          storageKey: "recognition-attachment",
+          contentHash: "a".repeat(64),
+        });
+        await insertInboxAttachments(pool, item.id, [{ blobId: blob.id, source: "camera" }]);
+      } else
+        await withTransaction(pool, (client) =>
+          updateItemWithClient(client, {
+            databaseId: inboxId,
+            itemId: item.id,
+            propertiesPatch: field === "date" ? { date: "2026-08-29" } : { time: "10:00" },
+          }),
+        );
+      await runTick(pool, databaseIds, item.id, compute);
+      expect(calls).toBe(2);
+    });
+    it("keeps legacy v1 compatibility for an untyped source", async () => {
+      const { type, item } = await fixture();
+      await runTick(pool, databaseIds, item.id, async () => ({
+        properties: { name: "Task" },
+        candidates: [{ typeId: type.id, confidence: 0.9 }],
+      }));
+      const card = await findProposalForItem(pool, proposalsId, item.id);
+      if (!card) throw new Error("Missing card");
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          {
+            databaseId: proposalsId,
+            itemId: card.id,
+            propertiesPatch: { fingerprint: legacyFingerprintOf("", "Buy milk") },
+          },
+          { allowedSystemKeys: ["fingerprint"] },
+        ),
+      );
+      await runTick(pool, databaseIds, item.id, async () => {
+        throw new Error("Unchanged legacy source must not compute");
+      });
+    });
+    it("discards recognition after a source type-edge change", async () => {
+      const { type, item } = await fixture();
+      await runTick(pool, databaseIds, item.id, async () => {
+        await withTransaction(pool, async (client) => {
+          const property = await propertiesStore.getPropertyByKey(client, inboxId, "type");
+          if (!property) throw new Error("Missing type property");
+          await createRelationWithClient(client, {
+            relationPropertyId: property.id,
+            callerItemId: item.id,
+            targetItemId: type.id,
+          });
+        });
+        return { properties: { name: "Stale" }, candidates: [{ typeId: type.id, confidence: 0.9 }] };
+      });
+      expect(await findProposalForItem(pool, proposalsId, item.id)).toBeNull();
+    });
+    it("never recomputes a locked recognized card", async () => {
+      const { type, item } = await fixture();
+      await runTick(pool, databaseIds, item.id, async () => ({
+        properties: { name: "Task" },
+        candidates: [{ typeId: type.id, confidence: 0.9 }],
+      }));
+      const card = await findProposalForItem(pool, proposalsId, item.id);
+      if (!card) throw new Error("Missing card");
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          { databaseId: proposalsId, itemId: card.id, propertiesPatch: { status: "rejected" } },
+          { allowedSystemKeys: ["status"] },
+        ),
+      );
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(client, { databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "Changed" } }),
+      );
+      await runTick(pool, databaseIds, item.id, async () => {
+        throw new Error("Locked card must not compute");
+      });
+    });
+    it.each([0, 1])("offers only %s existing valid types and explains the shortage", async (count) => {
+      const { type, item } = await fixture();
+      const types = await withTransaction(pool, (client) => itemsStore.listItems(client, typesId, { limit: 200 }));
+      for (const row of types.items) {
+        if (count === 1 && row.id === type.id) continue;
+        await withTransaction(pool, (client) =>
+          updateItemWithClient(client, {
+            databaseId: typesId,
+            itemId: row.id,
+            propertiesPatch: { status: "archived" },
+          }),
+        );
+      }
+      await runTick(pool, databaseIds, item.id, async () => ({
+        properties: {},
+        candidates: [{ typeId: type.id, confidence: count === 0 ? 0.9 : 0.5 }],
+      }));
+      const card = await findProposalForItem(pool, proposalsId, item.id);
+      expect(card?.properties.status).toBe("needsClarification");
+      expect(card?.properties.proposal).toBeNull();
+      expect(z.array(z.unknown()).parse(card?.properties.typeCandidates)).toHaveLength(count);
+      expect(card?.properties.reason).toEqual(expect.any(String));
+    });
+    it("makes no call without text", async () => {
+      const { item } = await fixture();
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(client, { databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "" } }),
+      );
+      await runTick(pool, databaseIds, item.id, async () => {
+        throw new Error("Unexpected computation");
+      });
+      expect((await findProposalForItem(pool, proposalsId, item.id))?.properties.status).toBe("needsClarification");
+    });
   });
 
   describe("locale passed to computeProposal", () => {
@@ -760,7 +998,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     );
 
     await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for an untyped item");
+      return { properties: {}, candidates: [] };
     });
 
     const proposal = await findProposalForItem(pool, proposalsId, item.id);
@@ -782,7 +1020,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     );
 
     const throwing: ComputeSemprecProposalFn = async () => {
-      throw new Error("computeProposal must not be called for an untyped item");
+      return { properties: {}, candidates: [] };
     };
     await runTick(pool, databaseIds, item.id, throwing);
     await runTick(pool, databaseIds, item.id, throwing);
@@ -902,7 +1140,7 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     );
 
     await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for an untyped item");
+      return { properties: {}, candidates: [] };
     });
     const needsClarification = await findProposalForItem(pool, proposalsId, item.id);
     expect(needsClarification!.properties.status).toBe("needsClarification");
@@ -1189,7 +1427,7 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       }),
     );
     await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for an untyped item");
+      return { properties: {}, candidates: [] };
     });
 
     await trashSource(item.id);
@@ -1202,7 +1440,7 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
 
     await restoreSource(item.id);
     await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for an untyped item");
+      return { properties: {}, candidates: [] };
     });
 
     const card = await findProposalForItem(pool, proposalsId, item.id);
@@ -2565,7 +2803,7 @@ describe("aiProposal and aiVersion on the tick's writes (issue #1471)", () => {
       }),
     );
     await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for an untyped item");
+      return { properties: {}, candidates: [] };
     });
 
     const proposal = await findProposalForItem(pool, proposalsId, item.id);
@@ -2594,7 +2832,7 @@ describe("aiProposal and aiVersion on the tick's writes (issue #1471)", () => {
       });
     });
     await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for an untyped item");
+      return { properties: {}, candidates: [] };
     });
 
     const after = await findProposalForItem(pool, proposalsId, item.id);
