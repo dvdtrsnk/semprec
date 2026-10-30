@@ -105,7 +105,7 @@ const languages: ReadonlyMap<string, string> = new Map(
     // Hawaiian has no ISO 639-1 code; Whisper's historical jw spelling maps to ISO jv.
     if (!code || !names || code === "haw") return [];
     const iso = code === "jw" ? "jv" : code;
-    return [iso, ...names.split(",")].map((name) => [name, iso] as const);
+    return [iso, code, ...names.split(",")].map((name) => [name, iso] as const);
   }),
 );
 
