@@ -57,7 +57,10 @@ describe("mail contacts", () => {
       await withTransaction(pool, async (client) => {
         const mailboxes = await getDatabaseByModuleId(client, "mailboxes");
         if (!mailboxes) throw new Error("Missing seeded database");
-        const mailbox = await createItemWithClient(client, { databaseId: mailboxes.id, properties: { name: "Account" } });
+        const mailbox = await createItemWithClient(client, {
+          databaseId: mailboxes.id,
+          properties: { name: "Account" },
+        });
         await writeMailboxAddresses(client, {
           mailboxesDatabaseId: mailboxes.id,
           mailboxItemId: mailbox.id,
