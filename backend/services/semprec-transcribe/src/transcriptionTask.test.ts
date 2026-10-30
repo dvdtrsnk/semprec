@@ -1389,7 +1389,8 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       const transcript = await readTranscript(file.id);
       const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
 
-      // Step 1 (date), step 4 (segments, then language), step 5 (summary) and step 8 (status done).
+      // Step 1 (date), prepare's durationSeconds (issue #1469), step 4 (segments, then language), step 5 (summary),
+      // finalize's finalizedAt (issue #1469) and step 8 (status done).
       await vi.waitFor(() => {
         const updates = received.filter(
           (message) =>
@@ -1399,7 +1400,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
             z.object({ itemId: z.literal(transcript.id), databaseId: z.literal(transcripts?.id) }).safeParse(message)
               .success,
         );
-        expect(updates).toHaveLength(5);
+        expect(updates).toHaveLength(7);
       });
     } finally {
       listenClient.release(true);
