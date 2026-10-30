@@ -41,6 +41,16 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     await Promise.all([LIBRARY_PATH, MAIL_PATH, INBOX_PATH].map((path) => import(path)));
   }, 30_000);
 
+  it("loads Czech and English labels for Books publication year and ISBN", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await registry.loadModule(LIBRARY_PATH);
+    const catalogs = await registry.getCatalogs("library");
+    expect(catalogs?.cs["property.books.year.name"]).toBe("Rok");
+    expect(catalogs?.en["property.books.year.name"]).toBe("Year");
+    expect(catalogs?.cs["property.books.isbn.name"]).toBe("ISBN");
+    expect(catalogs?.en["property.books.isbn.name"]).toBe("ISBN");
+  });
+
   it("loads the library manifest with Books/Movies and the library-grid view type", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     const moduleId = await registry.loadModule(LIBRARY_PATH);

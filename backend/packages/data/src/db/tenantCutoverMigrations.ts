@@ -1,3 +1,4 @@
+import { runLibraryBooksYearIsbnCutoverMigration } from "../library/libraryBooksYearIsbnCutoverMigration.js";
 import { runSelfPersonCutoverMigration } from "../tenancy/selfPersonCutoverMigration.js";
 import { runTranscriptionLanguageCodeCutoverMigration } from "../transcription/transcriptionLanguageCodeCutoverMigration.js";
 import { runTranscriptDurationBackfillCutoverMigration } from "../transcription/transcriptDurationBackfillCutoverMigration.js";
@@ -40,5 +41,6 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runEmailsSenderPeopleCardinalityCutoverMigration(pool);
     await runMailDraftsAndSentReadBackfill(pool);
     await runSelfPersonCutoverMigration(pool);
+    await runLibraryBooksYearIsbnCutoverMigration(pool);
   });
 }
