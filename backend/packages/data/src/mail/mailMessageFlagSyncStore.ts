@@ -1,3 +1,5 @@
+import { enqueueMailAccountSync } from "./mailSyncEnqueue.js";
+import { getMailMessageMetaByItemId } from "./mailMessageMetaStore.js";
 import type { PoolClient } from "pg";
 import { requireAffectedRows, type Queryable } from "../db/pool.js";
 import type { ItemUpdateHook } from "../chokePoint/hooks.js";
@@ -58,7 +60,11 @@ export const mailMessageFlagsItemUpdateHook: ItemUpdateHook = async ({
   skipMailDesiredStateRecording,
 }) => {
   if (database.ownerModuleId !== EMAILS_MODULE_ID || skipMailDesiredStateRecording) return;
+  if (!Object.entries(propertiesPatch).some(([key, value]) => isMailMessageFlagKey(key) && typeof value === "boolean"))
+    return;
   await recordDesiredMailMessageFlags(client, item.id, propertiesPatch);
+  const meta = await getMailMessageMetaByItemId(client, item.id);
+  if (meta?.mailboxItemId) await enqueueMailAccountSync(client, meta.mailboxItemId);
 };
 
 /**

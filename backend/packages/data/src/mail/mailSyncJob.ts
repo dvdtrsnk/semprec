@@ -1,8 +1,9 @@
+import { enqueueMailAccountSync } from "./mailSyncEnqueue.js";
+export { enqueueMailAccountSync, mailAccountSyncJobKey } from "./mailSyncEnqueue.js";
 import type { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import { withTransaction, type Queryable } from "../db/pool.js";
+import { withTransaction } from "../db/pool.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
@@ -78,19 +79,6 @@ const STORED_FAILURE_KINDS: Record<ReturnType<typeof mailSyncFailureKind>, MailS
  */
 async function resolveMailboxProblem(client: PoolClient, mailboxItemId: string): Promise<void> {
   await resolveProblem(client, { dedupeKey: mailProblemKey(mailboxItemId), resolutionKind: "recovered" });
-}
-
-export function mailAccountSyncJobKey(mailboxItemId: string): string {
-  return `mail-account-sync:${mailboxItemId}`;
-}
-
-export async function enqueueMailAccountSync(client: Queryable, mailboxItemId: string): Promise<void> {
-  await enqueueJob(
-    client,
-    CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC,
-    { mailboxItemId },
-    { jobKey: mailAccountSyncJobKey(mailboxItemId), maxAttempts: 3 },
-  );
 }
 
 /** Periodic sweep (crontab, `CORE_CRONTAB` in worker.ts): enqueues a sync job for every account whose `next_expected_activity_at` is due — the safety-net reconcile that runs regardless of push-notification reliability. */
