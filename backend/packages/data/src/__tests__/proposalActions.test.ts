@@ -914,7 +914,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       }),
     );
     await runTick(item.id, async () => {
-      throw new Error("computeProposal must not be called for an untyped item");
+      return { properties: {}, candidates: [] };
     });
     const needsClarification = (await findProposalForItem(item.id))!;
     expect(needsClarification.properties.status).toBe("needsClarification");

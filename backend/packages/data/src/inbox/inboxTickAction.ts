@@ -489,7 +489,7 @@ async function writeNeedsClarification(
       },
       {
         allowedSystemKeys: [
-          "reason",
+          ...RECOGNITION_CARD_KEYS,
           "fingerprint",
           "proposal",
           "aiProposal",
