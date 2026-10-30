@@ -1,3 +1,4 @@
+import { projectItemsForRead } from "./itemReadProjection.js";
 // Owns the choke point's read-through-a-view operations: querying a stored view, and the raw
 // request-shaped queries against a database or a view. Nothing that writes state, and no view
 // definition management (creating, updating or deleting views and their manual items), belongs here.
@@ -10,7 +11,7 @@ import type { ChokePointDeps } from "./chokePointDeps.js";
 
 /** Stamps `fromInbox` on a result page's items with one origin lookup. */
 async function stampFromInbox(client: PoolClient, page: viewQuery.QueryViewResult): Promise<viewQuery.QueryViewResult> {
-  return { ...page, items: await withFromInbox(client, page.items) };
+  return { ...page, items: await projectItemsForRead(client, await withFromInbox(client, page.items)) };
 }
 
 export function createViewQueryOps(deps: Pick<ChokePointDeps, "pool">) {

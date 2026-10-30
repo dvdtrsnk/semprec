@@ -1,3 +1,6 @@
+import { sanitizeMailHtml } from "./mail/htmlSanitize.js";
+import { EMAILS_MODULE_ID } from "./seed/emailModuleKeys.js";
+import { registerItemReadProjection } from "./chokePoint/hooks.js";
 // The composition point for the choke point's per-process hook registries (chokePoint/hooks.ts):
 // the one place that imports every domain's hook by name and registers it, so chokePoint/ itself
 // never has to. Side-effect only — imported for its registration calls, not any export.
@@ -42,3 +45,17 @@ registerItemCreateHook(journalItemCreateHook);
 registerItemCreateHook(inboxItemCreateHook);
 registerItemCreateHook(inboxTypeItemCreateHook);
 registerItemUpdateHook(inboxTypeItemUpdateHook);
+
+registerItemReadProjection({
+  ownerModuleId: EMAILS_MODULE_ID,
+  project: (item) =>
+    typeof item.properties.body === "string"
+      ? {
+          ...item,
+          properties: {
+            ...item.properties,
+            body: sanitizeMailHtml(item.properties.body, { allowRemoteImages: false }),
+          },
+        }
+      : item,
+});
