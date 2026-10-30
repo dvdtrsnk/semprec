@@ -22,3 +22,8 @@ export const TRANSCRIPT_LANGUAGE_COMPUTED_KEY = "language";
 export const TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY = "summaryByInstruction";
 /** Step 7 stores `{ proposedSpeakers }` on the source Files item once its one speaker-suggestion call has been turned into cards: the keys that got a card. */
 export const TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY = "suggestSpeakers";
+
+/** Recording duration in seconds, copied from the Files prepare checkpoint. */
+export const TRANSCRIPT_DURATION_SECONDS_COMPUTED_KEY = "durationSeconds";
+/** UTC completion time, written on the first successful finalize. */
+export const TRANSCRIPT_FINALIZED_AT_COMPUTED_KEY = "finalizedAt";
