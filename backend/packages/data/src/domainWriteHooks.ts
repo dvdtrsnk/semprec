@@ -1,3 +1,7 @@
+import {
+  mailboxConnectionLimitCreateHook,
+  mailboxConnectionLimitUpdateHook,
+} from "./mail/mailboxConnectionLimitHook.js";
 import { sanitizeMailHtml } from "./mail/htmlSanitize.js";
 import { EMAILS_MODULE_ID } from "./seed/emailModuleKeys.js";
 import { registerItemReadProjection } from "./chokePoint/hooks.js";
@@ -59,3 +63,6 @@ registerItemReadProjection({
         }
       : item,
 });
+
+registerItemCreateHook(mailboxConnectionLimitCreateHook);
+registerItemUpdateHook(mailboxConnectionLimitUpdateHook);
