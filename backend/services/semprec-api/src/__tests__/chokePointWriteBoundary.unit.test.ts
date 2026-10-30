@@ -21,6 +21,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "password-reset consume": "services/semprec-api/src/authHandler.ts",
   logout: "services/semprec-api/src/authHandler.ts",
   "revoke session": "services/semprec-api/src/authHandler.ts",
+  "set self person": "services/semprec-api/src/authHandler.ts",
   "current session": "services/semprec-api/src/authHandler.ts",
   "first-account setup (API)": "services/semprec-api/src/setupHandler.ts",
   "accept invitation": "services/semprec-api/src/invitationHandler.ts",
@@ -98,6 +99,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "upload file": "services/semprec-api/src/filesHandler.ts",
   "upload blob": "services/semprec-api/src/blobUploadHandler.ts",
   "download blob": "services/semprec-api/src/blobsHandler.ts",
+  "mail contacts": "packages/data/src/mail/mailContactsRoute.ts",
   "mailbox removal impact": "packages/data/src/mail/mailboxRemovalImpact.ts",
   "Microsoft Graph mail webhook": "services/semprec-api/src/graphWebhookHandler.ts",
 };

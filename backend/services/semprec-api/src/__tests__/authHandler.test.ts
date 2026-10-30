@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { runInTenant, runAsSystem } from "@semprec/shared";
+import { createRuntimeRolePool, createTestTenant } from "@semprec/data/testSupport";
+import { seedSystem, createChokePoint, getDatabaseByModuleId, withTransaction } from "@semprec/data";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import pg, { type Pool } from "pg";
@@ -1095,5 +1099,160 @@ describe("createAuthRequestListener", () => {
 
       expect((await consume(OTHER_ADDRESS, { token, newPassword: "a-brand-new-password" })).status).toBe(200);
     });
+  });
+});
+
+describe("self person HTTP contract", () => {
+  let admin: Pool;
+  let runtime: Pool;
+  let server: Server;
+  let baseUrl: string;
+  let tenantId: string;
+  let token: string;
+  let peopleId: string;
+  let ownId: string;
+  let foreignId: string;
+
+  beforeEach(async () => {
+    admin ??= getTestPool();
+    runtime ??= await createRuntimeRolePool(admin, "semprec_data");
+    await resetDatabase(admin);
+    tenantId = await createTestTenant(admin);
+    const other = await createTestTenant(admin);
+    const passwordHash = await hashPassword(PASSWORD);
+    await runAsSystem("self person test user", () =>
+      createUser(admin, {
+        tenantId,
+        email: "self@example.com",
+        passwordHash,
+      }),
+    );
+    for (const id of [tenantId, other]) {
+      await runInTenant(id, async () => {
+        await seedSystem(runtime);
+        const people = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "people"));
+        if (!people) throw new Error("People missing");
+        const person = await createChokePoint(runtime).createItem({
+          databaseId: people.id,
+          properties: { name: "Person" },
+        });
+        if (id === tenantId) {
+          peopleId = people.id;
+          ownId = person.id;
+        } else foreignId = person.id;
+      });
+    }
+    server = createServer(
+      createAuthRequestListener(runtime, { passwordResetMailer: createFakeMailer(), appBaseUrl: APP_BASE_URL }),
+    );
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("TCP address missing");
+    baseUrl = `http://127.0.0.1:${address.port}`;
+    const login = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "self@example.com", password: PASSWORD, platform: "ios" }),
+    });
+    expect(login.status).toBe(200);
+    const body: unknown = await login.json();
+    if (typeof body !== "object" || body === null || !("token" in body) || typeof body.token !== "string")
+      throw new Error("Login token missing");
+    token = body.token;
+  });
+  afterEach(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+  afterAll(async () => {
+    await runtime.end();
+    await admin.end();
+  });
+
+  async function put(body: unknown, authenticated = true) {
+    return fetch(`${baseUrl}/api/auth/self-person`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...(authenticated ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify(body),
+    });
+  }
+  async function personId(): Promise<unknown> {
+    const res = await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } });
+    expect(res.status).toBe(200);
+    const body: unknown = await res.json();
+    if (
+      typeof body !== "object" ||
+      body === null ||
+      !("user" in body) ||
+      typeof body.user !== "object" ||
+      body.user === null ||
+      !("personId" in body.user)
+    )
+      throw new Error("personId missing");
+    return body.user.personId;
+  }
+  it("sets, replaces and clears the link, returning it through the session", async () => {
+    expect(await personId()).toBeNull();
+    const first = await put({ personId: ownId });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ personId: ownId });
+    expect(await personId()).toBe(ownId);
+    const next = await runInTenant(tenantId, () =>
+      createChokePoint(runtime).createItem({ databaseId: peopleId, properties: { name: "Next" } }),
+    );
+    expect((await put({ personId: next.id })).status).toBe(200);
+    expect(await personId()).toBe(next.id);
+    expect((await put({ personId: null })).status).toBe(200);
+    expect(await personId()).toBeNull();
+  });
+  it("reads a trashed or purged person as unset and rejects linking a trashed person", async () => {
+    expect((await put({ personId: ownId })).status).toBe(200);
+    await runInTenant(tenantId, () => createChokePoint(runtime).softDeleteItem(peopleId, ownId));
+    expect(await personId()).toBeNull();
+    expect((await put({ personId: ownId })).status).toBe(404);
+    const purged = await runInTenant(tenantId, () =>
+      createChokePoint(runtime).purgeExpiredTrashSubtree(ownId, new Date(Date.now() + 60_000)),
+    );
+    expect(purged.purgedItemIds).toContain(ownId);
+    expect(await personId()).toBeNull();
+  });
+  it("returns identical 404 bodies for foreign and unknown ids, preserving the previous link", async () => {
+    expect((await put({ personId: ownId })).status).toBe(200);
+    const foreign = await put({ personId: foreignId });
+    const missing = await put({ personId: randomUUID() });
+    expect(foreign.status).toBe(404);
+    expect(missing.status).toBe(404);
+    expect(await foreign.json()).toEqual(await missing.json());
+    expect(await personId()).toBe(ownId);
+  });
+  it("serializes concurrent replacements so exactly one edge remains", async () => {
+    const next = await runInTenant(tenantId, () =>
+      createChokePoint(runtime).createItem({ databaseId: peopleId, properties: { name: "Next" } }),
+    );
+    const results = await Promise.all([put({ personId: ownId }), put({ personId: next.id })]);
+    expect(results.map((res) => res.status)).toEqual([200, 200]);
+    expect([ownId, next.id]).toContain(await personId());
+    const edges = await runInTenant(tenantId, () =>
+      runtime.query<{ item_b: string }>(
+        `SELECT edge.item_b FROM item_relations edge JOIN relation_definitions rd ON rd.id = edge.relation_definition_id
+       JOIN properties p ON p.id = rd.property_id_a WHERE p.key = 'selfPerson'`,
+      ),
+    );
+    expect(edges.rows).toHaveLength(1);
+  });
+  it("refuses a live item outside People with the same 404", async () => {
+    const item = await runInTenant(tenantId, async () => {
+      const db = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "events"));
+      if (!db) throw new Error("Events missing");
+      return createChokePoint(runtime).createItem({ databaseId: db.id, properties: { name: "Event" } });
+    });
+    const invalid = await put({ personId: item.id });
+    const missing = await put({ personId: randomUUID() });
+    expect(invalid.status).toBe(404);
+    expect(await invalid.json()).toEqual(await missing.json());
+  });
+  it("requires authentication and validates personId before writing", async () => {
+    expect((await put({ personId: ownId }, false)).status).toBe(401);
+    for (const body of [{}, null, [], { personId: 1 }, { personId: "bad" }]) expect((await put(body)).status).toBe(400);
+    expect(await personId()).toBeNull();
   });
 });

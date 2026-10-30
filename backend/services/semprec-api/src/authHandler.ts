@@ -1,6 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   withTransaction,
+  getSelfPersonId,
+  setSelfPersonId,
   ChokePointError,
   ValidationError,
   UnauthorizedError,
@@ -22,7 +24,7 @@ import {
   type AuthenticatedIdentity,
   type PasswordResetMailer,
 } from "@semprec/data";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import type { Pool } from "pg";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { assertUuid } from "./adapter/requestValidation.js";
@@ -185,7 +187,7 @@ export interface AuthRequestListenerOptions {
 
 /**
  * Auth-v1's HTTP surface (issue #140): `POST /api/auth/login`, `POST /api/auth/logout`,
- * `POST /api/auth/sessions/:id/revoke`, `GET /api/auth/session`, and (issue #142)
+ * `POST /api/auth/sessions/:id/revoke`, `GET /api/auth/session`, `PUT /api/auth/self-person`, and (issue #142)
  * `POST /api/auth/password-reset/request` / `POST /api/auth/password-reset/consume`. Unlike this
  * package's other handlers, there is no shared-secret `authToken` gate here — `login` and the
  * password-reset routes are necessarily public, and the session routes gate on a real session
@@ -273,7 +275,7 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
         }
         reservation.release();
 
-        // Same shape as the user `GET /api/auth/session` returns: the public user plus its role (#1387).
+        // Public account fields and role; GET /api/auth/session also resolves the tenant-side person link.
         const user = { ...result.user, role: result.role };
         // Per #141: a browser must never see its token in a readable response body — only the
         // `httpOnly` cookie carries it. iOS/macOS get it back in the body for Keychain storage
@@ -363,10 +365,30 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
         return;
       }
 
+      if (req.method === "PUT" && url.pathname === "/api/auth/self-person") {
+        const identity = await authenticateRequest(pool, req);
+        const body: unknown = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
+        if (typeof body !== "object" || body === null || Array.isArray(body) || !("personId" in body)) {
+          throw new ValidationError("'personId' must be a UUID or null");
+        }
+        if (body.personId !== null && typeof body.personId !== "string") {
+          throw new ValidationError("'personId' must be a UUID or null");
+        }
+        const personId = body.personId === null ? null : assertUuid(body.personId, "personId");
+        await runInTenant(identity.tenantId, () =>
+          withTransaction(pool, (client) =>
+            setSelfPersonId(client, personId, { writerKind: "user", onBehalfOfUserId: identity.user.id }),
+          ),
+        );
+        sendJson(res, 200, { personId });
+        return;
+      }
+
       if (req.method === "GET" && url.pathname === "/api/auth/session") {
         const identity = await authenticateRequest(pool, req);
+        const personId = await runInTenant(identity.tenantId, () => withTransaction(pool, getSelfPersonId));
         sendJson(res, 200, {
-          user: { ...identity.user, role: identity.role },
+          user: { ...identity.user, role: identity.role, personId },
           session: { id: identity.session.id, platform: identity.session.platform },
         });
         return;
@@ -394,7 +416,7 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
    * request. Same shape as `setupHandler.ts`.
    */
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
-    // Every auth route touches only global identity tables, so the whole request runs as system work.
+    // Authentication starts as system work; person reads/writes enter the verified tenant scope.
     runAsSystem("auth", () => handleRequest(req, res)).catch((err: unknown) => {
       logger.error({ err }, "Unhandled error in the request listener");
       if (res.headersSent) {

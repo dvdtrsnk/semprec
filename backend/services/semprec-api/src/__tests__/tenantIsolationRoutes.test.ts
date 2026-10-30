@@ -873,6 +873,31 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }));
     await expectAAccountActive();
   },
+  "set self person": async () => {
+    const person = async (fixture: TenantFixture) =>
+      inTenantTransaction(fixture.tenantId, async (client) => {
+        const people = await getDatabaseByModuleId(client, "people");
+        if (!people) throw new Error("People not seeded");
+        return createItemWithClient(client, { databaseId: people.id, properties: { name: "Self" } });
+      });
+    const ownA = await person(a);
+    const ownB = await person(b);
+    const set = (personId: string | null): Request => ({
+      method: "PUT",
+      path: "/api/auth/self-person",
+      body: { personId },
+    });
+    expect((await send(a.member, set(ownA.id))).status).toBe(200);
+    const foreign = await send(b.member, set(ownA.id));
+    const missing = await send(b.member, set(randomUUID()));
+    expect(foreign.status).toBe(404);
+    expect(foreign).toEqual(missing);
+    expect((await send(b.member, set(ownB.id))).status).toBe(200);
+    const sessionB = await send(b.member, { method: "GET", path: "/api/auth/session" });
+    expect(readString(sessionB.text, "user", "personId")).toBe(ownB.id);
+    const sessionA = await send(a.member, { method: "GET", path: "/api/auth/session" });
+    expect(readString(sessionA.text, "user", "personId")).toBe(ownA.id);
+  },
   "current session": async () => {
     for (const session of [b.member, b.webSession]) {
       const answer = await expectExcludesA(session, { method: "GET", path: "/api/auth/session" });

@@ -1,3 +1,4 @@
+import { createRelationPropertyWithClient } from "../chokePoint/relationPropertyWrites.js";
 import type { Pool } from "pg";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { withTransaction } from "../db/pool.js";
@@ -196,6 +197,18 @@ export async function seedSystem(
         name: "Semp",
         timezone: DEFAULT_TIMEZONE,
       },
+    });
+
+    const people = await databasesStore.getDatabaseByModuleId(client, "people");
+    if (!people) throw new Error("People database has not been seeded");
+    await createRelationPropertyWithClient(client, {
+      sourceDatabaseId: settingsDb.id,
+      key: "selfPerson",
+      name: null,
+      targetDatabaseId: people.id,
+      cardinality: "one_to_one",
+      owner: "user",
+      locked: true,
     });
 
     await client.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [settingsDb.id]);
