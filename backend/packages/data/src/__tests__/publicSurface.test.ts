@@ -42,8 +42,6 @@ export type FrozenTypeExports = [
 ];
 
 const EXPECTED_RUNTIME_EXPORTS = [
-  "registerItemReadProjection",
-  "projectItemForRead",
   "ADMIN_AUDIT_ACTIONS",
   "AGENT_GUIDANCE_DRIFT_ACTION_ID",
   "AGENT_RUN_ERROR_CODES",
@@ -521,6 +519,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "prepareHeartbeatOccurrenceFire",
   "primaryRootForBlob",
   "projectAgentGuidanceStore",
+  "projectItemForRead",
   "projectProperties",
   "propertyDeleteWithClient",
   "proposalEnvelopeSchema",
@@ -552,6 +551,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "recordMcpConnectionSuccess",
   "recordTokenGatewayCall",
   "refreshAndPersistAccessToken",
+  "registerItemReadProjection",
   "registerMailboxClientViewType",
   "registerPushSubscription",
   "registerTemporalSwitcherViewType",

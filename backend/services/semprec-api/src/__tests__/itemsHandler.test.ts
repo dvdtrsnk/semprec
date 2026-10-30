@@ -129,7 +129,7 @@ describe("item routes (issue #241)", () => {
         return createItemWithClient(
           client,
           { databaseId: database.id, properties: { body: raw } },
-          { allowedSystemKeys: ["body"], systemOwnerProcess: "emails" },
+          { allowedSystemKeys: ["body"] },
         );
       });
 

@@ -351,7 +351,7 @@ describe("generic operation MCP contract (issue #220)", () => {
       return createItemWithClient(
         client,
         { databaseId: database.id, properties: { body: raw } },
-        { allowedSystemKeys: ["body"], systemOwnerProcess: "emails" },
+        { allowedSystemKeys: ["body"] },
       );
     });
 

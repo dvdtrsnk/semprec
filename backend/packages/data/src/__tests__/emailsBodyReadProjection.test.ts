@@ -28,7 +28,7 @@ describe("Emails body read projection", () => {
       return createItemWithClient(
         client,
         { databaseId: db.id, properties: { body: raw } },
-        { allowedSystemKeys: ["body"], systemOwnerProcess: "emails" },
+        { allowedSystemKeys: ["body"] },
       );
     });
   });
@@ -65,7 +65,7 @@ describe("Emails body read projection", () => {
       createItemWithClient(
         client,
         { databaseId: item.databaseId, properties: { body: raw }, idempotencyKey: "projection-replay" },
-        { allowedSystemKeys: ["body"], systemOwnerProcess: "emails" },
+        { allowedSystemKeys: ["body"] },
       ),
     );
     const replay = await cp.createItem({
