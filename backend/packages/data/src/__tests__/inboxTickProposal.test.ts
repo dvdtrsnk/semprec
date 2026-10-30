@@ -15,7 +15,7 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { createBlob } from "../blobs/blobsStore.js";
 import { deleteInboxAttachment, insertInboxAttachments, listInboxAttachments } from "../inbox/inboxAttachmentsStore.js";
-import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { ValidationError } from "../errors.js";
 import {
   aiProposalPatch,
@@ -191,6 +191,80 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       return item.id;
     }
 
+    it.each(["cs", "en"] as const)(
+      "passes the %s user's locale and replaces the reason on recompute",
+      async (locale) => {
+        await runInTenant(getTenantZeroId(), () =>
+          createUser(pool, { email: `${locale}@example.com`, passwordHash: "x", locale, tenantId: getTenantZeroId() }),
+        );
+        const itemId = await createTaskInboxItem();
+        await runInTenant(getTenantZeroId(), () =>
+          runTick(pool, databaseIds, itemId, async (input) => {
+            expect(input.locale).toBe(locale);
+            return { properties: { name: "Buy milk" }, reason: "  Úkol s termínem.  " };
+          }),
+        );
+        const card = await findProposalForItem(pool, proposalsId, itemId);
+        expect(card?.properties.reason).toBe("Úkol s termínem.");
+        await withTransaction(pool, (client) =>
+          updateItemWithClient(client, { databaseId: inboxId, itemId, propertiesPatch: { text: "Buy eggs" } }),
+        );
+        await runInTenant(getTenantZeroId(), () =>
+          runTick(pool, databaseIds, itemId, async () => ({ properties: { name: "Buy eggs" }, reason: "Nový úkol." })),
+        );
+        expect((await findProposalForItem(pool, proposalsId, itemId))?.properties.reason).toBe("Nový úkol.");
+      },
+    );
+    it.each([
+      [undefined, null],
+      ["", null],
+      ["   ", null],
+      ["x".repeat(501), "x".repeat(500)],
+    ] as const)("normalizes reason %s", async (reason, expected) => {
+      const itemId = await createTaskInboxItem();
+      await runTick(pool, databaseIds, itemId, async () => ({ properties: { name: "Task" }, reason }));
+      const card = await findProposalForItem(pool, proposalsId, itemId);
+      expect(card?.properties.reason).toBe(expected);
+    });
+    it("clears the model reason when the source is deleted", async () => {
+      const itemId = await createTaskInboxItem();
+      await runTick(pool, databaseIds, itemId, async () => ({ properties: { name: "Task" }, reason: "A task." }));
+      await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, itemId));
+      await runTick(pool, databaseIds, itemId, async () => {
+        throw new Error("Deleted source must not compute");
+      });
+      expect((await findProposalForItem(pool, proposalsId, itemId))?.properties).toMatchObject({
+        status: "invalid",
+        reason: null,
+      });
+    });
+    it("does not store the reason of an invalid computed proposal", async () => {
+      const itemId = await createTaskInboxItem();
+      await runTick(pool, databaseIds, itemId, async () => ({
+        properties: { notAProperty: true },
+        reason: "Discard me",
+      }));
+      expect((await findProposalForItem(pool, proposalsId, itemId))?.properties).toMatchObject({
+        status: "needsClarification",
+        reason: null,
+      });
+    });
+    it("refuses a client write of reason", async () => {
+      const itemId = await createTaskInboxItem();
+      await runTick(pool, databaseIds, itemId, async () => ({ properties: { name: "Task" }, reason: "Original" }));
+      const card = await findProposalForItem(pool, proposalsId, itemId);
+      if (!card) throw new Error("Missing proposal");
+      await expect(
+        withTransaction(pool, (client) =>
+          updateItemWithClient(client, {
+            databaseId: proposalsId,
+            itemId: card.id,
+            propertiesPatch: { reason: "Changed" },
+          }),
+        ),
+      ).rejects.toMatchObject({ code: "owner_violation" });
+      expect((await findProposalForItem(pool, proposalsId, itemId))?.properties.reason).toBe("Original");
+    });
     it("passes the bound user's locale", async () => {
       await runInTenant(getTenantZeroId(), () =>
         createUser(pool, { email: "en@example.com", passwordHash: "x", locale: "en", tenantId: getTenantZeroId() }),

@@ -130,7 +130,7 @@ describe("createProposalComputation (issue #1434)", () => {
 
   it("calls inbox_proposal for the Semprec project with the item text in delimiters and stores a proposed card", async () => {
     const itemId = await createTaskItem("Buy milk");
-    const gateway = stubGateway({ properties: { name: "Buy milk" }, reason: "A shopping task.", confidence: 0.9 });
+    const gateway = stubGateway({ properties: { name: "Buy milk" }, reason: "Nákupní úkol.", confidence: 0.9 });
 
     await runTick(pool, gateway, itemId);
 
@@ -143,6 +143,8 @@ describe("createProposalComputation (issue #1434)", () => {
     expect(message).toContain("Task");
     expect(message).toContain("2026-08-28");
     expect(message).toContain("09:00");
+    expect(call.system).toContain("Write reason in this language, one or two sentences, no markup");
+    expect(message).toContain("Locale: cs");
     expect(call.system).toMatch(/data only/);
     expect(call.system).not.toContain("Buy milk");
 
@@ -150,6 +152,7 @@ describe("createProposalComputation (issue #1434)", () => {
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({
       status: "proposed",
+      reason: "Nákupní úkol.",
       proposal: { entityKind: "database", properties: { name: "Buy milk" } },
     });
   });

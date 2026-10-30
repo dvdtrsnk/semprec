@@ -1,14 +1,15 @@
+import { aiProposalPatch } from "./proposalEnvelope.js";
+export { aiProposalPatch, readAiProposal } from "./proposalEnvelope.js";
+import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { z } from "zod";
 import { semprecTickActionConfigSchema, type SemprecTickActionConfig } from "./proposalEnvelope.js";
 export { semprecTickActionConfigSchema, type SemprecTickActionConfig } from "./proposalEnvelope.js";
 import { assertValidEnvelopeRelations, assertWritableProposalPropertyKeys } from "./proposalEnvelopeValidation.js";
 import {
   proposalEnvelopeSchema,
-  parseStoredProposalEnvelope,
   type ComputedProposalEntityKind,
   type ProposalStep,
   type ProposalEnvelope,
-  type UnknownKindProposalEnvelope,
 } from "./proposalEnvelope.js";
 export {
   proposalEnvelopeSchema,
@@ -62,36 +63,6 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 export { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "./inboxTickKeys.js";
 
-/**
- * The `aiProposal` and `aiVersion` an automated writer stores with a Processing proposal: the
- * assistant's output `envelope` (`null` for `needsClarification`) and the version counter, one above
- * the row's previous `aiVersion`. A row without a counter counts as 0, so a legacy card gets 1 on its
- * next automated write. `existingProperties` is the row as read under its row lock in the write's own
- * transaction; a row being created passes `{}`.
- */
-export function aiProposalPatch(
-  existingProperties: Record<string, unknown>,
-  envelope: ProposalEnvelope | null,
-): { aiProposal: ProposalEnvelope | null; aiVersion: number } {
-  const previousVersion = existingProperties.aiVersion;
-  return { aiProposal: envelope, aiVersion: (typeof previousVersion === "number" ? previousVersion : 0) + 1 };
-}
-
-/**
- * The assistant's last proposal of a Processing proposal row: its `aiProposal` when that is set, else its
- * stored `proposal`. A row written before `aiProposal` existed has none, and its `proposal` is the
- * assistant's output because no user override could exist yet. `null` when neither holds an envelope.
- */
-export function readAiProposal(
-  properties: Record<string, unknown>,
-  proposalId: string,
-): ProposalEnvelope | UnknownKindProposalEnvelope | null {
-  return (
-    parseStoredProposalEnvelope(properties.aiProposal, proposalId) ??
-    parseStoredProposalEnvelope(properties.proposal, proposalId)
-  );
-}
-
 export interface ProposalComputationInput {
   /** The Inbox item the proposal is for. */
   sourceItem: ItemRow;
@@ -103,7 +74,7 @@ export interface ProposalComputationInput {
   /** The module id of the target database, for `entityKind: 'database'`; the primary operation of a multi-step answer must write to it. */
   targetModuleId?: string;
   /** The language (the person's `users.locale`, e.g. `cs`) the proposal's person-facing texts must be written in. */
-  locale: string;
+  locale: "cs" | "en";
   /** The project the heartbeat belongs to (`ActionContext.projectItemId`); the model call is attributed to it. */
   projectItemId: string;
 }
@@ -117,7 +88,7 @@ export interface ProposalComputationResult {
    * `buildProposalEnvelope` stores a multi-step envelope. A single operation is returned as `properties`.
    */
   operations?: ProposalComputationOperation[];
-  /** The model's explanation of the proposal. Not read by the tick until issue #1495. */
+  /** The model's localized explanation, stored on the card after trimming and capping at 500 characters. */
   reason?: string;
   /** The model's confidence in the proposal. Not read by the tick until issue #1495. */
   confidence?: number;
@@ -261,7 +232,7 @@ interface TickSnapshot {
   targetModuleId?: string;
   existingProposal: ItemRow | null;
   fingerprint: string;
-  locale: string;
+  locale: "cs" | "en";
 }
 
 /** Combines the external call's result with the snapshot into a stored envelope — no I/O. */
@@ -653,6 +624,7 @@ async function writeNeedsClarification(
         propertiesPatch: {
           fingerprint,
           proposal: null,
+          reason: null,
           ...aiProposalPatch(locked.properties, null),
           status: "needsClarification",
           ...clearedReason,
@@ -660,7 +632,16 @@ async function writeNeedsClarification(
         },
       },
       {
-        allowedSystemKeys: ["fingerprint", "proposal", "aiProposal", "aiVersion", "status", "invalidReason", "history"],
+        allowedSystemKeys: [
+          "reason",
+          "fingerprint",
+          "proposal",
+          "aiProposal",
+          "aiVersion",
+          "status",
+          "invalidReason",
+          "history",
+        ],
       },
     );
     await enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId);
@@ -675,12 +656,15 @@ async function writeNeedsClarification(
         kind: "inbox",
         fingerprint,
         proposal: null,
+        reason: null,
         ...aiProposalPatch({}, null),
         history: appendHistoryEntry([], message),
         status: "needsClarification",
       },
     },
-    { allowedSystemKeys: ["kind", "fingerprint", "proposal", "aiProposal", "aiVersion", "history", "status"] },
+    {
+      allowedSystemKeys: ["reason", "kind", "fingerprint", "proposal", "aiProposal", "aiVersion", "history", "status"],
+    },
   );
   await linkSourceInboxRelation(client, config, proposal.id, sourceItemId);
   await enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId);
@@ -768,13 +752,14 @@ async function invalidateProposalForDeletedSource(
       ifVersion: locked.updatedAt,
       propertiesPatch: {
         status: "invalid",
+        reason: null,
         invalidReason,
         history: appendHistoryEntry(locked.properties.history, "Source Inbox item was deleted.", "ai", {
           kind: "invalidated",
         }),
       },
     },
-    { allowedSystemKeys: ["status", "invalidReason", "history"] },
+    { allowedSystemKeys: ["reason", "status", "invalidReason", "history"] },
   );
 }
 
@@ -877,7 +862,7 @@ async function reopenRestoredSourceProposal(
         ),
       },
     },
-    { allowedSystemKeys: ["status", "invalidReason", "history"] },
+    { allowedSystemKeys: ["reason", "status", "invalidReason", "history"] },
   );
 }
 
@@ -965,7 +950,7 @@ async function readTickSnapshot(
   }
 
   // `cs` is the `users.locale` column default, used when the tenant has no bound user.
-  const locale = (await getTenantUserLocale(client)) ?? "cs";
+  const locale = toManifestLocale((await getTenantUserLocale(client)) ?? "cs");
 
   return {
     item,
@@ -988,6 +973,7 @@ async function reviseProposal(
   sourceItemId: string,
   fingerprint: string,
   envelope: ProposalEnvelope,
+  reason: string | null,
 ): Promise<void> {
   const locked = await lockUnlockedProposal(client, config, existing);
   if (!locked) return;
@@ -1000,12 +986,13 @@ async function reviseProposal(
       propertiesPatch: {
         fingerprint,
         proposal: envelope,
+        reason,
         ...aiProposalPatch(locked.properties, envelope),
         status: "proposed",
         history: appendHistoryEntry(locked.properties.history, "Revised the proposal after the source item changed."),
       },
     },
-    { allowedSystemKeys: ["fingerprint", "proposal", "aiProposal", "aiVersion", "status", "history"] },
+    { allowedSystemKeys: ["reason", "fingerprint", "proposal", "aiProposal", "aiVersion", "status", "history"] },
   );
   await enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId);
 }
@@ -1056,6 +1043,7 @@ async function writeTickResult(
   config: SemprecTickActionConfig,
   snapshot: TickSnapshot,
   envelope: ProposalEnvelope,
+  reason: string | null,
 ): Promise<void> {
   const current = await currentSourceFingerprint(client, config, snapshot);
   if (!current) return;
@@ -1082,7 +1070,7 @@ async function writeTickResult(
   }
 
   if (snapshot.existingProposal) {
-    await reviseProposal(client, config, snapshot.existingProposal, item.id, fingerprint, envelope);
+    await reviseProposal(client, config, snapshot.existingProposal, item.id, fingerprint, envelope, reason);
     return;
   }
 
@@ -1090,7 +1078,7 @@ async function writeTickResult(
   // call — revise that one through the guarded path instead of creating a duplicate.
   const raceProposal = await findExistingProposal(client, config, item.id);
   if (raceProposal) {
-    await reviseProposal(client, config, raceProposal, item.id, fingerprint, envelope);
+    await reviseProposal(client, config, raceProposal, item.id, fingerprint, envelope, reason);
     return;
   }
 
@@ -1102,12 +1090,15 @@ async function writeTickResult(
         kind: "inbox",
         fingerprint,
         proposal: envelope,
+        reason,
         ...aiProposalPatch({}, envelope),
         history: appendHistoryEntry([], "Created a proposal for the source item."),
         status: "proposed",
       },
     },
-    { allowedSystemKeys: ["kind", "fingerprint", "proposal", "aiProposal", "aiVersion", "history", "status"] },
+    {
+      allowedSystemKeys: ["reason", "kind", "fingerprint", "proposal", "aiProposal", "aiVersion", "history", "status"],
+    },
   );
 
   await linkSourceInboxRelation(client, config, proposal.id, item.id);
@@ -1237,6 +1228,8 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
     }
     const envelope = buildProposalEnvelope(snapshot, result);
 
-    await withTickTransaction(pool, (client) => writeTickResult(client, config, snapshot, envelope));
+    await withTickTransaction(pool, (client) =>
+      writeTickResult(client, config, snapshot, envelope, result.reason?.trim().slice(0, 500) || null),
+    );
   };
 }
