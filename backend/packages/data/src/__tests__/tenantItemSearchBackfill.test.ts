@@ -430,10 +430,13 @@ describe("item search create/update hooks", () => {
         for (const property of props.rows) {
           // An event's place is an address or a call link; it is deliberately not searched (asserted below).
           if (descriptor.key === "events" && property.key === "place") continue;
+          // An area's icon is a closed key validated by the area write hook, not searchable free text.
+          if (descriptor.key === "areas" && property.key === "icon") continue;
           expect(descriptor.searchFields).toContain(property.key);
         }
       }
       expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("place");
+      expect(manifest.databases.find((d) => d.key === "areas")?.searchFields).not.toContain("icon");
       expect(manifest.databases.find((d) => d.key === "people")?.searchFields).toContain("emails");
       expect(manifest.databases.find((d) => d.key === "people")?.searchFields).not.toContain("phones");
       for (const [key, fields] of Object.entries({
