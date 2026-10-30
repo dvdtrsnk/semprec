@@ -6,7 +6,7 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
-import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import { createDatabase, getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { runProjectsPinnedOrderCutoverMigration } from "../seed/projectsPinnedOrderCutoverMigration.js";
 import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { generateSchemaProjection } from "../manifest/schemaProjection.js";
@@ -63,6 +63,21 @@ describe("Projects pin order", () => {
   afterAll(async () => {
     await pool.end();
     await admin.end();
+  });
+  it("creates and updates an unpinned project without injecting an order into a catalog lacking that property", async () => {
+    const unseeded = await createTestTenant(admin);
+    await runInTenant(unseeded, async () => {
+      const db = await withTransaction(pool, (client) =>
+        createDatabase(client, { name: "Projects", system: true, ownerModuleId: "projects" }),
+      );
+      expect(await schema(db.id)).toEqual([]);
+      const item = await cp.createItem({ databaseId: db.id, properties: {} });
+      expect(item.properties).not.toHaveProperty("pinnedOrder");
+      const updated = await cp.updateItem({ databaseId: db.id, itemId: item.id, propertiesPatch: {} });
+      expect(updated.properties).not.toHaveProperty("pinnedOrder");
+      expect((await cp.getItem(db.id, item.id))?.properties).toEqual(updated.properties);
+      expect(await schema(db.id)).toEqual([]);
+    });
   });
   it("queries three projects in pin order and moves an unpinned then repinned project last", async () =>
     runInTenant(tenant, async () => {

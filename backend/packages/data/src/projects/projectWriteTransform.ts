@@ -7,7 +7,11 @@ import { ValidationError } from "../errors.js";
 export const projectWriteTransform: ItemPreWriteTransform = async (context) => {
   const patch = unpinTerminalProject(context.stored, context.patch);
   const pinned = Object.hasOwn(patch, "pinned") ? patch.pinned : context.stored?.properties.pinned;
-  if (pinned !== true) return { ...patch, pinnedOrder: null };
+  if (pinned !== true) {
+    return Object.hasOwn(patch, "pinnedOrder") || context.stored?.properties.pinnedOrder != null
+      ? { ...patch, pinnedOrder: null }
+      : patch;
+  }
   if (Object.hasOwn(patch, "pinnedOrder")) return patch;
   if (context.stored?.properties.pinnedOrder != null) return patch;
   await context.client.query(
