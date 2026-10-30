@@ -40,7 +40,7 @@ export {
  */
 export const manifest: ModuleManifest = {
   id: "systemDatabases",
-  version: "1.1.0",
+  version: "1.2.0",
   name: "System Databases",
   removable: false,
   systemProject: true,
