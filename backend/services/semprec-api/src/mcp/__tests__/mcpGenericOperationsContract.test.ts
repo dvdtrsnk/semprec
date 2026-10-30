@@ -33,6 +33,7 @@ import {
   OPERATION_METADATA,
   type CapabilityId,
   type GenericOperationName,
+  type InputByOperation,
 } from "@semprec/shared";
 import { createMcpRequestListener } from "../mcpHandler.js";
 
@@ -394,29 +395,39 @@ describe("generic operation MCP contract (issue #220)", () => {
     const { server, baseUrl } = await startServer();
     servers.push(server);
     const headers = await authHeader();
-    const answer = await rpc(baseUrl, headers, "semprec.item.patch", { itemId: item.id, patch: { status } });
+    async function patchProject(properties: Record<string, unknown>) {
+      const current = await chokePoint.getItem(databaseId, item.id);
+      if (!current) throw new Error("Missing project fixture");
+      const args: InputByOperation["item.patch"] = { itemId: item.id, properties, ifVersion: current.updatedAt };
+      return rpc(baseUrl, headers, "semprec.item.patch", args);
+    }
+    const answer = await patchProject({ status });
     expect(answer.error).toBeUndefined();
     const content = answer.result?.content.find((part) => part.type === "text")?.text;
     if (!content) throw new Error("Missing MCP result");
     const result: unknown = JSON.parse(content);
     expect(result).toMatchObject({ properties: { status, pinned: false } });
     for (const patch of [{ pinned: true }, { status, pinned: true }]) {
-      const rejected = await rpc(baseUrl, headers, "semprec.item.patch", { itemId: item.id, patch });
+      const rejected = await patchProject(patch);
       expect(rejected.error?.code).toBe(-32602);
       expect(rejected.error?.data).toMatchObject({ field: "pinned" });
       expect((await chokePoint.getItem(databaseId, item.id))?.properties).toMatchObject({ status, pinned: false });
     }
     for (const activeStatus of ["inProgress", "longTerm"]) {
-      const accepted = await rpc(baseUrl, headers, "semprec.item.patch", {
-        itemId: item.id,
-        patch: { status: activeStatus, pinned: true },
-      });
+      const accepted = await patchProject({ status: activeStatus, pinned: true });
       expect(accepted.error).toBeUndefined();
       expect((await chokePoint.getItem(databaseId, item.id))?.properties).toMatchObject({
         status: activeStatus,
         pinned: true,
       });
     }
+    const combined = await patchProject({ status, pinned: true });
+    expect(combined.error?.code).toBe(-32602);
+    expect(combined.error?.data).toMatchObject({ field: "pinned" });
+    expect((await chokePoint.getItem(databaseId, item.id))?.properties).toMatchObject({
+      status: "longTerm",
+      pinned: true,
+    });
   });
 
   it("has exactly one contract case per operation in the closed catalog", () => {
