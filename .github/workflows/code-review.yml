@@ -48,6 +48,10 @@ jobs:
           # pull_request merge ref. The bot gets changed files from the PR API and
           # anchors its Check Run to that head, so agents must read the same tree.
           ref: ${{ github.event.pull_request.head.sha || format('refs/pull/{0}/head', inputs.pull_request) }}
+          # The bot reads approved specifications from the PR base commit with
+          # `git ls-tree <base>`, which needs full history; a shallow clone of the
+          # head fails that lookup and the review aborts before any verdict.
+          fetch-depth: 0
 
       - name: Checkout code-review-bot (private)
         uses: actions/checkout@v4
