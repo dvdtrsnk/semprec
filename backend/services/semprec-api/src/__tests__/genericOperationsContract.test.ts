@@ -418,6 +418,49 @@ describe("generic operation REST contract (issue #219)", () => {
     await pool?.end();
   });
 
+  it("returns the same expansion on item, database and view reads while retaining path and links", async () => {
+    const fx = await buildFixtures();
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const item = await fetch(`${baseUrl}/api/items/${fx.itemA.id}?include=path,links,relations&relations.assignedTo=`, {
+      headers,
+    });
+    expect(item.status).toBe(200);
+    const body: unknown = await item.json();
+    expect(body).toMatchObject({
+      links: {},
+      relations: { assignedTo: [{ id: fx.targetItem.id, icon: "database", color: "#FF9500" }] },
+      relationsTruncated: [],
+    });
+    expect(body).toHaveProperty("path");
+    for (const path of [`/api/databases/${fx.database.id}/query`, `/api/views/${fx.curatedView.id}/query`]) {
+      const response = await fetch(`${baseUrl}${path}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ include: { links: true, relations: { assignedTo: [] } } }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            id: fx.itemA.id,
+            links: {},
+            relations: { assignedTo: [expect.objectContaining({ id: fx.targetItem.id })] },
+          }),
+        ]),
+      });
+    }
+    for (const include of [[], ["links"], { links: true }]) {
+      const response = await fetch(`${baseUrl}/api/databases/${fx.database.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ include }),
+      });
+      expect(response.status).toBe(200);
+      const legacy: unknown = await response.json();
+      expect(JSON.stringify(legacy)).not.toContain('"relations"');
+    }
+  });
+
   it("has exactly one contract case per operation in the closed catalog", () => {
     expect(Object.keys(CASES).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });

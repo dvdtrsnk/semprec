@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import { createItemWithClient, getDatabaseByModuleId, withTransaction } from "@semprec/data";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
@@ -17,6 +18,10 @@ import {
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { GENERIC_OPERATION_NAMES, OPERATION_METADATA, type GenericOperationName } from "@semprec/shared";
 import { createGenericOperationAgentTools } from "../tools/generic/genericOperationAgentTools.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -206,7 +211,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
 
     const projectItemId = await createProjectItem();
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "read email" });
-    const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+    const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
     const result = await tools["item.get"](run.id, { itemId: item.id });
     expect(result.error).toBeFalsy();
     expect(result.result).toContain("safe");
@@ -237,7 +242,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
         triggeredBy: "user",
         task: `contract test ${operation}`,
       });
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
       const fx = await buildFixtures(projectItemId);
       const testCase = CASES[operation];
       await testCase.prepare?.(fx);
@@ -275,7 +280,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     it("surfaces database_archived (issue #83) as a ChokePointError-shaped result for a write against an archived database", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "archived db write" });
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
       const fx = await buildFixtures(projectItemId);
       await chokePoint.archiveDatabase(fx.database.id);
 
@@ -291,7 +296,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     it("rejects patch.type on a relation property (issue #219)", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "relation patch" });
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
       const fx = await buildFixtures(projectItemId);
 
       const outcome = await tools["property.patch"](run.id, {
@@ -306,7 +311,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     it("rejects patch.config on a relation property (issue #219)", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "relation patch" });
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
       const fx = await buildFixtures(projectItemId);
 
       const outcome = await tools["property.patch"](run.id, {
@@ -321,7 +326,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     it("rejects a non-relation property id supplied directly as relationPropertyId — contrast with REST's key-based route resolution", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "bad relation id" });
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
       const fx = await buildFixtures(projectItemId);
 
       // REST resolves a relation route's `:propertyKey` segment against the caller item's own

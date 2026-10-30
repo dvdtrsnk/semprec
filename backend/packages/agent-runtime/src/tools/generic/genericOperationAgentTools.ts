@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import type { Pool } from "pg";
 import {
   ApprovalRequiredError,
@@ -164,7 +165,7 @@ function createTool(
  * One AgentTool per generic operation (issue #220), named verbatim after the operation
  * (`GENERIC_OPERATION_NAMES`) — MCP's own composition root (`services/semprec-api/src/mcp`)
  * prefixes the same names `semprec.` for its own catalog, both dispatching through
- * `createGenericOperationGateway(pool)` so there is exactly one path into the 30-operation
+ * `createGenericOperationGateway(pool, resolver)` so there is exactly one path into the 30-operation
  * catalog's business logic for this process, alongside REST's own separate
  * `dispatchGenericOperation` (#219) over the same neutral `GenericApplicationPort` (#219's ADR:
  * "one instance per injected Pool" — this composition root's own instance, not REST's).
@@ -177,9 +178,10 @@ function createTool(
  */
 export function createGenericOperationAgentTools(
   pool: Pool,
-  moduleRegistry?: ModuleRegistry,
+  moduleRegistry: ModuleRegistry | undefined,
+  resolver: CollectionMetadataResolver,
 ): Record<GenericOperationName, GenericOperationAgentTool> {
-  const gateway = createGenericOperationGateway(pool);
+  const gateway = createGenericOperationGateway(pool, resolver);
   const tools = {} as Record<GenericOperationName, GenericOperationAgentTool>;
   for (const operation of GENERIC_OPERATION_NAMES) {
     tools[operation] = createTool(gateway, pool, moduleRegistry, operation);
@@ -196,8 +198,9 @@ export async function listGrantedGenericOperationAgentTools(
   pool: Pool,
   moduleRegistry: ModuleRegistry | undefined,
   currentRunId: string,
+  resolver: CollectionMetadataResolver,
 ): Promise<GenericOperationName[]> {
   const context = await resolveAgentContext(pool, moduleRegistry, currentRunId);
   if (!context) return [];
-  return createGenericOperationGateway(pool).listOperations(context.grantedCapabilities);
+  return createGenericOperationGateway(pool, resolver).listOperations(context.grantedCapabilities);
 }

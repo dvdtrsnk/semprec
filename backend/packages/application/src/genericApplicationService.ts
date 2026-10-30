@@ -1,3 +1,5 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
+import type { ItemReadInclude } from "@semprec/shared";
 import type { Pool } from "pg";
 import {
   createChokePoint,
@@ -57,7 +59,10 @@ function paginate<T extends { id: string }>(rows: readonly T[], cursor: string |
   return { items: windowRows, nextCursor };
 }
 
-export function createGenericApplicationService(pool: Pool): GenericApplicationPort {
+export function createGenericApplicationService(
+  pool: Pool,
+  resolver: CollectionMetadataResolver,
+): GenericApplicationPort {
   const chokePoint = createChokePoint(pool);
   const docStore = createDocStore(pool);
 
@@ -73,13 +78,18 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
     return item;
   }
 
-  /** `include: ["links"]` (issue #1403): attaches each item's links (an empty object when it has none) in one batched read; without it the items come back untouched. */
-  async function withLinks<T extends Item>(items: T[], include: readonly "links"[] | undefined): Promise<T[]> {
-    if (!include?.includes("links")) return items;
+  /** Legacy `include: ["links"]` or `{ links: true }`: attaches each item's links (an empty object when it has none) in one batched read; without it the items come back untouched. */
+  async function withLinks<T extends Item>(items: T[], include: ItemReadInclude): Promise<T[]> {
+    if (!(Array.isArray(include) ? include.includes("links") : include?.links === true)) return items;
     const linksByItem = await chokePoint.getValueLinksForItems(items.map((item) => item.id));
     return items.map((item) => ({ ...item, links: linksByItem.get(item.id) ?? {} }));
   }
 
+  function expansion(include: ItemReadInclude) {
+    return include && !Array.isArray(include) && include.relations !== undefined
+      ? { relations: include.relations, resolver }
+      : undefined;
+  }
   return {
     // ---- databases ----
     async listDatabases(_actor, input) {
@@ -260,15 +270,19 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
     },
 
     async queryView(actor, input) {
-      const page = await chokePoint.queryViewItems(input.viewId, {
-        locale: await chokePoint.findUserLocale(actor.userId),
-        filter: input.filter,
-        sort: input.sort,
-        cursor: input.cursor,
-        limit: input.limit,
-        inTrash: input.inTrash,
-        includeCount: input.includeCount,
-      });
+      const page = await chokePoint.queryViewItems(
+        input.viewId,
+        {
+          locale: await chokePoint.findUserLocale(actor.userId),
+          filter: input.filter,
+          sort: input.sort,
+          cursor: input.cursor,
+          limit: input.limit,
+          inTrash: input.inTrash,
+          includeCount: input.includeCount,
+        },
+        expansion(input.include),
+      );
       return { ...page, items: await withLinks(page.items, input.include) };
     },
 
@@ -297,7 +311,8 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
 
     // ---- items ----
     async getItem(_actor, input) {
-      const item = await requireItem(input.itemId);
+      const item = await chokePoint.findItem(input.itemId, expansion(input.include));
+      if (!item) throw new NotFoundError(`Item ${input.itemId} not found`, { resource: "item", itemId: input.itemId });
       const [withItemLinks] = await withLinks([item], input.include);
       return withItemLinks ?? item;
     },
@@ -357,15 +372,19 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
           resource: "database",
           databaseId: input.databaseId,
         });
-      const page = await chokePoint.queryDatabaseItems(input.databaseId, {
-        locale: await chokePoint.findUserLocale(actor.userId),
-        filter: input.filter,
-        sort: input.sort,
-        cursor: input.cursor,
-        limit: input.limit,
-        inTrash: input.inTrash,
-        includeCount: input.includeCount,
-      });
+      const page = await chokePoint.queryDatabaseItems(
+        input.databaseId,
+        {
+          locale: await chokePoint.findUserLocale(actor.userId),
+          filter: input.filter,
+          sort: input.sort,
+          cursor: input.cursor,
+          limit: input.limit,
+          inTrash: input.inTrash,
+          includeCount: input.includeCount,
+        },
+        expansion(input.include),
+      );
       return { ...page, items: await withLinks(page.items, input.include) };
     },
 

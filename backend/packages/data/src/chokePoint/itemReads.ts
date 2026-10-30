@@ -1,3 +1,4 @@
+import { expandItemRelations, type RelationExpansionOptions } from "./relationExpansion.js";
 import { projectItemsForRead } from "./itemReadProjection.js";
 // Owns the choke point's item reads: single-item lookups (`getItem`, `findItem`,
 // `findItemIncludingDeleted`), the breadcrumb walk `getItemPath`, and filtered `listItems` /
@@ -72,12 +73,13 @@ async function resolveFilterSql(
 export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
   const { pool } = deps;
   return {
-    async getItem(databaseId: string, itemId: string): Promise<ItemRow | null> {
+    async getItem(databaseId: string, itemId: string, expansion?: RelationExpansionOptions) {
       return withTransaction(pool, async (client) => {
         const item = await itemsStore.getItemById(client, databaseId, itemId);
         if (!item) return null;
         const [stamped] = await withFromInbox(client, [item]);
-        return (await projectItemsForRead(client, [stamped ?? item]))[0]!;
+        const projected = await projectItemsForRead(client, [stamped ?? item]);
+        return (expansion ? await expandItemRelations(client, projected, expansion) : projected)[0]!;
       });
     },
 
@@ -87,12 +89,13 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
      * `getItemsByIds` scan `assertItemExists` already uses for view membership — acceptable here
      * for the same reason: a single-row point lookup, not a scan over a large membership list.
      */
-    async findItem(itemId: string): Promise<ItemRow | null> {
+    async findItem(itemId: string, expansion?: RelationExpansionOptions) {
       return withTransaction(pool, async (client) => {
         const [item] = await itemsStore.getItemsByIds(client, [itemId]);
         if (!item) return null;
         const [stamped] = await withFromInbox(client, [item]);
-        return (await projectItemsForRead(client, [stamped ?? item]))[0]!;
+        const projected = await projectItemsForRead(client, [stamped ?? item]);
+        return (expansion ? await expandItemRelations(client, projected, expansion) : projected)[0]!;
       });
     },
 
@@ -126,7 +129,7 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
      * Iterative per-level walk rather than a single recursive CTE — the trade-off is recorded in
      * `docs/adr/2026-09-11-iterative-parent-chain-traversal-in-choke-point.md`.
      */
-    async getItemPath(itemId: string): Promise<ItemRow[]> {
+    async getItemPath(itemId: string, expansion?: RelationExpansionOptions): Promise<ItemRow[]> {
       return withTransaction(pool, async (client) => {
         const chain: ItemRow[] = [];
         const visitedDatabaseIds = new Set<string>();
@@ -140,7 +143,11 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
           const database = await databasesStore.getDatabase(client, item.databaseId);
           currentId = database?.parentItemId ?? undefined;
         }
-        return projectItemsForRead(client, chain);
+        const projected = await projectItemsForRead(client, chain);
+        const last = projected.at(-1);
+        if (!expansion || !last) return projected;
+        const expanded = await expandItemRelations(client, [last], expansion);
+        return [...projected.slice(0, -1), ...expanded];
       });
     },
 

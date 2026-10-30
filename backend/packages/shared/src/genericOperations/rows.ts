@@ -94,6 +94,20 @@ export interface ItemLink {
   brokenAt: string | null;
 }
 
+export interface ReducedRelationTarget {
+  id: string;
+  databaseKey: string | null;
+  title: string;
+  color?: string;
+  icon?: string;
+}
+export interface ExpandedRelationTarget extends ReducedRelationTarget {
+  databaseId: string;
+  metadata: Record<string, unknown>;
+  properties?: Record<string, unknown>;
+  blobs?: Record<string, { blobId: string; byteSize: number; mimeType: string; filename: string | null }>;
+}
+
 export interface Item {
   id: string;
   databaseId: string;
@@ -103,6 +117,8 @@ export interface Item {
   deletedAt: string | null;
   /** Present on item reads and queries: true exactly when the item was created from an Inbox proposal. */
   fromInbox?: boolean;
+  relations?: Record<string, ExpandedRelationTarget[]>;
+  relationsTruncated?: string[];
   /** Present only when the read asked for `include: ["links"]`; keyed by property key, empty when the item has no link. */
   links?: Record<string, ItemLink>;
 }

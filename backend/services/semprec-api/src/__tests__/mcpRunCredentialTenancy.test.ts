@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -16,6 +17,10 @@ import { createGenericOperationGateway } from "@semprec/application";
 import { CAPABILITY_IDS } from "@semprec/shared";
 import { createAgentRunRequestListener } from "../agentRunHandler.js";
 import { createMcpRequestListener } from "../mcp/mcpHandler.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 const PASSWORD = "s3cret-password";
 
@@ -54,7 +59,13 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
     tenantA = getTenantZeroId();
     tenantB = await createTestTenant(adminPool);
     agentRunUrl = await listen(createAgentRunRequestListener(pool));
-    mcpUrl = await listen(createMcpRequestListener(pool, createGenericOperationGateway(pool), new Set(CAPABILITY_IDS)));
+    mcpUrl = await listen(
+      createMcpRequestListener(
+        pool,
+        createGenericOperationGateway(pool, testMetadataResolver),
+        new Set(CAPABILITY_IDS),
+      ),
+    );
   });
 
   afterEach(async () => {

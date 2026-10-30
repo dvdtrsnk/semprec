@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
@@ -17,6 +18,10 @@ import {
   createGenericOperationAgentTools,
   listGrantedGenericOperationAgentTools,
 } from "../tools/generic/genericOperationAgentTools.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -58,7 +63,7 @@ describe("generic operation AgentTools (issue #220)", () => {
 
   describe("createGenericOperationAgentTools", () => {
     it("returns owner_violation, never touching the choke point, for a currentRunId that doesn't exist", async () => {
-      const tools = createGenericOperationAgentTools(pool);
+      const tools = createGenericOperationAgentTools(pool, undefined, testMetadataResolver);
 
       const outcome = await tools["item.get"](randomUUID(), { itemId: randomUUID() });
 
@@ -68,7 +73,7 @@ describe("generic operation AgentTools (issue #220)", () => {
 
     it("returns owner_violation for a run whose project_item_id is NULL", async () => {
       const run = await createAgentRun(pool, { triggeredBy: "user", task: "no project" });
-      const tools = createGenericOperationAgentTools(pool);
+      const tools = createGenericOperationAgentTools(pool, undefined, testMetadataResolver);
 
       const outcome = await tools["item.get"](run.id, { itemId: randomUUID() });
 
@@ -81,7 +86,7 @@ describe("generic operation AgentTools (issue #220)", () => {
       const otherProjectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "make a view" });
       const database = await chokePoint.createDatabase({ name: "Tools DB" });
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
 
       // Every generic-operation input schema is a strict zod object with none of these field
       // names (see AuthenticatedActor's own doc comment) — an attempt to smuggle a different
@@ -117,7 +122,7 @@ describe("generic operation AgentTools (issue #220)", () => {
         { type: "list", name: "Scratch", config: { membership: "manual" } },
         { type: "ai_agent", agentProjectItemId: projectItemId },
       );
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
 
       const outcome = await tools["view.delete"](run.id, { viewId: view.id });
 
@@ -139,7 +144,7 @@ describe("generic operation AgentTools (issue #220)", () => {
         { type: "list", name: "Scratch", config: { membership: "manual" } },
         { type: "ai_agent", agentProjectItemId: projectItemId },
       );
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
 
       const outcome = await tools["view.delete"](run.id, { viewId: view.id });
 
@@ -164,7 +169,7 @@ describe("generic operation AgentTools (issue #220)", () => {
         databaseId: database.id,
         properties: { title: "Write", due: "2026-10-21T14:00", body: "secret old body" },
       });
-      return { run, item, tools: createGenericOperationAgentTools(pool, moduleRegistry) };
+      return { run, item, tools: createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver) };
     }
 
     it("reports the previous and new value of a changed property", async () => {
@@ -221,7 +226,7 @@ describe("generic operation AgentTools (issue #220)", () => {
     it("returns [] for a run with no project context", async () => {
       const run = await createAgentRun(pool, { triggeredBy: "user", task: "no project" });
 
-      const granted = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, run.id);
+      const granted = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, run.id, testMetadataResolver);
 
       expect(granted).toEqual([]);
     });
@@ -230,7 +235,7 @@ describe("generic operation AgentTools (issue #220)", () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "check tools" });
 
-      const granted = await listGrantedGenericOperationAgentTools(pool, undefined, run.id);
+      const granted = await listGrantedGenericOperationAgentTools(pool, undefined, run.id, testMetadataResolver);
 
       expect(granted).toEqual([]);
     });
@@ -239,7 +244,7 @@ describe("generic operation AgentTools (issue #220)", () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "check tools" });
 
-      const granted = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, run.id);
+      const granted = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, run.id, testMetadataResolver);
 
       expect(granted.sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
     });

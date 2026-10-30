@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
@@ -42,6 +43,10 @@ import {
 } from "@semprec/shared";
 import { createGenericOperationGateway, replayApprovedGenericOperation } from "../genericOperationGateway.js";
 
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
+
 let pool: Pool;
 let chokePoint: ChokePoint;
 
@@ -66,7 +71,7 @@ async function approveDestructive(
   actor: AuthenticatedActor,
   input: unknown,
 ): Promise<string> {
-  const gateway = createGenericOperationGateway(pool);
+  const gateway = createGenericOperationGateway(pool, testMetadataResolver);
   let requestId: string;
   try {
     await gateway.invoke(operation, actor, ALL_CAPABILITIES, input);
@@ -99,7 +104,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
   it("item.patch carries the transactional pre-image through the production gateway and service", async () => {
     await inTenantZero(async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId: await createUser() };
       const db = await chokePoint.createDatabase({ name: "Patch values" });
       for (const key of ["due", "note", "unset"]) {
@@ -146,7 +151,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         return { db, item: await cp.createItem({ databaseId: db.id, properties: { title: "Private" } }) };
       });
       const actor: AuthenticatedActor = { userId: await createUser() };
-      const gateway = createGenericOperationGateway(runtimePool);
+      const gateway = createGenericOperationGateway(runtimePool, testMetadataResolver);
       const input = { itemId: fixture.item.id, properties: { title: "Changed" }, ifVersion: fixture.item.updatedAt };
       const foreign = await runInTenant(tenantB, () =>
         Promise.allSettled([
@@ -174,7 +179,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
   describe("listOperations", () => {
     it("returns only the operations whose capability is granted, never present-but-forbidden", () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
 
       expect(gateway.listOperations(NO_CAPABILITIES)).toEqual([]);
       expect(gateway.listOperations(ALL_CAPABILITIES)).toEqual([...GENERIC_OPERATION_NAMES]);
@@ -189,7 +194,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
   describe("invoke", () => {
     it("throws NotFoundError for an operation whose capability isn't granted, indistinguishable from unknown", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId: await createUser() };
 
       await expect(gateway.invoke("item.get", actor, NO_CAPABILITIES, { itemId: randomUUID() })).rejects.toThrow(
@@ -198,7 +203,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("rejects an agent actor carrying runId without agentProjectItemId as owner_violation", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId: await createUser(), runId: randomUUID() };
 
       try {
@@ -211,7 +216,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("rejects an agent actor carrying agentProjectItemId without runId as owner_violation", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId: await createUser(), agentProjectItemId: randomUUID() };
 
       try {
@@ -224,14 +229,14 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("throws ValidationError for input that fails the operation's own zod binding", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId: await createUser() };
 
       await expect(gateway.invoke("item.get", actor, ALL_CAPABILITIES, {})).rejects.toThrow(ValidationError);
     });
 
     it("names the offending field when property.create fails its union schema", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId: await createUser() };
       const database = await chokePoint.createDatabase({ name: "Gateway DB" });
       const base = { databaseId: database.id, key: "rel", name: "Rel" };
@@ -250,7 +255,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("executes a non-destructive operation immediately for a REST-style human actor", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId: await createUser() };
       const database = await chokePoint.createDatabase({ name: "Gateway DB" });
       await chokePoint.createProperty({ databaseId: database.id, key: "title", name: "Title", type: "title" });
@@ -266,7 +271,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("executes a destructive operation immediately for a REST-style human actor (no runId, so never approval-gated)", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId: await createUser() };
       const database = await chokePoint.createDatabase({ name: "Gateway DB 2" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
@@ -279,7 +284,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("defers a destructive operation for a full agent actor: no execution, one pending approval_requests row, ApprovalRequiredError", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const database = await chokePoint.createDatabase({ name: "Gateway DB 3" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       const projectItemId = randomUUID();
@@ -310,7 +315,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("stores the agent's reason on the request without putting it in the canonical input or the snapshot (issue #1420)", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const database = await chokePoint.createDatabase({ name: "Gateway DB reason" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       const projectItemId = randomUUID();
@@ -333,7 +338,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("stores the tool call id on the request, and leaves it NULL when none is supplied (issue #1618)", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const database = await chokePoint.createDatabase({ name: "Gateway DB tool call" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       const projectItemId = randomUUID();
@@ -356,7 +361,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("still rejects a reason field inside the operation input as strict-schema ValidationError (issue #1420)", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId: randomUUID() };
       await expect(
         gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: randomUUID(), reason: "x" }),
@@ -364,7 +369,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("executes a non-destructive operation immediately for a full agent actor (no approval gate)", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const userId = await createUser();
       const database = await chokePoint.createDatabase({ name: "Gateway DB 4" });
       await chokePoint.createProperty({ databaseId: database.id, key: "title", name: "Title", type: "title" });
@@ -389,7 +394,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
       run: { id: string };
       item: { id: string; databaseId: string };
     }> {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const database = await chokePoint.createDatabase({ name: "Replay DB" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       const projectItemId = randomUUID();
@@ -586,7 +591,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     }
 
     it("creates no approval_requests row and no notification when the resource is unauthorized (not found)", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const projectItemId = randomUUID();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete a ghost" });
       const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
@@ -599,7 +604,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("creates no approval_requests row and no notification when the actor's persisted provenance no longer matches (owner_violation)", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const database = await chokePoint.createDatabase({ name: "Preflight Provenance" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       const projectItemId = randomUUID();
@@ -624,7 +629,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("creates no approval_requests row and no notification when the resource is locked (paired relation property locked)", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const tasks = await chokePoint.createDatabase({ name: "Preflight Locked Tasks" });
       const participants = await chokePoint.createDatabase({ name: "Preflight Locked Participants" });
       const { property: assignedTo } = await chokePoint.createRelationProperty({
@@ -647,7 +652,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("persists resourceSnapshot inside the payload, matching the row's own resourceSnapshot column", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const database = await chokePoint.createDatabase({ name: "Preflight Snapshot Payload" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       const projectItemId = randomUUID();
@@ -1095,7 +1100,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
     it("refuses a request for an unknown page without queuing an approval", async () => {
       const actor = await makeAgentActor();
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
 
       await expect(
         gateway.invoke("page.restoreVersion", actor, ALL_CAPABILITIES, {
@@ -1129,7 +1134,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     }
 
     async function createPendingDeleteAndApprove(): Promise<{ requestId: string; itemId: string }> {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const database = await chokePoint.createDatabase({ name: "Worker path DB" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       const projectItemId = randomUUID();
@@ -1225,9 +1230,14 @@ describe("approval_pending recipient in a tenant (issue #1018)", () => {
       const run = await createAgentRun(runtimePool, { projectItemId, triggeredBy: "user", task: "delete it" });
       const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
       try {
-        await createGenericOperationGateway(runtimePool).invoke("item.delete", actor, ALL_CAPABILITIES, {
-          itemId: item.id,
-        });
+        await createGenericOperationGateway(runtimePool, testMetadataResolver).invoke(
+          "item.delete",
+          actor,
+          ALL_CAPABILITIES,
+          {
+            itemId: item.id,
+          },
+        );
       } catch (err) {
         if (err instanceof ApprovalRequiredError) return err.details.approvalRequestId;
         throw err;

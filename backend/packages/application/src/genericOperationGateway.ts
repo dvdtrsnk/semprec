@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import type { Pool, PoolClient } from "pg";
 import {
   ApprovalRequiredError,
@@ -310,8 +311,11 @@ export interface GenericOperationGateway {
  * directly without this gate — a REST human actor never carries `agentProjectItemId`, the one
  * condition this gate's approval check keys on, so this gate would only ever be a no-op there.
  */
-export function createGenericOperationGateway(pool: Pool): GenericOperationGateway {
-  const service = createGenericApplicationService(pool);
+export function createGenericOperationGateway(
+  pool: Pool,
+  resolver: CollectionMetadataResolver,
+): GenericOperationGateway {
+  const service = createGenericApplicationService(pool, resolver);
 
   return {
     listOperations(grantedCapabilities) {

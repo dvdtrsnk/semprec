@@ -1,3 +1,5 @@
+import { getView } from "./viewsStore.js";
+import { expandItemRelations, type RelationExpansionOptions } from "./relationExpansion.js";
 import { projectItemsForRead } from "./itemReadProjection.js";
 // Owns the choke point's read-through-a-view operations: querying a stored view, and the raw
 // request-shaped queries against a database or a view. Nothing that writes state, and no view
@@ -32,17 +34,37 @@ export function createViewQueryOps(deps: Pick<ChokePointDeps, "pool">) {
     async queryDatabaseItems(
       databaseId: string,
       input: viewQuery.DatabaseQueryInput,
+      expansion?: RelationExpansionOptions,
     ): Promise<viewQuery.QueryViewResult> {
-      return withTransaction(pool, async (client) =>
-        stampFromInbox(client, await viewQuery.queryDatabaseItems(client, databaseId, input)),
-      );
+      return withTransaction(pool, async (client) => {
+        const page = await stampFromInbox(client, await viewQuery.queryDatabaseItems(client, databaseId, input));
+        return expansion
+          ? {
+              ...page,
+              items: await expandItemRelations(client, page.items, { ...expansion, databaseIds: [databaseId] }),
+            }
+          : page;
+      });
     },
 
     /** `POST /api/views/:id/query` (issue #157): same raw request shape as `queryDatabaseItems`, resolved against a stored view. */
-    async queryViewItems(viewId: string, input: viewQuery.ViewQueryInput): Promise<viewQuery.QueryViewResult> {
-      return withTransaction(pool, async (client) =>
-        stampFromInbox(client, await viewQuery.queryViewItems(client, viewId, input)),
-      );
+    async queryViewItems(
+      viewId: string,
+      input: viewQuery.ViewQueryInput,
+      expansion?: RelationExpansionOptions,
+    ): Promise<viewQuery.QueryViewResult> {
+      return withTransaction(pool, async (client) => {
+        const page = await stampFromInbox(client, await viewQuery.queryViewItems(client, viewId, input));
+        if (!expansion) return page;
+        const view = await getView(client, viewId);
+        return {
+          ...page,
+          items: await expandItemRelations(client, page.items, {
+            ...expansion,
+            databaseIds: view?.databaseId ? [view.databaseId] : undefined,
+          }),
+        };
+      });
     },
   };
 }
