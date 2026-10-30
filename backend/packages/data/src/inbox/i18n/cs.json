@@ -5,7 +5,6 @@
   "property.inbox.text.name": "Text",
   "property.inbox.type.name": "Typ",
   "property.inbox.journalDay.name": "Den v deníku",
-
   "database.inboxItemTypes.name": "Typy položek Inboxu",
   "property.inboxItemTypes.name.name": "Název",
   "property.inboxItemTypes.emoji.name": "Emoji",
@@ -26,7 +25,6 @@
   "property.inboxItemTypes.targetDatabase.option.companies": "Firmy",
   "property.inboxItemTypes.targetDatabase.option.transcripts": "Přepisy",
   "property.inboxItemTypes.targetDatabase.option.journal": "Deník",
-
   "database.processingProposals.name": "Návrhy zpracování",
   "property.processingProposals.kind.name": "Druh",
   "property.processingProposals.kind.option.inbox": "Inbox",
@@ -61,9 +59,7 @@
   "invalidReason.sourceDeleted": "Zdrojová položka Inboxu „{label}“ byla smazána, takže tento návrh už nelze dokončit.",
   "invalidReason.targetArchived": "Cíl „{label}“ byl archivován, takže návrh nemá kam zapsat. Vyberte jiný cíl nebo požádejte Semp o nový výpočet.",
   "invalidReason.targetDeleted": "Cíl „{label}“ byl smazán, takže návrh nemá kam zapsat. Vyberte jiný cíl nebo požádejte Semp o nový výpočet.",
-
   "viewType.journal-inbox.name": "Inbox deníku",
-
   "editor.mcp.name.label": "Název",
   "editor.mcp.name.placeholder": "Název serveru",
   "editor.mcp.transport.label": "Přenos",
@@ -73,5 +69,7 @@
   "editor.mcp.command.placeholder": "npx -y @example/server",
   "editor.mcp.credential.label": "Přihlašovací údaje",
   "editor.mcp.credential.placeholder": "API klíč nebo token",
-  "editor.mcp.mcpProjects.label": "Projekty"
+  "editor.mcp.mcpProjects.label": "Projekty",
+  "inbox.recognition.chooseType": "Vyberte typ položky.",
+  "inbox.recognition.typeShortage": "Jsou dostupné méně než dva platné aktivní typy."
 }
