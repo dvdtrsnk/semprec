@@ -1,3 +1,5 @@
+import { booksPreWriteTransform } from "./library/booksPreWriteTransform.js";
+import { BOOKS_MODULE_ID } from "./seed/libraryModuleKeys.js";
 import {
   mailboxConnectionLimitCreateHook,
   mailboxConnectionLimitUpdateHook,
@@ -35,6 +37,7 @@ import { inboxItemCreateHook } from "./inbox/inboxCreateHook.js";
 import { inboxTypeItemCreateHook, inboxTypeItemUpdateHook } from "./inbox/inboxTypeWriteHook.js";
 
 registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform);
+registerItemPreWriteTransform(BOOKS_MODULE_ID, booksPreWriteTransform);
 registerItemCreateHook(mcpServerItemCreateHook);
 registerItemCreateHook(itemSearchCreateHook);
 registerItemUpdateHook(mcpServerItemUpdateHook);
