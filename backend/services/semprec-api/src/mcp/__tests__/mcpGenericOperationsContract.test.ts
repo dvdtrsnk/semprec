@@ -385,6 +385,40 @@ describe("generic operation MCP contract (issue #220)", () => {
     await pool?.end();
   });
 
+  it.each(["done", "archived"])("unpins Projects and refuses explicit terminal pins over MCP (%s)", async (status) => {
+    const databaseId = await projectsDatabaseId();
+    const item = await chokePoint.createItem({
+      databaseId,
+      properties: { name: "Project", status: "inProgress", pinned: true },
+    });
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const headers = await authHeader();
+    const answer = await rpc(baseUrl, headers, "semprec.item.patch", { itemId: item.id, patch: { status } });
+    expect(answer.error).toBeUndefined();
+    const content = answer.result?.content.find((part) => part.type === "text")?.text;
+    if (!content) throw new Error("Missing MCP result");
+    const result: unknown = JSON.parse(content);
+    expect(result).toMatchObject({ properties: { status, pinned: false } });
+    for (const patch of [{ pinned: true }, { status, pinned: true }]) {
+      const rejected = await rpc(baseUrl, headers, "semprec.item.patch", { itemId: item.id, patch });
+      expect(rejected.error?.code).toBe(-32602);
+      expect(rejected.error?.data).toMatchObject({ field: "pinned" });
+      expect((await chokePoint.getItem(databaseId, item.id))?.properties).toMatchObject({ status, pinned: false });
+    }
+    for (const activeStatus of ["inProgress", "longTerm"]) {
+      const accepted = await rpc(baseUrl, headers, "semprec.item.patch", {
+        itemId: item.id,
+        patch: { status: activeStatus, pinned: true },
+      });
+      expect(accepted.error).toBeUndefined();
+      expect((await chokePoint.getItem(databaseId, item.id))?.properties).toMatchObject({
+        status: activeStatus,
+        pinned: true,
+      });
+    }
+  });
+
   it("has exactly one contract case per operation in the closed catalog", () => {
     expect(Object.keys(CASES).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
