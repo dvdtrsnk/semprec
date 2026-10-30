@@ -1,3 +1,4 @@
+import { projectWriteTransform } from "./projects/projectWriteTransform.js";
 import { areaItemCreateHook, areaItemUpdateHook } from "./areas/areaWriteHook.js";
 import { booksPreWriteTransform } from "./library/booksPreWriteTransform.js";
 import { BOOKS_MODULE_ID } from "./seed/libraryModuleKeys.js";
@@ -23,7 +24,7 @@ import {
 } from "./chokePoint/hooks.js";
 import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "./mcp/mcpServerWriteHook.js";
 import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.js";
-import { TASKS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
+import { TASKS_MODULE_ID, PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
 import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHook.js";
 import { taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
@@ -39,6 +40,7 @@ import { inboxTypeItemCreateHook, inboxTypeItemUpdateHook } from "./inbox/inboxT
 
 registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform);
 registerItemPreWriteTransform(BOOKS_MODULE_ID, booksPreWriteTransform);
+registerItemPreWriteTransform(PROJECTS_MODULE_ID, projectWriteTransform);
 registerItemCreateHook(mcpServerItemCreateHook);
 registerItemCreateHook(itemSearchCreateHook);
 registerItemUpdateHook(mcpServerItemUpdateHook);
