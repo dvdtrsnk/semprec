@@ -114,6 +114,8 @@ export async function seedLibraryModuleInTransaction(
   await createProps(client, books.id, [
     { key: "name", name: null, type: "title", owner: "user" },
     { key: "author", name: null, type: "text", owner: "user" },
+    { key: "year", name: null, type: "number", owner: "user" },
+    { key: "isbn", name: null, type: "text", owner: "user" },
     // { blobId } over the shared `blobs` table (0004_ten_databases.sql) — coverKey.
     { key: "cover", name: null, type: "image", owner: "system" },
     { key: "rating", name: null, type: "number", owner: "user" },

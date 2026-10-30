@@ -3,6 +3,8 @@
   "database.books.searchPlaceholder": "Search books",
   "property.books.name.name": "Name",
   "property.books.author.name": "Author",
+  "property.books.year.name": "Year",
+  "property.books.isbn.name": "ISBN",
   "property.books.cover.name": "Cover",
   "property.books.rating.name": "Rating",
   "property.books.status.name": "Status",

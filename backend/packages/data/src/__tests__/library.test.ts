@@ -2,6 +2,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
 import { runInTenant } from "@semprec/shared";
+import { runLibraryBooksYearIsbnCutoverMigration } from "../library/libraryBooksYearIsbnCutoverMigration.js";
+import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
+import { generateSchemaProjection } from "../manifest/schemaProjection.js";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -163,7 +166,7 @@ describe("library module (issue #25)", () => {
     const books = await chokePoint.listProperties(booksId);
     const movies = await chokePoint.listProperties(moviesId);
 
-    expect(books.map((p) => p.key).sort()).toEqual(["author", "cover", "name", "rating", "status"]);
+    expect(books.map((p) => p.key).sort()).toEqual(["author", "cover", "isbn", "name", "rating", "status", "year"]);
     expect(movies.map((p) => p.key).sort()).toEqual(
       [
         "cover",
@@ -179,6 +182,8 @@ describe("library module (issue #25)", () => {
       ].sort(),
     );
 
+    expect(books.find((p) => p.key === "year")).toMatchObject({ type: "number", owner: "user", name: null });
+    expect(books.find((p) => p.key === "isbn")).toMatchObject({ type: "text", owner: "user", name: null });
     expect(books.find((p) => p.key === "cover")).toMatchObject({ type: "image", owner: "system" });
     expect(movies.find((p) => p.key === "year")).toMatchObject({ type: "number", owner: "user" });
     expect(movies.find((p) => p.key === "secondaryRating")).toMatchObject({ type: "number", owner: "system" });
@@ -647,5 +652,123 @@ describe("library automation_error recipient in a tenant (issue #1018)", () => {
     );
     expect(rows).toEqual([{ user_id: userB.id, kind: "automation_error", tenant_id: tenantB }]);
     expect(rows[0]?.user_id).not.toBe(userA.id);
+  });
+});
+
+describe("Books year and ISBN tenant cutover", () => {
+  let admin: Pool;
+  let runtime: Pool;
+  let tenantId: string;
+  let booksId: string;
+  beforeEach(async () => {
+    admin ??= getTestPool();
+    runtime ??= await createRuntimeRolePool(admin, "semprec_data");
+    await resetDatabase(admin);
+    tenantId = await createTestTenant(admin);
+    await runInTenant(tenantId, async () => {
+      await seedSystem(runtime);
+      const { rows } = await runtime.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'books'");
+      if (!rows[0]) throw new Error("Books missing");
+      booksId = rows[0].id;
+    });
+  });
+  afterAll(async () => {
+    await runtime.end();
+    await admin.end();
+  });
+
+  async function snapshot() {
+    const { rows } = await runtime.query<{
+      key: string;
+      type: string;
+      owner: string;
+      name: string | null;
+      xmin: string;
+      id: string;
+    }>("SELECT key, type, owner, name, xmin::text AS xmin, id FROM properties WHERE database_id = $1 ORDER BY key", [
+      booksId,
+    ]);
+    return rows;
+  }
+  it("adds both missing properties to the locked schema once and preserves existing properties", async () =>
+    runInTenant(tenantId, async () => {
+      // Direct fixture SQL recreates the schema of an older build.
+      await runtime.query("DELETE FROM properties WHERE database_id = $1 AND key = ANY($2::text[])", [
+        booksId,
+        ["year", "isbn"],
+      ]);
+      const before = await snapshot();
+      await runLibraryBooksYearIsbnCutoverMigration(runtime);
+      const upgraded = await snapshot();
+      expect(upgraded.filter((p) => p.key !== "year" && p.key !== "isbn")).toEqual(before);
+      expect(upgraded.find((p) => p.key === "year")).toMatchObject({ type: "number", owner: "user", name: null });
+      expect(upgraded.find((p) => p.key === "isbn")).toMatchObject({ type: "text", owner: "user", name: null });
+      await runLibraryBooksYearIsbnCutoverMigration(runtime);
+      expect(await snapshot()).toEqual(upgraded);
+      const db = await runtime.query<{ schema_locked: boolean }>("SELECT schema_locked FROM databases WHERE id = $1", [
+        booksId,
+      ]);
+      expect(db.rows[0]?.schema_locked).toBe(true);
+    }));
+  it.each(["year", "isbn"])(
+    "preserves an existing %s property when adding its missing neighbour",
+    async (existingKey) =>
+      runInTenant(tenantId, async () => {
+        await runtime.query("DELETE FROM properties WHERE database_id = $1 AND key = $2", [
+          booksId,
+          existingKey === "year" ? "isbn" : "year",
+        ]);
+        const existing = (await snapshot()).find((p) => p.key === existingKey);
+        await runLibraryBooksYearIsbnCutoverMigration(runtime);
+        const result = await snapshot();
+        expect(result.find((p) => p.key === existingKey)).toEqual(existing);
+        expect(result.map((p) => p.key)).toContain(existingKey === "year" ? "isbn" : "year");
+      }),
+  );
+  it("stores numeric year and text ISBN through the choke point and refuses text year on create and update", async () =>
+    runInTenant(tenantId, async () => {
+      const api = createChokePoint(runtime);
+      const item = await api.createItem({
+        databaseId: booksId,
+        properties: { name: "Book", year: 2019, isbn: "9788074325014" },
+      });
+      expect((await api.getItem(booksId, item.id))?.properties).toMatchObject({ year: 2019, isbn: "9788074325014" });
+      await expect(
+        api.createItem({ databaseId: booksId, properties: { name: "Invalid", year: "2019" } }),
+      ).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        api.updateItem({ databaseId: booksId, itemId: item.id, propertiesPatch: { year: "2019" } }),
+      ).rejects.toBeInstanceOf(ValidationError);
+      await api.updateItem({
+        databaseId: booksId,
+        itemId: item.id,
+        propertiesPatch: { year: 2020, isbn: "9788074325015" },
+      });
+      expect((await api.getItem(booksId, item.id))?.properties).toMatchObject({ year: 2020, isbn: "9788074325015" });
+    }));
+  it("resolves both names through the real Czech and English schema projection", async () =>
+    runInTenant(tenantId, async () => {
+      const registry = await loadFullModuleRegistry();
+      for (const locale of ["cs", "en"] as const) {
+        const schema = await withTransaction(runtime, (client) =>
+          generateSchemaProjection(client, registry, { locale }),
+        );
+        const properties = schema.databases.find((db) => db.databaseId === booksId)?.properties;
+        expect(properties?.find((p) => p.key === "year")?.name).toBe(locale === "cs" ? "Rok" : "Year");
+        expect(properties?.find((p) => p.key === "isbn")?.name).toBe("ISBN");
+      }
+    }));
+  it("does not change another tenant and skips a tenant without Books", async () => {
+    const empty = await createTestTenant(admin);
+    await runInTenant(tenantId, async () => {
+      await runtime.query("DELETE FROM properties WHERE database_id = $1 AND key = ANY($2::text[])", [
+        booksId,
+        ["year", "isbn"],
+      ]);
+    });
+    await runInTenant(empty, () => runLibraryBooksYearIsbnCutoverMigration(runtime));
+    await runInTenant(tenantId, async () => {
+      expect((await snapshot()).map((p) => p.key)).not.toContain("year");
+    });
   });
 });

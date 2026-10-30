@@ -18,7 +18,7 @@ import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js"
  */
 export const manifest: ModuleManifest = {
   id: "library",
-  version: "1.0.0",
+  version: "1.1.0",
   name: "Library",
   removable: false,
   systemProject: true,
