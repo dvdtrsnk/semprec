@@ -1,3 +1,4 @@
+import { runTranscriptionLanguageCodeCutoverMigration } from "../transcription/transcriptionLanguageCodeCutoverMigration.js";
 import { runTranscriptDurationBackfillCutoverMigration } from "../transcription/transcriptDurationBackfillCutoverMigration.js";
 import { runPropertyDefaultsCutoverMigration } from "../seed/propertyDefaultsCutoverMigration.js";
 import type { Pool } from "pg";
@@ -27,6 +28,7 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runPropertyDefaultsCutoverMigration(pool);
     await runTranscriptsCatalogCutoverMigration(pool);
     await runTranscriptDurationBackfillCutoverMigration(pool);
+    await runTranscriptionLanguageCodeCutoverMigration(pool);
     await runEventTranscriptCardinalityCutoverMigration(pool);
     await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
     await runFilesTypeOptionsCutoverMigration(pool);

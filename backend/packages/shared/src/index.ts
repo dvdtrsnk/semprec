@@ -7,3 +7,4 @@ export * from "./traceContext.js";
 export * from "./genericOperations/index.js";
 export * from "./tenantScope.js";
 export * from "./sempMessageRef.js";
+export { normalizeWhisperLanguage } from "./whisperLanguageCodes.js";
