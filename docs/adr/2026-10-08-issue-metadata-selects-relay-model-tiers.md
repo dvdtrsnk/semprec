@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-10-08
 area: [cross-cutting]
 supersedes: []
-superseded-by: null
+superseded-by: 2026-10-30-repository-automation-removed
 ---
 
 # Issue metadata selects Relay model tiers

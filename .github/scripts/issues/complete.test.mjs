@@ -54,6 +54,8 @@ test("completion requires a positive pull request number and a full implementati
   const issue = approveIssue(createRecord({ title: "Deliver", body }), "maintainer");
   const { root, hash } = await fixture(t, issue);
   await assert.rejects(completeIssue(root, issue.metadata.id, hash, { handover: "Handover\n", pullRequest: 0, commit }), /pull request number/);
+  await assert.rejects(completeIssue(root, issue.metadata.id, hash, { handover: "Handover\n", pullRequest: Number("abc"), commit }), /pull request number/);
+  await assert.rejects(completeIssue(root, issue.metadata.id, hash, { handover: "Handover\n", pullRequest: 1.5, commit }), /pull request number/);
   await assert.rejects(completeIssue(root, issue.metadata.id, hash, { handover: "Handover\n", pullRequest: 42, commit: "short" }), /commit SHA/);
 });
 

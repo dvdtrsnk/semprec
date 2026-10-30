@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-10-26
 area: [cross-cutting]
 supersedes: []
-superseded-by: null
+superseded-by: 2026-10-30-repository-automation-removed
 ---
 
 # The owner can pause automated review without disabling build and test gates

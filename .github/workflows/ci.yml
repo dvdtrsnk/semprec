@@ -368,7 +368,9 @@ jobs:
       # `packages/data/src/testSupport/globalSetup.ts` (an embedded server, no service
       # container and no external database).
       - name: Backend — test:integration (shard ${{ matrix.shard }}/3)
-        timeout-minutes: 9
+        # The shard's test run alone takes about nine minutes on a hosted runner, so
+        # a nine-minute step limit left no margin and failed a correct change.
+        timeout-minutes: 15
         working-directory: backend
         run: pnpm run test:integration --shard=${{ matrix.shard }}/3
 
