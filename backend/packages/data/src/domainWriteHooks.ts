@@ -1,3 +1,4 @@
+import { areaItemCreateHook, areaItemUpdateHook } from "./areas/areaWriteHook.js";
 import { booksPreWriteTransform } from "./library/booksPreWriteTransform.js";
 import { BOOKS_MODULE_ID } from "./seed/libraryModuleKeys.js";
 import {
@@ -69,3 +70,6 @@ registerItemReadProjection({
 
 registerItemCreateHook(mailboxConnectionLimitCreateHook);
 registerItemUpdateHook(mailboxConnectionLimitUpdateHook);
+
+registerItemCreateHook(areaItemCreateHook);
+registerItemUpdateHook(areaItemUpdateHook);

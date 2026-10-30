@@ -42,7 +42,7 @@ interface PropSpec {
    * translation catalog); a built-in property of a system database is stored with a null
    * `name` (issue #235) — `createProps` below never writes this string to the column.
    */
-  name: string;
+  name: string | null;
   type: PropertyType;
   owner?: PropertyOwner;
   ownerProcess?: string;
@@ -108,6 +108,9 @@ export async function seedTenDatabasesInTransaction(
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "active", name: "Active", type: "checkbox", owner: "user", config: { default: true } },
     { key: "note", name: "Note", type: "text", owner: "user" },
+    { key: "icon", name: null, type: "text", owner: "user" },
+    { key: "color", name: null, type: "color", owner: "user" },
+    { key: "position", name: null, type: "number", owner: "user" },
   ]);
 
   const projects = await createDb(client, PROJECTS_MODULE_ID);
