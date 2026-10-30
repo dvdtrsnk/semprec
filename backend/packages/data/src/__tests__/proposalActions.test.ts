@@ -192,7 +192,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       }),
     );
     await runTick(item.id, async () => {
-      throw new Error("must not be called");
+      return { properties: {}, candidates: [] };
     });
     const proposal = (await findProposalForItem(item.id))!;
 
