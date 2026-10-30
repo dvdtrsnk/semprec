@@ -39,6 +39,11 @@ export interface ModuleHeartbeatRuleKindDescriptor {
   nextFireAtExport: string;
 }
 
+export interface ModuleRelatedOrderDescriptor {
+  order: string[];
+  omit?: string[];
+}
+
 /**
  * `defaultViewType`, when present, names the view type a database's default (system-created)
  * view uses instead of the generic `"table"` type — e.g. Journal's `temporal-switcher`
@@ -50,6 +55,8 @@ export interface ModuleDatabaseDescriptor {
   defaultViewType?: string;
   /** Searchable property keys; absent uses the generic text and select-label rule. Unknown keys are ignored. */
   searchFields?: string[];
+  /** Related collection ordering for this record type; consumers apply fallback ordering. */
+  relatedOrder?: ModuleRelatedOrderDescriptor;
   /** Icon name, lowercase kebab-case. Absent means the database declares no icon. */
   icon?: string;
   /** Color as `#RRGGBB`. Absent means the database declares no color. */
@@ -249,11 +256,32 @@ const moduleHeartbeatRuleKindDescriptorSchema = z.object({
   nextFireAtExport: z.string().min(1),
 });
 
+const moduleRelatedOrderSchema = z
+  .object({
+    order: z.array(z.string().min(1)),
+    omit: z.array(z.string().min(1)).optional(),
+  })
+  .superRefine(({ order, omit }, ctx) => {
+    const seen = new Set<string>();
+    for (const [field, keys] of [
+      ["order", order],
+      ["omit", omit ?? []],
+    ] as const) {
+      keys.forEach((key, index) => {
+        if (seen.has(key)) {
+          ctx.addIssue({ code: "custom", message: `Duplicate related database key "${key}"`, path: [field, index] });
+        }
+        seen.add(key);
+      });
+    }
+  });
+
 const moduleDatabaseDescriptorSchema = z.object({
   key: z.string().min(1),
   name: z.string().min(1),
   defaultViewType: z.string().min(1).optional(),
   searchFields: z.array(z.string().min(1)).max(1000).optional(),
+  relatedOrder: moduleRelatedOrderSchema.optional(),
   icon: z
     .string()
     .regex(/^[a-z][a-z0-9-]{0,63}$/)
