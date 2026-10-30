@@ -9,6 +9,8 @@ import {
   TRANSCRIPTION_PREPARE_COMPUTED_KEY,
   TRANSCRIPTION_DIARIZE_COMPUTED_KEY,
   TRANSCRIPTION_ASR_COMPUTED_KEY,
+  TRANSCRIPT_DURATION_SECONDS_COMPUTED_KEY,
+  TRANSCRIPT_FINALIZED_AT_COMPUTED_KEY,
   TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
   TRANSCRIPT_LANGUAGE_COMPUTED_KEY,
   TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
@@ -398,6 +400,13 @@ async function runPrepareStep(
         creationTime: probe.creationTime,
       };
       await writeComputed(client, filesDatabaseId, fileItemId, TRANSCRIPTION_PREPARE_COMPUTED_KEY, result);
+      await writeComputedAndAnnounce(
+        client,
+        transcripts.id,
+        transcriptId,
+        TRANSCRIPT_DURATION_SECONDS_COMPUTED_KEY,
+        durationSeconds,
+      );
       referenced = true;
     });
   } finally {
@@ -755,6 +764,13 @@ async function runFinalizeStep(
       client,
       { databaseId: transcriptsDatabaseId, itemId: transcriptId, propertiesPatch: { status: "done" } },
       { allowedSystemKeys: ["status"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+    );
+    await writeComputedAndAnnounce(
+      client,
+      transcriptsDatabaseId,
+      transcriptId,
+      TRANSCRIPT_FINALIZED_AT_COMPUTED_KEY,
+      new Date().toISOString(),
     );
     await markItemAutomationDone(client, transcriptId);
   });

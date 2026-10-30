@@ -1,3 +1,4 @@
+import { runTranscriptDurationBackfillCutoverMigration } from "../transcription/transcriptDurationBackfillCutoverMigration.js";
 import { runPropertyDefaultsCutoverMigration } from "../seed/propertyDefaultsCutoverMigration.js";
 import type { Pool } from "pg";
 import { assertRowSecurityActive, forEachMaintainedTenant } from "../tenancy/provisionTenant.js";
@@ -25,6 +26,7 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
   await forEachMaintainedTenant(pool, async () => {
     await runPropertyDefaultsCutoverMigration(pool);
     await runTranscriptsCatalogCutoverMigration(pool);
+    await runTranscriptDurationBackfillCutoverMigration(pool);
     await runEventTranscriptCardinalityCutoverMigration(pool);
     await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
     await runFilesTypeOptionsCutoverMigration(pool);

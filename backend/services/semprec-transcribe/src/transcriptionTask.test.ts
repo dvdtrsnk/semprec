@@ -1003,6 +1003,10 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
   }
 
   it("merges into speaker segments with the language, summarizes, and finalizes done with item_automation done", async () => {
+    const announced: string[] = [];
+    setInvalidationHook((event) => {
+      if (event.scope === "item" && event.itemId) announced.push(event.itemId);
+    });
     const { file } = await createSourceFile();
 
     await createTranscriptionTask(
@@ -1018,6 +1022,16 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       { speaker: "SPEAKER_01", text: "Hi there.", startsAt: 0.6, endsAt: 0.9 },
     ]);
     expect(transcript.computed.language).toBe("en");
+    expect(transcript.computed.durationSeconds).toBeGreaterThan(0);
+    expect(announced).toContain(transcript.id);
+    expect(transcript.computed.finalizedAt).toEqual(expect.stringMatching(/Z$/));
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+    expect((await readTranscript(file.id)).computed).toEqual(transcript.computed);
     expect(transcript.computed.summaryByInstruction).toEqual({
       meetingSummary: expect.stringMatching(/^summary for: Summarize this meeting/),
     });
