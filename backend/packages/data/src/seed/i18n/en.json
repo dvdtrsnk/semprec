@@ -16,6 +16,7 @@
   "database.projects.searchPlaceholder": "Search projects",
   "property.projects.name.name": "Name",
   "property.projects.pinned.name": "Pinned",
+  "property.projects.pinnedOrder.name": "Pin order",
   "property.projects.status.name": "Status",
   "property.projects.status.option.inProgress": "In progress",
   "property.projects.status.option.done": "Done",

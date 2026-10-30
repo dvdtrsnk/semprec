@@ -1,3 +1,4 @@
+import { runProjectsPinnedOrderCutoverMigration } from "../seed/projectsPinnedOrderCutoverMigration.js";
 import { runAreasPropertiesCutoverMigration } from "../seed/areasPropertiesCutoverMigration.js";
 import { runLibraryBooksYearIsbnCutoverMigration } from "../library/libraryBooksYearIsbnCutoverMigration.js";
 import { runSelfPersonCutoverMigration } from "../tenancy/selfPersonCutoverMigration.js";
@@ -44,5 +45,6 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runSelfPersonCutoverMigration(pool);
     await runLibraryBooksYearIsbnCutoverMigration(pool);
     await runAreasPropertiesCutoverMigration(pool);
+    await runProjectsPinnedOrderCutoverMigration(pool);
   });
 }

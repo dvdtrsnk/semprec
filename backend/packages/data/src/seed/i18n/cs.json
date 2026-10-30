@@ -16,6 +16,7 @@
   "database.projects.searchPlaceholder": "Hledat v Projektech",
   "property.projects.name.name": "Název",
   "property.projects.pinned.name": "Připnuto",
+  "property.projects.pinnedOrder.name": "Pořadí připnutí",
   "property.projects.status.name": "Stav",
   "property.projects.status.option.inProgress": "Probíhá",
   "property.projects.status.option.done": "Hotovo",

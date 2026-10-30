@@ -117,6 +117,7 @@ export async function seedTenDatabasesInTransaction(
   await createProps(client, projects.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "pinned", name: "Pinned", type: "checkbox", owner: "user" },
+    { key: "pinnedOrder", name: null, type: "number", owner: "user" },
     {
       key: "status",
       name: "Status",
