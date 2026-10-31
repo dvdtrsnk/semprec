@@ -107,8 +107,72 @@ describe("mail OAuth states (issue #1483)", () => {
 
   it("lets exactly one of two racing consume calls succeed", async () => {
     const { state } = await create(tenantA, userA);
-    const results = await Promise.all([consume(tenantA, state, userA), consume(tenantA, state, userA)]);
-    expect(results.filter((r) => r !== null)).toHaveLength(1);
+    let releaseFirst: () => void = () => undefined;
+    const firstMayCommit = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstConsumed: () => void = () => undefined;
+    const firstReady = new Promise<void>((resolve) => {
+      firstConsumed = resolve;
+    });
+    let reportSecondPid: (pid: number) => void = () => undefined;
+    const secondPid = new Promise<number>((resolve) => {
+      reportSecondPid = resolve;
+    });
+    const first = runInTenant(tenantA, () =>
+      withTransaction(pool, async (client) => {
+        const result = await consumeMailOauthState(client, { state, userId: userA });
+        firstConsumed();
+        await firstMayCommit;
+        return result;
+      }),
+    );
+    let second: Promise<Awaited<ReturnType<typeof consumeMailOauthState>>> | undefined;
+    let results: PromiseSettledResult<Awaited<ReturnType<typeof consumeMailOauthState>>>[];
+    try {
+      await Promise.race([
+        firstReady,
+        first.then(() => {
+          throw new Error("First transaction ended before barrier");
+        }),
+      ]);
+      second = runInTenant(tenantA, () =>
+        withTransaction(pool, async (client) => {
+          await client.query("SET LOCAL statement_timeout = '5s'");
+          const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          const pid = rows[0]?.pid;
+          if (pid === undefined) throw new Error("Missing backend pid");
+          reportSecondPid(pid);
+          return consumeMailOauthState(client, { state, userId: userA });
+        }),
+      );
+      const pid = await Promise.race([
+        secondPid,
+        second.then(() => {
+          throw new Error("Second transaction ended before reporting pid");
+        }),
+      ]);
+      const deadline = Date.now() + 3000;
+      let blocked = false;
+      while (Date.now() < deadline) {
+        const { rows } = await adminPool.query<{ blocked: boolean }>(
+          "SELECT cardinality(pg_blocking_pids($1)) > 0 AS blocked",
+          [pid],
+        );
+        if (rows[0]?.blocked) {
+          blocked = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(blocked).toBe(true);
+    } finally {
+      releaseFirst();
+      results = await Promise.allSettled(second ? [first, second] : [first]);
+    }
+    expect(results).toHaveLength(2);
+    expect(results[0]).toMatchObject({ status: "fulfilled", value: { provider: "gmail" } });
+    expect(results[1]).toEqual({ status: "fulfilled", value: null });
   });
 
   it("stores neither the plaintext state nor the verifier, bound to tenant and row", async () => {

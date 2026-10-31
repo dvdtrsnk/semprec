@@ -4,6 +4,10 @@ import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
 import { resolveThreadId } from "../threading.js";
+import { createChokePoint } from "../../chokePoint/chokePoint.js";
+import { createItemWithClient } from "../../chokePoint/itemWrites.js";
+import { ingestEmailMessage } from "../ingest.js";
+import type { BlobStorageWriter } from "../blobStorage.js";
 
 let pool: Pool;
 
@@ -61,5 +65,109 @@ describe("cross-mailbox threading of one message", () => {
     const a = await ingest(mailboxA, "<one@x>");
     const b = await ingest(mailboxB, "<two@x>");
     expect(b).not.toBe(a);
+  });
+});
+
+describe("cross-mailbox threading through message ingest", () => {
+  it("joins two newsletter copies and merges an ancestor thread through the ingest entry point", async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool);
+    const chokePoint = createChokePoint(pool);
+    const { rows: databases } = await pool.query<{ id: string; owner_module_id: string }>(
+      "SELECT id, owner_module_id FROM databases WHERE owner_module_id = ANY($1::text[])",
+      [["emails", "files", "folders", "mailboxes"]],
+    );
+    const idFor = (name: string): string => {
+      const row = databases.find((database) => database.owner_module_id === name);
+      if (!row) throw new Error(`Missing ${name} database`);
+      return row.id;
+    };
+    const emailsId = idFor("emails");
+    const properties = await chokePoint.listProperties(emailsId);
+    const propertyId = (key: string): string => {
+      const property = properties.find((entry) => entry.key === key);
+      if (!property) throw new Error(`Missing ${key} property`);
+      return property.id;
+    };
+    const [mailboxA, mailboxB, folderA, folderB] = await withTransaction(pool, async (client) => {
+      const a = await createItemWithClient(client, {
+        databaseId: idFor("mailboxes"),
+        properties: { name: "A", provider: "generic" },
+      });
+      const b = await createItemWithClient(client, {
+        databaseId: idFor("mailboxes"),
+        properties: { name: "B", provider: "generic" },
+      });
+      const fa = await createItemWithClient(
+        client,
+        { databaseId: idFor("folders"), properties: { name: "A inbox", behavior: "folder", specialPurpose: "inbox" } },
+        { allowedSystemKeys: ["name", "behavior", "specialPurpose"] },
+      );
+      const fb = await createItemWithClient(
+        client,
+        { databaseId: idFor("folders"), properties: { name: "B inbox", behavior: "folder", specialPurpose: "inbox" } },
+        { allowedSystemKeys: ["name", "behavior", "specialPurpose"] },
+      );
+      return [a.id, b.id, fa.id, fb.id];
+    });
+    const storage: BlobStorageWriter = {
+      async writeStream() {
+        throw new Error("No attachments expected");
+      },
+      async delete() {
+        throw new Error("No attachments expected");
+      },
+      readStream() {
+        throw new Error("No attachments expected");
+      },
+    };
+    const ingestCopy = (mailboxItemId: string, folderItemId: string, messageId: string, references: string[] = []) =>
+      withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: idFor("files"),
+          folderRelationPropertyId: propertyId("folder"),
+          attachmentsRelationPropertyId: propertyId("attachments"),
+          folderItemId,
+          mailboxItemId,
+          messageId,
+          references,
+          subject: "Test",
+          envelope: { from: { address: "sender@example.com" }, to: [{ address: "recipient@example.com" }] },
+          attachments: [],
+          storage,
+          storageKeyPrefix: "test",
+        }),
+      );
+    await ingestCopy(mailboxA, folderA, "<newsletter@example.com>");
+    await ingestCopy(mailboxB, folderB, "<ancestor@example.com>");
+    const { rows: before } = await pool.query<{ message_id: string; thread_id: string }>(
+      "SELECT message_id, thread_id FROM mail_message_meta WHERE message_id = ANY($1::text[])",
+      [["<newsletter@example.com>", "<ancestor@example.com>"]],
+    );
+    const original = before.find((row) => row.message_id === "<newsletter@example.com>")?.thread_id;
+    const other = before.find((row) => row.message_id === "<ancestor@example.com>")?.thread_id;
+    expect(original).toBeDefined();
+    expect(other).toBeDefined();
+    expect(other).not.toBe(original);
+    await ingestCopy(mailboxB, folderB, "<newsletter@example.com>", ["<ancestor@example.com>"]);
+    const { rows: after } = await pool.query<{ thread_id: string }>(
+      "SELECT thread_id FROM mail_message_meta WHERE message_id = ANY($1::text[])",
+      [["<newsletter@example.com>", "<ancestor@example.com>"]],
+    );
+    expect(after).toHaveLength(3);
+    expect(after.every((row) => row.thread_id === original)).toBe(true);
+    expect((await pool.query("SELECT id FROM mail_threads WHERE id = $1", [other])).rowCount).toBe(0);
+
+    await ingestCopy(mailboxA, folderA, "<independent@example.com>");
+    await ingestCopy(mailboxB, folderB, "<independent@example.com>");
+    const { rows: copies } = await pool.query<{ thread_id: string }>(
+      "SELECT thread_id FROM mail_message_meta WHERE message_id = $1",
+      ["<independent@example.com>"],
+    );
+    expect(copies).toHaveLength(2);
+    expect(copies[0]?.thread_id).toBe(copies[1]?.thread_id);
+    expect(copies[0]?.thread_id).not.toBe(original);
   });
 });

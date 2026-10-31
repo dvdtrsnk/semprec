@@ -16,6 +16,27 @@ function sender() {
   return { sendMail, transporter: { sendMail } };
 }
 
+function sentMail(value: unknown): { subject: string; text: string; html: string } {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("subject" in value) ||
+    typeof value.subject !== "string" ||
+    !("text" in value) ||
+    typeof value.text !== "string" ||
+    !("html" in value) ||
+    typeof value.html !== "string"
+  )
+    throw new Error("Expected a rendered auth email");
+  return { subject: value.subject, text: value.text, html: value.html };
+}
+
+function expectOneAnchor(html: string, escapedUrl: string): void {
+  const anchors = [...html.matchAll(/<a\b[^>]*>.*?<\/a>/g)];
+  expect(anchors).toHaveLength(1);
+  expect(anchors[0]?.[0]).toBe(`<a href="${escapedUrl}">${escapedUrl}</a>`);
+}
+
 async function sentByReset(locale: string, resetUrl = PLAIN_URL) {
   const { sendMail, transporter } = sender();
   await new NodemailerPasswordResetMailer(transporter, "from@example.test").sendPasswordResetEmail({
@@ -23,7 +44,7 @@ async function sentByReset(locale: string, resetUrl = PLAIN_URL) {
     resetUrl,
     locale,
   });
-  return sendMail.mock.calls[0]![0] as { subject: string; text: string; html: string };
+  return sentMail(sendMail.mock.calls[0]?.[0]);
 }
 
 async function sentByInvite(locale: string, inviteUrl = PLAIN_URL) {
@@ -34,11 +55,11 @@ async function sentByInvite(locale: string, inviteUrl = PLAIN_URL) {
     expiresAt: "2026-01-01T00:00:00.000Z",
     locale,
   });
-  return sendMail.mock.calls[0]![0] as { subject: string; text: string; html: string };
+  return sentMail(sendMail.mock.calls[0]?.[0]);
 }
 
 describe("auth mail catalog (issue #1356)", () => {
-  it("renders the English password-reset email with today's wording and the URL once per body", async () => {
+  it("renders the English password-reset email with today's wording and one link", async () => {
     const mail = await sentByReset("en");
     expect(mail.subject).toBe("Reset your password");
     expect(mail.text).toBe(
@@ -47,6 +68,8 @@ describe("auth mail catalog (issue #1356)", () => {
     expect(mail.html).toBe(
       `<p>Use the link below to reset your password. This link expires in 30 minutes and can only be used once.</p><p><a href="${PLAIN_URL}">${PLAIN_URL}</a></p><p>If you didn't request this, you can safely ignore this email.</p>`,
     );
+    expect(count(mail.text, PLAIN_URL)).toBe(1);
+    expectOneAnchor(mail.html, PLAIN_URL);
   });
 
   it("renders the Czech password-reset email", async () => {
@@ -56,6 +79,7 @@ describe("auth mail catalog (issue #1356)", () => {
     expect(mail.html).toContain("Heslo si obnovíte");
     expect(count(mail.text, PLAIN_URL)).toBe(1);
     expect(count(mail.html, PLAIN_URL)).toBe(2);
+    expectOneAnchor(mail.html, PLAIN_URL);
   });
 
   it("renders the English invitation email with today's wording", async () => {
@@ -67,6 +91,8 @@ describe("auth mail catalog (issue #1356)", () => {
     expect(mail.html).toBe(
       `<p>You have been invited to Semprec. Open the link below to create your account. This link expires in 7 days and can only be used once.</p><p><a href="${PLAIN_URL}">${PLAIN_URL}</a></p>`,
     );
+    expect(count(mail.text, PLAIN_URL)).toBe(1);
+    expectOneAnchor(mail.html, PLAIN_URL);
   });
 
   it("renders the Czech invitation email", async () => {
@@ -76,11 +102,13 @@ describe("auth mail catalog (issue #1356)", () => {
     expect(mail.html).toContain("Účet si vytvoříte");
     expect(count(mail.text, PLAIN_URL)).toBe(1);
     expect(count(mail.html, PLAIN_URL)).toBe(2);
+    expectOneAnchor(mail.html, PLAIN_URL);
   });
 
   it("HTML-escapes the URL in the html body of both emails and leaves the text body verbatim", async () => {
     for (const mail of [await sentByReset("cs", URL_WITH_SPECIALS), await sentByInvite("en", URL_WITH_SPECIALS)]) {
       expect(count(mail.html, ESCAPED_URL)).toBe(2);
+      expectOneAnchor(mail.html, ESCAPED_URL);
       expect(mail.html).not.toContain(URL_WITH_SPECIALS);
       expect(count(mail.text, URL_WITH_SPECIALS)).toBe(1);
     }
