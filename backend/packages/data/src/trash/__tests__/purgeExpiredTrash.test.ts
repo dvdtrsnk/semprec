@@ -526,8 +526,19 @@ describe("purgeExpiredTrash (issue #156)", () => {
         await pool.query("INSERT INTO purge_rollback_database_guard (database_id) VALUES ($1)", [inlineDb.id]);
 
         const { storage, deleteMock } = fakeStorage();
+        const purgeError = vi.spyOn(logger, "error").mockImplementation(() => {});
         try {
           expect(await purgeExpiredTrash(pool, storage)).toBe(0);
+          expect(purgeError).toHaveBeenCalledWith(
+            expect.objectContaining({
+              err: expect.objectContaining({
+                code: "23503",
+                constraint: "purge_rollback_database_guard_database_id_fkey",
+              }),
+              itemId: file.id,
+            }),
+            "Failed to purge trashed item",
+          );
 
           const { rows: fileRows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE id = $1", [file.id]);
           expect(fileRows.map((row) => row.id)).toEqual([file.id]);
@@ -538,6 +549,7 @@ describe("purgeExpiredTrash (issue #156)", () => {
           expect(blobRows.map((row) => row.id).sort()).toEqual([originalId, normalized.id, playback.id].sort());
           expect(deleteMock).not.toHaveBeenCalled();
         } finally {
+          purgeError.mockRestore();
           await pool.query("DROP TABLE purge_rollback_database_guard");
         }
       });
