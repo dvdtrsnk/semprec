@@ -36,3 +36,9 @@ The strengthened HTTP test found that seeded Emails, Mailboxes and Folders have 
 A new proposed 2026-10-31-mail-database-key-cutover ADR must explain the narrowly bounded three-row SQL exception to the existing application-code post-migration decision; no historical accepted ADR body is edited. Acceptance still requires actual list/schema visibility and fresh/populated/rerun/isolation/collision evidence. Non-normative repeated context was shortened to keep the aggregate below the existing 60000-character limit; previous Tasks, decisions and AC remain.
 
 Source gh-1407: 9bb36fb24ac5d80aaf6b96604fd63d1872778dae0fe0ce253aab887e248d0baa -> a7142a837f5d3679fa52eb537cec08086c52ac0a51956939667d65f1f67c92a2. Aggregate: 1a43655b09fc2d2afeab1b9913977e844a08dbf07676be1d70df62135e28a865.
+
+## Producer regression fixtures after project attribution enforcement
+
+The diagnostic run exposed two guidance-drift tests passing fabricated project UUIDs through the real producer into raiseProblem. These are invalid positive fixtures under the approved guard. Authorize replacing only those project fixtures with real same-tenant Projects items created through production writes in backend/packages/data/src/__tests__/sempProblemsProducers.test.ts; preserve dedupe and stored-attribution assertions and verify rollback reaches its intended sentinel after a successful raise. No producer behavior change or validation bypass is authorized; producer implementation remains out of scope. The mixed-source run remains diagnostic, not acceptance evidence.
+
+Source gh-1459: e1aeba010e772ce13d583edc2a71077e7e06e20adefbb30ab65c243dfe509c69 -> 57b9ed88d2e85a5a529e7bdf3e0a56a172f83d4472d0b9bcb8f6e0e5e1a93229. Aggregate: e6f6a3fb22a49bcf517866c4e6b5b9117590c09d58b9ece130b9489036531089.

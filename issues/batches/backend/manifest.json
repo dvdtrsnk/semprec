@@ -279,12 +279,12 @@
       "sequence": 2,
       "status": "proposed",
       "title": "[backend-delivery 02/74] Implement data/manifest, module-registry, application changes",
-      "bodyCharacters": 57961,
-      "specSha256": "1a43655b09fc2d2afeab1b9913977e844a08dbf07676be1d70df62135e28a865",
+      "bodyCharacters": 59106,
+      "specSha256": "e6f6a3fb22a49bcf517866c4e6b5b9117590c09d58b9ece130b9489036531089",
       "members": [
         {
           "id": "gh-1459",
-          "specSha256": "e1aeba010e772ce13d583edc2a71077e7e06e20adefbb30ab65c243dfe509c69",
+          "specSha256": "57b9ed88d2e85a5a529e7bdf3e0a56a172f83d4472d0b9bcb8f6e0e5e1a93229",
           "parent": "gh-1311",
           "dependencies": [],
           "approval": "approved"
