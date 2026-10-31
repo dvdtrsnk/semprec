@@ -1,5 +1,37 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GmailRestClient } from "../mail/gmailRestClient.js";
+
+describe("Gmail label inventory validation", () => {
+  it("accepts opaque user and system ids", async () => {
+    const labels = [
+      { id: "opaque", name: "Work", type: "user" },
+      { id: "new-system", name: "Flag", type: "system" },
+    ];
+    const client = new GmailRestClient(
+      async () => "token",
+      async () => Response.json({ labels }),
+    );
+    expect(await client.listLabels()).toEqual(labels);
+  });
+
+  it.each([
+    {},
+    { labels: [{ id: "x", name: "X", type: "other" }] },
+    {
+      labels: [
+        { id: "x", name: "X", type: "user" },
+        { id: "x", name: "X", type: "system" },
+      ],
+    },
+    { labels: [{ id: "", name: "X", type: "user" }] },
+  ])("rejects an incomplete or ambiguous inventory", async (body) => {
+    const client = new GmailRestClient(
+      async () => "token",
+      async () => Response.json(body),
+    );
+    await expect(client.listLabels()).rejects.toThrow();
+  });
+});
 import { MailReauthorizationRequiredError, MailRecipientRejectedError } from "../mail/providerTypes.js";
 
 function encodeBase64Url(value: string): string {

@@ -436,8 +436,24 @@ export class GmailRestClient implements GmailMailClient {
   }
 
   async listLabels(): Promise<GmailLabelRef[]> {
-    const { json } = await this.request<{ labels?: { id: string; name: string; type: string }[] }>("/labels");
-    return (json?.labels ?? []).map((l) => ({ id: l.id, name: l.name, type: l.type === "system" ? "system" : "user" }));
+    const { json } = await this.request<unknown>("/labels");
+    const body = assertJsonObject(json, "Gmail labels response");
+    if (!Array.isArray(body.labels)) throw new Error("Gmail labels response has no label inventory");
+    const seen = new Set<string>();
+    return body.labels.map((value: unknown) => {
+      const label = assertJsonObject(value, "Gmail label");
+      if (
+        typeof label.id !== "string" ||
+        !label.id ||
+        typeof label.name !== "string" ||
+        (label.type !== "user" && label.type !== "system") ||
+        seen.has(label.id)
+      ) {
+        throw new Error("Gmail labels response contains an invalid or duplicate label");
+      }
+      seen.add(label.id);
+      return { id: label.id, name: label.name, type: label.type };
+    });
   }
 
   async modifyMessageLabels(messageId: string, addLabelIds: string[], removeLabelIds: string[]): Promise<void> {

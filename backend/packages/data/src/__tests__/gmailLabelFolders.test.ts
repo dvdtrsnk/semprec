@@ -193,19 +193,59 @@ describe("Gmail label folders (issue #1496)", () => {
     expect(await foldersOf(params, "m1")).toEqual([GMAIL_ARCHIVE_PROVIDER_ID]);
   });
 
+  it("fails before deleting a mailbox folder when its label inventory is unavailable or ambiguous", async () => {
+    const params = await setup();
+    await runInTenant(tenantId, () =>
+      withTransaction(pool, (client) =>
+        ensureFolderItem(client, {
+          foldersDatabaseId: params.foldersDatabaseId,
+          mailboxItemId: params.mailboxItemId,
+          mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
+          providerId: "UNREAD",
+          name: "Unread",
+          behavior: "label",
+          specialPurpose: "none",
+        }),
+      ),
+    );
+    const before = await folderProviderIds(params);
+    await expect(handleMailGmailPseudoFolderCleanupTask(pool, undefined)).rejects.toThrow();
+    expect(await folderProviderIds(params)).toEqual(before);
+    await expect(
+      handleMailGmailPseudoFolderCleanupTask(pool, async () => {
+        throw new Error("provider offline");
+      }),
+    ).rejects.toThrow();
+    expect(await folderProviderIds(params)).toEqual(before);
+    await expect(
+      handleMailGmailPseudoFolderCleanupTask(pool, async () => [
+        { id: "UNREAD", name: "Unread", type: "system" },
+        { id: "UNREAD", name: "Unread", type: "user" },
+      ]),
+    ).rejects.toThrow();
+    expect(await folderProviderIds(params)).toEqual(before);
+  });
+
   it("cleanup removes pseudo-folders, keeps archived mail visible through Archive, and a second run changes nothing", async () => {
     const params = await setup();
+    const inventory: GmailLabelRef[] = [
+      ...LABELS,
+      { id: "opaque-user", name: "Private", type: "user" },
+      { id: "opaque-system", name: "System", type: "system" },
+    ];
+    const storedLabels: GmailLabelRef[] = [...inventory, { id: "absent-id", name: "Unknown", type: "user" }];
     // The state an older sync left behind: a folder for every label, mail linked to each.
     const messageIdsByLabels: Record<string, string[]> = {
       inboxUnread: ["INBOX", "UNREAD"],
       archivedUnread: ["UNREAD", "CATEGORY_PROMOTIONS"],
       archivedWork: ["STARRED", "Label_1"],
       sentStarred: ["SENT", "STARRED"],
+      opaque: ["opaque-system", "opaque-user", "absent-id"],
     };
     await runInTenant(tenantId, () =>
       withTransaction(pool, async (client) => {
         const folderIds = new Map<string, string>();
-        for (const label of LABELS) {
+        for (const label of storedLabels) {
           folderIds.set(
             label.id,
             await ensureFolderItem(client, {
@@ -242,21 +282,22 @@ describe("Gmail label folders (issue #1496)", () => {
       }),
     );
 
-    await handleMailGmailPseudoFolderCleanupTask(pool);
+    await handleMailGmailPseudoFolderCleanupTask(pool, async () => inventory);
 
     expect(await folderProviderIds(params)).toEqual(
-      ["DRAFT", "INBOX", "Label_1", "SENT", GMAIL_ARCHIVE_PROVIDER_ID].sort(),
+      ["DRAFT", "INBOX", "Label_1", "SENT", "opaque-user", "absent-id", GMAIL_ARCHIVE_PROVIDER_ID].sort(),
     );
     expect(await foldersOf(params, "inboxUnread")).toEqual(["INBOX"]);
     expect(await foldersOf(params, "archivedUnread")).toEqual([GMAIL_ARCHIVE_PROVIDER_ID]);
     expect(await foldersOf(params, "archivedWork")).toEqual(["Label_1", GMAIL_ARCHIVE_PROVIDER_ID].sort());
     expect(await foldersOf(params, "sentStarred")).toEqual(["SENT"]);
+    expect(await foldersOf(params, "opaque")).toEqual(["opaque-user", "absent-id", GMAIL_ARCHIVE_PROVIDER_ID].sort());
 
     const snapshot = async () =>
       (await admin.query("SELECT * FROM item_relations ORDER BY id")).rows.map((r) => JSON.stringify(r));
     const edgesAfterFirst = await snapshot();
     const { rows: itemsAfterFirst } = await admin.query("SELECT id, deleted_at FROM items ORDER BY id");
-    await handleMailGmailPseudoFolderCleanupTask(pool);
+    await handleMailGmailPseudoFolderCleanupTask(pool, async () => inventory);
     expect(await snapshot()).toEqual(edgesAfterFirst);
     expect((await admin.query("SELECT id, deleted_at FROM items ORDER BY id")).rows).toEqual(itemsAfterFirst);
   });

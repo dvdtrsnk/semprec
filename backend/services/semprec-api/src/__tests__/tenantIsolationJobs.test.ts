@@ -1254,7 +1254,7 @@ describe("background task isolation across two tenants: api runtime (issue #1056
       pool,
       actionRegistry,
       undefined,
-      undefined,
+      { loadGmailLabels: async () => [{ id: "UNREAD", name: "Unread", type: "system" }] },
       undefined,
       undefined,
       moduleRegistry,
