@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { copyFile, mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Pool, PoolClient } from "pg";
+import { Pool, type PoolClient } from "pg";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -10,6 +14,7 @@ import {
   withTenantTransaction,
 } from "../testSupport/testDb.js";
 import { ValidationError } from "../errors.js";
+import { runMigrations } from "../db/migrate.js";
 import {
   deleteMailServerSettings,
   getMailServerSettings,
@@ -59,6 +64,78 @@ afterAll(async () => {
 });
 
 describe("mail server settings store (issue #1473)", () => {
+  it("upgrades a populated pre-0101 database with the real migration runner", async () => {
+    const url = process.env.TEST_DATABASE_URL;
+    if (!url) throw new Error("Missing test database URL");
+    // The database name is a fixed prefix and UUID hex, so the quoted identifier cannot escape.
+    const name = `mail_upgrade_${randomUUID().replaceAll("-", "")}`;
+    const admin = new Pool({ connectionString: url });
+    const dir = await mkdtemp(path.join(tmpdir(), "semprec-mail-upgrade-"));
+    const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+    let created = false;
+    let scratch: Pool | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      await admin.query(`CREATE DATABASE "${name}"`);
+      created = true;
+      const scratchUrl = new URL(url);
+      scratchUrl.pathname = `/${name}`;
+      scratch = new Pool({ connectionString: scratchUrl.toString() });
+      const files = (await readdir(migrations)).filter((file) => file.endsWith(".sql") && file < "0101_").sort();
+      for (const file of files) await copyFile(path.join(migrations, file), path.join(dir, file));
+      await runMigrations(scratch, dir);
+      const mailboxId = randomUUID();
+      await scratch.query(
+        "INSERT INTO mail_account_sync_state (item_id, tenant_id, sync_mode) SELECT $1, id, 'imap' FROM tenants",
+        [mailboxId],
+      );
+      const before = await scratch.query<{ item_id: string; sync_mode: string }>(
+        "SELECT item_id, sync_mode FROM mail_account_sync_state WHERE item_id = $1",
+        [mailboxId],
+      );
+      expect(before.rows).toEqual([{ item_id: mailboxId, sync_mode: "imap" }]);
+      const migration = "0101_mail_account_server_settings.sql";
+      await copyFile(path.join(migrations, migration), path.join(dir, migration));
+      await runMigrations(scratch, dir);
+      const after = await scratch.query<{ item_id: string; sync_mode: string }>(
+        "SELECT item_id, sync_mode FROM mail_account_sync_state WHERE item_id = $1",
+        [mailboxId],
+      );
+      expect(after.rows).toEqual(before.rows);
+      await scratch.query("UPDATE mail_account_sync_state SET last_error = 'legacy write' WHERE item_id = $1", [
+        mailboxId,
+      ]);
+      expect(
+        (
+          await scratch.query<{ last_error: string }>(
+            "SELECT last_error FROM mail_account_sync_state WHERE item_id = $1",
+            [mailboxId],
+          )
+        ).rows[0]?.last_error,
+      ).toBe("legacy write");
+      expect(
+        (await scratch.query<{ id: string }>("SELECT id FROM schema_migrations WHERE id = $1", [migration])).rows,
+      ).toHaveLength(1);
+    } catch (error) {
+      failure = { error };
+    }
+    for (const cleanup of [
+      async () => scratch?.end(),
+      async () => {
+        if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      },
+      async () => admin.end(),
+      async () => rm(dir, { recursive: true, force: true }),
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        failure ??= { error };
+      }
+    }
+    if (failure) throw failure.error;
+  }, 120_000);
+
   it("round-trips settings and the row holds no password", async () => {
     await inRolledBackTransaction(async (client) => {
       const id = randomUUID();
