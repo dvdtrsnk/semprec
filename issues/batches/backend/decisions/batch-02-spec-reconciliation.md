@@ -19,3 +19,12 @@ The source requirements and aggregate were revised, reapproved under delegated a
 
 - gh-1459: 71a2254f0df58f303b82fc487adac3b0862a1d00e3b5499930693d37e42ea5d6 -> e1aeba010e772ce13d583edc2a71077e7e06e20adefbb30ab65c243dfe509c69
 - gh-1360: 7ee1d9c24f5550c7c0df83d19aa76c57b48debe4a9cfc50a23ba3ef75b507624 -> 269ccb3b073705421cffb7487a38bf6bebe33185c752bb85514350814a7d5b93
+
+## Empty patches, strict REST bodies and the real drift action
+
+- gh-1528: the schema itself must reject empty patches; the downstream guard stays defense in depth. Preserve the public validation error contract and generated operation schema compatibility.
+- gh-1528: preserve external database patch keys until strict validation, with path-derived database identity kept outside the patch. Known-plus-unknown requests must fail before writes or invalidation. This is already within the named Task/Touches; no spec weakening is authorized.
+- gh-1427: wire activeProcessIds into the actual core.driftCheck composition and test that action with calendar and an unknown owner. The existing separate helper test is insufficient. API composition/test paths are explicitly added to scope. Keep existing dependency-cruiser exemptions; the broad AC now names non-exempt modules.
+- Missing explicit tenant predicates in drift-property scans are confirmed defects to fix across sibling scans, not reasons to relax isolation or use only superuser tests.
+
+Source gh-1427: b0cd0f1d573b358eb40b0e0608474f5e04f98eb751a4b5eee0e902e3b566addb -> 08b569b61e76ccdcd95d40722cea00cb18e064a1d475a839eae28c3a605b9a97. Aggregate: a76307e91bc1366fe72bfaf1f1277bf4943053f9e9d9f9717ae5010a77d9edb4.
