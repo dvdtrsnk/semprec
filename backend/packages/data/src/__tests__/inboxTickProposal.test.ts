@@ -3027,6 +3027,30 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
       expect((await failure(envelope)).details).toMatchObject({ ref: "move", field: "project", code: "targetDeleted" });
     });
 
+    it("exempts only the retained edge from target-side cardinality", async () => {
+      const first = await createItem("projects", { name: "First" });
+      const second = await createItem("projects", { name: "Second" });
+      const task = await createItem("tasks", { name: "Task" });
+      const projectsDb = await databaseIdFor("projects");
+      const property = await withTransaction(pool, (client) =>
+        propertiesStore.getPropertyByKey(client, projectsDb, "tasks"),
+      );
+      if (!property) throw new Error("Missing Projects.tasks");
+      await withTransaction(pool, (client) =>
+        createRelationWithClient(client, {
+          relationPropertyId: property.id,
+          callerItemId: first,
+          targetItemId: task,
+        }),
+      );
+      const step = { before: { relations: { tasks: [task] } }, after: { relations: { tasks: [task] } } };
+      await validate(await updateEnvelope(step, first));
+      await expect(validate(await updateEnvelope(step, second))).rejects.toMatchObject({
+        status: 409,
+        details: { ref: "move", field: "tasks" },
+      });
+    });
+
     it("rejects a foreign-tenant target under the runtime role even if before claims it", async () => {
       const foreignTenant = await createTestTenant(pool);
       const runtime = await createRuntimeRolePool(pool, "semprec_data");

@@ -32,7 +32,6 @@ import {
   rejectProposalWithClient,
   reviseProposalWithClient,
 } from "../inbox/proposalActions.js";
-import { deleteItemDependents } from "../chokePoint/itemTrash.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
@@ -803,6 +802,27 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(await edgeExists(project, newArea)).toBe(true);
     });
 
+    it("rejects duplicate targets in an unchanged declared before relation without writing", async () => {
+      const area = await createIn("areas", { name: "Area" });
+      const project = await createIn("projects", { name: "Before" });
+      const card = await cardWithSteps("projects", [
+        {
+          ref: "project",
+          op: "update",
+          itemId: project,
+          role: "primary",
+          properties: { name: "After" },
+          before: { properties: { name: "Before" }, relations: { area: [area, area] } },
+          after: { properties: { name: "After" } },
+        },
+      ]);
+      await expect(confirm(card)).rejects.toMatchObject({ status: 400, details: { ref: "project", field: "area" } });
+      const [current] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
+      expect(current?.properties.name).toBe("Before");
+      expect(await cardStatus(card)).toBe("proposed");
+      expect(await edgeExists(project, area)).toBe(false);
+    });
+
     it("links an existing person to a created company once and rolls back a later failure", async () => {
       const person = await createIn("people", { name: "Jane" });
       const steps: Step[] = [
@@ -1344,7 +1364,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       },
     );
 
-    it.each(["property", "insert", "delete"] as const)(
+    it.each(["property", "insert", "delete", "insert-extra", "delete-extra"] as const)(
       "holds precondition locks against a later overlapping %s",
       async (change) => {
         const project = await createIn("projects", { name: "Before" });
@@ -1355,8 +1375,10 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         );
         if (!property) throw new Error("Missing Projects.area property");
         const edge = { relationPropertyId: property.id, callerItemId: project, targetItemId: area };
-        if (change === "delete") await withTransaction(pool, (client) => createRelationWithClient(client, edge));
-        const beforeTargets = change === "delete" ? [area] : [];
+        if (change === "delete" || change === "delete-extra")
+          await withTransaction(pool, (client) => createRelationWithClient(client, edge));
+        const beforeTargets = change === "delete" || change === "delete-extra" ? [area] : [];
+        const extraOnly = change.endsWith("-extra");
         const card = await cardWithSteps("projects", [
           {
             ref: "project",
@@ -1364,9 +1386,9 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
             itemId: project,
             role: "primary",
             properties: { name: "After" },
-            relations: { area: beforeTargets },
+            ...(extraOnly ? {} : { relations: { area: beforeTargets } }),
             before: { properties: { name: "Before" }, relations: { area: beforeTargets } },
-            after: { properties: { name: "After" }, relations: { area: beforeTargets } },
+            after: { properties: { name: "After" }, ...(extraOnly ? {} : { relations: { area: beforeTargets } }) },
           },
         ]);
         const confirmPool = getTestPool({ max: 1 });
@@ -1401,7 +1423,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
                 itemId: project,
                 propertiesPatch: { name: "Later" },
               });
-            } else if (change === "insert") {
+            } else if (change === "insert" || change === "insert-extra") {
               await createRelationWithClient(client, edge);
             } else {
               await deleteRelationWithClient(client, edge);
@@ -1426,7 +1448,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           expect(await cardStatus(card)).toBe("confirmed");
           const [current] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
           expect(current?.properties.name).toBe(change === "property" ? "Later" : "After");
-          expect(await edgeExists(project, area)).toBe(change === "insert");
+          expect(await edgeExists(project, area)).toBe(change === "insert" || change === "insert-extra");
         } finally {
           release();
           await confirmationOutcome;
@@ -1526,6 +1548,19 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         const inboxItemId = await sourceInboxItemId(card);
         await withTransaction(pool, (client) =>
           updateItemWithClient(client, { databaseId: inboxId, itemId: inboxItemId, propertiesPatch: { date } }),
+        );
+        await confirm(card);
+        expect((await originRows()).map((row) => [row.captured_at, row.capture_time_basis])).toEqual([
+          [null, "unknown"],
+          [null, "unknown"],
+        ]);
+      });
+
+      it.each([null, "invalid"])("records an unknown time for an Inbox capture time %s", async (time) => {
+        const card = await cardWithSteps("companies", companyAndPerson());
+        const inboxItemId = await sourceInboxItemId(card);
+        await withTransaction(pool, (client) =>
+          updateItemWithClient(client, { databaseId: inboxId, itemId: inboxItemId, propertiesPatch: { time } }),
         );
         await confirm(card);
         expect((await originRows()).map((row) => [row.captured_at, row.capture_time_basis])).toEqual([
@@ -1731,6 +1766,29 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         expect(await originRows()).toEqual([]);
       });
 
+      it("rolls back created items and origins when origin insertion fails", async () => {
+        const card = await cardWithSteps("companies", companyAndPerson());
+        await pool.query(`CREATE FUNCTION reject_second_origin_test() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN
+            IF EXISTS (SELECT 1 FROM item_origins WHERE proposal_id = NEW.proposal_id) THEN
+              RAISE EXCEPTION 'injected origin insertion failure';
+            END IF;
+            RETURN NEW;
+          END $$`);
+        try {
+          await pool.query(`CREATE TRIGGER reject_second_origin_test BEFORE INSERT ON item_origins
+            FOR EACH ROW EXECUTE FUNCTION reject_second_origin_test()`);
+          await expect(confirm(card)).rejects.toThrow("injected origin insertion failure");
+          expect(await countItems("companies")).toBe(0);
+          expect(await countItems("people")).toBe(0);
+          expect(await originRows()).toEqual([]);
+          expect(await cardStatus(card)).toBe("proposed");
+        } finally {
+          await pool.query("DROP TRIGGER IF EXISTS reject_second_origin_test ON item_origins");
+          await pool.query("DROP FUNCTION reject_second_origin_test()");
+        }
+      });
+
       it("a repeated confirm adds and changes no row", async () => {
         const card = await cardWithSteps("companies", companyAndPerson());
         await confirm(card);
@@ -1742,15 +1800,49 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       it("permanent deletion removes the item's row and keeps the other item's", async () => {
         const card = await cardWithSteps("companies", companyAndPerson());
         const confirmed = await confirm(card);
-        const resultId = confirmed.properties.resultItemId as string;
-        await withTransaction(pool, async (client) => {
-          const [row] = await itemsStore.getItemsByIds(client, [resultId]);
-          await itemsStore.hardDeleteItem(client, row!.databaseId, row!.id);
-          await deleteItemDependents(client, row!);
-        });
+        const resultId = confirmed.properties.resultItemId;
+        if (typeof resultId !== "string") throw new Error("Expected created item");
+        const [row] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [resultId]));
+        if (!row) throw new Error("Expected created item row");
+        const chokePoint = createChokePoint(pool);
+        await chokePoint.softDeleteItem(row.databaseId, resultId);
+        const result = await chokePoint.purgeExpiredTrashSubtree(resultId, new Date(Date.now() + 1000));
+        expect(result.purgedItemIds).toContain(resultId);
+        expect(
+          await withTransaction(pool, (client) => itemsStore.getItemsByIdsIncludingDeleted(client, [resultId])),
+        ).toEqual([]);
         const rows = await originRows();
         expect(rows).toHaveLength(1);
         expect(rows[0]!.item_id).not.toBe(resultId);
+      });
+
+      it("rolls back the hard deletion if origin cleanup fails", async () => {
+        const confirmed = await confirm(await cardWithSteps("companies", companyAndPerson()));
+        const itemId = confirmed.properties.resultItemId;
+        if (typeof itemId !== "string") throw new Error("Expected created item");
+        const [row] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [itemId]));
+        if (!row) throw new Error("Expected created item row");
+        const chokePoint = createChokePoint(pool);
+        await chokePoint.softDeleteItem(row.databaseId, itemId);
+        const before = await originRows();
+        await pool.query(`CREATE FUNCTION reject_origin_cleanup_test() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN RAISE EXCEPTION 'injected origin cleanup failure'; END $$`);
+        try {
+          await pool.query(`CREATE TRIGGER reject_origin_cleanup_test BEFORE DELETE ON item_origins
+            FOR EACH ROW EXECUTE FUNCTION reject_origin_cleanup_test()`);
+          await expect(chokePoint.purgeExpiredTrashSubtree(itemId, new Date(Date.now() + 1000))).rejects.toThrow(
+            "injected origin cleanup failure",
+          );
+          const remaining = await withTransaction(pool, (client) =>
+            itemsStore.getItemsByIdsIncludingDeleted(client, [itemId]),
+          );
+          expect(remaining).toHaveLength(1);
+          expect(remaining[0]?.deletedAt).not.toBeNull();
+          expect(await originRows()).toEqual(before);
+        } finally {
+          await pool.query("DROP TRIGGER IF EXISTS reject_origin_cleanup_test ON item_origins");
+          await pool.query("DROP FUNCTION reject_origin_cleanup_test()");
+        }
       });
     });
   });
