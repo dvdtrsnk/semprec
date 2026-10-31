@@ -19,3 +19,22 @@ Only redundant aggregate introduction/Touches annotations are compacted; other a
 - gh-1358: d253df9080448163e86be46b6dfb85a4a53bb95e74ac48cb33b40243f147dcc4 -> 376371cc3aab71e9b55e645a8374c87255220eb03aadd2522d2f29e2ac58b219
 - gh-1716: c20b843f2b1fe3be890e0f16ae4945b973d6406a46413ca94dd68108678e4207 -> 248454e103798cd6475805d60e9c24fde1157d0acd804668357c22fc742498c6
 - gh-1967: 21adcf3eaeb4f46e6aa03844c7d58618d56deaa1588e753b0e74fc935a6a49ce -> 0c1123ef485fb2aa135c930037cfcf183bde28815b5bc520ba7b7362275dcc66
+
+## Registered preparation and stateful Projects allocation
+
+Independent review found that title/color-only checks omitted real Tasks schedule validation and transform-added user-owned time clears. Direct inspection also disproved the initial blanket assumption that every write transform is a pure preview: Projects takes an advisory lock and allocates pinnedOrder as MAX+1. This decision supersedes that initial assumption, without changing historical accepted ADR bodies.
+
+Authorize a read-only registered preparation seam alongside write transforms, composed for the existing Tasks, Books and Projects modules. Share deterministic rules with the actual write path; no domain dispatch in the generic choke point, allocation, mutation hooks, write probes or Projects allocation lock in preflight. A registered transform without safe preparation fails proposal validation closed; ordinary direct writes retain their behavior.
+
+Caller fields and deterministically changed transform-added user-owned fields require matching before/after coverage. System-derived outputs are excluded. Confirm prepares against the locked row and checks every declared before key even if the current transform would make it a no-op. Incomplete legacy multi-step snapshots fail with 400 and precise ref/field, leaving the card proposed and all writes rolled back.
+
+Projects.pinnedOrder remains user-owned. A trusted module declaration may defer its implicit automatic allocation: before.pinnedOrder is mandatory, numeric after may be omitted, and the real choke-point write receives the original caller patch and allocates once using the existing item-then-project-advisory lock order. Concurrent pinning of another project may legitimately alter the allocated number. Explicit caller values require ordinary matching before/after; conflicting redundant after values fail. Automatic destructive clears, including Tasks time fields and project unpinning, receive no allocation exemption.
+
+Extend this batch's new confirmed-proposal-update-preconditions ADR with the seam, rationale, deferred-key exception, compatibility limits and exact lock ordering; older accepted ADR bodies remain immutable. Require real registered-transform schedule, implicit-clear, stale-field and deferred-allocation regressions plus full remaining independent Task/AC review. This decision does not claim a review or verification PASS.
+
+To retain the aggregate's 60000-character bound, historical explanatory Context prose, tier rationales and redundant aggregate introduction are compressed without changing model classifications; decisions and Task/AC are retained except for the explicit gh-1479/1486 clarification above.
+
+- gh-1479: c993004e9c163a8bcada4a19a1f3ff3edb20e40a646f65e2bdb43ad96bdbdf6d -> 1f128ea22f04ef564578c6346081e397d827f01a654f8894115e0f72e882c4cf
+- gh-1486: 279a5a6a70e7ca68126226d08ef2c0068494bd857fbb1f6eeb17ba704a054601 -> 923c2df25d7f053ac1c2a90dc752215705b656bd8a268d3381d2951c4a5820ae
+- gh-1358: 376371cc3aab71e9b55e645a8374c87255220eb03aadd2522d2f29e2ac58b219 -> 3b8acea3771e7da7f1f322cffccc679fbad8a82a0bbdb9a96ccad0b3b73ee45b
+- gh-1716: 248454e103798cd6475805d60e9c24fde1157d0acd804668357c22fc742498c6 -> a157115bb160f7c4065423763809ff15e9447e04e8a90a6778f5eeee04567251

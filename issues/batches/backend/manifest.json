@@ -439,12 +439,12 @@
       "sequence": 4,
       "status": "proposed",
       "title": "[backend-delivery 04/74] Implement data/inbox, data/chokePoint, data/tenancy changes",
-      "bodyCharacters": 59458,
-      "specSha256": "141337dda48abc8e351ad7c5b3c17142bf48bbe121e00251c6d19dedff47d249",
+      "bodyCharacters": 59684,
+      "specSha256": "140ea684fba6196aa6ae6cb135f0aa480b2446fc818ee5fc5ed4754f991970be",
       "members": [
         {
           "id": "gh-1479",
-          "specSha256": "c993004e9c163a8bcada4a19a1f3ff3edb20e40a646f65e2bdb43ad96bdbdf6d",
+          "specSha256": "1f128ea22f04ef564578c6346081e397d827f01a654f8894115e0f72e882c4cf",
           "parent": "gh-1312",
           "dependencies": [
             "gh-1378",
@@ -463,7 +463,7 @@
         },
         {
           "id": "gh-1486",
-          "specSha256": "279a5a6a70e7ca68126226d08ef2c0068494bd857fbb1f6eeb17ba704a054601",
+          "specSha256": "923c2df25d7f053ac1c2a90dc752215705b656bd8a268d3381d2951c4a5820ae",
           "parent": "gh-1312",
           "dependencies": [
             "gh-1476",
@@ -482,7 +482,7 @@
         },
         {
           "id": "gh-1716",
-          "specSha256": "248454e103798cd6475805d60e9c24fde1157d0acd804668357c22fc742498c6",
+          "specSha256": "a157115bb160f7c4065423763809ff15e9447e04e8a90a6778f5eeee04567251",
           "parent": "gh-1312",
           "dependencies": [
             "gh-1659"
@@ -528,7 +528,7 @@
         },
         {
           "id": "gh-1358",
-          "specSha256": "376371cc3aab71e9b55e645a8374c87255220eb03aadd2522d2f29e2ac58b219",
+          "specSha256": "3b8acea3771e7da7f1f322cffccc679fbad8a82a0bbdb9a96ccad0b3b73ee45b",
           "parent": "gh-1296",
           "dependencies": [],
           "approval": "approved"
