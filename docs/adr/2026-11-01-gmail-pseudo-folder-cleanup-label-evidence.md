@@ -44,4 +44,6 @@ Gmail reconciliation already performs provider I/O in its transaction; this guar
 duration and can delay cleanup for the same mailbox. This decision retains that existing boundary
 for this path and does not authorize new network work inside transactions. The guard coordinates
 only these participating writers; it does not guarantee deadlock freedom or control old-version or
-other writers. Waits use the normal transaction limits and failures propagate for retry.
+other writers. The production pool applies a 60-second limit to each SQL statement, not to the
+transaction or provider awaits as a whole. Errors propagate; the fixed-key cleanup job is enqueued
+with three attempts, and no timeout is reported as success.

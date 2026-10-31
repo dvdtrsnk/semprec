@@ -417,6 +417,117 @@ describe("Gmail label folders (issue #1496)", () => {
     expect(await foldersOf(params, "overlap")).toEqual(["INBOX"]);
   }, 15_000);
 
+  it("rolls back a failed cleanup page and releases the waiting Gmail sync", async () => {
+    const params = await setup();
+    const seeded = await seedOverlap(params);
+    const cleanupPool = await createRuntimeRolePool(admin, "semprec_data");
+    const syncPool = await createRuntimeRolePool(admin, "semprec_data");
+    let failCleanup: () => void = () => undefined;
+    let releaseSync: () => void = () => undefined;
+    const cleanupGate = new Promise<void>((resolve) => {
+      failCleanup = resolve;
+    });
+    const syncGate = new Promise<void>((resolve) => {
+      releaseSync = resolve;
+    });
+    let reportCleanup: (pid: number) => void = () => undefined;
+    const cleanupPaused = new Promise<number>((resolve) => {
+      reportCleanup = resolve;
+    });
+    let reportSync: () => void = () => undefined;
+    const syncPaused = new Promise<void>((resolve) => {
+      reportSync = resolve;
+    });
+    const original = relationOps.deleteRelationWithClient;
+    const spy = vi
+      .spyOn(relationOps, "deleteRelationWithClient")
+      .mockImplementation(async (client, input, context, writer) => {
+        const result = await original(client, input, context, writer);
+        if (input.callerItemId === seeded.messageItemId && input.targetItemId === seeded.folderItemId && result) {
+          const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          const pid = rows[0]?.pid;
+          if (pid === undefined) throw new Error("Missing cleanup backend pid");
+          reportCleanup(pid);
+          await cleanupGate;
+          throw new Error("Injected failure after guarded edge deletion");
+        }
+        return result;
+      });
+    const cleanup = handleMailGmailPseudoFolderCleanupTask(cleanupPool, async () => LABELS);
+    const cleanupSettled = Promise.allSettled([cleanup]);
+    let syncSettled: Promise<PromiseSettledResult<void>[]> | undefined;
+    let outcomes: PromiseSettledResult<void>[][];
+    let blockedQuery = "";
+    let restored: string[];
+    let folderRestored: boolean;
+    try {
+      const pid = await Promise.race([
+        cleanupPaused,
+        cleanup.then(() => {
+          throw new Error("Cleanup ended before barrier");
+        }),
+      ]);
+      const syncing = runInTenant(tenantId, () =>
+        withTransaction(syncPool, async (client) => {
+          await client.query("SET LOCAL statement_timeout = '5s'");
+          const gmail = gmailClient({ overlap: ["INBOX"] });
+          gmail.listLabels = async () => {
+            reportSync();
+            await syncGate;
+            return LABELS;
+          };
+          await reconcileGmailAccount(client, gmail, params);
+        }),
+      );
+      syncSettled = Promise.allSettled([syncing]);
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline) {
+        const { rows } = await admin.query<{ query: string }>(
+          "SELECT query FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+          [pid],
+        );
+        if (rows[0]) {
+          blockedQuery = rows[0].query;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      failCleanup();
+      await Promise.race([
+        syncPaused,
+        syncing.then(() => {
+          throw new Error("Sync ended before barrier");
+        }),
+      ]);
+      await cleanupSettled;
+      spy.mockRestore();
+      restored = await foldersOf(params, "overlap");
+      folderRestored = (await folderProviderIds(params)).includes("UNREAD");
+    } finally {
+      failCleanup();
+      releaseSync();
+      outcomes = await Promise.all([cleanupSettled, syncSettled ?? Promise.resolve([])]);
+      spy.mockRestore();
+      await cleanupPool.end();
+      await syncPool.end();
+    }
+    expect(blockedQuery).toMatch(/pg_advisory_xact_lock/i);
+    const cleanupResult = outcomes[0]?.[0];
+    expect(cleanupResult?.status).toBe("rejected");
+    if (cleanupResult?.status !== "rejected" || !(cleanupResult.reason instanceof AggregateError)) {
+      throw new Error("Expected cleanup to propagate the injected failure");
+    }
+    expect(
+      cleanupResult.reason.errors.some(
+        (error: unknown) => error instanceof Error && error.message === "Injected failure after guarded edge deletion",
+      ),
+    ).toBe(true);
+    expect(outcomes[1]?.[0]?.status).toBe("fulfilled");
+    expect(restored).toEqual(["UNREAD"]);
+    expect(folderRestored).toBe(true);
+    expect(await foldersOf(params, "overlap")).toEqual(["INBOX"]);
+  }, 15_000);
+
   it("waits for an in-flight Gmail move before cleaning the same mailbox", async () => {
     const params = await setup();
     await seedOverlap(params);
