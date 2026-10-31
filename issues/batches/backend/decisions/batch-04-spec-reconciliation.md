@@ -45,3 +45,14 @@ Clarify the earlier ambiguous "may omit" wording: implicit Projects allocation M
 
 - gh-1479: 1f128ea22f04ef564578c6346081e397d827f01a654f8894115e0f72e882c4cf -> df2c6a0d990e81554ac9886762f36236840aa6df0200830fbf89f96e1c617774
 - gh-1486: 923c2df25d7f053ac1c2a90dc752215705b656bd8a268d3381d2951c4a5820ae -> f7ea9e8da3007555cfc49d06b0c2a436e000647a391f4c8add6764cc2b4d2ec8
+
+## Inbox-origin flag reaches actual HTTP responses
+
+Direct inspection confirms the API toItemEnvelope mapper reconstructs an ItemRow and drops its existing optional fromInbox. gh-1716 Task 1 already requires that flag in item reads and database/view queries; data-layer tests alone do not demonstrate this boundary. Authorize the minimal optional envelope field/forwarding when defined, without any adapter origin lookup, preserving existing write omission and all other envelope fields.
+
+Add actual authenticated HTTP single-item and database/view query tests with real proposal confirmation and a manually created Files comparison. Keep set-based production page/query-count, deleted-origin and tenant isolation evidence. Scope includes the mapper, the three existing handler test files and one optional shared typed origin fixture. No client implementation or origin filter/sort is included.
+
+To respect the aggregate's body limit, only gh-1417's historical descriptive Context paragraph is compressed; its decisions, model tier, Tasks and AC are unchanged. Review-02 remains BLOCKED/incomplete, and graph-pruning, relation-only preparation and real populated-tenant migration-runner evidence still require fixes and full independent review.
+
+- gh-1716: a157115bb160f7c4065423763809ff15e9447e04e8a90a6778f5eeee04567251 -> 435eb504160c452cf5fbeafec6e61d89a3f03a4284b825855c4366552c5a73c9
+- gh-1417: 6c0555302299218e3c9f127db3124ca67649136ce7d6b98e1a18ef1ee52225f9 -> 3e80b597e9c4bd7a1d85c869fda752d0ef5bae4d2198cd172c68624bc81f8716
