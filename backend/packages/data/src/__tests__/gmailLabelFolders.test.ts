@@ -228,6 +228,53 @@ describe("Gmail label folders (issue #1496)", () => {
     expect(await folderProviderIds(params)).not.toContain("UNREAD");
   });
 
+  it("walks more than one cleanup page and leaves every affected message in Archive", async () => {
+    const params = await setup();
+    await runInTenant(tenantId, () =>
+      withTransaction(pool, async (client) => {
+        const folderItemId = await ensureFolderItem(client, {
+          foldersDatabaseId: params.foldersDatabaseId,
+          mailboxItemId: params.mailboxItemId,
+          mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
+          providerId: "UNREAD",
+          name: "Unread",
+          behavior: "label",
+          specialPurpose: "none",
+        });
+        for (let index = 0; index < 201; index += 1) {
+          await ingestEmailMessage(client, {
+            emailsDatabaseId: params.emailsDatabaseId,
+            filesDatabaseId: params.filesDatabaseId,
+            folderRelationPropertyId: params.folderRelationPropertyId,
+            attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
+            folderItemId,
+            mailboxItemId: params.mailboxItemId,
+            providerMessageId: `page-${index}`,
+            messageId: `<page-${index}@example.test>`,
+            envelope: { from: { address: "sender@example.test" } },
+            subject: "Page",
+            attachments: [],
+            storage,
+            storageKeyPrefix: "page-test",
+          });
+        }
+      }),
+    );
+    await handleMailGmailPseudoFolderCleanupTask(pool, async () => LABELS);
+    for (const index of [0, 100, 200]) {
+      expect(await foldersOf(params, `page-${index}`)).toEqual([GMAIL_ARCHIVE_PROVIDER_ID]);
+    }
+    const { rows } = await admin.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM mail_message_meta m
+        JOIN item_relations r ON r.item_a = m.item_id OR r.item_b = m.item_id
+        JOIN items f ON f.id = CASE WHEN r.item_a = m.item_id THEN r.item_b ELSE r.item_a END
+        WHERE m.mailbox_item_id = $1 AND f.properties ->> 'providerId' = $2`,
+      [params.mailboxItemId, GMAIL_ARCHIVE_PROVIDER_ID],
+    );
+    expect(rows[0]?.count).toBe("201");
+    expect(await folderProviderIds(params)).not.toContain("UNREAD");
+  }, 30_000);
+
   it("cleanup removes pseudo-folders, keeps archived mail visible through Archive, and a second run changes nothing", async () => {
     const params = await setup();
     const inventory: GmailLabelRef[] = [

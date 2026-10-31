@@ -182,6 +182,31 @@ describe("mail OAuth states (issue #1483)", () => {
     expect(results[1]).toEqual({ status: "fulfilled", value: null });
   });
 
+  it("rejects a duplicate state hash within a tenant but permits it in a different tenant", async () => {
+    const userB = await createUser(tenantB);
+    const first = await create(tenantA, userA);
+    const otherA = await create(tenantA, userA);
+    const otherB = await create(tenantB, userB);
+    const firstHash = createHash("sha256").update(first.state).digest("hex");
+    const otherAHash = createHash("sha256").update(otherA.state).digest("hex");
+    const otherBHash = createHash("sha256").update(otherB.state).digest("hex");
+    await expect(
+      runInTenant(tenantA, () =>
+        withTransaction(pool, (client) =>
+          client.query("UPDATE mail_oauth_states SET state_hash = $1 WHERE state_hash = $2", [firstHash, otherAHash]),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "23505", constraint: "mail_oauth_states_state_hash_uq" });
+    await runInTenant(tenantB, () =>
+      withTransaction(pool, (client) =>
+        client.query("UPDATE mail_oauth_states SET state_hash = $1 WHERE state_hash = $2", [firstHash, otherBHash]),
+      ),
+    );
+    expect(await consume(tenantA, first.state, userA)).not.toBeNull();
+    expect(await consume(tenantB, first.state, userB)).not.toBeNull();
+    expect(await consume(tenantA, otherA.state, userA)).not.toBeNull();
+  });
+
   it("stores neither the plaintext state nor the verifier, bound to tenant and row", async () => {
     const { state } = await create(tenantA, userA);
     const row = (await rowFor(state))!;
