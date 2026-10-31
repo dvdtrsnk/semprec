@@ -1,5 +1,18 @@
 # Repository issues
 
+## Current backend delivery program
+
+Use [the sequential technical batches](batches/backend/README.md) to execute the
+open backend backlog in one working tree. Original implementation issues remain
+requirement records with their existing feature-epic parents; their individual
+dispatch intent is disabled. New aggregate issues are proposed, not approved or
+queued. The program preserves source Tasks/AC and declared dependencies.
+
+Run `node issues/batches/backend/verify.mjs` to check routing and snapshots, then
+`node .github/scripts/issues.mjs validate` for ordinary catalog validation.
+The scoped authoring/execution exception is recorded in
+`docs/adr/2026-10-31-sequential-backend-delivery-batches.md`.
+
 Issues are Markdown records with stable identities and a small YAML metadata
 header. The rollout is tracked in [`migration/state.json`](migration/state.json).
 While its authority is `github`, the live Relay workflows still use GitHub;
