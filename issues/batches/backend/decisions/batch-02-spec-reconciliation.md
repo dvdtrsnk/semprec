@@ -28,3 +28,11 @@ The source requirements and aggregate were revised, reapproved under delegated a
 - Missing explicit tenant predicates in drift-property scans are confirmed defects to fix across sibling scans, not reasons to relax isolation or use only superuser tests.
 
 Source gh-1427: b0cd0f1d573b358eb40b0e0608474f5e04f98eb751a4b5eee0e902e3b566addb -> 08b569b61e76ccdcd95d40722cea00cb18e064a1d475a839eae28c3a605b9a97. Aggregate: a76307e91bc1366fe72bfaf1f1277bf4943053f9e9d9f9717ae5010a77d9edb4.
+
+## Canonical mail database keys for actual collection visibility
+
+The strengthened HTTP test found that seeded Emails, Mailboxes and Folders have NULL keys, so key-based manifest metadata does not apply. Authorize fresh canonical keys plus a per-tenant populated-upgrade repair of only these three system rows. Preserve ids, names, items, relations and ownership. No resolver heuristic or weaker assertion is accepted. NULL keys become their existing module constants; canonical rows are unchanged; missing rows are skipped. Unexpected non-null keys or collisions fail atomically without overwriting another row. Use existing runtime-role tenant cutover composition, explicit tenant/system identity, transactional row guards and real multi-tenant tests.
+
+A new proposed 2026-10-31-mail-database-key-cutover ADR must explain the narrowly bounded three-row SQL exception to the existing application-code post-migration decision; no historical accepted ADR body is edited. Acceptance still requires actual list/schema visibility and fresh/populated/rerun/isolation/collision evidence. Non-normative repeated context was shortened to keep the aggregate below the existing 60000-character limit; previous Tasks, decisions and AC remain.
+
+Source gh-1407: 9bb36fb24ac5d80aaf6b96604fd63d1872778dae0fe0ce253aab887e248d0baa -> a7142a837f5d3679fa52eb537cec08086c52ac0a51956939667d65f1f67c92a2. Aggregate: 1a43655b09fc2d2afeab1b9913977e844a08dbf07676be1d70df62135e28a865.
