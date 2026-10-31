@@ -476,6 +476,18 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       relations: { project: [project] },
     });
 
+    const malformedTargetError = await revise({ project: ["not-a-uuid"] }).catch((e: unknown) => e);
+    expect(malformedTargetError).toBeInstanceOf(ValidationError);
+    if (!(malformedTargetError instanceof ValidationError)) throw malformedTargetError;
+    expect(malformedTargetError.status).toBe(400);
+    expect(malformedTargetError.details).toEqual({ field: "project" });
+    const unchangedCard = await withTransaction(pool, (client) =>
+      itemsStore.getItemById(client, proposalsId, proposal.id),
+    );
+    expect(unchangedCard).not.toBeNull();
+    if (!unchangedCard) throw new Error("The rejected revision removed its proposal card");
+    expect(unchangedCard.properties.proposal).toEqual(revised.properties.proposal);
+
     await withTransaction(pool, async (client) => {
       await itemsStore.softDeleteItem(client, projectsId, project);
     });

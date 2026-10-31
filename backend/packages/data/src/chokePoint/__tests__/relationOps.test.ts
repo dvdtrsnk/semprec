@@ -95,8 +95,9 @@ describe("assertRelationTargetLinkableWithClient (issue #1426)", () => {
     const error = await checkTarget(await propertyId("tasks", "project"), "not-a-uuid").catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).status).toBe(400);
-    expect((error as ValidationError).details).toEqual({ field: "project" });
+    if (!(error instanceof ValidationError)) throw error;
+    expect(error.status).toBe(400);
+    expect(error.details).toEqual({ field: "project" });
   });
 
   it("treats another tenant's item as nonexistent", async () => {

@@ -32,8 +32,9 @@ import {
 import { runRelationEdgeDeleteHooks, runRelationEdgeWriteHooks } from "./hooks.js";
 import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 import { breakValueLinksForRelationEdge } from "./valueLinkWrites.js";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The normalized public shape of a stored edge — same fields as `relationsStore.ItemRelationRow`, named here to match the choke-point's own edge contract. */
 export type RelationEdge = ItemRelationRow;
@@ -112,11 +113,11 @@ export interface LinkableRelationTargetInput {
 
 /**
  * Rejects a relation target an edge could not point at, without the caller item, which a proposed
- * item does not have yet. Every failure carries `details.field` = the relation property key:
+ * item does not have yet. Target-validation failures carry `details.field` = the relation property key:
  * - the target is missing from the relation's other database (another tenant's item is missing
  *   too), `code: 'targetNotFound'`; soft-deleted, `code: 'targetDeleted'`; a project whose
  *   `status` is `archived`, `code: 'targetArchived'` (a `done` project stays linkable);
- * - `database_archived` / `owner_violation` and the edge-metadata hooks, as for `assertRelationCreatableWithClient`;
+ * - `database_archived` / `owner_violation` and edge-metadata hook failures retain the shared edge guards' error details and status;
  * - `CardinalityViolationError` when the target already holds the only edge the relation allows:
  *   any edge for `one_to_one`, any edge on the side of a `one_to_many` whose item may have only one counterpart.
  * The cardinality check only reports; the write at confirm time stays enforced by the database trigger.

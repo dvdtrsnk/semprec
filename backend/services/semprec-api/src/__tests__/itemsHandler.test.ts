@@ -453,9 +453,11 @@ describe("item routes (issue #241)", () => {
       });
 
       expect(patch.status).toBe(400);
-      expect(((await patch.json()) as ErrorBody).error.details).toMatchObject({ field: "writerKind" });
+      const patchBody: unknown = await patch.json();
+      expect(patchBody).toMatchObject({ error: { code: "validation_failed", details: { field: "writerKind" } } });
       expect(create.status).toBe(400);
-      expect(((await create.json()) as ErrorBody).error.details).toMatchObject({ field: "writerKind" });
+      const createBody: unknown = await create.json();
+      expect(createBody).toMatchObject({ error: { code: "validation_failed", details: { field: "writerKind" } } });
       expect(updated).toEqual([]);
       expect(created).toEqual([]);
       expect((await chokePoint.getItem(db.id, item.id))?.properties).toEqual({ title: "Dune" });
