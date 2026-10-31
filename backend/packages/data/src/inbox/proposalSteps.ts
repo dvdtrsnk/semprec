@@ -13,7 +13,9 @@ import { FILES_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { parseFileFromAttachmentProperties } from "./fileAttachmentStep.js";
 import { deleteInboxAttachment, getInboxAttachment } from "./inboxAttachmentsStore.js";
 import type { ProposalStep } from "./inboxTickAction.js";
-import { selectActiveSteps } from "./proposalStepGraph.js";
+import { effectiveStepRelations, selectActiveSteps } from "./proposalStepGraph.js";
+import * as relationsStore from "../chokePoint/relationsStore.js";
+import { isDeepStrictEqual } from "node:util";
 
 /** What a `fileFromAttachment` step resolved to: the Files item, the attachment it moved, and whether this step created the item. */
 export interface FileFromAttachmentResult {
@@ -50,6 +52,80 @@ interface StepOutcome {
   movedAttachmentId?: string;
 }
 
+/** Locks the existing rows and relation definitions needed by update preconditions. */
+async function lockUpdatePreconditions(client: PoolClient, steps: ProposalStep[]): Promise<void> {
+  const updates = steps.filter((step) => step.op === "update" && step.itemId !== undefined);
+  const itemIds = [...new Set(updates.flatMap((step) => (step.itemId ? [step.itemId] : [])))].sort();
+  const items = await itemsStore.getItemsByIds(client, itemIds);
+  const byId = new Map(items.map((item) => [item.id, item]));
+  for (const id of itemIds) {
+    const item = byId.get(id);
+    if (!item || !(await itemsStore.lockItemById(client, item.databaseId, id))) {
+      const step = updates.find((candidate) => candidate.itemId === id)!;
+      throw new ValidationError(`Proposal step '${step.ref}': its item does not exist`, {
+        ref: step.ref,
+        field: "itemId",
+      });
+    }
+  }
+  const definitionIds = new Set<string>();
+  for (const step of updates) {
+    const item = step.itemId ? byId.get(step.itemId) : undefined;
+    if (!item) continue;
+    for (const key of Object.keys(effectiveStepRelations(step))) {
+      const propertyId = await requireRelationPropertyId(client, step, item.databaseId, key);
+      const definition = await relationsStore.getRelationDefinitionByPropertyId(client, propertyId);
+      if (!definition) throw new ValidationError(`Relation '${key}' has no definition`, { ref: step.ref, field: key });
+      definitionIds.add(definition.id);
+    }
+  }
+  const sortedDefinitions = [...definitionIds].sort();
+  for (const id of sortedDefinitions) {
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", [id]);
+  }
+  if (sortedDefinitions.length > 0 && itemIds.length > 0) {
+    await client.query(
+      `SELECT id FROM item_relations WHERE relation_definition_id = ANY($1::uuid[])
+       AND (item_a = ANY($2::uuid[]) OR item_b = ANY($2::uuid[])) ORDER BY id FOR UPDATE`,
+      [sortedDefinitions, itemIds],
+    );
+  }
+}
+
+/** Compares the locked current state immediately before applying an update step. */
+async function assertUpdateBefore(
+  client: PoolClient,
+  step: ProposalStep,
+  databaseId: string,
+  itemId: string,
+): Promise<void> {
+  const item = await itemsStore.lockItemById(client, databaseId, itemId);
+  if (!item || item.deletedAt)
+    throw new ValidationError("Proposal update item no longer exists", { ref: step.ref, field: "itemId" });
+  for (const key of Object.keys(step.properties ?? {})) {
+    if (!isDeepStrictEqual(item.properties[key] ?? null, step.before?.properties?.[key] ?? null)) {
+      throw new ValidationError(`Proposal step '${step.ref}': property '${key}' changed`, {
+        ref: step.ref,
+        field: key,
+      });
+    }
+  }
+  for (const key of Object.keys(effectiveStepRelations(step))) {
+    const propertyId = await requireRelationPropertyId(client, step, databaseId, key);
+    const definition = await relationsStore.getRelationDefinitionByPropertyId(client, propertyId);
+    if (!definition) throw new ValidationError(`Relation '${key}' has no definition`, { ref: step.ref, field: key });
+    const edges = await relationsStore.listRelationsForItem(client, definition.id, itemId);
+    const actual = edges.map((edge) => relationsStore.otherSide(edge, itemId)).sort();
+    const before = [...(step.before?.relations?.[key] ?? [])].sort();
+    if (!isDeepStrictEqual(actual, before)) {
+      throw new ValidationError(`Proposal step '${step.ref}': relation '${key}' changed`, {
+        ref: step.ref,
+        field: key,
+      });
+    }
+  }
+}
+
 type StepRelationTargets = Record<string, Array<string | { ref: string }>>;
 
 function refsOf(relations: StepRelationTargets | undefined): string[] {
@@ -66,7 +142,7 @@ function orderByRefDependencies(steps: ProposalStep[]): ProposalStep[] {
   const place = (step: ProposalStep): void => {
     if (placed.has(step.ref)) return;
     placed.add(step.ref);
-    for (const ref of [...refsOf(step.relations), ...refsOf(step.after?.relations)]) {
+    for (const ref of refsOf(effectiveStepRelations(step))) {
       const dependency = byRef.get(ref);
       if (dependency) place(dependency);
     }
@@ -83,7 +159,11 @@ async function withStepDetails<T>(step: ProposalStep, field: string, run: () => 
   } catch (error) {
     if (!(error instanceof ChokePointError)) throw error;
     const details = typeof error.details === "object" && error.details !== null ? error.details : {};
-    throw new ChokePointError(error.status, error.code, error.message, { ...details, ref: step.ref, field });
+    throw new ChokePointError(error.status, error.code, error.message, {
+      ...details,
+      ref: step.ref,
+      field: field === "properties" && "field" in details && typeof details.field === "string" ? details.field : field,
+    });
   }
 }
 
@@ -149,7 +229,7 @@ async function moveEdges(
   itemId: string,
   ctx: StepWriteContext,
 ): Promise<void> {
-  const nextRelations: StepRelationTargets = { ...step.relations, ...step.after?.relations };
+  const nextRelations = effectiveStepRelations(step);
   for (const [key, nextTargets] of Object.entries(nextRelations)) {
     const relationPropertyId = await requireRelationPropertyId(client, step, databaseId, key);
     const next = nextTargets.map((target) => resolveTargetId(step, key, target, ctx));
@@ -293,6 +373,7 @@ async function executeStep(client: PoolClient, step: ProposalStep, ctx: StepWrit
     await createEdges(client, step, item.databaseId, item.id, step.relations ?? {}, ctx);
     return { itemId: item.id, databaseId: item.databaseId, created: false };
   }
+  await assertUpdateBefore(client, step, item.databaseId, item.id);
   const propertiesPatch = step.properties ?? {};
   if (Object.keys(propertiesPatch).length > 0) {
     // The choke point applies the same validation, approval and risk rules as to any other update.
@@ -329,7 +410,9 @@ export async function executeProposalSteps(
   let primary: Pick<ExecutedProposalSteps, "primaryItemId" | "primaryDatabaseId"> | null = null;
   const createdItemIds: string[] = [];
   const fileFromAttachments: FileFromAttachmentResult[] = [];
-  for (const step of orderByRefDependencies(selectActiveSteps(steps))) {
+  const activeSteps = selectActiveSteps(steps);
+  await lockUpdatePreconditions(client, activeSteps);
+  for (const step of orderByRefDependencies(activeSteps)) {
     const outcome = await executeStep(client, step, ctx);
     if (outcome.created) createdItemIds.push(outcome.itemId);
     if (outcome.movedAttachmentId !== undefined) {

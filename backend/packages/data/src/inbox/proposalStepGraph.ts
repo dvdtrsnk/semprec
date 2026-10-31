@@ -7,10 +7,15 @@ export function stepError(step: ProposalStep, message: string, field: string): V
   return new ValidationError(`Proposal step '${step.ref}': ${message}`, { ref: step.ref, field });
 }
 
+/** The relation values that the executor will write for this step. */
+export function effectiveStepRelations(step: ProposalStep): NonNullable<ProposalStep["relations"]> {
+  return step.op === "update" ? { ...step.relations, ...step.after?.relations } : (step.relations ?? {});
+}
+
 /** The `{ ref }` targets of a step's relations, with the relation key each sits under. */
 function stepRefTargets(step: ProposalStep): Array<{ key: string; ref: string }> {
   const targets: Array<{ key: string; ref: string }> = [];
-  for (const [key, list] of Object.entries(step.relations ?? {})) {
+  for (const [key, list] of Object.entries(effectiveStepRelations(step))) {
     for (const target of list) if (typeof target !== "string") targets.push({ key, ref: target.ref });
   }
   return targets;

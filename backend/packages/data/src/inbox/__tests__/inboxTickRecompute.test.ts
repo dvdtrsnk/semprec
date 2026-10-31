@@ -134,7 +134,11 @@ describe("Inbox tick write phase recomputes the day's Inbox summary (issue #1390
    * then runs `inCompute`, so a job present afterwards was enqueued by the write phase.
    */
   async function tickWithClearedJobs(itemId: string, inCompute: () => Promise<void> = async () => {}) {
+    const dayId = await journalDayIdFor(itemId);
+    await clearRecomputeJobs();
     await runTick(itemId, async () => {
+      // This job exists before the write phase starts; clear it to observe only later enqueues.
+      expect(await pendingRecomputeJobKeys()).toEqual([journalInboxRecomputeJobKey(dayId)]);
       await clearRecomputeJobs();
       await inCompute();
       return { properties: { name: "Buy milk" } };
@@ -210,6 +214,7 @@ describe("Inbox tick write phase recomputes the day's Inbox summary (issue #1390
     });
 
     expect(await pendingRecomputeJobKeys()).toEqual([]);
+    expect((await chokePoint.listItems(proposalsId)).items).toHaveLength(0);
   });
 
   it("enqueues nothing when the item was deleted while the tick computed", async () => {
@@ -222,5 +227,6 @@ describe("Inbox tick write phase recomputes the day's Inbox summary (issue #1390
     });
 
     expect(await pendingRecomputeJobKeys()).toEqual([]);
+    expect((await chokePoint.listItems(proposalsId)).items).toHaveLength(0);
   });
 });

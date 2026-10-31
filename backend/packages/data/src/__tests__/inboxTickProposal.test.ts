@@ -465,7 +465,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       return item.id;
     }
 
-    it.each(["cs", "en"] as const)(
+    it.each(["cs", "en", "fr"] as const)(
       "passes the %s user's locale and replaces the reason on recompute",
       async (locale) => {
         await runInTenant(getTenantZeroId(), () =>
@@ -2560,7 +2560,8 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
   async function failure(envelope: ProposalEnvelope): Promise<ValidationError> {
     const error = await validate(envelope).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ValidationError);
-    return error as ValidationError;
+    if (!(error instanceof ValidationError)) throw error;
+    return error;
   }
 
   async function createItem(moduleId: string, properties: Record<string, unknown>): Promise<string> {
@@ -2589,10 +2590,11 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
     expect(JSON.stringify(parseStoredProposalEnvelope(JSON.parse(json), "p1"))).toBe(json);
   });
 
-  it("reports the ref and field of a failing step", async () => {
-    const error = await failure(envelopeOf([{ ...companyStep, properties: { name: "Acme", bogus: 1 } }, personStep]));
+  it("reports the ref and field of a failing person step", async () => {
+    const error = await failure(envelopeOf([companyStep, { ...personStep, properties: { name: "Jane", bogus: 1 } }]));
 
-    expect(error.details).toEqual({ ref: "company", field: "bogus" });
+    expect(error.status).toBe(400);
+    expect(error.details).toEqual({ ref: "person", field: "bogus" });
   });
 
   it("rejects a cycle between steps", async () => {
@@ -2675,6 +2677,29 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
       };
     }
 
+    it("rejects a missing step referenced only by an update's after relations", async () => {
+      const project = await createItem("projects", { name: "Home" });
+      const error = await failure(
+        await updateEnvelope({ after: { relations: { area: [{ ref: "missing" }] } } }, project),
+      );
+      expect(error.details).toEqual({ ref: "move", field: "area" });
+    });
+
+    it("rejects a cycle through an update's after relations", async () => {
+      const project = await createItem("projects", { name: "Home" });
+      const envelope = await updateEnvelope({ after: { relations: { area: [{ ref: "area" }] } } }, project);
+      envelope.operations.push({
+        ref: "area",
+        op: "create",
+        databaseKey: "areas",
+        role: "secondary",
+        properties: { name: "Work" },
+        relations: { projects: [{ ref: "move" }] },
+      });
+      const error = await failure(envelope);
+      expect(error.details).toMatchObject({ ref: "area", field: "projects" });
+    });
+
     it("accepts an update step changing a project's status", async () => {
       const project = await createItem("projects", { name: "Home", status: "inProgress" });
 
@@ -2688,6 +2713,73 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
           project,
         ),
       );
+    });
+
+    it("rejects a blank title with the update field and ref", async () => {
+      const project = await createItem("projects", { name: "Home" });
+      const error = await failure(
+        await updateEnvelope(
+          {
+            properties: { name: "" },
+            before: { properties: { name: "Home" } },
+            after: { properties: { name: "" } },
+          },
+          project,
+        ),
+      );
+      expect(error.details).toEqual({ ref: "move", field: "name" });
+    });
+
+    it("rejects an after-only relation with no before coverage", async () => {
+      const project = await createItem("projects", { name: "Home" });
+      const error = await failure(await updateEnvelope({ after: { relations: { area: [] } } }, project));
+      expect(error.details).toEqual({ ref: "move", field: "area" });
+    });
+
+    it("rejects a conflicting after property", async () => {
+      const project = await createItem("projects", { name: "Home" });
+      const error = await failure(
+        await updateEnvelope(
+          {
+            properties: { name: "Next" },
+            before: { properties: { name: "Home" } },
+            after: { properties: { name: "Other" } },
+          },
+          project,
+        ),
+      );
+      expect(error.details).toEqual({ ref: "move", field: "name" });
+    });
+
+    it("rejects conflicting relation representations", async () => {
+      const project = await createItem("projects", { name: "Home" });
+      const first = await createItem("areas", { name: "First" });
+      const second = await createItem("areas", { name: "Second" });
+      const error = await failure(
+        await updateEnvelope(
+          {
+            relations: { area: [first] },
+            before: { relations: { area: [] } },
+            after: { relations: { area: [second] } },
+          },
+          project,
+        ),
+      );
+      expect(error.details).toEqual({ ref: "move", field: "area" });
+    });
+
+    it("rejects an invalid after-only relation target", async () => {
+      const project = await createItem("projects", { name: "Home" });
+      const error = await failure(
+        await updateEnvelope(
+          {
+            before: { relations: { area: [] } },
+            after: { relations: { area: ["00000000-0000-4000-8000-000000000001"] } },
+          },
+          project,
+        ),
+      );
+      expect(error.details).toMatchObject({ ref: "move", field: "area" });
     });
 
     it("accepts an update step moving a project to another area", async () => {

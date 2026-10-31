@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
@@ -34,7 +34,8 @@ describe("fromInbox flag", () => {
         proposalId: randomUUID(),
         inboxItemId: null,
         sourceTranscriptId: null,
-        capturedAt: new Date().toISOString(),
+        capturedAt: captureChannel === "inbox" ? new Date().toISOString() : null,
+        captureTimeBasis: captureChannel === "inbox" ? "inboxCapture" : "unknown",
         captureChannel,
       }),
     );
@@ -109,6 +110,26 @@ describe("fromInbox flag", () => {
     expect(await countQueries(ids.slice(0, 1))).toBe(1);
     expect(await countQueries(ids)).toBe(1);
     expect(await countQueries([])).toBe(0);
+
+    async function countProductionOriginQueries(limit: number): Promise<number> {
+      const spies: Array<{ mock: { calls: unknown[][] }; mockRestore(): void }> = [];
+      const observe = (client: PoolClient) => {
+        spies.push(vi.spyOn(client, "query"));
+      };
+      pool.on("acquire", observe);
+      try {
+        const page = await chokePoint.queryDatabaseItems(db.id, { limit });
+        expect(page.items).toHaveLength(limit);
+        return spies
+          .flatMap((spy) => spy.mock.calls)
+          .filter((args) => typeof args[0] === "string" && args[0].includes("FROM item_origins")).length;
+      } finally {
+        pool.off("acquire", observe);
+        for (const spy of spies) spy.mockRestore();
+      }
+    }
+    expect(await countProductionOriginQueries(1)).toBe(1);
+    expect(await countProductionOriginQueries(50)).toBe(1);
 
     const page = await chokePoint.queryDatabaseItems(db.id, { limit: 50 });
     expect(page.items).toHaveLength(50);

@@ -21,7 +21,7 @@ export interface ProposalComputationInput {
   /** The module id of the target database, for `entityKind: 'database'`; the primary operation of a multi-step answer must write to it. */
   targetModuleId?: string;
   /** The language (the person's `users.locale`, e.g. `cs`) the proposal's person-facing texts must be written in. */
-  locale: "cs" | "en";
+  locale: string;
   /** The project the heartbeat belongs to (`ActionContext.projectItemId`); the model call is attributed to it. */
   projectItemId: string;
 }
@@ -65,7 +65,7 @@ export interface TickSnapshot {
   targetModuleId?: string;
   existingProposal: ItemRow | null;
   fingerprint: string;
-  locale: "cs" | "en";
+  locale: string;
 }
 
 /** Combines the external call's result with the snapshot into a stored envelope — no I/O. */

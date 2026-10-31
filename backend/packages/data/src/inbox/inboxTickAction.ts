@@ -1,4 +1,9 @@
-import { withStepRef, existingItemRelations, assertStepDatabaseWritable } from "./proposalEnvelopeValidation.js";
+import {
+  withStepRef,
+  existingItemRelations,
+  assertStepDatabaseWritable,
+  assertUpdateStepShape,
+} from "./proposalEnvelopeValidation.js";
 import { inboxFingerprintInput, getRelationDefinitionByKey, resolveRecognizedType } from "./inboxSourceFingerprint.js";
 import {
   buildProposalEnvelope,
@@ -50,7 +55,7 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { assertUserItemPatchValid, createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
@@ -227,31 +232,14 @@ async function assertValidStep(client: PoolClient, step: ProposalStep): Promise<
     throw stepError(step, "a link step cannot write properties", "properties");
   }
   await withStepRef(step.ref, async () => {
-    const byKey = new Map(
-      (await propertiesStore.listPropertiesByDatabase(client, database.id)).map((property) => [property.key, property]),
-    );
+    const databaseProperties = await propertiesStore.listPropertiesByDatabase(client, database.id);
+    const byKey = new Map(databaseProperties.map((property) => [property.key, property]));
     assertWritableProposalPropertyKeys(properties, byKey, database.id);
+    assertUserItemPatchValid(databaseProperties, properties, database.ownerModuleId);
     // A target the item already holds is not re-linked, so the cardinality check skips it.
     await assertValidEnvelopeRelations(client, database.id, byKey, existingItemRelations(step, step.before?.relations));
   });
-  if (step.op === "update") {
-    for (const key of Object.keys(properties)) {
-      if (!Object.hasOwn(step.before?.properties ?? {}, key)) {
-        throw stepError(step, `before does not hold the current value of property '${key}'`, key);
-      }
-      if (!Object.hasOwn(step.after?.properties ?? {}, key)) {
-        throw stepError(step, `after does not hold the new value of property '${key}'`, key);
-      }
-    }
-    for (const key of Object.keys(step.relations ?? {})) {
-      if (!Object.hasOwn(step.before?.relations ?? {}, key)) {
-        throw stepError(step, `before does not hold the current targets of relation '${key}'`, key);
-      }
-      if (!Object.hasOwn(step.after?.relations ?? {}, key)) {
-        throw stepError(step, `after does not hold the new targets of relation '${key}'`, key);
-      }
-    }
-  }
+  if (step.op === "update") assertUpdateStepShape(step);
   return database;
 }
 
@@ -778,7 +766,7 @@ async function readTickSnapshot(
       entityKind: "pageContent",
       existingProposal,
       fingerprint,
-      locale: toManifestLocale((await getTenantUserLocale(client)) ?? "cs"),
+      locale: (await getTenantUserLocale(client)) ?? "cs",
       sourceTypeId,
       recognition: true,
       activeTypes: validRecognitionTypes(await listActiveInboxTypes(client, config.inboxItemTypesDatabaseId)),
@@ -799,7 +787,7 @@ async function readTickSnapshot(
   }
 
   // `cs` is the `users.locale` column default, used when the tenant has no bound user.
-  const locale = toManifestLocale((await getTenantUserLocale(client)) ?? "cs");
+  const locale = (await getTenantUserLocale(client)) ?? "cs";
 
   return {
     item,
@@ -1124,7 +1112,11 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
           const patch = {
             recognizedTypeId: null,
             typeCandidates: choices,
-            reason: await recognitionClarificationReason(snapshot.locale, choices.length, result.reason),
+            reason: await recognitionClarificationReason(
+              toManifestLocale(snapshot.locale),
+              choices.length,
+              result.reason,
+            ),
           };
           await writeNeedsClarification(
             client,

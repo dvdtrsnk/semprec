@@ -157,6 +157,17 @@ function assertTitlePresent(
   }
 }
 
+/** Checks a proposed user patch using the side-effect-free checks of an item update. */
+export function assertUserItemPatchValid(
+  properties: PropertyRow[],
+  values: Record<string, unknown>,
+  ownerModuleId: string | null,
+): void {
+  assertWritableProperties(properties, Object.keys(values));
+  assertColorValues(properties, values);
+  assertTitlePresent(properties, values, ownerModuleId, { writerKind: "user" }, "patch");
+}
+
 /**
  * The ownership rule for keys a pre-write transform adds (the caller's own keys were already checked by
  * `assertWritableProperties`): the key must exist on the database, must be writable through the generic

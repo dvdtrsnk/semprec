@@ -4,12 +4,13 @@ import type { Pool } from "pg";
 import { getSystemTimezone } from "../systemSettings.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
+import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { ConflictError, ValidationError } from "../errors.js";
 import { randomUUID } from "node:crypto";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
-import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
@@ -30,6 +31,8 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createDocStore, type DocStore } from "../docs/docStore.js";
+import { matchTranscriptToEvent } from "../transcription/transcriptEventMatch.js";
+import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
@@ -257,6 +260,8 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const card = await readCard(proposal.id);
       expect(card!.properties.proposal).toEqual(futureEnvelope);
       expect(card!.properties.status).toBe("proposed");
+      const page = await createChokePoint(pool).listItems(proposalsId);
+      expect(page.items.find((item) => item.id === proposal.id)?.properties.proposal).toEqual(futureEnvelope);
       expect(parseStoredProposalEnvelope(card!.properties.proposal, proposal.id)).toEqual({
         unknownKind: true,
         ...futureEnvelope,
@@ -672,7 +677,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const edgesBefore = (await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM item_relations")).rows[0]!.n;
 
       const error = await confirm(failingCard).catch((e: unknown) => e);
-      expect(error).toMatchObject({ status: 400, details: { ref: "person" } });
+      expect(error).toMatchObject({ status: 400, details: { ref: "person", field: "name" } });
       expect(await countItems("companies")).toBe(0);
       expect(await countItems("people")).toBe(0);
       expect((await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM item_relations")).rows[0]!.n).toBe(
@@ -778,12 +783,116 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(await statusOf()).toBe("done");
     });
 
+    it.each(["property", "insert", "delete"] as const)(
+      "rejects stale before state after an overlapping %s commits",
+      async (change) => {
+        const project = await createIn("projects", { name: "Before" });
+        const area = await createIn("areas", { name: "Area" });
+        const projectsDb = await databaseIdFor("projects");
+        const property = await withTransaction(pool, (client) =>
+          propertiesStore.getPropertyByKey(client, projectsDb, "area"),
+        );
+        if (!property) throw new Error("Missing Projects.area property");
+        const edge = { relationPropertyId: property.id, callerItemId: project, targetItemId: area };
+        if (change === "delete") await withTransaction(pool, (client) => createRelationWithClient(client, edge));
+        const beforeTargets = change === "delete" ? [area] : [];
+        const card = await cardWithSteps("projects", [
+          {
+            ref: "project",
+            op: "update",
+            itemId: project,
+            role: "primary",
+            properties: { name: "After" },
+            relations: { area: beforeTargets },
+            before: { properties: { name: "Before" }, relations: { area: beforeTargets } },
+            after: { properties: { name: "After" }, relations: { area: beforeTargets } },
+          },
+        ]);
+        const writerPool = getTestPool({ max: 1 });
+        const contenderPool = getTestPool({ max: 1 });
+        let release = () => {};
+        let started = () => {};
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const ready = new Promise<void>((resolve) => {
+          started = resolve;
+        });
+        const writer = withTransaction(writerPool, async (client) => {
+          if (change === "property") {
+            await updateItemWithClient(client, {
+              databaseId: projectsDb,
+              itemId: project,
+              propertiesPatch: { name: "Changed" },
+            });
+          } else if (change === "insert") {
+            await createRelationWithClient(client, edge);
+          } else {
+            await deleteRelationWithClient(client, edge);
+          }
+          started();
+          await gate;
+        });
+        const writerOutcome = Promise.allSettled([writer]);
+        let contenderOutcome: Promise<PromiseSettledResult<unknown>[]> | undefined;
+        try {
+          await Promise.race([ready, writer]);
+          const pidResult = await contenderPool.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          const pid = pidResult.rows[0]?.pid;
+          if (pid === undefined) throw new Error("Missing contender pid");
+          const contender = withTransaction(contenderPool, (client) =>
+            confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card),
+          );
+          contenderOutcome = Promise.allSettled([contender]);
+          await expect
+            .poll(
+              async () => {
+                const { rows } = await pool.query<{ blocked: boolean }>(
+                  "SELECT cardinality(pg_blocking_pids($1)) > 0 AS blocked",
+                  [pid],
+                );
+                return rows[0]?.blocked;
+              },
+              { timeout: 5000 },
+            )
+            .toBe(true);
+          release();
+          await writer;
+          await expect(contender).rejects.toMatchObject({
+            status: 400,
+            details: { ref: "project", field: change === "property" ? "name" : "area" },
+          });
+          expect(await cardStatus(card)).toBe("proposed");
+          const [current] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
+          expect(current?.properties.name).toBe(change === "property" ? "Changed" : "Before");
+          expect(await edgeExists(project, area)).toBe(change === "insert");
+        } finally {
+          release();
+          await writerOutcome;
+          if (contenderOutcome) await contenderOutcome;
+          await writerPool.end();
+          await contenderPool.end();
+        }
+      },
+    );
+
     it("a repeated confirm returns the confirmed card and creates nothing twice", async () => {
       const card = await cardWithSteps("companies", companyAndPerson());
       await confirm(card);
       await confirm(card);
       expect(await countItems("companies")).toBe(1);
       expect(await countItems("people")).toBe(1);
+    });
+
+    it("returns the Inbox flag on a Files query after a real confirmation", async () => {
+      const card = await cardWithSteps("files", [
+        { ref: "file", op: "create", databaseKey: "files", role: "primary", properties: { name: "From Inbox" } },
+      ]);
+      const confirmed = await confirm(card);
+      const manual = await createIn("files", { name: "Manual" });
+      const page = await createChokePoint(pool).queryDatabaseItems(await databaseIdFor("files"), {});
+      expect(page.items.find((item) => item.id === confirmed.properties.resultItemId)?.fromInbox).toBe(true);
+      expect(page.items.find((item) => item.id === manual)?.fromInbox).toBe(false);
     });
 
     it("addresses every realtime invalidation of a confirm to the acting user", async () => {
@@ -807,8 +916,9 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         proposal_id: string;
         inbox_item_id: string | null;
         source_transcript_id: string | null;
-        captured_at: Date;
+        captured_at: Date | null;
         capture_channel: string;
+        capture_time_basis: string;
       }
       const originRows = async () => (await pool.query<OriginRow>("SELECT * FROM item_origins ORDER BY item_id")).rows;
       const sourceInboxItemId = (cardId: string) =>
@@ -839,7 +949,8 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           expect(row.inbox_item_id).toBe(inboxItemId);
           expect(row.source_transcript_id).toBeNull();
           expect(row.capture_channel).toBe("inbox");
-          expect(row.captured_at.toISOString()).toBe(
+          expect(row.capture_time_basis).toBe("inboxCapture");
+          expect(row.captured_at?.toISOString()).toBe(
             DateTime.fromISO(`${String(inboxItem!.properties.date)}T${String(inboxItem!.properties.time)}`, {
               zone: await withTransaction(pool, getSystemTimezone),
             })
@@ -847,6 +958,67 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
               .toISO(),
           );
         }
+      });
+
+      it.each([null, "invalid"])("records an unknown time for an Inbox capture date %s", async (date) => {
+        const card = await cardWithSteps("companies", companyAndPerson());
+        const inboxItemId = await sourceInboxItemId(card);
+        await withTransaction(pool, (client) =>
+          updateItemWithClient(client, { databaseId: inboxId, itemId: inboxItemId, propertiesPatch: { date } }),
+        );
+        await confirm(card);
+        expect((await originRows()).map((row) => [row.captured_at, row.capture_time_basis])).toEqual([
+          [null, "unknown"],
+          [null, "unknown"],
+        ]);
+      });
+
+      it("marks an old writer's timestamp unverified", async () => {
+        await pool.query(
+          `INSERT INTO item_origins (item_id, proposal_id, captured_at, capture_channel)
+           VALUES ($1, $2, $3, 'inbox')`,
+          [randomUUID(), randomUUID(), "2026-01-01T00:00:00Z"],
+        );
+        const [row] = await originRows();
+        expect(row?.captured_at?.toISOString()).toBe("2026-01-01T00:00:00.000Z");
+        expect(row?.capture_time_basis).toBe("legacyUnverified");
+      });
+
+      it("records no guessed time for a revised transcript card", async () => {
+        const transcriptsId = await databaseIdFor("transcripts");
+        const transcript = await withTransaction(pool, (client) =>
+          createItemWithClient(
+            client,
+            { databaseId: transcriptsId, properties: { name: "Meeting", date: "2024-03-01T12:00:00.000Z" } },
+            { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+          ),
+        );
+        await withTransaction(pool, (client) =>
+          matchTranscriptToEvent(client, { transcriptId: transcript.id, durationSeconds: 60 }),
+        );
+        const { rows } = await pool.query<{ id: string }>(
+          "SELECT id FROM items WHERE database_id = $1 AND properties->>'kind' = 'transcript'",
+          [proposalsId],
+        );
+        const cardId = rows[0]?.id;
+        if (!cardId) throw new Error("Missing transcript card");
+        const eventsId = await databaseIdFor("events");
+        await withTransaction(pool, (client) =>
+          reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, {
+            message: "Revised",
+            entityKind: "database",
+            target: eventsId,
+            properties: { name: "Meeting" },
+          }),
+        );
+        await confirm(cardId);
+        const [row] = await originRows();
+        expect(row).toMatchObject({
+          source_transcript_id: transcript.id,
+          capture_channel: "transcript",
+          captured_at: null,
+          capture_time_basis: "unknown",
+        });
       });
 
       it("writes one row for a single-step database proposal", async () => {
