@@ -348,12 +348,12 @@
       "sequence": 3,
       "status": "proposed",
       "title": "[backend-delivery 03/74] Implement architecture changes",
-      "bodyCharacters": 58417,
-      "specSha256": "cbcfa05d4fcb94d160137950c3a5ba913eb848c7586296ea7f7da23179ef4772",
+      "bodyCharacters": 59748,
+      "specSha256": "aa747622930fe193aac849f89348bde3e393bbdaed235033db435ff0192e58bf",
       "members": [
         {
           "id": "gh-1366",
-          "specSha256": "27090644ccda62858a38f08411214907c3a22f5ff21a7ac85522178689139531",
+          "specSha256": "a941e6d314c86e065e23f5f48743874748c4eb987bba3abc75fa02aac9ae823f",
           "parent": "gh-1303",
           "dependencies": [],
           "approval": "approved"
@@ -367,7 +367,7 @@
         },
         {
           "id": "gh-1394",
-          "specSha256": "c03cd367906ff2496b48d801d68b5abb4e119dda781cefc690e8c6a289e43477",
+          "specSha256": "012d08fd455746d94304ae5cc0ed5cecb5f32b82620296abd353097a4b48bd82",
           "parent": "gh-1303",
           "dependencies": [
             "gh-1366"
