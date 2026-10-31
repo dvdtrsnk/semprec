@@ -439,8 +439,8 @@
       "sequence": 4,
       "status": "proposed",
       "title": "[backend-delivery 04/74] Implement data/inbox, data/chokePoint, data/tenancy changes",
-      "bodyCharacters": 59892,
-      "specSha256": "2d12978d509c6330deb1246214f8a4e9d257871eb3509c5f96c9a339b971d81d",
+      "bodyCharacters": 59958,
+      "specSha256": "e6398b7145f3b200e996fc258c4d19281e25abc04e8418983f8326be184381e5",
       "members": [
         {
           "id": "gh-1479",
@@ -507,7 +507,7 @@
         },
         {
           "id": "gh-1419",
-          "specSha256": "337af8821395a0c6aef1f32f864669a1ca3d79dcd14ec721f51db4a6b90f27f6",
+          "specSha256": "f511cad62c9a37eef42e9e820585a2a9b8b5e96c36cf6f2795adc7e8760e18a2",
           "parent": "gh-1331",
           "dependencies": [],
           "approval": "approved"

@@ -56,3 +56,11 @@ To respect the aggregate's body limit, only gh-1417's historical descriptive Con
 
 - gh-1716: a157115bb160f7c4065423763809ff15e9447e04e8a90a6778f5eeee04567251 -> 435eb504160c452cf5fbeafec6e61d89a3f03a4284b825855c4366552c5a73c9
 - gh-1417: 6c0555302299218e3c9f127db3124ca67649136ce7d6b98e1a18ef1ee52225f9 -> 3e80b597e9c4bd7a1d85c869fda752d0ef5bae4d2198cd172c68624bc81f8716
+
+## Unknown-kind conflict identification on the HTTP boundary
+
+The global HTTP error envelope intentionally excludes internal exception messages. For gh-1419, retain the internal descriptive conflict message, HTTP 409 and existing error code/envelope; add the primitive entityKind alongside field in conflict details. The public identifying information is details.entityKind, not a new general message field. No global adapter change or new route is authorized. Add the authenticated HTTP confirm regression to the already aggregate-approved itemsHandler.test.ts, now explicitly included in this source Touches. Assert exact details and unchanged proposal/target state; retain revise evidence at its existing data entry point.
+
+Only the historical introductory Context paragraph is compressed to retain the aggregate body limit; the rollback sequencing decision and all other Task/AC remain.
+
+- gh-1419: 337af8821395a0c6aef1f32f864669a1ca3d79dcd14ec721f51db4a6b90f27f6 -> f511cad62c9a37eef42e9e820585a2a9b8b5e96c36cf6f2795adc7e8760e18a2
