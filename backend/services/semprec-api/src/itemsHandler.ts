@@ -1,6 +1,6 @@
 import type { CollectionMetadataResolver } from "@semprec/data";
 import type { Pool } from "pg";
-import { createChokePoint, NotFoundError } from "@semprec/data";
+import { createChokePoint, NotFoundError, ValidationError } from "@semprec/data";
 import type { GenericApplicationPort, Property } from "@semprec/shared";
 import type { RouteDefinition } from "./adapter/routeTable.js";
 import {
@@ -16,6 +16,12 @@ import { toRelationEnvelope } from "./adapter/relationEnvelope.js";
 
 function requestUrl(rawUrl: string | undefined): URL {
   return new URL(rawUrl ?? "/", "http://localhost");
+}
+
+function rejectCallerWriterKind(body: Record<string, unknown>): void {
+  if (Object.hasOwn(body, "writerKind")) {
+    throw new ValidationError("'writerKind' is server-controlled", { field: "writerKind" });
+  }
 }
 
 type RelationPropertyResolution = { property: Property } | { conflict: { status: number; body: unknown } };
@@ -93,6 +99,7 @@ export function createItemRoutes(
         const databaseId = requireUuidParam(ctx.params, "id");
         const idempotencyKey = optionalHeader(ctx.req, "Idempotency-Key");
         const body = requireJsonObjectBody(ctx.body);
+        rejectCallerWriterKind(body);
         const item = await dispatchGenericOperation(service, "item.create", restActor(ctx.identity.user.id), {
           databaseId,
           properties: body.properties ?? {},
@@ -157,6 +164,7 @@ export function createItemRoutes(
       handler: async (ctx) => {
         const id = requireUuidParam(ctx.params, "id");
         const body = requireJsonObjectBody(ctx.body);
+        rejectCallerWriterKind(body);
         const item = await dispatchGenericOperation(service, "item.patch", restActor(ctx.identity.user.id), {
           itemId: id,
           properties: body.properties,
