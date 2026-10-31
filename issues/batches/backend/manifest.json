@@ -348,26 +348,26 @@
       "sequence": 3,
       "status": "proposed",
       "title": "[backend-delivery 03/74] Implement architecture changes",
-      "bodyCharacters": 57214,
-      "specSha256": "f9c8600d59d879503d35281a2224cd9d89d46affa46ac9dc195feaf3c5ec5d97",
+      "bodyCharacters": 59748,
+      "specSha256": "aa747622930fe193aac849f89348bde3e393bbdaed235033db435ff0192e58bf",
       "members": [
         {
           "id": "gh-1366",
-          "specSha256": "0ca3cc3e305ceafdb4e4f91f1eca968eb06f1fd8a7a21a4c6484d23637dc5cf7",
+          "specSha256": "a941e6d314c86e065e23f5f48743874748c4eb987bba3abc75fa02aac9ae823f",
           "parent": "gh-1303",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1371",
-          "specSha256": "f3d6ee82132325aad6a7f8de88f3a3399c637934864427737d3602594a643c03",
+          "specSha256": "61438a75daead149ec59c2b4182a86810c39b92961e0dd5c308eade84cc9d401",
           "parent": "gh-1307",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1394",
-          "specSha256": "c03cd367906ff2496b48d801d68b5abb4e119dda781cefc690e8c6a289e43477",
+          "specSha256": "012d08fd455746d94304ae5cc0ed5cecb5f32b82620296abd353097a4b48bd82",
           "parent": "gh-1303",
           "dependencies": [
             "gh-1366"
@@ -390,7 +390,7 @@
         },
         {
           "id": "gh-1372",
-          "specSha256": "6830421b129d3dfe3dc062708f58a3f89a6b1dd3124525c99938819e5512960f",
+          "specSha256": "7a5685cc47f8155714da272c016041ba865f7dd2e43edc8f286862bc61144816",
           "parent": "gh-1307",
           "dependencies": [],
           "approval": "approved"
@@ -1005,8 +1005,8 @@
       "sequence": 10,
       "status": "proposed",
       "title": "[backend-delivery 10/74] Implement ai-gateway-client, semprec-ai-gateway, shared changes",
-      "bodyCharacters": 57485,
-      "specSha256": "f7cbafef3ef0144c351d5c6c40c0df00a04607f274fc7424f72b9dafb745054e",
+      "bodyCharacters": 58390,
+      "specSha256": "395181ee21a1c435c502d29425975828befdb1a077b225224989ec369a97b000",
       "members": [
         {
           "id": "gh-1369",
@@ -1040,7 +1040,7 @@
         },
         {
           "id": "gh-1399",
-          "specSha256": "c612336ede34bfbd4933c0d726a2d291f9b59cb22e19cd67892ce7f7d7d9cdad",
+          "specSha256": "5f487d699e93606f37da211b84aa73c3fce48525d1ba0034ef9ef3d315aa33c0",
           "parent": "gh-1307",
           "dependencies": [
             "gh-1371",
