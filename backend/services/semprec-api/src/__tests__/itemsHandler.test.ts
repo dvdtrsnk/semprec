@@ -453,9 +453,9 @@ describe("item routes (issue #241)", () => {
       });
 
       expect(patch.status).toBe(400);
-      expect((await patch.json() as ErrorBody).error.details).toMatchObject({ field: "writerKind" });
+      expect(((await patch.json()) as ErrorBody).error.details).toMatchObject({ field: "writerKind" });
       expect(create.status).toBe(400);
-      expect((await create.json() as ErrorBody).error.details).toMatchObject({ field: "writerKind" });
+      expect(((await create.json()) as ErrorBody).error.details).toMatchObject({ field: "writerKind" });
       expect(updated).toEqual([]);
       expect(created).toEqual([]);
       expect((await chokePoint.getItem(db.id, item.id))?.properties).toEqual({ title: "Dune" });

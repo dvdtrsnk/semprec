@@ -31,6 +31,8 @@ import {
 } from "./relationEdgeContext.js";
 import { runRelationEdgeDeleteHooks, runRelationEdgeWriteHooks } from "./hooks.js";
 import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 import { breakValueLinksForRelationEdge } from "./valueLinkWrites.js";
 
 /** The normalized public shape of a stored edge — same fields as `relationsStore.ItemRelationRow`, named here to match the choke-point's own edge contract. */
@@ -127,6 +129,10 @@ export async function assertRelationTargetLinkableWithClient(
 ): Promise<void> {
   const edgeContext = await loadWritableRelationEdgeContext(client, input.relationPropertyId, context);
   const field = edgeContext.property.key;
+
+  if (!UUID_RE.test(input.targetItemId)) {
+    throw new ValidationError("Relation target must be a UUID", { field });
+  }
 
   const target = await itemsStore.getItemById(client, edgeContext.targetDatabaseId, input.targetItemId);
   if (!target) {

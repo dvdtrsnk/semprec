@@ -91,6 +91,14 @@ describe("assertRelationTargetLinkableWithClient (issue #1426)", () => {
     expect((error as ValidationError).details).toMatchObject({ field: "project" });
   });
 
+  it("rejects a malformed target UUID as validation on the relation key", async () => {
+    const error = await checkTarget(await propertyId("tasks", "project"), "not-a-uuid").catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).status).toBe(400);
+    expect((error as ValidationError).details).toEqual({ field: "project" });
+  });
+
   it("treats another tenant's item as nonexistent", async () => {
     const otherTenant = await createTestTenant(pool);
     // A runtime-role pool, because the superuser pool bypasses row-level security and would find tenant zero's Projects database.
