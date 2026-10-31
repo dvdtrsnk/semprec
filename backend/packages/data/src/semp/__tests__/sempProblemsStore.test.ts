@@ -90,11 +90,18 @@ async function overlapRaises(firstInput: RaiseProblemInput, secondInput: RaisePr
       fail(error);
       throw error;
     }
-  });
-  let second: Promise<Awaited<ReturnType<typeof raiseProblem>>> | undefined;
+  }).then(
+    (result) => ({ ok: true as const, result }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  let second:
+    Promise<{ ok: true; result: Awaited<ReturnType<typeof raiseProblem>> } | { ok: false; error: unknown }> | undefined;
   try {
     const held = await ready;
-    second = inZero((client) => raiseProblem(client, secondInput));
+    second = inZero((client) => raiseProblem(client, secondInput)).then(
+      (result) => ({ ok: true as const, result }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
     await expect
       .poll(
         async () => {
@@ -108,7 +115,11 @@ async function overlapRaises(firstInput: RaiseProblemInput, secondInput: RaisePr
       )
       .toBe("1");
     release();
-    return [held.outcome, (await first).outcome, (await second).outcome];
+    const settled = await second;
+    if (!settled.ok) throw settled.error;
+    const settledFirst = await first;
+    if (!settledFirst.ok) throw settledFirst.error;
+    return [held.outcome, settledFirst.result.outcome, settled.result.outcome];
   } finally {
     release();
     await Promise.allSettled(second ? [first, second] : [first]);

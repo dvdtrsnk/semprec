@@ -10,6 +10,7 @@ import {
 } from "../../testSupport/testDb.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createDatabase } from "../../chokePoint/databasesStore.js";
+import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { withTransaction } from "../../db/pool.js";
 import { runMailDatabaseKeysCutoverMigration } from "../mailDatabaseKeysCutoverMigration.js";
 
@@ -53,6 +54,20 @@ describe("mail database key cutover", () => {
       const itemId = await createTestModuleItem(pool, "emails");
       const email = seeded.find((row) => row.owner_module_id === "emails");
       if (!email) throw new Error("Missing Emails database");
+      const chokePoint = createChokePoint(pool);
+      const source = await chokePoint.createDatabase({ name: "Relation fixture" });
+      const property = await chokePoint.createRelationProperty({
+        sourceDatabaseId: source.id,
+        key: "email",
+        name: "Email",
+        targetDatabaseId: email.id,
+      });
+      const sourceItem = await chokePoint.createItem({ databaseId: source.id, properties: {} });
+      const edge = await chokePoint.createRelation({
+        relationPropertyId: property.property.id,
+        callerItemId: sourceItem.id,
+        targetItemId: itemId,
+      });
       const content = () =>
         pool.query<{ id: string; database_id: string; properties: unknown }>(
           "SELECT id, database_id, properties FROM items WHERE database_id = $1 AND id = $2",
@@ -65,8 +80,15 @@ describe("mail database key cutover", () => {
         );
       const beforeContent = (await content()).rows;
       const beforeRelations = (await relations()).rows;
+      const edgeRows = () =>
+        pool.query<{ id: string; item_a: string; item_b: string }>(
+          "SELECT id, item_a, item_b FROM item_relations WHERE id = $1",
+          [edge.id],
+        );
+      const beforeEdge = (await edgeRows()).rows;
       expect(beforeContent).toHaveLength(1);
       expect(beforeRelations.length).toBeGreaterThan(0);
+      expect(beforeEdge).toHaveLength(1);
       await makeLegacy();
       const legacy = await rows();
       await runMailDatabaseKeysCutoverMigration(pool);
@@ -77,6 +99,7 @@ describe("mail database key cutover", () => {
       );
       expect((await content()).rows).toEqual(beforeContent);
       expect((await relations()).rows).toEqual(beforeRelations);
+      expect((await edgeRows()).rows).toEqual(beforeEdge);
       await runMailDatabaseKeysCutoverMigration(pool);
       expect(await rows()).toEqual(repaired);
     });
@@ -123,7 +146,15 @@ describe("mail database key cutover", () => {
   it("rolls back an earlier update when a later key update fails", async () => {
     await runInTenant(tenant, makeLegacy);
     await admin.query(`CREATE FUNCTION test_fail_mail_key() RETURNS trigger LANGUAGE plpgsql AS $$
-      BEGIN IF NEW.key = 'folders' THEN RAISE EXCEPTION 'test later update failure'; END IF; RETURN NEW; END $$`);
+      BEGIN
+        IF NEW.key = 'folders' THEN
+          IF NOT EXISTS (SELECT 1 FROM databases WHERE tenant_id = NEW.tenant_id AND system AND owner_module_id = 'emails' AND key = 'emails') THEN
+            RAISE EXCEPTION 'test earlier update missing';
+          END IF;
+          RAISE EXCEPTION 'test later update failure';
+        END IF;
+        RETURN NEW;
+      END $$`);
     await admin.query(
       "CREATE TRIGGER test_fail_mail_key BEFORE UPDATE OF key ON databases FOR EACH ROW EXECUTE FUNCTION test_fail_mail_key()",
     );
@@ -223,8 +254,14 @@ describe("mail database key cutover", () => {
       );
       release();
       await holder;
-      expect(await first).toBeInstanceOf(Error);
-      expect(await second).toBeInstanceOf(Error);
+      expect(await first).toMatchObject({ code: "23505", constraint: "databases_key_unique" });
+      expect(await second).toMatchObject({ message: "Mail database key mailboxes is already occupied" });
+      const occupant = await runInTenant(tenant, () =>
+        pool.query<{ key: string; owner_module_id: string }>(
+          "SELECT key, owner_module_id FROM databases WHERE key = 'mailboxes'",
+        ),
+      );
+      expect(occupant.rows).toEqual([{ key: "mailboxes", owner_module_id: "collisionFixture" }]);
       expect((await runInTenant(tenant, rows)).map((row) => row.key)).toEqual([null, null, null]);
     } finally {
       release();

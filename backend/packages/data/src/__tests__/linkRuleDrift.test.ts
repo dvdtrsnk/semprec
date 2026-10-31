@@ -119,6 +119,23 @@ describe("link rule schema drift", () => {
     expect(findings).toEqual([]);
   });
 
+  it("reports a missing target property", async () => {
+    const registry = await registryWith(["fixtureLinkRuleValid", "linkRuleValidModule.js"]);
+    const rule = (await registry.getLinkRules())[0];
+    if (!rule) throw new Error("Missing link rule fixture");
+    const spy = vi
+      .spyOn(registry, "getLinkRules")
+      .mockResolvedValue([{ ...rule, target: { ...rule.target, propertyKey: "missingTarget" } }]);
+    try {
+      const findings = await withTransaction(pool, (client) => findInvalidLinkRuleReferences(client, registry));
+      expect(findings).toContainEqual(
+        expect.objectContaining({ reason: "missingTargetProperty", property: "projects.missingTarget" }),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("reports a link_rule_schema_drift finding from the drift check action", async () => {
     const project = await chokePoint.createDatabase({ name: "Drift projects" });
     const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });
