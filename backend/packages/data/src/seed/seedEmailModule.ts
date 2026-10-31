@@ -41,7 +41,13 @@ async function createDb(
   ownerModuleId: string,
   ownerProjectItemId: string,
 ): Promise<DatabaseRow> {
-  return databasesStore.createDatabase(client, { name, system: true, ownerModuleId, ownerProjectItemId });
+  return databasesStore.createDatabase(client, {
+    name,
+    key: ownerModuleId,
+    system: true,
+    ownerModuleId,
+    ownerProjectItemId,
+  });
 }
 
 async function createProps(client: PoolClient, databaseId: string, specs: PropSpec[]): Promise<void> {

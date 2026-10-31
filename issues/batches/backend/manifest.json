@@ -279,19 +279,19 @@
       "sequence": 2,
       "status": "proposed",
       "title": "[backend-delivery 02/74] Implement data/manifest, module-registry, application changes",
-      "bodyCharacters": 55496,
-      "specSha256": "b2b356f60cda818bdb47fae6589d262b11be8dc568dea1786415034c708cf694",
+      "bodyCharacters": 59440,
+      "specSha256": "4287361526ab7afa169509047adcf75e685c27a7dd63df74c44c9dab2b74b01b",
       "members": [
         {
           "id": "gh-1459",
-          "specSha256": "08799f92d266790b7e5ab00b0874b7f2aac066857b234d19afb6469537942e3c",
+          "specSha256": "57b9ed88d2e85a5a529e7bdf3e0a56a172f83d4472d0b9bcb8f6e0e5e1a93229",
           "parent": "gh-1311",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1407",
-          "specSha256": "9bb36fb24ac5d80aaf6b96604fd63d1872778dae0fe0ce253aab887e248d0baa",
+          "specSha256": "a7142a837f5d3679fa52eb537cec08086c52ac0a51956939667d65f1f67c92a2",
           "parent": "gh-1298",
           "dependencies": [
             "gh-1397"
@@ -309,7 +309,7 @@
         },
         {
           "id": "gh-1427",
-          "specSha256": "9b6720159991c5997a99ce65b5b706359c0417b04b3240bad7d93bf4d101e90e",
+          "specSha256": "7d2649534df5344ec93d666f32e2ba0d19c49cb880cfc7dba2c9a26f8df36eea",
           "parent": "gh-1301",
           "dependencies": [
             "gh-1411"
@@ -318,7 +318,7 @@
         },
         {
           "id": "gh-1528",
-          "specSha256": "900c2cb6d8566bb4409a511d12fe2afab777dfe77105be59cea8f75d2e93f66b",
+          "specSha256": "77de1557812a3be8abcb837fd5f95e72c3da1153d636397a01918782f4889afe",
           "parent": "gh-1298",
           "dependencies": [
             "gh-1407"
@@ -327,19 +327,19 @@
         },
         {
           "id": "gh-1360",
-          "specSha256": "7ee1d9c24f5550c7c0df83d19aa76c57b48debe4a9cfc50a23ba3ef75b507624",
+          "specSha256": "269ccb3b073705421cffb7487a38bf6bebe33185c752bb85514350814a7d5b93",
           "parent": "gh-1298",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1414",
-          "specSha256": "783d5d197b3fbccec89902272a114b7125bbf0c397e5d1b29f72b7664dc65d22",
+          "specSha256": "34e7b7ce3760ad9284f5f9b0c6f67255b5bc1e01eeec62524ffab5f3045b0dd7",
           "parent": "gh-1329",
           "dependencies": [
             "gh-1411"
           ],
-          "approval": "unapproved"
+          "approval": "approved"
         }
       ]
     },

@@ -1,9 +1,13 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { ForbiddenError, NotFoundError } from "../errors.js";
+import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
+import { withTransaction } from "../db/pool.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -56,6 +60,22 @@ describe("choke-point databaseOps", () => {
     expect(all).toMatchObject({ name: "Ideas", icon: "star", color: null });
   });
 
+  it("publishes a schema invalidation after icon and color changes", async () => {
+    const db = await chokePoint.createDatabase({ name: "Gifts" });
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      await chokePoint.patchDatabase(db.id, { icon: "gift" });
+      await chokePoint.patchDatabase(db.id, { color: "#007AFF" });
+      expect(events).toEqual([
+        { scope: "schema", databaseId: db.id, userId: undefined },
+        { scope: "schema", databaseId: db.id, userId: undefined },
+      ]);
+    } finally {
+      setInvalidationHook(() => {});
+    }
+  });
+
   it("patchDatabase rejects icon and color on a system database but allows a rename", async () => {
     const system = await chokePoint.createDatabase({ name: "System", system: true });
     await expect(chokePoint.patchDatabase(system.id, { color: "#007AFF" })).rejects.toBeInstanceOf(ForbiddenError);
@@ -77,6 +97,55 @@ describe("choke-point databaseOps", () => {
     await expect(pool.query("UPDATE databases SET icon = 'my icon' WHERE id = $1", [db.id])).rejects.toThrow(
       /databases_icon_format/,
     );
+  });
+
+  it("keeps appearance null for rows written in the pre-migration shape", async () => {
+    // The legacy insert omits both columns, as code deployed before migration 0113 did.
+    const { rows } = await pool.query<{ icon: string | null; color: string | null }>(
+      "INSERT INTO databases (name, system) VALUES ($1, false) RETURNING icon, color",
+      ["Legacy"],
+    );
+    expect(rows).toEqual([{ icon: null, color: null }]);
+    const columns = await pool.query<{ column_name: string; is_nullable: string; column_default: string | null }>(
+      "SELECT column_name, is_nullable, column_default FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'databases' AND column_name = ANY($1::text[]) ORDER BY column_name",
+      [["icon", "color"]],
+    );
+    expect(columns.rows).toEqual([
+      { column_name: "color", is_nullable: "YES", column_default: null },
+      { column_name: "icon", is_nullable: "YES", column_default: null },
+    ]);
+  });
+
+  it("preserves a row created before the appearance migration", async () => {
+    const migration = await readFile(new URL("../db/migrations/0113_database_icon_color.sql", import.meta.url), "utf8");
+    await withTransaction(pool, async (client) => {
+      await client.query("CREATE TEMP TABLE databases (id uuid PRIMARY KEY, name text NOT NULL) ON COMMIT DROP");
+      await client.query("SET LOCAL search_path = pg_temp");
+      const id = randomUUID();
+      await client.query("INSERT INTO databases (id, name) VALUES ($1, $2)", [id, "Before upgrade"]);
+      await client.query(migration);
+      const { rows } = await client.query<{ id: string; name: string; icon: string | null; color: string | null }>(
+        "SELECT id, name, icon, color FROM databases WHERE id = $1",
+        [id],
+      );
+      expect(rows).toEqual([{ id, name: "Before upgrade", icon: null, color: null }]);
+    });
+  });
+
+  it("allows the data runtime role to write both appearance columns", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      await runInTenant(getTenantZeroId(), async () => {
+        const runtimeChokePoint = createChokePoint(runtime);
+        const db = await runtimeChokePoint.createDatabase({ name: "Runtime", icon: "gift", color: "#34C759" });
+        expect(await runtimeChokePoint.patchDatabase(db.id, { icon: "star", color: "#007AFF" })).toMatchObject({
+          icon: "star",
+          color: "#007AFF",
+        });
+      });
+    } finally {
+      await runtime.end();
+    }
   });
 
   it("renameDatabase on a missing database raises NotFoundError", async () => {

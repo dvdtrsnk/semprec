@@ -46,7 +46,10 @@ export function createApiActionRegistry(pool: Pool, moduleRegistry: ModuleRegist
   const agentGuidanceDrift = createAgentGuidanceDriftActionForApi(pool, gateway, moduleRegistry);
 
   const registry = createActionRegistry();
-  registry.set(DRIFT_CHECK_ACTION_ID, createDriftCheckAction(pool, { moduleRegistry }));
+  registry.set(
+    DRIFT_CHECK_ACTION_ID,
+    createDriftCheckAction(pool, { moduleRegistry, activeProcessIds: KNOWN_OWNER_PROCESS_IDS }),
+  );
   registry.set(
     MODULE_REGISTRY_CHECK_DRIFT_ACTION_ID,
     createModuleRegistryDriftCheckAction(pool, {

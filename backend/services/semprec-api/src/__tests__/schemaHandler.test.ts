@@ -88,7 +88,7 @@ describe("createSchemaRequestListener (issue #147)", () => {
               filterable: true,
               id: expect.stringMatching(/.+/),
               config: { default: "inProgress" },
-              options: expect.any(Array),
+              options: expect.arrayContaining([expect.objectContaining({ key: "inProgress" })]),
             }),
           ]),
         }),
@@ -96,6 +96,29 @@ describe("createSchemaRequestListener (issue #147)", () => {
           key: "files",
           properties: expect.arrayContaining([
             expect.objectContaining({ key: "date", config: { includeTime: false, default: "today" } }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  it.each([
+    ["cs", "Stav", "Probíhá"],
+    ["en", "Status", "In progress"],
+  ])("localizes Projects status and its options for %s", async (locale, name, label) => {
+    const response = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader(locale) });
+    expect(response.status).toBe(200);
+    const body: unknown = await response.json();
+    expect(body).toMatchObject({
+      databases: expect.arrayContaining([
+        expect.objectContaining({
+          key: "projects",
+          properties: expect.arrayContaining([
+            expect.objectContaining({
+              key: "status",
+              name,
+              options: expect.arrayContaining([expect.objectContaining({ key: "inProgress", label })]),
+            }),
           ]),
         }),
       ]),
@@ -186,6 +209,16 @@ describe("createSchemaRequestListener (issue #147)", () => {
       switcherOrder: null,
       clientVisible: true,
     });
+    expect(body.databases.find((db) => db.key === "emails")).toMatchObject({
+      icon: "envelope",
+      color: "#007AFF",
+      overviewOrder: null,
+      switcherOrder: null,
+      clientVisible: true,
+    });
+    for (const key of ["mailboxes", "folders"]) {
+      expect(body.databases.find((db) => db.key === key)).toMatchObject({ clientVisible: false });
+    }
     expect(body.databases.find((db) => db.databaseId === custom.id)).toMatchObject({
       icon: "database",
       color: "#FF9500",

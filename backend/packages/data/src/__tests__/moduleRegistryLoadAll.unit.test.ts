@@ -1,5 +1,6 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { ModuleRegistry } from "@semprec/module-registry";
+import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { manifestPath } from "../testSupport/moduleManifestPath.js";
 import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
 import { BUILTIN_VIEW_TYPES } from "../chokePoint/viewTypeRegistry.js";
@@ -61,6 +62,29 @@ describe("all module manifests loaded together (module-contract issue #115)", ()
   beforeAll(async () => {
     await Promise.all(MANIFEST_PATHS.map((path) => import(path)));
   }, 30_000);
+
+  it("rejects an invalid link rule during full registry loading", async () => {
+    const original: unknown = Reflect.get(ModuleRegistry.prototype, "loadModule");
+    if (typeof original !== "function") throw new Error("Missing loadModule method");
+    const fixture = new URL(
+      "../../../module-registry/src/__tests__/fixtures/linkRulesUnknownDatabaseModule.js",
+      import.meta.url,
+    ).href;
+    const spy = vi.spyOn(ModuleRegistry.prototype, "loadModule").mockImplementation(async function (
+      this: ModuleRegistry,
+      path: string,
+    ) {
+      const id: unknown = await Reflect.apply(original, this, [path]);
+      if (typeof id !== "string") throw new Error("loadModule did not return an id");
+      if (id === "calendar") await Reflect.apply(original, this, [fixture]);
+      return id;
+    });
+    try {
+      await expect(loadFullModuleRegistry()).rejects.toThrow(/fixtureLink\.unknownDatabase.*noSuchDatabase/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 
   it("loads every manifest from #226/#227 into one registry with no cross-manifest collisions", async () => {
     const registry = await loadAll(alwaysActive);

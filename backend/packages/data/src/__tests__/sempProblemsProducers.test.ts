@@ -5,6 +5,7 @@ import { enqueueJob } from "@semprec/queue";
 import { runAsSystem } from "@semprec/shared";
 import {
   createTestTenant,
+  createTestProjectItem,
   getTenantZeroId,
   getTestPool,
   inTenantZero,
@@ -108,7 +109,7 @@ describe("semp problem producers (issue #1465)", () => {
 
     it("gives one problem for two activations of one finding and one more for a different finding", async () => {
       const userId = await createTestUser();
-      const projectItemId = randomUUID();
+      const projectItemId = await createTestProjectItem(pool);
       await raiseDrift(userId, projectItemId, "fp-a", "fp-a:2026-02-01T00:00:00.000Z");
       await raiseDrift(userId, projectItemId, "fp-a", "fp-a:2026-02-02T00:00:00.000Z");
       await raiseDrift(userId, projectItemId, "fp-b", "fp-b:2026-02-02T00:00:00.000Z");
@@ -130,11 +131,12 @@ describe("semp problem producers (issue #1465)", () => {
 
     it("leaves no problem when the surrounding transaction rolls back", async () => {
       const userId = await createTestUser();
+      const projectItemId = await createTestProjectItem(pool);
       await expect(
         withTenantTransaction(pool, getTenantZeroId(), async (client) => {
           await createGuidanceProblemWriter().raise(client, {
             userId,
-            projectItemId: randomUUID(),
+            projectItemId,
             fingerprint: "fp-a",
             findingId: randomUUID(),
             occurrenceKey: "k",

@@ -19,7 +19,8 @@ export async function findOrphanedOwnerProcessProperties(
   activeProcessIds?: ReadonlySet<string>,
 ): Promise<OrphanedOwnerProcessProperty[]> {
   const { rows } = await client.query<{ id: string; database_id: string; key: string; owner_process: string | null }>(
-    `SELECT id, database_id, key, owner_process FROM properties WHERE owner = 'system'`,
+    `SELECT id, database_id, key, owner_process FROM properties
+      WHERE tenant_id = app_tenant_default() AND owner = 'system'`,
   );
   return rows
     .filter((row) => !row.owner_process || (activeProcessIds && !activeProcessIds.has(row.owner_process)))
@@ -64,8 +65,8 @@ export async function findInvalidLinkRuleReferences(
     target_database_id: string | null;
   }>(
     `SELECT d.id AS database_id, d.key AS database_key, p.key, p.type, p.config->>'targetDatabaseId' AS target_database_id
-     FROM properties p JOIN databases d ON d.id = p.database_id
-     WHERE d.key IS NOT NULL`,
+     FROM properties p JOIN databases d ON d.id = p.database_id AND d.tenant_id = p.tenant_id
+     WHERE p.tenant_id = app_tenant_default() AND d.tenant_id = app_tenant_default() AND d.key IS NOT NULL`,
   );
   const propertyByName = new Map(rows.map((row) => [`${row.database_key}.${row.key}`, row]));
   const databaseIdByKey = new Map(rows.map((row) => [row.database_key, row.database_id]));

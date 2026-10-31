@@ -5,6 +5,11 @@ import { operationInputJsonSchema } from "../jsonSchema.js";
 import { validationIssueField } from "../validationIssueField.js";
 
 const objectSchema = z.record(z.string(), z.unknown());
+it("advertises a nonempty strict database patch", () => {
+  const root = operationInputJsonSchema("database.patch");
+  const patch = objectSchema.parse(objectSchema.parse(root.properties).patch);
+  expect(patch).toMatchObject({ type: "object", minProperties: 1, additionalProperties: false });
+});
 const value = "11111111-1111-4111-8111-111111111111";
 const validLeaf = { type: "relation_path_contains", path: ["project", "area"], value };
 const invalidLeaves = [

@@ -159,6 +159,9 @@ describe("permission manifest and drift check", () => {
       config: { filterPresets: [{ key: "high" }] },
     });
     expect(byKey.get("note")).toMatchObject({ type: "text", filterable: false, config: {} });
+    for (const key of ["tasksa", "due", "start", "budget", "score", "note"]) {
+      expect(byKey.get(key)?.id).toEqual(expect.stringMatching(/.+/));
+    }
     expect(relationQueries).toBe(1);
   });
 

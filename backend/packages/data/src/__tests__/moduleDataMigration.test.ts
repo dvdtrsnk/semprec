@@ -178,7 +178,7 @@ describe("module data migration", () => {
   });
 
   it("is a no-op once the transition is already recorded", async () => {
-    await seedDatabaseWithItems(2);
+    const { databaseId, itemIds } = await seedDatabaseWithItems(2);
     const converter = vi.fn(markConverted);
 
     const params = {
@@ -190,9 +190,11 @@ describe("module data migration", () => {
     };
     await runModuleDataMigration(pool, params);
     expect(converter).toHaveBeenCalledTimes(4); // two items, two passes
+    const before = await getUpdatedAts(databaseId, itemIds);
 
     await runModuleDataMigration(pool, params);
     expect(converter).toHaveBeenCalledTimes(4); // no additional calls — already recorded, straight no-op
+    expect(await getUpdatedAts(databaseId, itemIds)).toEqual(before);
     expect(await countModuleMigrationRows()).toBe(1);
   });
 
