@@ -88,7 +88,7 @@ describe("createSchemaRequestListener (issue #147)", () => {
               filterable: true,
               id: expect.stringMatching(/.+/),
               config: { default: "inProgress" },
-              options: expect.any(Array),
+              options: expect.arrayContaining([expect.objectContaining({ key: "inProgress" })]),
             }),
           ]),
         }),
@@ -186,6 +186,16 @@ describe("createSchemaRequestListener (issue #147)", () => {
       switcherOrder: null,
       clientVisible: true,
     });
+    expect(body.databases.find((db) => db.key === "emails")).toMatchObject({
+      icon: "envelope",
+      color: "#007AFF",
+      overviewOrder: null,
+      switcherOrder: null,
+      clientVisible: true,
+    });
+    for (const key of ["mailboxes", "folders"]) {
+      expect(body.databases.find((db) => db.key === key)).toMatchObject({ clientVisible: false });
+    }
     expect(body.databases.find((db) => db.databaseId === custom.id)).toMatchObject({
       icon: "database",
       color: "#FF9500",

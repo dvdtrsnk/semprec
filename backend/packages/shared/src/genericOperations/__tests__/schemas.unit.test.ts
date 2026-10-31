@@ -132,6 +132,11 @@ describe("DatabaseCreateInputSchema", () => {
 });
 
 describe("database icon and color inputs", () => {
+  it("rejects an empty database patch", () => {
+    const result = DatabasePatchInputSchema.safeParse({ databaseId: "d", patch: {} });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues[0]?.path).toEqual(["patch"]);
+  });
   it("normalizes a create color to upper case and keeps a valid icon", () => {
     const parsed = DatabaseCreateInputSchema.parse({ name: "Gifts", icon: "gift", color: "#34c759" });
     expect(parsed).toEqual({ name: "Gifts", icon: "gift", color: "#34C759" });

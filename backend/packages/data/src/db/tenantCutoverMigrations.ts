@@ -17,6 +17,7 @@ import { runProcessingProposalsCardStateCutoverMigration } from "../inbox/proces
 import { runMailboxAddressesOwnerCutoverMigration } from "../mail/mailboxAddressesOwnerCutoverMigration.js";
 import { runEmailsSenderPeopleCardinalityCutoverMigration } from "../mail/emailsSenderPeopleCardinalityCutoverMigration.js";
 import { runMailDraftsAndSentReadBackfill } from "../mail/mailDraftsAndSentReadBackfill.js";
+import { runMailDatabaseKeysCutoverMigration } from "../mail/mailDatabaseKeysCutoverMigration.js";
 
 /**
  * Runs the data-driven post-migration cutovers — the ones that read and write tenant rows — once
@@ -29,6 +30,7 @@ import { runMailDraftsAndSentReadBackfill } from "../mail/mailDraftsAndSentReadB
 export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
   await assertRowSecurityActive(pool);
   await forEachMaintainedTenant(pool, async () => {
+    await runMailDatabaseKeysCutoverMigration(pool);
     await runPropertyDefaultsCutoverMigration(pool);
     await runTranscriptsCatalogCutoverMigration(pool);
     await runTranscriptDurationBackfillCutoverMigration(pool);

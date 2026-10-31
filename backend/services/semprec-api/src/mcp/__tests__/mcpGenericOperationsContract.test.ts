@@ -434,6 +434,19 @@ describe("generic operation MCP contract (issue #220)", () => {
     expect(Object.keys(CASES).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 
+  it("rejects an empty database patch at the MCP operation boundary", async () => {
+    const database = await chokePoint.createDatabase({ name: "MCP patch fixture" });
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const response = await rpc(baseUrl, await authHeader(), "semprec.database.patch", {
+      databaseId: database.id,
+      patch: {},
+    });
+    expect(response.error?.code).toBe(-32602);
+    expect(response.error?.data).toMatchObject({ field: "patch" });
+    expect((await chokePoint.getDatabase(database.id))?.name).toBe("MCP patch fixture");
+  });
+
   describe("dispatch through a plain human-session actor", () => {
     for (const operation of GENERIC_OPERATION_NAMES) {
       it(`dispatches ${operation} through the MCP adapter`, async () => {

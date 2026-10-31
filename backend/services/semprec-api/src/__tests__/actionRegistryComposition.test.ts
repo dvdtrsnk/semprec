@@ -3,10 +3,12 @@ import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   CORE_AGENT_RUN_ACTION_ID,
+  DRIFT_CHECK_ACTION_ID,
   KNOWN_HEARTBEAT_ACTION_IDS,
   KNOWN_OWNER_PROCESS_IDS,
   SEMPREC_TICK_ACTION_ID,
   createHeartbeatFireCoreTask,
+  createChokePoint,
   findOrphanedOwnerProcessIds,
   findUnknownHeartbeatActionIds,
   loadFullModuleRegistry,
@@ -40,6 +42,35 @@ describe("createApiActionRegistry (issue #641)", () => {
     const expected = [...KNOWN_HEARTBEAT_ACTION_IDS].filter((actionId) => actionId !== CORE_AGENT_RUN_ACTION_ID).sort();
     expect([...registry.keys()].sort()).toEqual(expected);
     expect(registry.has(SEMPREC_TICK_ACTION_ID)).toBe(true);
+  });
+
+  it("the composed core drift action accepts calendar and reports an unknown owner", async () => {
+    await seedSystem(pool);
+    const chokePoint = createChokePoint(pool);
+    const db = await chokePoint.createDatabase({ name: "Drift fixture" });
+    for (const [key, ownerProcess] of [
+      ["calendarOwned", "calendar"],
+      ["unknownOwned", "unknownProcess"],
+    ] as const) {
+      await chokePoint.createProperty({
+        databaseId: db.id,
+        key,
+        name: key,
+        type: "text",
+        owner: "system",
+        ownerProcess,
+      });
+    }
+    const projectItem = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+    const action = createApiActionRegistry(pool, await loadFullModuleRegistry()).get(DRIFT_CHECK_ACTION_ID);
+    if (!action) throw new Error("core drift action is missing");
+    await action({}, { heartbeatId: "fixture", projectItemId: projectItem.id });
+    const { rows } = await pool.query<{ payload: { orphanedOwnerProcess: Array<{ key: string }> } }>(
+      "SELECT payload FROM manifest_drift_findings WHERE kind = 'agent_manifest_drift'",
+    );
+    const keys = rows.flatMap((row) => row.payload.orphanedOwnerProcess.map((property) => property.key));
+    expect(keys).toContain("unknownOwned");
+    expect(keys).not.toContain("calendarOwned");
   });
 
   it("fires a seeded Inbox heartbeat without reporting 'No handler registered'", async () => {

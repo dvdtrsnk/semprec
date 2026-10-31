@@ -50,6 +50,7 @@ function inZero<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
 async function rowsFor(tenantId: string, dedupeKey: string) {
   const { rows } = await pool.query<{
     id: string;
+    project_item_id: string | null;
     severity: string;
     occurrence_count: number;
     first_seen_at: Date;
@@ -57,7 +58,7 @@ async function rowsFor(tenantId: string, dedupeKey: string) {
     resolved_at: Date | null;
     resolution_kind: string | null;
   }>(
-    `SELECT id, severity, occurrence_count, first_seen_at, last_seen_at, resolved_at, resolution_kind
+    `SELECT id, project_item_id, severity, occurrence_count, first_seen_at, last_seen_at, resolved_at, resolution_kind
        FROM semp_problems WHERE tenant_id = $1 AND dedupe_key = $2 ORDER BY first_seen_at, id`,
     [tenantId, dedupeKey],
   );
@@ -101,13 +102,27 @@ describe("semp problems store", () => {
       const run = (projectItemId: string | null) =>
         withTenantTransaction(rolePool, tenantZero, (client) => raiseProblem(client, input({ projectItemId })));
       const invalidProjects = [randomUUID(), "invalid", wrongDatabase, foreignProject];
-      for (const invalid of invalidProjects) {
-        await expect(run(invalid)).rejects.toMatchObject({
-          name: "ValidationError",
-          message: "Invalid projectItemId",
-          details: { field: "projectItemId" },
+      const checkRejectedInTransaction = async () => {
+        await withTenantTransaction(rolePool, tenantZero, async (client) => {
+          const problems = () =>
+            client.query<{ id: string; project_item_id: string | null; occurrence_count: number }>(
+              "SELECT id, project_item_id, occurrence_count FROM semp_problems ORDER BY id",
+            );
+          const notifications = () => client.query<{ id: string }>("SELECT id FROM notifications ORDER BY id");
+          const beforeProblems = await problems();
+          const beforeNotifications = await notifications();
+          for (const invalid of invalidProjects) {
+            await expect(raiseProblem(client, input({ projectItemId: invalid }))).rejects.toMatchObject({
+              name: "ValidationError",
+              message: "Invalid projectItemId",
+              details: { field: "projectItemId" },
+            });
+            expect((await problems()).rows).toEqual(beforeProblems.rows);
+            expect((await notifications()).rows).toEqual(beforeNotifications.rows);
+          }
         });
-      }
+      };
+      await checkRejectedInTransaction();
       expect(await rowsFor(tenantZero, "mail:sync:account-1")).toEqual([]);
       expect((await pool.query<{ count: string }>("SELECT count(*) FROM notifications")).rows[0]?.count).toBe("0");
       expect(
@@ -118,19 +133,15 @@ describe("semp problems store", () => {
         ).outcome,
       ).toBe("created");
       expect((await run(project)).outcome).toBe("created");
+      expect((await rowsFor(tenantZero, "mail:sync:account-1"))[0]?.project_item_id).toBe(project);
+      expect((await run(project)).outcome).toBe("merged");
       expect((await run(null)).outcome).toBe("merged");
       expect(
         (await withTenantTransaction(rolePool, tenantZero, (client) => raiseProblem(client, input()))).outcome,
       ).toBe("merged");
       const before = await rowsFor(tenantZero, "mail:sync:account-1");
       const notificationsBefore = await pool.query<{ count: string }>("SELECT count(*) FROM notifications");
-      for (const invalid of invalidProjects) {
-        await expect(run(invalid)).rejects.toMatchObject({
-          name: "ValidationError",
-          message: "Invalid projectItemId",
-          details: { field: "projectItemId" },
-        });
-      }
+      await checkRejectedInTransaction();
       expect(await rowsFor(tenantZero, "mail:sync:account-1")).toEqual(before);
       expect((await pool.query<{ count: string }>("SELECT count(*) FROM notifications")).rows).toEqual(
         notificationsBefore.rows,
@@ -140,13 +151,15 @@ describe("semp problems store", () => {
 
   it("merges four raises of one key into one row counting four occurrences", async () => {
     const outcomes: string[] = [];
+    const since = new Date("2026-01-02T03:04:05.000Z");
     for (let i = 0; i < 4; i++) {
-      outcomes.push((await inZero((client) => raiseProblem(client, input()))).outcome);
+      outcomes.push((await inZero((client) => raiseProblem(client, input(i === 0 ? { since } : {})))).outcome);
     }
     expect(outcomes).toEqual(["created", "merged", "merged", "merged"]);
     const rows = await rowsFor(tenantZero, "mail:sync:account-1");
     expect(rows).toHaveLength(1);
     expect(rows[0]?.occurrence_count).toBe(4);
+    expect(rows[0]?.first_seen_at.toISOString()).toBe(since.toISOString());
     expect(rows[0]?.last_seen_at.getTime()).toBeGreaterThan(rows[0]?.first_seen_at.getTime() ?? Infinity);
   });
 
@@ -196,11 +209,39 @@ describe("semp problems store", () => {
 
   it("reports an escalation once when two critical raises race over a warning", async () => {
     await inZero((client) => raiseProblem(client, input({ severity: "warning" })));
-    const results = await Promise.all([
-      inZero((client) => raiseProblem(client, input({ severity: "critical" }))),
-      inZero((client) => raiseProblem(client, input({ severity: "critical" }))),
-    ]);
-    expect(results.map((r) => r.outcome).sort()).toEqual(["escalated", "merged"]);
+    const first = await pool.connect();
+    let second: Promise<Awaited<ReturnType<typeof raiseProblem>>> | undefined;
+    try {
+      await first.query("BEGIN");
+      await first.query("SELECT set_config('app.tenant_id', $1, true)", [tenantZero]);
+      const { rows } = await first.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+      const pid = rows[0]?.pid;
+      if (pid === undefined) throw new Error("Missing backend pid");
+      expect((await raiseProblem(first, input({ severity: "critical" }))).outcome).toBe("escalated");
+      second = inZero((client) => raiseProblem(client, input({ severity: "critical" })));
+      await expect
+        .poll(
+          async () => {
+            const result = await pool.query<{ count: string }>(
+              "SELECT count(*)::text AS count FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+              [pid],
+            );
+            return result.rows[0]?.count;
+          },
+          { timeout: 5000 },
+        )
+        .toBe("1");
+      await first.query("COMMIT");
+      expect((await second).outcome).toBe("merged");
+      const notifications = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM notifications WHERE kind = 'semp_problem'",
+      );
+      expect(notifications.rows[0]?.count).toBe("2");
+    } finally {
+      await first.query("ROLLBACK");
+      first.release();
+      if (second) await second;
+    }
   });
 
   it("leaves no row when the raising transaction rolls back", async () => {
@@ -252,10 +293,8 @@ describe("semp problems store", () => {
     expect(await rowsFor(tenantB, "mail:sync:account-1")).toHaveLength(1);
 
     // Row-level security as the runtime role: tenant B sees only its own row.
-    await withTenantTransaction(pool, tenantB, async (client) => {
-      await client.query("SET LOCAL ROLE semprec_side");
+    await withTenantTransaction(sidePool, tenantB, async (client) => {
       const { rows } = await client.query<{ tenant_id: string }>("SELECT tenant_id FROM semp_problems");
-      await client.query("RESET ROLE");
       expect(rows).toEqual([{ tenant_id: tenantB }]);
     });
 

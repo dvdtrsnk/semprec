@@ -101,6 +101,14 @@ describe("ModuleRegistry link rules", () => {
     );
   });
 
+  it("detects a cycle whose rules are declared in different modules", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-link-a", "fixture-link-cross-cycle"]));
+    await load(registry, "linkRulesAModule.js", "linkRulesCrossCycleModule.js");
+    expect(() => registry.validateLinkRules()).toThrow(
+      /fixtureLink\.aToB.*fixtureLink\.bToA|fixtureLink\.bToA.*fixtureLink\.aToB/,
+    );
+  });
+
   it("fails on a three-rule cycle and names all three rules", async () => {
     const registry = new ModuleRegistry(() => new Set(["fixture-link-three-cycle"]));
     await load(registry, "linkRulesThreeCycleModule.js");

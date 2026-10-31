@@ -1,7 +1,13 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { ModuleRegistry } from "@semprec/module-registry";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+  withTenantTransaction,
+} from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
@@ -9,6 +15,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import {
   createDriftCheckAction,
   findInvalidLinkRuleReferences,
+  findOrphanedOwnerProcessProperties,
   LINK_RULE_SCHEMA_DRIFT_FINDING_KIND,
 } from "../manifest/driftCheck.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
@@ -42,6 +49,36 @@ describe("link rule schema drift", () => {
     const registry = await registryWith(["fixtureLinkRuleValid", "linkRuleValidModule.js"]);
     const findings = await withTransaction(pool, (client) => findInvalidLinkRuleReferences(client, registry));
     expect(findings).toEqual([]);
+  });
+
+  it("does not use another tenant's properties for link rules or owner drift", async () => {
+    const tenantB = await createTestTenant(pool);
+    const db = await chokePoint.createDatabase({ name: "Owner drift fixture" });
+    await chokePoint.createProperty({
+      databaseId: db.id,
+      key: "orphan",
+      name: "Orphan",
+      type: "text",
+      owner: "system",
+      ownerProcess: "unknown",
+    });
+    const registry = await registryWith(["fixtureLinkRuleValid", "linkRuleValidModule.js"]);
+    const runtime = await createRuntimeRolePool(pool, "semprec_side");
+    try {
+      for (const clientPool of [runtime, pool]) {
+        await withTenantTransaction(clientPool, tenantB, async (client) => {
+          const findings = await findInvalidLinkRuleReferences(client, registry);
+          expect(findings.map((finding) => finding.reason)).toEqual([
+            "missingSourceProperty",
+            "missingTargetProperty",
+            "missingViaProperty",
+          ]);
+          expect(await findOrphanedOwnerProcessProperties(client, new Set())).toEqual([]);
+        });
+      }
+    } finally {
+      await runtime.end();
+    }
   });
 
   it("flags a misspelled property key, a misspelled or non-relation via, and a relation to the wrong database", async () => {

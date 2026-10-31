@@ -154,6 +154,32 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
     expect((await readState(zero)).transcriptsId).not.toBe((await readState(b)).transcriptsId);
   });
 
+  it("repairs legacy mail database keys through the tenant cutover runner", async () => {
+    await seedOldShape(zero);
+    await seedOldShape(b);
+    for (const tenantId of [zero, b]) {
+      await runInTenant(tenantId, () =>
+        dataPool.query("UPDATE databases SET key = NULL WHERE system AND owner_module_id = ANY($1::text[])", [
+          ["emails", "folders", "mailboxes"],
+        ]),
+      );
+    }
+    await runCutovers(dataPool);
+    for (const tenantId of [zero, b]) {
+      const rows = await runInTenant(
+        tenantId,
+        async () =>
+          (
+            await dataPool.query<{ key: string }>(
+              "SELECT key FROM databases WHERE system AND owner_module_id = ANY($1::text[]) ORDER BY key",
+              [["emails", "folders", "mailboxes"]],
+            )
+          ).rows,
+      );
+      expect(rows.map((row) => row.key)).toEqual(["emails", "folders", "mailboxes"]);
+    }
+  });
+
   it("is idempotent: a second call changes no row", async () => {
     await seedOldShape(zero);
     await seedOldShape(b);
@@ -675,7 +701,7 @@ describe("emails senderPeople cardinality tenant cutover (issue #1457)", () => {
     await seedOneToManySender(zero);
     await seedOneToManySender(b);
     await runInTenant(b, () =>
-      dataPool.query("UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'emails'"),
+      dataPool.query("UPDATE databases SET owner_module_id = NULL, key = NULL WHERE owner_module_id = 'emails'"),
     );
     const bBefore = await relationDefinitions(b);
 

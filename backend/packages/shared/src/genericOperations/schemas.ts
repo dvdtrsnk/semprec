@@ -94,7 +94,9 @@ export const DatabasePatchInputSchema = z
         icon: DatabaseIconSchema.nullable().optional(),
         color: DatabaseColorSchema.nullable().optional(),
       })
-      .strict(),
+      .strict()
+      .refine((patch) => Object.values(patch).some((value) => value !== undefined), "patch must not be empty")
+      .meta({ minProperties: 1 }),
   })
   .strict();
 export type DatabasePatchInput = z.infer<typeof DatabasePatchInputSchema>;
