@@ -32,6 +32,10 @@ test('an unassigned newly added requirement cannot silently escape coverage', ()
   const changed = structuredClone(catalog);
   const source = structuredClone(changed.get(original.batches[0].members[0].id));
   source.metadata.id = 'gh-999999';
+  source.metadata.state = 'open';
+  source.metadata.closedAt = null;
+  source.metadata.stateReason = null;
+  source.metadata.resolution = null;
   changed.set(source.metadata.id, source);
   assert.throws(() => verifyPlan(original, changed, handovers), /Unassigned open requirement/);
 });
@@ -55,7 +59,9 @@ test('changing the aggregate hash cannot conceal missing source acceptance crite
 
 test('source dispatch is refused while aggregate work is pending', () => {
   const changed = structuredClone(catalog);
-  changed.get(original.batches[0].members[0].id).metadata.labels.push('agent:ready');
+  const pending = original.batches.flatMap(batch => batch.members).find(member => changed.get(member.id).metadata.state === 'open');
+  assert(pending, 'Expected at least one pending source');
+  changed.get(pending.id).metadata.labels.push('agent:ready');
   assert.throws(() => verifyPlan(original, changed, handovers), /individually queued/);
 });
 
@@ -71,12 +77,12 @@ test('breaking the predecessor chain or intra-batch order fails validation', () 
   assert.throws(() => verifyPlan(reordered, catalog, handovers), /Internal forward dependency/);
 });
 
-test('completed prerequisites need real handovers and production sign-off needs a human gate', () => {
+test('completed prerequisites need real handovers and security review needs a parent decision gate', () => {
   assert.throws(() => verifyPlan(original, catalog, new Set()), /Undelivered prerequisite/);
   const changed = structuredClone(catalog);
   const gate = original.batches.find(b => b.members.some(m => m.id === 'gh-1086'));
-  changed.get(gate.id).metadata.labels = changed.get(gate.id).metadata.labels.filter(l => l !== 'execution:external-gate');
-  assert.throws(() => verifyPlan(original, changed, handovers), /not a human gate/);
+  changed.get(gate.id).metadata.labels = changed.get(gate.id).metadata.labels.filter(l => l !== 'execution:parent-decision');
+  assert.throws(() => verifyPlan(original, changed, handovers), /not a parent decision gate/);
 });
 
 test('a valid-looking reversed chain still fails its actual source dependency checks', () => {

@@ -1887,13 +1887,13 @@
       "id": "sp-f1a0629b-0137-4cd3-a7b7-9421ec0dc438",
       "sequence": 19,
       "status": "proposed",
-      "title": "[backend-delivery 19/74] Obtain independent production security sign-off",
-      "bodyCharacters": 10388,
-      "specSha256": "97ee3eb0f96a959e5217542da5ce58a349a90d38917e9ca27e994e7025c519ac",
+      "title": "[backend-delivery 19/74] Verify security readiness under parent supervision",
+      "bodyCharacters": 11104,
+      "specSha256": "ff4fb264aecc5696062b17f7a503d96cfb8cc3ae4a0ba7b78675c5e41b135287",
       "members": [
         {
           "id": "gh-1086",
-          "specSha256": "d937e1dab011b8b8e1b5347118d8109c10ac4d1b4bb7e845fa93eb1d043f41da",
+          "specSha256": "62c272324aa2fcab0dbc834b4a0f4d1e069dfb5364e53afaf302cffea589a562",
           "parent": "gh-961",
           "dependencies": [
             "gh-1000",

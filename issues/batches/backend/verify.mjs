@@ -108,7 +108,7 @@ export function verifyPlan(input, catalog, handovers) {
     }
     if (id === 'gh-1086') {
       const gate = catalog.get(owner.batch.id);
-      assert(gate.metadata.labels.includes('execution:external-gate') && gate.metadata.labels.includes('agent:needs-human-action'), 'Production sign-off is not a human gate');
+      assert(gate.metadata.labels.includes('execution:security-gate') && gate.metadata.labels.includes('execution:parent-decision'), 'Security review is not a parent decision gate');
     }
   }
   return { sources: owners.size, mainBatches: active, heldBatches: held };

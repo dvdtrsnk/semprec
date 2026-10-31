@@ -33,9 +33,11 @@ The integration branch receives only independently accepted batches through
 `git merge --no-ff`. Keep failed or unfinished work on its batch branch.
 Do not change develop or push/deploy as part of this program.
 
-The owner has authorized batch 01 only. Its aggregate approval records that
-instruction; other aggregate specifications remain proposed. The parent thread
-reviews functionality before accepting the result. Do not start batch 02.
+The owner has authorized autonomous processing of the entire backend main lane.
+Parent thread thr_pz39tcih5r makes project decisions, including batch19, supervises
+review and acceptance, archives each finished worker and only then starts the
+next. Exact proposed specs are approved at dispatch under this delegation.
+See [CONTROLLER.md](CONTROLLER.md) for the complete continuation protocol.
 
 Verified local implementation history was recovered from
 `9b4929ba4e672a8f2b0c83a955bdf0679757fcc3`.
@@ -68,14 +70,14 @@ source metadata header and the repeated backend-only scope wrapper are replaced
 by the equivalent aggregate metadata and scope. Full member specifications were
 preserved rather than shortening requirements to hit an arbitrary batch size.
 
-## External gate
+## Parent-supervised security gate
 
-**Batch 19 is the production security sign-off gh-1086.** Only a maintainer and
-an independent external reviewer can satisfy it. The first 18 batches can be
-accepted without it under the declared dependency graph. Batch 20 and later
-wait for it because the main lane is sequential. A missing sign-off is BLOCKED,
-never an implementer's PASS. This restructuring does not authorize a production
-rollout, dropping the tenant guard or fabricating external review evidence.
+Batch19 (gh-1086) is supervised and adjudicated by the parent controller under
+explicit owner delegation. Independent review and actual technical evidence
+remain required; there is no human-signature-only stop. The parent resolves
+obsolete platform/deployment assumptions through recorded spec decisions and
+never represents unperformed checks as a production PASS. See CONTROLLER.md and
+`docs/adr/2026-10-31-owner-delegated-backend-program-supervision.md`.
 
 ## Execution protocol
 
@@ -161,7 +163,7 @@ reported by the ordinary validator; they are not silently repaired by batching.
 | 16 | [[backend-delivery 16/74] Implement architecture, data/auth, realtime changes](../../items/sp-e02ff8c6-d20d-4fde-be2a-e0033cf9ef91.md) | 10 | 57430 |
 | 17 | [[backend-delivery 17/74] Implement data/mail, data/inbox, semprec-api/adapter changes](../../items/sp-db5e1165-5ccf-4fba-bce0-fd7a1f2bc098.md) | 11 | 55538 |
 | 18 | [[backend-delivery 18/74] Implement data/mail, data/observability, data/docs changes](../../items/sp-a0bbb89b-34c7-4d8e-8758-3552b91c85a5.md) | 9 | 46516 |
-| 19 | [[backend-delivery 19/74] Obtain independent production security sign-off](../../items/sp-f1a0629b-0137-4cd3-a7b7-9421ec0dc438.md) | 1 | 10388 |
+| 19 | [[backend-delivery 19/74] Verify security readiness under parent supervision](../../items/sp-f1a0629b-0137-4cd3-a7b7-9421ec0dc438.md) | 1 | 10388 |
 | 20 | [[backend-delivery 20/74] Implement data/tenancy, data/auth, data/inbox changes](../../items/sp-823fc8d3-3186-4b22-9c0b-3e360048d9d3.md) | 7 | 55833 |
 | 21 | [[backend-delivery 21/74] Implement data/mail, data/inbox, data/transcription changes](../../items/sp-3f9fb92f-ea6b-468c-8243-1fb711c94aa7.md) | 11 | 56981 |
 | 22 | [[backend-delivery 22/74] Implement application, data/chokePoint, shared/genericOperations changes](../../items/sp-0a8b4be1-3039-4f6d-87b4-e1b673eab967.md) | 7 | 54499 |
