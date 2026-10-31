@@ -31,8 +31,9 @@ OpenAI TTS remains the provisional engineering default, with ElevenLabs the
 alternative documented in the live voice decision. No comparative Czech
 listening result has been established. The listening qualification is a
 pre-production-release condition tracked by #1399; it is not a prerequisite
-for local backend implementation or integration completion. Fake-provider
-tests cannot establish that qualification. If the qualification changes the
+for local backend implementation or integration completion. In the historical
+voice decision, the adapter "ships" when it is released to production; local
+integration does not qualify as shipping. Fake-provider tests cannot establish that qualification. If the qualification changes the
 provider decision, record that change through a new decision rather than
 rewriting the historical record.
 
