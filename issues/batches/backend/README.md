@@ -15,7 +15,7 @@ implementation or alter the running Relay workflow.
 - Every batch is a self-contained ordinary implementation record. New records
   are proposed and unqueued; sources are labeled execution:batch-source and
   agent:blocked with their individual ready intent removed.
-- New aggregate specifications require owner approval. They do not inherit
+- New aggregate specifications require owner approval (batch 01 is now explicitly authorized). They do not inherit
   source approvals. Sources without approval at planning time are:
   gh-1414, gh-1478, gh-1422, gh-1393, gh-1086, gh-1601, gh-1739, gh-1783, gh-1088, gh-1611. Resolve their approval before implementation;
   the ordinary source-completion guard remains in force.
@@ -25,9 +25,30 @@ The canonical manifest is [manifest.json](manifest.json); its program epic is
 The accepted scoped exception is
 [sequential-backend-delivery-batches](../../../docs/adr/2026-10-31-sequential-backend-delivery-batches.md).
 
+## Branch isolation and first-batch authorization
+
+Use local integration branch `feature/backend-delivery` and one temporary branch
+per batch (`batch/backend-01` for the pilot), all in this same working tree.
+The integration branch receives only independently accepted batches through
+`git merge --no-ff`. Keep failed or unfinished work on its batch branch.
+Do not change develop or push/deploy as part of this program.
+
+The owner has authorized batch 01 only. Its aggregate approval records that
+instruction; other aggregate specifications remain proposed. The parent thread
+reviews functionality before accepting the result. Do not start batch 02.
+
+Verified local implementation history was recovered from
+`9b4929ba4e672a8f2b0c83a955bdf0679757fcc3`.
+[reconciled-completions.json](reconciled-completions.json) records 205 previously
+completed implementations, including every member of batch 01. Their code and
+handover history are present; do not reimplement them. Source planning records
+retain the owner-directed backend-only specifications and await batch acceptance.
+Compare original specifications at the recovered commit when evaluating changed
+requirements. Completion provenance is not proof of the newly packaged AC.
+
 ## Baseline and grouping
 
-The base commit is `ccdf6042ac29bf94fcdf3d81bfb96b8defc80dea`, plus the owner-directed backend-only
+The original planning commit is `ccdf6042ac29bf94fcdf3d81bfb96b8defc80dea`, plus the owner-directed backend-only
 scope edits in this working tree. Previous sessions may have newer local
 integration work absent here. Reconcile those commits and handovers before
 implementation. This inventory is not evidence that every listed requirement
