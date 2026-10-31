@@ -4,6 +4,7 @@ import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
 import { resolveThreadId } from "../threading.js";
+import { createMailThread } from "../mailMessageMetaStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { ingestEmailMessage } from "../ingest.js";
@@ -65,6 +66,28 @@ describe("cross-mailbox threading of one message", () => {
     const a = await ingest(mailboxA, "<one@x>");
     const b = await ingest(mailboxB, "<two@x>");
     expect(b).not.toBe(a);
+  });
+
+  it("chooses the lowest thread id when existing copies disagree, regardless of insertion order", async () => {
+    const first = await createMailThread(pool);
+    const second = await createMailThread(pool);
+    const [low, high] = [first.id, second.id].sort();
+    if (!low || !high) throw new Error("Expected two threads");
+    await pool.query(
+      `INSERT INTO mail_message_meta (item_id, mailbox_item_id, message_id, thread_id, envelope)
+       VALUES (gen_random_uuid(), $1, '<duplicate@x>', $2, '{}'),
+              (gen_random_uuid(), $3, '<duplicate@x>', $4, '{}')`,
+      [mailboxA, high, mailboxB, low],
+    );
+    const thirdMailbox = "00000000-0000-4000-8000-00000000000c";
+    expect(await ingest(thirdMailbox, "<duplicate@x>")).toBe(low);
+    const { rows } = await pool.query<{ thread_id: string }>(
+      "SELECT thread_id FROM mail_message_meta WHERE message_id = $1",
+      ["<duplicate@x>"],
+    );
+    expect(rows).toHaveLength(3);
+    expect(rows.every((row) => row.thread_id === low)).toBe(true);
+    expect((await pool.query("SELECT id FROM mail_threads WHERE id = $1", [high])).rowCount).toBe(0);
   });
 });
 

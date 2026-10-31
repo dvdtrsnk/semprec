@@ -59,6 +59,27 @@ async function sentByInvite(locale: string, inviteUrl = PLAIN_URL) {
 }
 
 describe("auth mail catalog (issue #1356)", () => {
+  it("retries catalog loading after a transient failure", async () => {
+    const registry = await vi.importActual<typeof import("@semprec/module-registry")>("@semprec/module-registry");
+    const load = vi.fn(registry.loadModuleCatalogs).mockRejectedValueOnce(new Error("catalog temporarily unavailable"));
+    vi.doMock("@semprec/module-registry", () => ({ ...registry, loadModuleCatalogs: load }));
+    vi.resetModules();
+    try {
+      const { renderAuthMail: freshRenderer } = await import("../auth/authMailCatalog.js");
+      await expect(freshRenderer("invite", "en", PLAIN_URL, (value) => value)).rejects.toThrow(
+        "catalog temporarily unavailable",
+      );
+      const rendered = await freshRenderer("invite", "en", PLAIN_URL, (value) => value);
+      expect(rendered.subject).toBe("You have been invited to Semprec");
+      expect(rendered.text).toContain(PLAIN_URL);
+      await freshRenderer("passwordReset", "cs", PLAIN_URL, (value) => value);
+      expect(load).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.doUnmock("@semprec/module-registry");
+      vi.resetModules();
+    }
+  });
+
   it("renders the English password-reset email with today's wording and one link", async () => {
     const mail = await sentByReset("en");
     expect(mail.subject).toBe("Reset your password");

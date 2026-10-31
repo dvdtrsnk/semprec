@@ -92,6 +92,19 @@ describe("mail OAuth states (issue #1483)", () => {
     expect((await rowFor(state))!.used_at).not.toBeNull();
   });
 
+  it("returns the mailbox id when reauthorizing an existing mailbox", async () => {
+    const mailboxItemId = randomUUID();
+    const created = await runInTenant(tenantA, () =>
+      withTransaction(pool, (client) =>
+        createMailOauthState(client, { userId: userA, provider: "gmail", mailboxItemId }),
+      ),
+    );
+    const consumed = await consume(tenantA, created.state, userA);
+    expect(consumed?.mailboxItemId).toBe(mailboxItemId);
+    expect(consumed?.provider).toBe("gmail");
+    expect(await consume(tenantA, created.state, userA)).toBeNull();
+  });
+
   it("returns null for a second consume, another user and an expired state, changing nothing", async () => {
     const userOther = randomUUID();
     const first = await create(tenantA, userA);
