@@ -1,3 +1,5 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
+import { createItemWithClient, getDatabaseByModuleId } from "@semprec/data";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -11,6 +13,7 @@ import {
 } from "@semprec/data/testSupport";
 import {
   createChokePoint,
+  createDocStore,
   createUser,
   createViewTypeRegistry,
   hashPassword,
@@ -30,8 +33,13 @@ import {
   OPERATION_METADATA,
   type CapabilityId,
   type GenericOperationName,
+  type InputByOperation,
 } from "@semprec/shared";
 import { createMcpRequestListener } from "../mcpHandler.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 const PASSWORD = "s3cret-password";
 const ALL_CAPABILITIES: ReadonlySet<CapabilityId> = new Set(CAPABILITY_IDS);
@@ -181,7 +189,7 @@ interface Case {
 }
 
 /**
- * One `tools/call` case per operation in the closed 29-operation catalog, mirroring
+ * One `tools/call` case per operation in the closed 31-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern one adapter over (the code-review finding on
  * issue #220's diff: parameterized contract tests across all of the then-28 operations were missing for the
  * MCP and AgentTool adapters). Reused across two describe-blocks below: dispatched by a plain
@@ -303,17 +311,70 @@ const CASES: Record<GenericOperationName, Case> = {
       },
     }),
   },
+  "relation.list": { tool: (fx) => ({ name: "semprec.relation.list", arguments: { itemId: fx.itemA.id } }) },
+  "page.restoreVersion": {
+    // The block's update is dated an hour back, so the instant (half an hour back) sits inside the history `prepare` opens.
+    tool: (fx) => ({
+      name: "semprec.page.restoreVersion",
+      arguments: { itemId: fx.itemA.id, at: new Date(Date.now() - 30 * 60 * 1000).toISOString() },
+    }),
+    prepare: async (fx) => {
+      await createDocStore(pool).putBlock(
+        fx.itemA.id,
+        { id: "b1", flavour: "paragraph", fields: { content: "first" } },
+        "user",
+      );
+      await pool.query(`UPDATE docs SET history_available_from = now() - interval '1 hour' WHERE item_id = $1`, [
+        fx.itemA.id,
+      ]);
+      await pool.query(
+        `UPDATE doc_snapshot_history SET represented_at = now() - interval '1 hour'
+         WHERE through_update_id = 0 AND doc_id = (SELECT id FROM docs WHERE item_id = $1)`,
+        [fx.itemA.id],
+      );
+      await pool.query(
+        `UPDATE doc_updates SET created_at = now() - interval '1 hour'
+         WHERE doc_id = (SELECT id FROM docs WHERE item_id = $1)`,
+        [fx.itemA.id],
+      );
+      await pool.query(
+        `UPDATE doc_history_updates SET created_at = now() - interval '1 hour'
+         WHERE doc_id = (SELECT id FROM docs WHERE item_id = $1)`,
+        [fx.itemA.id],
+      );
+    },
+  },
 };
 
 describe("generic operation MCP contract (issue #220)", () => {
   let servers: Server[] = [];
 
+  it("sanitizes Emails.body on MCP item.get", async () => {
+    const raw = '<p onclick="evil()">safe</p><script>evil()</script><img src="https://tracker.example/pixel">';
+    const item = await withTransaction(pool, async (client) => {
+      const database = await getDatabaseByModuleId(client, "emails");
+      if (!database) throw new Error("Emails not seeded");
+      return createItemWithClient(
+        client,
+        { databaseId: database.id, properties: { body: raw } },
+        { allowedSystemKeys: ["body"] },
+      );
+    });
+
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const body = await rpc(baseUrl, await authHeader(), "semprec.item.get", { itemId: item.id });
+    expect(body.error).toBeUndefined();
+    const text = body.result?.content.map((part) => part.text).join("");
+    expect(text).toContain("safe");
+    expect(text).not.toMatch(/<script|onclick|https:\/\/tracker/i);
+  });
   beforeEach(async () => {
     pool ??= getTestPool();
     chokePoint ??= createChokePoint(pool);
     await resetDatabase(pool);
     await seedSystem(pool, createViewTypeRegistry());
-    gateway = createGenericOperationGateway(pool);
+    gateway = createGenericOperationGateway(pool, testMetadataResolver);
     servers = [];
   });
 
@@ -323,6 +384,50 @@ describe("generic operation MCP contract (issue #220)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it.each(["done", "archived"])("unpins Projects and refuses explicit terminal pins over MCP (%s)", async (status) => {
+    const databaseId = await projectsDatabaseId();
+    const item = await chokePoint.createItem({
+      databaseId,
+      properties: { name: "Project", status: "inProgress", pinned: true },
+    });
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const headers = await authHeader();
+    async function patchProject(properties: Record<string, unknown>) {
+      const current = await chokePoint.getItem(databaseId, item.id);
+      if (!current) throw new Error("Missing project fixture");
+      const args: InputByOperation["item.patch"] = { itemId: item.id, properties, ifVersion: current.updatedAt };
+      return rpc(baseUrl, headers, "semprec.item.patch", args);
+    }
+    const answer = await patchProject({ status });
+    expect(answer.error).toBeUndefined();
+    const content = answer.result?.content.find((part) => part.type === "text")?.text;
+    if (!content) throw new Error("Missing MCP result");
+    const result: unknown = JSON.parse(content);
+    expect(result).toMatchObject({ properties: { status, pinned: false } });
+    for (const patch of [{ pinned: true }, { status, pinned: true }]) {
+      const rejected = await patchProject(patch);
+      expect(rejected.error?.code).toBe(-32602);
+      expect(rejected.error?.data).toMatchObject({ field: "pinned" });
+      expect((await chokePoint.getItem(databaseId, item.id))?.properties).toMatchObject({ status, pinned: false });
+    }
+    for (const activeStatus of ["inProgress", "longTerm"]) {
+      const accepted = await patchProject({ status: activeStatus, pinned: true });
+      expect(accepted.error).toBeUndefined();
+      expect((await chokePoint.getItem(databaseId, item.id))?.properties).toMatchObject({
+        status: activeStatus,
+        pinned: true,
+      });
+    }
+    const combined = await patchProject({ status, pinned: true });
+    expect(combined.error?.code).toBe(-32602);
+    expect(combined.error?.data).toMatchObject({ field: "pinned" });
+    expect((await chokePoint.getItem(databaseId, item.id))?.properties).toMatchObject({
+      status: "longTerm",
+      pinned: true,
+    });
   });
 
   it("has exactly one contract case per operation in the closed catalog", () => {

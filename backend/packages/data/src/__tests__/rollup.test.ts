@@ -1,12 +1,14 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
-import { bindToTenantZero, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { bindToTenantZero, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 import { ValidationError } from "../errors.js";
-import { recomputeRollupCell } from "../rollup/recompute.js";
+import { recomputeRollupCell, rollupRecomputeFullJobKey } from "../rollup/recompute.js";
+import { withTransaction } from "../db/pool.js";
+import { databaseArchiveWithClient } from "../chokePoint/databaseOps.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -210,6 +212,73 @@ describe("rollup engine", () => {
 
     const item = await chokePoint.getItem(projects.id, project.id);
     expect(item?.computed[sumProp.key]).toBe(10);
+  });
+
+  describe("archived source databases", () => {
+    async function fullJobKeys(): Promise<string[]> {
+      const { rows } = await pool.query<{ key: string }>(
+        "SELECT key FROM graphile_worker._private_jobs WHERE key LIKE 'rollup-recompute:%:full' ORDER BY key",
+      );
+      return rows.map((row) => row.key);
+    }
+
+    async function linkedFixture() {
+      const fixture = await makeProjectsAndTasks();
+      const project = await chokePoint.createItem({ databaseId: fixture.projects.id, properties: {} });
+      for (const hours of [3, 4]) {
+        const task = await chokePoint.createItem({ databaseId: fixture.tasks.id, properties: { hours } });
+        await chokePoint.createRelation({
+          relationPropertyId: fixture.tasksRelation.id,
+          callerItemId: project.id,
+          targetItemId: task.id,
+        });
+      }
+      await drainQueue();
+      return { ...fixture, project };
+    }
+
+    async function expectValues(f: Awaited<ReturnType<typeof linkedFixture>>, count: number, sum: number | null) {
+      const item = await chokePoint.getItem(f.projects.id, f.project.id);
+      expect(item?.computed[f.countProp.key]).toBe(count);
+      expect(item?.computed[f.sumProp.key]).toBe(sum);
+    }
+
+    it("drops the archived items from count and sum after the job runs and restores them on restore", async () => {
+      const f = await linkedFixture();
+      await expectValues(f, 2, 7);
+
+      await chokePoint.archiveDatabase(f.tasks.id);
+      await drainQueue();
+      await expectValues(f, 0, null);
+
+      await chokePoint.restoreDatabase(f.tasks.id);
+      await drainQueue();
+      await expectValues(f, 2, 7);
+    });
+
+    it("queues one full job per dependent rollup property and a second archive request does not queue another", async () => {
+      const f = await linkedFixture();
+      await chokePoint.archiveDatabase(f.tasks.id);
+      const expected = [f.countProp.id, f.sumProp.id].map(rollupRecomputeFullJobKey).sort();
+      expect(await fullJobKeys()).toEqual(expected);
+
+      await chokePoint.archiveDatabase(f.tasks.id);
+      expect(await fullJobKeys()).toEqual(expected);
+    });
+
+    it("queues nothing when no rollup aggregates the archived database", async () => {
+      const f = await linkedFixture();
+      await chokePoint.archiveDatabase(f.projects.id);
+      expect(await fullJobKeys()).toEqual([]);
+    });
+
+    it("recounts the same way through the approved-operation path", async () => {
+      const f = await linkedFixture();
+      await inTenantZero(() => withTransaction(pool, (client) => databaseArchiveWithClient(client, f.tasks.id)));
+      expect(await fullJobKeys()).toHaveLength(2);
+      await drainQueue();
+      await expectValues(f, 0, null);
+    });
   });
 
   it("recomputes on soft delete/restore of a source row", async () => {

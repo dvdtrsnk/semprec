@@ -69,6 +69,17 @@ export interface ImapMailClient {
    * calls it itself.
    */
   setMessageFlag(path: string, uid: number, flag: WritableImapFlag, value: boolean): Promise<void>;
+  /**
+   * IMAP APPEND of one complete RFC 5322 message with the given flags. Only the copy of a sent message kept in the
+   * Sent folder uses it (mailTransport.ts, issue #1641); the reconcile pass never calls it.
+   */
+  appendMessage(path: string, raw: Buffer, flags: readonly WritableImapFlag[]): Promise<void>;
+  /**
+   * Logs out and releases the socket. The sync job calls it once per pass, on success and on failure
+   * (mailSyncJob.ts), and the Sent-copy append calls it once per copy (mailTransport.ts). It never rejects: the
+   * caller is already cleaning up after a pass or an append that may have failed.
+   */
+  close(): Promise<void>;
 }
 
 export interface ReconcileImapFolderParams {

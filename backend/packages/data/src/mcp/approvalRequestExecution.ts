@@ -149,15 +149,20 @@ export async function handleApprovalRequestExecuteTask(
 
   const noLongerAvailableOutcome: ApprovalRequestOutcome = {
     error: true,
+    outcomeKind: "toolUnavailable",
     result:
       "This MCP tool is no longer available to the requesting project: its grant was revoked, or its registration or server is inactive.",
   };
-  const outcome: ApprovalRequestOutcome =
-    target && target.mcpServerItemId === payload.mcpServerItemId && target.toolName === claimed.toolName
-      ? await executeMcpInvocation(pool, { serverItem: target.serverItem, toolName: claimed.toolName }, payload.args, {
-          idempotencyKey: claimed.id,
-        })
-      : noLongerAvailableOutcome;
+  let outcome: ApprovalRequestOutcome = noLongerAvailableOutcome;
+  if (target && target.mcpServerItemId === payload.mcpServerItemId && target.toolName === claimed.toolName) {
+    const invoked = await executeMcpInvocation(
+      pool,
+      { serverItem: target.serverItem, toolName: claimed.toolName },
+      payload.args,
+      { idempotencyKey: claimed.id },
+    );
+    outcome = invoked.error ? { ...invoked, outcomeKind: "callFailed" } : invoked;
+  }
 
   const recorded = await withTransaction(pool, (client) => recordApprovalRequestOutcome(client, claimed.id, outcome));
   if (!recorded) {

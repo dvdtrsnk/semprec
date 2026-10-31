@@ -23,6 +23,8 @@ type DatabaseDbRow = {
   owner_module_id: string | null;
   schema_locked: boolean;
   system: boolean;
+  icon: string | null;
+  color: string | null;
   archived_at: Date | null;
 };
 
@@ -36,12 +38,14 @@ function mapDatabaseRow(row: DatabaseDbRow): DatabaseRow {
     ownerModuleId: row.owner_module_id,
     schemaLocked: row.schema_locked,
     system: row.system,
+    icon: row.icon,
+    color: row.color,
     archivedAt: row.archived_at ? row.archived_at.toISOString() : null,
   };
 }
 
 const DATABASE_COLUMNS =
-  "id, name, key, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, archived_at";
+  "id, name, key, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, icon, color, archived_at";
 
 export interface CreateDatabaseInput {
   /** Required unless `system` is true — enforced below, not by the (now nullable) column. */
@@ -53,6 +57,10 @@ export interface CreateDatabaseInput {
   ownerModuleId?: string;
   schemaLocked?: boolean;
   system?: boolean;
+  /** Only valid for a non-system database; a system database's icon comes from its module manifest. */
+  icon?: string;
+  /** `#RRGGBB`, stored upper-case; only valid for a non-system database. */
+  color?: string;
 }
 
 /**
@@ -74,6 +82,10 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
     throw new ValidationError("key is required for a system database with a null name", { field: "key" });
   }
 
+  if (input.system && (input.icon !== undefined || input.color !== undefined)) {
+    throw new ForbiddenError("The icon and color of a system database come from its module manifest");
+  }
+
   if (input.parentItemId !== undefined) {
     // Foreign, soft-deleted, missing and malformed ids all fail identically (no id in the message),
     // so the error cannot serve as an existence oracle across tenants.
@@ -87,8 +99,8 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
   let database: DatabaseRow;
   try {
     const { rows } = await client.query<DatabaseDbRow>(
-      `INSERT INTO databases (name, key, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO databases (name, key, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, icon, color)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING ${DATABASE_COLUMNS}`,
       [
         input.name,
@@ -98,6 +110,8 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
         input.ownerModuleId ?? null,
         input.schemaLocked ?? false,
         input.system ?? false,
+        input.icon ?? null,
+        input.color?.toUpperCase() ?? null,
       ],
     );
     database = mapDatabaseRow(requireSingleRow(rows, "databases row"));
@@ -125,6 +139,17 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
 
 export async function getDatabase(client: PoolClient, id: string): Promise<DatabaseRow | null> {
   const { rows } = await client.query<DatabaseDbRow>(`SELECT ${DATABASE_COLUMNS} FROM databases WHERE id = $1`, [id]);
+  return rows[0] ? mapDatabaseRow(rows[0]) : null;
+}
+
+/**
+ * Looks up a system database by its stable `key` (unique per tenant). Under row-level security the
+ * lookup is per tenant; a caller that sees several tenants fails with a plain `Error` on more than one match.
+ */
+export async function getDatabaseByKey(client: PoolClient, key: string): Promise<DatabaseRow | null> {
+  const { rows } = await client.query<DatabaseDbRow>(`SELECT ${DATABASE_COLUMNS} FROM databases WHERE key = $1`, [key]);
+  if (rows.length > 1)
+    throw new Error(`Database key '${key}' resolves to ${rows.length} databases, expected at most one`);
   return rows[0] ? mapDatabaseRow(rows[0]) : null;
 }
 
@@ -157,6 +182,39 @@ export async function listAllDatabases(client: PoolClient): Promise<DatabaseRow[
   return rows.map(mapDatabaseRow);
 }
 
+/** What a reader needs to label an item of a database: its module id and the key of its `title` property. */
+export interface DatabaseLabelRow {
+  id: string;
+  ownerModuleId: string | null;
+  titlePropertyKey: string | null;
+}
+
+/**
+ * The batched lookup behind item labels: one query for a whole set of databases, the key of the
+ * `title` property included so the caller reads titles without a query per database. A database
+ * with several `title` properties resolves to the alphabetically first key.
+ */
+export async function listDatabaseLabelsByIds(client: PoolClient, ids: string[]): Promise<DatabaseLabelRow[]> {
+  if (ids.length === 0) return [];
+  const { rows } = await client.query<{
+    id: string;
+    owner_module_id: string | null;
+    title_property_key: string | null;
+  }>(
+    `SELECT DISTINCT ON (d.id) d.id, d.owner_module_id, p.key AS title_property_key
+     FROM databases d
+     LEFT JOIN properties p ON p.database_id = d.id AND p.type = 'title'
+     WHERE d.id = ANY($1::uuid[])
+     ORDER BY d.id, p.key`,
+    [ids],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    ownerModuleId: row.owner_module_id,
+    titlePropertyKey: row.title_property_key,
+  }));
+}
+
 async function requireDatabase(client: PoolClient, id: string): Promise<DatabaseRow> {
   const database = await getDatabase(client, id);
   if (!database) throw new NotFoundError(`Database ${id} not found`);
@@ -174,14 +232,42 @@ export async function archiveDatabase(client: PoolClient, id: string): Promise<D
   return mapDatabaseRow(requireSingleRow(rows, "databases row"));
 }
 
-/** The label is always renamable, same as `renameProperty` in `propertiesStore.ts` — `schemaLocked`/`system` govern schema mutation, never the display name. */
-export async function renameDatabase(client: PoolClient, id: string, name: string): Promise<DatabaseRow> {
-  await requireDatabase(client, id);
+/** Fields `patchDatabase` may change; `null` for `icon` or `color` returns it to the read-time default. */
+export interface DatabasePatch {
+  name?: string;
+  icon?: string | null;
+  color?: string | null;
+}
+
+/**
+ * Updates any of `name`, `icon`, `color` in one statement. The label is always renamable, same as
+ * `renameProperty` in `propertiesStore.ts` — `schemaLocked`/`system` govern schema mutation, never the
+ * display name — but the icon and color of a system database belong to its module manifest.
+ */
+export async function patchDatabase(client: PoolClient, id: string, patch: DatabasePatch): Promise<DatabaseRow> {
+  const database = await requireDatabase(client, id);
+  if (database.system && (patch.icon !== undefined || patch.color !== undefined)) {
+    throw new ForbiddenError("The icon and color of a system database come from its module manifest");
+  }
+  const sets: string[] = [];
+  const values: unknown[] = [id];
+  const add = (column: string, value: unknown) => {
+    values.push(value);
+    sets.push(`${column} = $${values.length}`);
+  };
+  if (patch.name !== undefined) add("name", patch.name);
+  if (patch.icon !== undefined) add("icon", patch.icon);
+  if (patch.color !== undefined) add("color", patch.color === null ? null : patch.color.toUpperCase());
+  if (sets.length === 0) return database;
   const { rows } = await client.query<DatabaseDbRow>(
-    `UPDATE databases SET name = $2 WHERE id = $1 RETURNING ${DATABASE_COLUMNS}`,
-    [id, name],
+    `UPDATE databases SET ${sets.join(", ")} WHERE id = $1 RETURNING ${DATABASE_COLUMNS}`,
+    values,
   );
   return mapDatabaseRow(requireSingleRow(rows, "databases row"));
+}
+
+export async function renameDatabase(client: PoolClient, id: string, name: string): Promise<DatabaseRow> {
+  return patchDatabase(client, id, { name });
 }
 
 /**

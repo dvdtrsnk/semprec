@@ -18,7 +18,6 @@ import {
   getDatabaseByModuleId,
   getItemById,
   LocalFsBlobStorageWriter,
-  NotFoundError,
   seedSystem,
   TRANSCRIPTION_OWNER_PROCESS,
   setAgentRunEventHook,
@@ -47,8 +46,13 @@ import { wireRealtimeHooks } from "@semprec/realtime";
 import type { AiGatewayClientPort, AiGatewayCompletionInput, AiGatewayCompletionResult } from "@semprec/shared";
 import { CORE_TASK_NAMES, enqueueJob, registerTask, runOnce } from "@semprec/queue";
 import { AiGatewayFailedError } from "@semprec/shared";
-import { createTranscriptionTask, TranscriptionSourceChangedError } from "./transcriptionTask.js";
-import { AudioGatewayBudgetExceededError } from "./audioGatewayClient.js";
+import {
+  classifyTranscriptionFailure,
+  createTranscriptionTask,
+  TranscriptionSourceChangedError,
+} from "./transcriptionTask.js";
+import { AudioGatewayBudgetExceededError, AudioGatewayCallError } from "./audioGatewayClient.js";
+import { MediaToolError, probeMedia } from "./mediaNormalization.js";
 import type {
   AudioGatewayClient,
   DiarizationTurn,
@@ -58,8 +62,11 @@ import type {
 } from "./audioGatewayClient.js";
 import {
   FIXTURE_CREATION_TIME,
+  generateLateAudioVideoFixture,
   generateMp4Fixture,
+  generateOggFixture,
   generateWebmFixture,
+  probeAudioStream,
   probeNormalizedAudio,
 } from "./__tests__/fixtures/mediaFixtures.js";
 
@@ -104,7 +111,8 @@ class FakeSummaryClient implements AiGatewayClientPort {
     if (this.failure) throw this.failure;
     if (input.operation === "transcript_speaker_suggestion")
       return { content: { mappings: this.speakerMappings }, usage: { inputTokens: 10, outputTokens: 5 } };
-    const instruction = input.messages[0]?.content.split("\n")[1] ?? "";
+    const content = input.messages[0]?.content;
+    const instruction = (typeof content === "string" ? content.split("\n")[1] : undefined) ?? "";
     return { content: { summary: `summary for: ${instruction}` }, usage: { inputTokens: 10, outputTokens: 5 } };
   }
 }
@@ -224,6 +232,7 @@ describe("transcription step 0", () => {
 
 const prepareCheckpointSchema = z.object({
   normalizedBlobId: z.string(),
+  playbackBlobId: z.string().optional(),
   durationSeconds: z.number(),
   creationTime: z.string().nullable(),
 });
@@ -525,6 +534,79 @@ describe("transcription step 1 (prepare)", () => {
     });
   });
 
+  async function countTranscriptionBlobs(): Promise<number> {
+    const { rows } = await pool.query<{ count: string }>("SELECT count(*) FROM blobs WHERE storage_key LIKE $1", [
+      `${transcriptionsPrefix}%`,
+    ]);
+    return Number(rows[0]?.count);
+  }
+
+  async function runPrepare(mimeType: string, bytes: Buffer) {
+    const { files, file, blob } = await createSourceFile(mimeType, bytes);
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+    const prepare = prepareCheckpointSchema.parse((await readSource(files.id, file.id))?.computed.prepare);
+    return { prepare, blob };
+  }
+
+  it.each(["audio/mp4", "audio/mpeg", "audio/wav"])(
+    "plays the original of a %s source and creates no playback blob",
+    async (mimeType) => {
+      const { prepare, blob } = await runPrepare(mimeType, audioFixture);
+
+      expect(prepare.playbackBlobId).toBe(blob.id);
+      // Only the normalized Opus copy is created next to the original.
+      expect(await countTranscriptionBlobs()).toBe(1);
+    },
+  );
+
+  it.each([
+    ["a video", "video/mp4", null, () => videoFixture],
+    ["an Ogg recording", "audio/ogg", 1, () => generateOggFixture()],
+    // The audio lasts two seconds but starts one second into the container.
+    ["a video whose audio starts late", "video/x-matroska", 2, () => generateLateAudioVideoFixture()],
+  ])("renders and checkpoints an AAC m4a playback blob for %s", async (_label, mimeType, audioSeconds, getBytes) => {
+    const { prepare, blob } = await runPrepare(mimeType, await getBytes());
+
+    expect(prepare.playbackBlobId).toBeDefined();
+    expect(prepare.playbackBlobId).not.toBe(blob.id);
+    expect(prepare.playbackBlobId).not.toBe(prepare.normalizedBlobId);
+    const { rows } = await pool.query<{ mime_type: string; storage_key: string }>(
+      "SELECT mime_type, storage_key FROM blobs WHERE id = $1",
+      [prepare.playbackBlobId],
+    );
+    expect(rows).toEqual([
+      { mime_type: "audio/mp4", storage_key: expect.stringMatching(new RegExp(`^${transcriptionsPrefix}.*\\.m4a$`)) },
+    ]);
+    const path = join(tmpBlobDir, rows[0]!.storage_key);
+    expect(await probeAudioStream(path)).toMatchObject({ codecName: "aac", channels: 1 });
+    const { durationSeconds } = await probeMedia(path);
+    if (audioSeconds !== null) expect(Math.abs((durationSeconds ?? NaN) - audioSeconds)).toBeLessThan(0.1);
+    else expect(durationSeconds).toBeGreaterThan(0);
+  });
+
+  it("discards the normalized audio when rendering the playback copy fails", async () => {
+    const { file } = await createSourceFile("video/mp4", videoFixture);
+    const storage: BlobStorageWriter = {
+      writeStream: (storageKey, source, options) => {
+        if (storageKey.endsWith(".m4a")) return Promise.reject(new Error("disk full"));
+        return blobStorage.writeStream(storageKey, source, options);
+      },
+      delete: (storageKey) => blobStorage.delete(storageKey),
+      readStream: (storageKey, range) => blobStorage.readStream(storageKey, range),
+    };
+
+    await expect(
+      createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
+    ).rejects.toThrow("disk full");
+
+    expect(await readNormalizedLeftovers()).toEqual({ blobRows: 0, storedFiles: [] });
+  });
+
   it("rolls back and discards its audio when the write transaction fails", async () => {
     const { files, file } = await createSourceFile("audio/mp4", audioFixture);
     const storage = storageWithMidNormalizationHook(async () => {
@@ -534,9 +616,8 @@ describe("transcription step 1 (prepare)", () => {
       );
     });
 
-    await expect(
-      createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
-    ).rejects.toBeInstanceOf(NotFoundError);
+    // Issue #1582: a deleted transcript is a clean stop, not a failure.
+    await createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     expect((await readSource(files.id, file.id))?.computed).not.toHaveProperty("prepare");
     expect(await readNormalizedLeftovers()).toEqual({ blobRows: 0, storedFiles: [] });
@@ -922,6 +1003,10 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
   }
 
   it("merges into speaker segments with the language, summarizes, and finalizes done with item_automation done", async () => {
+    const announced: string[] = [];
+    setInvalidationHook((event) => {
+      if (event.scope === "item" && event.itemId) announced.push(event.itemId);
+    });
     const { file } = await createSourceFile();
 
     await createTranscriptionTask(
@@ -937,6 +1022,16 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       { speaker: "SPEAKER_01", text: "Hi there.", startsAt: 0.6, endsAt: 0.9 },
     ]);
     expect(transcript.computed.language).toBe("en");
+    expect(transcript.computed.durationSeconds).toBeGreaterThan(0);
+    expect(announced).toContain(transcript.id);
+    expect(transcript.computed.finalizedAt).toEqual(expect.stringMatching(/Z$/));
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+    expect((await readTranscript(file.id)).computed).toEqual(transcript.computed);
     expect(transcript.computed.summaryByInstruction).toEqual({
       meetingSummary: expect.stringMatching(/^summary for: Summarize this meeting/),
     });
@@ -1294,7 +1389,8 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       const transcript = await readTranscript(file.id);
       const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
 
-      // Step 1 (date), step 4 (segments, then language), step 5 (summary) and step 8 (status done).
+      // Step 1 (date), prepare's durationSeconds (issue #1469), step 4 (segments, then language), step 5 (summary),
+      // finalize's finalizedAt (issue #1469) and step 8 (status done).
       await vi.waitFor(() => {
         const updates = received.filter(
           (message) =>
@@ -1304,7 +1400,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
             z.object({ itemId: z.literal(transcript.id), databaseId: z.literal(transcripts?.id) }).safeParse(message)
               .success,
         );
-        expect(updates).toHaveLength(5);
+        expect(updates).toHaveLength(7);
       });
     } finally {
       listenClient.release(true);
@@ -1379,13 +1475,74 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
         {
           user_id: userId,
           kind: "automation_error",
-          link_href: null,
+          link_href: `?page=transcript&id=${transcript.id}`,
           source_table: "item_automation",
           transition_instance: "attempt:3",
         },
       ]);
       expect(gatewayClient.diarizeCalls).toHaveLength(1);
       expect(gatewayClient.transcribeCalls).toHaveLength(1);
+    });
+
+    it.each([
+      ["a budget rejection", () => new AiGatewayFailedError("budget_exceeded"), "budgetExceeded"],
+      ["an audio gateway budget rejection", () => new AudioGatewayBudgetExceededError(), "budgetExceeded"],
+      [
+        "an ffmpeg failure",
+        () => new MediaToolError("ffmpeg exited with code 1: secret transcript text"),
+        "mediaUnreadable",
+      ],
+      [
+        "an audio gateway failure",
+        () => new AudioGatewayCallError("Gateway responded with HTTP 500"),
+        "providerFailed",
+      ],
+      ["a completion gateway failure", () => new AiGatewayFailedError("http"), "providerFailed"],
+      ["any other error", () => new Error("secret transcript text"), "unknown"],
+      ["a thrown non-error", () => "secret transcript text" as unknown as Error, "unknown"],
+    ])("stores the code for %s and keeps its message out of the notification", async (_label, makeFailure, code) => {
+      const { file } = await createSourceFile();
+      await createUser();
+      const failure = makeFailure();
+      expect(classifyTranscriptionFailure(failure)).toBe(code);
+      summaryClient.failure = failure;
+      const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+
+      await task({ fileItemId: file.id }, FINAL_ATTEMPT).catch(() => undefined);
+
+      const transcript = await readTranscript(file.id);
+      const { rows } = await pool.query<{ status: string; error_code: string | null }>(
+        "SELECT status, error_code FROM item_automation WHERE item_id = $1",
+        [transcript.id],
+      );
+      expect(rows).toEqual([{ status: "error", error_code: code }]);
+      const notifications = await pool.query("SELECT to_jsonb(n) AS row FROM notifications n WHERE source_id = $1", [
+        transcript.id,
+      ]);
+      expect(notifications.rows).toHaveLength(1);
+      expect(JSON.stringify(notifications.rows)).not.toContain("secret transcript text");
+    });
+
+    it("clears the error code together with the error when a retry succeeds", async () => {
+      const { file } = await createSourceFile();
+      await createUser();
+      summaryClient.failure = new AiGatewayFailedError("http");
+      const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+      await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toBe(summaryClient.failure);
+      const transcript = await readTranscript(file.id);
+      const readCode = async () =>
+        (
+          await pool.query<{ error_code: string | null; error: string | null }>(
+            "SELECT error, error_code FROM item_automation WHERE item_id = $1",
+            [transcript.id],
+          )
+        ).rows[0];
+      expect((await readCode())?.error_code).toBe("providerFailed");
+
+      summaryClient.failure = null;
+      await task({ fileItemId: file.id }, { job: { attempts: 2, max_attempts: 3 } });
+
+      expect(await readCode()).toEqual({ error: null, error_code: null });
     });
 
     it("sends the permanent-failure automation_error notification to the user of the tenant it ran in, never the earlier-created account", async () => {
@@ -1650,6 +1807,106 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       expect(transcript.properties.status).toBe("processing");
       expect(await readAutomation(transcript.id)).toEqual({ status: "locked", error: null, attempts: 1 });
       expect(await readNotifications(transcript.id)).toEqual([]);
+    });
+
+    describe("deleted transcript or source file (issue #1582)", () => {
+      async function readStoppedState(transcriptId: string) {
+        const { rows } = await pool.query<{ status: string; error_code: string | null }>(
+          "SELECT status, error_code FROM item_automation WHERE item_id = $1",
+          [transcriptId],
+        );
+        return rows[0];
+      }
+
+      /** Soft-deletes `itemId` the moment the diarize call is made, like a user emptying it mid-run. */
+      class DeletingGateway extends FakeAudioGatewayClient {
+        constructor(public deleteWhere: (fileItemId: string) => string) {
+          super();
+        }
+
+        fileItemId = "";
+
+        override async diarize(request: DiarizeRequest): Promise<DiarizationTurn[]> {
+          await pool.query(this.deleteWhere(this.fileItemId));
+          return super.diarize(request);
+        }
+      }
+
+      const deleteTranscriptSql = (fileItemId: string) =>
+        `UPDATE items SET deleted_at = now() WHERE id = (SELECT (computed ->> 'create')::uuid FROM items WHERE id = '${fileItemId}')`;
+      const deleteSourceSql = (fileItemId: string) => `UPDATE items SET deleted_at = now() WHERE id = '${fileItemId}'`;
+
+      for (const [label, sql] of [
+        ["transcript", deleteTranscriptSql],
+        ["source file", deleteSourceSql],
+      ] as const) {
+        it(`stops without ASR or a notification and marks error/deleted when the ${label} is deleted during diarization`, async () => {
+          const { file } = await createSourceFile();
+          await createUser();
+          const gateway = new DeletingGateway(sql);
+          gateway.fileItemId = file.id;
+
+          await createTranscriptionTask(
+            pool,
+            blobStorage,
+            gateway,
+            summaryClient,
+          )({ fileItemId: file.id }, FINAL_ATTEMPT);
+
+          const transcript = await readTranscript(file.id);
+          expect(gateway.diarizeCalls).toHaveLength(1);
+          expect(gateway.transcribeCalls).toEqual([]);
+          expect(summaryClient.calls).toEqual([]);
+          expect(await readStoppedState(transcript.id)).toEqual({ status: "error", error_code: "deleted" });
+          expect(await readNotifications(transcript.id)).toEqual([]);
+        });
+      }
+
+      it("falls back to the deleted stop instead of rolling back when the last attempt fails on a trashed transcript", async () => {
+        const { file } = await createSourceFile();
+        await createUser();
+        const trashingSummary = new (class extends FakeSummaryClient {
+          override async complete(): Promise<AiGatewayCompletionResult> {
+            await pool.query(deleteTranscriptSql(file.id));
+            throw new Error("simulated summary outage");
+          }
+        })();
+
+        await createTranscriptionTask(
+          pool,
+          blobStorage,
+          gatewayClient,
+          trashingSummary,
+        )({ fileItemId: file.id }, FINAL_ATTEMPT);
+
+        const transcript = await readTranscript(file.id);
+        expect(await readStoppedState(transcript.id)).toEqual({ status: "error", error_code: "deleted" });
+        expect(await readNotifications(transcript.id)).toEqual([]);
+      });
+
+      it("runs again after the transcript is restored and the job is rerun", async () => {
+        const { file } = await createSourceFile();
+        const gateway = new DeletingGateway(deleteTranscriptSql);
+        gateway.fileItemId = file.id;
+        await createTranscriptionTask(
+          pool,
+          blobStorage,
+          gateway,
+          summaryClient,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT);
+        const transcript = await readTranscript(file.id);
+        await pool.query("UPDATE items SET deleted_at = NULL WHERE id = $1", [transcript.id]);
+        gateway.deleteWhere = () => "SELECT 1";
+
+        await createTranscriptionTask(
+          pool,
+          blobStorage,
+          gateway,
+          summaryClient,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+        expect(await readStoppedState(transcript.id)).toEqual({ status: "done", error_code: null });
+      });
     });
 
     it("retries through graphile-worker at most three times with growing backoff, then records the failure once", async () => {

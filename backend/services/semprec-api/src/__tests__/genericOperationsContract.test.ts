@@ -7,6 +7,7 @@ import { Pool } from "pg";
 import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
 import {
   createChokePoint,
+  createDocStore,
   createUser,
   createViewTypeRegistry,
   hashPassword,
@@ -93,7 +94,7 @@ async function buildFixtures(): Promise<Fixtures> {
 type ContractCase = (fx: Fixtures, headers: Record<string, string>, baseUrl: string) => Promise<void>;
 
 /**
- * One REST exercise per operation in the closed 29-operation catalog (issue #219's acceptance
+ * One REST exercise per operation in the closed 31-operation catalog (issue #219's acceptance
  * criterion: "a parameterized contract test covers all 28 operations over REST", extended to
  * `property.getByKey` by issue #432). Each case
  * issues the real HTTP request a REST caller would send and asserts only that it reaches
@@ -101,7 +102,7 @@ type ContractCase = (fx: Fixtures, headers: Record<string, string>, baseUrl: str
  * per-field/per-error-branch behavior for each route already lives in its own handler test file
  * (`itemsHandler.test.ts`, `databasesHandler.test.ts`, `propertiesHandler.test.ts`,
  * `viewsHandler.test.ts`). The `Object.keys(CASES)` assertion below is what keeps this list
- * honest as the catalog evolves: a 30th operation with no case here fails that assertion, not
+ * honest as the catalog evolves: a 31st operation with no case here fails that assertion, not
  * silently passes with 29 stale entries.
  */
 const CASES: Record<GenericOperationName, ContractCase> = {
@@ -340,6 +341,48 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     const body = (await res.json()) as { itemA: string; itemB: string };
     expect([body.itemA, body.itemB]).toContain(fx.itemA.id);
   },
+  "relation.list": async (fx, headers, baseUrl) => {
+    const res = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/relations`, { headers });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { relations: { targetItemId: string }[] };
+    expect(body.relations.map((relation) => relation.targetItemId)).toEqual([fx.targetItem.id]);
+  },
+  "page.restoreVersion": async (fx, headers, baseUrl) => {
+    // A page whose history opens an hour ago, restored to half an hour ago: the one block it had is still there.
+    await createDocStore(pool).putBlock(
+      fx.itemA.id,
+      { id: "b1", flavour: "paragraph", fields: { content: "first" } },
+      "user",
+    );
+    await pool.query(`UPDATE docs SET history_available_from = now() - interval '1 hour' WHERE item_id = $1`, [
+      fx.itemA.id,
+    ]);
+    await pool.query(
+      `UPDATE doc_snapshot_history SET represented_at = now() - interval '1 hour'
+       WHERE through_update_id = 0 AND doc_id = (SELECT id FROM docs WHERE item_id = $1)`,
+      [fx.itemA.id],
+    );
+    // The block's update is dated an hour back too, so the page at the instant already had it.
+    await pool.query(
+      `UPDATE doc_updates SET created_at = now() - interval '1 hour'
+       WHERE doc_id = (SELECT id FROM docs WHERE item_id = $1)`,
+      [fx.itemA.id],
+    );
+    await pool.query(
+      `UPDATE doc_history_updates SET created_at = now() - interval '1 hour'
+       WHERE doc_id = (SELECT id FROM docs WHERE item_id = $1)`,
+      [fx.itemA.id],
+    );
+    const res = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page/restore`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ at: new Date(Date.now() - 30 * 60 * 1000).toISOString() }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { itemId: string; blockIds: string[] };
+    expect(body.itemId).toBe(fx.itemA.id);
+    expect(body.blockIds).toEqual(["b1"]);
+  },
 };
 
 describe("generic operation REST contract (issue #219)", () => {
@@ -373,6 +416,49 @@ describe("generic operation REST contract (issue #219)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("returns the same expansion on item, database and view reads while retaining path and links", async () => {
+    const fx = await buildFixtures();
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const item = await fetch(`${baseUrl}/api/items/${fx.itemA.id}?include=path,links,relations&relations.assignedTo=`, {
+      headers,
+    });
+    expect(item.status).toBe(200);
+    const body: unknown = await item.json();
+    expect(body).toMatchObject({
+      links: {},
+      relations: { assignedTo: [{ id: fx.targetItem.id, icon: "database", color: "#FF9500" }] },
+      relationsTruncated: [],
+    });
+    expect(body).toHaveProperty("path");
+    for (const path of [`/api/databases/${fx.database.id}/query`, `/api/views/${fx.curatedView.id}/query`]) {
+      const response = await fetch(`${baseUrl}${path}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ include: { links: true, relations: { assignedTo: [] } } }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            id: fx.itemA.id,
+            links: {},
+            relations: { assignedTo: [expect.objectContaining({ id: fx.targetItem.id })] },
+          }),
+        ]),
+      });
+    }
+    for (const include of [[], ["links"], { links: true }]) {
+      const response = await fetch(`${baseUrl}/api/databases/${fx.database.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ include }),
+      });
+      expect(response.status).toBe(200);
+      const legacy: unknown = await response.json();
+      expect(JSON.stringify(legacy)).not.toContain('"relations"');
+    }
   });
 
   it("has exactly one contract case per operation in the closed catalog", () => {

@@ -1,4 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { moduleManifestSchema, type ModuleManifest } from "../manifest.js";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ModuleRegistry } from "../registry.js";
 import { loadModuleCatalogs } from "../catalog.js";
 
@@ -444,5 +449,196 @@ describe("ModuleRegistry.loadModule check ordering (issue #783)", () => {
       cs: { "database.fixtureCatalogGood.name": "Fixtura dobrého katalogu" },
       en: { "database.fixtureCatalogGood.name": "Fixture Catalog Good" },
     });
+  });
+});
+
+describe("ModuleRegistry editor schemas (issue #1417)", () => {
+  const editorSchema = {
+    groups: [
+      {
+        key: "server",
+        fields: [{ key: "name", control: "text", labelKey: "fixture.editor.name.label", required: true }],
+      },
+    ],
+  };
+
+  it("projects the editor schema of an active module", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-editor"]));
+    await registry.loadModule(fixturePath("editorSchemaModule.js"));
+
+    expect(await registry.getEditorSchemas()).toEqual([
+      { moduleId: "fixture-editor", baseKind: "mcp", schema: editorSchema },
+    ]);
+  });
+
+  it("omits the editor schema of an inactive module while the module stays loaded", async () => {
+    const registry = new ModuleRegistry(() => new Set());
+    await registry.loadModule(fixturePath("editorSchemaModule.js"));
+
+    expect(await registry.getEditorSchemas()).toEqual([]);
+    expect(registry.listModuleIds()).toEqual(["fixture-editor"]);
+  });
+
+  it("returns a copy, so changing a projected schema leaves the registry's schema unchanged", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-editor"]));
+    await registry.loadModule(fixturePath("editorSchemaModule.js"));
+
+    const [first] = await registry.getEditorSchemas();
+    const firstField = first?.schema.groups[0]?.fields[0];
+    if (firstField === undefined) throw new Error("expected the fixture's first field");
+    firstField.required = false;
+
+    expect(await registry.getEditorSchemas()).toEqual([
+      { moduleId: "fixture-editor", baseKind: "mcp", schema: editorSchema },
+    ]);
+  });
+
+  it("rejects a second module declaring the same base kind, naming both modules, and keeps the first module registered", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-editor", "fixture-editor-duplicate"]));
+    await registry.loadModule(fixturePath("editorSchemaModule.js"));
+
+    await expect(registry.loadModule(fixturePath("editorSchemaDuplicateModule.js"))).rejects.toThrow(
+      /Duplicate editor schema base kind "mcp" loading .*: module "fixture-editor-duplicate" and module "fixture-editor" both declare it/,
+    );
+    expect(registry.listModuleIds()).toEqual(["fixture-editor"]);
+    expect(await registry.getEditorSchemas()).toEqual([
+      { moduleId: "fixture-editor", baseKind: "mcp", schema: editorSchema },
+    ]);
+  });
+
+  it("rejects the duplicate base kind even while the first declaring module is inactive", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-editor-duplicate"]));
+    await registry.loadModule(fixturePath("editorSchemaModule.js"));
+
+    await expect(registry.loadModule(fixturePath("editorSchemaDuplicateModule.js"))).rejects.toThrow(
+      /Duplicate editor schema base kind "mcp"/,
+    );
+  });
+});
+
+describe("related collection order", () => {
+  const base = {
+    id: "related",
+    name: "Related",
+    version: "1.0.0",
+    removable: true,
+    systemProject: false,
+    databases: [],
+    capabilities: [],
+    agentTools: [],
+    viewTypes: [],
+    migrations: [],
+  } satisfies ModuleManifest;
+  const manifestWith = (relatedOrder: unknown) => ({
+    ...base,
+    databases: [{ key: "projects", name: "Projects", relatedOrder }],
+  });
+
+  it.each([{ order: [], omit: [] }, { order: ["tasks"] }, { order: ["tasks", "unknown"], omit: ["journal"] }])(
+    "accepts valid related order without requiring every key to be known: %s",
+    (relatedOrder) => {
+      expect(moduleManifestSchema.safeParse(manifestWith(relatedOrder)).success).toBe(true);
+    },
+  );
+  it.each([
+    { order: [""] },
+    { order: [], omit: [""] },
+    { order: ["tasks", "tasks"] },
+    { order: [], omit: ["tasks", "tasks"] },
+    { order: ["tasks"], omit: ["tasks"] },
+    { omit: ["tasks"] },
+  ])("rejects empty strings and duplicates within or across lists: %s", (relatedOrder) => {
+    expect(moduleManifestSchema.safeParse(manifestWith(relatedOrder)).success).toBe(false);
+  });
+
+  let directory: string;
+  let ordinal = 0;
+  beforeAll(async () => {
+    directory = await mkdtemp(join(tmpdir(), "semprec-related-order-"));
+  });
+  afterAll(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  async function load(registry: ModuleRegistry, manifest: ModuleManifest) {
+    const path = join(directory, `manifest-${ordinal++}.mjs`);
+    await writeFile(path, `export const manifest = ${JSON.stringify(manifest)};`);
+    await registry.loadModule(pathToFileURL(path).href);
+  }
+  async function createRegistry() {
+    const active = new Set(["related", "optional"]);
+    const registry = new ModuleRegistry(() => active);
+    await load(registry, {
+      ...base,
+      databases: [
+        {
+          key: "projects",
+          name: "Projects",
+          relatedOrder: {
+            order: ["people", "optionalItems", "unknown"],
+            omit: ["tasks", "optionalHidden", "missingOmit"],
+          },
+        },
+        { key: "people", name: "People", relatedOrder: { order: ["projects", "tasks"] } },
+        { key: "tasks", name: "Tasks" },
+        { key: "empty", name: "Empty", relatedOrder: { order: [] } },
+      ],
+    });
+    await load(registry, {
+      ...base,
+      id: "optional",
+      name: "Optional",
+      databases: [
+        { key: "optionalItems", name: "Optional items" },
+        { key: "optionalHidden", name: "Optional hidden" },
+      ],
+    });
+    return { registry, active };
+  }
+  it("projects a copy of the full declaration and leaves undeclared fields absent", async () => {
+    const { registry } = await createRegistry();
+    const databases = await registry.getDatabases();
+    const relatedOrder = databases.find((db) => db.key === "projects")?.relatedOrder;
+    expect(relatedOrder).toEqual({
+      order: ["people", "optionalItems", "unknown"],
+      omit: ["tasks", "optionalHidden", "missingOmit"],
+    });
+    expect(databases.find((db) => db.key === "tasks")).not.toHaveProperty("relatedOrder");
+    if (!relatedOrder?.omit) throw new Error("Expected the projected lists");
+    relatedOrder.order.push("mutated");
+    relatedOrder.omit.push("mutatedOmit");
+    expect((await registry.getDatabases()).find((db) => db.key === "projects")?.relatedOrder).toEqual({
+      order: ["people", "optionalItems", "unknown"],
+      omit: ["tasks", "optionalHidden", "missingOmit"],
+    });
+  });
+  it("filters unknown/inactive keys in both lists and rechecks activation on every call", async () => {
+    const { registry, active } = await createRegistry();
+    expect(await registry.getRelatedOrder("projects")).toEqual({
+      order: ["people", "optionalItems"],
+      omit: ["tasks", "optionalHidden"],
+    });
+    active.delete("optional");
+    expect(await registry.getRelatedOrder("projects")).toEqual({ order: ["people"], omit: ["tasks"] });
+    active.add("optional");
+    expect(await registry.getRelatedOrder("projects")).toEqual({
+      order: ["people", "optionalItems"],
+      omit: ["tasks", "optionalHidden"],
+    });
+  });
+  it("omits Tasks only for Projects and defaults an absent omit to an empty list", async () => {
+    const { registry } = await createRegistry();
+    expect((await registry.getRelatedOrder("projects"))?.order).not.toContain("tasks");
+    expect(await registry.getRelatedOrder("people")).toEqual({ order: ["projects", "tasks"], omit: [] });
+    const resolved = await registry.getRelatedOrder("people");
+    resolved?.order.push("mutated");
+    expect(await registry.getRelatedOrder("people")).toEqual({ order: ["projects", "tasks"], omit: [] });
+  });
+  it("returns undefined for undeclared, unknown or inactive source databases, preserving a declared empty list", async () => {
+    const { registry, active } = await createRegistry();
+    expect(await registry.getRelatedOrder("tasks")).toBeUndefined();
+    expect(await registry.getRelatedOrder("unknown")).toBeUndefined();
+    expect(await registry.getRelatedOrder("empty")).toEqual({ order: [], omit: [] });
+    active.delete("related");
+    expect(await registry.getRelatedOrder("projects")).toBeUndefined();
   });
 });

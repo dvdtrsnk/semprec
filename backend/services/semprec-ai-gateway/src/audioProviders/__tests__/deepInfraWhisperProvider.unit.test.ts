@@ -10,7 +10,7 @@ describe("createDeepInfraWhisperProvider", () => {
       .fn()
       .mockResolvedValue(
         new Response(
-          JSON.stringify({ text: "Hello", language: "en", segments: [{ start: 0, end: 1.2, text: "Hello" }] }),
+          JSON.stringify({ text: "Hello", language: "czech", segments: [{ start: 0, end: 1.2, text: "Hello" }] }),
         ),
       );
     vi.stubGlobal("fetch", fetchMock);
@@ -21,11 +21,24 @@ describe("createDeepInfraWhisperProvider", () => {
       mimeType: "audio/ogg",
     });
 
-    expect(result).toEqual({ text: "Hello", language: "en", segments: [{ start: 0, end: 1.2, text: "Hello" }] });
+    expect(result).toEqual({ text: "Hello", language: "cs", segments: [{ start: 0, end: 1.2, text: "Hello" }] });
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.deepinfra.com/v1/openai/audio/transcriptions",
       expect.objectContaining({ method: "POST", headers: { Authorization: "Bearer test-key" } }),
     );
+  });
+
+  it.each([null, undefined, "unknown"])("normalizes missing or unknown language %s to null", async (language) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ text: "", language, segments: [] }))),
+    );
+    const result = await createDeepInfraWhisperProvider("test-key").transcribe({
+      audio: new Uint8Array(),
+      filename: "chunk.opus",
+      mimeType: "audio/ogg",
+    });
+    expect(result.language).toBeNull();
   });
 
   it("does not expose a provider response body on failure", async () => {

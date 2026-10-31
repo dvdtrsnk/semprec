@@ -1,4 +1,5 @@
-import type { Pool } from "pg";
+import type { CollectionMetadataResolver } from "@semprec/data";
+import type { Pool, PoolClient } from "pg";
 import {
   ApprovalRequiredError,
   ChokePointError,
@@ -6,8 +7,11 @@ import {
   NotFoundError,
   ValidationError,
   computeDestructiveResourceProjection,
+  computePageRestoreProjection,
   createActionQueueAffinity,
   createPendingApprovalRequest,
+  approvalNotificationBody,
+  buildDestructiveApprovalDescription,
   databaseArchiveWithClient,
   deleteRelationWithClient,
   getAgentRun,
@@ -17,14 +21,18 @@ import {
   itemDeleteWithClient,
   markApprovalRequestExecutionSucceeded,
   propertyDeleteWithClient,
+  restorePageVersionWithClient,
   terminalizeApprovalRequestAsConflict,
   viewDeleteWithClient,
   withTransaction,
   writeNotification,
   type Actor,
+  type WriterIdentity,
   type ApprovalRequest,
   type DestructiveOperationCheck,
+  type DestructiveResourceProjection,
   type GenericOperationApprovalRequestPayload,
+  type PageRestoreCheck,
 } from "@semprec/data";
 import {
   GENERIC_OPERATION_BINDINGS,
@@ -41,9 +49,9 @@ import {
 } from "@semprec/shared";
 import { createGenericApplicationService, toActor } from "./genericApplicationService.js";
 
-/** The five destructive operations issue #89 covers — every other catalog entry never reaches this gate (`OPERATION_METADATA[...].requiresApproval` is `false`). */
+/** The six destructive operations: issue #89's five, plus `page.restoreVersion` (issue #1617). Every other catalog entry never reaches this gate (`OPERATION_METADATA[...].requiresApproval` is `false`). */
 type DestructiveOperationName =
-  "database.archive" | "property.delete" | "view.delete" | "item.delete" | "relation.delete";
+  "database.archive" | "property.delete" | "view.delete" | "item.delete" | "relation.delete" | "page.restoreVersion";
 
 function isDestructiveOperationName(operation: GenericOperationName): operation is DestructiveOperationName {
   return (
@@ -51,17 +59,26 @@ function isDestructiveOperationName(operation: GenericOperationName): operation 
     operation === "property.delete" ||
     operation === "view.delete" ||
     operation === "item.delete" ||
-    operation === "relation.delete"
+    operation === "relation.delete" ||
+    operation === "page.restoreVersion"
   );
 }
 
+/** A destructive check the choke point's own projection covers, or the page restore's, which the docs module projects (`chokePoint` may not import `docs`). */
+type GatewayCheck = DestructiveOperationCheck | PageRestoreCheck;
+
+/** The approval snapshot of one destructive check, computed by the module that owns the resource. */
+function projectCheck(client: PoolClient, check: GatewayCheck): Promise<DestructiveResourceProjection> {
+  return check.operation === "page.restoreVersion"
+    ? computePageRestoreProjection(client, check)
+    : computeDestructiveResourceProjection(client, check);
+}
+
 /** Maps one destructive operation's already-validated input (plus the data-layer `Actor` form of the caller, needed only by `view.delete`'s writability check) onto the shared projection/authorization check both request-time snapshotting and execution-time revalidation run. */
-function buildDestructiveCheck(
-  operation: DestructiveOperationName,
-  input: unknown,
-  actor: Actor,
-): DestructiveOperationCheck {
+function buildDestructiveCheck(operation: DestructiveOperationName, input: unknown, actor: Actor): GatewayCheck {
   switch (operation) {
+    case "page.restoreVersion":
+      return { operation, input: input as { itemId: string; at: string } };
     case "database.archive":
       return { operation, input: input as { databaseId: string } };
     case "property.delete":
@@ -80,14 +97,20 @@ function buildDestructiveCheck(
 
 /** Runs the actual destructive mutation on the caller's own transaction — the same `*WithClient` function the choke-point's public API delegates to, so approval-gated execution and a direct call share one implementation. */
 async function executeDestructiveWithClient(
-  client: Parameters<typeof databaseArchiveWithClient>[0],
+  client: PoolClient,
   operation: DestructiveOperationName,
   input: unknown,
   actor: Actor,
   actingUserId: string | undefined,
   currentResource: unknown,
+  writer: WriterIdentity,
 ): Promise<unknown> {
   switch (operation) {
+    case "page.restoreVersion": {
+      // Authored `user`: the approver's decision is the user's (issue #1617).
+      const { itemId, at } = input as { itemId: string; at: string };
+      return restorePageVersionWithClient(client, itemId, new Date(at));
+    }
     case "database.archive":
       return databaseArchiveWithClient(client, (input as { databaseId: string }).databaseId, actingUserId);
     case "property.delete":
@@ -99,12 +122,15 @@ async function executeDestructiveWithClient(
       return itemDeleteWithClient(client, databaseId, (input as { itemId: string }).itemId, {
         queueAffinity: createActionQueueAffinity(),
         actingUserId,
+        writer,
       });
     }
     case "relation.delete":
       return deleteRelationWithClient(
         client,
         input as { relationPropertyId: string; callerItemId: string; targetItemId: string },
+        undefined,
+        writer,
       );
   }
 }
@@ -201,6 +227,8 @@ async function preflightDestructiveApproval(
   operation: DestructiveOperationName,
   actor: AuthenticatedActor,
   input: unknown,
+  reason: string | null,
+  toolCallId: string | null,
 ): Promise<ApprovalRequest> {
   const metadata = OPERATION_METADATA[operation];
   return withTransaction(pool, async (client) => {
@@ -214,7 +242,7 @@ async function preflightDestructiveApproval(
     }
 
     const check = buildDestructiveCheck(operation, input, toActor(actor));
-    const { snapshot } = await computeDestructiveResourceProjection(client, check);
+    const { snapshot } = await projectCheck(client, check);
 
     const payload: GenericOperationApprovalRequestPayload = {
       operationName: operation,
@@ -222,12 +250,16 @@ async function preflightDestructiveApproval(
       actor: { runId: actor.runId!, agentProjectItemId: actor.agentProjectItemId, userId: actor.userId },
       resourceSnapshot: snapshot,
     };
+    const description = await buildDestructiveApprovalDescription(client, check);
     const created = await createPendingApprovalRequest(client, {
       agentRunId: actor.runId!,
       toolName: operation,
-      riskClass: metadata.riskClass!,
+      riskClass: metadata.riskClass,
       payload,
       resourceSnapshot: snapshot,
+      reason,
+      toolCallId,
+      description,
     });
 
     const userId = await getTenantUserId(client);
@@ -235,7 +267,7 @@ async function preflightDestructiveApproval(
       await writeNotification(client, {
         userId,
         kind: "approval_pending",
-        titleParams: { toolName: created.toolName },
+        ...approvalNotificationBody(created.description),
         linkHref: `?page=approvals&user=${userId}`,
         sourceTable: "approval_requests",
         sourceId: created.id,
@@ -263,6 +295,11 @@ export interface GenericOperationGateway {
     actor: AuthenticatedActor,
     grantedCapabilities: ReadonlySet<CapabilityId>,
     raw: unknown,
+    /**
+     * `reason`: the agent's reason for an approval-gated call, already stripped from `raw`; stored on the request only, never in the operation input.
+     * `toolCallId`: the model-runtime tool call, stored on a created approval request; REST and `/mcp` pass none.
+     */
+    options?: { reason?: string; toolCallId?: string },
   ): Promise<OutputByOperation[K]>;
 }
 
@@ -274,15 +311,18 @@ export interface GenericOperationGateway {
  * directly without this gate — a REST human actor never carries `agentProjectItemId`, the one
  * condition this gate's approval check keys on, so this gate would only ever be a no-op there.
  */
-export function createGenericOperationGateway(pool: Pool): GenericOperationGateway {
-  const service = createGenericApplicationService(pool);
+export function createGenericOperationGateway(
+  pool: Pool,
+  resolver: CollectionMetadataResolver,
+): GenericOperationGateway {
+  const service = createGenericApplicationService(pool, resolver);
 
   return {
     listOperations(grantedCapabilities) {
       return GENERIC_OPERATION_NAMES.filter((operation) => isGranted(operation, grantedCapabilities));
     },
 
-    async invoke(operation, actor, grantedCapabilities, raw) {
+    async invoke(operation, actor, grantedCapabilities, raw, options) {
       if (!isGranted(operation, grantedCapabilities)) {
         throw new NotFoundError(`Unknown operation '${operation}'`);
       }
@@ -294,10 +334,17 @@ export function createGenericOperationGateway(pool: Pool): GenericOperationGatew
       if (metadata.requiresApproval && actor.runId !== undefined && actor.agentProjectItemId !== undefined) {
         if (!isDestructiveOperationName(operation)) {
           throw new ValidationError(
-            `Operation '${operation}' is flagged as approval-requiring but is not one of the five destructive kinds`,
+            `Operation '${operation}' is flagged as approval-requiring but is not a destructive kind`,
           );
         }
-        const request = await preflightDestructiveApproval(pool, operation, actor, input);
+        const request = await preflightDestructiveApproval(
+          pool,
+          operation,
+          actor,
+          input,
+          options?.reason ?? null,
+          options?.toolCallId ?? null,
+        );
         throw new ApprovalRequiredError(`Operation '${operation}' requires human approval before it can run.`, {
           approvalRequestId: request.id,
           link: `?page=approvals&id=${request.id}`,
@@ -393,7 +440,7 @@ export async function replayApprovedGenericOperation(
 
       const dataActor = toActor({ userId: actor.userId, agentProjectItemId: actor.agentProjectItemId });
       const check = buildDestructiveCheck(operation, input, dataActor);
-      const { currentResource, snapshot } = await computeDestructiveResourceProjection(client, check);
+      const { currentResource, snapshot } = await projectCheck(client, check);
 
       if (
         snapshot.kind !== locked.resourceSnapshot.kind ||
@@ -410,6 +457,12 @@ export async function replayApprovedGenericOperation(
         dataActor,
         actor.userId,
         currentResource,
+        {
+          writerKind: "agent",
+          agentRunId: locked.agentRunId,
+          agentProjectItemId: actor.agentProjectItemId,
+          onBehalfOfUserId: actor.userId,
+        },
       );
       return await markApprovalRequestExecutionSucceeded(client, locked.id, result);
     } catch (err) {

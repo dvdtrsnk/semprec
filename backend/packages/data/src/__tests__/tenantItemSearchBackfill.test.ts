@@ -394,10 +394,8 @@ describe("item search create/update hooks", () => {
       await withTransaction(pool, async (client) => {
         await createInboxItemWithClient(client, {
           inboxDatabaseId,
-          journalDatabaseId: databaseId,
           date: "2026-10-27",
           time: "12:00",
-          timezone: "UTC",
           text: "Journal Inbox observation",
         });
       });
@@ -429,9 +427,16 @@ describe("item search create/update hooks", () => {
           "SELECT key FROM properties WHERE database_id = $1 AND type = ANY($2::text[])",
           [await db(descriptor.key), ["title", "text", "longText", "url", "select", "multi_select"]],
         );
-        for (const property of props.rows) expect(descriptor.searchFields).toContain(property.key);
+        for (const property of props.rows) {
+          // An event's place is an address or a call link; it is deliberately not searched (asserted below).
+          if (descriptor.key === "events" && property.key === "place") continue;
+          // An area's icon is a closed key validated by the area write hook, not searchable free text.
+          if (descriptor.key === "areas" && property.key === "icon") continue;
+          expect(descriptor.searchFields).toContain(property.key);
+        }
       }
       expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("place");
+      expect(manifest.databases.find((d) => d.key === "areas")?.searchFields).not.toContain("icon");
       expect(manifest.databases.find((d) => d.key === "people")?.searchFields).toContain("emails");
       expect(manifest.databases.find((d) => d.key === "people")?.searchFields).not.toContain("phones");
       for (const [key, fields] of Object.entries({

@@ -1,3 +1,4 @@
+import { createCollectionMetadataResolver } from "@semprec/data";
 import type { Pool } from "pg";
 import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
@@ -11,16 +12,27 @@ import {
 } from "@semprec/agent-runtime";
 import {
   createPoolClientTransactionRunner,
+  getTenantUserLocale,
+  APPROVAL_REQUEST_REASON_MAX_LENGTH,
   listMcpToolGrantsForProject,
   projectAgentGuidanceStore,
   withClient,
   type AgentRunRow,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
-import { operationInputJsonSchema } from "@semprec/shared";
+import { OPERATION_METADATA, operationInputJsonSchema, type GenericOperationName } from "@semprec/shared";
 import type { GatewayModel } from "./modelComposition.js";
 import { createPiAgentSessionFactory } from "./piAgentSession.js";
 import { logger } from "./logger.js";
+
+const LANGUAGE_INSTRUCTIONS: Readonly<Record<"cs" | "en", string>> = {
+  cs: "Answer and write all user-visible text in Czech.",
+  en: "Answer and write all user-visible text in English.",
+};
+
+function languageInstruction(locale: string | null): string | undefined {
+  return locale === "cs" || locale === "en" ? LANGUAGE_INSTRUCTIONS[locale] : undefined;
+}
 
 const AGENT_BASE_SYSTEM_PROMPT = [
   "You are an agent inside Semprec, a personal life-organization system.",
@@ -38,12 +50,70 @@ const AGENT_RUN_ID_HEADER = "x-semprec-agent-run-id";
  */
 const MCP_TOOL_PARAMETERS = Type.Object({}, { additionalProperties: true });
 
+/** Same, for an approval-gated MCP tool: the free-form arguments plus the reserved optional reason (issue #1420). */
+const APPROVAL_GATED_MCP_TOOL_PARAMETERS = Type.Object(
+  { semprecReason: Type.Optional(Type.String({ maxLength: APPROVAL_REQUEST_REASON_MAX_LENGTH })) },
+  { additionalProperties: true },
+);
+
+/** The optional argument an approval-gated generic operation's tool schema adds; it never reaches the operation input. */
+const GENERIC_OPERATION_REASON_KEY = "reason";
+
+/**
+ * The tool schema for one generic operation: the operation's own strict input schema, plus the
+ * optional agent-only `reason` when the operation is approval-gated (issue #1420).
+ */
+function genericOperationToolSchema(operation: GenericOperationName): Record<string, unknown> {
+  const schema = operationInputJsonSchema(operation);
+  if (!OPERATION_METADATA[operation].requiresApproval) return schema;
+  const properties = isArgumentsObject(schema.properties) ? schema.properties : {};
+  return {
+    ...schema,
+    properties: {
+      ...properties,
+      [GENERIC_OPERATION_REASON_KEY]: { type: "string", maxLength: APPROVAL_REQUEST_REASON_MAX_LENGTH },
+    },
+  };
+}
+
+type ReasonSplit = { ok: true; args: unknown; reason?: string } | { ok: false; error: string };
+
+/** Removes the agent-only `reason` from an approval-gated operation's arguments before the operation validates them. */
+function splitGenericOperationReason(operation: GenericOperationName, params: unknown): ReasonSplit {
+  if (!OPERATION_METADATA[operation].requiresApproval || !isArgumentsObject(params)) return { ok: true, args: params };
+  if (!(GENERIC_OPERATION_REASON_KEY in params)) return { ok: true, args: params };
+  const { [GENERIC_OPERATION_REASON_KEY]: raw, ...args } = params;
+  if (raw === undefined || raw === null) return { ok: true, args };
+  if (typeof raw !== "string" || raw.length > APPROVAL_REQUEST_REASON_MAX_LENGTH) {
+    return {
+      ok: false,
+      error: `Invalid argument 'reason': it must be a string of at most ${APPROVAL_REQUEST_REASON_MAX_LENGTH} characters.`,
+    };
+  }
+  return { ok: true, args, reason: raw };
+}
+
 /**
  * Model providers accept only `[A-Za-z0-9_-]{1,64}` as a tool name, so a generic operation's dotted
  * name (`item.create`) and an MCP server's free-form tool name are both mapped onto that alphabet.
  */
 function toModelToolName(name: string): string {
   return name.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
+}
+
+/**
+ * Model-facing name of an MCP tool: `mcp_<tool>_<first 8 hex of the server item id>`. The immutable
+ * server id (not its renameable name) keeps the name stable and separates servers that expose the
+ * same tool name; the tool part is sanitized and cut so the whole name stays within 64 characters.
+ */
+export function mcpModelToolName(toolName: string, mcpServerItemId: string): string {
+  const suffix = mcpServerItemId
+    .replace(/-/g, "")
+    .toLowerCase()
+    .slice(0, 8)
+    .replace(/[^a-z0-9_]/g, "_");
+  const tool = toolName.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64 - "mcp_".length - 1 - 8);
+  return `mcp_${tool}_${suffix}`;
 }
 
 function isArgumentsObject(value: unknown): value is Record<string, unknown> {
@@ -57,29 +127,46 @@ async function createGenericOperationTools(
   moduleRegistry: ModuleRegistry,
   runId: string,
 ): Promise<ComposedAgentTool[]> {
-  const operations = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, runId);
-  const implementations = createGenericOperationAgentTools(pool, moduleRegistry);
+  const resolver = await createCollectionMetadataResolver(moduleRegistry);
+  const operations = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, runId, resolver);
+  const implementations = createGenericOperationAgentTools(pool, moduleRegistry, resolver);
   return operations.map((operation) => ({
     name: toModelToolName(operation),
     label: operation,
     toolEventMetadata: { operation },
     description: `Semprec generic operation '${operation}'.`,
-    parameters: Type.Unsafe(operationInputJsonSchema(operation)),
-    async execute(_toolCallId, params) {
-      const result = await implementations[operation](runId, params);
-      return { content: [{ type: "text", text: result.result }], details: { error: result.error } };
+    parameters: Type.Unsafe(genericOperationToolSchema(operation)),
+    async execute(toolCallId, params) {
+      const split = splitGenericOperationReason(operation, params);
+      if (!split.ok) {
+        return { content: [{ type: "text", text: split.error }], details: { error: true } };
+      }
+      const result = await implementations[operation](runId, split.args, {
+        ...(split.reason === undefined ? {} : { reason: split.reason }),
+        toolCallId,
+      });
+      return {
+        content: [{ type: "text", text: result.result }],
+        details: {
+          error: result.error,
+          ...(result.approvalRequestId !== undefined ? { approvalRequestId: result.approvalRequestId } : {}),
+          ...(result.changes !== undefined ? { changes: result.changes } : {}),
+        },
+      };
     },
   }));
 }
 
 async function createMcpTools(pool: Pool, runId: string, projectItemId: string): Promise<ComposedAgentTool[]> {
-  const grants = await withClient(pool, (client) => listMcpToolGrantsForProject(client, projectItemId));
+  // The agent never shows `displayLabel` to a person, so the locale only picks the (unused) label fallback.
+  const grants = await withClient(pool, (client) => listMcpToolGrantsForProject(client, projectItemId, "en"));
+  // The listing keeps tools of switched-off servers for the settings screen; a run only offers tools that can run.
   return grants
-    .filter((grant) => grant.granted)
+    .filter((grant) => grant.granted && grant.mcpServerOnline)
     .map((grant) => {
       const invoke = createApprovalGatedMcpInvokeTool(pool, runId, projectItemId, grant.mcpToolRegistrationId);
       return {
-        name: toModelToolName(`mcp_${grant.toolName}`),
+        name: mcpModelToolName(grant.toolName, grant.mcpServerItemId),
         label: `${grant.mcpServerName}: ${grant.toolName}`,
         toolEventMetadata: {
           mcp: {
@@ -90,16 +177,32 @@ async function createMcpTools(pool: Pool, runId: string, projectItemId: string):
           },
         },
         description: grant.description ?? `MCP tool '${grant.toolName}' on '${grant.mcpServerName}'.`,
-        parameters: MCP_TOOL_PARAMETERS,
-        async execute(_toolCallId, params, signal) {
+        parameters: grant.requiresApproval ? APPROVAL_GATED_MCP_TOOL_PARAMETERS : MCP_TOOL_PARAMETERS,
+        async execute(toolCallId, params, signal) {
           if (!isArgumentsObject(params)) {
             return {
               content: [{ type: "text", text: "Tool arguments must be a JSON object." }],
               details: { error: true },
             };
           }
-          const result = await invoke(params, signal);
-          return { content: [{ type: "text", text: result.result }], details: { error: result.error } };
+          const result = await invoke(params, signal, { toolCallId });
+          return {
+            content: [{ type: "text", text: result.result }],
+            details: {
+              error: result.error,
+              ...(result.approvalRequestId !== undefined ? { approvalRequestId: result.approvalRequestId } : {}),
+              ...(result.failure
+                ? {
+                    failureKind: result.failure.failureKind,
+                    ...(result.failure.mcpServerItemId !== undefined
+                      ? { mcpServerItemId: result.failure.mcpServerItemId }
+                      : {}),
+                    connectorName: grant.mcpServerName,
+                    ...(result.failure.timeoutMs !== undefined ? { timeoutMs: result.failure.timeoutMs } : {}),
+                  }
+                : {}),
+            },
+          };
         },
       } satisfies ComposedAgentTool;
     });
@@ -134,7 +237,9 @@ export async function createAgentSessionFactoryForRun(
   run: AgentRunRow,
 ): Promise<CreateAgentSession> {
   const tools = await createGenericOperationTools(pool, moduleRegistry, run.id);
-  let systemPrompt = AGENT_BASE_SYSTEM_PROMPT;
+  // Read once per run: a locale change applies from the next run, a running one keeps its prompt.
+  const instruction = languageInstruction(await getTenantUserLocale(pool));
+  let systemPrompt = instruction ? `${AGENT_BASE_SYSTEM_PROMPT}\n${instruction}` : AGENT_BASE_SYSTEM_PROMPT;
 
   if (run.projectItemId) {
     tools.push(...(await createMcpTools(pool, run.id, run.projectItemId)));
@@ -160,5 +265,6 @@ export async function createAgentSessionFactoryForRun(
     tools: uniqueTools,
     toolEventMetadata,
     systemPrompt,
+    isBudgetRefusal: gateway.isBudgetRefusal,
   });
 }

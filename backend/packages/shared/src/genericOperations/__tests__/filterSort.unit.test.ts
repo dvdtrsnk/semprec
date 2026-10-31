@@ -59,3 +59,34 @@ describe("relation_path_contains schema", () => {
     ).toBe(false);
   });
 });
+
+describe("numeric comparison schema", () => {
+  it.each(["lt", "lte", "gt", "gte"] as const)("accepts %s with a finite number", (type) => {
+    expect(filterNodeSchema.safeParse({ type, property: "rating", value: 4 }).success).toBe(true);
+    expect(filterNodeSchema.safeParse({ type, property: "rating", value: -0.5 }).success).toBe(true);
+  });
+
+  it.each([["4"], [null], [Number.POSITIVE_INFINITY], [Number.NaN], [true]])("rejects value %j", (value) => {
+    expect(filterNodeSchema.safeParse({ type: "gte", property: "rating", value }).success).toBe(false);
+  });
+});
+
+describe("relation emptiness schema", () => {
+  it.each(["relation_is_empty", "relation_is_not_empty"])(
+    "accepts %s with a property only, also in a group",
+    (type) => {
+      const node = { type, property: "projects" };
+      expect(filterNodeSchema.parse(node)).toEqual(node);
+      expect(filterNodeSchema.safeParse({ type: "and", nodes: [node] }).success).toBe(true);
+    },
+  );
+
+  it.each([{ property: undefined }, { property: "" }, { property: 1 }, { value: "x" }, { path: ["a", "b"] }])(
+    "rejects malformed emptiness condition %j",
+    (override) => {
+      expect(filterNodeSchema.safeParse({ type: "relation_is_empty", property: "projects", ...override }).success).toBe(
+        false,
+      );
+    },
+  );
+});

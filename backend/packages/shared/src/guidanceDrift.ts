@@ -1,10 +1,32 @@
 import { createHash } from "node:crypto";
-import { canonicalizeJson, compareByCodePoint } from "./canonicalJson.js";
+import { canonicalizeJson } from "./canonicalJson.js";
 
 export type GuidanceDriftSeverity = "blocking" | "warning";
 
-/** One AI-gateway-reported contradiction between project guidance and the mechanically enforced permission manifest. */
+export type GuidanceDriftKind = "permission" | "behavior";
+
+/** What a permission-check contradiction is about: the manifest operation and, if specific, the database. */
+export interface GuidanceDriftPermissionSubject {
+  operation: string;
+  databaseId: string | null;
+}
+
+/** What a behavior-check contradiction is about: the MCP tool and, if specific, the database. */
+export interface GuidanceDriftBehaviorSubject {
+  mcpTool: string;
+  databaseId: string | null;
+}
+
+/** A finding's identity: the only input, besides the project and kind, of its fingerprint. */
+export type GuidanceDriftSubject = GuidanceDriftPermissionSubject | GuidanceDriftBehaviorSubject;
+
+/**
+ * One AI-gateway-reported contradiction between project guidance and the mechanically enforced permission manifest.
+ * `subject` is `null` only for a payload stored before subjects existed.
+ */
 export interface GuidanceDriftContradiction {
+  kind: "permission";
+  subject: GuidanceDriftPermissionSubject | null;
   claim: string;
   guidanceExcerpt: string;
   manifestFacts: string[];
@@ -85,29 +107,44 @@ export interface GuidanceNotificationWriter<Tx> {
   create(tx: Tx, input: CreateGuidanceNotificationInput): Promise<void>;
 }
 
+export interface RaiseGuidanceDriftProblemInput {
+  userId: string;
+  projectItemId: string;
+  fingerprint: string;
+  /** The `agent_guidance_drift_findings` row the problem points at. */
+  findingId: string;
+  /** Identifies this activation cycle, like the notification's `transitionInstance`. */
+  occurrenceKey: string;
+}
+
+/** Transaction-scoped adapter that raises the Semp status problem of a drift finding (issue #1465). */
+export interface GuidanceProblemWriter<Tx> {
+  raise(tx: Tx, input: RaiseGuidanceDriftProblemInput): Promise<void>;
+}
+
 /**
- * Fingerprints one contradiction (issue #85): `manifestFacts` sorted ascending by Unicode code
- * point, then `{ claim, guidanceExcerpt, manifestFacts, severity }` canonically serialized (sorted
- * object keys, no whitespace) and SHA-256 hashed. Deterministic under reordering of
- * `manifestFacts`, of the contradiction's own object keys (moot here since this function builds
- * the object itself), or of the list of contradictions the caller sorts by fingerprint before
- * writing — this is the "implement it once" self-contained algorithm the issue calls for, with no
- * external canonicalization spec or library involved.
+ * Fingerprints a finding by its subject only (SHA-256 hex of the canonical JSON of
+ * `{ projectItemId, kind, operation, mcpTool, databaseId }`). Nothing the AI words freely
+ * (claim, excerpt, facts) enters it, so a reworded report of the same problem keeps its identity.
  */
-export function fingerprintGuidanceDriftContradiction(contradiction: GuidanceDriftContradiction): string {
-  const normalized = {
-    claim: contradiction.claim,
-    guidanceExcerpt: contradiction.guidanceExcerpt,
-    manifestFacts: [...contradiction.manifestFacts].sort(compareByCodePoint),
-    severity: contradiction.severity,
-  };
-  const canonical = canonicalizeJson(normalized);
+export function fingerprintGuidanceDriftSubject(
+  projectItemId: string,
+  kind: GuidanceDriftKind,
+  subject: GuidanceDriftSubject,
+): string {
+  const canonical = canonicalizeJson({
+    projectItemId,
+    kind,
+    operation: "operation" in subject ? subject.operation : null,
+    mcpTool: "mcpTool" in subject ? subject.mcpTool : null,
+    databaseId: subject.databaseId,
+  });
   return createHash("sha256").update(canonical, "utf8").digest("hex");
 }
 
 /**
  * Narrows an `unknown` value to a `GuidanceDriftContradiction`, throwing if any field is missing,
- * the wrong type, or empty. Shared by both the AI-gateway response boundary
+ * the wrong type, or empty (`kind` and `subject` may be absent: legacy payload, see the type). Shared by both the AI-gateway response boundary
  * (`driftAction.ts`, which validates defensively even though the gateway already enforces this
  * schema server-side) and the `agent_guidance_drift_findings.payload` JSONB boundary
  * (`agentGuidanceDriftFindingsStore.ts`'s `mapRow`), so a malformed row from a direct DB patch or
@@ -117,7 +154,13 @@ export function validateGuidanceDriftContradiction(entry: unknown, context: stri
   if (typeof entry !== "object" || entry === null) {
     throw new Error(`${context}: contradiction is not an object`);
   }
-  const { claim, guidanceExcerpt, manifestFacts, severity } = entry as Record<string, unknown>;
+  const { claim, guidanceExcerpt, manifestFacts, severity, kind, subject } = entry as Record<string, unknown>;
+
+  // A payload stored before `kind`/`subject` existed has neither: it reads as a permission finding
+  // without a subject.
+  if (kind !== undefined && kind !== "permission") {
+    throw new Error(`${context}: contradiction has an invalid kind`);
+  }
 
   if (typeof claim !== "string" || claim.length === 0) {
     throw new Error(`${context}: contradiction has an invalid claim`);
@@ -136,7 +179,28 @@ export function validateGuidanceDriftContradiction(entry: unknown, context: stri
     throw new Error(`${context}: contradiction has an invalid severity`);
   }
 
-  return { claim, guidanceExcerpt, manifestFacts: facts, severity };
+  return {
+    kind: "permission",
+    subject: subject === undefined || subject === null ? null : validatePermissionSubject(subject, context),
+    claim,
+    guidanceExcerpt,
+    manifestFacts: facts,
+    severity,
+  };
+}
+
+function validatePermissionSubject(subject: unknown, context: string): GuidanceDriftPermissionSubject {
+  if (typeof subject !== "object" || subject === null) {
+    throw new Error(`${context}: contradiction has an invalid subject`);
+  }
+  const { operation, databaseId } = subject as Record<string, unknown>;
+  if (!isNonEmptyString(operation)) {
+    throw new Error(`${context}: contradiction subject has an invalid operation`);
+  }
+  if (databaseId !== null && !isNonEmptyString(databaseId)) {
+    throw new Error(`${context}: contradiction subject has an invalid databaseId`);
+  }
+  return { operation, databaseId };
 }
 
 function isNonEmptyString(value: unknown): value is string {

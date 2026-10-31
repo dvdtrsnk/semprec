@@ -19,6 +19,7 @@ import {
 } from "../mail/personLinkingActions.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID } from "./emailModuleKeys.js";
+import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
 
 // Issue #145: every shipped catalog option `s` becomes `{ key: s }` — see seedTenDatabases.ts's
 // copy of this helper for the full rationale.
@@ -105,11 +106,7 @@ export async function seedEmailModuleInTransaction(
     properties: {
       name: "Email",
       systemActive: true,
-      agents:
-        "Purpose: keep synced mailboxes/folders/messages consistent and link messages to People deterministically.\n" +
-        "Allowed: read Mailboxes/Folders/Emails via the generic list/get endpoints; call email.draft.create freely — drafting never requires confirmation.\n" +
-        "Not allowed: write any Mailboxes/Folders/Emails property directly outside email.draft.create — every field except the user-owned Emails.read/Emails.flagged triage flags is owner: 'system', written only by the sync worker or the draft/send path (mail/ingest.ts, mail/draft.ts, mail/send.ts). Calling email.send without this project's capabilities.email.send.autonomous grant ends in a 403; the draft is left unchanged, not queued for approval.\n" +
-        "General instructions: this project's only agent-facing write surface is drafting and (when explicitly granted) sending mail; it otherwise exists to host the sync worker's heartbeats.",
+      agents: SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS[MAILBOXES_MODULE_ID],
     },
   });
 
@@ -123,7 +120,10 @@ export async function seedEmailModuleInTransaction(
       owner: "user",
       config: selectConfig(["gmail", "outlook", "icloud", "generic"]),
     },
-    { key: "addresses", name: "Addresses", type: "longText", owner: "user" },
+    // Owned by the system since issue #1454: the connect and reauthorization flows (#1686, #1736)
+    // will record the provider-verified address through mail/mailboxAddresses.ts, and a generic
+    // item write (REST or agent) is refused with owner_violation.
+    { key: "addresses", name: "Addresses", type: "longText", owner: "system" },
     // Overrides the sync worker's provider-derived default IMAP simultaneous-connection cap
     // (imapConnectionLimiter.ts) — unset by default, since most accounts should just take the
     // conservative per-provider default.
@@ -236,13 +236,16 @@ export async function seedEmailModuleInTransaction(
   );
   // People's schema is likewise already locked — both People-facing relations below are
   // one-directional for the same reason.
+  // A person may send many emails (issue #1457), so this is many_to_many. Cardinality does not
+  // keep "one message, one sender"; today mail/personLinkingActions.ts is the only writer of this
+  // edge. Populated installs are switched by mail/emailsSenderPeopleCardinalityCutoverMigration.ts.
   await relate(
     {
       sourceDatabaseId: emails.id,
       key: "senderPeople",
       name: "Sender",
       targetDatabaseId: peopleDatabaseId,
-      cardinality: "one_to_many",
+      cardinality: "many_to_many",
       owner: "system",
       ownerProcess: EMAILS_MODULE_ID,
     },

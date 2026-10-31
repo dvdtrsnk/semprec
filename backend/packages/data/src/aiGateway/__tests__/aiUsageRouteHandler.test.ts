@@ -14,7 +14,13 @@ import { createProperty } from "../../chokePoint/propertiesStore.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createTenantZeroUser, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
-import { recordTokenGatewayCall } from "../aiGatewayCallsStore.js";
+import {
+  failGatewayCall,
+  recordTokenGatewayCall,
+  reserveGatewayCall,
+  settleAudioGatewayCall,
+} from "../aiGatewayCallsStore.js";
+import { getAiUsageReport } from "../aiUsageReport.js";
 import { createAiUsageRouteHandler } from "../aiUsageRouteHandler.js";
 import { ValidationError } from "../../errors.js";
 
@@ -53,7 +59,10 @@ describe("ai usage custom route handler (issue #239)", () => {
     const from = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const to = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     const handler = createAiUsageRouteHandler(pool);
-    const result = await handler({ req: { url: `/api/ai-usage?from=${from}&to=${to}` } });
+    const result = await handler({
+      req: { url: `/api/ai-usage?from=${from}&to=${to}` },
+      identity: { user: { locale: "en" } },
+    });
 
     expect(result.status).toBe(200);
     const body = result.body as { totalCostUsd: number };
@@ -62,7 +71,9 @@ describe("ai usage custom route handler (issue #239)", () => {
 
   it("rejects a request missing the `from`/`to` query parameters", async () => {
     const handler = createAiUsageRouteHandler(pool);
-    await expect(handler({ req: { url: "/api/ai-usage" } })).rejects.toThrow(ValidationError);
+    await expect(handler({ req: { url: "/api/ai-usage" }, identity: { user: { locale: "en" } } })).rejects.toThrow(
+      ValidationError,
+    );
   });
 });
 
@@ -127,7 +138,10 @@ describe("monthly AI usage (gh-1462)", () => {
     const params = new URLSearchParams({ from, to });
     if (granularity !== undefined) params.set("granularity", granularity);
     return runInTenant(tenantId, () =>
-      createAiUsageRouteHandler(runtime)({ req: { url: `/api/ai-usage?${params.toString()}` } }),
+      createAiUsageRouteHandler(runtime)({
+        req: { url: `/api/ai-usage?${params.toString()}` },
+        identity: { user: { locale: "en" } },
+      }),
     );
   }
 
@@ -174,6 +188,21 @@ describe("monthly AI usage (gh-1462)", () => {
             audioSeconds: null,
           },
         ],
+        byOperation: expect.any(Array),
+        byModel: [
+          {
+            provider: "anthropic",
+            model: "monthly-test",
+            displayName: "monthly-test",
+            callCount: 2,
+            costUsd: 5,
+            inputTokens: 20,
+            outputTokens: 10,
+            audioSeconds: null,
+            operations: ["other"],
+          },
+        ],
+        estimated: false,
         totalCostUsd: 5,
         dailyCostUsd: [],
         dailyTokenUsage: [],
@@ -260,7 +289,10 @@ describe("monthly AI usage (gh-1462)", () => {
     if (granularity !== undefined) params.set("granularity", granularity);
     expect(
       await runInTenant(tenant, () =>
-        createAiUsageRouteHandler(runtime)({ req: { url: `/api/ai-usage?${params.toString()}` } }),
+        createAiUsageRouteHandler(runtime)({
+          req: { url: `/api/ai-usage?${params.toString()}` },
+          identity: { user: { locale: "en" } },
+        }),
       ),
     ).toEqual({
       status: 200,
@@ -282,6 +314,21 @@ describe("monthly AI usage (gh-1462)", () => {
             audioSeconds: null,
           },
         ],
+        byOperation: expect.any(Array),
+        byModel: [
+          {
+            provider: "anthropic",
+            model: expect.any(String),
+            displayName: expect.any(String),
+            callCount: 1,
+            costUsd: 1,
+            inputTokens: 10,
+            outputTokens: 5,
+            audioSeconds: null,
+            operations: ["other"],
+          },
+        ],
+        estimated: false,
         totalCostUsd: 1,
         dailyCostUsd: [{ day: "2024-02-01", costUsd: 1 }],
         dailyTokenUsage: [{ day: "2024-02-01", inputTokens: 10, outputTokens: 5 }],
@@ -306,7 +353,10 @@ describe("monthly AI usage (gh-1462)", () => {
     if (granularity === "day") params.set("granularity", granularity);
     await expect(
       runInTenant(tenant, () =>
-        createAiUsageRouteHandler(runtime)({ req: { url: `/api/ai-usage?${params.toString()}` } }),
+        createAiUsageRouteHandler(runtime)({
+          req: { url: `/api/ai-usage?${params.toString()}` },
+          identity: { user: { locale: "en" } },
+        }),
       ),
     ).rejects.toMatchObject({ status: 400, details: { field: "to" } });
     expect(await report("2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z", "day")).toMatchObject({ status: 200 });
@@ -319,5 +369,315 @@ describe("monthly AI usage (gh-1462)", () => {
     ["2024-01-01", "2024-01-01", "to"],
   ])("retains monthly range validation for %s to %s", async (from, to, field) => {
     await expect(report(from, to)).rejects.toMatchObject({ status: 400, details: { field } });
+  });
+});
+
+describe("usage units and call status (gh-1467)", () => {
+  const range = {
+    from: new Date(Date.now() - 86_400_000).toISOString(),
+    to: new Date(Date.now() + 86_400_000).toISOString(),
+  };
+
+  let db: Pool;
+
+  beforeAll(() => {
+    db = getTestPool();
+  });
+  beforeEach(async () => {
+    await resetDatabase(db);
+    await createTenantZeroUser(db);
+  });
+  afterAll(async () => {
+    await db?.end();
+  });
+
+  it("does not count a failed call and leaves the total cost unchanged", async () => {
+    await recordTokenGatewayCall(db, {
+      provider: "anthropic",
+      model: "m",
+      inputTokens: 10,
+      outputTokens: 5,
+      costUsd: 2,
+      operation: "agent_turn",
+    });
+    const before = await getAiUsageReport(db, range);
+    const failed = await reserveGatewayCall(db, {
+      provider: "anthropic",
+      model: "m",
+      estimatedCostUsd: 1,
+      operation: "agent_turn",
+    });
+    await failGatewayCall(db, failed.id);
+
+    const after = await getAiUsageReport(db, range);
+
+    expect(before.rows[0]).toMatchObject({ callCount: 1 });
+    expect(after.rows).toEqual(before.rows);
+    expect(after.totalCostUsd).toBe(before.totalCostUsd);
+    expect(after.estimated).toBe(false);
+  });
+
+  it("reports a reserved transcription call in an audio row and never in a token row", async () => {
+    await reserveGatewayCall(db, {
+      provider: "deepinfra",
+      model: "whisper",
+      estimatedCostUsd: 0.5,
+      operation: "transcription_transcribe",
+    });
+    await reserveGatewayCall(db, {
+      provider: "pyannote",
+      model: "diarize",
+      estimatedCostUsd: 0.25,
+      operation: "transcription_diarize",
+    });
+
+    const report = await getAiUsageReport(db, range);
+
+    expect(report.rows).toHaveLength(2);
+    expect(report.rows.every((row) => row.nativeUnit === "audio_seconds")).toBe(true);
+    expect(report.rows[0]).toMatchObject({
+      model: "whisper",
+      callCount: 1,
+      costUsd: 0.5,
+      audioSeconds: 0,
+      inputTokens: null,
+      outputTokens: null,
+    });
+  });
+
+  it("reports a reserved token call with zero tokens and null audio seconds", async () => {
+    await reserveGatewayCall(db, { provider: "anthropic", model: "m", estimatedCostUsd: 1 });
+
+    const report = await getAiUsageReport(db, range);
+
+    expect(report.rows).toHaveLength(1);
+    expect(report.rows[0]).toMatchObject({
+      nativeUnit: "tokens",
+      inputTokens: 0,
+      outputTokens: 0,
+      audioSeconds: null,
+    });
+  });
+
+  it("sets estimated while a call is reserved and clears it once the call is settled", async () => {
+    const reserved = await reserveGatewayCall(db, {
+      provider: "deepinfra",
+      model: "whisper",
+      estimatedCostUsd: 0.5,
+      operation: "transcription_transcribe",
+    });
+    expect((await getAiUsageReport(db, range)).estimated).toBe(true);
+
+    await settleAudioGatewayCall(db, reserved.id, { audioSeconds: 30, costUsd: 0.1 });
+
+    const settled = await getAiUsageReport(db, range);
+    expect(settled.estimated).toBe(false);
+    expect(settled.rows[0]).toMatchObject({ nativeUnit: "audio_seconds", audioSeconds: 30 });
+  });
+
+  it("is not estimated when the range holds no calls", async () => {
+    expect((await getAiUsageReport(db, range)).estimated).toBe(false);
+  });
+});
+
+describe("usage by model (gh-1472)", () => {
+  const range = {
+    from: new Date(Date.now() - 86_400_000).toISOString(),
+    to: new Date(Date.now() + 86_400_000).toISOString(),
+  };
+
+  let db: Pool;
+
+  beforeAll(() => {
+    db = getTestPool();
+  });
+  beforeEach(async () => {
+    await resetDatabase(db);
+    await createTenantZeroUser(db);
+  });
+  afterAll(async () => {
+    await db?.end();
+  });
+
+  it("merges invocation and session runs into one entry with each operation once", async () => {
+    const invocation = await createAgentRun(db, { triggeredBy: "user", task: "a", unit: "invocation" });
+    const session = await createAgentRun(db, { triggeredBy: "user", task: "b", unit: "session" });
+    for (const [run, operation] of [
+      [invocation, "agent_turn"],
+      [session, "agent_turn"],
+      [session, "heartbeat"],
+    ] as const) {
+      await recordTokenGatewayCall(db, {
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        inputTokens: 10,
+        outputTokens: 5,
+        costUsd: 1,
+        agentRunId: run.id,
+        operation,
+      });
+    }
+    await recordTokenGatewayCall(db, {
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      inputTokens: 1,
+      outputTokens: 1,
+      costUsd: 0.5,
+    });
+    const failed = await reserveGatewayCall(db, {
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      estimatedCostUsd: 1,
+      operation: "failed_only",
+    });
+    await failGatewayCall(db, failed.id);
+
+    const report = await getAiUsageReport(db, range);
+
+    expect(report.byModel).toEqual([
+      {
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        displayName: "Claude Sonnet",
+        callCount: 4,
+        costUsd: 3.5,
+        inputTokens: 31,
+        outputTokens: 16,
+        audioSeconds: null,
+        operations: ["agent_turn", "heartbeat", "other"],
+      },
+    ]);
+    expect(report.byModel.reduce((sum, entry) => sum + entry.costUsd, 0)).toBe(report.totalCostUsd);
+    expect(report.rows.length).toBeGreaterThan(1);
+  });
+
+  it("localizes the display name by locale and keeps an unknown id raw", async () => {
+    await recordTokenGatewayCall(db, {
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      inputTokens: 1,
+      outputTokens: 1,
+      costUsd: 2,
+      operation: "agent_turn",
+    });
+    await recordTokenGatewayCall(db, {
+      provider: "acme",
+      model: "mystery-1",
+      inputTokens: 1,
+      outputTokens: 1,
+      costUsd: 1,
+      operation: "agent_turn",
+    });
+
+    const cs = await getAiUsageReport(db, { ...range, locale: "cs" });
+    const en = await getAiUsageReport(db, { ...range, locale: "en" });
+
+    expect(cs.byModel.map((entry) => entry.displayName)).toEqual(["Claude Sonnet", "mystery-1"]);
+    expect(en.byModel.map((entry) => entry.displayName)).toEqual(["Claude Sonnet", "mystery-1"]);
+  });
+
+  it("reports an audio model with audio seconds and null token fields", async () => {
+    const reserved = await reserveGatewayCall(db, {
+      provider: "deepinfra",
+      model: "openai/whisper-large-v3",
+      estimatedCostUsd: 0.5,
+      operation: "transcription_transcribe",
+    });
+    await settleAudioGatewayCall(db, reserved.id, { audioSeconds: 30, costUsd: 0.5 });
+
+    const report = await getAiUsageReport(db, range);
+
+    expect(report.byModel).toEqual([
+      expect.objectContaining({
+        model: "openai/whisper-large-v3",
+        displayName: "Whisper",
+        inputTokens: null,
+        outputTokens: null,
+        audioSeconds: 30,
+        operations: ["transcription_transcribe"],
+      }),
+    ]);
+  });
+});
+
+describe("usage by operation (gh-1477)", () => {
+  const range = {
+    from: new Date(Date.now() - 86_400_000).toISOString(),
+    to: new Date(Date.now() + 86_400_000).toISOString(),
+  };
+
+  let db: Pool;
+
+  beforeAll(() => {
+    db = getTestPool();
+  });
+  beforeEach(async () => {
+    await resetDatabase(db);
+    await createTenantZeroUser(db);
+  });
+  afterAll(async () => {
+    await db?.end();
+  });
+
+  async function record(operation: string | undefined, costUsd: number): Promise<void> {
+    await recordTokenGatewayCall(db, {
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      inputTokens: 1,
+      outputTokens: 1,
+      costUsd,
+      ...(operation === undefined ? {} : { operation }),
+    });
+  }
+
+  it("groups, merges aliases, maps NULL to other, keeps unknown keys and sums to the total", async () => {
+    await record("agent_turn", 4);
+    await record("agent_guidance_drift", 1);
+    await record("agent_behavior_drift", 1);
+    await record("voice_transcribe_stream", 1);
+    await record("voice_synthesize", 1);
+    await record(undefined, 0.5);
+    await record("mystery_op", 0.5);
+    const failed = await reserveGatewayCall(db, {
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      estimatedCostUsd: 9,
+      operation: "agent_turn",
+    });
+    await failGatewayCall(db, failed.id);
+
+    const cs = await getAiUsageReport(db, { ...range, locale: "cs" });
+    const en = await getAiUsageReport(db, { ...range, locale: "en" });
+
+    expect(cs.byOperation.map((entry) => [entry.operation, entry.label, entry.costUsd, entry.callCount])).toEqual([
+      ["agent_turn", "Semp – chat a automatické úlohy", 4, 1],
+      ["agent_guidance_drift", "Kontrola instrukcí AGENT.md", 2, 2],
+      ["voice", "Hlas", 2, 2],
+      ["mystery_op", "mystery_op", 0.5, 1],
+      ["other", "Ostatní", 0.5, 1],
+    ]);
+    expect(en.byOperation.map((entry) => entry.label)).toEqual([
+      "Semp - chat and automatic tasks",
+      "AGENT.md instruction check",
+      "Voice",
+      "mystery_op",
+      "Other",
+    ]);
+    expect(cs.byOperation.reduce((sum, entry) => sum + entry.costUsd, 0)).toBeCloseTo(cs.totalCostUsd, 9);
+    expect(cs.byOperation.reduce((sum, entry) => sum + entry.share, 0)).toBeCloseTo(1, 9);
+    expect(cs.byOperation[0]?.share).toBeCloseTo(4 / 9, 9);
+  });
+
+  it("reports share 0 for every entry when the total is 0", async () => {
+    await record("agent_turn", 0);
+    await record("transcript_summary", 0);
+
+    const report = await getAiUsageReport(db, range);
+
+    expect(report.totalCostUsd).toBe(0);
+    expect(report.byOperation.map((entry) => [entry.operation, entry.share])).toEqual([
+      ["agent_turn", 0],
+      ["transcript_summary", 0],
+    ]);
   });
 });

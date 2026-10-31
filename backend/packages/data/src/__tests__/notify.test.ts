@@ -79,6 +79,59 @@ describe("writeNotification", () => {
     expect(rows[0].title).toBe(`Heartbeat „Daily digest“ selhal`);
   });
 
+  it("stores a NULL body for a notification written without a body key (issue #1773)", async () => {
+    const userId = await createTestUser("en");
+    await withTransaction(pool, (client) =>
+      writeNotification(client, {
+        userId,
+        kind: "heartbeat_error",
+        titleParams: { name: "Daily digest" },
+        linkHref: null,
+        sourceTable: "project_heartbeats",
+        sourceId: "hb-no-body",
+        transitionInstance: "job-1",
+      }),
+    );
+
+    const { rows } = await pool.query(`SELECT body FROM notifications WHERE source_id = $1`, ["hb-no-body"]);
+    expect(rows[0].body).toBeNull();
+  });
+
+  /** Writes an approval body for one user and returns the stored body; `null` params exercise the unnamed label. */
+  async function writeApprovalBody(userId: string, sourceId: string): Promise<string | null> {
+    await withTransaction(pool, (client) =>
+      writeNotification(client, {
+        userId,
+        kind: "approval_pending",
+        linkHref: null,
+        sourceTable: "approval_requests",
+        sourceId,
+        transitionInstance: sourceId,
+        bodyKey: "notification.approval_pending.body.itemDelete",
+        // `linkedCount` is in the description but not in this body entry; an unused param is ignored.
+        bodyParams: { itemName: null, databaseName: "Tasks", linkedCount: 2 },
+      }),
+    );
+    const { rows } = await pool.query(`SELECT body FROM notifications WHERE source_id = $1`, [sourceId]);
+    return rows[0].body;
+  }
+
+  it("renders the body in English for an English recipient, with null as the unnamed label (issue #1773)", async () => {
+    const userId = await createTestUser("en");
+
+    expect(await writeApprovalBody(userId, "body-en")).toBe(
+      'Delete the item "unnamed" in the database "Tasks". This can be undone later.',
+    );
+  });
+
+  it("renders the same body in Czech for a Czech recipient (issue #1773)", async () => {
+    const userId = await createTestUser("cs");
+
+    expect(await writeApprovalBody(userId, "body-cs")).toBe(
+      "Smazat položku „bez názvu“ v databázi „Tasks“. Lze ji později vzít zpět.",
+    );
+  });
+
   it("rolls back the notification when the caller's transaction rolls back", async () => {
     const userId = await createTestUser();
     await expect(

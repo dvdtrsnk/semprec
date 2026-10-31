@@ -6,7 +6,12 @@ import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
-import { appendHistoryEntry, assertValidProposalEnvelope, type ProposalEnvelope } from "../inbox/inboxTickAction.js";
+import {
+  aiProposalPatch,
+  appendHistoryEntry,
+  assertValidProposalEnvelope,
+  type ProposalEnvelope,
+} from "../inbox/inboxTickAction.js";
 import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { NotFoundError } from "../errors.js";
@@ -32,9 +37,10 @@ export interface MatchTranscriptToEventInput {
 }
 
 /**
- * - `linked`: exactly one candidate, now linked through the Transcripts <-> Events 1:1 relation.
- * - `suggested`: zero or several candidates (or a single one already linked to another
- *   transcript), so a `kind = 'transcript'` Processing proposal card was created instead.
+ * - `linked`: exactly one candidate, now linked through the Transcripts <-> Events relation. The
+ *   Event may already hold other transcripts: the parts of one meeting (issue #1464).
+ * - `suggested`: zero or several candidates, so a `kind = 'transcript'` Processing proposal card
+ *   was created instead.
  * - `alreadyLinked` / `alreadySuggested`: an earlier run already reached one of the above;
  *   nothing was written.
  */
@@ -96,10 +102,10 @@ async function listCandidateEventIds(
  * A transcript that already has an Event edge, or already has its suggestion card (found by
  * `transcriptSuggestionIdempotencyKey`, whatever that card's status or deletion), is left as it
  * is — a re-run never writes a second edge or a second card. Otherwise exactly one candidate is
- * linked directly; anything else creates one `proposed` card with `sourceTranscript` pointing at
- * the transcript and a create-Event proposal whose `name`/`date` come from the transcript. A
- * single candidate already linked to another transcript cannot take a second edge under the 1:1
- * relation, so it gets the card too rather than a guess.
+ * linked directly, even when that Event already holds other transcripts: an Event has many
+ * transcripts, and the database still allows a transcript only one Event. Anything else creates one
+ * `proposed` card with `sourceTranscript` pointing at the transcript and a create-Event proposal
+ * whose `name`/`date` come from the transcript.
  */
 export async function matchTranscriptToEvent(
   client: PoolClient,
@@ -140,15 +146,12 @@ export async function matchTranscriptToEvent(
 
   const [onlyCandidate] = candidates;
   if (candidates.length === 1 && onlyCandidate) {
-    const eventEdges = await relationsStore.listRelationsForItem(client, eventRelation.id, onlyCandidate);
-    if (eventEdges.length === 0) {
-      await createRelationWithClient(client, {
-        relationPropertyId: eventPropertyId,
-        callerItemId: transcript.id,
-        targetItemId: onlyCandidate,
-      });
-      return "linked";
-    }
+    await createRelationWithClient(client, {
+      relationPropertyId: eventPropertyId,
+      callerItemId: transcript.id,
+      targetItemId: onlyCandidate,
+    });
+    return "linked";
   }
 
   const envelope: ProposalEnvelope = {
@@ -165,6 +168,7 @@ export async function matchTranscriptToEvent(
       properties: {
         kind: "transcript",
         proposal: envelope,
+        ...aiProposalPatch({}, envelope),
         history: appendHistoryEntry(
           [],
           `${candidates.length === 1 ? "1 Event" : `${candidates.length} Events`} matched the recording's time window, so none was linked; proposed a new Event.`,
@@ -172,7 +176,7 @@ export async function matchTranscriptToEvent(
         status: "proposed",
       },
     },
-    { allowedSystemKeys: ["kind", "proposal", "history", "status"] },
+    { allowedSystemKeys: ["kind", "proposal", "aiProposal", "aiVersion", "history", "status"] },
   );
   const sourceTranscriptPropertyId = await requirePropertyId(client, processingProposalsDatabaseId, "sourceTranscript");
   await createRelationWithClient(

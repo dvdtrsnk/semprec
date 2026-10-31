@@ -58,6 +58,7 @@ import { reconcileGraphAccount, type GraphMailClient } from "../mail/graphReconc
 import {
   handleMailSearchReindexSweepTask,
   handleSyncMailAccountTask,
+  type MailModuleIds,
   type MailSyncAdapterFactory,
 } from "../mail/mailSyncJob.js";
 import {
@@ -66,6 +67,7 @@ import {
   defaultSyncModeForProvider,
 } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
+import { mailProblemKey } from "../semp/sourceProblemKeys.js";
 import {
   AttachmentCapExceededError,
   MailConnectionLimitError,
@@ -477,6 +479,61 @@ describe("message ingest dedup (issue #26)", () => {
 
     const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [emailsId]);
     expect(Number(rows[0].count)).toBe(1);
+  });
+
+  it("stores is_bulk from the bulk headers and sender, and a repeat ingest leaves it unchanged (issue #1502)", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+    const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+    const folder = await withTransaction(pool, (client) =>
+      createItemWithClient(
+        client,
+        { databaseId: foldersId, properties: { name: "INBOX" } },
+        { allowedSystemKeys: ["name"] },
+      ),
+    );
+    const base = {
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      folderRelationPropertyId: folderProperty.id,
+      attachmentsRelationPropertyId: attachmentsProperty.id,
+      folderItemId: folder.id,
+      mailboxItemId: TEST_MAILBOX_ITEM_ID,
+      attachments: [],
+      storage: noopStorage,
+      storageKeyPrefix: "test",
+    };
+    const person = { from: { address: "anna@example.com" } };
+    const cases: Array<[string, Partial<Parameters<typeof ingestEmailMessage>[1]>, boolean]> = [
+      ["<unsub@x>", { envelope: person, bulkHeaders: { listUnsubscribe: "<mailto:u@example.com>" } }, true],
+      ["<listid@x>", { envelope: person, bulkHeaders: { listId: "<l.example.com>" } }, true],
+      ["<prec@x>", { envelope: person, bulkHeaders: { precedence: "bulk" } }, true],
+      ["<auto@x>", { envelope: person, bulkHeaders: { autoSubmitted: "auto-generated" } }, true],
+      ["<noreply@x>", { envelope: { from: { address: "No-Reply@example.com" } } }, true],
+      ["<person@x>", { envelope: person, bulkHeaders: { autoSubmitted: "no" } }, false],
+    ];
+    for (const [messageId, extra, expected] of cases) {
+      const { itemId } = await withTransaction(pool, (client) =>
+        ingestEmailMessage(client, { ...base, envelope: {}, messageId, ...extra }),
+      );
+      const { rows } = await pool.query(`SELECT is_bulk FROM mail_message_meta WHERE item_id = $1`, [itemId]);
+      expect(rows[0].is_bulk, messageId).toBe(expected);
+    }
+
+    // A later pass over an already-ingested message, even one now reporting different headers, keeps the flag.
+    const again = await withTransaction(pool, (client) =>
+      ingestEmailMessage(client, {
+        ...base,
+        messageId: "<unsub@x>",
+        envelope: person,
+        bulkHeaders: { autoSubmitted: "no" },
+      }),
+    );
+    expect(again.created).toBe(false);
+    const { rows } = await pool.query(`SELECT is_bulk FROM mail_message_meta WHERE item_id = $1`, [again.itemId]);
+    expect(rows[0].is_bulk).toBe(true);
   });
 });
 
@@ -1421,6 +1478,7 @@ describe("IMAP reconcile core (issue #26)", () => {
 
   function fakeImapClient(overrides: Partial<ImapMailClient> = {}): ImapMailClient {
     return {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(["CONDSTORE", "QRESYNC"]),
       listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
       selectFolder: async () => ({ uidvalidity: 111, uidnext: 3, highestModSeq: 5 }),
@@ -1448,6 +1506,7 @@ describe("IMAP reconcile core (issue #26)", () => {
       fetchAllUids: async () => [1, 2],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
       ...overrides,
     };
   }
@@ -2135,6 +2194,7 @@ describe("mail sync job error handling (issue #26)", () => {
     );
 
     const failingImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => {
         throw new Error("connection refused");
@@ -2145,6 +2205,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
 
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingImap };
@@ -2231,6 +2292,7 @@ describe("mail sync job error handling (issue #26)", () => {
     // first, uneventful pass establishes real uidvalidity/uidnext state so the second pass
     // below actually reaches (and can fail inside) the vanished-UID check.
     const passOneImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -2239,6 +2301,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
     await handleSyncMailAccountTask(
       pool,
@@ -2249,6 +2312,7 @@ describe("mail sync job error handling (issue #26)", () => {
     );
 
     const failingAfterAttachmentImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
@@ -2280,6 +2344,7 @@ describe("mail sync job error handling (issue #26)", () => {
       },
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
 
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingAfterAttachmentImap };
@@ -2312,6 +2377,7 @@ describe("mail sync job error handling (issue #26)", () => {
     );
 
     const emptyImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -2320,6 +2386,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => emptyImap };
 
@@ -2340,6 +2407,99 @@ describe("mail sync job error handling (issue #26)", () => {
       client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]),
     );
     expect(item.rows[0].properties.syncStatus).toBe("ok");
+  });
+
+  it("tracks the last successful sync, the failure streak and its kind, and the initial sync across passes (issue #1497)", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const moduleIds = {
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      foldersDatabaseId: foldersId,
+      mailboxesDatabaseId: mailboxesId,
+    };
+
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    await withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+    );
+    const readState = () => withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
+    const readUpdatedAt = async () => {
+      const { rows } = await pool.query(`SELECT updated_at FROM items WHERE id = $1`, [mailbox.id]);
+      return rows[0].updated_at as Date;
+    };
+    const run = (adapters: MailSyncAdapterFactory) =>
+      handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, adapters, moduleIds, noopStorage);
+
+    const emptyImap: ImapMailClient = {
+      appendMessage: async () => {},
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => [],
+      fetchAllUids: async () => [],
+      fetchFlagsChangedSince: async () => [],
+      setMessageFlag: async () => {},
+      close: async () => {},
+    };
+    const healthy: MailSyncAdapterFactory = { createImapClient: async () => emptyImap };
+    const failing = (error: Error): MailSyncAdapterFactory => ({
+      createImapClient: async () => {
+        throw error;
+      },
+    });
+
+    await run(healthy);
+    const first = await readState();
+    expect(first?.lastSuccessfulSyncAt).toBeTruthy();
+    expect(first?.initialSyncCompletedAt).toBe(first?.lastSuccessfulSyncAt);
+    expect(first?.failingSince).toBeNull();
+    expect(first?.lastFailureKind).toBeNull();
+
+    // A second identical pass moves the success timestamp, keeps the initial sync, and leaves
+    // the already-'ok' Mailboxes item untouched.
+    const updatedAfterFirst = await readUpdatedAt();
+    await run(healthy);
+    const second = await readState();
+    expect(new Date(second!.lastSuccessfulSyncAt!).getTime()).toBeGreaterThan(
+      new Date(first!.lastSuccessfulSyncAt!).getTime(),
+    );
+    expect(second?.initialSyncCompletedAt).toBe(first?.initialSyncCompletedAt);
+    expect(await readUpdatedAt()).toEqual(updatedAfterFirst);
+
+    await expect(run(failing(new Error("boom")))).rejects.toThrow("boom");
+    const afterFirstFailure = await readState();
+    expect(afterFirstFailure?.lastSuccessfulSyncAt).toBe(second?.lastSuccessfulSyncAt);
+    expect(afterFirstFailure?.failingSince).toBeTruthy();
+    expect(afterFirstFailure?.lastFailureKind).toBe("other");
+
+    await expect(run(failing(new MailReauthorizationRequiredError("revoked")))).rejects.toThrow();
+    const afterReauth = await readState();
+    expect(afterReauth?.failingSince).toBe(afterFirstFailure?.failingSince);
+    expect(afterReauth?.lastFailureKind).toBe("reauthorization");
+    expect(afterReauth?.lastSuccessfulSyncAt).toBe(second?.lastSuccessfulSyncAt);
+
+    await run(failing(new MailConnectionLimitError("Too many simultaneous connections.")));
+    const afterLimit = await readState();
+    expect(afterLimit?.failingSince).toBe(afterFirstFailure?.failingSince);
+    expect(afterLimit?.lastFailureKind).toBe("connectionLimit");
+
+    await run(healthy);
+    const recovered = await readState();
+    expect(recovered?.failingSince).toBeNull();
+    expect(recovered?.lastFailureKind).toBeNull();
+    expect(recovered?.initialSyncCompletedAt).toBe(first?.initialSyncCompletedAt);
+    expect(new Date(recovered!.lastSuccessfulSyncAt!).getTime()).toBeGreaterThan(
+      new Date(second!.lastSuccessfulSyncAt!).getTime(),
+    );
   });
 
   it("sets Mailbox.syncStatus to 'needsReauthorization' when the adapter reports a revoked credential, without writing a mail_sync_error notification (issue #149)", async () => {
@@ -2560,6 +2720,7 @@ describe("mail sync job error handling (issue #26)", () => {
     await chokePoint.softDeleteItem(mailboxesId, mailbox.id);
 
     const createImapClient = vi.fn(async (): Promise<ImapMailClient> => ({
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -2568,6 +2729,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     }));
     const adapters: MailSyncAdapterFactory = { createImapClient };
 
@@ -2598,6 +2760,7 @@ describe("mail sync job error handling (issue #26)", () => {
     const mailboxesId = await databaseIdFor("mailboxes");
 
     const createImapClient = vi.fn(async (): Promise<ImapMailClient> => ({
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -2606,6 +2769,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     }));
     const adapters: MailSyncAdapterFactory = { createImapClient };
 
@@ -2625,6 +2789,202 @@ describe("mail sync job error handling (issue #26)", () => {
     ).resolves.toBeUndefined();
 
     expect(createImapClient).not.toHaveBeenCalled();
+  });
+});
+
+describe("mailbox Semp problem raised by the sync job (issue #1506)", () => {
+  interface MailProblemRow {
+    category: string;
+    kind: string;
+    severity: string;
+    source_table: string;
+    source_id: string;
+    occurrence_count: number;
+    first_seen_at: Date;
+    resolved_at: Date | null;
+    resolution_kind: string | null;
+  }
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  async function createOwner(): Promise<void> {
+    const passwordHash = await hashPassword("s3cret-password");
+    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
+  }
+
+  async function seededModuleIds(): Promise<MailModuleIds> {
+    return {
+      emailsDatabaseId: await databaseIdFor("emails"),
+      filesDatabaseId: await databaseIdFor("files"),
+      foldersDatabaseId: await databaseIdFor("folders"),
+      mailboxesDatabaseId: await databaseIdFor("mailboxes"),
+    };
+  }
+
+  /** A Mailbox with its sync state and, when `withCredential`, a stored app password. */
+  async function createMailbox(withCredential: boolean): Promise<string> {
+    const { mailboxesDatabaseId } = await seededModuleIds();
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesDatabaseId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    if (withCredential) {
+      await withTransaction(pool, (client) =>
+        storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+      );
+    }
+    return mailbox.id;
+  }
+
+  async function syncPass(
+    mailboxItemId: string,
+    adapters: MailSyncAdapterFactory,
+    jobId: string = randomUUID(),
+  ): Promise<void> {
+    await handleSyncMailAccountTask(pool, { mailboxItemId }, adapters, await seededModuleIds(), noopStorage, {
+      job: { id: jobId },
+    });
+  }
+
+  async function mailProblems(mailboxItemId: string): Promise<MailProblemRow[]> {
+    const { rows } = await pool.query<MailProblemRow>(
+      `SELECT category, kind, severity, source_table, source_id, occurrence_count, first_seen_at, resolved_at, resolution_kind
+         FROM semp_problems WHERE dedupe_key = $1 ORDER BY first_seen_at`,
+      [mailProblemKey(mailboxItemId)],
+    );
+    return rows;
+  }
+
+  const completingImap: ImapMailClient = {
+    appendMessage: async () => {},
+    getCapabilities: async () => new Set(),
+    listFolders: async () => [],
+    selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+    fetchMessagesSince: async () => [],
+    fetchVanishedSince: async () => [],
+    fetchAllUids: async () => [],
+    fetchFlagsChangedSince: async () => [],
+    setMessageFlag: async () => {},
+    close: async () => {},
+  };
+
+  const refusingImap: MailSyncAdapterFactory = {
+    createImapClient: async () => {
+      throw new Error("connection refused");
+    },
+  };
+
+  it("raises one warning problem per mailbox, merging every failing pass and counting a retry of the same job once", async () => {
+    await createOwner();
+    const mailboxId = await createMailbox(false);
+
+    // No stored credential: each pass fails before any provider call, with the default severity.
+    await expect(syncPass(mailboxId, {}, "job-1")).rejects.toThrow("has no stored credential");
+    await expect(syncPass(mailboxId, {}, "job-2")).rejects.toThrow("has no stored credential");
+    await expect(syncPass(mailboxId, {}, "job-3")).rejects.toThrow("has no stored credential");
+    // A redelivery of job-3 is the same report again.
+    await expect(syncPass(mailboxId, {}, "job-3")).rejects.toThrow("has no stored credential");
+
+    const problems = await mailProblems(mailboxId);
+    expect(problems).toMatchObject([
+      {
+        category: "mail",
+        kind: "mailSyncError",
+        severity: "warning",
+        source_table: "mail_account_sync_state",
+        source_id: mailboxId,
+        occurrence_count: 3,
+        resolved_at: null,
+      },
+    ]);
+    // The problem starts when the failure streak did, not when the last report arrived.
+    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, mailboxId));
+    expect(problems[0]!.first_seen_at.toISOString()).toBe(state!.failingSince);
+  });
+
+  it("raises the problem as critical when the token is revoked, and writes no mail_sync_error notification for it", async () => {
+    await createOwner();
+    const mailboxId = await createMailbox(true);
+
+    await expect(
+      syncPass(mailboxId, {
+        createImapClient: async () => {
+          throw new MailReauthorizationRequiredError("token revoked");
+        },
+      }),
+    ).rejects.toThrow("token revoked");
+
+    expect(await mailProblems(mailboxId)).toMatchObject([
+      { severity: "critical", occurrence_count: 1, resolved_at: null },
+    ]);
+    const { rows: notifications } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [mailboxId]);
+    expect(notifications).toHaveLength(0);
+  });
+
+  it("raises no problem before any user account exists", async () => {
+    const mailboxId = await createMailbox(false);
+
+    await expect(syncPass(mailboxId, {}, "job-1")).rejects.toThrow("has no stored credential");
+
+    expect(await mailProblems(mailboxId)).toEqual([]);
+  });
+
+  it("raises no problem when the sync state row disappears during the pass", async () => {
+    await createOwner();
+    const mailboxId = await createMailbox(true);
+    const vanishingState: MailSyncAdapterFactory = {
+      createImapClient: async () => {
+        // A removal racing the pass: the row the prologue read is gone when the failure is recorded.
+        await pool.query("DELETE FROM mail_account_sync_state WHERE item_id = $1", [mailboxId]);
+        throw new Error("boom");
+      },
+    };
+
+    await expect(syncPass(mailboxId, vanishingState)).rejects.toThrow("boom");
+
+    expect(await mailProblems(mailboxId)).toEqual([]);
+  });
+
+  it("resolves the problem in the pass that completes, and a later failure opens a new one", async () => {
+    await createOwner();
+    const mailboxId = await createMailbox(true);
+
+    // A completed pass with no problem to resolve changes nothing.
+    await syncPass(mailboxId, { createImapClient: async () => completingImap });
+    expect(await mailProblems(mailboxId)).toEqual([]);
+
+    await expect(syncPass(mailboxId, refusingImap, "job-1")).rejects.toThrow("connection refused");
+    expect(await mailProblems(mailboxId)).toMatchObject([{ resolved_at: null, occurrence_count: 1 }]);
+
+    await syncPass(mailboxId, { createImapClient: async () => completingImap }, "job-2");
+    expect(await mailProblems(mailboxId)).toMatchObject([
+      { resolved_at: expect.any(Date), resolution_kind: "recovered" },
+    ]);
+
+    await expect(syncPass(mailboxId, refusingImap, "job-3")).rejects.toThrow("connection refused");
+    expect(await mailProblems(mailboxId)).toMatchObject([
+      { resolved_at: expect.any(Date) },
+      { resolved_at: null, occurrence_count: 1 },
+    ]);
+  });
+
+  it("raises no problem for a connection-limit rejection on its own", async () => {
+    await createOwner();
+    const mailboxId = await createMailbox(true);
+
+    await syncPass(mailboxId, {
+      createImapClient: async () => {
+        throw new MailConnectionLimitError("Too many simultaneous connections.");
+      },
+    });
+
+    expect(await mailProblems(mailboxId)).toEqual([]);
   });
 });
 
@@ -3736,6 +4096,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     );
 
     const emptyImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -3744,6 +4105,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
 
     const runCalls: Array<{ accountId: string; limit: number }> = [];
@@ -3792,6 +4154,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     );
 
     const emptyImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -3800,6 +4163,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
 
     const runCalls: Array<{ accountId: string; limit: number }> = [];
@@ -3862,6 +4226,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       resolveFirstStarted = resolve;
     });
     const blockingImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
       selectFolder: async () => {
@@ -3876,8 +4241,10 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
     const emptyImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -3886,6 +4253,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
 
     // The first pass takes the account's only slot and holds it (blocked inside `selectFolder`,
@@ -3977,6 +4345,7 @@ describe("mail flag write-back (issue #251)", () => {
       flags: [],
     };
     const initial: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [
         { path: "INBOX", specialUse: "\\Inbox" },
@@ -3988,6 +4357,7 @@ describe("mail flag write-back (issue #251)", () => {
       fetchAllUids: async (path) => (path === "INBOX" ? [1] : [2]),
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
+      close: async () => {},
     };
     await withTransaction(pool, (client) => reconcileImapAccount(client, initial, params));
 
@@ -4144,6 +4514,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
     overrides: Partial<ImapMailClient> = {},
   ): Promise<string> {
     const firstPassImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [{ path: "INBOX" }],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
@@ -4156,6 +4527,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
       setMessageFlag: async () => {
         throw new Error("write-back is out of scope for this test");
       },
+      close: async () => {},
       ...overrides,
     };
     await withTransaction(pool, (client) => reconcileImapFolder(client, firstPassImap, params));
@@ -4174,6 +4546,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
     expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: true });
 
     const secondPassImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [{ path: "INBOX" }],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
@@ -4184,6 +4557,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
       setMessageFlag: async () => {
         throw new Error("a converged observation must not be echoed as a write-back");
       },
+      close: async () => {},
     };
     await withTransaction(pool, (client) => reconcileImapFolder(client, secondPassImap, params));
 
@@ -4210,6 +4584,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
     expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: false });
 
     const secondPassImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [{ path: "INBOX" }],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
@@ -4220,6 +4595,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
       setMessageFlag: async () => {
         throw new Error("this pass must not attempt a write-back itself");
       },
+      close: async () => {},
     };
     await withTransaction(pool, (client) => reconcileImapFolder(client, secondPassImap, params));
 
@@ -4245,6 +4621,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
     expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: false });
 
     const secondPassImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [{ path: "INBOX" }],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
@@ -4255,6 +4632,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
       setMessageFlag: async () => {
         throw new Error("an observation matching desired state must not be echoed as a write-back");
       },
+      close: async () => {},
     };
     await withTransaction(pool, (client) => reconcileImapFolder(client, secondPassImap, params));
 
@@ -4414,6 +4792,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
     expect(calls).toEqual([]);
 
     const noCondstoreImap: ImapMailClient = {
+      appendMessage: async () => {},
       getCapabilities: async () => new Set(),
       listFolders: async () => [{ path: "INBOX" }],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: 42 }),
@@ -4425,6 +4804,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
         return [];
       },
       setMessageFlag: async () => {},
+      close: async () => {},
     };
     await withTransaction(pool, (client) => reconcileImapFolder(client, noCondstoreImap, params));
     expect(calls).toEqual([null]);

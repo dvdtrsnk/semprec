@@ -1,3 +1,5 @@
+import type { PoolClient } from "pg";
+import { runAfterCommit } from "./db/pool.js";
 import type { CreatedBy } from "./types.js";
 
 /**
@@ -160,4 +162,31 @@ export function setAgentRunEventHook(next: AgentRunEventHook): void {
 
 export function notifyAgentRunEvent(event: AgentRunEventNotification): void {
   agentRunEventHook(event);
+}
+
+/**
+ * Fired after the commit of a write that changed a Semp thread (a message, a state change, a title,
+ * a tick run). It names the thread and its tenant only; delivery is best effort, to sockets of
+ * `tenantId`, with no replay, and the client refetches the thread.
+ */
+export interface SempThreadInvalidationEvent {
+  tenantId: string;
+  threadId: string;
+}
+
+export type SempThreadInvalidationHook = (event: SempThreadInvalidationEvent) => void;
+
+let sempThreadInvalidationHook: SempThreadInvalidationHook = () => {};
+
+export function setSempThreadInvalidationHook(next: SempThreadInvalidationHook): void {
+  sempThreadInvalidationHook = next;
+}
+
+/**
+ * Publishes a `sempThread` invalidation once the transaction on `client` has committed; a rollback
+ * publishes nothing. Usable from `semprec-api` and `semprec-agents` writes alike: both processes
+ * wire the hook through `wireRealtimeHooks`, and the message travels over `semprec_events`.
+ */
+export function publishSempThreadInvalidation(client: PoolClient, tenantId: string, threadId: string): void {
+  runAfterCommit(client, () => sempThreadInvalidationHook({ tenantId, threadId }));
 }

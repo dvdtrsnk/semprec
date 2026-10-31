@@ -1,5 +1,14 @@
 export type AgentMessageKind =
-  "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "message_update";
+  "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "message_update" | "user_message";
+
+/**
+ * One context ref attached to a user turn, stored as sent: the ref object (item, block,
+ * transcript segment, ...) plus its label at send time. Expanded ref content is never stored.
+ */
+export interface UserTurnContextRef {
+  label: string;
+  [key: string]: unknown;
+}
 
 /** The full pi-agent-core message shape, persisted verbatim into `agent_run_events.payload`. */
 export interface AgentMessage {
@@ -23,6 +32,8 @@ export interface ConversationEntry {
 
 export interface AgentSessionOptions {
   task: string;
+  /** Context refs sent with the wake turn's `task`; persisted on its `user_message` event. */
+  context?: readonly UserTurnContextRef[];
   /** Cancels the underlying agent, including a prompt blocked waiting for its next event. */
   signal?: AbortSignal;
   /** pi-agent-core's system-prompt override hook: given its default prompt, returns the one to use. */
@@ -52,7 +63,7 @@ export interface AgentSession {
    * whole transcript again. Optional because every session up to #228/#117 only ever ran
    * one turn to completion and never needed it.
    */
-  send?(task: string): AsyncIterable<AgentMessage>;
+  send?(task: string, context?: readonly UserTurnContextRef[]): AsyncIterable<AgentMessage>;
 }
 
 export type CreateAgentSession = (options: AgentSessionOptions) => AgentSession;

@@ -1,10 +1,10 @@
-import { once } from "node:events";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import { escapeIdentifier, type Pool, type PoolClient } from "pg";
 import yazl from "yazl";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { tenantBlobStorageKey } from "../blobs/blobsStore.js";
+import { openBlobFromRoots } from "../blobs/openBlobFromRoots.js";
 import { requireSingleRow, withTransaction } from "../db/pool.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { forEachActiveTenant } from "./forEachActiveTenant.js";
@@ -25,7 +25,12 @@ import {
  */
 
 /** Tenant-classified tables never exported: credential ciphertext, the wrapped tenant data key, and the exports themselves. */
-export const EXPORT_EXCLUDED_TABLES = ["external_credentials", "tenant_keys", "tenant_exports"] as const;
+export const EXPORT_EXCLUDED_TABLES = [
+  "external_credentials",
+  "tenant_keys",
+  "tenant_exports",
+  "mail_oauth_states",
+] as const;
 
 /** The archive layout version written to `manifest.json`. */
 const EXPORT_FORMAT_VERSION = 1;
@@ -60,10 +65,6 @@ class TenantExportInterruptedError extends Error {
 
 function errorName(err: unknown): string {
   return err instanceof Error ? err.name : typeof err;
-}
-
-function isMissingFileError(err: unknown): boolean {
-  return err instanceof Error && "code" in err && err.code === "ENOENT";
 }
 
 /**
@@ -131,29 +132,23 @@ function lazySource(produce: () => AsyncGenerator<Buffer>): Readable {
   return Readable.from(produce(), { objectMode: false });
 }
 
-/**
- * Opens a blob's bytes, or `null` when its file does not exist. Waits for the first `readable`
- * event so a missing file is known before the entry is added; any other read error propagates.
- */
-async function openBlob(storage: BlobStorageWriter, storageKey: string): Promise<Readable | null> {
-  const stream = storage.readStream(storageKey);
-  try {
-    await once(stream, "readable");
-  } catch (err) {
-    stream.destroy();
-    if (isMissingFileError(err)) return null;
-    throw err;
-  }
-  return stream;
-}
-
 async function* accountEntry(client: PoolClient): AsyncGenerator<Buffer> {
-  const { rows } = await client.query<{ email: string; locale: string; role: string; created_at: Date }>(
-    "SELECT email, locale, role, created_at FROM users WHERE tenant_id = app_current_tenant()",
-  );
+  const { rows } = await client.query<{
+    email: string;
+    display_name: string | null;
+    locale: string;
+    role: string;
+    created_at: Date;
+  }>("SELECT email, display_name, locale, role, created_at FROM users WHERE tenant_id = app_current_tenant()");
   const user = rows[0];
   if (!user) throw new Error("The tenant in scope has no account to export");
-  const account = { email: user.email, locale: user.locale, role: user.role, createdAt: user.created_at.toISOString() };
+  const account = {
+    email: user.email,
+    displayName: user.display_name,
+    locale: user.locale,
+    role: user.role,
+    createdAt: user.created_at.toISOString(),
+  };
   yield Buffer.from(JSON.stringify(account, null, 2));
 }
 
@@ -246,7 +241,7 @@ async function writeArchive(
         const alternate = blob.in_mail ? storages.files : storages.mailAttachments;
         // A reference selects the first root, but shared content-hash deduplication can retain
         // bytes in the other one; see ADR 2026-10-18-tenant-export-cross-root-blob-lookup.
-        const bytes = (await openBlob(storage, blob.storage_key)) ?? (await openBlob(alternate, blob.storage_key));
+        const bytes = await openBlobFromRoots({ primary: storage, alternate, storageKey: blob.storage_key });
         if (!bytes) {
           missingBlobIds.push(blob.id);
           continue;

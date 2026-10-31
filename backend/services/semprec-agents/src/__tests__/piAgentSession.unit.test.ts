@@ -1,7 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
-import { Type, fauxAssistantMessage, fauxProvider, fauxToolCall, type Context } from "@earendil-works/pi-ai";
+import {
+  Type,
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxToolCall,
+  type AssistantMessage,
+  type Context,
+} from "@earendil-works/pi-ai";
 import type { AgentMessage, ToolEventMetadata } from "@semprec/agent-runtime";
+import { AiBudgetExceededError, agentRunErrorCodeOf } from "@semprec/data";
 import { toPiMessages } from "../piConversationHistory.js";
 import { createPiAgentSessionFactory } from "../piAgentSession.js";
 
@@ -51,6 +59,7 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
     const persisted = messages.filter((message) => message.kind !== "message_update");
 
     expect(persisted.map((message) => message.kind)).toEqual([
+      "user_message",
       "turn_start",
       "message",
       "tool_use",
@@ -66,6 +75,34 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
     expect(toolResult).toMatchObject({ toolCallId: "call-1", isError: false });
     expect(persisted.at(-2)).toMatchObject({ kind: "message", text: "all done" });
     expect(calls).toEqual([{ value: "hi" }]);
+  });
+
+  it("emits a user_message before the prompt for the wake turn and each follow-up, prepending system messages", async () => {
+    const { faux, model, streamFn } = fauxModel();
+    faux.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
+    const seen: string[] = [];
+    const wrapped: StreamFn = (m, context, options) => {
+      seen.push(JSON.stringify(context.messages.at(-1)?.content));
+      return streamFn(m, context, options);
+    };
+    const pending = [["approved: X"], []];
+    const session = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn: wrapped,
+      tools: [],
+      systemPrompt: "base",
+      pendingSystemMessages: () => pending.shift() ?? [],
+    })({ task: "hello", context: [{ label: "Budget", id: "i1" }] });
+
+    const first = await collect(session.messages());
+    const second = await collect(session.send!("again"));
+
+    expect(first[0]).toEqual({ kind: "user_message", text: "hello", context: [{ label: "Budget", id: "i1" }] });
+    expect(second[0]).toEqual({ kind: "user_message", text: "again", context: [] });
+    expect(seen[0]).toContain("approved: X");
+    expect(seen[0]).toContain("hello");
+    expect(seen[1]).toBe(JSON.stringify([{ type: "text", text: "again" }]));
   });
 
   it("aborts a blocked production tool directly while its async generator waits", async () => {
@@ -203,7 +240,52 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
       systemPrompt: "base",
     });
 
-    await expect(collect(createSession({ task: "t" }).messages())).rejects.toThrow("gateway refused: budget");
+    const failure = await collect(createSession({ task: "t" }).messages()).catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe("gateway refused: budget");
+    expect(agentRunErrorCodeOf(failure)).toBe("modelError");
+  });
+
+  it("fails the session with AiBudgetExceededError when the failed message is a budget refusal", async () => {
+    const { faux, model, streamFn: fauxStreamFn } = fauxModel();
+    faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "403: secret provider text" })]);
+    // Marks the final message object of the call, as the gateway model does: it must still be the
+    // object the agent keeps in its state.
+    const refused = new WeakSet<AssistantMessage>();
+    const streamFn: StreamFn = (m, context, options) => {
+      const stream = fauxStreamFn(m, context, options);
+      void Promise.resolve(stream).then((s) => s.result().then((message) => refused.add(message)));
+      return stream;
+    };
+    const createSession = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn,
+      tools: [],
+      systemPrompt: "base",
+      isBudgetRefusal: (message) => refused.has(message),
+    });
+
+    const failure = await collect(createSession({ task: "t" }).messages()).catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(AiBudgetExceededError);
+    expect((failure as Error).message).toBe("AI budget exceeded");
+    expect(agentRunErrorCodeOf(failure)).toBe("budgetExceeded");
+  });
+
+  it("keeps modelError when the detector does not recognize the failed message", async () => {
+    const { faux, model, streamFn } = fauxModel();
+    faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "boom" })]);
+    const createSession = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn,
+      tools: [],
+      systemPrompt: "base",
+      isBudgetRefusal: () => false,
+    });
+
+    const failure = await collect(createSession({ task: "t" }).messages()).catch((err: unknown) => err);
+    expect(agentRunErrorCodeOf(failure)).toBe("modelError");
   });
 
   it("fails the session with the tool's own error when a tool throws", async () => {

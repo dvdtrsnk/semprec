@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { SSEClientTransport, SseError } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { FetchLike, Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -17,7 +17,7 @@ import {
   type OutboundHttp,
 } from "../net/outboundAddressPolicy.js";
 import { assertValidMcpConnectionConfig, type McpConnectionConfig } from "./mcpConnectionConfig.js";
-import { McpConnectionError } from "./mcpConnectionError.js";
+import { McpConnectionError, MCP_DEFAULT_CONNECT_TIMEOUT_MS } from "./mcpConnectionError.js";
 import { SandboxedStdioClientTransport } from "./sandboxedStdioTransport.js";
 import { tenantAllowsStdio } from "./stdioTransportPolicy.js";
 
@@ -55,7 +55,7 @@ export interface ConnectMcpServerOptions {
 const logger = createLogger("mcp");
 const CLIENT_INFO = { name: "semprec-mcp-client", version: "1.0.0" };
 /** A misbehaving server can accept a TCP/SSE/HTTP connection or spawn cleanly and then never answer `initialize` — `mcpClient.connect()` has no timeout of its own for that, so this factory imposes one. */
-const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
+const DEFAULT_CONNECT_TIMEOUT_MS = MCP_DEFAULT_CONNECT_TIMEOUT_MS;
 
 /**
  * Connects to the MCP server described by `mcpServerItem.properties.connectionConfig`,
@@ -101,11 +101,21 @@ export async function connectMcpServer(
   const mcpClient = new Client(CLIENT_INFO, { capabilities: {} });
   try {
     await withTimeout(mcpClient.connect(transport), options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS);
-  } catch {
+  } catch (err) {
     await safeCloseTransport(transport);
     await safeCloseOutbound(outbound);
     if (refusal.seen) throw addressNotAllowed(config.transport);
-    throw new McpConnectionError("handshake_failed", `Failed to connect to MCP server (transport=${config.transport})`);
+    if (err instanceof ConnectTimeoutError) {
+      throw new McpConnectionError(
+        "connect_timeout",
+        `Timed out connecting to MCP server (transport=${config.transport})`,
+      );
+    }
+    throw new McpConnectionError(
+      "handshake_failed",
+      `Failed to connect to MCP server (transport=${config.transport})`,
+      authRejectionStatus(err),
+    );
   }
   // The transport has already used the credential to spawn/authenticate; scrub any copy it kept
   // as a plain, JSON-serializable property so `handle.client`'s serializable state never carries it.
@@ -166,11 +176,24 @@ function recordAddressRefusal(fetch: FetchLike, refusal: { seen: boolean }): Fet
  * (the caller's very next step) makes the original `connect()` reject with nothing else
  * listening, which without this would crash the process as an unhandled rejection.
  */
+class ConnectTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Timed out after ${timeoutMs}ms`);
+    this.name = "ConnectTimeoutError";
+  }
+}
+
+/** The 401/403 status an HTTP transport reported for a rejected connect, or `undefined` for any other failure. */
+function authRejectionStatus(err: unknown): number | undefined {
+  if (!(err instanceof StreamableHTTPError || err instanceof SseError)) return undefined;
+  return err.code === 401 || err.code === 403 ? err.code : undefined;
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   promise.catch(() => {});
   let timer: NodeJS.Timeout;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
+    timer = setTimeout(() => reject(new ConnectTimeoutError(timeoutMs)), timeoutMs);
   });
   try {
     return await Promise.race([promise, timeout]);

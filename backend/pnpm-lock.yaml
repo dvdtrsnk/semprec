@@ -39,6 +39,22 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
 
+  ../shared/block-model:
+    dependencies:
+      yjs:
+        specifier: ^13.6.32
+        version: 13.6.32
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
+
   packages/agent-runtime:
     dependencies:
       '@earendil-works/pi-agent-core':
@@ -100,7 +116,13 @@ importers:
       '@semprec/shared':
         specifier: workspace:*
         version: link:../shared
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.3
     devDependencies:
+      '@types/ws':
+        specifier: ^8.5.13
+        version: 8.18.1
       vitest:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
@@ -145,6 +167,9 @@ importers:
       '@node-rs/argon2':
         specifier: ^2.2.0
         version: 2.2.0
+      '@semprec/block-model':
+        specifier: workspace:*
+        version: link:../../../shared/block-model
       '@semprec/credentials':
         specifier: workspace:*
         version: link:../credentials
@@ -404,6 +429,9 @@ importers:
       '@semprec/queue':
         specifier: workspace:*
         version: link:../../packages/queue
+      '@semprec/realtime':
+        specifier: workspace:*
+        version: link:../../packages/realtime
       '@semprec/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -438,6 +466,9 @@ importers:
       pg:
         specifier: ^8.23.0
         version: 8.23.0
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.3
       zod:
         specifier: ^4.1.11
         version: 4.4.3
@@ -445,6 +476,9 @@ importers:
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
+      '@types/ws':
+        specifier: ^8.5.13
+        version: 8.18.1
       vitest:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
@@ -481,6 +515,9 @@ importers:
       pg:
         specifier: ^8.23.0
         version: 8.23.0
+      zod:
+        specifier: ^4.1.11
+        version: 4.4.3
     devDependencies:
       '@semprec/credentials':
         specifier: workspace:*

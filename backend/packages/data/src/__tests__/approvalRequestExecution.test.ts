@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
-import { createTenantZeroUser, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createTenantZeroUser,
+  getTenantZeroId,
+  getTestPool,
+  inTenantZero,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 import {
   startStdioContractServer,
   type ContractServerTool,
@@ -10,7 +16,7 @@ import {
 } from "../testSupport/mcpContractServers.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { requireSingleRow, withTransaction } from "../db/pool.js";
+import { withTransaction } from "../db/pool.js";
 import { createUser as createAuthUser } from "../auth/usersStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
@@ -23,6 +29,7 @@ import {
   recordApprovalRequestOutcome,
 } from "../mcp/approvalRequestsStore.js";
 import { decideAndEnqueueApprovalRequest } from "../mcp/approvalDecisionAction.js";
+import { approvalConflictReason } from "../mcp/approvalConflictReason.js";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 
@@ -48,9 +55,7 @@ async function createUser(): Promise<string> {
 }
 
 async function createSoleTenantAdmin(): Promise<string> {
-  const { rows } = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
-  const tenantId = requireSingleRow(rows, "sole tenant").id;
-  if (!tenantId) throw new Error("Expected a sole tenant");
+  const tenantId = getTenantZeroId();
   const user = await createAuthUser(pool, {
     email: "admin@example.test",
     passwordHash: "unused",
@@ -280,9 +285,13 @@ describe("approval request decide+execute (issue #131)", () => {
     const finished = await getApprovalRequest(pool, request.id);
     expect(finished!.executionStatus).toBe("conflict");
     expect(finished!.executionError).toBe(true);
-    expect(finished!.executionResult).toBe(
-      "The deferred MCP tool call was claimed by an earlier delivery that never recorded its outcome; the tool may or may not have run.",
-    );
+    expect(finished!.executionResult).toEqual({
+      text: "The deferred MCP tool call was claimed by an earlier delivery that never recorded its outcome; the tool may or may not have run.",
+      outcomeKind: "staleClaim",
+    });
+    expect(approvalConflictReason(finished!.executionStatus, finished!.executionResult)).toEqual({
+      key: "approval.conflict.other",
+    });
   });
 
   it("fails retriably without calling the tool when a claim is less than 10 minutes old", async () => {
@@ -361,7 +370,7 @@ describe("approval request decide+execute (issue #131)", () => {
   const NO_LONGER_AVAILABLE_MESSAGE =
     "This MCP tool is no longer available to the requesting project: its grant was revoked, or its registration or server is inactive.";
 
-  async function approveAndSetUp() {
+  async function approveAndSetUp(args: Record<string, unknown> = { query: "semprec" }) {
     const contractServer = startStdioContractServer([SEARCH_TOOL]);
     servers.push(contractServer);
     const { server, registration, projectItemId } = await createGrantedTool(contractServer);
@@ -370,7 +379,7 @@ describe("approval request decide+execute (issue #131)", () => {
       agentRunId: run.id,
       toolName: SEARCH_TOOL.name,
       riskClass: "unclassified",
-      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
+      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
     const userId = run.actorUserId;
@@ -405,7 +414,10 @@ describe("approval request decide+execute (issue #131)", () => {
     const finished = await getApprovalRequest(pool, request.id);
     expect(finished!.executionStatus).toBe("conflict");
     expect(finished!.executionError).toBe(true);
-    expect(finished!.executionResult).toBe(NO_LONGER_AVAILABLE_MESSAGE);
+    expect(finished!.executionResult).toEqual({ text: NO_LONGER_AVAILABLE_MESSAGE, outcomeKind: "toolUnavailable" });
+    expect(approvalConflictReason(finished!.executionStatus, finished!.executionResult)).toEqual({
+      key: "approval.conflict.toolUnavailable",
+    });
   });
 
   it("records a conflict and calls no tool when the tool registration was deactivated after approval", async () => {
@@ -419,7 +431,10 @@ describe("approval request decide+execute (issue #131)", () => {
     const finished = await getApprovalRequest(pool, request.id);
     expect(finished!.executionStatus).toBe("conflict");
     expect(finished!.executionError).toBe(true);
-    expect(finished!.executionResult).toBe(NO_LONGER_AVAILABLE_MESSAGE);
+    expect(finished!.executionResult).toEqual({ text: NO_LONGER_AVAILABLE_MESSAGE, outcomeKind: "toolUnavailable" });
+    expect(approvalConflictReason(finished!.executionStatus, finished!.executionResult)).toEqual({
+      key: "approval.conflict.toolUnavailable",
+    });
   });
 
   it("records a conflict and calls no tool when the server item was set inactive after approval", async () => {
@@ -435,7 +450,10 @@ describe("approval request decide+execute (issue #131)", () => {
     const finished = await getApprovalRequest(pool, request.id);
     expect(finished!.executionStatus).toBe("conflict");
     expect(finished!.executionError).toBe(true);
-    expect(finished!.executionResult).toBe(NO_LONGER_AVAILABLE_MESSAGE);
+    expect(finished!.executionResult).toEqual({ text: NO_LONGER_AVAILABLE_MESSAGE, outcomeKind: "toolUnavailable" });
+    expect(approvalConflictReason(finished!.executionStatus, finished!.executionResult)).toEqual({
+      key: "approval.conflict.toolUnavailable",
+    });
   });
 
   it("executes normally when grant, registration and server are unchanged at execution time", async () => {
@@ -451,5 +469,19 @@ describe("approval request decide+execute (issue #131)", () => {
     const finished = await getApprovalRequest(pool, request.id);
     expect(finished!.executionStatus).toBe("succeeded");
     expect(finished!.executionError).toBe(false);
+    expect(approvalConflictReason(finished!.executionStatus, finished!.executionResult)).toBeNull();
+  });
+
+  it("records a callFailed outcome kind when the tool call itself errors", async () => {
+    const { request } = await approveAndSetUp({ query: "semprec", __forceError: true });
+
+    await drainQueue();
+
+    const finished = await getApprovalRequest(pool, request.id);
+    expect(finished!.executionStatus).toBe("conflict");
+    expect(finished!.executionResult).toMatchObject({ outcomeKind: "callFailed" });
+    expect(approvalConflictReason(finished!.executionStatus, finished!.executionResult)).toEqual({
+      key: "approval.outcome.failed",
+    });
   });
 });

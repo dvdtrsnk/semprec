@@ -1,9 +1,12 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
+import { createItemWithClient, getDatabaseByModuleId, withTransaction } from "@semprec/data";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createAgentRun,
   createChokePoint,
+  createDocStore,
   createViewTypeRegistry,
   loadFullModuleRegistry,
   seedSystem,
@@ -15,6 +18,10 @@ import {
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { GENERIC_OPERATION_NAMES, OPERATION_METADATA, type GenericOperationName } from "@semprec/shared";
 import { createGenericOperationAgentTools } from "../tools/generic/genericOperationAgentTools.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -99,7 +106,7 @@ interface Case {
 }
 
 /**
- * One AgentTool call per operation in the closed 29-operation catalog, mirroring
+ * One AgentTool call per operation in the closed 31-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern and `mcpGenericOperationsContract.test.ts`'s
  * MCP pattern one adapter over (the code-review finding on issue #220's diff: parameterized
  * contract tests across all of the then-28 operations were missing for the AgentTool adapter). Every
@@ -167,9 +174,49 @@ const CASES: Record<GenericOperationName, Case> = {
       targetItemId: fx.targetItem.id,
     }),
   },
+  "relation.list": { args: (fx) => ({ itemId: fx.itemA.id }) },
+  "page.restoreVersion": {
+    // The instant sits inside the history `prepare` opens, so only the approval gate stands between the call and the restore.
+    args: (fx) => ({ itemId: fx.itemA.id, at: new Date(Date.now() - 30 * 60 * 1000).toISOString() }),
+    prepare: async (fx) => {
+      await createDocStore(pool).putBlock(
+        fx.itemA.id,
+        { id: "b1", flavour: "paragraph", fields: { content: "first" } },
+        "user",
+      );
+      await pool.query(`UPDATE docs SET history_available_from = now() - interval '1 hour' WHERE item_id = $1`, [
+        fx.itemA.id,
+      ]);
+      await pool.query(
+        `UPDATE doc_snapshot_history SET represented_at = now() - interval '1 hour'
+         WHERE through_update_id = 0 AND doc_id = (SELECT id FROM docs WHERE item_id = $1)`,
+        [fx.itemA.id],
+      );
+    },
+  },
 };
 
 describe("generic operation AgentTools contract (issue #220)", () => {
+  it("sanitizes Emails.body on the agent item.get tool", async () => {
+    const raw = '<p onclick="evil()">safe</p><script>evil()</script><img src="https://tracker.example/pixel">';
+    const item = await withTransaction(pool, async (client) => {
+      const database = await getDatabaseByModuleId(client, "emails");
+      if (!database) throw new Error("Emails not seeded");
+      return createItemWithClient(
+        client,
+        { databaseId: database.id, properties: { body: raw } },
+        { allowedSystemKeys: ["body"] },
+      );
+    });
+
+    const projectItemId = await createProjectItem();
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "read email" });
+    const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+    const result = await tools["item.get"](run.id, { itemId: item.id });
+    expect(result.error).toBeFalsy();
+    expect(result.result).toContain("safe");
+    expect(result.result).not.toMatch(/<script|onclick|https:\/\/tracker/i);
+  });
   beforeEach(async () => {
     pool ??= getTestPool();
     chokePoint ??= createChokePoint(pool);
@@ -195,7 +242,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
         triggeredBy: "user",
         task: `contract test ${operation}`,
       });
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
       const fx = await buildFixtures(projectItemId);
       const testCase = CASES[operation];
       await testCase.prepare?.(fx);
@@ -212,6 +259,12 @@ describe("generic operation AgentTools contract (issue #220)", () => {
         expect(rows[0]!.count).toBe(1);
       } else {
         expect(outcome.error).toBe(false);
+        // A non-destructive call runs without an approval request (docs/adr/2026-09-18-non-destructive-generic-operations-bypass-agent-approval.md).
+        const { rows } = await pool.query<{ count: number }>(
+          `SELECT count(*)::int AS count FROM approval_requests WHERE agent_run_id = $1`,
+          [run.id],
+        );
+        expect(rows[0]!.count).toBe(0);
       }
     });
   }
@@ -227,7 +280,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     it("surfaces database_archived (issue #83) as a ChokePointError-shaped result for a write against an archived database", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "archived db write" });
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
       const fx = await buildFixtures(projectItemId);
       await chokePoint.archiveDatabase(fx.database.id);
 
@@ -243,7 +296,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     it("rejects patch.type on a relation property (issue #219)", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "relation patch" });
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
       const fx = await buildFixtures(projectItemId);
 
       const outcome = await tools["property.patch"](run.id, {
@@ -258,7 +311,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     it("rejects patch.config on a relation property (issue #219)", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "relation patch" });
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
       const fx = await buildFixtures(projectItemId);
 
       const outcome = await tools["property.patch"](run.id, {
@@ -273,7 +326,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     it("rejects a non-relation property id supplied directly as relationPropertyId — contrast with REST's key-based route resolution", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "bad relation id" });
-      const tools = createGenericOperationAgentTools(pool, moduleRegistry);
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
       const fx = await buildFixtures(projectItemId);
 
       // REST resolves a relation route's `:propertyKey` segment against the caller item's own

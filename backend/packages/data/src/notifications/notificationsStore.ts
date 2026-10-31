@@ -9,6 +9,8 @@ export interface NotificationRow {
   userId: string;
   kind: NotificationKind;
   title: string;
+  /** The rendered body, in the recipient's locale at write time; `null` for a kind that has none (issue #1773). */
+  body: string | null;
   linkHref: string | null;
   sourceTable: string;
   sourceId: string;
@@ -16,6 +18,7 @@ export interface NotificationRow {
   payload: Record<string, unknown>;
   createdAt: string;
   readAt: string | null;
+  resolvedAt: string | null;
 }
 
 interface NotificationDbRow {
@@ -23,6 +26,7 @@ interface NotificationDbRow {
   user_id: string;
   kind: string;
   title: string;
+  body: string | null;
   link_href: string | null;
   source_table: string;
   source_id: string;
@@ -30,6 +34,7 @@ interface NotificationDbRow {
   payload: Record<string, unknown>;
   created_at: Date;
   read_at: Date | null;
+  resolved_at: Date | null;
 }
 
 function mapRow(row: NotificationDbRow): NotificationRow {
@@ -38,6 +43,7 @@ function mapRow(row: NotificationDbRow): NotificationRow {
     userId: row.user_id,
     kind: assertKnownValue(NOTIFICATION_KINDS, row.kind, "kind"),
     title: row.title,
+    body: row.body,
     linkHref: row.link_href,
     sourceTable: row.source_table,
     sourceId: row.source_id,
@@ -45,11 +51,12 @@ function mapRow(row: NotificationDbRow): NotificationRow {
     payload: row.payload,
     createdAt: row.created_at.toISOString(),
     readAt: row.read_at ? row.read_at.toISOString() : null,
+    resolvedAt: row.resolved_at ? row.resolved_at.toISOString() : null,
   };
 }
 
 const NOTIFICATION_COLUMNS =
-  "id, user_id, kind, title, link_href, source_table, source_id, transition_instance, payload, created_at, read_at";
+  "id, user_id, kind, title, body, link_href, source_table, source_id, transition_instance, payload, created_at, read_at, resolved_at";
 
 /**
  * Caps how many unread rows a single reconnect-recovery fetch or mark-all-read sweep touches in
@@ -153,4 +160,51 @@ export async function markAllNotificationsRead(client: PoolClient, userId: strin
     );
   }
   return updated;
+}
+
+/**
+ * Marks every unresolved notification of one source resolved ("the thing it pointed at was
+ * handled") and, in the same statement, read when it was not yet. Runs on the caller's client so
+ * it commits or rolls back with the decision that handled the source. Rows already resolved are
+ * untouched, so a replay changes nothing and publishes nothing.
+ *
+ * Publishes `notification_read_state` after commit, one event per user, for the rows whose
+ * `read_at` this call set; a row that was already read converged on its read earlier. Returns
+ * every row this call resolved.
+ */
+export async function resolveNotificationsBySource(
+  client: PoolClient,
+  input: { sourceTable: string; sourceId: string },
+): Promise<NotificationRow[]> {
+  const { rows } = await client.query<NotificationDbRow & { newly_read: boolean }>(
+    `WITH previous AS (
+       SELECT id, read_at FROM notifications
+       WHERE source_table = $1 AND source_id = $2 AND resolved_at IS NULL
+       FOR UPDATE
+     )
+     UPDATE notifications n
+     SET resolved_at = now(), read_at = COALESCE(n.read_at, now())
+     FROM previous
+     WHERE n.id = previous.id
+     RETURNING ${NOTIFICATION_COLUMNS.split(", ")
+       .map((column) => `n.${column}`)
+       .join(", ")}, (previous.read_at IS NULL) AS newly_read`,
+    [input.sourceTable, input.sourceId],
+  );
+
+  const idsByUser = new Map<string, string[]>();
+  for (const row of rows) {
+    if (!row.newly_read) continue;
+    const ids = idsByUser.get(row.user_id) ?? [];
+    ids.push(row.id);
+    idsByUser.set(row.user_id, ids);
+  }
+  if (idsByUser.size > 0) {
+    runAfterCommit(client, () => {
+      for (const [userId, notificationIds] of idsByUser) {
+        notifyNotificationReadState({ userId, notificationIds });
+      }
+    });
+  }
+  return rows.map(mapRow);
 }

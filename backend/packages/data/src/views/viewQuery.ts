@@ -1,16 +1,31 @@
 import type { PoolClient } from "pg";
 import { NotFoundError, ValidationError } from "../errors.js";
-import type { ItemRow, ViewItemRow, ViewRow } from "../types.js";
-import { getItemsByIds, getItemsByIdsIncludingDeleted, listItems } from "../chokePoint/itemsStore.js";
+import type { ItemRow, PropertyRow, ViewItemRow, ViewRow } from "../types.js";
+import { countItems, getItemsByIds, getItemsByIdsIncludingDeleted, listItems } from "../chokePoint/itemsStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import * as viewItemsStore from "../chokePoint/viewItemsStore.js";
-import { compileFilterNode } from "./filterCompiler.js";
+import { compileFilterNode, resolveFilterCompileContext } from "./filterCompiler.js";
 import { buildFilterProperties } from "./filterProperties.js";
-import { compileSort, compileSortKeyset, sortKeyCast, type SortProperties } from "./sortCompiler.js";
+import {
+  collationForLocale,
+  compileSort,
+  compileSortKeyset,
+  sortKeyCast,
+  type SortProperties,
+} from "./sortCompiler.js";
 import { parseFilterNode, type FilterNode } from "./filterTree.js";
 import { parseSortConfig, sortConfigSchema, type SortSpec } from "./sortSpec.js";
 import { parseViewConfig, projectProperties, type ViewConfig } from "./viewConfig.js";
+
+/**
+ * The `users.locale` of a user, or `undefined` when the user row is not visible to the caller. It lives
+ * here, not behind `auth/usersStore.ts`, because the choke point must not import a domain folder.
+ */
+export async function findUserLocale(client: PoolClient, userId: string): Promise<string | undefined> {
+  const { rows } = await client.query<{ locale: string }>(`SELECT locale FROM users WHERE id = $1`, [userId]);
+  return rows[0]?.locale;
+}
 
 export interface QueryViewOptions {
   limit?: number;
@@ -23,18 +38,32 @@ export interface QueryViewOptions {
   cursor?: string;
   /** Excludes soft-deleted rows unless `true` (issue #157's `inTrash`). */
   includeDeleted?: boolean;
+  /** Also returns `totalCount`: the number of items matching the filter, ignoring cursor, limit and sort. */
+  includeCount?: boolean;
+  /** The clock `date_relative` conditions are evaluated at; defaults to the current time. */
+  now?: Date;
+  /** The caller's `users.locale`, choosing the text-sort collation (`cs` is Czech, anything else or absent is neutral). */
+  locale?: string;
 }
 
 export interface QueryViewResult {
   items: ItemRow[];
   nextCursor: string | null;
+  /** Present only when `includeCount` was requested. */
+  totalCount?: number;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+type GroupDirection = NonNullable<ViewConfig["groupDirection"]>;
+
+function effectiveGroupDirection(config: ViewConfig): GroupDirection {
+  return config.groupDirection ?? "asc";
+}
+
 function buildSortSpecs(config: ViewConfig): SortSpec[] {
   const specs = config.sort ? parseSortConfig(config.sort) : [];
-  return config.groupBy ? [{ property: config.groupBy, direction: "asc" as const }, ...specs] : specs;
+  return config.groupBy ? [{ property: config.groupBy, direction: effectiveGroupDirection(config) }, ...specs] : specs;
 }
 
 /**
@@ -43,8 +72,15 @@ function buildSortSpecs(config: ViewConfig): SortSpec[] {
  * tuple `compileSortKeyset` resumes after. A rollup key's value is read from `computed`, the
  * column its sort expression reads.
  */
-function encodeSortCursor(sortSpecs: SortSpec[], properties: SortProperties, item: ItemRow): string {
+function encodeSortCursor(
+  sortSpecs: SortSpec[],
+  properties: SortProperties,
+  item: ItemRow,
+  groupDirection: GroupDirection,
+): string {
   const payload = {
+    // Written only for `desc`, so tokens issued before `groupDirection` existed stay valid under the default.
+    ...(groupDirection === "desc" ? { g: groupDirection } : {}),
     v: sortSpecs.map((sort) => {
       const source = properties.get(sort.property)?.type === "rollup" ? item.computed : item.properties;
       return source[sort.property] ?? null;
@@ -81,6 +117,7 @@ function decodeSortCursor(
   raw: string,
   sortSpecs: SortSpec[],
   properties: SortProperties,
+  groupDirection: GroupDirection,
 ): { values: unknown[]; id: string } {
   const invalid = new ValidationError("Invalid cursor", { field: "cursor" });
   let payload: unknown;
@@ -91,7 +128,8 @@ function decodeSortCursor(
     throw err;
   }
   if (typeof payload !== "object" || payload === null) throw invalid;
-  const { v, id } = payload as { v?: unknown; id?: unknown };
+  const { v, id, g } = payload as { v?: unknown; id?: unknown; g?: unknown };
+  if ((g ?? "asc") !== groupDirection) throw invalid;
   if (!Array.isArray(v) || v.length !== sortSpecs.length) throw invalid;
   if (typeof id !== "string" || !UUID_RE.test(id)) throw invalid;
   const castable = sortSpecs.every((sort, index) => {
@@ -102,9 +140,23 @@ function decodeSortCursor(
   return { values: v, id };
 }
 
+/**
+ * Appends the database's title property as a last ascending sort key when a sort exists and the
+ * title is not already one, so rows equal on every key order by title (then by id). The title is
+ * part of the sort tuple, hence of the keyset cursor.
+ */
+function withTitleTieBreak(sortSpecs: SortSpec[], properties: PropertyRow[]): SortSpec[] {
+  if (sortSpecs.length === 0) return sortSpecs;
+  const title = properties.find((p) => p.type === "title");
+  if (!title || sortSpecs.some((sort) => sort.property === title.key)) return sortSpecs;
+  return [...sortSpecs, { property: title.key, direction: "asc" }];
+}
+
 interface QueryItemsCoreOptions extends QueryViewOptions {
   filterNode?: FilterNode;
   sortSpecs?: SortSpec[];
+  /** The direction `sortSpecs`' leading group key was built with; the cursor carries it. */
+  groupDirection?: GroupDirection;
 }
 
 /**
@@ -122,25 +174,37 @@ async function queryItemsCore(
   const properties = await listPropertiesByDatabase(client, databaseId);
   const sortProperties: SortProperties = new Map(properties.map((p) => [p.key, p]));
   const filterProperties = filterNode ? await buildFilterProperties(client, properties) : undefined;
-  const sortSpecs = options.sortSpecs ?? [];
+  const collation = collationForLocale(options.locale);
+  const sortSpecs = withTitleTieBreak(options.sortSpecs ?? [], properties);
   const sorted = sortSpecs.length > 0;
+  const groupDirection = options.groupDirection ?? "asc";
   const sortCursor =
-    sorted && options.cursor !== undefined ? decodeSortCursor(options.cursor, sortSpecs, sortProperties) : undefined;
+    sorted && options.cursor !== undefined
+      ? decodeSortCursor(options.cursor, sortSpecs, sortProperties, groupDirection)
+      : undefined;
 
-  return listItems(client, databaseId, {
+  const filterContext = filterNode ? await resolveFilterCompileContext(client, filterNode, options.now) : undefined;
+  const buildFilterSql = filterNode
+    ? (params: unknown[]) => compileFilterNode(filterNode, filterProperties!, params, filterContext)
+    : undefined;
+
+  const page = await listItems(client, databaseId, {
     limit: options.limit,
     cursor: sorted ? undefined : options.cursor,
     includeDeleted: options.includeDeleted,
-    buildFilterSql: filterNode ? (params) => compileFilterNode(filterNode, filterProperties!, params) : undefined,
-    buildOrderBySql: sorted ? (params) => compileSort(sortSpecs, sortProperties, params) : undefined,
+    buildFilterSql,
+    buildOrderBySql: sorted ? (params) => compileSort(sortSpecs, sortProperties, params, collation) : undefined,
     keyset: sorted
       ? {
           buildAfterSql: (params) =>
-            sortCursor ? compileSortKeyset(sortSpecs, sortProperties, sortCursor, params) : undefined,
-          encodeCursor: (last) => encodeSortCursor(sortSpecs, sortProperties, last),
+            sortCursor ? compileSortKeyset(sortSpecs, sortProperties, sortCursor, params, collation) : undefined,
+          encodeCursor: (last) => encodeSortCursor(sortSpecs, sortProperties, last, groupDirection),
         }
       : undefined,
   });
+  if (!options.includeCount) return page;
+  const totalCount = await countItems(client, databaseId, { includeDeleted: options.includeDeleted, buildFilterSql });
+  return { ...page, totalCount };
 }
 
 async function queryFilteredView(
@@ -150,16 +214,14 @@ async function queryFilteredView(
   options: QueryViewOptions,
 ): Promise<QueryViewResult> {
   const sortSpecs = buildSortSpecs(config);
-  const { items, nextCursor } = await queryItemsCore(client, databaseId, {
+  const { items, ...rest } = await queryItemsCore(client, databaseId, {
     ...options,
     filterNode: config.filter,
     sortSpecs,
+    groupDirection: effectiveGroupDirection(config),
   });
 
-  return {
-    items: items.map((item) => ({ ...item, properties: projectProperties(item.properties, config) })),
-    nextCursor,
-  };
+  return { ...rest, items: items.map((item) => ({ ...item, properties: projectProperties(item.properties, config) })) };
 }
 
 /**
@@ -211,7 +273,16 @@ async function queryCuratedView(
   );
   const items = page.map((m) => itemsById.get(m.itemId)).filter((item): item is ItemRow => item !== undefined);
   const lastOnPage = page[page.length - 1];
-  return { items, nextCursor: hasMore && lastOnPage !== undefined ? String(lastOnPage.position) : null };
+  const result: QueryViewResult = {
+    items,
+    nextCursor: hasMore && lastOnPage !== undefined ? String(lastOnPage.position) : null,
+  };
+  if (options.includeCount) {
+    result.totalCount = options.includeDeleted
+      ? (await viewItemsStore.listViewItems(client, view.id)).length
+      : await viewItemsStore.countLiveViewItems(client, view.id);
+  }
+  return result;
 }
 
 export async function queryView(
@@ -266,12 +337,23 @@ function parseInTrashInput(raw: unknown): boolean {
   return raw;
 }
 
+function parseIncludeCountInput(raw: unknown): boolean {
+  if (raw === undefined) return false;
+  if (typeof raw !== "boolean") {
+    throw new ValidationError("'includeCount' must be a boolean", { field: "includeCount" });
+  }
+  return raw;
+}
+
 export interface DatabaseQueryInput {
   filter?: unknown;
   sort?: unknown;
   cursor?: unknown;
   limit?: unknown;
   inTrash?: unknown;
+  includeCount?: unknown;
+  /** Set by the application layer from the actor's `users.locale`; never read from the request body. */
+  locale?: string;
 }
 
 /**
@@ -290,8 +372,17 @@ export async function queryDatabaseItems(
   const limit = parseLimitInput(input.limit);
   const cursor = parseCursorInput(input.cursor, sortSpecs.length === 0);
   const includeDeleted = parseInTrashInput(input.inTrash);
+  const includeCount = parseIncludeCountInput(input.includeCount);
 
-  return queryItemsCore(client, databaseId, { filterNode, sortSpecs, limit, cursor, includeDeleted });
+  return queryItemsCore(client, databaseId, {
+    filterNode,
+    sortSpecs,
+    limit,
+    cursor,
+    includeDeleted,
+    includeCount,
+    locale: input.locale,
+  });
 }
 
 export interface ViewQueryInput {
@@ -300,6 +391,9 @@ export interface ViewQueryInput {
   cursor?: unknown;
   limit?: unknown;
   inTrash?: unknown;
+  includeCount?: unknown;
+  /** Set by the application layer from the actor's `users.locale`; never read from the request body. */
+  locale?: string;
 }
 
 /**
@@ -322,6 +416,7 @@ export async function queryViewItems(
 
   const limit = parseLimitInput(input.limit);
   const includeDeleted = parseInTrashInput(input.inTrash);
+  const includeCount = parseIncludeCountInput(input.includeCount);
 
   if (view.databaseId === null) {
     if (input.filter !== undefined || input.sort !== undefined) {
@@ -330,7 +425,7 @@ export async function queryViewItems(
       });
     }
     const cursor = parseCursorInput(input.cursor, false);
-    return queryCuratedView(client, view, { limit, cursor, includeDeleted });
+    return queryCuratedView(client, view, { limit, cursor, includeDeleted, includeCount });
   }
 
   const config = parseViewConfig(view.config);
@@ -338,15 +433,16 @@ export async function queryViewItems(
   const sortSpecs = input.sort !== undefined ? parseSortConfigInput(input.sort) : buildSortSpecs(config);
   const cursor = parseCursorInput(input.cursor, sortSpecs.length === 0);
 
-  const { items, nextCursor } = await queryItemsCore(client, view.databaseId, {
+  const { items, ...rest } = await queryItemsCore(client, view.databaseId, {
     filterNode,
     sortSpecs,
+    // An ad-hoc `sort` replaces the view's grouping, so there is no group direction to carry.
+    groupDirection: input.sort !== undefined ? "asc" : effectiveGroupDirection(config),
     limit,
     cursor,
     includeDeleted,
+    includeCount,
+    locale: input.locale,
   });
-  return {
-    items: items.map((item) => ({ ...item, properties: projectProperties(item.properties, config) })),
-    nextCursor,
-  };
+  return { ...rest, items: items.map((item) => ({ ...item, properties: projectProperties(item.properties, config) })) };
 }

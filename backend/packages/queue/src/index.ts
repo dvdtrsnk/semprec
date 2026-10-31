@@ -43,6 +43,16 @@ export type QueueJobEnvelope = z.infer<typeof queueJobEnvelopeSchema>;
  */
 export const CORE_TASK_NAMES = {
   ITEM_SEARCH_BACKFILL: "itemSearchBackfill",
+  // Issue #1658: converts one page's blocks to plain text for the item search index, enqueued by a page edit
+  // with a 30-second debounce (`preserve_run_at`).
+  ITEM_SEARCH_PAGE_TEXT: "itemSearchPageText",
+  // Issue #1468: fills mail_message_meta.preview_text/ingested_at for rows that predate them.
+  MAIL_MESSAGE_PREVIEW_BACKFILL: "mailMessagePreviewBackfill",
+  // Issue #1496: removes Gmail pseudo-label folders (UNREAD, STARRED, CATEGORY_*...) and keeps their mail in Archive.
+  MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP: "mailGmailPseudoFolderCleanup",
+  // Issue #1570: threads stored mail that has no thread (sent messages before #1474) and merges copies of one
+  // Message-ID that were split across threads.
+  MAIL_THREAD_BACKFILL: "mailThreadBackfill",
   HEARTBEAT_SWEEP: "heartbeatSweep",
   // Issue #222: the API-runtime half of `heartbeatFire`'s split for every deterministic
   // heartbeat action (including library processing); the agent-session half is
@@ -92,8 +102,11 @@ export const CORE_TASK_NAMES = {
   TRANSCRIPTION_JOB: "transcriptionJob",
   // Issue #643: the hourly sweep that closes every MCP-triggered run whose run-credential expired.
   MCP_RUN_CREDENTIAL_EXPIRY_SWEEP: "mcpRunCredentialExpirySweep",
+  // Issue #1483: the sweep that deletes expired and used mailbox OAuth states.
+  MAIL_OAUTH_STATES_SWEEP: "mailOauthStatesSweep",
   // Issue #692: the daily sweep that deletes pre-checkpoint agent_run_events rows past retention.
   AGENT_RUN_EVENTS_RETENTION: "agentRunEventsRetention",
+  SEMP_PROBLEMS_PRUNE: "sempProblemsPrune",
   // Issue #706: the daily sweep that deletes permanently-failed graphile_worker.jobs rows past retention.
   QUEUE_FAILED_JOBS_PRUNE: "queueFailedJobsPrune",
   // Issue #1043: builds one requested tenant export archive, and the daily sweep that removes
@@ -102,6 +115,8 @@ export const CORE_TASK_NAMES = {
   TENANT_EXPORT_EXPIRY_SWEEP: "tenantExportExpirySweep",
   // Issue #1055: the per-minute sweep that erases every `deleting` tenant and records a tombstone.
   TENANT_PURGE: "tenantPurge",
+  // Issue #1401: the daily sweep that deletes standalone upload blobs nothing references 24 hours after creation.
+  BLOBS_UNREFERENCED_SWEEP: "blobsUnreferencedSweep",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
@@ -116,6 +131,10 @@ export type TaskAffinity = (typeof TASK_AFFINITIES)[number];
  */
 export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: "api",
+  [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: "api",
+  [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "api",
+  [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: "api",
+  [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: "api",
   [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: "api",
   [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: "api",
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: "api",
@@ -137,11 +156,14 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.TRASH_PURGE]: "api",
   [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: "transcribe",
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "api",
+  [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "api",
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "api",
+  [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: "api",
   [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: "api",
   [CORE_TASK_NAMES.TENANT_EXPORT]: "api",
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: "api",
   [CORE_TASK_NAMES.TENANT_PURGE]: "api",
+  [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: "api",
 };
 
 /**
@@ -167,6 +189,10 @@ export type TaskTenancy = "tenant" | "system";
  */
 export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: "tenant",
+  [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: "tenant",
+  [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "system",
+  [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: "system",
+  [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: "system",
   [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: "system",
   [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: "tenant",
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: "tenant",
@@ -188,11 +214,14 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.TRASH_PURGE]: "system",
   [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: "tenant",
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "system",
+  [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "system",
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "system",
+  [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: "system",
   [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: "system",
   [CORE_TASK_NAMES.TENANT_EXPORT]: "tenant",
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: "system",
   [CORE_TASK_NAMES.TENANT_PURGE]: "system",
+  [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: "system",
   [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: "tenant",
   [AGENT_TASK_NAMES.AGENT_RUN]: "tenant",
   [AGENT_TASK_NAMES.DELEGATED_AGENT_RUN]: "tenant",

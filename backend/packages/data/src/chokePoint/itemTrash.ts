@@ -17,10 +17,14 @@ import type { ActionQueueAffinity } from "../scheduler/actions.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import { assertDatabaseNotArchived } from "./databaseGuards.js";
 import { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
+import { TRANSCRIPTION_PREPARE_COMPUTED_KEY } from "../transcription/transcriptionComputedKeys.js";
 import * as blobsStore from "../blobs/blobsStore.js";
 import * as docsStore from "../docs/docsStore.js";
+import * as inboxAttachmentsStore from "../inbox/inboxAttachmentsStore.js";
+import * as itemOriginsStore from "../inbox/itemOriginsStore.js";
 import * as itemAutomationStore from "../library/itemAutomationStore.js";
 import * as taskRecurrenceStore from "../tasks/taskRecurrenceStore.js";
+import type { WriterIdentity } from "./writerKind.js";
 
 /**
  * Transaction-scoped counterpart to `chokePoint.softDeleteItem` (issue #89), factored out for the
@@ -31,7 +35,12 @@ export async function itemDeleteWithClient(
   client: PoolClient,
   databaseId: string,
   itemId: string,
-  options: { queueAffinity: ActionQueueAffinity; actingUserId?: string },
+  options: {
+    queueAffinity: ActionQueueAffinity;
+    actingUserId?: string;
+    /** Accepted and carried so the delete hook can read it without a signature change; not yet consumed. */
+    writer?: WriterIdentity;
+  },
 ): Promise<ItemRow | null> {
   await assertDatabaseNotArchived(client, databaseId);
   const before = await itemsStore.lockItemById(client, databaseId, itemId);
@@ -76,13 +85,18 @@ export async function itemDeleteWithClient(
  * cascade delete touched shares one identical timestamp, which lets this tell "trashed
  * together with the root" apart from a row that happened to already be independently trashed
  * (earlier or later) before this subtree was ever cascaded — restoring the latter would
- * silently resurrect data the user deleted on purpose.
+ * silently resurrect data the user deleted on purpose. Each restored row triggers the `update`
+ * `onItemEvent` heartbeats of its database in this same transaction, as an edit of it does
+ * (issue #1604).
  */
 async function restoreItemWithClient(
   client: PoolClient,
   databaseId: string,
   itemId: string,
+  queueAffinity: ActionQueueAffinity,
   actingUserId?: string,
+  // Accepted and carried so the restore hook can read it without a signature change; not yet consumed.
+  _writer?: WriterIdentity,
 ): Promise<ItemRow | null> {
   await assertDatabaseNotArchived(client, databaseId);
   // Locked for the same reason `softDeleteItem` locks its root: without it, two concurrent
@@ -103,6 +117,7 @@ async function restoreItemWithClient(
     const item = await itemsStore.restoreItem(client, row.databaseId, row.id);
     if (!item) continue;
     if (row.id === itemId) rootResult = item;
+    await triggerOnItemEventHeartbeats(client, row.databaseId, "update", row.id, queueAffinity);
     const edges = await relationsStore.listAllRelationsForItem(client, row.id);
     for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
     runAfterCommit(client, () =>
@@ -171,36 +186,67 @@ function fileBlobId(row: ItemRow): string | null {
   return typeof blobId === "string" && UUID_RE.test(blobId) ? blobId : null;
 }
 
+/** The `computed.prepare` blob ids that are valid UUID strings; a missing or older checkpoint yields none. */
+function derivedBlobIds(row: ItemRow): string[] {
+  const prepare: unknown = row.computed[TRANSCRIPTION_PREPARE_COMPUTED_KEY];
+  if (typeof prepare !== "object" || prepare === null) return [];
+  const original = fileBlobId(row);
+  const ids: string[] = [];
+  for (const key of ["normalizedBlobId", "playbackBlobId"] as const) {
+    const id: unknown = (prepare as Record<string, unknown>)[key];
+    // A playback rendition that is the original blob is not a separate blob; and one id is deleted once.
+    if (typeof id === "string" && UUID_RE.test(id) && id !== original && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
 /**
  * Deletes every row that points at a just-purged item (issue #675). `items` is partitioned with a
  * composite key, so none of these tables carries a Postgres FK to it and nothing else removes
  * them: its relation edges, curated-view memberships, idempotency reservation, doc (whose
  * snapshots, updates, history updates and snapshot history cascade by FK), recurrence rule,
- * automation state and search-index row. Must run in the purge's own transaction, after
- * `itemsStore.hardDeleteItem` has removed `row` — the blob check below relies on the row already
- * being gone.
+ * automation state, origin and search-index row, and its Inbox attachment rows (issue #1564).
+ * Must run in the purge's own transaction, after `itemsStore.hardDeleteItem` has removed `row` —
+ * the blob checks below rely on the row already being gone.
  *
- * The doc, recurrence rule, automation state and blob rows are each deleted through their owning
- * store. For a Files item it also deletes the `blobs` row its `properties.file.blobId` names, but
- * only when nothing else references that blob (`blobsStore.deleteBlobIfUnreferenced`). Returns the
- * deleted blob's `storage_key` so the caller can remove the bytes after the commit, or null when no
- * blob row was deleted.
+ * The doc, recurrence rule, automation state, origin and blob rows are each deleted through their
+ * owning store. Every blob an Inbox attachment row named is released through
+ * `blobsStore.deleteBlobIfUnreferenced` once those rows are gone, so a blob a Files item or another
+ * attachment still names keeps its row. For a Files item it also deletes the `blobs` row its
+ * `properties.file.blobId` names, but only when nothing else references that blob. Returns the
+ * deleted blob's `storage_key`, and the derived blobs named by its `computed.prepare` checkpoint
+ * (`normalizedBlobId`, `playbackBlobId`) are deleted unconditionally through
+ * `blobsStore.deleteDerivedBlob`, since they are one-to-one with the item; a playback id equal to
+ * the original blob is not deleted separately. Returns the `storage_key` of every deleted blob row
+ * so the caller can remove the bytes after the commit.
  */
-export async function deleteItemDependents(
-  client: PoolClient,
-  row: ItemRow,
-): Promise<{ blobStorageKey: string | null }> {
+export async function deleteItemDependents(client: PoolClient, row: ItemRow): Promise<{ blobStorageKeys: string[] }> {
   await client.query("DELETE FROM item_relations WHERE item_a = $1 OR item_b = $1", [row.id]);
   await client.query("DELETE FROM view_items WHERE item_id = $1", [row.id]);
   await client.query("DELETE FROM idempotency_keys WHERE item_id = $1 AND database_id = $2", [row.id, row.databaseId]);
   await docsStore.deleteDocByItemId(client, row.id);
   await taskRecurrenceStore.deleteTaskRecurrence(client, row.id);
   await itemAutomationStore.deleteItemAutomation(client, row.id);
+  await itemOriginsStore.deleteItemOrigin(client, row.id);
   await client.query("DELETE FROM item_search_index WHERE item_id = $1", [row.id]);
 
+  const blobStorageKeys: string[] = [];
+  // The attachment rows go first: a row still present would keep its blob referenced.
+  const attachmentBlobIds = await inboxAttachmentsStore.deleteInboxAttachmentsForItem(client, row.id);
+  for (const id of new Set(attachmentBlobIds)) {
+    const key = await blobsStore.deleteBlobIfUnreferenced(client, id);
+    if (key !== null) blobStorageKeys.push(key);
+  }
   const blobId = fileBlobId(row);
-  if (!blobId) return { blobStorageKey: null };
-  return { blobStorageKey: await blobsStore.deleteBlobIfUnreferenced(client, blobId) };
+  if (blobId) {
+    const key = await blobsStore.deleteBlobIfUnreferenced(client, blobId);
+    if (key !== null) blobStorageKeys.push(key);
+  }
+  for (const id of derivedBlobIds(row)) {
+    const key = await blobsStore.deleteDerivedBlob(client, id);
+    if (key !== null) blobStorageKeys.push(key);
+  }
+  return { blobStorageKeys };
 }
 
 export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAffinity">) {
@@ -212,15 +258,27 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
      * anywhere in that subtree must be unarchived, or the entire cascade is rejected and nothing
      * is written; a database midway down the tree being archived is not a partial success.
      */
-    async softDeleteItem(databaseId: string, itemId: string, actingUserId?: string): Promise<ItemRow | null> {
+    async softDeleteItem(
+      databaseId: string,
+      itemId: string,
+      actingUserId?: string,
+      writer?: WriterIdentity,
+    ): Promise<ItemRow | null> {
       return withTransaction(pool, (client) =>
-        itemDeleteWithClient(client, databaseId, itemId, { queueAffinity, actingUserId }),
+        itemDeleteWithClient(client, databaseId, itemId, { queueAffinity, actingUserId, writer }),
       );
     },
 
     /** Runs `restoreItemWithClient` in its own transaction. */
-    async restoreItem(databaseId: string, itemId: string, actingUserId?: string): Promise<ItemRow | null> {
-      return withTransaction(pool, (client) => restoreItemWithClient(client, databaseId, itemId, actingUserId));
+    async restoreItem(
+      databaseId: string,
+      itemId: string,
+      actingUserId?: string,
+      writer?: WriterIdentity,
+    ): Promise<ItemRow | null> {
+      return withTransaction(pool, (client) =>
+        restoreItemWithClient(client, databaseId, itemId, queueAffinity, actingUserId, writer),
+      );
     },
 
     /**
@@ -274,8 +332,7 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
           const removed = await itemsStore.hardDeleteItem(client, row.databaseId, row.id);
           if (!removed) continue;
           purgedItemIds.push(row.id);
-          const { blobStorageKey } = await deleteItemDependents(client, row);
-          if (blobStorageKey !== null) blobStorageKeys.push(blobStorageKey);
+          blobStorageKeys.push(...(await deleteItemDependents(client, row)).blobStorageKeys);
         }
 
         // Keyed off the purged owners rather than `subtreeDatabaseIds`: a nested row is usually an

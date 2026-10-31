@@ -5,6 +5,7 @@ import { NotFoundError, ValidationError } from "../errors.js";
 import { getDatabase } from "../chokePoint/databasesStore.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { requireAffectedRows, requireSingleRow, withTransaction } from "../db/pool.js";
+import { assertKnownValue } from "../dbRowValidation.js";
 import { computeNextFireAt } from "./nextFireAt.js";
 import {
   isFloatingRuleKind,
@@ -15,11 +16,15 @@ import {
   type HeartbeatRuleKindRegistry,
 } from "./rule.js";
 import {
+  CORE_AGENT_RUN_ACTION_ID,
   createActionQueueAffinity,
   resolveAgentRunLane,
   resolveHeartbeatFireTaskName,
   type ActionQueueAffinity,
 } from "./actions.js";
+
+export const HEARTBEAT_ORIGINS = ["user", "system"] as const;
+export type HeartbeatOrigin = (typeof HEARTBEAT_ORIGINS)[number];
 
 export interface HeartbeatRow {
   id: string;
@@ -32,6 +37,8 @@ export interface HeartbeatRow {
   nextFireAt: string | null;
   lastFiredAt: string | null;
   lastError: string | null;
+  /** `user` when a person asked Semp to create it, `system` for seeds and internal upserts. */
+  origin: HeartbeatOrigin;
 }
 
 /** The raw `project_heartbeats` row shape this module reads back from Postgres. */
@@ -46,6 +53,7 @@ type HeartbeatDbRow = {
   next_fire_at: Date | null;
   last_fired_at: Date | null;
   last_error: string | null;
+  origin: string;
 };
 
 function mapRow(
@@ -73,11 +81,12 @@ function mapRow(
     nextFireAt: row.next_fire_at ? row.next_fire_at.toISOString() : null,
     lastFiredAt: row.last_fired_at ? row.last_fired_at.toISOString() : null,
     lastError: row.last_error,
+    origin: assertKnownValue(HEARTBEAT_ORIGINS, row.origin, "heartbeat origin"),
   };
 }
 
 const COLUMNS =
-  "id, project_item_id, name, rule, action_id, action_config, enabled, next_fire_at, last_fired_at, last_error";
+  "id, project_item_id, name, rule, action_id, action_config, enabled, next_fire_at, last_fired_at, last_error, origin";
 
 export interface CreateHeartbeatInput {
   projectItemId: string;
@@ -86,6 +95,8 @@ export interface CreateHeartbeatInput {
   actionId: string;
   actionConfig?: Record<string, unknown>;
   enabled?: boolean;
+  /** Defaults to `system`; only the heartbeat.create tool writes `user`. */
+  origin?: HeartbeatOrigin;
 }
 
 /** An `onItemEvent` rule must name a database visible in the caller's tenant; a foreign id fails like a missing one. */
@@ -110,8 +121,8 @@ export async function createHeartbeat(
     enabled && !isOnItemEventRule(rule) ? await computeNextFireAtNow(client, rule, moduleRuleKinds) : null;
 
   const { rows } = await client.query<HeartbeatDbRow>(
-    `INSERT INTO project_heartbeats (project_item_id, name, rule, action_id, action_config, enabled, next_fire_at)
-     VALUES ($1, $2, $3::jsonb, $4, $5::jsonb, $6, $7)
+    `INSERT INTO project_heartbeats (project_item_id, name, rule, action_id, action_config, enabled, next_fire_at, origin)
+     VALUES ($1, $2, $3::jsonb, $4, $5::jsonb, $6, $7, $8)
      RETURNING ${COLUMNS}`,
     [
       input.projectItemId,
@@ -121,6 +132,7 @@ export async function createHeartbeat(
       JSON.stringify(input.actionConfig ?? {}),
       enabled,
       nextFireAt,
+      input.origin ?? "system",
     ],
   );
   return mapRow(requireSingleRow(rows, "project_heartbeats row"), moduleRuleKinds);
@@ -191,6 +203,29 @@ export async function getHeartbeatForProject(
 }
 
 /**
+ * The manual-fire lookup (issue #1453): the heartbeat by id, scoped to one project when
+ * `projectItemId` is given and to the tenant alone when it is `null`, row-locked with
+ * `FOR UPDATE`. The lock is what makes the enabled check and the enqueue that follow it in the
+ * same transaction hold against a concurrent `setHeartbeatEnabled`, which takes the same row lock
+ * to update it. Must run on a `PoolClient` inside `withTransaction`: `FOR UPDATE` on a bare pool
+ * releases its lock after the one statement.
+ */
+export async function lockHeartbeatForManualFire(
+  client: PoolClient,
+  heartbeatId: string,
+  projectItemId: string | null,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<HeartbeatRow | null> {
+  const { rows } = await client.query<HeartbeatDbRow>(
+    `SELECT ${COLUMNS} FROM project_heartbeats
+     WHERE id = $1 AND ($2::uuid IS NULL OR project_item_id = $2::uuid)
+     FOR UPDATE`,
+    [heartbeatId, projectItemId],
+  );
+  return rows[0] ? mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true }) : null;
+}
+
+/**
  * Recomputes next_fire_at using the same pure function as the sweep — deterministic at write
  * time. Only the row's `enabled` flag is needed from the *current* state — never its current
  * rule — so replacing a heartbeat whose existing rule kind's module was deactivated (e.g. to
@@ -219,6 +254,72 @@ export async function updateHeartbeatRule(
     [id, JSON.stringify(rule), nextFireAt],
   );
   return mapRow(requireSingleRow(rows, "project_heartbeats row"), moduleRuleKinds);
+}
+
+export const HEARTBEAT_NAME_MAX_LENGTH = 200;
+export const HEARTBEAT_TASK_MAX_LENGTH = 4000;
+
+/**
+ * Renames a heartbeat (`project_heartbeats.name`, the title of an automation). Touches nothing
+ * else: `rule`, `enabled` and `next_fire_at` are left as they are, so a rule whose module was
+ * deactivated does not block a rename. Returns null when no heartbeat with this id is visible
+ * to the caller's tenant.
+ */
+export async function updateHeartbeatName(
+  client: Pool | PoolClient,
+  id: string,
+  name: string,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<HeartbeatRow | null> {
+  const trimmed = typeof name === "string" ? name.trim() : "";
+  if (trimmed.length === 0 || trimmed.length > HEARTBEAT_NAME_MAX_LENGTH) {
+    throw new ValidationError(`'name' must be 1-${HEARTBEAT_NAME_MAX_LENGTH} characters after trimming`, {
+      field: "name",
+    });
+  }
+  const { rows, rowCount } = await client.query<HeartbeatDbRow>(
+    `UPDATE project_heartbeats SET name = $2 WHERE id = $1 RETURNING ${COLUMNS}`,
+    [id, trimmed],
+  );
+  // Zero rows is a valid outcome: no heartbeat with this id is visible to the caller's tenant.
+  return rowCount && rows[0] ? mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true }) : null;
+}
+
+/**
+ * Sets `action_config.task` of a `core.agentRun` heartbeat, keeping every other `action_config`
+ * key. Returns null when no heartbeat with this id is visible to the caller's tenant; a heartbeat
+ * with another action is a validation error, because only `core.agentRun` reads `task`.
+ */
+export async function updateHeartbeatTask(
+  client: Pool | PoolClient,
+  id: string,
+  task: string,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<HeartbeatRow | null> {
+  if (typeof task !== "string" || task.trim().length === 0 || task.length > HEARTBEAT_TASK_MAX_LENGTH) {
+    throw new ValidationError(`'task' must be a non-empty string of at most ${HEARTBEAT_TASK_MAX_LENGTH} characters`, {
+      field: "task",
+    });
+  }
+  // The action check is part of the UPDATE's WHERE, so a concurrent action change cannot slip
+  // between a check and the write.
+  const { rows, rowCount } = await client.query<HeartbeatDbRow>(
+    `UPDATE project_heartbeats
+     SET action_config = jsonb_set(action_config, '{task}', to_jsonb($2::text))
+     WHERE id = $1 AND action_id = $3
+     RETURNING ${COLUMNS}`,
+    [id, task, CORE_AGENT_RUN_ACTION_ID],
+  );
+  // Zero rows is a valid outcome: the heartbeat is invisible to the tenant or has another action.
+  if (rowCount && rows[0]) return mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true });
+  const { rows: existing } = await client.query<{ action_id: string }>(
+    `SELECT action_id FROM project_heartbeats WHERE id = $1`,
+    [id],
+  );
+  if (!existing[0]) return null;
+  throw new ValidationError(`Heartbeat action '${existing[0].action_id}' has no task to change`, {
+    field: "actionId",
+  });
 }
 
 /** Disabling is a plain flag flip; re-enabling recomputes from now — occurrences missed while paused are not caught up. */
@@ -313,6 +414,28 @@ export function occurrenceFireJobKey(heartbeatId: string, occurrenceId: string, 
  */
 export function manualHeartbeatFireJobKey(heartbeatId: string): string {
   return `heartbeat-fire:manual:${heartbeatId}`;
+}
+
+/**
+ * Whether a fire job of this heartbeat is waiting for a worker or running on one (issue #1453's
+ * manual trigger refuses while one is). Matches the manual key and the scheduler keys the fire paths
+ * build (`occurrenceFireJobKey`, and `heartbeatFireJobKey` with an item suffix), which all start with
+ * `heartbeatFireJobKey(id)` followed by `:`. A job counts only
+ * while it can still run: locked, or with attempts left. A permanently failed job keeps its key
+ * until `queueFailedJobsPrune` deletes it, and a keyed enqueue revives it, so it must not block.
+ * Reads the `jobs` view of graphile-worker 0.17.3 (`key`, `locked_at`, `attempts`, `max_attempts`),
+ * the same read `findTranscriptionJobId` makes.
+ */
+export async function hasWaitingHeartbeatFireJob(client: Pool | PoolClient, heartbeatId: string): Promise<boolean> {
+  const { rows } = await client.query<{ waiting: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM graphile_worker.jobs
+       WHERE (key = $1 OR starts_with(key, $2))
+         AND (locked_at IS NOT NULL OR attempts < max_attempts)
+     ) AS waiting`,
+    [manualHeartbeatFireJobKey(heartbeatId), `${heartbeatFireJobKey(heartbeatId)}:`],
+  );
+  return requireSingleRow(rows, "heartbeat fire job lookup").waiting;
 }
 
 /**
@@ -605,12 +728,13 @@ export async function prepareHeartbeatOccurrenceFire(
       next_fire_at: Date | null;
       last_fired_at: Date | null;
       last_error: string | null;
+      origin: string;
       first_started_at: Date | null;
       generation: number;
       rules_match: boolean;
     }>(
       `SELECT h.id, h.project_item_id, h.name, h.rule, h.action_id, h.action_config, h.enabled,
-              h.next_fire_at, h.last_fired_at, h.last_error,
+              h.next_fire_at, h.last_fired_at, h.last_error, h.origin,
               o.first_started_at, o.generation, (h.rule = o.rule_snapshot) AS rules_match
        FROM heartbeat_occurrences o
        JOIN project_heartbeats h ON h.id = o.heartbeat_id

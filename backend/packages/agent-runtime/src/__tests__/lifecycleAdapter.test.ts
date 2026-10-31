@@ -157,11 +157,12 @@ describe("runAgentSession", () => {
       runAgentSession(pool, { createAgentSession, task: "fails", triggeredBy: "supervisor" }),
     ).rejects.toThrow("boom");
 
-    const { rows } = await pool.query<{ status: string; result: string | null }>(
-      "SELECT status, result FROM agent_runs WHERE task = 'fails'",
+    const { rows } = await pool.query<{ status: string; result: string | null; error_code: string | null }>(
+      "SELECT status, result, error_code FROM agent_runs WHERE task = 'fails'",
     );
     expect(rows[0]!.status).toBe("error");
     expect(rows[0]!.result).toBe("boom");
+    expect(rows[0]!.error_code).toBe("internal");
   });
 
   it("announces durable events as thin references and sends message_update only on the ephemeral stream", async () => {
@@ -476,6 +477,28 @@ describe("runAgentTurn cancellation", () => {
     expect(session.returnCalls()).toBe(1);
   });
 
+  it("closes a run stopped by AgentRunCancelledError with the cancelled code", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { createAgentSession } = {
+      createAgentSession: (() => ({ messages: async function* () {} })) as CreateAgentSession,
+    };
+
+    await expect(
+      runAgentSession(pool, {
+        createAgentSession,
+        task: "cancelled run",
+        triggeredBy: "supervisor",
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(AgentRunCancelledError);
+
+    const { rows } = await pool.query<{ status: string; error_code: string | null }>(
+      "SELECT status, error_code FROM agent_runs WHERE task = 'cancelled run'",
+    );
+    expect(rows).toEqual([{ status: "error", error_code: "cancelled" }]);
+  });
+
   it("stops before the next message when the signal aborts while a message is being recorded", async () => {
     const run = await openRun();
     const session = hangingSession([{ kind: "turn_start" }, { kind: "turn_end" }]);
@@ -584,5 +607,62 @@ describe("runAgentTurn cancellation", () => {
     expect(notifications).toEqual([{ count: "1" }]);
     expect(session.returnCalls()).toBe(1);
     expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ signal: controller.signal }));
+  });
+});
+
+describe("runAgentTurn onFirstEvent", () => {
+  async function newRun(): Promise<AgentRunRow> {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "first event" });
+    await pushRunStatus(pool, run.id, "running");
+    return run;
+  }
+
+  async function* messagesOf(...messages: AgentMessage[]): AsyncGenerator<AgentMessage> {
+    for (const message of messages) yield message;
+  }
+
+  it("reports the stored row id of the first persisted event once, skipping live deltas", async () => {
+    const run = await newRun();
+    const seen: string[] = [];
+
+    await runAgentTurn(
+      pool,
+      run.id,
+      messagesOf(
+        { kind: "message_update", text: "d" },
+        { kind: "turn_start" },
+        { kind: "message", text: "hi" },
+        { kind: "turn_end" },
+      ),
+      undefined,
+      undefined,
+      (eventId) => {
+        seen.push(eventId);
+      },
+    );
+
+    const { rows } = await pool.query<{ id: string; kind: string }>(
+      `SELECT id, kind FROM agent_run_events WHERE agent_run_id = $1 AND kind <> 'run_status' ORDER BY id`,
+      [run.id],
+    );
+    expect(seen).toEqual([rows[0]!.id]);
+    expect(rows[0]!.kind).toBe("turn_start");
+  });
+
+  it("ends the turn with the hook's error before the next message is pulled", async () => {
+    const run = await newRun();
+    let pulledSecond = false;
+    async function* messages(): AsyncGenerator<AgentMessage> {
+      yield { kind: "turn_start" };
+      pulledSecond = true;
+      yield { kind: "message", text: "hi" };
+    }
+
+    await expect(
+      runAgentTurn(pool, run.id, messages(), undefined, undefined, () => {
+        throw new Error("hook failed");
+      }),
+    ).rejects.toThrow("hook failed");
+    expect(pulledSecond).toBe(false);
   });
 });

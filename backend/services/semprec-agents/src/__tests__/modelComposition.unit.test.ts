@@ -147,4 +147,61 @@ describe("createGatewayModel (issue #647)", () => {
       expect(headers).not.toHaveProperty("x-semprec-tenant-id");
     });
   });
+
+  describe("budget refusal capture", () => {
+    const REQUEST = { messages: [{ role: "user" as const, content: "hi", timestamp: 0 }] };
+
+    async function listenWith(handler: (url: string, res: import("node:http").ServerResponse) => void) {
+      server = createServer((req, res) => {
+        req.resume();
+        req.on("end", () => handler(req.headers["x-case"] as string, res));
+      });
+      await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+      const { port } = server.address() as AddressInfo;
+      return createGatewayModel({ ...COMPLETE_ENV, AI_GATEWAY_BASE_URL: `http://127.0.0.1:${port}/internal/pi` });
+    }
+
+    const refuse =
+      (status: number, headers: Record<string, string>) => (_c: string, res: import("node:http").ServerResponse) => {
+        res.writeHead(status, { "content-type": "application/json", ...headers });
+        res.end(JSON.stringify({ error: "AI budget exceeded", code: "budget_exceeded" }));
+      };
+
+    async function finalMessage(gateway: Awaited<ReturnType<typeof listenWith>>, headers: Record<string, string> = {}) {
+      const reply = await gateway.streamFn(gateway.model, REQUEST, { headers, maxRetries: 0 });
+      return reply.result();
+    }
+
+    it("recognizes a 403 with the budget header, compared case-insensitively", async () => {
+      const gateway = await listenWith(refuse(403, { "X-Semprec-Error-Code": "budget_exceeded" }));
+      const message = await finalMessage(gateway);
+      expect(message.stopReason).toBe("error");
+      expect(gateway.isBudgetRefusal(message)).toBe(true);
+    });
+
+    it.each([
+      ["a 403 without the header", 403, {}],
+      ["a 403 with another code", 403, { "x-semprec-error-code": "other" }],
+      ["a 400 with the budget header", 400, { "x-semprec-error-code": "budget_exceeded" }],
+      ["a 500", 500, {}],
+    ])("does not recognize %s", async (_name, status, headers) => {
+      const gateway = await listenWith(refuse(status, headers));
+      const message = await finalMessage(gateway);
+      expect(message.stopReason).toBe("error");
+      expect(gateway.isBudgetRefusal(message)).toBe(false);
+    });
+
+    it("marks only the refused call when two run concurrently", async () => {
+      const gateway = await listenWith((which, res) => {
+        if (which === "refuse") refuse(403, { "x-semprec-error-code": "budget_exceeded" })("", res);
+        else refuse(500, {})("", res);
+      });
+      const [refused, failed] = await Promise.all([
+        finalMessage(gateway, { "x-case": "refuse" }),
+        finalMessage(gateway, { "x-case": "fail" }),
+      ]);
+      expect(gateway.isBudgetRefusal(refused)).toBe(true);
+      expect(gateway.isBudgetRefusal(failed)).toBe(false);
+    });
+  });
 });

@@ -1,3 +1,4 @@
+import { validationIssueField } from "../validationIssueField.js";
 import { describe, expect, it } from "vitest";
 import {
   DatabaseArchiveInputSchema,
@@ -19,7 +20,9 @@ import {
   PropertyListInputSchema,
   PropertyPatchInputSchema,
   RelationDeleteInputSchema,
+  RelationListInputSchema,
   RelationPutInputSchema,
+  PageRestoreVersionInputSchema,
   ViewCreateInputSchema,
   ViewDeleteInputSchema,
   ViewGetInputSchema,
@@ -61,6 +64,8 @@ const ALL_SCHEMAS = [
   DatabaseQueryInputSchema,
   RelationPutInputSchema,
   RelationDeleteInputSchema,
+  RelationListInputSchema,
+  PageRestoreVersionInputSchema,
 ];
 
 describe("every generic-operation input schema", () => {
@@ -75,6 +80,45 @@ describe("every generic-operation input schema", () => {
 });
 
 describe("DatabaseCreateInputSchema", () => {
+  it("accepts titlePropertyName and a properties list of the allowed types", () => {
+    const result = DatabaseCreateInputSchema.safeParse({
+      name: "Gifts",
+      titlePropertyName: "Název",
+      properties: [
+        { key: "recipient", name: "Recipient", type: "text" },
+        { key: "link", name: "Link", type: "relation", targetDatabaseId: "db", cardinality: "one_to_many" },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects duplicate keys naming the key, the title key, more than 50 entries and disallowed types", () => {
+    const dup = DatabaseCreateInputSchema.safeParse({
+      name: "G",
+      properties: [
+        { key: "a", name: "A", type: "text" },
+        { key: "a", name: "B", type: "text" },
+      ],
+    });
+    expect(dup.success).toBe(false);
+    expect(JSON.stringify(dup.error?.issues)).toContain("'a'");
+    expect(
+      DatabaseCreateInputSchema.safeParse({ name: "G", properties: [{ key: "name", name: "N", type: "text" }] })
+        .success,
+    ).toBe(false);
+    const many = Array.from({ length: 51 }, (_, i) => ({ key: `k${i}`, name: "K", type: "text" }));
+    expect(DatabaseCreateInputSchema.safeParse({ name: "G", properties: many }).success).toBe(false);
+    for (const type of ["rollup", "title", "multi_select"]) {
+      expect(
+        DatabaseCreateInputSchema.safeParse({ name: "G", properties: [{ key: "k", name: "K", type }] }).success,
+      ).toBe(false);
+    }
+    expect(
+      DatabaseCreateInputSchema.safeParse({ name: "G", properties: [{ key: "k", name: "K", type: "relation" }] })
+        .success,
+    ).toBe(false);
+  });
+
   it("accepts a bare name", () => {
     expect(DatabaseCreateInputSchema.safeParse({ name: "Tasks" }).success).toBe(true);
   });
@@ -83,6 +127,37 @@ describe("DatabaseCreateInputSchema", () => {
     "rejects the server-derived field '%s'",
     (field) => {
       expect(DatabaseCreateInputSchema.safeParse({ name: "Tasks", [field]: "x" }).success).toBe(false);
+    },
+  );
+});
+
+describe("database icon and color inputs", () => {
+  it("normalizes a create color to upper case and keeps a valid icon", () => {
+    const parsed = DatabaseCreateInputSchema.parse({ name: "Gifts", icon: "gift", color: "#34c759" });
+    expect(parsed).toEqual({ name: "Gifts", icon: "gift", color: "#34C759" });
+  });
+
+  it.each([{ color: "red" }, { color: "#12345" }, { color: "#GGGGGG" }, { icon: "my icon" }, { icon: "Gift" }])(
+    "rejects the create input %j",
+    (extra) => {
+      expect(DatabaseCreateInputSchema.safeParse({ name: "Gifts", ...extra }).success).toBe(false);
+    },
+  );
+
+  it("accepts null to reset icon and color in a patch, and normalizes the color", () => {
+    expect(DatabasePatchInputSchema.parse({ databaseId: "d", patch: { icon: null, color: null } }).patch).toEqual({
+      icon: null,
+      color: null,
+    });
+    expect(DatabasePatchInputSchema.parse({ databaseId: "d", patch: { color: "#007aff" } }).patch).toEqual({
+      color: "#007AFF",
+    });
+  });
+
+  it.each([{ color: "red" }, { color: "#12345" }, { icon: "my icon" }, { icon: "" }, { unknown: 1 }])(
+    "rejects the patch %j",
+    (patch) => {
+      expect(DatabasePatchInputSchema.safeParse({ databaseId: "d", patch }).success).toBe(false);
     },
   );
 });
@@ -221,4 +296,97 @@ describe("RelationDeleteInputSchema", () => {
       }).success,
     ).toBe(false);
   });
+});
+
+describe("RelationListInputSchema (issue #1404)", () => {
+  it("requires an itemId and takes the relation property as an optional narrowing", () => {
+    expect(RelationListInputSchema.safeParse({ itemId: "i1" }).success).toBe(true);
+    expect(RelationListInputSchema.safeParse({ itemId: "i1", relationPropertyId: "p1" }).success).toBe(true);
+    expect(RelationListInputSchema.safeParse({ relationPropertyId: "p1" }).success).toBe(false);
+  });
+
+  it("rejects an unknown key, such as a relation direction or a metadata field", () => {
+    expect(RelationListInputSchema.safeParse({ itemId: "i1", propertyKey: "assignedTo" }).success).toBe(false);
+    expect(RelationListInputSchema.safeParse({ itemId: "i1", direction: "out" }).success).toBe(false);
+  });
+});
+
+describe("PageRestoreVersionInputSchema (issue #1617)", () => {
+  it("requires an itemId and an ISO 8601 timestamp with an offset", () => {
+    expect(PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "2026-10-01T10:00:00Z" }).success).toBe(true);
+    expect(PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "2026-10-01T10:00:00.250+02:00" }).success).toBe(
+      true,
+    );
+  });
+
+  it("rejects a missing itemId, a missing or non-ISO at, and an at without an offset", () => {
+    expect(PageRestoreVersionInputSchema.safeParse({ at: "2026-10-01T10:00:00Z" }).success).toBe(false);
+    expect(PageRestoreVersionInputSchema.safeParse({ itemId: "i1" }).success).toBe(false);
+    expect(PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "yesterday" }).success).toBe(false);
+    expect(PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "2026-10-01T10:00:00" }).success).toBe(false);
+  });
+
+  it("rejects an unknown key, such as a page id or a userId", () => {
+    expect(
+      PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "2026-10-01T10:00:00Z", pageId: "p" }).success,
+    ).toBe(false);
+    expect(
+      PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "2026-10-01T10:00:00Z", userId: "u" }).success,
+    ).toBe(false);
+  });
+});
+
+describe("include on item reads (issue #1403)", () => {
+  it.each([
+    ["item.get", ItemGetInputSchema, { itemId: "i1" }],
+    ["database.query", DatabaseQueryInputSchema, { databaseId: "d1" }],
+    ["view.query", ViewQueryInputSchema, { viewId: "v1" }],
+  ] as const)("%s accepts include links and rejects an unknown include value", (_name, schema, base) => {
+    expect(schema.safeParse({ ...base, include: ["links"] }).success).toBe(true);
+    expect(schema.safeParse(base).success).toBe(true);
+    expect(schema.safeParse({ ...base, include: ["comments"] }).success).toBe(false);
+  });
+});
+
+describe("relation expansion include contract", () => {
+  for (const [schema, base] of [
+    [ItemGetInputSchema, { itemId: "i" }],
+    [DatabaseQueryInputSchema, { databaseId: "d" }],
+    [ViewQueryInputSchema, { viewId: "v" }],
+  ] as const) {
+    it("accepts legacy links and combined object includes", () => {
+      for (const include of [
+        [],
+        ["links"],
+        { links: true },
+        { links: false },
+        { relations: {} },
+        { links: true, relations: { projects: ["area"] } },
+      ]) {
+        expect(schema.safeParse({ ...base, include }).success).toBe(true);
+      }
+    });
+    it("bounds keys/projections and rejects malformed object includes", () => {
+      for (const include of [
+        { relations: Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`r${i}`, []])) },
+        { relations: { projects: Array(11).fill("name") } },
+        { relations: { projects: [""] } },
+        { unknown: true },
+        { links: "yes" },
+      ]) {
+        expect(schema.safeParse({ ...base, include }).success).toBe(false);
+      }
+    });
+  }
+});
+
+it("names the offending relation include field in schema failures", () => {
+  for (const [relations, field] of [
+    [Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`r${i}`, []])), "include.relations"],
+    [{ companies: Array(11).fill("name") }, "include.relations.companies"],
+  ] as const) {
+    const parsed = ItemGetInputSchema.safeParse({ itemId: "id", include: { relations } });
+    if (parsed.success) throw new Error("Expected invalid relation include");
+    expect(validationIssueField(parsed.error.issues)).toBe(field);
+  }
 });

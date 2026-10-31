@@ -72,7 +72,9 @@ export function createPool(connectionString: string, options: CreatePoolOptions 
     connectionString,
     connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
     Client: DetachedScopeClient,
-    ...(options.role ? { options: `-c role=${options.role}` } : {}),
+    // A startup option holds for every pooled connection from its first statement, so a
+    // `timestamptz` cast of an offset-less string never depends on the server's configured zone.
+    options: options.role ? `-c TimeZone=UTC -c role=${options.role}` : "-c TimeZone=UTC",
     ...(statementTimeoutMs > 0 ? { statement_timeout: statementTimeoutMs } : {}),
   });
   // pg's Pool emits 'error' when an idle client is dropped by the server (restart,

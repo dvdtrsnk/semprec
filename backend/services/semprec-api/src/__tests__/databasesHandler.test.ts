@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -9,6 +10,7 @@ import {
   createChokePoint,
   createUser,
   createViewTypeRegistry,
+  ForbiddenError,
   hashPassword,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
@@ -21,6 +23,10 @@ import {
 import { createGenericApplicationService } from "@semprec/application";
 import { createDispatcher } from "../app.js";
 import { createDatabaseRoutes } from "../databasesHandler.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 const PASSWORD = "s3cret-password";
 const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
@@ -47,9 +53,15 @@ async function authHeader(locale = "en"): Promise<{ Authorization: string }> {
 interface DatabaseBody {
   id: string;
   name: string;
+  searchPlaceholder: string | null;
   key: string | null;
   system: boolean;
   archivedAt: string | null;
+  icon: string | null;
+  color: string | null;
+  overviewOrder: number | null;
+  switcherOrder: number | null;
+  clientVisible: boolean;
 }
 
 interface PropertyCatalogBody {
@@ -249,12 +261,317 @@ describe("database routes (issue #240)", () => {
     expect(unauthenticated.status).toBe(401);
   });
 
+  async function listPage(query: string): Promise<{ databases: DatabaseBody[]; nextCursor: string | null }> {
+    const res = await fetch(`${baseUrl}/api/databases${query}`, { headers: await authHeader() });
+    expect(res.status).toBe(200);
+    return (await res.json()) as { databases: DatabaseBody[]; nextCursor: string | null };
+  }
+
+  it("orders by switcher order, then overview-only order, then by name, and carries the descriptor metadata", async () => {
+    await chokePoint.createDatabase({ name: "alpha custom" });
+    const { databases } = await listPage("?limit=200");
+    const keys = databases.map((db) => db.key);
+    expect(keys.slice(0, 8)).toEqual([
+      "projects",
+      "tasks",
+      "events",
+      "journal",
+      "people",
+      "companies",
+      "files",
+      "healthRecords",
+    ]);
+    const overviewOnly = databases.filter((db) => db.switcherOrder === null && db.overviewOrder !== null);
+    expect(overviewOnly.map((db) => db.overviewOrder)).toEqual([...overviewOnly.map((db) => db.overviewOrder)].sort());
+    expect(keys.indexOf("books") === -1 || keys.indexOf("books") === 8).toBe(true);
+    const rest = databases.slice(8 + overviewOnly.length).map((db) => db.name.toLowerCase());
+    expect(rest).toEqual([...rest].sort((a, b) => a.localeCompare(b)));
+
+    const byKey = new Map(databases.map((db) => [db.key, db]));
+    expect(byKey.get("projects")).toMatchObject({
+      icon: "folder",
+      color: "#007AFF",
+      overviewOrder: 1,
+      switcherOrder: 1,
+      clientVisible: true,
+    });
+    expect(byKey.get("tasks")).toMatchObject({ overviewOrder: null, switcherOrder: 2, clientVisible: true });
+    expect(byKey.get("journal")).toMatchObject({ overviewOrder: null, switcherOrder: 4, clientVisible: true });
+    expect(byKey.get("healthRecords")).toMatchObject({ overviewOrder: 6, switcherOrder: 8 });
+    for (const key of ["areas", "transcripts"]) {
+      expect(byKey.get(key)).toMatchObject({ overviewOrder: null, switcherOrder: null, clientVisible: true });
+    }
+    for (const key of ["books", "movies", "emails"]) {
+      const db = byKey.get(key);
+      if (db) expect(db).toMatchObject({ switcherOrder: null, clientVisible: true });
+    }
+    for (const db of databases.filter(
+      (d) =>
+        d.system &&
+        !["areas", "transcripts", "books", "movies", "emails"].includes(d.key ?? "") &&
+        d.overviewOrder === null &&
+        d.switcherOrder === null,
+    )) {
+      expect(db.clientVisible).toBe(false);
+    }
+    const custom = databases.find((db) => db.name === "alpha custom");
+    expect(custom).toMatchObject({
+      system: false,
+      clientVisible: true,
+      icon: "database",
+      color: "#FF9500",
+      overviewOrder: null,
+      switcherOrder: null,
+    });
+  });
+
+  it("resolves the search placeholder per locale, a generic sentence for user databases and null without an entry", async () => {
+    await chokePoint.createDatabase({ name: "Custom placeholder" });
+    const list = async (locale: string): Promise<DatabaseBody[]> => {
+      const res = await fetch(`${baseUrl}/api/databases?limit=200`, { headers: await authHeader(locale) });
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { databases: DatabaseBody[] }).databases;
+    };
+    const cs = await list("cs");
+    const en = await list("en");
+    const byKey = (databases: DatabaseBody[], key: string): DatabaseBody | undefined =>
+      databases.find((db) => db.key === key);
+    expect(byKey(cs, "people")?.searchPlaceholder).toBe("Hledat v Lidech");
+    expect(byKey(cs, "movies")?.searchPlaceholder).toBe("Hledat ve filmech a seriálech");
+    expect(byKey(en, "projects")?.searchPlaceholder).toBe("Search projects");
+    expect(cs.find((db) => db.name === "Custom placeholder")?.searchPlaceholder).toBe("Hledat ve sbírce");
+    expect(en.find((db) => db.name === "Custom placeholder")?.searchPlaceholder).toBe("Search collection");
+    const internal = cs.filter((db) => db.system && !db.clientVisible);
+    expect(internal.length).toBeGreaterThan(0);
+    for (const db of internal) expect(db.searchPlaceholder, `database ${db.key}`).toBeNull();
+
+    const detail = await fetch(`${baseUrl}/api/databases/${byKey(cs, "people")?.id}`, {
+      headers: await authHeader("cs"),
+    });
+    expect(((await detail.json()) as DatabaseBody).searchPlaceholder).toBe("Hledat v Lidech");
+  });
+
+  it("walks every database exactly once with limit=2 and resumes after the cursor row was archived", async () => {
+    await chokePoint.createDatabase({ name: "Zeta custom" });
+    const all = (await listPage("?limit=200")).databases.map((db) => db.id);
+    expect(all.length).toBeGreaterThan(6);
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const page = await listPage(`?limit=2${cursor === null ? "" : `&cursor=${encodeURIComponent(cursor)}`}`);
+      expect(page.databases.length).toBeLessThanOrEqual(2);
+      seen.push(...page.databases.map((db) => db.id));
+      cursor = page.nextCursor;
+      pages += 1;
+    } while (cursor !== null);
+    expect(pages).toBeGreaterThanOrEqual(3);
+    expect(seen).toEqual(all);
+
+    const custom = await chokePoint.createDatabase({ name: "Gamma custom" });
+    const first = await listPage("?limit=200");
+    const idx = first.databases.findIndex((db) => db.id === custom.id);
+    const cursorPage = await listPage(`?limit=${idx + 1}`);
+    expect(cursorPage.nextCursor).not.toBeNull();
+    await chokePoint.archiveDatabase(custom.id);
+    const resumed = await listPage(`?limit=200&cursor=${encodeURIComponent(cursorPage.nextCursor!)}`);
+    expect(resumed.databases.map((db) => db.id)).toEqual(first.databases.slice(idx + 1).map((db) => db.id));
+  });
+
+  it("rejects a malformed cursor and an out-of-range limit with 400 naming the field", async () => {
+    const headers = await authHeader();
+    for (const cursor of [
+      "not-a-cursor",
+      Buffer.from("[1,2]").toString("base64url"),
+      Buffer.from('["a",null,"n","i"]').toString("base64url"),
+    ]) {
+      const res = await fetch(`${baseUrl}/api/databases?cursor=${cursor}`, { headers });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: { details: unknown } }).error.details).toEqual({ field: "cursor" });
+    }
+    for (const limit of ["0", "201", "x"]) {
+      const res = await fetch(`${baseUrl}/api/databases?limit=${limit}`, { headers });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: { details: unknown } }).error.details).toEqual({ field: "limit" });
+    }
+  });
+
   it("registers exactly one property-catalog route handler", () => {
     expect(
-      createDatabaseRoutes(createGenericApplicationService(pool), moduleRegistry).filter(
+      createDatabaseRoutes(createGenericApplicationService(pool, testMetadataResolver), moduleRegistry).filter(
         (route) => route.method === "GET" && route.path === "/api/databases/:id/properties",
       ),
     ).toHaveLength(1);
+  });
+
+  it("stores icon and color on create and serves the read-time defaults for a bare create", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const picked = await fetch(`${baseUrl}/api/databases`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "Gift ideas", icon: "gift", color: "#34c759" }),
+    });
+    expect(picked.status).toBe(201);
+    expect(await picked.json()).toMatchObject({ icon: "gift", color: "#34C759" });
+
+    const bare = await fetch(`${baseUrl}/api/databases`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "Bare" }),
+    });
+    const bareBody = (await bare.json()) as DatabaseBody;
+    expect(bareBody).toMatchObject({ icon: "database", color: "#FF9500" });
+    const { rows } = await pool.query("SELECT icon, color FROM databases WHERE id = $1", [bareBody.id]);
+    expect(rows[0]).toEqual({ icon: null, color: null });
+  });
+
+  describe("create with properties (issue #1592)", () => {
+    const jsonHeaders = async (locale = "en") => ({
+      ...(await authHeader(locale)),
+      "Content-Type": "application/json",
+    });
+    const post = (headers: Record<string, string>, body: unknown) =>
+      fetch(`${baseUrl}/api/databases`, { method: "POST", headers, body: JSON.stringify(body) });
+    const footprint = async () => {
+      const { rows } = await pool.query<{ databases: string; partitions: string; properties: string }>(
+        `SELECT (SELECT count(*) FROM databases WHERE system = false) AS databases,
+                (SELECT count(*) FROM pg_class WHERE relname LIKE 'items\\_p\\_%') AS partitions,
+                (SELECT count(*) FROM properties p JOIN databases d ON d.id = p.database_id WHERE d.system = false) AS properties`,
+      );
+      return rows[0];
+    };
+    const threeProperties = [
+      { key: "recipient", name: "Recipient", type: "text" },
+      { key: "status", name: "Status", type: "select", config: { options: [{ key: "idea", label: "Idea" }] } },
+      { key: "when", name: "When", type: "date" },
+    ];
+
+    it("creates the database, a localized title property and the listed properties in order", async () => {
+      const headers = await jsonHeaders("cs");
+      const res = await post(headers, { name: "Gift ideas", properties: threeProperties });
+      expect(res.status).toBe(201);
+      const created = (await res.json()) as DatabaseBody;
+      const listed = await fetch(`${baseUrl}/api/databases/${created.id}/properties`, { headers });
+      const body = (await listed.json()) as PropertyCatalogBody;
+      expect(body.properties.map((p) => [p.key, p.type])).toEqual([
+        ["name", "title"],
+        ["recipient", "text"],
+        ["status", "select"],
+        ["when", "date"],
+      ]);
+      expect(body.properties[0]?.label).toBe("Název");
+      const item = await fetch(`${baseUrl}/api/databases/${created.id}/items`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ properties: { name: "Book", recipient: "Anna" } }),
+      });
+      expect(item.status).toBe(201);
+    });
+
+    it("creates no title property without properties", async () => {
+      const res = await post(await jsonHeaders(), { name: "Bare" });
+      const created = (await res.json()) as DatabaseBody;
+      expect(await chokePoint.listProperties(created.id)).toEqual([]);
+    });
+
+    it.each([
+      ["a bad select config", { key: "status", name: "Status", type: "select", config: { options: "nope" } }],
+      ["a duplicate key", { key: "recipient", name: "Again", type: "text" }],
+      [
+        "a relation to a missing database",
+        { key: "link", name: "Link", type: "relation", targetDatabaseId: randomUUID(), cardinality: "many_to_many" },
+      ],
+    ])("leaves nothing behind when the third property has %s", async (_label, third) => {
+      const before = await footprint();
+      const res = await post(await jsonHeaders(), {
+        name: "Broken",
+        properties: [
+          { key: "recipient", name: "Recipient", type: "text" },
+          { key: "when", name: "When", type: "date" },
+          third,
+        ],
+      });
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(res.status).toBeLessThan(500);
+      expect(await footprint()).toEqual(before);
+    });
+
+    it("forbids a non-REST actor from sending properties, writes nothing, and still allows a bare create", async () => {
+      const service = createGenericApplicationService(pool, testMetadataResolver);
+      const agent = { userId: randomUUID(), runId: randomUUID(), agentProjectItemId: randomUUID() };
+      const before = await footprint();
+      await expect(
+        service.createDatabase(agent, { name: "Agent", properties: [{ key: "a", name: "A", type: "text" }] }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+      expect(await footprint()).toEqual(before);
+      const bare = await service.createDatabase(agent, { name: "Agent bare" });
+      expect(bare.name).toBe("Agent bare");
+    });
+
+    it("names the missing field of a relation entry and rejects forbidden types", async () => {
+      const headers = await jsonHeaders();
+      const noTarget = await post(headers, {
+        name: "X",
+        properties: [{ key: "link", name: "Link", type: "relation", cardinality: "one_to_one" }],
+      });
+      expect(noTarget.status).toBe(400);
+      expect(JSON.stringify(await noTarget.json())).toContain("targetDatabaseId");
+      for (const type of ["rollup", "title", "multi_select"]) {
+        const res = await post(headers, { name: "X", properties: [{ key: "k", name: "K", type }] });
+        expect(res.status).toBe(400);
+      }
+    });
+  });
+
+  it("patches only the color, resets the icon with null and rejects bad formats", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const created = (await (
+      await fetch(`${baseUrl}/api/databases`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ name: "Gift ideas", icon: "gift", color: "#34C759" }),
+      })
+    ).json()) as DatabaseBody;
+    const patch = (body: unknown) =>
+      fetch(`${baseUrl}/api/databases/${created.id}`, { method: "PATCH", headers, body: JSON.stringify(body) });
+
+    const recolored = await patch({ color: "#007AFF" });
+    expect(recolored.status).toBe(200);
+    expect(await recolored.json()).toMatchObject({ name: "Gift ideas", icon: "gift", color: "#007AFF" });
+
+    const reset = await patch({ icon: null });
+    expect(reset.status).toBe(200);
+    expect(await reset.json()).toMatchObject({ icon: "database", color: "#007AFF" });
+
+    for (const bad of [{ color: "red" }, { color: "#12345" }, { icon: "my icon" }, { icon: "Gift" }]) {
+      const res = await patch(bad);
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: { code: string } }).error.code).toBe("validation_failed");
+    }
+    const create = await fetch(`${baseUrl}/api/databases`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "X", color: "red" }),
+    });
+    expect(create.status).toBe(400);
+  });
+
+  it("forbids icon and color changes on a system database but still renames it", async () => {
+    const system = await findSystemDatabase();
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const patch = (body: unknown) =>
+      fetch(`${baseUrl}/api/databases/${system.id}`, { method: "PATCH", headers, body: JSON.stringify(body) });
+
+    const before = (await (await fetch(`${baseUrl}/api/databases/${system.id}`, { headers })).json()) as DatabaseBody;
+    expect((await patch({ color: "#007AFF" })).status).toBe(403);
+    expect((await patch({ icon: "gift" })).status).toBe(403);
+    const renamed = await patch({ name: "Renamed system" });
+    expect(renamed.status).toBe(200);
+    const after = (await renamed.json()) as DatabaseBody;
+    expect(after.name).toBe("Renamed system");
+    expect(after.icon).toBe(before.icon);
+    expect(after.color).toBe(before.color);
   });
 
   it("forbids archiving/deleting a system database with 403", async () => {

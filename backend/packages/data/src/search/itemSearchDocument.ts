@@ -9,8 +9,25 @@ export interface ItemSearchDocumentInput {
   descriptor?: ModuleDatabaseDescriptor;
   properties: PropertyRow[];
   relatedTitles: string[];
+  /** The item's converted page text (`item_search_index.page_text`); null or absent when the item has no page text. */
+  pageText?: string | null;
   locale: ManifestLocale;
   catalogs?: ModuleCatalogs;
+}
+
+/** The cached Inbox entry texts of a Journal day (issue #106); empty for every other item. */
+function journalInboxTexts(input: Pick<ItemSearchDocumentInput, "item" | "databaseKey">): string[] {
+  if (input.databaseKey !== JOURNAL_MODULE_ID || input.item.properties.type !== "day") return [];
+  const entries: unknown = input.item.computed.inboxItems;
+  if (!Array.isArray(entries)) return [];
+  const texts: string[] = [];
+  const summaries: unknown[] = entries;
+  for (const entry of summaries) {
+    if (typeof entry === "object" && entry !== null && "text" in entry && typeof entry.text === "string") {
+      texts.push(entry.text);
+    }
+  }
+  return texts;
 }
 
 /** Pure text projection; related titles have already been resolved from live, tenant-visible edges. */
@@ -40,16 +57,18 @@ export function buildItemSearchDocument(input: ItemSearchDocumentInput): string 
     }
   }
   parts.push(...input.relatedTitles);
-  if (input.databaseKey === JOURNAL_MODULE_ID && input.item.properties.type === "day") {
-    const entries: unknown = input.item.computed.inboxItems;
-    if (Array.isArray(entries)) {
-      const summaries: unknown[] = entries;
-      for (const entry of summaries) {
-        if (typeof entry === "object" && entry !== null && "text" in entry && typeof entry.text === "string") {
-          parts.push(entry.text);
-        }
-      }
-    }
-  }
+  parts.push(...journalInboxTexts(input));
+  if (input.pageText) parts.push(input.pageText);
   return parts.filter((part) => part.trim().length > 0).join(" ");
+}
+
+/**
+ * Excerpt source for `item_search_index.body` (issue #1658): a Journal day's Inbox entry texts followed by its
+ * page text, or the page text alone for every other item. Null when there is neither.
+ */
+export function buildItemSearchBody(
+  input: Pick<ItemSearchDocumentInput, "item" | "databaseKey" | "pageText">,
+): string | null {
+  const parts = [...journalInboxTexts(input), input.pageText ?? ""].filter((part) => part.trim().length > 0);
+  return parts.length > 0 ? parts.join(" ") : null;
 }

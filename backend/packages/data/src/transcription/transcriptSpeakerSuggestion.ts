@@ -5,7 +5,12 @@ import * as relationsStore from "../chokePoint/relationsStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
-import { appendHistoryEntry, assertValidProposalEnvelope, type ProposalEnvelope } from "../inbox/inboxTickAction.js";
+import {
+  aiProposalPatch,
+  appendHistoryEntry,
+  assertValidProposalEnvelope,
+  type ProposalEnvelope,
+} from "../inbox/inboxTickAction.js";
 import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { NotFoundError } from "../errors.js";
@@ -146,6 +151,7 @@ export async function proposeSpeakerMappings(
         properties: {
           kind: "transcript",
           proposal: envelope,
+          ...aiProposalPatch({}, envelope),
           history: appendHistoryEntry(
             [],
             `Suggested from the linked Event's participants and how they are addressed in the transcript.`,
@@ -153,7 +159,7 @@ export async function proposeSpeakerMappings(
           status: "proposed",
         },
       },
-      { allowedSystemKeys: ["kind", "proposal", "history", "status"] },
+      { allowedSystemKeys: ["kind", "proposal", "aiProposal", "aiVersion", "history", "status"] },
     );
     await createRelationWithClient(
       client,

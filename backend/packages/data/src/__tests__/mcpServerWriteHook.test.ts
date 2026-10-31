@@ -1,15 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createTenantZeroUser, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { requireSingleRow, withTransaction } from "../db/pool.js";
+import { withTransaction } from "../db/pool.js";
 import { createUser } from "../auth/usersStore.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import {
   clearHooksForTests,
   registerItemCreateHook,
+  registerItemPreWriteTransform,
   registerItemUpdateHook,
   registerRelationEdgeWriteHook,
   runItemCreateHooks,
@@ -20,6 +21,7 @@ import {
   type RelationEdgeWriteHookContext,
 } from "../chokePoint/hooks.js";
 import { loadRelationEdgeContext } from "../chokePoint/relationEdgeContext.js";
+import { SYSTEM_WRITER } from "../chokePoint/writerKind.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createSemprecTickAction } from "../inbox/inboxTickAction.js";
 import { confirmProposalWithClient, reviseProposalWithClient } from "../inbox/proposalActions.js";
@@ -29,7 +31,9 @@ import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as mcpServerWriteHook from "../mcp/mcpServerWriteHook.js";
 import * as mailMessageFlagSyncStore from "../mail/mailMessageFlagSyncStore.js";
 import * as taskRecurrenceItemUpdateHook from "../tasks/taskRecurrenceItemUpdateHook.js";
+import { taskPreWriteTransform } from "../tasks/taskPreWriteTransform.js";
 import * as transcriptionSpeakerEdges from "../transcription/transcriptionSpeakerEdges.js";
+import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 
 let pool: Pool;
 let mcpServersId: string;
@@ -70,13 +74,14 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
     await pool?.end();
   });
 
-  /** Mirrors the five registrations of `../domainWriteHooks.ts`. Reads each hook through its module namespace, so a test's scoped spy is what gets registered while it is installed. */
+  /** Mirrors the registrations of `../domainWriteHooks.ts` that this file's scenarios depend on. Reads each hook through its module namespace, so a test's scoped spy is what gets registered while it is installed. */
   function registerProductionWriteHookDefaults(): void {
     registerItemCreateHook(mcpServerWriteHook.mcpServerItemCreateHook);
     registerItemUpdateHook(mcpServerWriteHook.mcpServerItemUpdateHook);
     registerItemUpdateHook(mailMessageFlagSyncStore.mailMessageFlagsItemUpdateHook);
     registerItemUpdateHook(taskRecurrenceItemUpdateHook.taskRecurrenceItemUpdateHook);
     registerRelationEdgeWriteHook(transcriptionSpeakerEdges.transcriptSpeakerEdgeWriteHook);
+    registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform);
   }
 
   it("restores all five production write hooks after a registry reset, each dispatched once when restored twice (issue #1261)", async () => {
@@ -105,13 +110,26 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
         );
         if (!speakersProperty) throw new Error("Transcripts speakers property was not seeded");
 
-        const createContext: ItemCreateHookContext = { client, database, item, properties: { name: "S" } };
-        const updateContext: ItemUpdateHookContext = { client, database, item, propertiesPatch: { name: "T" } };
+        const createContext: ItemCreateHookContext = {
+          client,
+          database,
+          item,
+          properties: { name: "S" },
+          writer: SYSTEM_WRITER,
+        };
+        const updateContext: ItemUpdateHookContext = {
+          client,
+          database,
+          item,
+          propertiesPatch: { name: "T" },
+          writer: SYSTEM_WRITER,
+        };
         const edgeContext: RelationEdgeWriteHookContext = {
           client,
           edgeContext: await loadRelationEdgeContext(client, speakersProperty.id),
           callerItemId: randomUUID(),
           targetItemId: randomUUID(),
+          writer: SYSTEM_WRITER,
         };
 
         await runItemCreateHooks(createContext);
@@ -158,9 +176,7 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
   });
 
   async function createAdmin(): Promise<string> {
-    const { rows } = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
-    const tenantId = requireSingleRow(rows, "sole tenant").id;
-    if (!tenantId) throw new Error("Expected a sole tenant");
+    const tenantId = getTenantZeroId();
     const user = await createUser(pool, {
       email: "admin@example.test",
       passwordHash: "unused",
@@ -297,20 +313,17 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
 
   it("refuses to confirm a stored envelope whose url fails the baseline", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
     const proposalsId = await databaseIdFor("processingProposals");
     const inboxItem = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "connect a server",
       }),
     );
     await createSemprecTickAction(pool, async () => {
-      throw new Error("must not be called for an untyped item");
+      return { properties: {}, candidates: [] };
     })(
       {
         inboxDatabaseId: inboxId,
@@ -349,20 +362,17 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
   it("refuses an admin confirming a stored stdio envelope", async () => {
     await createAdmin();
     const inboxId = await databaseIdFor("inbox");
-    const journalId = await databaseIdFor("journal");
     const proposalsId = await databaseIdFor("processingProposals");
     const inboxItem = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
         date: "2026-08-28",
         time: "09:00",
         text: "connect a server",
       }),
     );
     await createSemprecTickAction(pool, async () => {
-      throw new Error("must not be called for an untyped item");
+      return { properties: {}, candidates: [] };
     })(
       {
         inboxDatabaseId: inboxId,

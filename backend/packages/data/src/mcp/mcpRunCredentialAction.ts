@@ -16,8 +16,8 @@ import {
 } from "./mcpRunCredentialsStore.js";
 
 /**
- * How long a minted MCP run-credential stays valid. Short by design (unlike `SESSION_TTL_SECONDS`'s
- * 30 days): this credential authenticates one particular run's own `POST /mcp` calls, not a
+ * How long a minted MCP run-credential stays valid. Short by design (unlike a login session, which
+ * slides for months): this credential authenticates one particular run's own `POST /mcp` calls, not a
  * standing integration, so there is no reason for it to outlive the task it was minted for by much.
  */
 export const MCP_RUN_CREDENTIAL_TTL_SECONDS = 60 * 60; // 1 hour

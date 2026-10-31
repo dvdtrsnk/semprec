@@ -1,10 +1,15 @@
+import { createCollectionMetadataResolver } from "@semprec/data";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { CAPABILITY_IDS, withTraceContext } from "@semprec/shared";
 import { createGenericApplicationService, createGenericOperationGateway } from "@semprec/application";
 import type { BlobStorageWriter, InviteMailer, PasswordResetMailer, loadFullModuleRegistry } from "@semprec/data";
 import { createMcpRequestListener } from "./mcp/mcpHandler.js";
-import { mountCustomRoutes } from "./adapter/customRouteMount.js";
+import {
+  createCustomRouteDependencies,
+  mountCustomRoutes,
+  type CustomRouteDependencies,
+} from "./adapter/customRouteMount.js";
 import { mountRoutes } from "./adapter/routeTable.js";
 import { createAccountExportDownloadListener, createAccountRoutes } from "./accountHandler.js";
 import { createAdminRoutes } from "./adminHandler.js";
@@ -18,10 +23,12 @@ import { createAgentRunRequestListener } from "./agentRunHandler.js";
 import { createAuthRequestListener } from "./authHandler.js";
 import { createNotificationsRequestListener } from "./notificationsHandler.js";
 import { createSetupRequestListener } from "./setupHandler.js";
+import { createInvitationRequestListener } from "./invitationHandler.js";
 import { createHealthzRequestListener } from "./healthzHandler.js";
 import { createServerInfoRequestListener } from "./serverInfoHandler.js";
 import { createSchemaRequestListener } from "./schemaHandler.js";
 import { createFilesRequestListener } from "./filesHandler.js";
+import { createBlobUploadRequestListener } from "./blobUploadHandler.js";
 import { createBlobsRequestListener } from "./blobsHandler.js";
 import { createGraphWebhookRequestListener } from "./graphWebhookHandler.js";
 import { sendJson } from "./adapter/http.js";
@@ -41,10 +48,17 @@ export interface AppOptions {
   moduleRegistry: Awaited<ReturnType<typeof loadFullModuleRegistry>>;
   /** Backs `POST /api/files` and `GET /api/blobs/:id` (issue #158). */
   blobStorage: BlobStorageWriter;
+  /** Where synced mail attachments are stored; `GET /api/blobs/:id` also reads from it. Defaults to `blobStorage`. */
+  mailAttachmentStorage?: BlobStorageWriter;
   /** Issue #158's `maxFileSizeMb`, already resolved to bytes. */
   maxFileSizeBytes: number;
   /** Issue #635: forwarded to `createAuthRequestListener` — login throttling keys on the last `X-Forwarded-For` hop. */
   trustProxy?: boolean;
+  /**
+   * Issue gh-1460: the composition root's dependencies, handed to every module custom route's factory.
+   * Absent means the empty container, so a caller that mounts no route needing a member passes nothing.
+   */
+  customRouteDependencies?: CustomRouteDependencies;
 }
 
 /**
@@ -68,18 +82,23 @@ export async function createDispatcher(
   options: AppOptions,
 ): Promise<(req: IncomingMessage, res: ServerResponse) => void> {
   const customRouteDefinitions = await options.moduleRegistry.getCustomRouteDefinitions();
-  const dispatchCustomRoute = mountCustomRoutes(pool, customRouteDefinitions);
+  const dispatchCustomRoute = mountCustomRoutes(
+    pool,
+    customRouteDefinitions,
+    options.customRouteDependencies ?? createCustomRouteDependencies(),
+  );
   // The sole neutral `GenericApplicationPort` implementation (issue #219): one instance per
   // injected `Pool`, threaded into every generic resource route family below so there is no
   // second write path — a route never constructs its own `createChokePoint(pool)`.
-  const genericApplicationService = createGenericApplicationService(pool);
+  const collectionMetadataResolver = await createCollectionMetadataResolver(options.moduleRegistry);
+  const genericApplicationService = createGenericApplicationService(pool, collectionMetadataResolver);
   const dispatchResourceRoute = mountRoutes(pool, [
     ...createAccountRoutes(pool, options),
     ...createAdminRoutes(pool, options),
     ...createDatabaseRoutes(genericApplicationService, options.moduleRegistry),
     ...createPropertyRoutes(genericApplicationService, options.moduleRegistry),
-    ...createViewRoutes(genericApplicationService),
-    ...createItemRoutes(genericApplicationService, pool),
+    ...createViewRoutes(genericApplicationService, pool),
+    ...createItemRoutes(genericApplicationService, pool, collectionMetadataResolver),
   ]);
   // Issue #220's own composition root over the same generic catalog: a second
   // `GenericOperationGateway` instance over this process's one `Pool`, never sharing state with
@@ -87,7 +106,7 @@ export async function createDispatcher(
   // MCP each own their own instance). `grantedCapabilities` is the schema core module's own
   // registered capabilities (an authenticated MCP session has no project to compute a per-run
   // manifest against, unlike an AgentTool run).
-  const mcpGateway = createGenericOperationGateway(pool);
+  const mcpGateway = createGenericOperationGateway(pool, collectionMetadataResolver);
   const registeredModuleCapabilities = await options.moduleRegistry.getCapabilities();
   const mcpGrantedCapabilities = new Set(CAPABILITY_IDS.filter((id) => registeredModuleCapabilities.includes(id)));
   const mcpListener = createMcpRequestListener(pool, mcpGateway, mcpGrantedCapabilities);
@@ -101,6 +120,7 @@ export async function createDispatcher(
   });
   const notificationsListener = createNotificationsRequestListener(pool);
   const setupListener = createSetupRequestListener(pool, { setupToken: options.setupToken });
+  const invitationListener = createInvitationRequestListener(pool, { trustProxy: options.trustProxy ?? false });
   const healthzListener = createHealthzRequestListener(pool);
   const serverInfoListener = createServerInfoRequestListener();
   const schemaListener = createSchemaRequestListener(pool, options.moduleRegistry);
@@ -108,7 +128,14 @@ export async function createDispatcher(
     storage: options.blobStorage,
     maxFileSizeBytes: options.maxFileSizeBytes,
   });
-  const blobsListener = createBlobsRequestListener(pool, { storage: options.blobStorage });
+  const blobUploadListener = createBlobUploadRequestListener(pool, {
+    storage: options.blobStorage,
+    maxFileSizeBytes: options.maxFileSizeBytes,
+  });
+  const blobsListener = createBlobsRequestListener(pool, {
+    files: options.blobStorage,
+    mailAttachments: options.mailAttachmentStorage ?? options.blobStorage,
+  });
   const graphWebhookListener = createGraphWebhookRequestListener(pool);
   const accountExportDownloadListener = createAccountExportDownloadListener(pool, { storage: options.blobStorage });
 
@@ -169,8 +196,16 @@ export async function createDispatcher(
       void setupListener(req, res);
       return;
     }
+    if (pathname === "/api/invitations/accept") {
+      void invitationListener(req, res);
+      return;
+    }
     if (pathname === "/api/files" && req.method === "POST") {
       void filesListener(req, res);
+      return;
+    }
+    if (pathname === "/api/blobs" && req.method === "POST") {
+      void blobUploadListener(req, res);
       return;
     }
     if (pathname.startsWith("/api/blobs/") && req.method === "GET") {

@@ -1,3 +1,4 @@
+import { createRelationPropertyWithClient } from "../chokePoint/relationPropertyWrites.js";
 import type { Pool } from "pg";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { withTransaction } from "../db/pool.js";
@@ -15,11 +16,14 @@ import { registerLibraryGridViewType } from "../views/libraryGridViewType.js";
 import { registerMailboxClientViewType } from "../views/mailboxClientViewType.js";
 import { registerJournalInboxViewType } from "../views/journalInboxViewType.js";
 import { JOURNAL_INBOX_COMPUTED_KEY } from "../inbox/journalInboxCompute.js";
+import { JOURNAL_SUMMARY_COMPUTED_KEY } from "../journal/journalSummary.js";
 import {
   TRANSCRIPTION_CREATE_COMPUTED_KEY,
   TRANSCRIPTION_PREPARE_COMPUTED_KEY,
   TRANSCRIPTION_DIARIZE_COMPUTED_KEY,
   TRANSCRIPTION_ASR_COMPUTED_KEY,
+  TRANSCRIPT_DURATION_SECONDS_COMPUTED_KEY,
+  TRANSCRIPT_FINALIZED_AT_COMPUTED_KEY,
   TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
   TRANSCRIPT_LANGUAGE_COMPUTED_KEY,
   TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
@@ -35,6 +39,7 @@ import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
 import { seedInboxPipelineInTransaction } from "./seedInboxPipeline.js";
 import { seedMcpModuleInTransaction } from "./seedMcpModule.js";
+import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
 import { runModuleDataMigrations } from "../migrationJob/moduleDataMigration.js";
 
 export { PROJECTS_MODULE_ID } from "./tenDatabaseKeys.js";
@@ -97,8 +102,12 @@ export async function seedSystem(
   // seedInboxPipelineInTransaction, which the idempotency early-return below skips after
   // the first run.
   computedKeyRegistry.add(JOURNAL_INBOX_COMPUTED_KEY);
+  // Same reasoning again (issue #1711's derived Journal title): reserved against collision on every startup too.
+  computedKeyRegistry.add(JOURNAL_SUMMARY_COMPUTED_KEY);
   // Same reasoning again (issue #180's Transcripts computed keys): reserved against
   // collision on every startup, not only the one-time DB seed.
+  computedKeyRegistry.add(TRANSCRIPT_DURATION_SECONDS_COMPUTED_KEY);
+  computedKeyRegistry.add(TRANSCRIPT_FINALIZED_AT_COMPUTED_KEY);
   computedKeyRegistry.add(TRANSCRIPT_SEGMENTS_COMPUTED_KEY);
   computedKeyRegistry.add(TRANSCRIPTION_CREATE_COMPUTED_KEY);
   computedKeyRegistry.add(TRANSCRIPTION_PREPARE_COMPUTED_KEY);
@@ -151,11 +160,7 @@ export async function seedSystem(
       properties: {
         name: "Semprec",
         systemActive: true,
-        agents:
-          "Purpose: supervise Semprec, the personal life-organization system, and delegate to project agents.\n" +
-          "Allowed: read the schema-derived permission manifest for any project and delegate tasks to its agent.\n" +
-          "Not allowed: write any property whose owner is 'system', or change a locked/schema_locked database.\n" +
-          "General instructions: keep delegated tasks and their results terse; the manifest is the source of truth for what is allowed.",
+        agents: SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS[SYSTEM_SETTINGS_MODULE_ID],
       },
     });
 
@@ -192,6 +197,18 @@ export async function seedSystem(
         name: "Semp",
         timezone: DEFAULT_TIMEZONE,
       },
+    });
+
+    const people = await databasesStore.getDatabaseByModuleId(client, "people");
+    if (!people) throw new Error("People database has not been seeded");
+    await createRelationPropertyWithClient(client, {
+      sourceDatabaseId: settingsDb.id,
+      key: "selfPerson",
+      name: null,
+      targetDatabaseId: people.id,
+      cardinality: "one_to_one",
+      owner: "user",
+      locked: true,
     });
 
     await client.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [settingsDb.id]);

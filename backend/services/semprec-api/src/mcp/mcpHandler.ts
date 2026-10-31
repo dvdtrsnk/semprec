@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import {
@@ -23,6 +24,18 @@ import { toPublicErrorBody } from "../adapter/errorContract.js";
 import { extractBearerToken, PayloadTooLargeError, readJsonBody, sendJson } from "../adapter/http.js";
 import { authenticateRequest } from "../authHandler.js";
 import { logger } from "../logger.js";
+
+/** MCP protocol revisions `initialize` can agree on, newest first; the first is the fallback. */
+const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
+
+/** The API service's own package version, reported as `serverInfo.version`. */
+const SERVER_VERSION = (() => {
+  const manifest = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as {
+    version?: unknown;
+  };
+  if (typeof manifest.version !== "string") throw new Error("semprec-api package.json has no version string");
+  return manifest.version;
+})();
 
 const MCP_TOOL_PREFIX = "semprec.";
 
@@ -56,8 +69,8 @@ interface JsonRpcRequestBody {
 }
 
 /**
- * The authenticated MCP JSON-RPC endpoint (issue #220): `POST /mcp`, `tools/list` and
- * `tools/call` over the same 29-operation generic catalog REST (#219) and the AgentTool
+ * The authenticated MCP JSON-RPC endpoint (issue #220): `POST /mcp`, `initialize`, `tools/list` and
+ * `tools/call` over the same 30-operation generic catalog REST (#219) and the AgentTool
  * composition root (`packages/agent-runtime/src/tools/generic`) dispatch through — MCP names are
  * the operation names prefixed `semprec.` (`fromMcpToolName`/`toMcpToolName`).
  *
@@ -118,7 +131,7 @@ export function createMcpRequestListener(
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== "POST") {
-      sendJson(res, 404, { error: "Not found" });
+      sendJson(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
       return;
     }
 
@@ -145,6 +158,34 @@ export function createMcpRequestListener(
         rpcId = rpc.id ?? null;
         if (rpc.jsonrpc !== "2.0" || typeof rpc.method !== "string") {
           sendJson(res, 200, rpcError(rpcId, -32600, "Invalid Request"));
+          return;
+        }
+
+        // A JSON-RPC notification (no `id`) is acknowledged with an empty 202, whatever its method.
+        if (rpc.id === undefined) {
+          res.writeHead(202, { "Cache-Control": "no-store" });
+          res.end();
+          return;
+        }
+
+        if (rpc.method === "initialize") {
+          const params = rpc.params as { protocolVersion?: unknown } | null | undefined;
+          if (typeof params !== "object" || params === null || typeof params.protocolVersion !== "string") {
+            sendJson(res, 200, rpcError(rpcId, -32602, "initialize requires params.protocolVersion"));
+            return;
+          }
+          const requested = params.protocolVersion;
+          const protocolVersion =
+            SUPPORTED_PROTOCOL_VERSIONS.find((version) => version === requested) ?? SUPPORTED_PROTOCOL_VERSIONS[0];
+          sendJson(
+            res,
+            200,
+            rpcResult(rpcId, {
+              protocolVersion,
+              capabilities: { tools: {} },
+              serverInfo: { name: "semprec", version: SERVER_VERSION },
+            }),
+          );
           return;
         }
 

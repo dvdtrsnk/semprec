@@ -26,6 +26,8 @@ async function createProjectItem(): Promise<string> {
 }
 
 const CONTRADICTION: GuidanceDriftContradiction = {
+  kind: "permission",
+  subject: { operation: "files.delete", databaseId: null },
   claim: "The agent can delete files without approval.",
   guidanceExcerpt: "Agents may delete any file directly.",
   manifestFacts: ["capability.files.delete requires approval"],

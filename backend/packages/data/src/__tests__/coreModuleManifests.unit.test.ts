@@ -69,6 +69,38 @@ describe("core module manifests (module-contract issue #226)", () => {
     const databases = await registry.getDatabases();
     expect(databases.map((db) => db.key).sort()).toEqual([...TEN_DATABASE_MODULE_IDS].sort());
     expect(await registry.getViewTypes()).toEqual([TEMPORAL_SWITCHER_VIEW_TYPE]);
+    const meta = new Map(databases.map((db) => [db.key, db]));
+    const pick = (key: string) => {
+      const { icon, color, overviewOrder, switcherOrder, clientVisible } = meta.get(key)!;
+      return { icon, color, overviewOrder, switcherOrder, clientVisible };
+    };
+    expect(pick("projects")).toEqual({ icon: "folder", color: "#007AFF", overviewOrder: 1, switcherOrder: 1 });
+    expect(pick("tasks")).toEqual({
+      icon: "checkmark-circle",
+      color: "#34C759",
+      overviewOrder: null,
+      switcherOrder: 2,
+    });
+    expect(pick("events")).toEqual({ icon: "calendar", color: "#FF3B30", overviewOrder: 2, switcherOrder: 3 });
+    expect(pick("journal")).toEqual({ icon: "book", color: "#AF52DE", overviewOrder: null, switcherOrder: 4 });
+    expect(pick("people")).toEqual({ icon: "person", color: "#5856D6", overviewOrder: 3, switcherOrder: 5 });
+    expect(pick("companies")).toEqual({ icon: "building", color: "#5AC8FA", overviewOrder: 4, switcherOrder: 6 });
+    expect(pick("files")).toEqual({ icon: "document", color: "#8E8E93", overviewOrder: 5, switcherOrder: 7 });
+    expect(pick("healthRecords")).toEqual({ icon: "heart", color: "#FF2D55", overviewOrder: 6, switcherOrder: 8 });
+    expect(pick("areas")).toEqual({
+      icon: "compass",
+      color: "#30B0C7",
+      overviewOrder: null,
+      switcherOrder: null,
+      clientVisible: true,
+    });
+    expect(pick("transcripts")).toEqual({
+      icon: "waveform",
+      color: "#8E8E93",
+      overviewOrder: null,
+      switcherOrder: null,
+      clientVisible: true,
+    });
   });
 
   it("loads all four manifests together into one registry with no id/name/database-key collisions", async () => {

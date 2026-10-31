@@ -1,4 +1,4 @@
-import { repairInterruptedRuns } from "@semprec/agent-runtime";
+import { closeIdleThreadSessions, repairInterruptedRuns } from "@semprec/agent-runtime";
 import {
   assertRuntimeRole,
   createPool,
@@ -6,6 +6,7 @@ import {
   startProcessHeartbeat,
   startTenantDeactivationListener,
 } from "@semprec/data";
+import { wireRealtimeHooks } from "@semprec/realtime";
 import { installFatalHandlers } from "@semprec/shared";
 import { createAgentRunTask, createRunAgentForHeartbeats } from "./agentRunTasks.js";
 import { createInFlightAgentRuns } from "./inFlightAgentRuns.js";
@@ -30,6 +31,11 @@ if (!connectionString) throw new Error("SEMPREC_API_DATABASE_URL (or DATABASE_UR
 
 const pool = createPool(connectionString);
 await assertRuntimeRole(pool);
+
+// Every item write, notification and agent run event this process commits publishes through the
+// data layer's in-process realtime hooks, whose defaults are no-ops. They are wired before the
+// queue runtime below can claim a job, so no agent-run write goes unpublished.
+wireRealtimeHooks(pool);
 
 // Issue #168: this process's own `process_heartbeats` row, re-UPSERTed every 15 seconds for as
 // long as this process is up.
@@ -68,7 +74,13 @@ const tenantDeactivationListener = await startTenantDeactivationListener(pool, a
   if (aborted > 0) logger.info({ tenantId, aborted }, "Aborted in-flight agent runs of a deactivated tenant");
 });
 
-const shutdown = createGracefulShutdown({ queueRuntime, tenantDeactivationListener, pool, logger });
+const shutdown = createGracefulShutdown({
+  queueRuntime,
+  tenantDeactivationListener,
+  pool,
+  logger,
+  closeIdleThreadSessions,
+});
 registerShutdownSignals(shutdown);
 
 logger.info({}, "semprec-agents queue runtime started");

@@ -122,7 +122,7 @@ describe("createOutboundHttp().fetch against a real server (issue #1034)", () =>
 describe("sendWebPushNotification under the default policy (issue #1034)", () => {
   const vapid = webpush.generateVAPIDKeys();
   const config = { publicKey: vapid.publicKey, privateKey: vapid.privateKey, subject: "mailto:ops@example.test" };
-  const payload = { notificationId: "notif-1", title: "Title", linkHref: null };
+  const payload = { notificationId: "notif-1", title: "Title", body: null, linkHref: null };
 
   function subscription(endpoint: string) {
     const ecdh = createECDH("prime256v1");

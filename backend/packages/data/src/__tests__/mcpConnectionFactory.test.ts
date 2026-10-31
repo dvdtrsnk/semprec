@@ -7,6 +7,7 @@ import {
   createRuntimeRolePool,
   createTenantZeroUser,
   createTestTenant,
+  getTenantZeroId,
   getTestPool,
   resetDatabase,
 } from "../testSupport/testDb.js";
@@ -133,12 +134,10 @@ describe("MCP connection factory (issue #231)", () => {
     mcpServersId = await databaseIdFor("mcpServers");
   });
 
-  // A `stdio` spawn needs an admin of the sole tenant (issue #1033). Each test that expects a
+  // A `stdio` spawn needs an admin of tenant zero (issue #1033). Each test that expects a
   // spawn creates that admin explicitly; the member test below leaves its user a member.
   async function makeSoleTenantAdmin(): Promise<void> {
-    const { rows } = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
-    const tenantId = requireSingleRow(rows, "sole tenant").id;
-    if (!tenantId) throw new Error("Expected a sole tenant");
+    const tenantId = getTenantZeroId();
     await createUser(pool, {
       email: "admin@example.test",
       passwordHash: "unused",
@@ -324,6 +323,21 @@ describe("MCP connection factory (issue #231)", () => {
         [item.id],
       );
       expect(rows[0]?.count).toBe("0");
+    });
+
+    it("raises connect_timeout when the handshake does not finish in time", async () => {
+      await makeSoleTenantAdmin();
+      // `sleep` never speaks MCP, so the handshake can only end by the connect timeout.
+      const item = await createMcpServerItem({ transport: "stdio", command: "sleep", args: ["30"] });
+
+      let thrown: unknown;
+      try {
+        await connectMcpServer(pool, item, { connectTimeoutMs: 200 });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(McpConnectionError);
+      expect((thrown as McpConnectionError).reason).toBe("connect_timeout");
     });
 
     it("leaves no child process running after a failed connect", async () => {

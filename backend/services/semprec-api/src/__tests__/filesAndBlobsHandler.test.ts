@@ -1,9 +1,10 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
+import { readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
@@ -86,7 +87,7 @@ describe("files and blobs routes (issue #158)", () => {
     await pool?.end();
   });
 
-  async function uploadFile(body: string, opts: { filename?: string; contentType?: string } = {}) {
+  async function uploadFile(body: string | Buffer, opts: { filename?: string; contentType?: string } = {}) {
     const headers = {
       ...(await authHeader()),
       "Content-Type": opts.contentType ?? "text/plain",
@@ -193,8 +194,64 @@ describe("files and blobs routes (issue #158)", () => {
     });
   });
 
+  describe("POST /api/blobs (issue #1401)", () => {
+    async function uploadBlob(body: string, contentType = "image/png", authenticated = true) {
+      const headers: Record<string, string> = {
+        ...(authenticated ? await authHeader() : {}),
+        "Content-Type": contentType,
+      };
+      return fetch(`${baseUrl}/api/blobs`, { method: "POST", headers, body, duplex: "half" });
+    }
+
+    async function storedFileCount(): Promise<number> {
+      try {
+        return (await readdir(tmpBlobDir, { recursive: true, withFileTypes: true })).filter((e) => e.isFile()).length;
+      } catch {
+        return 0;
+      }
+    }
+
+    it("rejects an unauthenticated request", async () => {
+      expect((await uploadBlob("png", "image/png", false)).status).toBe(401);
+    });
+
+    it("stores an image as a blob, 201, without creating a Files item", async () => {
+      const res = await uploadBlob("image bytes");
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { blobId: string; byteSize: number; mimeType: string };
+      expect(body).toEqual({ blobId: expect.any(String), byteSize: 11, mimeType: "image/png" });
+      const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE properties ? 'file'");
+      expect(rows[0].n).toBe(0);
+      expect(await storedFileCount()).toBe(1);
+    });
+
+    it("normalises Content-Type parameters and returns the same blob with 200 for identical bytes", async () => {
+      const first = (await (await uploadBlob("same image")).json()) as { blobId: string };
+      const res = await uploadBlob("same image", "Image/PNG; charset=binary");
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { blobId: string; mimeType: string }).blobId).toBe(first.blobId);
+      // The duplicate's bytes are removed after the commit, without the response waiting for it.
+      await vi.waitFor(async () => expect(await storedFileCount()).toBe(1));
+    });
+
+    it("rejects a non-image Content-Type with 400 on the Content-Type field and stores nothing", async () => {
+      const res = await uploadBlob("hello", "text/plain");
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as ErrorBody;
+      expect(body.error.details).toMatchObject({ field: "Content-Type" });
+      expect(await storedFileCount()).toBe(0);
+    });
+
+    it("rejects an oversized body with 413 and stores nothing", async () => {
+      const res = await uploadBlob("x".repeat(MAX_FILE_SIZE_BYTES + 100));
+      expect(res.status).toBe(413);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("payload_too_large");
+      expect(await storedFileCount()).toBe(0);
+    });
+  });
+
   describe("GET /api/blobs/:id", () => {
-    async function uploadAndGetBlobId(content: string, opts?: { filename?: string; contentType?: string }) {
+    async function uploadAndGetBlobId(content: string | Buffer, opts?: { filename?: string; contentType?: string }) {
       const res = await uploadFile(content, opts);
       const body = (await res.json()) as ItemBody;
       return (body.properties.file as { blobId: string }).blobId;
@@ -297,7 +354,9 @@ describe("files and blobs routes (issue #158)", () => {
 
     it("honors ?disposition=inline only for an allowlisted MIME type", async () => {
       const headers = await authHeader();
-      const pngBlobId = await uploadAndGetBlobId("fake-png-bytes", { filename: "pic.png", contentType: "image/png" });
+      // The mime is detected from the bytes, so a PNG signature is needed whatever the client claims.
+      const pngBytes = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("x")]);
+      const pngBlobId = await uploadAndGetBlobId(pngBytes, { filename: "pic.png", contentType: "text/plain" });
 
       const inline = await fetch(`${baseUrl}/api/blobs/${pngBlobId}?disposition=inline`, { headers });
       expect(inline.headers.get("content-disposition")).toContain("inline;");
@@ -323,6 +382,53 @@ describe("files and blobs routes (issue #158)", () => {
       const disposition = res.headers.get("content-disposition")!;
       expect(disposition).not.toContain('"; filename="x');
       expect(disposition).toContain('filename="evil_.txt_; filename=_x"');
+    });
+  });
+
+  describe("blob metadata on item envelopes (issue #1412)", () => {
+    interface BlobsItemBody extends ItemBody {
+      blobs?: Record<string, { blobId: string; byteSize: number; mimeType: string; filename: string | null }>;
+    }
+    interface QueryBody {
+      items: BlobsItemBody[];
+    }
+
+    it("returns blobs.file with size, type and filename on the upload response, GET and query", async () => {
+      const headers = await authHeader();
+      const uploaded = (await (
+        await uploadFile("hello world", { filename: "report.txt", contentType: "text/plain" })
+      ).json()) as BlobsItemBody;
+      const blobId = (uploaded.properties.file as { blobId: string }).blobId;
+      const expected = { blobId, byteSize: 11, mimeType: "application/octet-stream", filename: "report.txt" };
+
+      expect(uploaded.blobs).toEqual({ file: expected });
+
+      const got = (await (await fetch(`${baseUrl}/api/items/${uploaded.id}`, { headers })).json()) as BlobsItemBody;
+      expect(got.blobs).toEqual({ file: expected });
+      expect(got.properties).toEqual(uploaded.properties);
+
+      const queried = (await (
+        await fetch(`${baseUrl}/api/databases/${uploaded.databaseId}/query`, {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: "{}",
+        })
+      ).json()) as QueryBody;
+      expect(queried.items.find((item) => item.id === uploaded.id)?.blobs).toEqual({ file: expected });
+    });
+
+    it("has no blobs key on an item without a file blob", async () => {
+      const headers = await authHeader();
+      const uploaded = (await (await uploadFile("x")).json()) as BlobsItemBody;
+      const created = await fetch(`${baseUrl}/api/databases/${uploaded.databaseId}/items`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ properties: { name: "no file here" } }),
+      });
+      expect(created.status).toBe(201);
+      const body = (await created.json()) as BlobsItemBody;
+      expect(body).not.toHaveProperty("blobs");
+      expect(body.properties).toMatchObject({ name: "no file here" });
     });
   });
 });

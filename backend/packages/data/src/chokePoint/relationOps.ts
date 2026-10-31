@@ -12,7 +12,9 @@
 // - docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
 import type { PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
-import { NotFoundError, ValidationError } from "../errors.js";
+import { CardinalityViolationError, NotFoundError, ValidationError } from "../errors.js";
+import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import * as databasesStore from "./databasesStore.js";
 import type { ItemRelationRow } from "../types.js";
 import { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
@@ -21,12 +23,15 @@ import * as relationsStore from "./relationsStore.js";
 import {
   assertRelationDatabasesNotArchived,
   assertRelationPropertyWritable,
+  assertRelationValueLinkHandoff,
   loadRelationEdgeContext,
   normalizeRelationSides,
   type RelationEdgeContext,
   type SystemRelationWriteContext,
 } from "./relationEdgeContext.js";
-import { runRelationEdgeWriteHooks } from "./hooks.js";
+import { runRelationEdgeDeleteHooks, runRelationEdgeWriteHooks } from "./hooks.js";
+import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
+import { breakValueLinksForRelationEdge } from "./valueLinkWrites.js";
 
 /** The normalized public shape of a stored edge — same fields as `relationsStore.ItemRelationRow`, named here to match the choke-point's own edge contract. */
 export type RelationEdge = ItemRelationRow;
@@ -71,17 +76,98 @@ async function assertRelationEndpointsValid(
   await assertRelationEndpointValid(client, context.targetDatabaseId, targetItemId, "targetItemId");
 }
 
+/** The edge context and the guards every edge write shares: both databases unarchived and the caller's relation property writable by this caller. */
+async function loadWritableRelationEdgeContext(
+  client: PoolClient,
+  relationPropertyId: string,
+  context: SystemRelationWriteContext | undefined,
+): Promise<RelationEdgeContext> {
+  const edgeContext = await loadRelationEdgeContext(client, relationPropertyId);
+  await assertRelationDatabasesNotArchived(client, edgeContext);
+  assertRelationPropertyWritable(edgeContext.property, context);
+  return edgeContext;
+}
+
 /** Every check `createRelationWithClient` runs before its write, in the same order, so both raise the same canonical error for the same input. */
 async function loadCreatableRelationEdgeContext(
   client: PoolClient,
   input: CreateRelationInput,
   context: SystemRelationWriteContext | undefined,
 ): Promise<RelationEdgeContext> {
-  const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
-  await assertRelationDatabasesNotArchived(client, edgeContext);
-  assertRelationPropertyWritable(edgeContext.property, context);
+  const edgeContext = await loadWritableRelationEdgeContext(client, input.relationPropertyId, context);
+  await assertRelationValueLinkHandoff(client, edgeContext.property, context, input.callerItemId);
   await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
   return edgeContext;
+}
+
+/** Stands in for the caller of an edge whose item is only proposed and has no id yet; the nil UUID matches no item. */
+const PROPOSED_CALLER_ITEM_ID = "00000000-0000-0000-0000-000000000000";
+
+export interface LinkableRelationTargetInput {
+  relationPropertyId: string;
+  targetItemId: string;
+}
+
+/**
+ * Rejects a relation target an edge could not point at, without the caller item, which a proposed
+ * item does not have yet. Every failure carries `details.field` = the relation property key:
+ * - the target is missing from the relation's other database (another tenant's item is missing
+ *   too), `code: 'targetNotFound'`; soft-deleted, `code: 'targetDeleted'`; a project whose
+ *   `status` is `archived`, `code: 'targetArchived'` (a `done` project stays linkable);
+ * - `database_archived` / `owner_violation` and the edge-metadata hooks, as for `assertRelationCreatableWithClient`;
+ * - `CardinalityViolationError` when the target already holds the only edge the relation allows:
+ *   any edge for `one_to_one`, any edge on the side of a `one_to_many` whose item may have only one counterpart.
+ * The cardinality check only reports; the write at confirm time stays enforced by the database trigger.
+ */
+export async function assertRelationTargetLinkableWithClient(
+  client: PoolClient,
+  input: LinkableRelationTargetInput,
+  context?: SystemRelationWriteContext,
+  writer: WriterIdentity = SYSTEM_WRITER,
+): Promise<void> {
+  const edgeContext = await loadWritableRelationEdgeContext(client, input.relationPropertyId, context);
+  const field = edgeContext.property.key;
+
+  const target = await itemsStore.getItemById(client, edgeContext.targetDatabaseId, input.targetItemId);
+  if (!target) {
+    throw new ValidationError(
+      `Relation target ${input.targetItemId} does not exist in database ${edgeContext.targetDatabaseId}`,
+      { field, code: "targetNotFound" },
+    );
+  }
+  if (target.deletedAt) {
+    throw new ValidationError(`Relation target ${input.targetItemId} is deleted`, { field, code: "targetDeleted" });
+  }
+  if (target.properties.status === "archived") {
+    const targetDatabase = await databasesStore.getDatabase(client, edgeContext.targetDatabaseId);
+    if (targetDatabase?.ownerModuleId === PROJECTS_MODULE_ID) {
+      throw new ValidationError(`Relation target ${input.targetItemId} is an archived project`, {
+        field,
+        code: "targetArchived",
+      });
+    }
+  }
+
+  await runRelationEdgeWriteHooks({
+    client,
+    edgeContext,
+    callerItemId: PROPOSED_CALLER_ITEM_ID,
+    targetItemId: input.targetItemId,
+    writer,
+  });
+
+  // The proposed item is the (unknown) caller, so the target is item B exactly when the caller's property is side A.
+  const targetIsSideB = edgeContext.reldef.propertyIdA === input.relationPropertyId;
+  const { cardinality } = edgeContext.reldef;
+  if (cardinality === "one_to_one" || (cardinality === "one_to_many" && targetIsSideB)) {
+    const edges = await relationsStore.listRelationsForItem(client, edgeContext.reldef.id, input.targetItemId);
+    if (edges.length > 0) {
+      throw new CardinalityViolationError(
+        `Relation target ${input.targetItemId} already holds the only edge ${cardinality} relation ${edgeContext.reldef.id} allows`,
+        { field, code: "cardinalityViolation", relationDefinitionId: edgeContext.reldef.id, cardinality },
+      );
+    }
+  }
 }
 
 /**
@@ -95,6 +181,7 @@ export async function assertRelationCreatableWithClient(
   client: PoolClient,
   input: CreateRelationInput,
   context?: SystemRelationWriteContext,
+  writer: WriterIdentity = SYSTEM_WRITER,
 ): Promise<void> {
   const edgeContext = await loadCreatableRelationEdgeContext(client, input, context);
   await runRelationEdgeWriteHooks({
@@ -103,6 +190,7 @@ export async function assertRelationCreatableWithClient(
     callerItemId: input.callerItemId,
     targetItemId: input.targetItemId,
     metadata: input.metadata,
+    writer,
   });
 }
 
@@ -119,6 +207,7 @@ export async function createRelationWithClient(
   client: PoolClient,
   input: CreateRelationInput,
   context?: SystemRelationWriteContext,
+  writer: WriterIdentity = SYSTEM_WRITER,
 ): Promise<RelationEdge> {
   const edgeContext = await loadCreatableRelationEdgeContext(client, input, context);
   await runRelationEdgeWriteHooks({
@@ -127,6 +216,7 @@ export async function createRelationWithClient(
     callerItemId: input.callerItemId,
     targetItemId: input.targetItemId,
     metadata: input.metadata,
+    writer,
   });
 
   const { itemA, itemB } = normalizeRelationSides(
@@ -135,12 +225,20 @@ export async function createRelationWithClient(
     input.callerItemId,
     input.targetItemId,
   );
-  const edge = await relationsStore.createItemRelation(client, {
+  const { edge, inserted } = await relationsStore.createItemRelationReportingInsert(client, {
     relationDefinitionId: edgeContext.reldef.id,
     itemA,
     itemB,
     metadata: input.metadata,
   });
+  if (inserted) {
+    await breakValueLinksForRelationEdge(client, {
+      reldef: edgeContext.reldef,
+      itemA,
+      itemB,
+      writerKind: writer.writerKind,
+    });
+  }
   await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
   return edge;
 }
@@ -150,10 +248,12 @@ export async function updateRelationWithClient(
   client: PoolClient,
   input: UpdateRelationInput,
   context?: SystemRelationWriteContext,
+  writer: WriterIdentity = SYSTEM_WRITER,
 ): Promise<RelationEdge> {
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
   await assertRelationDatabasesNotArchived(client, edgeContext);
   assertRelationPropertyWritable(edgeContext.property, context);
+  await assertRelationValueLinkHandoff(client, edgeContext.property, context, input.callerItemId);
   await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
   await runRelationEdgeWriteHooks({
     client,
@@ -161,6 +261,7 @@ export async function updateRelationWithClient(
     callerItemId: input.callerItemId,
     targetItemId: input.targetItemId,
     metadata: input.metadata,
+    writer,
   });
 
   const { itemA, itemB } = normalizeRelationSides(
@@ -206,17 +307,35 @@ export async function deleteRelationWithClient(
   client: PoolClient,
   input: DeleteRelationInput,
   context?: SystemRelationWriteContext,
+  writer: WriterIdentity = SYSTEM_WRITER,
 ): Promise<RelationEdge | null> {
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
   await assertRelationDatabasesNotArchived(client, edgeContext);
   assertRelationPropertyWritable(edgeContext.property, context);
+  await assertRelationValueLinkHandoff(client, edgeContext.property, context, input.callerItemId);
   const { itemA, itemB } = normalizeRelationSides(
     edgeContext.reldef,
     input.relationPropertyId,
     input.callerItemId,
     input.targetItemId,
   );
+  // Edge-delete hooks, not the write hooks: those validate metadata and must not run on a removal.
+  await runRelationEdgeDeleteHooks({
+    client,
+    edgeContext,
+    callerItemId: input.callerItemId,
+    targetItemId: input.targetItemId,
+    writer,
+  });
   const edge = await relationsStore.deleteItemRelation(client, edgeContext.reldef.id, itemA, itemB);
+  if (edge) {
+    await breakValueLinksForRelationEdge(client, {
+      reldef: edgeContext.reldef,
+      itemA,
+      itemB,
+      writerKind: writer.writerKind,
+    });
+  }
   await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
   return edge;
 }
@@ -224,16 +343,16 @@ export async function deleteRelationWithClient(
 export function createRelationOps(deps: Pick<ChokePointDeps, "pool">) {
   const { pool } = deps;
   return {
-    async createRelation(input: CreateRelationInput): Promise<RelationEdge> {
-      return withTransaction(pool, (client) => createRelationWithClient(client, input));
+    async createRelation(input: CreateRelationInput, writer?: WriterIdentity): Promise<RelationEdge> {
+      return withTransaction(pool, (client) => createRelationWithClient(client, input, undefined, writer));
     },
 
-    async updateRelation(input: UpdateRelationInput): Promise<RelationEdge> {
-      return withTransaction(pool, (client) => updateRelationWithClient(client, input));
+    async updateRelation(input: UpdateRelationInput, writer?: WriterIdentity): Promise<RelationEdge> {
+      return withTransaction(pool, (client) => updateRelationWithClient(client, input, undefined, writer));
     },
 
-    async deleteRelation(input: DeleteRelationInput): Promise<RelationEdge | null> {
-      return withTransaction(pool, (client) => deleteRelationWithClient(client, input));
+    async deleteRelation(input: DeleteRelationInput, writer?: WriterIdentity): Promise<RelationEdge | null> {
+      return withTransaction(pool, (client) => deleteRelationWithClient(client, input, undefined, writer));
     },
   };
 }

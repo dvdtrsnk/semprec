@@ -1,3 +1,4 @@
+import type { Pool } from "pg";
 import type { GenericApplicationPort } from "@semprec/shared";
 import type { RouteDefinition } from "./adapter/routeTable.js";
 import { optionalIntegerQueryParam, requireJsonObjectBody, requireUuidParam } from "./adapter/requestValidation.js";
@@ -25,7 +26,7 @@ function requestUrl(rawUrl: string | undefined): URL {
  * agent-originated view write goes through a different adapter entirely (see
  * `docs/adr/2026-09-10-views-are-excluded-from-the-agent-proposal-flow.md`).
  */
-export function createViewRoutes(service: GenericApplicationPort): RouteDefinition[] {
+export function createViewRoutes(service: GenericApplicationPort, pool: Pool): RouteDefinition[] {
   return [
     {
       method: "GET",
@@ -145,13 +146,15 @@ export function createViewRoutes(service: GenericApplicationPort): RouteDefiniti
         const body = ctx.body === undefined ? {} : requireJsonObjectBody(ctx.body);
         const result = await dispatchGenericOperation(service, "view.query", restActor(ctx.identity.user.id), {
           viewId,
+          include: body.include,
           filter: body.filter,
           sort: body.sort,
           cursor: body.cursor,
           limit: body.limit,
           inTrash: body.inTrash,
+          includeCount: body.includeCount,
         });
-        return { status: 200, body: toItemQueryEnvelope(result) };
+        return { status: 200, body: await toItemQueryEnvelope(pool, result) };
       },
     },
   ];

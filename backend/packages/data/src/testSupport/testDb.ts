@@ -5,6 +5,7 @@ import { getTenantZeroId, tenantZeroSessionOptions } from "./tenantFixtures.js";
 // credential plus its sync-state row) without adding either writer to the production entry point.
 export { storeCredential } from "../credentials/externalCredentialsStore.js";
 export { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
+export { ensureFolderItem } from "../mail/folderDiscovery.js";
 export {
   bindToTenantZero,
   createRuntimeRolePool,
@@ -18,6 +19,20 @@ export {
   withTenantTransaction,
 } from "./tenantFixtures.js";
 export { createTestModuleItem, createTestProjectItem } from "./projectFixtures.js";
+export { stubDnsLookup, type DnsLookupStub } from "./dnsLookupStub.js";
+export { writePageTextBlocks } from "./pageFixtures.js";
+// Test-only: lets a composition-root test outside this package observe the write hook contexts
+// (`writer`) a transport's request reaches the choke point with.
+export {
+  registerItemCreateHook,
+  registerItemUpdateHook,
+  registerRelationEdgeWriteHook,
+  registerRelationEdgeDeleteHook,
+  type ItemCreateHookContext,
+  type ItemUpdateHookContext,
+  type RelationEdgeWriteHookContext,
+  type RelationEdgeDeleteHookContext,
+} from "../chokePoint/hooks.js";
 
 /**
  * The superuser pool existing suites seed and assert through. Superusers bypass row-level security,

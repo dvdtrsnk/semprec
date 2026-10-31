@@ -1,6 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   withTransaction,
+  getSelfPersonId,
+  setSelfPersonId,
   ChokePointError,
   ValidationError,
   UnauthorizedError,
@@ -11,15 +13,18 @@ import {
   revokeUserSession,
   requestPasswordReset,
   resetPassword,
-  SESSION_TTL_SECONDS,
+  SESSION_MAX_LIFETIME_SECONDS,
   SESSION_PLATFORMS,
   SESSION_DELIVERY_CHANNEL_BY_PLATFORM,
+  deviceFromUserAgent,
+  type LoginDevice,
+  type SessionDeviceKind,
   type SessionPlatform,
   type SessionDeliveryChannel,
   type AuthenticatedIdentity,
   type PasswordResetMailer,
 } from "@semprec/data";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import type { Pool } from "pg";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { assertUuid } from "./adapter/requestValidation.js";
@@ -98,6 +103,66 @@ export async function authenticateRequest(pool: Pool, req: IncomingMessage): Pro
   return identity;
 }
 
+const NATIVE_DEVICE_KINDS: Record<"ios" | "macos", readonly SessionDeviceKind[]> = {
+  ios: ["iphone", "ipad"],
+  macos: ["mac"],
+};
+
+/** An optional trimmed string field of `1..maxLength` characters; absent (`undefined`/`null`) yields `null`. */
+function optionalDeviceString(value: unknown, field: string, maxLength: number): string | null {
+  if (value === undefined || value === null) return null;
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (trimmed.length === 0 || trimmed.length > maxLength) {
+    throw new ValidationError(`'${field}' must be a string of 1-${maxLength} characters`, { field });
+  }
+  return trimmed;
+}
+
+/**
+ * The device identity a login records. A browser must not be able to claim a device, so a `web`
+ * login ignores every body field and takes the name and OS family from its `User-Agent`; a native
+ * login's optional fields are validated and a violation is a 400 naming the field.
+ */
+function parseLoginDevice(
+  raw: Record<string, unknown>,
+  platform: SessionPlatform,
+  userAgent: string | null,
+): LoginDevice {
+  if (platform === "web") {
+    const derived = deviceFromUserAgent(userAgent);
+    return {
+      deviceId: null,
+      deviceName: derived.deviceName,
+      deviceKind: "browser",
+      osVersion: derived.osVersion,
+      appVersion: null,
+    };
+  }
+  let deviceId: string | null = null;
+  if (raw.deviceId !== undefined && raw.deviceId !== null) {
+    if (typeof raw.deviceId !== "string") {
+      throw new ValidationError("'deviceId' must be a UUID string", { field: "deviceId" });
+    }
+    deviceId = assertUuid(raw.deviceId, "deviceId");
+  }
+  let deviceKind: SessionDeviceKind | null = null;
+  if (raw.deviceKind !== undefined && raw.deviceKind !== null) {
+    const allowed = NATIVE_DEVICE_KINDS[platform];
+    const kind = allowed.find((candidate) => candidate === raw.deviceKind);
+    if (!kind) {
+      throw new ValidationError(`'deviceKind' must be one of: ${allowed.join(", ")}`, { field: "deviceKind" });
+    }
+    deviceKind = kind;
+  }
+  return {
+    deviceId,
+    deviceName: optionalDeviceString(raw.deviceName, "deviceName", 100),
+    deviceKind,
+    osVersion: optionalDeviceString(raw.osVersion, "osVersion", 50),
+    appVersion: optionalDeviceString(raw.appVersion, "appVersion", 50),
+  };
+}
+
 function isSessionPlatform(value: unknown): value is SessionPlatform {
   return typeof value === "string" && (SESSION_PLATFORMS as readonly string[]).includes(value);
 }
@@ -122,7 +187,7 @@ export interface AuthRequestListenerOptions {
 
 /**
  * Auth-v1's HTTP surface (issue #140): `POST /api/auth/login`, `POST /api/auth/logout`,
- * `POST /api/auth/sessions/:id/revoke`, `GET /api/auth/session`, and (issue #142)
+ * `POST /api/auth/sessions/:id/revoke`, `GET /api/auth/session`, `PUT /api/auth/self-person`, and (issue #142)
  * `POST /api/auth/password-reset/request` / `POST /api/auth/password-reset/consume`. Unlike this
  * package's other handlers, there is no shared-secret `authToken` gate here — `login` and the
  * password-reset routes are necessarily public, and the session routes gate on a real session
@@ -171,6 +236,11 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
             email?: unknown;
             password?: unknown;
             platform?: unknown;
+            deviceId?: unknown;
+            deviceName?: unknown;
+            deviceKind?: unknown;
+            osVersion?: unknown;
+            appVersion?: unknown;
           };
           if (typeof raw.email !== "string" || raw.email.length === 0) {
             throw new ValidationError("'email' must be a non-empty string");
@@ -184,6 +254,8 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
           body = { email: raw.email, password: raw.password, platform: raw.platform };
 
           const userAgentHeader = req.headers["user-agent"];
+          const userAgent = typeof userAgentHeader === "string" ? userAgentHeader : null;
+          const device = parseLoginDevice(raw, body.platform, userAgent);
           result = await login(pool, {
             email: body.email,
             password: body.password,
@@ -193,7 +265,8 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
             // lock the owner out everywhere. Per-address scoping only ever locks the attacker's own
             // address, and Argon2id verification keeps distributed guessing expensive.
             ip,
-            userAgent: typeof userAgentHeader === "string" ? userAgentHeader : null,
+            userAgent,
+            device,
           });
         } catch (err) {
           // Only a failed credential check counts; infrastructure errors and validation do not.
@@ -202,6 +275,8 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
         }
         reservation.release();
 
+        // Public account fields and role; GET /api/auth/session also resolves the tenant-side person link.
+        const user = { ...result.user, role: result.role };
         // Per #141: a browser must never see its token in a readable response body — only the
         // `httpOnly` cookie carries it. iOS/macOS get it back in the body for Keychain storage
         // and use it as `Authorization: Bearer` on every later request; they get no cookie.
@@ -209,11 +284,11 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
           sendJson(
             res,
             200,
-            { user: result.user },
-            { "Set-Cookie": sessionCookieHeader(result.token, SESSION_TTL_SECONDS) },
+            { user },
+            { "Set-Cookie": sessionCookieHeader(result.token, SESSION_MAX_LIFETIME_SECONDS) },
           );
         } else {
-          sendJson(res, 200, { token: result.token, user: result.user });
+          sendJson(res, 200, { token: result.token, user });
         }
         return;
       }
@@ -290,10 +365,30 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
         return;
       }
 
+      if (req.method === "PUT" && url.pathname === "/api/auth/self-person") {
+        const identity = await authenticateRequest(pool, req);
+        const body: unknown = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
+        if (typeof body !== "object" || body === null || Array.isArray(body) || !("personId" in body)) {
+          throw new ValidationError("'personId' must be a UUID or null");
+        }
+        if (body.personId !== null && typeof body.personId !== "string") {
+          throw new ValidationError("'personId' must be a UUID or null");
+        }
+        const personId = body.personId === null ? null : assertUuid(body.personId, "personId");
+        await runInTenant(identity.tenantId, () =>
+          withTransaction(pool, (client) =>
+            setSelfPersonId(client, personId, { writerKind: "user", onBehalfOfUserId: identity.user.id }),
+          ),
+        );
+        sendJson(res, 200, { personId });
+        return;
+      }
+
       if (req.method === "GET" && url.pathname === "/api/auth/session") {
         const identity = await authenticateRequest(pool, req);
+        const personId = await runInTenant(identity.tenantId, () => withTransaction(pool, getSelfPersonId));
         sendJson(res, 200, {
-          user: { ...identity.user, role: identity.role },
+          user: { ...identity.user, role: identity.role, personId },
           session: { id: identity.session.id, platform: identity.session.platform },
         });
         return;
@@ -321,7 +416,7 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
    * request. Same shape as `setupHandler.ts`.
    */
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
-    // Every auth route touches only global identity tables, so the whole request runs as system work.
+    // Authentication starts as system work; person reads/writes enter the verified tenant scope.
     runAsSystem("auth", () => handleRequest(req, res)).catch((err: unknown) => {
       logger.error({ err }, "Unhandled error in the request listener");
       if (res.headersSent) {

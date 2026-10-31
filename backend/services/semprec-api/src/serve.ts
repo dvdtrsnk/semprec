@@ -2,7 +2,6 @@ import { createServer } from "node:http";
 import {
   assertRuntimeRole,
   createMailLiveSyncRoot,
-  createNoopMailLiveSyncLifecycleFactory,
   createPool,
   LocalFsBlobStorageWriter,
   loadFullModuleRegistry,
@@ -20,6 +19,14 @@ import { createTransport, type Transporter } from "nodemailer";
 import { wireRealtimeHooks } from "@semprec/realtime";
 import { installFatalHandlers, withTraceContext } from "@semprec/shared";
 import { createDispatcher } from "./app.js";
+import {
+  CustomRouteConfigurationError,
+  type CustomRouteDependencies,
+  type CustomRouteOAuthClient,
+  type MailLiveSyncControl,
+} from "./adapter/customRouteMount.js";
+import { createImapIdleLifecycleFactory, createMailLiveSyncLifecycleFactory } from "./mailLiveSyncLifecycles.js";
+import { readOAuthClient } from "./mailSyncAdapters.js";
 import { createSyncUpgradeHandler } from "./syncHandler.js";
 import { createApiQueueRuntime } from "./queueRuntime.js";
 import { createGracefulShutdown, registerShutdownSignals } from "./shutdown.js";
@@ -63,6 +70,42 @@ if (!Number.isInteger(port) || port <= 0 || port > 65535)
 const appBaseUrl = process.env.APP_BASE_URL ?? "http://localhost:3000";
 
 /**
+ * One provider's OAuth client, read with the same keys and rules `createMailSyncAdapters` applies.
+ * An unset or empty key leaves the client out, so a route that needs it fails with a configuration
+ * error when it runs (`requireCustomRouteDependency`), not at startup.
+ */
+function optionalOAuthClient(idKey: string, secretKey: string): CustomRouteOAuthClient | undefined {
+  const client = readOAuthClient(process.env, idKey, secretKey);
+  return "missingEnv" in client ? undefined : client;
+}
+
+// The mail live-sync root is created further down, after the dispatcher. It has no per-mailbox
+// control yet (only start, stop, reconcileOnce and stopTenant), so this proxy has nothing to forward
+// to: each call refuses with a configuration error that names it. Per-mailbox wiring is left to a
+// later issue.
+const mailLiveSyncProxy: MailLiveSyncControl = {
+  async startMailbox() {
+    throw new CustomRouteConfigurationError(
+      'custom route dependency "mailLiveSync.startMailbox" is not wired in this composition root yet',
+    );
+  },
+  async stopMailbox() {
+    throw new CustomRouteConfigurationError(
+      'custom route dependency "mailLiveSync.stopMailbox" is not wired in this composition root yet',
+    );
+  },
+};
+
+const customRouteDependencies: CustomRouteDependencies = {
+  oauth: {
+    gmail: optionalOAuthClient("GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET"),
+    msGraph: optionalOAuthClient("MS_GRAPH_OAUTH_CLIENT_ID", "MS_GRAPH_OAUTH_CLIENT_SECRET"),
+    redirectBaseUrl: appBaseUrl,
+  },
+  mailLiveSync: mailLiveSyncProxy,
+};
+
+/**
  * The SMTP transport and sender address the transactional mailers share, or `null` when SMTP is not
  * configured. A set `SMTP_HOST` with an invalid `SMTP_PORT` throws at startup.
  */
@@ -101,6 +144,7 @@ if (!Number.isFinite(maxFileSizeMb) || maxFileSizeMb <= 0) {
   throw new Error(`MAX_FILE_SIZE_MB is not a valid positive number: ${process.env.MAX_FILE_SIZE_MB}`);
 }
 const blobStorage = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR"));
+const mailAttachmentStorage = new LocalFsBlobStorageWriter(resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR"));
 
 // Issue #635: this process sits behind Caddy on loopback, so the socket peer is always 127.0.0.1.
 // Only the exact string "1" trusts the proxy's `X-Forwarded-For`; any other value, or unset, is false.
@@ -127,8 +171,10 @@ const dispatch = await createDispatcher(pool, {
   setupToken,
   moduleRegistry,
   blobStorage,
+  mailAttachmentStorage,
   maxFileSizeBytes: maxFileSizeMb * 1024 * 1024,
   trustProxy,
+  customRouteDependencies,
 });
 const syncServer = await createSyncUpgradeHandler(pool);
 
@@ -138,13 +184,18 @@ const queueRuntime = await createApiQueueRuntime(pool, moduleRegistry);
 
 // Issue #650: this long-lived process hosts the one mail live-sync root that
 // `createMailLiveSyncRoot`'s contract requires. The root discovers each active tenant's
-// Mailboxes database itself. Until real transports exist, every account gets the noop
-// lifecycle, whose `start()` enqueues one immediate `mailAccountSync`.
-const mailLiveSync = createMailLiveSyncRoot(pool, createNoopMailLiveSyncLifecycleFactory(pool), {
-  onLifecycleError: (mailboxItemId, phase, err) => {
-    logger.error({ err, mailboxItemId, phase }, "Mail live-sync lifecycle failed");
+// Mailboxes database itself. IMAP accounts get the IDLE lifecycle (issue #1550). Every other
+// sync mode gets the noop lifecycle, whose `start()` enqueues one immediate `mailAccountSync`,
+// until the Gmail and Graph lifecycles are hosted (#1739, #1745).
+const mailLiveSync = createMailLiveSyncRoot(
+  pool,
+  createMailLiveSyncLifecycleFactory({ pool, hosted: { imap: createImapIdleLifecycleFactory(pool) } }),
+  {
+    onLifecycleError: (mailboxItemId, phase, err) => {
+      logger.error({ err, mailboxItemId, phase }, "Mail live-sync lifecycle failed");
+    },
   },
-});
+);
 await mailLiveSync.start();
 
 // Issue #1042: a tenant leaving `active` ends its sockets and its hosted mailbox lifecycles in this

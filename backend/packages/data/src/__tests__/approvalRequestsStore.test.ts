@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { RISK_CLASSES } from "@semprec/shared";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import {
@@ -13,6 +16,7 @@ import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/vie
 import { seedSystem } from "../seed/seedSystem.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import {
+  type ApprovalDescription,
   createPendingApprovalRequest,
   getApprovalRequest,
   getApprovalRequestForOwner,
@@ -41,6 +45,323 @@ async function createPendingRequest(): Promise<string> {
   });
   return created.id;
 }
+
+describe("approvalRequestsStore reason (issue #1420)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool, createViewTypeRegistry());
+    ownerId = await createUser();
+  });
+
+  async function insertWithReason(reason: string | null | undefined) {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+    return createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "search_web",
+      riskClass: "unclassified",
+      payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      ...(reason === undefined ? {} : { reason }),
+    });
+  }
+
+  it("stores the reason and reads it back", async () => {
+    const created = await insertWithReason("You last filled in Mood in August.");
+    expect(created.reason).toBe("You last filled in Mood in August.");
+    expect((await getApprovalRequest(pool, created.id))!.reason).toBe("You last filled in Mood in August.");
+  });
+
+  it("reads null when no reason was given", async () => {
+    expect((await insertWithReason(undefined)).reason).toBeNull();
+    expect((await insertWithReason(null)).reason).toBeNull();
+  });
+
+  it("accepts a reason of exactly 500 characters and rejects 501 at the database", async () => {
+    expect((await insertWithReason("x".repeat(500))).reason).toHaveLength(500);
+    await expect(insertWithReason("x".repeat(501))).rejects.toThrow(/approval_requests_reason_length_check/);
+  });
+});
+
+describe("approval_requests.risk_class closed set (issue #1423)", () => {
+  const migrationSql = readFileSync(
+    fileURLToPath(new URL("../db/migrations/0094_approval_requests_risk_class_check.sql", import.meta.url)),
+    "utf8",
+  );
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool, createViewTypeRegistry());
+    ownerId = await createUser();
+  });
+
+  async function insertRaw(riskClass: string): Promise<string> {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO approval_requests (agent_run_id, tool_name, risk_class, payload, resource_snapshot)
+       VALUES ($1, 'search_web', $2, '{}'::jsonb, '{"kind":"test","resourceId":"test","sha256":null}'::jsonb) RETURNING id`,
+      [run.id, riskClass],
+    );
+    return rows[0]!.id;
+  }
+
+  it("rejects an unknown class at the database", async () => {
+    await expect(insertRaw("high")).rejects.toThrow(/approval_requests_risk_class_check/);
+    for (const value of RISK_CLASSES) await insertRaw(value);
+  });
+
+  it("backfills a legacy unknown class to unclassified when the migration runs", async () => {
+    await pool.query("ALTER TABLE approval_requests DROP CONSTRAINT approval_requests_risk_class_check");
+    const legacyId = await insertRaw("high");
+    const knownId = await insertRaw("destructive");
+
+    await pool.query(migrationSql);
+
+    expect((await getApprovalRequest(pool, legacyId))!.riskClass).toBe("unclassified");
+    expect((await getApprovalRequest(pool, knownId))!.riskClass).toBe("destructive");
+    await expect(insertRaw("high")).rejects.toThrow(/approval_requests_risk_class_check/);
+  });
+});
+
+describe("approvalRequestsStore toolCallId (issue #1618)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool, createViewTypeRegistry());
+    ownerId = await createUser();
+  });
+
+  async function insert(agentRunId: string, toolCallId?: string | null) {
+    return createPendingApprovalRequest(pool, {
+      agentRunId,
+      toolName: "search_web",
+      riskClass: "unclassified",
+      payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      ...(toolCallId === undefined ? {} : { toolCallId }),
+    });
+  }
+
+  it("stores the tool call id and reads it back", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+    const created = await insert(run.id, "call_1");
+    expect(created.toolCallId).toBe("call_1");
+    expect((await getApprovalRequest(pool, created.id))!.toolCallId).toBe("call_1");
+  });
+
+  it("leaves tool_call_id NULL when none is supplied, and allows several such requests per run", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+    const first = await insert(run.id);
+    const second = await insert(run.id, null);
+    expect(first.toolCallId).toBeNull();
+    expect(second.toolCallId).toBeNull();
+    expect(second.id).not.toBe(first.id);
+  });
+
+  it("returns the existing request for a repeated (run, tool call id) and keeps one row", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+    const first = await insert(run.id, "call_1");
+    const again = await insert(run.id, "call_1");
+    expect(again.id).toBe(first.id);
+    const { rows } = await pool.query("SELECT count(*)::int AS n FROM approval_requests WHERE agent_run_id = $1", [
+      run.id,
+    ]);
+    expect(rows[0].n).toBe(1);
+  });
+
+  it("creates separate requests for the same tool call id in different runs or different ids in one run", async () => {
+    const runA = await createAgentRun(pool, { triggeredBy: "user", task: "a", userId: ownerId });
+    const runB = await createAgentRun(pool, { triggeredBy: "user", task: "b", userId: ownerId });
+    const a1 = await insert(runA.id, "call_1");
+    const b1 = await insert(runB.id, "call_1");
+    const a2 = await insert(runA.id, "call_2");
+    expect(new Set([a1.id, b1.id, a2.id]).size).toBe(3);
+  });
+});
+
+describe("approvalRequestsStore description (issue #1683)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool, createViewTypeRegistry());
+    ownerId = await createUser();
+  });
+
+  async function insert(runId: string, description?: ApprovalDescription) {
+    return createPendingApprovalRequest(pool, {
+      agentRunId: runId,
+      toolName: "search_web",
+      riskClass: "unclassified",
+      payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      ...(description === undefined ? {} : { description }),
+    });
+  }
+
+  it("stores the description and reads it back", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+    const description: ApprovalDescription = {
+      key: "approval.viewDelete",
+      params: { viewName: "Open", databaseName: null, count: 3 },
+    };
+    const created = await insert(run.id, description);
+    expect(created.description).toEqual(description);
+    expect((await getApprovalRequest(pool, created.id))!.description).toEqual(description);
+  });
+
+  it("returns null for a row without a description and leaves every other field unchanged", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+    const created = await insert(run.id);
+    await pool.query(`UPDATE approval_requests SET description = NULL WHERE id = $1`, [created.id]);
+    const read = await getApprovalRequest(pool, created.id);
+    expect(read).toEqual(created);
+    expect(read!.description).toBeNull();
+    expect(read!.toolName).toBe("search_web");
+  });
+
+  it.each([
+    ["a non-object", "approval.x"],
+    ["a missing key", { params: {} }],
+    ["missing params", { key: "approval.x" }],
+    ["a nested param value", { key: "approval.x", params: { a: { b: 1 } } }],
+    ["a malformed endsInheritance", { key: "approval.x", params: {}, endsInheritance: [{ itemId: 1 }] }],
+  ])("rejects a row whose description is %s", async (_label, description) => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+    const created = await insert(run.id);
+    await pool.query(`UPDATE approval_requests SET description = $2::jsonb WHERE id = $1`, [
+      created.id,
+      JSON.stringify(description),
+    ]);
+    await expect(getApprovalRequest(pool, created.id)).rejects.toThrow("Malformed description in database row");
+  });
+});
+
+describe("approvalRequestsStore thread activity (issue #1728)", () => {
+  const OLD = "2020-01-01T00:00:00Z";
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool, createViewTypeRegistry());
+    ownerId = await createUser();
+  });
+
+  async function insertThread(activityAt = OLD): Promise<string> {
+    const { rows } = await pool.query<{ id: string }>(
+      "INSERT INTO semp_threads (kind, last_activity_at) VALUES ('chat', $1) RETURNING id",
+      [activityAt],
+    );
+    return rows[0]!.id;
+  }
+
+  async function activity(threadId: string): Promise<number> {
+    const { rows } = await pool.query<{ t: Date }>("SELECT last_activity_at AS t FROM semp_threads WHERE id = $1", [
+      threadId,
+    ]);
+    return rows[0]!.t.getTime();
+  }
+
+  function genericPayload(runId: string) {
+    return {
+      operationName: "deleteView",
+      canonicalInput: {},
+      actor: { runId, agentProjectItemId: randomUUID(), userId: ownerId },
+      resourceSnapshot: { kind: "view", resourceId: "v", sha256: null },
+    };
+  }
+
+  function mcpPayload() {
+    return { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} };
+  }
+
+  it.each([
+    ["generic operation", true],
+    ["MCP tool call", false],
+  ])("raises the thread's activity to the creation time for a %s request", async (_label, generic) => {
+    const threadId = await insertThread();
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "t", userId: ownerId, threadId });
+    const before = Date.now();
+    await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "tool",
+      riskClass: "unclassified",
+      payload: generic ? genericPayload(run.id) : mcpPayload(),
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    expect(await activity(threadId)).toBeGreaterThanOrEqual(before - 1000);
+  });
+
+  it("leaves every thread untouched for a run without a thread", async () => {
+    const threadId = await insertThread();
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "t", userId: ownerId });
+    await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "tool",
+      riskClass: "unclassified",
+      payload: mcpPayload(),
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    expect(await activity(threadId)).toBe(new Date(OLD).getTime());
+  });
+
+  it("leaves the activity unchanged when the request transaction rolls back", async () => {
+    const threadId = await insertThread();
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "t", userId: ownerId, threadId });
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await createPendingApprovalRequest(client, {
+        agentRunId: run.id,
+        toolName: "tool",
+        riskClass: "unclassified",
+        payload: mcpPayload(),
+        resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      });
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+    expect(await activity(threadId)).toBe(new Date(OLD).getTime());
+  });
+
+  it("bumps the thread a delegated run is linked to", async () => {
+    const threadId = await insertThread();
+    const parent = await createAgentRun(pool, { triggeredBy: "user", task: "t", userId: ownerId, threadId });
+    const child = await createAgentRun(pool, { triggeredBy: "supervisor", task: "sub", parentRunId: parent.id });
+    await createPendingApprovalRequest(pool, {
+      agentRunId: child.id,
+      toolName: "tool",
+      riskClass: "unclassified",
+      payload: mcpPayload(),
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    expect(await activity(threadId)).toBeGreaterThan(new Date(OLD).getTime());
+  });
+
+  it("never moves activity backwards when a newer activity committed after the transaction started", async () => {
+    const threadId = await insertThread();
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "t", userId: ownerId, threadId });
+    const client = await pool.connect();
+    const future = new Date(Date.now() + 3_600_000);
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT now()"); // fixes the transaction start time
+      await pool.query("UPDATE semp_threads SET last_activity_at = $2 WHERE id = $1", [threadId, future]);
+      await createPendingApprovalRequest(client, {
+        agentRunId: run.id,
+        toolName: "tool",
+        riskClass: "unclassified",
+        payload: mcpPayload(),
+        resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      });
+      await client.query("COMMIT");
+    } finally {
+      client.release();
+    }
+    expect(await activity(threadId)).toBe(future.getTime());
+  });
+});
 
 describe("approvalRequestsStore (issue #130)", () => {
   beforeEach(async () => {

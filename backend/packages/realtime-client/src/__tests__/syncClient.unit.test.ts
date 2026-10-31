@@ -107,6 +107,7 @@ describe("createSyncClient (issue #164)", () => {
       userId: "u1",
       kind: "system",
       title: "Hello",
+      body: null,
       linkHref: null,
       sourceTable: "items",
       sourceId: "i1",
@@ -155,6 +156,23 @@ describe("createSyncClient (issue #164)", () => {
       runId: "22222222-2222-2222-2222-222222222222",
       afterEventId: "7",
     });
+  });
+
+  it("dispatches a doc:ack frame to onDocAck and drops a malformed one", () => {
+    const onDocAck = vi.fn();
+    const client = createSyncClient({ createSocket, onDocAck });
+    client.connect();
+    const socket = sockets[0]!;
+    socket.open();
+
+    socket.receiveFrame({ type: "doc:ack", docId: "d1", clientUpdateId: "edit-1" });
+    expect(onDocAck).toHaveBeenCalledExactlyOnceWith("d1", "edit-1");
+
+    socket.receiveFrame({ type: "doc:ack", docId: "d1" });
+    socket.receiveFrame({ type: "doc:ack", docId: 5, clientUpdateId: "edit-2" });
+    socket.receiveFrame({ type: "doc:ack", docId: "d1", clientUpdateId: "bad id" });
+    socket.receiveFrame({ type: "doc:ack", docId: "d1", clientUpdateId: "a".repeat(65) });
+    expect(onDocAck).toHaveBeenCalledTimes(1);
   });
 
   it("reconnects with the injected backoff delay after a server-initiated drop", async () => {

@@ -1,3 +1,14 @@
+import { projectWriteTransform } from "./projects/projectWriteTransform.js";
+import { areaItemCreateHook, areaItemUpdateHook } from "./areas/areaWriteHook.js";
+import { booksPreWriteTransform } from "./library/booksPreWriteTransform.js";
+import { BOOKS_MODULE_ID } from "./seed/libraryModuleKeys.js";
+import {
+  mailboxConnectionLimitCreateHook,
+  mailboxConnectionLimitUpdateHook,
+} from "./mail/mailboxConnectionLimitHook.js";
+import { sanitizeMailHtml } from "./mail/htmlSanitize.js";
+import { EMAILS_MODULE_ID } from "./seed/emailModuleKeys.js";
+import { registerItemReadProjection } from "./chokePoint/hooks.js";
 // The composition point for the choke point's per-process hook registries (chokePoint/hooks.ts):
 // the one place that imports every domain's hook by name and registers it, so chokePoint/ itself
 // never has to. Side-effect only — imported for its registration calls, not any export.
@@ -5,13 +16,31 @@
 // process that loads @semprec/data registers these hooks before any write; a test importing a
 // choke-point module by its deep path (bypassing the barrel) must import this file itself.
 // See docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md.
-import { registerItemCreateHook, registerItemUpdateHook, registerRelationEdgeWriteHook } from "./chokePoint/hooks.js";
+import {
+  registerItemCreateHook,
+  registerItemPreWriteTransform,
+  registerItemUpdateHook,
+  registerRelationEdgeWriteHook,
+} from "./chokePoint/hooks.js";
 import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "./mcp/mcpServerWriteHook.js";
 import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.js";
+import { TASKS_MODULE_ID, PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
 import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHook.js";
+import { taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
 import { itemSearchCreateHook, itemSearchUpdateHook } from "./search/itemSearchIndexer.js";
+import {
+  libraryRatingItemCreateHook,
+  libraryRatingItemUpdateHook,
+  libraryWatchedWithEdgeWriteHook,
+} from "./library/libraryRatingHooks.js";
+import { journalItemCreateHook } from "./journal/journalWriteHook.js";
+import { inboxItemCreateHook } from "./inbox/inboxCreateHook.js";
+import { inboxTypeItemCreateHook, inboxTypeItemUpdateHook } from "./inbox/inboxTypeWriteHook.js";
 
+registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform);
+registerItemPreWriteTransform(BOOKS_MODULE_ID, booksPreWriteTransform);
+registerItemPreWriteTransform(PROJECTS_MODULE_ID, projectWriteTransform);
 registerItemCreateHook(mcpServerItemCreateHook);
 registerItemCreateHook(itemSearchCreateHook);
 registerItemUpdateHook(mcpServerItemUpdateHook);
@@ -19,3 +48,30 @@ registerItemUpdateHook(mailMessageFlagsItemUpdateHook);
 registerItemUpdateHook(taskRecurrenceItemUpdateHook);
 registerItemUpdateHook(itemSearchUpdateHook);
 registerRelationEdgeWriteHook(transcriptSpeakerEdgeWriteHook);
+registerItemCreateHook(libraryRatingItemCreateHook);
+registerItemUpdateHook(libraryRatingItemUpdateHook);
+registerRelationEdgeWriteHook(libraryWatchedWithEdgeWriteHook);
+registerItemCreateHook(journalItemCreateHook);
+registerItemCreateHook(inboxItemCreateHook);
+registerItemCreateHook(inboxTypeItemCreateHook);
+registerItemUpdateHook(inboxTypeItemUpdateHook);
+
+registerItemReadProjection({
+  ownerModuleId: EMAILS_MODULE_ID,
+  project: (item) =>
+    typeof item.properties.body === "string"
+      ? {
+          ...item,
+          properties: {
+            ...item.properties,
+            body: sanitizeMailHtml(item.properties.body, { allowRemoteImages: false }),
+          },
+        }
+      : item,
+});
+
+registerItemCreateHook(mailboxConnectionLimitCreateHook);
+registerItemUpdateHook(mailboxConnectionLimitUpdateHook);
+
+registerItemCreateHook(areaItemCreateHook);
+registerItemUpdateHook(areaItemUpdateHook);

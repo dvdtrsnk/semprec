@@ -9,6 +9,8 @@ import {
   TRANSCRIPTION_PREPARE_COMPUTED_KEY,
   TRANSCRIPTION_DIARIZE_COMPUTED_KEY,
   TRANSCRIPTION_ASR_COMPUTED_KEY,
+  TRANSCRIPT_DURATION_SECONDS_COMPUTED_KEY,
+  TRANSCRIPT_FINALIZED_AT_COMPUTED_KEY,
   TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
   TRANSCRIPT_LANGUAGE_COMPUTED_KEY,
   TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
@@ -44,15 +46,17 @@ import {
 } from "@semprec/data";
 import type { BlobStorageWriter } from "@semprec/data";
 import { NotFoundError, ValidationError } from "@semprec/data";
-import type { ItemRow } from "@semprec/data";
+import type { ItemAutomationErrorCode, ItemRow } from "@semprec/data";
 import {
   discardStoredAudio,
   downloadToTempFile,
   extractAudioChunkBytes,
+  MediaToolError,
   normalizeAudio,
   probeMedia,
   probeNormalizedDuration,
   removeTempFile,
+  renderPlaybackAudio,
   type MediaProbeResult,
   type NormalizedAudioResult,
 } from "./mediaNormalization.js";
@@ -61,6 +65,7 @@ import { AiGatewayFailedError, type AiGatewayClientPort } from "@semprec/shared"
 import { computeAsrChunkBoundaries } from "./asrChunking.js";
 import {
   AudioGatewayBudgetExceededError,
+  AudioGatewayCallError,
   createHttpAudioGatewayClient,
   type AudioGatewayClient,
 } from "./audioGatewayClient.js";
@@ -79,8 +84,17 @@ function sourceName(properties: Record<string, unknown>): string {
   throw new ValidationError("Source file has no name", { field: "name" });
 }
 
+/** Source types an iOS player can play and seek as they are; any other type gets a rendition (`renderPlaybackAudio`). */
+const DIRECTLY_PLAYABLE_MIME_TYPES: ReadonlySet<string> = new Set(["audio/mp4", "audio/mpeg", "audio/wav"]);
+
+function isDirectlyPlayable(mimeType: string): boolean {
+  return DIRECTLY_PLAYABLE_MIME_TYPES.has(mimeType.split(";")[0]!.trim().toLowerCase());
+}
+
 interface PrepareStepResult {
   normalizedBlobId: string;
+  /** The blob the app plays and seeks on the segments' timeline: the original for a directly playable type, else the rendition's. Absent from checkpoints written before this field existed. */
+  playbackBlobId?: string | undefined;
   durationSeconds: number;
   /** The recording's own `creation_time`; `null` when it had none usable and `date` fell back to the upload time. */
   creationTime: string | null;
@@ -107,6 +121,18 @@ export class TranscriptionLockedError extends Error {
   constructor(transcriptId: string) {
     super(`Transcriptions item '${transcriptId}' was locked by a user`);
     this.name = "TranscriptionLockedError";
+  }
+}
+
+/**
+ * The Transcriptions row or its source Files item is in Trash or gone. Thrown by a step's first
+ * read, before it writes or makes a paid call; the handler marks `item_automation` `error`/`deleted`
+ * and ends the job successfully, with no notification.
+ */
+export class TranscriptionStoppedError extends Error {
+  constructor(what: string, itemId: string) {
+    super(`${what} '${itemId}' was deleted`);
+    this.name = "TranscriptionStoppedError";
   }
 }
 
@@ -167,6 +193,7 @@ function requireTranscriptId(source: ItemRow, fileItemId: string): string {
 
 const prepareCheckpointSchema = z.object({
   normalizedBlobId: z.string(),
+  playbackBlobId: z.string().optional(),
   durationSeconds: z.number(),
   creationTime: z.string().nullable(),
 });
@@ -221,8 +248,13 @@ function withRepeatableReadTransaction<T>(pool: Pool, fn: (client: PoolClient) =
  * Every transaction of steps 1–8 calls it first, including the read transaction ahead of a paid
  * call, so a lock set while a step runs stops the pipeline before its next write or paid call.
  * Taken before any `items` row lock, the same order `recordTranscriptionFailure` takes them in.
+ * Then throws `TranscriptionStoppedError` when the transcript or the source Files item is in
+ * Trash or gone, so no step writes to or pays for deleted data.
  */
-async function requireTranscriptionUnlocked(client: PoolClient, transcriptId: string): Promise<void> {
+async function requireTranscriptionUnlocked(
+  client: PoolClient,
+  { filesDatabaseId, fileItemId, transcriptId }: TranscriptionStepContextIds,
+): Promise<void> {
   const automation = await lockItemAutomation(client, transcriptId);
   if (!automation)
     throw new NotFoundError(`item_automation row for item '${transcriptId}' not found`, {
@@ -230,13 +262,20 @@ async function requireTranscriptionUnlocked(client: PoolClient, transcriptId: st
       itemId: transcriptId,
     });
   if (automation.status === "locked") throw new TranscriptionLockedError(transcriptId);
+  const transcript = await getItemById(client, await requireTranscriptsDatabaseId(client), transcriptId);
+  if (!transcript || transcript.deletedAt) throw new TranscriptionStoppedError("Transcriptions item", transcriptId);
+  const source = await getItemById(client, filesDatabaseId, fileItemId);
+  if (!source || source.deletedAt) throw new TranscriptionStoppedError("Files item", fileItemId);
 }
+
+type TranscriptionStepContextIds = Pick<TranscriptionStepContext, "filesDatabaseId" | "fileItemId" | "transcriptId">;
 
 /** Step 0: database-only, so one transaction covers the checkpoint check, the Transcripts row and the checkpoint. */
 async function runCreateStep({ pool, filesDatabaseId, fileItemId }: TranscriptionSourceContext): Promise<void> {
   await withTransaction(pool, async (client) => {
     const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
     if (Object.hasOwn(source.computed, TRANSCRIPTION_CREATE_COMPUTED_KEY)) return;
+    if (source.deletedAt) throw new TranscriptionStoppedError("Files item", fileItemId);
 
     const transcripts = await getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
     if (!transcripts) throw new NotFoundError("Transcripts database not found");
@@ -270,7 +309,7 @@ async function runPrepareStep(
   blobStorage: BlobStorageWriter,
 ): Promise<void> {
   const snapshot = await withRepeatableReadTransaction(pool, async (client) => {
-    await requireTranscriptionUnlocked(client, transcriptId);
+    await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
     const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
     if (Object.hasOwn(source.computed, TRANSCRIPTION_PREPARE_COMPUTED_KEY)) return null;
     const sourceBlobId = readBlobId(source.properties);
@@ -278,16 +317,34 @@ async function runPrepareStep(
     const sourceBlob = await getBlob(client, sourceBlobId);
     if (!sourceBlob) throw new NotFoundError(`Blob '${sourceBlobId}' not found`, { resource: "blob" });
     const normalizedStorageKey = await tenantBlobStorageKey(client, `transcriptions/${randomUUID()}.opus`);
-    return { sourceBlobId, storageKey: sourceBlob.storageKey, uploadedAt: sourceBlob.createdAt, normalizedStorageKey };
+    const playbackStorageKey = isDirectlyPlayable(sourceBlob.mimeType)
+      ? null
+      : await tenantBlobStorageKey(client, `transcriptions/${randomUUID()}.m4a`);
+    return {
+      sourceBlobId,
+      storageKey: sourceBlob.storageKey,
+      uploadedAt: sourceBlob.createdAt,
+      normalizedStorageKey,
+      playbackStorageKey,
+    };
   });
   if (!snapshot) return;
 
   const tempPath = await downloadToTempFile(blobStorage, snapshot.storageKey);
   let probe: MediaProbeResult;
   let normalized: NormalizedAudioResult;
+  let playback: NormalizedAudioResult | null = null;
   try {
     probe = await probeMedia(tempPath);
     normalized = await normalizeAudio(tempPath, blobStorage, snapshot.normalizedStorageKey);
+    if (snapshot.playbackStorageKey !== null) {
+      try {
+        playback = await renderPlaybackAudio(tempPath, blobStorage, snapshot.playbackStorageKey);
+      } catch (err) {
+        await discardStoredAudio(blobStorage, normalized.storageKey);
+        throw err;
+      }
+    }
   } finally {
     await removeTempFile(tempPath);
   }
@@ -303,7 +360,7 @@ async function runPrepareStep(
       probe.durationSeconds ?? (await probeNormalizedDuration(blobStorage, normalized.storageKey));
 
     await withRepeatableReadTransaction(pool, async (client) => {
-      await requireTranscriptionUnlocked(client, transcriptId);
+      await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
       // Locked, so the checks below still hold when this transaction's writes land.
       const source = requireSource(await lockItemById(client, filesDatabaseId, fileItemId), fileItemId);
       // A concurrent run finished step 1 first: its checkpoint stands and this run's audio is discarded.
@@ -317,6 +374,14 @@ async function runPrepareStep(
         storageKey: normalized.storageKey,
         contentHash: normalized.contentHash,
       });
+      const playbackBlob = playback
+        ? await createBlob(client, {
+            mimeType: "audio/mp4",
+            byteSize: playback.byteSize,
+            storageKey: playback.storageKey,
+            contentHash: playback.contentHash,
+          })
+        : null;
       const transcripts = await getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
       if (!transcripts) throw new NotFoundError("Transcripts database not found");
       await updateItemWithClient(
@@ -330,14 +395,25 @@ async function runPrepareStep(
       );
       const result: PrepareStepResult = {
         normalizedBlobId: normalizedBlob.id,
+        playbackBlobId: playbackBlob?.id ?? snapshot.sourceBlobId,
         durationSeconds,
         creationTime: probe.creationTime,
       };
       await writeComputed(client, filesDatabaseId, fileItemId, TRANSCRIPTION_PREPARE_COMPUTED_KEY, result);
+      await writeComputedAndAnnounce(
+        client,
+        transcripts.id,
+        transcriptId,
+        TRANSCRIPT_DURATION_SECONDS_COMPUTED_KEY,
+        durationSeconds,
+      );
       referenced = true;
     });
   } finally {
-    if (!referenced) await discardStoredAudio(blobStorage, normalized.storageKey);
+    if (!referenced) {
+      await discardStoredAudio(blobStorage, normalized.storageKey);
+      if (playback) await discardStoredAudio(blobStorage, playback.storageKey);
+    }
   }
 }
 
@@ -352,7 +428,7 @@ async function runDiarizeStep(
   gatewayClient: AudioGatewayClient,
 ): Promise<void> {
   const prepare = await withTransaction(pool, async (client) => {
-    await requireTranscriptionUnlocked(client, transcriptId);
+    await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
     const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
     if (Object.hasOwn(source.computed, TRANSCRIPTION_DIARIZE_COMPUTED_KEY)) return null;
     return requirePrepareCheckpoint(source, fileItemId);
@@ -377,7 +453,7 @@ async function runDiarizeStep(
   }
 
   await withTransaction(pool, async (client) => {
-    await requireTranscriptionUnlocked(client, transcriptId);
+    await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
     // Locked, so a concurrent run that checkpointed first is not overwritten.
     const source = requireSource(await lockItemById(client, filesDatabaseId, fileItemId), fileItemId);
     if (Object.hasOwn(source.computed, TRANSCRIPTION_DIARIZE_COMPUTED_KEY)) return;
@@ -420,7 +496,7 @@ async function runAsrStep(
     for (let index = 0; index < boundaries.length; index += 1) {
       const boundary = boundaries[index]!;
       const current = await withTransaction(pool, async (client) => {
-        await requireTranscriptionUnlocked(client, transcriptId);
+        await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
         const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
         return readAsrCheckpoint(source);
       });
@@ -442,7 +518,7 @@ async function runAsrStep(
       if (index === 0) language = result.language;
 
       await withTransaction(pool, async (client) => {
-        await requireTranscriptionUnlocked(client, transcriptId);
+        await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
         // Locked, so a concurrent run that checkpointed this chunk first is not overwritten.
         const source = requireSource(await lockItemById(client, filesDatabaseId, fileItemId), fileItemId);
         const base = readAsrCheckpoint(source);
@@ -510,7 +586,7 @@ async function runMergeStep({
   transcriptId,
 }: TranscriptionStepContext): Promise<void> {
   await withTransaction(pool, async (client) => {
-    await requireTranscriptionUnlocked(client, transcriptId);
+    await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
     const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
     const transcriptsDatabaseId = await requireTranscriptsDatabaseId(client);
     // Locked, so a concurrent run that merged first is not overwritten.
@@ -557,12 +633,12 @@ async function runMergeStep({
  * (no speech) gets an empty summary without a paid call.
  */
 async function runSummarizeStep(
-  { pool, transcriptId }: TranscriptionStepContext,
+  { pool, filesDatabaseId, fileItemId, transcriptId }: TranscriptionStepContext,
   summaryClient: AiGatewayClientPort,
   instruction: SummaryInstruction,
 ): Promise<void> {
   const snapshot = await withRepeatableReadTransaction(pool, async (client) => {
-    await requireTranscriptionUnlocked(client, transcriptId);
+    await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
     const transcriptsDatabaseId = await requireTranscriptsDatabaseId(client);
     const transcript = requireTranscript(await getItemById(client, transcriptsDatabaseId, transcriptId), transcriptId);
     if (Object.hasOwn(readSummaries(transcript), instruction.key)) return null;
@@ -578,7 +654,7 @@ async function runSummarizeStep(
   }
 
   await withTransaction(pool, async (client) => {
-    await requireTranscriptionUnlocked(client, transcriptId);
+    await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
     // Locked, so a concurrent run's summary for another instruction is kept, and one for this instruction wins.
     const transcript = requireTranscript(
       await lockItemById(client, snapshot.transcriptsDatabaseId, transcriptId),
@@ -608,7 +684,7 @@ async function runMatchStep({
   transcriptId,
 }: TranscriptionStepContext): Promise<void> {
   await withTransaction(pool, async (client) => {
-    await requireTranscriptionUnlocked(client, transcriptId);
+    await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
     const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
     const { durationSeconds } = requirePrepareCheckpoint(source, fileItemId);
     await matchTranscriptToEvent(client, { transcriptId, durationSeconds });
@@ -630,7 +706,7 @@ async function runSuggestSpeakersStep(
   completionClient: AiGatewayClientPort,
 ): Promise<void> {
   const snapshot = await withRepeatableReadTransaction(pool, async (client) => {
-    await requireTranscriptionUnlocked(client, transcriptId);
+    await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
     const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
     if (Object.hasOwn(source.computed, TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY)) return null;
     const transcriptsDatabaseId = await requireTranscriptsDatabaseId(client);
@@ -645,7 +721,7 @@ async function runSuggestSpeakersStep(
   const suggestions = parseSpeakerSuggestionContent(result.content);
 
   await withTransaction(pool, async (client) => {
-    await requireTranscriptionUnlocked(client, transcriptId);
+    await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
     // Locked, so a concurrent run that checkpointed first is not doubled.
     const source = requireSource(await lockItemById(client, filesDatabaseId, fileItemId), fileItemId);
     if (Object.hasOwn(source.computed, TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY)) return;
@@ -666,11 +742,11 @@ async function runSuggestSpeakersStep(
  * step reopened it as `pending`.
  */
 async function runFinalizeStep(
-  { pool, transcriptId }: TranscriptionStepContext,
+  { pool, filesDatabaseId, fileItemId, transcriptId }: TranscriptionStepContext,
   instruction: SummaryInstruction,
 ): Promise<void> {
   await withTransaction(pool, async (client) => {
-    await requireTranscriptionUnlocked(client, transcriptId);
+    await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
     const transcriptsDatabaseId = await requireTranscriptsDatabaseId(client);
     const transcript = requireTranscript(await lockItemById(client, transcriptsDatabaseId, transcriptId), transcriptId);
     if (transcript.properties.status === "done") {
@@ -688,6 +764,13 @@ async function runFinalizeStep(
       client,
       { databaseId: transcriptsDatabaseId, itemId: transcriptId, propertiesPatch: { status: "done" } },
       { allowedSystemKeys: ["status"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+    );
+    await writeComputedAndAnnounce(
+      client,
+      transcriptsDatabaseId,
+      transcriptId,
+      TRANSCRIPT_FINALIZED_AT_COMPUTED_KEY,
+      new Date().toISOString(),
     );
     await markItemAutomationDone(client, transcriptId);
   });
@@ -732,6 +815,17 @@ async function startTranscriptionAttempt({
 }
 
 /** A rejection by the gateway's budget caps: no retry can succeed until the cap resets, so the failure is permanent at once. */
+/**
+ * Maps a pipeline failure onto the stable code stored beside its diagnostic message: budget
+ * exhaustion, an `ffmpeg`/`ffprobe` failure, any other gateway failure, otherwise `unknown`.
+ */
+export function classifyTranscriptionFailure(err: unknown): ItemAutomationErrorCode {
+  if (isBudgetRejection(err)) return "budgetExceeded";
+  if (err instanceof MediaToolError) return "mediaUnreadable";
+  if (err instanceof AudioGatewayCallError || err instanceof AiGatewayFailedError) return "providerFailed";
+  return "unknown";
+}
+
 function isBudgetRejection(err: unknown): boolean {
   return (
     err instanceof AudioGatewayBudgetExceededError ||
@@ -741,24 +835,40 @@ function isBudgetRejection(err: unknown): boolean {
 
 /**
  * Records a failed attempt on the Transcriptions row, all in one transaction. While retries
- * remain, only `item_automation.error` is written and the row stays `pending`/`processing`. A
+ * remain, only `item_automation.error` and `error_code` are written and the row stays `pending`/`processing`. A
  * permanent failure also sets `item_automation.status = 'error'` and `status = error`, and writes
  * one `automation_error` notification keyed by the cumulative attempt count, so replaying the same
  * attempt's failure never adds a second one while every later permanent failure gets its own.
- * Returns `false`, writing nothing, when a user locked the row in the meantime.
+ * A permanent failure on a transcript in Trash writes no `status` update and no notification (the
+ * update would throw `NotFound` and roll everything back); it marks `error`/`deleted` instead.
+ * Returns `"locked"`, writing nothing, when a user locked the row in the meantime, `"deleted"` for
+ * that stop, otherwise `"recorded"`.
  */
 async function recordTranscriptionFailure(
   client: PoolClient,
   transcriptId: string,
   message: string,
+  errorCode: ItemAutomationErrorCode,
   permanent: boolean,
-): Promise<boolean> {
+): Promise<"recorded" | "locked" | "deleted"> {
   const automation = await lockItemAutomation(client, transcriptId);
-  if (!automation || automation.status === "locked") return false;
-  const written = await recordItemAutomationFailure(client, transcriptId, message, permanent ? "error" : "pending");
+  if (!automation || automation.status === "locked") return "locked";
+  const written = await recordItemAutomationFailure(
+    client,
+    transcriptId,
+    message,
+    permanent ? "error" : "pending",
+    errorCode,
+  );
   if (!written) throw new Error(`item_automation row for item ${transcriptId} was not updated while locked`);
-  if (!permanent) return true;
+  if (!permanent) return "recorded";
 
+  const transcript = await getItemById(client, await requireTranscriptsDatabaseId(client), transcriptId);
+  if (!transcript || transcript.deletedAt) {
+    // In Trash the `status` update would throw NotFound and roll back everything above: stop cleanly instead.
+    await recordItemAutomationFailure(client, transcriptId, message, "error", "deleted");
+    return "deleted";
+  }
   await updateItemWithClient(
     client,
     {
@@ -771,18 +881,17 @@ async function recordTranscriptionFailure(
   const userId = await getTenantUserId(client);
   if (!userId) {
     logger.warn({ transcriptId }, "No user to notify about a permanent transcription failure");
-    return true;
+    return "recorded";
   }
   await writeNotification(client, {
     userId,
     kind: "automation_error",
-    // Transcriptions have no dedicated page to link to yet.
-    linkHref: null,
+    linkHref: `?page=transcript&id=${transcriptId}`,
     sourceTable: "item_automation",
     sourceId: transcriptId,
     transitionInstance: `attempt:${automation.attempts}`,
   });
-  return true;
+  return "recorded";
 }
 
 /** The part of graphile-worker's `JobHelpers` this task reads: which attempt of how many this run is. */
@@ -855,7 +964,14 @@ export function createTranscriptionTask(
     if (!files) throw new NotFoundError("Files database not found");
     const sourceContext: TranscriptionSourceContext = { pool, filesDatabaseId: files.id, fileItemId };
 
-    await runCreateStep(sourceContext);
+    try {
+      await runCreateStep(sourceContext);
+    } catch (err) {
+      if (!(err instanceof TranscriptionStoppedError)) throw err;
+      // No transcript exists yet, so there is no `item_automation` row to mark.
+      logger.info({ fileItemId }, "Source file deleted before transcription started; nothing to do");
+      return;
+    }
     const transcriptId = await startTranscriptionAttempt(sourceContext);
     if (!transcriptId) return;
     const context: TranscriptionStepContext = {
@@ -877,6 +993,15 @@ export function createTranscriptionTask(
       }
     } catch (err) {
       if (err instanceof TranscriptionLockedError) return;
+      if (err instanceof TranscriptionStoppedError) {
+        await withTransaction(pool, async (client) => {
+          const automation = await lockItemAutomation(client, transcriptId);
+          if (!automation || automation.status === "locked") return;
+          await recordItemAutomationFailure(client, transcriptId, err.message, "error", "deleted");
+        });
+        logger.info({ transcriptId, fileItemId }, "Transcript or source file deleted; transcription stopped");
+        return;
+      }
       if (err instanceof TranscriptionInterruptedError) {
         await withTransaction(pool, (client) => enqueueTranscriptionJob(client, { fileItemId }));
         logger.info(
@@ -888,15 +1013,23 @@ export function createTranscriptionTask(
       const budgetRejected = isBudgetRejection(err);
       const permanent = budgetRejected || helpers.job.attempts >= helpers.job.max_attempts;
       const message = err instanceof Error ? err.message : String(err);
+      const errorCode = classifyTranscriptionFailure(err);
+      let outcome: Awaited<ReturnType<typeof recordTranscriptionFailure>>;
       try {
-        await withTransaction(pool, (client) => recordTranscriptionFailure(client, transcriptId, message, permanent));
+        outcome = await withTransaction(pool, (client) =>
+          recordTranscriptionFailure(client, transcriptId, message, errorCode, permanent),
+        );
       } catch (recordErr) {
         // The attempt's own failure is what the caller must see; this one is only logged.
         logger.error({ err: recordErr, transcriptId }, "Failed to record a transcription failure");
         throw err;
       }
+      if (outcome === "deleted") {
+        logger.info({ transcriptId, fileItemId }, "Transcript deleted; transcription stopped without a failure");
+        return;
+      }
       if (budgetRejected) {
-        logger.warn({ err, transcriptId }, "Transcription rejected by the gateway budget; not retrying");
+        logger.warn({ errorCode, transcriptId }, "Transcription rejected by the gateway budget; not retrying");
         return;
       }
       throw err;

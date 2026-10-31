@@ -48,6 +48,7 @@ const TENANT_TABLES = [
   "agent_run_events",
   "approval_requests",
   "mcp_tool_registrations",
+  "mcp_server_connection_state",
   "project_mcp_grants",
   "project_agent_guidance",
   "agent_guidance_drift_findings",
@@ -55,8 +56,11 @@ const TENANT_TABLES = [
   "notifications",
   "push_deliveries",
   "mail_account_sync_state",
+  "mail_account_server_settings",
+  "mail_drafts",
   "mail_folder_sync_state",
   "mail_threads",
+  "mail_thread_aliases",
   "mail_message_meta",
   "mail_attachments",
   "mail_message_flag_sync_state",
@@ -69,6 +73,15 @@ const TENANT_TABLES = [
   "tenant_keys",
   "tenant_observability_checks",
   "tenant_exports",
+  "mail_oauth_states",
+  "semp_problems",
+  "semp_threads",
+  "semp_messages",
+  "value_links",
+  "value_link_sources",
+  "item_origins",
+  "inbox_attachments",
+  "notification_preferences",
 ];
 
 type Queryable = Pick<Pool | PoolClient, "query">;
@@ -122,6 +135,12 @@ const PERMANENT_EXCEPTIONS: { table: string; columns: string[]; reason: string }
   { table: "task_recurrence", columns: ["item_id"], reason: "scoped by the server-generated item id" },
   { table: "item_automation", columns: ["item_id"], reason: "scoped by the server-generated item id" },
   { table: "mail_account_sync_state", columns: ["item_id"], reason: "scoped by the server-generated item id" },
+  { table: "mail_drafts", columns: ["email_item_id"], reason: "scoped by the server-generated email item id" },
+  {
+    table: "mail_account_server_settings",
+    columns: ["mailbox_item_id"],
+    reason: "scoped by the server-generated mailbox item id",
+  },
   { table: "mail_folder_sync_state", columns: ["item_id"], reason: "scoped by the server-generated item id" },
   { table: "mail_message_meta", columns: ["item_id"], reason: "scoped by the server-generated item id" },
   { table: "external_credentials", columns: ["item_id"], reason: "scoped by the server-generated item id" },
@@ -652,7 +671,7 @@ describe("tenancy classification catalog", () => {
           AND c.relnamespace = 'public'::regnamespace AND NOT c.relispartition
         ORDER BY k.conname`,
     );
-    expect(twins).toHaveLength(31);
+    expect(twins).toHaveLength(35);
     for (const twin of twins) {
       const client = await pool.connect();
       try {

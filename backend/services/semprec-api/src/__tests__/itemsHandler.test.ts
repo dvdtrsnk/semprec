@@ -1,24 +1,43 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
+import { createItemWithClient, getDatabaseByModuleId } from "@semprec/data";
+import { z } from "zod";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
+import {
+  getTestPool,
+  registerItemCreateHook,
+  registerItemUpdateHook,
+  resetDatabase,
+  tenantForNextTestUser,
+} from "@semprec/data/testSupport";
 import {
   createChokePoint,
+  createDocStore,
   createUser,
+  createViewTypeRegistry,
   hashPassword,
+  insertValueLink,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
+  seedSystem,
+  withTransaction,
   type AuthenticatedIdentity,
   type ChokePoint,
   type PasswordResetMailer,
+  type WriterIdentity,
 } from "@semprec/data";
 import { createGenericApplicationService } from "@semprec/application";
 import { createDispatcher } from "../app.js";
 import { createItemRoutes } from "../itemsHandler.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 const PASSWORD = "s3cret-password";
 const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
@@ -49,6 +68,7 @@ interface ItemBody {
   updatedAt: string;
   deletedAt: string | null;
   path?: ItemBody[];
+  links?: Record<string, unknown>;
 }
 
 interface ErrorBody {
@@ -58,6 +78,7 @@ interface ErrorBody {
 interface ItemQueryBody {
   items: ItemBody[];
   nextCursor: string | null;
+  totalCount?: number;
 }
 
 interface RelationBody {
@@ -99,6 +120,69 @@ describe("item routes (issue #241)", () => {
   afterAll(async () => {
     await pool?.end();
   });
+
+  it.each(["item get", "database query", "view query", "patch", "conflict"])(
+    "sanitizes Emails.body on REST %s",
+    async (path) => {
+      await seedSystem(pool, createViewTypeRegistry());
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+
+      const raw = '<p onclick="evil()">safe</p><script>evil()</script><img src="https://tracker.example/pixel">';
+      const item = await withTransaction(pool, async (client) => {
+        const database = await getDatabaseByModuleId(client, "emails");
+        if (!database) throw new Error("Emails not seeded");
+        return createItemWithClient(
+          client,
+          { databaseId: database.id, properties: { body: raw } },
+          { allowedSystemKeys: ["body"] },
+        );
+      });
+
+      let url = `/api/items/${item.id}`;
+      let method = "GET";
+      let payload: unknown;
+      if (path === "database query") {
+        url = `/api/databases/${item.databaseId}/query`;
+        method = "POST";
+        payload = {};
+      }
+      if (path === "view query") {
+        const view = await chokePoint.createView({
+          databaseId: item.databaseId,
+          type: "list",
+          name: "Projection test",
+          config: {},
+        });
+        url = `/api/views/${view.id}/query`;
+        method = "POST";
+        payload = {};
+      }
+      if (path === "patch" || path === "conflict") {
+        method = "PATCH";
+        payload = {
+          properties: { read: true },
+          ifVersion: path === "conflict" ? "2000-01-01T00:00:00.000Z" : item.updatedAt,
+        };
+      }
+      const response = await fetch(`${baseUrl}${url}`, {
+        method,
+        headers,
+        ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
+      });
+      expect(response.status).toBe(path === "conflict" ? 409 : 200);
+      const body: unknown = await response.json();
+      const envelope = z.object({ properties: z.object({ body: z.string() }) });
+      let html: string;
+      if (path === "conflict")
+        html = z.object({ error: z.object({ details: z.object({ currentItem: envelope }) }) }).parse(body).error.details
+          .currentItem.properties.body;
+      else if (path.endsWith("query"))
+        html = z.object({ items: z.array(envelope).min(1) }).parse(body).items[0]!.properties.body;
+      else html = envelope.parse(body).properties.body;
+      expect(html).toContain("safe");
+      expect(html).not.toMatch(/<script|onclick|https:\/\/tracker/i);
+    },
+  );
 
   async function makeMoviesDb() {
     const db = await chokePoint.createDatabase({ name: "Movies" });
@@ -180,6 +264,31 @@ describe("item routes (issue #241)", () => {
       expect(res.status).toBe(403);
       const body = (await res.json()) as ErrorBody;
       expect(body.error.code).toBe("database_archived");
+    });
+
+    it("refuses a Journal entry posted without its type and period with 403 and stores no row", async () => {
+      await seedSystem(pool, createViewTypeRegistry());
+      const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'journal'");
+      const journal = rows[0];
+      if (!journal) throw new Error("expected the journal database to be seeded");
+      const base = { ...(await authHeader()), "Content-Type": "application/json" };
+
+      for (const payload of [{}, { properties: {} }]) {
+        const res = await fetch(`${baseUrl}/api/databases/${journal.id}/items`, {
+          method: "POST",
+          headers: { ...base, "Idempotency-Key": randomUUID() },
+          body: JSON.stringify(payload),
+        });
+        expect(res.status).toBe(403);
+        const body = (await res.json()) as ErrorBody;
+        expect(body.error.code).toBe("forbidden");
+        expect(body.error.details).toEqual({ field: "type" });
+      }
+
+      const count = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+        journal.id,
+      ]);
+      expect(count.rows[0]?.n).toBe(0);
     });
   });
 
@@ -296,6 +405,57 @@ describe("item routes (issue #241)", () => {
       expect(res.status).toBe(400);
       const body = (await res.json()) as ErrorBody;
       expect(body.error.code).toBe("validation_failed");
+    });
+
+    it("writes a REST PATCH as the user writer", async () => {
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const writers: WriterIdentity[] = [];
+      // Hooks cannot be unregistered; this recorder only appends to this test's array.
+      registerItemUpdateHook(async (context) => {
+        writers.push(context.writer);
+      });
+
+      const res = await fetch(`${baseUrl}/api/items/${item.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties: { title: "Dune: Part Two" }, ifVersion: item.updatedAt }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(writers).toEqual([{ writerKind: "user" }]);
+    });
+
+    it("ignores a writerKind field in a create or patch body and still writes as the user", async () => {
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const created: WriterIdentity[] = [];
+      const updated: WriterIdentity[] = [];
+      // Hooks cannot be unregistered; these recorders only append to this test's arrays.
+      registerItemCreateHook(async (context) => {
+        created.push(context.writer);
+      });
+      registerItemUpdateHook(async (context) => {
+        updated.push(context.writer);
+      });
+
+      const patch = await fetch(`${baseUrl}/api/items/${item.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties: { title: "Changed" }, ifVersion: item.updatedAt, writerKind: "system" }),
+      });
+      const create = await fetch(`${baseUrl}/api/databases/${db.id}/items`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ properties: { title: "New" }, writerKind: "system" }),
+      });
+
+      expect(patch.status).toBe(200);
+      expect(create.status).toBe(201);
+      expect(updated).toEqual([{ writerKind: "user" }]);
+      expect(created).toEqual([{ writerKind: "user" }]);
     });
 
     it("returns 404 patching an unknown item", async () => {
@@ -692,6 +852,224 @@ describe("item routes (issue #241)", () => {
     });
   });
 
+  describe("query totalCount (includeCount)", () => {
+    it("returns the same totalCount from the database and a view over it, and none by default", async () => {
+      const db = await makeMoviesDb();
+      for (const title of ["Arrival", "Arrival", "Arrival", "Dune"]) {
+        await chokePoint.createItem({ databaseId: db.id, properties: { title } });
+      }
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const filter = { type: "equals", property: "title", value: "Arrival" };
+      const view = await chokePoint.createView({ databaseId: db.id, type: "table", name: "A", config: { filter } });
+
+      const dbRes = await fetch(`${baseUrl}/api/databases/${db.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ filter, limit: 2, includeCount: true }),
+      });
+      const dbBody = (await dbRes.json()) as ItemQueryBody;
+      const viewRes = await fetch(`${baseUrl}/api/views/${view.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ limit: 2, includeCount: true }),
+      });
+      const viewBody = (await viewRes.json()) as ItemQueryBody;
+      expect(dbBody.items).toHaveLength(2);
+      expect(dbBody.totalCount).toBe(3);
+      expect(viewBody.totalCount).toBe(3);
+
+      const plain = await fetch(`${baseUrl}/api/databases/${db.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ filter }),
+      });
+      expect(await plain.json()).not.toHaveProperty("totalCount");
+    });
+
+    it("returns 400 naming includeCount for a non-boolean value on both routes", async () => {
+      const db = await makeMoviesDb();
+      const view = await chokePoint.createView({ databaseId: db.id, type: "table", name: "V" });
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      for (const url of [`${baseUrl}/api/databases/${db.id}/query`, `${baseUrl}/api/views/${view.id}/query`]) {
+        const res = await fetch(url, { method: "POST", headers, body: JSON.stringify({ includeCount: "yes" }) });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as ErrorBody;
+        expect(JSON.stringify(body.error)).toContain("includeCount");
+      }
+    });
+  });
+
+  describe("include=links (issue #1403)", () => {
+    /** A file linked to a task, as the later propagation issue (#1593) will leave it; written through the store because nothing in product code writes links yet. */
+    async function makeLinkedFile(options: { extraSource?: boolean; broken?: boolean } = {}) {
+      const tasksDb = await chokePoint.createDatabase({ name: "Tasks", ownerModuleId: "linksTasks", system: true });
+      await chokePoint.createProperty({ databaseId: tasksDb.id, key: "title", name: "Title", type: "title" });
+      const filesDb = await chokePoint.createDatabase({ name: "Files" });
+      const task = await chokePoint.createItem({ databaseId: tasksDb.id, properties: { title: "Send the invoice" } });
+      const other = await chokePoint.createItem({ databaseId: tasksDb.id, properties: { title: "Pay the invoice" } });
+      const file = await chokePoint.createItem({ databaseId: filesDb.id, properties: {} });
+      const plain = await chokePoint.createItem({ databaseId: filesDb.id, properties: {} });
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: file.id,
+          propertyKey: "projects",
+          ruleKey: "fileProject",
+          ...(options.broken
+            ? { state: "broken" as const, brokenBy: "user" as const, brokenAt: new Date("2026-10-20T10:00:00.000Z") }
+            : {}),
+          sources: [
+            { kind: "item", sourceItemId: task.id, sourcePropertyKey: "project" },
+            ...(options.extraSource
+              ? [{ kind: "item" as const, sourceItemId: other.id, sourcePropertyKey: "project" }]
+              : []),
+          ],
+        }),
+      );
+      return { tasksDb, filesDb, task, other, file, plain };
+    }
+
+    it("returns links.projects with the inherited kind and the source including its title", async () => {
+      const { file, task } = await makeLinkedFile();
+      const headers = await authHeader();
+
+      const res = await fetch(`${baseUrl}/api/items/${file.id}?include=links`, { headers });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as ItemBody;
+      expect(body.links).toEqual({
+        projects: {
+          valueKind: "inherited",
+          sources: [
+            {
+              kind: "item",
+              itemId: task.id,
+              databaseKey: "linksTasks",
+              title: "Send the invoice",
+              propertyKey: "project",
+            },
+          ],
+          brokenBy: null,
+          brokenAt: null,
+        },
+      });
+    });
+
+    it("returns both sources of a link with two sources", async () => {
+      const { file } = await makeLinkedFile({ extraSource: true });
+      const headers = await authHeader();
+
+      const body = (await (
+        await fetch(`${baseUrl}/api/items/${file.id}?include=links`, { headers })
+      ).json()) as ItemBody;
+      const entry = body.links?.projects as { sources: { title: string }[] };
+      expect(entry.sources.map((source) => source.title).sort()).toEqual(["Pay the invoice", "Send the invoice"]);
+    });
+
+    it("reads a broken row as inheritedBroken with brokenBy and brokenAt", async () => {
+      const { file } = await makeLinkedFile({ broken: true });
+      const headers = await authHeader();
+
+      const body = (await (
+        await fetch(`${baseUrl}/api/items/${file.id}?include=links`, { headers })
+      ).json()) as ItemBody;
+      expect(body.links?.projects).toMatchObject({
+        valueKind: "inheritedBroken",
+        brokenBy: "user",
+        brokenAt: "2026-10-20T10:00:00.000Z",
+      });
+    });
+
+    it("returns an empty links object for an item without a row, and no links field without include", async () => {
+      const { plain, file } = await makeLinkedFile();
+      const headers = await authHeader();
+
+      const withLinks = (await (
+        await fetch(`${baseUrl}/api/items/${plain.id}?include=links`, { headers })
+      ).json()) as ItemBody;
+      expect(withLinks.links).toEqual({});
+      const without = (await (await fetch(`${baseUrl}/api/items/${file.id}`, { headers })).json()) as ItemBody;
+      expect("links" in without).toBe(false);
+    });
+
+    it("returns both the path and the links for include=path,links, and only the path for include=path", async () => {
+      const { file } = await makeLinkedFile();
+      const headers = await authHeader();
+
+      const both = (await (
+        await fetch(`${baseUrl}/api/items/${file.id}?include=path,links`, { headers })
+      ).json()) as ItemBody;
+      expect(both.path?.map((item) => item.id)).toEqual([file.id]);
+      expect(Object.keys(both.links ?? {})).toEqual(["projects"]);
+      const pathOnly = (await (
+        await fetch(`${baseUrl}/api/items/${file.id}?include=path`, { headers })
+      ).json()) as ItemBody;
+      expect(pathOnly.path).toHaveLength(1);
+      expect("links" in pathOnly).toBe(false);
+    });
+
+    it("returns 404 for an unknown item with include=path,links", async () => {
+      const headers = await authHeader();
+      const res = await fetch(`${baseUrl}/api/items/${randomUUID()}?include=path,links`, { headers });
+      expect(res.status).toBe(404);
+    });
+
+    it("gives each item of a database.query page its own links, and none without include", async () => {
+      const { filesDb, file, plain } = await makeLinkedFile();
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+
+      const res = await fetch(`${baseUrl}/api/databases/${filesDb.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ include: ["links"] }),
+      });
+      expect(res.status).toBe(200);
+      const page = (await res.json()) as ItemQueryBody;
+      const byId = new Map(page.items.map((item) => [item.id, item]));
+      expect(Object.keys(byId.get(file.id)?.links ?? {})).toEqual(["projects"]);
+      expect(byId.get(plain.id)?.links).toEqual({});
+
+      const plainRes = await fetch(`${baseUrl}/api/databases/${filesDb.id}/query`, {
+        method: "POST",
+        headers,
+        body: "{}",
+      });
+      const plainPage = (await plainRes.json()) as ItemQueryBody;
+      expect(plainPage.items.every((item) => !("links" in item))).toBe(true);
+    });
+
+    it("gives each item of a view.query page its own links", async () => {
+      const { filesDb, file, plain } = await makeLinkedFile();
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const view = await chokePoint.createView({
+        databaseId: filesDb.id,
+        type: "table",
+        name: "All files",
+        config: {},
+      });
+
+      const res = await fetch(`${baseUrl}/api/views/${view.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ include: ["links"] }),
+      });
+      expect(res.status).toBe(200);
+      const page = (await res.json()) as ItemQueryBody;
+      const byId = new Map(page.items.map((item) => [item.id, item]));
+      expect(Object.keys(byId.get(file.id)?.links ?? {})).toEqual(["projects"]);
+      expect(byId.get(plain.id)?.links).toEqual({});
+    });
+
+    it("rejects an include value the catalog does not know", async () => {
+      const db = await makeMoviesDb();
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const res = await fetch(`${baseUrl}/api/databases/${db.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ include: ["comments"] }),
+      });
+      expect(res.status).toBe(400);
+    });
+  });
+
   describe("relations (issue #157)", () => {
     async function makePairedRelation(cardinality?: "one_to_one" | "one_to_many" | "many_to_many") {
       const source = await chokePoint.createDatabase({ name: "Tasks" });
@@ -1011,6 +1389,114 @@ describe("item routes (issue #241)", () => {
         expect(body.error.code).toBe("owner_violation");
       });
     });
+
+    describe("GET list (issue #1404)", () => {
+      interface RelationListBody {
+        relations: Array<{
+          relationPropertyId: string;
+          propertyKey: string;
+          targetItemId: string;
+          targetDatabaseId: string;
+          metadata: Record<string, unknown>;
+        }>;
+      }
+
+      it("rejects an unauthenticated request", async () => {
+        const res = await fetch(`${baseUrl}/api/items/${randomUUID()}/relations`);
+        expect(res.status).toBe(401);
+      });
+
+      it("returns 404 not_found for an unknown item", async () => {
+        const headers = await authHeader();
+        const res = await fetch(`${baseUrl}/api/items/${randomUUID()}/relations`, { headers });
+        expect(res.status).toBe(404);
+        expect(((await res.json()) as ErrorBody).error.code).toBe("not_found");
+      });
+
+      it("returns an empty list for an item with no edges", async () => {
+        const { source } = await makePairedRelation();
+        const item = await chokePoint.createItem({ databaseId: source.id, properties: {} });
+        const headers = await authHeader();
+
+        const res = await fetch(`${baseUrl}/api/items/${item.id}/relations`, { headers });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ relations: [] });
+      });
+
+      it("lists a paired edge from each end under that end's own property", async () => {
+        const { source, target, property, inverseProperty } = await makePairedRelation();
+        const task = await chokePoint.createItem({ databaseId: source.id, properties: {} });
+        const person = await chokePoint.createItem({ databaseId: target.id, properties: {} });
+        await chokePoint.createRelation({
+          relationPropertyId: property.id,
+          callerItemId: task.id,
+          targetItemId: person.id,
+          metadata: { role: "owner" },
+        });
+        const headers = await authHeader();
+
+        const fromTask = await fetch(`${baseUrl}/api/items/${task.id}/relations`, { headers });
+        expect(fromTask.status).toBe(200);
+        expect(((await fromTask.json()) as RelationListBody).relations).toEqual([
+          {
+            relationPropertyId: property.id,
+            propertyKey: "assignedTo",
+            targetItemId: person.id,
+            targetDatabaseId: target.id,
+            metadata: { role: "owner" },
+          },
+        ]);
+
+        const fromPerson = await fetch(`${baseUrl}/api/items/${person.id}/relations`, { headers });
+        expect(fromPerson.status).toBe(200);
+        expect(((await fromPerson.json()) as RelationListBody).relations).toEqual([
+          {
+            relationPropertyId: inverseProperty.id,
+            propertyKey: "assignedTasks",
+            targetItemId: task.id,
+            targetDatabaseId: source.id,
+            metadata: { role: "owner" },
+          },
+        ]);
+      });
+
+      it("narrows to one property with ?propertyKey= and answers 404 for a key that is not a relation of the item's database", async () => {
+        const { source, target, property } = await makePairedRelation();
+        const { property: watchers } = await chokePoint.createRelationProperty({
+          sourceDatabaseId: source.id,
+          key: "watchers",
+          name: "Watchers",
+          targetDatabaseId: target.id,
+        });
+        await chokePoint.createProperty({ databaseId: source.id, key: "notes", name: "Notes", type: "text" });
+        const task = await chokePoint.createItem({ databaseId: source.id, properties: {} });
+        const person = await chokePoint.createItem({ databaseId: target.id, properties: {} });
+        const observer = await chokePoint.createItem({ databaseId: target.id, properties: {} });
+        await chokePoint.createRelation({
+          relationPropertyId: property.id,
+          callerItemId: task.id,
+          targetItemId: person.id,
+        });
+        await chokePoint.createRelation({
+          relationPropertyId: watchers.id,
+          callerItemId: task.id,
+          targetItemId: observer.id,
+        });
+        const headers = await authHeader();
+
+        const narrowed = await fetch(`${baseUrl}/api/items/${task.id}/relations?propertyKey=watchers`, { headers });
+        expect(narrowed.status).toBe(200);
+        expect(
+          ((await narrowed.json()) as RelationListBody).relations.map((r) => [r.propertyKey, r.targetItemId]),
+        ).toEqual([["watchers", observer.id]]);
+
+        for (const key of ["nope", "notes"]) {
+          const res = await fetch(`${baseUrl}/api/items/${task.id}/relations?propertyKey=${key}`, { headers });
+          expect(res.status, key).toBe(404);
+          expect(((await res.json()) as ErrorBody).error.code).toBe("not_found");
+        }
+      });
+    });
   });
 
   describe("relation property resolution through property.getByKey (issue #432)", () => {
@@ -1018,24 +1504,27 @@ describe("item routes (issue #241)", () => {
      * `UNIQUE(database_id, key)` makes more than one match unreachable through a real database, so
      * the ambiguous branch is driven by the real service with only `getPropertyByKey` overridden.
      */
-    async function callRelationRoute(method: "PUT" | "DELETE") {
+    async function callRelationRoute(method: "GET" | "PUT" | "DELETE") {
       const { source, property } = await makeAmbiguousFixture();
       const item = await chokePoint.createItem({ databaseId: source.id, properties: {} });
       const lookups: unknown[] = [];
       const service = {
-        ...createGenericApplicationService(pool),
+        ...createGenericApplicationService(pool, testMetadataResolver),
         async getPropertyByKey(_actor: unknown, input: unknown) {
           lookups.push(input);
           return [property, { ...property, id: randomUUID() }];
         },
       };
-      const route = createItemRoutes(service, pool).find(
-        (candidate) => candidate.method === method && candidate.path.includes("/relations/"),
+      const route = createItemRoutes(service, pool, testMetadataResolver).find((candidate) =>
+        method === "GET"
+          ? candidate.method === "GET" && candidate.path === "/api/items/:id/relations"
+          : candidate.method === method && candidate.path.includes("/relations/"),
       );
       if (!route) throw new Error(`expected a ${method} relation route`);
       const identity = { user: { id: randomUUID() } } as AuthenticatedIdentity;
       const result = await route.handler({
-        req: {} as IncomingMessage,
+        // The GET list reads its `?propertyKey=` filter from the request URL; the write routes ignore it.
+        req: { url: `/api/items/${item.id}/relations?propertyKey=${property.key}` } as IncomingMessage,
         identity,
         params: { id: item.id, propertyKey: property.key, targetItemId: randomUUID() },
         body: undefined,
@@ -1056,7 +1545,7 @@ describe("item routes (issue #241)", () => {
       return { source, property };
     }
 
-    it.each(["PUT", "DELETE"] as const)(
+    it.each(["GET", "PUT", "DELETE"] as const)(
       "%s answers 409 validation_failed ambiguous when the lookup returns more than one match",
       async (method) => {
         const { result, lookups, databaseId, propertyKey } = await callRelationRoute(method);
@@ -1067,5 +1556,93 @@ describe("item routes (issue #241)", () => {
         expect(lookups).toEqual([{ databaseId, key: propertyKey, type: "relation" }]);
       },
     );
+  });
+
+  describe("page restore (issue #1617)", () => {
+    const HALF_HOUR_MS = 30 * 60 * 1000;
+
+    /**
+     * A page with block `b1`: its history opens two hours before the database clock, and `b1` is dated an
+     * hour before it, so an instant half an hour back sits between the two.
+     */
+    async function pageWithBlock(): Promise<{ itemId: string; now: Date }> {
+      const { rows } = await pool.query<{ now: Date }>(`SELECT transaction_timestamp() AS now`);
+      const now = rows[0]!.now;
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Chapter" } });
+      const docStore = createDocStore(pool);
+      const doc = await docStore.getOrCreateDoc(item.id, "page");
+      const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+      const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+      await pool.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [doc.id, twoHoursAgo]);
+      await pool.query(
+        `UPDATE doc_snapshot_history SET represented_at = $2 WHERE doc_id = $1 AND through_update_id = 0`,
+        [doc.id, twoHoursAgo],
+      );
+      await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph", fields: { content: "first" } }, "user");
+      await pool.query(`UPDATE doc_updates SET created_at = $2 WHERE doc_id = $1`, [doc.id, oneHourAgo]);
+      await pool.query(`UPDATE doc_history_updates SET created_at = $2 WHERE doc_id = $1`, [doc.id, oneHourAgo]);
+      return { itemId: item.id, now };
+    }
+
+    async function restore(itemId: string, body: unknown): Promise<Response> {
+      return fetch(`${baseUrl}/api/items/${itemId}/page/restore`, {
+        method: "POST",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it("rejects an unauthenticated request", async () => {
+      const res = await fetch(`${baseUrl}/api/items/${randomUUID()}/page/restore`, { method: "POST" });
+      expect(res.status).toBe(401);
+    });
+
+    it("restores the page to the instant and returns its block ids", async () => {
+      const page = await pageWithBlock();
+      const at = new Date(page.now.getTime() - HALF_HOUR_MS).toISOString();
+
+      const res = await restore(page.itemId, { at });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ itemId: page.itemId, at, blockIds: ["b1"] });
+    });
+
+    it("answers an unknown item with 404", async () => {
+      const res = await restore(randomUUID(), { at: new Date(Date.now() - HALF_HOUR_MS).toISOString() });
+
+      expect(res.status).toBe(404);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("not_found");
+    });
+
+    it("answers an item that has no page with 404", async () => {
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "No page" } });
+
+      const res = await restore(item.id, { at: new Date(Date.now() - HALF_HOUR_MS).toISOString() });
+
+      expect(res.status).toBe(404);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("not_found");
+    });
+
+    it("answers an instant before the retained history with 410 history_not_retained", async () => {
+      const page = await pageWithBlock();
+
+      const res = await restore(page.itemId, { at: new Date(page.now.getTime() - 24 * 60 * 60 * 1000).toISOString() });
+
+      expect(res.status).toBe(410);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("history_not_retained");
+    });
+
+    it("answers a future instant and a malformed or missing at with 400", async () => {
+      const page = await pageWithBlock();
+      const future = new Date(page.now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+
+      for (const body of [{ at: future }, { at: "yesterday" }, {}]) {
+        const res = await restore(page.itemId, body);
+        expect(res.status, JSON.stringify(body)).toBe(400);
+        expect(((await res.json()) as ErrorBody).error.code).toBe("validation_failed");
+      }
+    });
   });
 });

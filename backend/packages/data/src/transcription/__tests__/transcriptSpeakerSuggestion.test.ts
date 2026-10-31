@@ -241,6 +241,21 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       expect(await propose([{ speaker: "SPEAKER_01", personId: aliceId }])).toEqual([]);
       expect(await speakerCards()).toEqual([]);
     });
+
+    it("stores the mapping as aiProposal too, at aiVersion 1 (issue #1471)", async () => {
+      await linkEvent();
+      await propose([{ speaker: "SPEAKER_01", personId: aliceId }]);
+
+      const { rows } = await pool.query<{ aiProposal: unknown; proposal: unknown; aiVersion: number }>(
+        `SELECT properties -> 'aiProposal' AS "aiProposal", properties -> 'proposal' AS proposal,
+                (properties ->> 'aiVersion')::int AS "aiVersion"
+           FROM items WHERE database_id = $1 AND properties ->> 'kind' = 'transcript'`,
+        [proposalsId],
+      );
+      expect(rows).toEqual([
+        { aiProposal: mapping(aliceId, "SPEAKER_01"), proposal: mapping(aliceId, "SPEAKER_01"), aiVersion: 1 },
+      ]);
+    });
   });
 
   describe("confirm, revise and reject of a speaker card", () => {
@@ -293,6 +308,19 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       await confirm(cardId);
 
       expect(await mappedPersonIds()).toEqual([null, bobId]);
+    });
+
+    it("revise stores the revised mapping as aiProposal and counts a version (issue #1471)", async () => {
+      const cardId = await onlyCardId();
+
+      await revise(cardId, mapping(bobId, "SPEAKER_01"));
+
+      const { rows } = await pool.query<{ aiProposal: unknown; aiVersion: number }>(
+        `SELECT properties -> 'aiProposal' AS "aiProposal", (properties ->> 'aiVersion')::int AS "aiVersion"
+           FROM items WHERE id = $1`,
+        [cardId],
+      );
+      expect(rows).toEqual([{ aiProposal: mapping(bobId, "SPEAKER_01"), aiVersion: 2 }]);
     });
 
     it("revise refuses a key the transcript does not have", async () => {

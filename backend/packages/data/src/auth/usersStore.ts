@@ -3,12 +3,20 @@ import { requireSingleRow } from "../db/pool.js";
 import type { UserRole, UserRow } from "./types.js";
 
 /** The raw `users` row shape this module reads back from Postgres. */
-type UserDbRow = { id: string; email: string; password_hash: string; locale: string; created_at: Date };
+type UserDbRow = {
+  id: string;
+  email: string;
+  display_name: string | null;
+  password_hash: string;
+  locale: string;
+  created_at: Date;
+};
 
 function mapRow(row: UserDbRow): UserRow {
   return {
     id: row.id,
     email: row.email,
+    displayName: row.display_name,
     passwordHash: row.password_hash,
     locale: row.locale,
     createdAt: row.created_at.toISOString(),
@@ -24,6 +32,11 @@ export interface CreateUserInput {
   tenantId?: string;
   /** Defaults to the `users.role` column default (`member`) when omitted. */
   role?: UserRole;
+  /**
+   * Stored as `users.display_name`; NULL when omitted. A caller that takes the name from a request validates it
+   * with `normalizeDisplayName` first.
+   */
+  displayName?: string;
 }
 
 /** Throws (unique violation, Postgres error code `23505`) if `email` is already taken. */
@@ -34,6 +47,7 @@ export async function createUser(client: Pool | PoolClient, input: CreateUserInp
     ["locale", input.locale],
     ["tenant_id", input.tenantId],
     ["role", input.role],
+    ["display_name", input.displayName],
   ];
   for (const [column, value] of optional) {
     if (value === undefined) continue;
@@ -43,7 +57,7 @@ export async function createUser(client: Pool | PoolClient, input: CreateUserInp
   const placeholders = values.map((_, i) => `$${i + 1}`).join(", ");
   const { rows } = await client.query<UserDbRow>(
     `INSERT INTO users (${columns.join(", ")}) VALUES (${placeholders})
-     RETURNING id, email, password_hash, locale, created_at`,
+     RETURNING id, email, display_name, password_hash, locale, created_at`,
     values,
   );
   return mapRow(requireSingleRow(rows, "users row"));
@@ -51,7 +65,7 @@ export async function createUser(client: Pool | PoolClient, input: CreateUserInp
 
 export async function getUserByEmail(client: Pool | PoolClient, email: string): Promise<UserRow | null> {
   const { rows } = await client.query<UserDbRow>(
-    `SELECT id, email, password_hash, locale, created_at FROM users WHERE email = $1`,
+    `SELECT id, email, display_name, password_hash, locale, created_at FROM users WHERE email = $1`,
     [email],
   );
   return rows[0] ? mapRow(rows[0]) : null;
@@ -59,7 +73,7 @@ export async function getUserByEmail(client: Pool | PoolClient, email: string): 
 
 export async function getUserById(client: Pool | PoolClient, id: string): Promise<UserRow | null> {
   const { rows } = await client.query<UserDbRow>(
-    `SELECT id, email, password_hash, locale, created_at FROM users WHERE id = $1`,
+    `SELECT id, email, display_name, password_hash, locale, created_at FROM users WHERE id = $1`,
     [id],
   );
   return rows[0] ? mapRow(rows[0]) : null;

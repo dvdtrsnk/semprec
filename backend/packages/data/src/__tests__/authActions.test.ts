@@ -11,6 +11,7 @@ import { withTransaction } from "../db/pool.js";
 import { createTestTenant } from "../testSupport/tenantFixtures.js";
 import { suspendAccount } from "../tenancy/accountsAdminStore.js";
 import { login, verifySessionToken, logout, revokeUserSession, bootstrapFirstAccount } from "../auth/authActions.js";
+import { SESSION_IDLE_TTL_SECONDS_BY_PLATFORM, SESSION_MAX_LIFETIME_SECONDS } from "../auth/authActions.js";
 import { LOCKOUT_THRESHOLD } from "../auth/loginLockout.js";
 import { NotFoundError, UnauthorizedError, ValidationError } from "../errors.js";
 
@@ -45,13 +46,54 @@ describe("auth actions (issue #140)", () => {
         ip: "127.0.0.1",
       });
 
-      expect(result.user).toEqual({ id: user.id, email: user.email, locale: user.locale, createdAt: user.createdAt });
+      expect(result.user).toEqual({
+        id: user.id,
+        email: user.email,
+        displayName: null,
+        locale: user.locale,
+        createdAt: user.createdAt,
+      });
+      expect(result.role).toBe("member");
       expect(result.token).toBeTruthy();
       expect((result.user as { passwordHash?: unknown }).passwordHash).toBeUndefined();
 
       const identity = await verifySessionToken(pool, result.token);
       expect(identity.user.id).toBe(user.id);
       expect(identity.session.id).toBe(result.session.id);
+    });
+
+    it("persists the device passed to login, and leaves the device columns NULL without one", async () => {
+      const user = await makeUser();
+      const device = {
+        deviceId: "6f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f",
+        deviceName: "iPad Air",
+        deviceKind: "ipad",
+        osVersion: "26.0",
+        appVersion: "2.0.0",
+      } as const;
+
+      const withDevice = await login(pool, {
+        email: user.email,
+        password: "s3cret-password",
+        platform: "ios",
+        ip: "127.0.0.1",
+        device,
+      });
+      expect(withDevice.session).toMatchObject(device);
+
+      const without = await login(pool, {
+        email: user.email,
+        password: "s3cret-password",
+        platform: "ios",
+        ip: "127.0.0.1",
+      });
+      expect(without.session).toMatchObject({
+        deviceId: null,
+        deviceName: null,
+        deviceKind: null,
+        osVersion: null,
+        appVersion: null,
+      });
     });
 
     it("records a successful attempt", async () => {
@@ -93,6 +135,56 @@ describe("auth actions (issue #140)", () => {
       expect(first.session.id).not.toBe(second.session.id);
       const sessions = await listSessionsForUser(pool, user.id);
       expect(sessions).toHaveLength(2);
+    });
+  });
+
+  describe("display name and role (issue #1387)", () => {
+    it("createUser returns a null displayName for an account created without one", async () => {
+      const user = await makeUser();
+      expect(user.displayName).toBeNull();
+    });
+
+    it("login and verifySessionToken return the displayName stored on the account", async () => {
+      const user = await makeUser();
+      // Nothing writes the name yet (#1513 does, at account creation), so the test sets the column directly.
+      await pool.query("UPDATE users SET display_name = $2 WHERE id = $1", [user.id, "Ada Lovelace"]);
+
+      const result = await login(pool, {
+        email: user.email,
+        password: "s3cret-password",
+        platform: "web",
+        ip: "1.2.3.4",
+      });
+      expect(result.user.displayName).toBe("Ada Lovelace");
+
+      const identity = await verifySessionToken(pool, result.token);
+      expect(identity.user.displayName).toBe("Ada Lovelace");
+    });
+
+    it("login returns the role of the account, admin or member", async () => {
+      const admin = await createUser(pool, {
+        tenantId: await tenantForNextTestUser(pool),
+        email: "admin@example.com",
+        passwordHash: await hashPassword("s3cret-password"),
+        role: "admin",
+      });
+      const member = await makeUser("member@example.com");
+
+      const adminLogin = await login(pool, {
+        email: admin.email,
+        password: "s3cret-password",
+        platform: "web",
+        ip: "1.2.3.4",
+      });
+      const memberLogin = await login(pool, {
+        email: member.email,
+        password: "s3cret-password",
+        platform: "web",
+        ip: "1.2.3.4",
+      });
+
+      expect(adminLogin.role).toBe("admin");
+      expect(memberLogin.role).toBe("member");
     });
   });
 
@@ -242,6 +334,83 @@ describe("auth actions (issue #140)", () => {
 
       const active = await getActiveSessionByTokenHash(pool, session.tokenHash);
       expect(active?.lastSeenAt).not.toBe(before);
+    });
+  });
+
+  describe("sliding session expiry (issue #1512)", () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    async function loginAs(platform: "web" | "ios" | "macos") {
+      const user = await makeUser(`${platform}-slide@example.com`);
+      return login(pool, { email: user.email, password: "s3cret-password", platform, ip: "1.1.1.1" });
+    }
+
+    // Raw SQL: production cannot age a session, and the test needs created_at/expires_at in the past.
+    async function setTimes(id: string, createdDaysAgo: number, expiresInDays: number): Promise<void> {
+      await pool.query(
+        `UPDATE sessions SET created_at = now() - make_interval(days => $2::int),
+                             expires_at = now() + make_interval(days => $3::int) WHERE id = $1`,
+        [id, createdDaysAgo, expiresInDays],
+      );
+    }
+
+    async function expiresAtMs(id: string): Promise<number> {
+      const { rows } = await pool.query<{ expires_at: Date }>(`SELECT expires_at FROM sessions WHERE id = $1`, [id]);
+      return rows[0]!.expires_at.getTime();
+    }
+
+    it.each([
+      ["ios", 90],
+      ["macos", 90],
+      ["web", 30],
+    ] as const)("pushes a %s session expiry to about %i days ahead", async (platform, days) => {
+      const { token, session } = await loginAs(platform);
+      expect(SESSION_IDLE_TTL_SECONDS_BY_PLATFORM[platform]).toBe(days * 86400);
+      await setTimes(session.id, 0, 1);
+
+      await verifySessionToken(pool, token);
+
+      const delta = (await expiresAtMs(session.id)) - Date.now();
+      expect(Math.abs(delta - days * DAY_MS)).toBeLessThan(60_000);
+    });
+
+    it("sets the initial expiry from the platform idle window", async () => {
+      const ios = await loginAs("ios");
+      const web = await loginAs("web");
+      expect(Math.abs(Date.parse(ios.session.expiresAt) - Date.now() - 90 * DAY_MS)).toBeLessThan(60_000);
+      expect(Math.abs(Date.parse(web.session.expiresAt) - Date.now() - 30 * DAY_MS)).toBeLessThan(60_000);
+    });
+
+    it("caps expiry at created_at + 365 days for a session created 364 days ago", async () => {
+      const { token, session } = await loginAs("ios");
+      await setTimes(session.id, 364, 1);
+
+      await verifySessionToken(pool, token);
+
+      const { rows } = await pool.query<{ capped: boolean }>(
+        `SELECT expires_at = created_at + make_interval(secs => $2::double precision) AS capped FROM sessions WHERE id = $1`,
+        [session.id, SESSION_MAX_LIFETIME_SECONDS],
+      );
+      expect(rows[0]?.capped).toBe(true);
+    });
+
+    it("never moves expires_at earlier, even when the ceiling is already below it", async () => {
+      const { token, session } = await loginAs("web");
+      // Idle window would give now()+30d, but the row already expires later than that.
+      await setTimes(session.id, 0, 200);
+      const before = await expiresAtMs(session.id);
+
+      await verifySessionToken(pool, token);
+
+      expect(await expiresAtMs(session.id)).toBeGreaterThanOrEqual(before);
+    });
+
+    it("rejects a token unused for longer than its idle window with 401", async () => {
+      const { token, session } = await loginAs("web");
+      await setTimes(session.id, 31, -1);
+
+      await expect(verifySessionToken(pool, token)).rejects.toThrow(UnauthorizedError);
+      expect(await expiresAtMs(session.id)).toBeLessThan(Date.now());
     });
   });
 

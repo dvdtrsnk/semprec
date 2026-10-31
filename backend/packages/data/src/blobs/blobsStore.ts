@@ -66,6 +66,16 @@ export async function getBlob(client: Queryable, id: string): Promise<BlobRow | 
 }
 
 /**
+ * Row-locks one blob until the caller's transaction ends, and reports whether it exists. A caller
+ * that decides from a read of the blob's Files items whether to create one takes this lock first, so
+ * a concurrent transaction filing the same bytes waits and then sees the item the first one created.
+ */
+export async function lockBlobById(client: Queryable, id: string): Promise<boolean> {
+  const { rows } = await client.query<{ id: string }>("SELECT id FROM blobs WHERE id = $1 FOR UPDATE", [id]);
+  return rows.length > 0;
+}
+
+/**
  * Looks a blob up by content hash within the tenant in scope: the `tenant_isolation` RLS policy
  * confines the read to that tenant's rows, so identical bytes another tenant stored are invisible
  * here and dedupe is per tenant.
@@ -107,10 +117,11 @@ export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput
 
 /**
  * Deletes blob `id` only when nothing references it any more — no item visible to the caller (live
- * or trashed, in any of its databases, archived ones included) whose `properties.file.blobId` names
- * it and no mail attachment — because
- * `findOrCreateBlob`'s content-hash dedup shares one blob between identical uploads. Used by the
- * trash purge (issue #675) in its own transaction, after the referencing item is gone. Returns the
+ * or trashed, in any of its databases, archived ones included) whose `properties.file.blobId` or
+ * `properties.<key>.blobId` of any `image` property names it, no mail attachment and no
+ * `inbox_attachments` row — because `findOrCreateBlob`'s content-hash dedup shares one blob between
+ * identical uploads. Used by the trash purge (issue #675) in its own transaction, after the
+ * referencing item is gone. Returns the
  * deleted row's `storage_key` so the caller can remove the bytes after the commit, or null when the
  * blob is still referenced or already absent.
  */
@@ -130,9 +141,55 @@ export async function deleteBlobIfUnreferenced(client: Queryable, id: string): P
          WHERE database_id = ANY($3::uuid[])
            AND properties @> jsonb_build_object('file', jsonb_build_object('blobId', $2::text))
        )
+       AND NOT EXISTS (
+         SELECT 1 FROM properties p
+         JOIN items i ON i.database_id = p.database_id
+         WHERE p.type = 'image'
+           AND p.database_id = ANY($3::uuid[])
+           AND i.database_id = ANY($3::uuid[])
+           AND i.properties @> jsonb_build_object(p.key, jsonb_build_object('blobId', $2::text))
+       )
        AND NOT EXISTS (SELECT 1 FROM mail_attachments WHERE blob_id = $1)
+       AND NOT EXISTS (SELECT 1 FROM inbox_attachments WHERE blob_id = $1)
      RETURNING storage_key`,
     [id, id, await visibleDatabaseIds(client)],
+  );
+  return rows[0]?.storage_key ?? null;
+}
+
+/**
+ * Ids of the tenant-in-scope's standalone upload blobs (storage key `<tenantId>/blobs/...`, see
+ * `ingestUploadedBlob`) created before `olderThan`, in keyset pages ordered by id. Whether a
+ * candidate is still referenced is decided by `deleteBlobIfUnreferenced`, not here.
+ */
+export async function listStandaloneBlobIdsCreatedBefore(
+  client: Queryable,
+  olderThan: Date,
+  afterId: string | null,
+  limit: number,
+): Promise<string[]> {
+  const { rows } = await client.query<{ id: string }>(
+    `SELECT id FROM blobs
+     WHERE created_at < $1
+       AND split_part(storage_key, '/', 2) = 'blobs'
+       AND ($2::uuid IS NULL OR id > $2::uuid)
+     ORDER BY id
+     LIMIT $3`,
+    [olderThan, afterId, limit],
+  );
+  return rows.map((row) => row.id);
+}
+
+/**
+ * Deletes blob `id` unconditionally and returns its `storage_key` so the caller can remove the
+ * bytes after the commit, or null when the row is absent. Only for a derived blob owned one-to-one
+ * by the item being purged (the normalized or playback audio of a recording); a blob that
+ * content-hash dedup may share between items goes through `deleteBlobIfUnreferenced` instead.
+ */
+export async function deleteDerivedBlob(client: Queryable, id: string): Promise<string | null> {
+  const { rows } = await client.query<{ storage_key: string }>(
+    "DELETE FROM blobs WHERE id = $1 RETURNING storage_key",
+    [id],
   );
   return rows[0]?.storage_key ?? null;
 }

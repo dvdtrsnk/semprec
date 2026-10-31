@@ -206,7 +206,7 @@ describe("choke-point itemWrites", () => {
         }),
       ]);
       expect(outcome).toEqual([{ status: "rejected", reason: expect.any(ConflictError) }]);
-      expect(await chokePoint.getItem(db.id, item.id)).toEqual(item);
+      expect(await chokePoint.getItem(db.id, item.id)).toEqual({ ...item, fromInbox: false });
       expect(events).toEqual([]);
     } finally {
       setInvalidationHook(() => {});
@@ -464,14 +464,14 @@ describe("property defaults on real item writes", () => {
       const databaseId = await database("tasks");
       const item = await chokePoint.createItem({
         databaseId,
-        properties: { timeFrom: "2026-10-27T14:00:00Z", timeTo: "2026-10-27T15:00:00Z" },
+        properties: { date: "2026-10-27", timeFrom: "14:00", timeTo: "15:00" },
       });
       const updated = await chokePoint.updateItem({
         databaseId,
         itemId: item.id,
-        propertiesPatch: { timeFrom: "2026-10-27T14:30:00Z" },
+        propertiesPatch: { timeFrom: "14:30" },
       });
-      expect(updated.previous).toEqual({ timeFrom: "2026-10-27T14:00:00Z" });
+      expect(updated.previous).toEqual({ timeFrom: "14:00" });
       expect(updated.properties.time).not.toEqual(item.properties.time);
     });
   });
@@ -614,6 +614,225 @@ describe("property defaults on real item writes", () => {
           [prop.id],
         );
         expect(rows[0]?.config).toEqual({});
+      }
+    });
+  });
+
+  describe("color value validation", () => {
+    async function makeProjectsDb() {
+      const db = await chokePoint.createDatabase({ name: "Projects" });
+      await chokePoint.createProperty({ databaseId: db.id, key: "name", name: "Name", type: "text" });
+      await chokePoint.createProperty({ databaseId: db.id, key: "color", name: "Color", type: "color" });
+      return db;
+    }
+
+    it("accepts upper and lower case #RRGGBB on create and update and stores the value as written", async () => {
+      const db = await makeProjectsDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { color: "#FF3B30" } });
+      expect(item.properties.color).toBe("#FF3B30");
+      const updated = await chokePoint.updateItem({
+        databaseId: db.id,
+        itemId: item.id,
+        propertiesPatch: { color: "#ff3b30" },
+      });
+      expect(updated.properties.color).toBe("#ff3b30");
+    });
+
+    it("rejects non-hex values on create and update with the key as field (HTTP 400 validation_failed)", async () => {
+      const db = await makeProjectsDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { color: "#FF3B30" } });
+      const expected = { status: 400, code: "validation_failed", details: { field: "color" } };
+      for (const bad of ["Červená", "red", "#FFF", "", 7, { hex: "#FF3B30" }, "#FF3B3G", " #FF3B30"]) {
+        await expect(chokePoint.createItem({ databaseId: db.id, properties: { color: bad } })).rejects.toMatchObject(
+          expected,
+        );
+        await expect(
+          chokePoint.updateItem({ databaseId: db.id, itemId: item.id, propertiesPatch: { color: bad } }),
+        ).rejects.toMatchObject(expected);
+      }
+      const { rows } = await pool.query<{ properties: Record<string, unknown> }>(
+        "SELECT properties FROM items WHERE id = $1",
+        [item.id],
+      );
+      expect(rows[0]?.properties.color).toBe("#FF3B30");
+    });
+
+    it("null clears the color", async () => {
+      const db = await makeProjectsDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { color: "#FF3B30" } });
+      const updated = await chokePoint.updateItem({
+        databaseId: db.id,
+        itemId: item.id,
+        propertiesPatch: { color: null },
+      });
+      expect(updated.properties.color ?? null).toBeNull();
+    });
+
+    it("does not inspect keys absent from the write: a stored 'red' survives an update of another key", async () => {
+      const db = await makeProjectsDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { name: "Old" } });
+      await pool.query(`UPDATE items SET properties = properties || '{"color":"red"}'::jsonb WHERE id = $1`, [item.id]);
+      const updated = await chokePoint.updateItem({
+        databaseId: db.id,
+        itemId: item.id,
+        propertiesPatch: { name: "New" },
+      });
+      expect(updated.properties).toEqual({ name: "New", color: "red" });
+    });
+
+    it("also applies to the client-level writers and to calls that pass allowedSystemKeys", async () => {
+      const db = await makeProjectsDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { name: "P" } });
+      await expect(
+        withTransaction(pool, (client) =>
+          createItemWithClient(
+            client,
+            { databaseId: db.id, properties: { color: "red" } },
+            { allowedSystemKeys: ["color"] },
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "validation_failed", details: { field: "color" } });
+      await expect(
+        withTransaction(pool, (client) =>
+          updateItemWithClient(
+            client,
+            { databaseId: db.id, itemId: item.id, propertiesPatch: { color: "red" } },
+            { allowedSystemKeys: ["color"] },
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "validation_failed", details: { field: "color" } });
+    });
+  });
+});
+
+describe("title validation on item writes", () => {
+  const userWriter = { writerKind: "user" } as const;
+  const agentWriter = { writerKind: "agent" } as const;
+
+  beforeAll(() => {
+    pool = getTestPool();
+    chokePoint = createChokePoint(pool);
+  });
+  afterAll(async () => {
+    await pool.end();
+  });
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+  });
+
+  async function makeDb(withTitle = true) {
+    const db = await chokePoint.createDatabase({ name: "Things" });
+    if (withTitle) await chokePoint.createProperty({ databaseId: db.id, key: "name", name: "Name", type: "title" });
+    await chokePoint.createProperty({ databaseId: db.id, key: "note", name: "Note", type: "text" });
+    return db;
+  }
+
+  async function countItems(databaseId: string): Promise<number> {
+    const { rows } = await pool.query<{ count: string }>("SELECT count(*) FROM items WHERE database_id = $1", [
+      databaseId,
+    ]);
+    return Number(rows[0]?.count);
+  }
+
+  const rejected = { status: 400, code: "validation_failed", details: { field: "name" } };
+
+  it.each([
+    ["user", userWriter],
+    ["agent", agentWriter],
+  ])("rejects a blank or missing title on create for a %s and leaves no row", async (_label, writer) => {
+    const db = await makeDb();
+    for (const properties of [{ name: "   " }, { name: "" }, { name: null }, { note: "x" }]) {
+      await expect(
+        chokePoint.createItem({ databaseId: db.id, properties }, undefined, undefined, writer),
+      ).rejects.toMatchObject(rejected);
+    }
+    expect(await countItems(db.id)).toBe(0);
+    const item = await chokePoint.createItem(
+      { databaseId: db.id, properties: { name: " Padded " } },
+      undefined,
+      undefined,
+      writer,
+    );
+    expect(item.properties.name).toBe(" Padded ");
+  });
+
+  it("rejects patching the title to blank but allows patching another property", async () => {
+    const db = await makeDb();
+    const item = await chokePoint.createItem(
+      { databaseId: db.id, properties: { name: "Keep" } },
+      undefined,
+      undefined,
+      userWriter,
+    );
+    for (const name of ["", "  ", null]) {
+      await expect(
+        chokePoint.updateItem(
+          { databaseId: db.id, itemId: item.id, propertiesPatch: { name } },
+          undefined,
+          undefined,
+          userWriter,
+        ),
+      ).rejects.toMatchObject(rejected);
+    }
+    const updated = await chokePoint.updateItem(
+      { databaseId: db.id, itemId: item.id, propertiesPatch: { note: "n" } },
+      undefined,
+      undefined,
+      agentWriter,
+    );
+    expect(updated.properties).toEqual({ name: "Keep", note: "n" });
+  });
+
+  it("does not apply to internal writers", async () => {
+    const db = await makeDb();
+    const item = await chokePoint.createItem({ databaseId: db.id, properties: { note: "x" } });
+    const updated = await chokePoint.updateItem({
+      databaseId: db.id,
+      itemId: item.id,
+      propertiesPatch: { name: "" },
+    });
+    expect(updated.properties.name).toBe("");
+  });
+
+  it("does not apply to a database without a user-owned title property", async () => {
+    const db = await makeDb(false);
+    const item = await chokePoint.createItem(
+      { databaseId: db.id, properties: { note: "x" } },
+      undefined,
+      undefined,
+      userWriter,
+    );
+    await chokePoint.updateItem(
+      { databaseId: db.id, itemId: item.id, propertiesPatch: { note: "y" } },
+      undefined,
+      undefined,
+      agentWriter,
+    );
+  });
+
+  it("exempts Transcripts for every writer kind", async () => {
+    await runInTenant(getTenantZeroId(), async () => {
+      await seedSystem(pool);
+      const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [
+        "transcripts",
+      ]);
+      const databaseId = rows[0]?.id ?? "";
+      for (const writer of [userWriter, agentWriter]) {
+        const item = await chokePoint.createItem(
+          { databaseId, properties: { name: "" } },
+          undefined,
+          undefined,
+          writer,
+        );
+        const updated = await chokePoint.updateItem(
+          { databaseId, itemId: item.id, propertiesPatch: { name: "  " } },
+          undefined,
+          undefined,
+          writer,
+        );
+        expect(updated.properties.name).toBe("  ");
       }
     });
   });

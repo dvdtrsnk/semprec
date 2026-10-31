@@ -6,6 +6,7 @@ import type { AuthOperations, SessionUser } from "../api/authOperations.js";
 import type { SetupOperations } from "../api/setupOperations.js";
 import type { AdminOperations } from "../api/adminOperations.js";
 import type { AccountOperations } from "../api/accountOperations.js";
+import type { InvitationOperations } from "../api/invitationOperations.js";
 import { createFakeOperations } from "../test/fakeOperations.js";
 import { App } from "../App.js";
 
@@ -47,6 +48,7 @@ function renderApp({
   passwordReset,
   admin,
   account,
+  invite,
   login,
   languages = ["en"],
 }: {
@@ -57,6 +59,7 @@ function renderApp({
   passwordReset?: { token: string | null };
   admin?: { operations: AdminOperations };
   account?: { operations: AccountOperations };
+  invite?: { token: string | null; operations: InvitationOperations };
   login?: true;
   languages?: readonly string[];
 }) {
@@ -70,6 +73,7 @@ function renderApp({
       passwordReset={passwordReset}
       admin={admin}
       account={account}
+      invite={invite}
       login={login}
       languages={languages}
     />,
@@ -232,6 +236,19 @@ describe("App session lifecycle", () => {
     renderApp({ auth, passwordReset: { token: null } });
 
     expect(await screen.findByRole("heading", { name: "Reset password" })).toBeInTheDocument();
+    expect(screen.queryByRole("banner")).not.toBeInTheDocument();
+    expect(screen.queryByText(CONTENT_MARKER)).not.toBeInTheDocument();
+    expect(auth.getSession).not.toHaveBeenCalled();
+  });
+
+  it("renders the invitation page without the header and never reads the session (issue #1088)", async () => {
+    const auth = stubAuth();
+    const operations: InvitationOperations = {
+      acceptInvitation: vi.fn(async () => ({ email: "invitee@example.com" })),
+    };
+    renderApp({ auth, invite: { token: "abc", operations } });
+
+    expect(await screen.findByRole("heading", { name: "Accept invitation" })).toBeInTheDocument();
     expect(screen.queryByRole("banner")).not.toBeInTheDocument();
     expect(screen.queryByText(CONTENT_MARKER)).not.toBeInTheDocument();
     expect(auth.getSession).not.toHaveBeenCalled();

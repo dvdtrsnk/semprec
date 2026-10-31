@@ -29,6 +29,15 @@ export const MESSAGE_FLAG_PROPERTIES: ReadonlyArray<{ propertyKey: string; imapF
 ];
 
 /**
+ * The `specialPurpose` of the folders whose messages are read by definition (issue #1461): the user
+ * wrote a draft, and sending it keeps the same Emails item in Sent. `createEmailDraft` creates a draft as
+ * read, the backfill in `mailDraftsAndSentReadBackfill.ts` makes older ones read, and the unread search
+ * (`search.ts`) and the unscoped unread filter (`web/src/views/mailbox/config.ts`) leave messages in these
+ * folders out.
+ */
+export const DRAFTS_AND_SENT_SPECIAL_PURPOSES = ["drafts", "sent"] as const;
+
+/**
  * The `read`/`flagged` properties a newly ingested message starts out with, derived from the
  * IMAP flags the fetch reported. Returns `{}` when the adapter reported no flags at all
  * (every non-IMAP adapter), leaving both properties absent — which the mailbox reads as

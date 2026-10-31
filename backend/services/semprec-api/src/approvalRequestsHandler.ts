@@ -69,19 +69,20 @@ export function createApprovalRequestsRequestListener(pool: Pool) {
         }
         const decision = body.decision;
 
-        const decided = await withTransaction(pool, (client) =>
-          decideAndEnqueueApprovalRequest(client, {
+        const view = await withTransaction(pool, async (client) => {
+          const decided = await decideAndEnqueueApprovalRequest(client, {
             approvalRequestId,
             decision,
             decidedByUserId: identity.user.id,
-          }),
-        );
+          });
+          return decided ? await toApprovalRequestDecisionView(client, decided.request) : null;
+        });
 
-        if (!decided) {
+        if (!view) {
           sendJson(res, 404, { error: "Not found" });
           return;
         }
-        sendJson(res, 200, toApprovalRequestDecisionView(decided.request));
+        sendJson(res, 200, view);
       });
     } catch (err) {
       if (err instanceof PayloadTooLargeError) {

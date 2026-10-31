@@ -398,4 +398,68 @@ describe("reconstructConversationHistory", () => {
       ),
     ).rejects.toThrow(/does not match the pending tool_use call/);
   });
+
+  it("reconstructs and compacts each thread from its own runs only", async () => {
+    const insertThread = async (): Promise<string> =>
+      (await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id")).rows[0]!.id;
+    const threadA = await insertThread();
+    const threadB = await insertThread();
+    const runA = await createAgentRun(pool, { threadId: threadA, triggeredBy: "user", unit: "session", task: "a" });
+    const runB = await createAgentRun(pool, { threadId: threadB, triggeredBy: "user", unit: "session", task: "b" });
+    const delegated = await createAgentRun(pool, {
+      triggeredBy: "supervisor",
+      unit: "session",
+      task: "d",
+      parentRunId: runA.id,
+    });
+    await insertAgentRunEvent(pool, runA.id, "message", { kind: "message", text: "from A" });
+    await insertAgentRunEvent(pool, runB.id, "message", { kind: "message", text: "from B" });
+    await insertAgentRunEvent(pool, delegated.id, "message", { kind: "message", text: "delegated" });
+
+    const filterA = { threadId: threadA, triggeredBy: "user", parentRunId: null } as const;
+    const filterB = { threadId: threadB, triggeredBy: "user", parentRunId: null } as const;
+    const texts = (h: { entries: ConversationEntry[] } | null) =>
+      h?.entries.map((e) => (e.message as { text?: string }).text);
+
+    expect(texts(await reconstructConversationHistory(pool, filterA, noopCompaction))).toEqual(["from A"]);
+    expect(texts(await reconstructConversationHistory(pool, filterB, noopCompaction))).toEqual(["from B"]);
+
+    const compactedA = await reconstructConversationHistory(pool, filterA, alwaysCompacts("summary of A"));
+    await persistCompaction(pool, runA.id, compactedA!.entries);
+
+    expect(texts(await reconstructConversationHistory(pool, filterA, noopCompaction))).toEqual(["summary of A"]);
+    expect(texts(await reconstructConversationHistory(pool, filterB, noopCompaction))).toEqual(["from B"]);
+  });
+
+  it("reconstructs a woken conversation as question then answer, with follow-up turns, in order", async () => {
+    const run = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "first question",
+    });
+    const refs = [{ label: "Budget", kind: "item", id: "i1" }];
+    await insertAgentRunEvent(pool, run.id, "user_message", {
+      kind: "user_message",
+      text: "first question",
+      context: refs,
+    });
+    await insertAgentRunEvent(pool, run.id, "message", { kind: "message", text: "first answer" });
+    await insertAgentRunEvent(pool, run.id, "user_message", { kind: "user_message", text: "follow-up", context: [] });
+    await insertAgentRunEvent(pool, run.id, "message", { kind: "message", text: "second answer" });
+
+    const history = await reconstructConversationHistory(
+      pool,
+      { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", parentRunId: null },
+      noopCompaction,
+    );
+
+    expect(history!.entries.map((e) => [e.message.kind, (e.message as { text?: string }).text])).toEqual([
+      ["user_message", "first question"],
+      ["message", "first answer"],
+      ["user_message", "follow-up"],
+      ["message", "second answer"],
+    ]);
+    expect(history!.entries[0]!.message.context).toEqual(refs);
+  });
 });

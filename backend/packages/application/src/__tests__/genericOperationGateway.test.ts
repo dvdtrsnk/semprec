@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
@@ -20,6 +21,7 @@ import {
   createAgentRun,
   createChokePoint,
   createCoreTaskList,
+  createDocStore,
   createUser as createBoundUser,
   createViewTypeRegistry,
   decideAndEnqueueApprovalRequest,
@@ -40,6 +42,10 @@ import {
   type GenericOperationName,
 } from "@semprec/shared";
 import { createGenericOperationGateway, replayApprovedGenericOperation } from "../genericOperationGateway.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -65,7 +71,7 @@ async function approveDestructive(
   actor: AuthenticatedActor,
   input: unknown,
 ): Promise<string> {
-  const gateway = createGenericOperationGateway(pool);
+  const gateway = createGenericOperationGateway(pool, testMetadataResolver);
   let requestId: string;
   try {
     await gateway.invoke(operation, actor, ALL_CAPABILITIES, input);
@@ -98,7 +104,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
   it("item.patch carries the transactional pre-image through the production gateway and service", async () => {
     await inTenantZero(async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId: await createUser() };
       const db = await chokePoint.createDatabase({ name: "Patch values" });
       for (const key of ["due", "note", "unset"]) {
@@ -145,7 +151,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         return { db, item: await cp.createItem({ databaseId: db.id, properties: { title: "Private" } }) };
       });
       const actor: AuthenticatedActor = { userId: await createUser() };
-      const gateway = createGenericOperationGateway(runtimePool);
+      const gateway = createGenericOperationGateway(runtimePool, testMetadataResolver);
       const input = { itemId: fixture.item.id, properties: { title: "Changed" }, ifVersion: fixture.item.updatedAt };
       const foreign = await runInTenant(tenantB, () =>
         Promise.allSettled([
@@ -158,7 +164,10 @@ describe("createGenericOperationGateway (issue #220)", () => {
         { status: "rejected", reason: expect.any(NotFoundError) },
       ]);
       await runInTenant(tenantA, async () => {
-        expect(await createChokePoint(runtimePool).getItem(fixture.db.id, fixture.item.id)).toEqual(fixture.item);
+        expect(await createChokePoint(runtimePool).getItem(fixture.db.id, fixture.item.id)).toEqual({
+          ...fixture.item,
+          fromInbox: false,
+        });
         const result = await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, input);
         expect(result.previous).toEqual({ title: "Private" });
         expect(result.properties).toEqual({ title: "Changed" });
@@ -170,7 +179,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
   describe("listOperations", () => {
     it("returns only the operations whose capability is granted, never present-but-forbidden", () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
 
       expect(gateway.listOperations(NO_CAPABILITIES)).toEqual([]);
       expect(gateway.listOperations(ALL_CAPABILITIES)).toEqual([...GENERIC_OPERATION_NAMES]);
@@ -185,7 +194,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
   describe("invoke", () => {
     it("throws NotFoundError for an operation whose capability isn't granted, indistinguishable from unknown", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId: await createUser() };
 
       await expect(gateway.invoke("item.get", actor, NO_CAPABILITIES, { itemId: randomUUID() })).rejects.toThrow(
@@ -194,7 +203,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("rejects an agent actor carrying runId without agentProjectItemId as owner_violation", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId: await createUser(), runId: randomUUID() };
 
       try {
@@ -207,7 +216,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("rejects an agent actor carrying agentProjectItemId without runId as owner_violation", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId: await createUser(), agentProjectItemId: randomUUID() };
 
       try {
@@ -220,14 +229,14 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("throws ValidationError for input that fails the operation's own zod binding", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId: await createUser() };
 
       await expect(gateway.invoke("item.get", actor, ALL_CAPABILITIES, {})).rejects.toThrow(ValidationError);
     });
 
     it("names the offending field when property.create fails its union schema", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId: await createUser() };
       const database = await chokePoint.createDatabase({ name: "Gateway DB" });
       const base = { databaseId: database.id, key: "rel", name: "Rel" };
@@ -246,7 +255,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("executes a non-destructive operation immediately for a REST-style human actor", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId: await createUser() };
       const database = await chokePoint.createDatabase({ name: "Gateway DB" });
       await chokePoint.createProperty({ databaseId: database.id, key: "title", name: "Title", type: "title" });
@@ -262,7 +271,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("executes a destructive operation immediately for a REST-style human actor (no runId, so never approval-gated)", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const actor: AuthenticatedActor = { userId: await createUser() };
       const database = await chokePoint.createDatabase({ name: "Gateway DB 2" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
@@ -275,7 +284,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("defers a destructive operation for a full agent actor: no execution, one pending approval_requests row, ApprovalRequiredError", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const database = await chokePoint.createDatabase({ name: "Gateway DB 3" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       const projectItemId = randomUUID();
@@ -305,8 +314,62 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(rows[0].count).toBe(1);
     });
 
+    it("stores the agent's reason on the request without putting it in the canonical input or the snapshot (issue #1420)", async () => {
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+      const database = await chokePoint.createDatabase({ name: "Gateway DB reason" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      const projectItemId = randomUUID();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
+      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+
+      const withReason = (await gateway
+        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id }, { reason: "You never use it." })
+        .catch((err: unknown) => err)) as ApprovalRequiredError;
+      const withoutReason = (await gateway
+        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id })
+        .catch((err: unknown) => err)) as ApprovalRequiredError;
+
+      const request = await getApprovalRequest(pool, withReason.details.approvalRequestId);
+      expect(request!.reason).toBe("You never use it.");
+      expect(JSON.stringify(request!.payload)).not.toContain("You never use it.");
+      expect(JSON.stringify(request!.resourceSnapshot)).not.toContain("You never use it.");
+      expect(request!.payload).toMatchObject({ canonicalInput: { itemId: item.id } });
+      expect((await getApprovalRequest(pool, withoutReason.details.approvalRequestId))!.reason).toBeNull();
+    });
+
+    it("stores the tool call id on the request, and leaves it NULL when none is supplied (issue #1618)", async () => {
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+      const database = await chokePoint.createDatabase({ name: "Gateway DB tool call" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      const projectItemId = randomUUID();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
+      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+
+      const linked = (await gateway
+        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id }, { toolCallId: "call_1" })
+        .catch((err: unknown) => err)) as ApprovalRequiredError;
+      const redelivered = (await gateway
+        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id }, { toolCallId: "call_1" })
+        .catch((err: unknown) => err)) as ApprovalRequiredError;
+      const unlinked = (await gateway
+        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id })
+        .catch((err: unknown) => err)) as ApprovalRequiredError;
+
+      expect((await getApprovalRequest(pool, linked.details.approvalRequestId))!.toolCallId).toBe("call_1");
+      expect(redelivered.details.approvalRequestId).toBe(linked.details.approvalRequestId);
+      expect((await getApprovalRequest(pool, unlinked.details.approvalRequestId))!.toolCallId).toBeNull();
+    });
+
+    it("still rejects a reason field inside the operation input as strict-schema ValidationError (issue #1420)", async () => {
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+      const actor: AuthenticatedActor = { userId: randomUUID() };
+      await expect(
+        gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: randomUUID(), reason: "x" }),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+
     it("executes a non-destructive operation immediately for a full agent actor (no approval gate)", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const userId = await createUser();
       const database = await chokePoint.createDatabase({ name: "Gateway DB 4" });
       await chokePoint.createProperty({ databaseId: database.id, key: "title", name: "Title", type: "title" });
@@ -331,7 +394,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
       run: { id: string };
       item: { id: string; databaseId: string };
     }> {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const database = await chokePoint.createDatabase({ name: "Replay DB" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       const projectItemId = randomUUID();
@@ -528,7 +591,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     }
 
     it("creates no approval_requests row and no notification when the resource is unauthorized (not found)", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const projectItemId = randomUUID();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete a ghost" });
       const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
@@ -541,7 +604,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("creates no approval_requests row and no notification when the actor's persisted provenance no longer matches (owner_violation)", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const database = await chokePoint.createDatabase({ name: "Preflight Provenance" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       const projectItemId = randomUUID();
@@ -566,7 +629,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("creates no approval_requests row and no notification when the resource is locked (paired relation property locked)", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const tasks = await chokePoint.createDatabase({ name: "Preflight Locked Tasks" });
       const participants = await chokePoint.createDatabase({ name: "Preflight Locked Participants" });
       const { property: assignedTo } = await chokePoint.createRelationProperty({
@@ -589,7 +652,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     it("persists resourceSnapshot inside the payload, matching the row's own resourceSnapshot column", async () => {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const database = await chokePoint.createDatabase({ name: "Preflight Snapshot Payload" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       const projectItemId = randomUUID();
@@ -609,6 +672,237 @@ describe("createGenericOperationGateway (issue #220)", () => {
         payload: GenericOperationApprovalRequestPayload;
       };
       expect(request.payload.resourceSnapshot).toEqual(request.resourceSnapshot);
+    });
+  });
+
+  describe("approval description snapshot (issue #1683)", () => {
+    async function makeActor(): Promise<AuthenticatedActor> {
+      const projectItemId = await createRealAgentProjectItemId();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "describe" });
+      return { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+    }
+
+    async function descriptionOf(requestId: string) {
+      return (await getApprovalRequest(pool, requestId))!.description;
+    }
+
+    it("property.delete snapshots names and the count of items with a value, unchanged by later edits", async () => {
+      const database = await chokePoint.createDatabase({ name: "Journal" });
+      const property = await chokePoint.createProperty({
+        databaseId: database.id,
+        key: "mood",
+        name: "Mood",
+        type: "text",
+      });
+      await chokePoint.createItem({ databaseId: database.id, properties: { mood: "ok" } });
+      await chokePoint.createItem({ databaseId: database.id, properties: { mood: "great" } });
+      await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      const actor = await makeActor();
+
+      const requestId = await approveDestructive("property.delete", actor, { propertyId: property.id });
+      const expected = {
+        key: "approval.propertyDelete",
+        params: { propertyName: "Mood", databaseKey: null, databaseName: "Journal", affectedCount: 2 },
+      };
+      expect(await descriptionOf(requestId)).toEqual(expected);
+
+      await pool.query(`UPDATE properties SET name = 'Renamed' WHERE id = $1`, [property.id]);
+      await chokePoint.createItem({ databaseId: database.id, properties: { mood: "late" } });
+      expect(await descriptionOf(requestId)).toEqual(expected);
+    });
+
+    it("item.delete snapshots the name, database key, linked count and trash retention, without ids", async () => {
+      const tasks = await chokePoint.createDatabase({ name: "Tasks" });
+      const people = await chokePoint.createDatabase({ name: "People" });
+      await chokePoint.createProperty({ databaseId: tasks.id, key: "name", name: "Name", type: "text" });
+      const { property: assignedTo } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: tasks.id,
+        key: "assignedTo",
+        name: "Assigned To",
+        targetDatabaseId: people.id,
+        inverse: { key: "assignedTasks", name: "Assigned Tasks" },
+      });
+      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { name: "Tax return" } });
+      const person = await chokePoint.createItem({ databaseId: people.id, properties: {} });
+      await chokePoint.createRelation({
+        relationPropertyId: assignedTo.id,
+        callerItemId: task.id,
+        targetItemId: person.id,
+      });
+      const actor = await makeActor();
+
+      const requestId = await approveDestructive("item.delete", actor, { itemId: task.id });
+      const description = await descriptionOf(requestId);
+
+      expect(description).toEqual({
+        key: "approval.itemDelete",
+        params: {
+          itemName: "Tax return",
+          databaseKey: null,
+          databaseName: "Tasks",
+          linkedCount: 1,
+          restorableDays: 30,
+        },
+      });
+      expect(JSON.stringify(description)).not.toContain(task.id);
+    });
+
+    it("database.archive, view.delete and relation.delete store their templates", async () => {
+      const tasks = await chokePoint.createDatabase({ name: "Tasks" });
+      const people = await chokePoint.createDatabase({ name: "People" });
+      await chokePoint.createProperty({ databaseId: tasks.id, key: "name", name: "Name", type: "text" });
+      await chokePoint.createProperty({ databaseId: people.id, key: "name", name: "Name", type: "text" });
+      const { property: assignedTo } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: tasks.id,
+        key: "assignedTo",
+        name: "Assigned To",
+        targetDatabaseId: people.id,
+        inverse: { key: "assignedTasks", name: "Assigned Tasks" },
+      });
+      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { name: "Tax return" } });
+      const person = await chokePoint.createItem({ databaseId: people.id, properties: { name: "Eva" } });
+      await chokePoint.createRelation({
+        relationPropertyId: assignedTo.id,
+        callerItemId: task.id,
+        targetItemId: person.id,
+      });
+      const actor = await makeActor();
+      const view = await chokePoint.createView(
+        { databaseId: tasks.id, type: "table", name: "Open tasks" },
+        { type: "ai_agent", agentProjectItemId: actor.agentProjectItemId },
+      );
+
+      const archiveId = await approveDestructive("database.archive", actor, { databaseId: tasks.id });
+      const viewId = await approveDestructive("view.delete", actor, { viewId: view.id });
+      const relationId = await approveDestructive("relation.delete", actor, {
+        relationPropertyId: assignedTo.id,
+        callerItemId: task.id,
+        targetItemId: person.id,
+      });
+
+      expect(await descriptionOf(archiveId)).toEqual({
+        key: "approval.databaseArchive",
+        params: { databaseName: "Tasks", affectedCount: 1 },
+      });
+      expect(await descriptionOf(viewId)).toEqual({
+        key: "approval.viewDelete",
+        params: { viewName: "Open tasks", databaseName: "Tasks" },
+      });
+      expect(await descriptionOf(relationId)).toEqual({
+        key: "approval.relationDelete",
+        params: { fromItemName: "Tax return", fromDatabaseKey: null, toItemName: "Eva", toDatabaseKey: null },
+      });
+    });
+  });
+
+  describe("approval notification body (issue #1773)", () => {
+    async function makeActor(): Promise<AuthenticatedActor> {
+      const projectItemId = await createRealAgentProjectItemId();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "notify" });
+      return { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+    }
+
+    /** Raises the request with the recipient's locale set to English, so the body can be asserted in English. */
+    async function raiseInEnglish(
+      operation: GenericOperationName,
+      actor: AuthenticatedActor,
+      input: unknown,
+    ): Promise<string> {
+      await pool.query(`UPDATE users SET locale = 'en'`);
+      return approveDestructive(operation, actor, input);
+    }
+
+    async function notificationOf(requestId: string): Promise<{ title: string; body: string | null }> {
+      const { rows } = await pool.query<{ title: string; body: string | null }>(
+        `SELECT title, body FROM notifications WHERE source_id = $1 AND kind = 'approval_pending'`,
+        [requestId],
+      );
+      expect(rows).toHaveLength(1);
+      return rows[0]!;
+    }
+
+    it("gives every approval the fixed title, and property.delete a body that ends with the irreversible sentence", async () => {
+      const database = await chokePoint.createDatabase({ name: "Journal" });
+      const property = await chokePoint.createProperty({
+        databaseId: database.id,
+        key: "mood",
+        name: "Mood",
+        type: "text",
+      });
+      const actor = await makeActor();
+
+      const requestId = await raiseInEnglish("property.delete", actor, { propertyId: property.id });
+
+      expect(await notificationOf(requestId)).toEqual({
+        title: "Semp needs approval",
+        body: 'Delete the property "Mood" in the database "Journal". This action is irreversible.',
+      });
+    });
+
+    it("gives item.delete a body that ends with the undo sentence, because the item goes to the trash", async () => {
+      const tasks = await chokePoint.createDatabase({ name: "Tasks" });
+      await chokePoint.createProperty({ databaseId: tasks.id, key: "name", name: "Name", type: "text" });
+      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { name: "Tax return" } });
+      const actor = await makeActor();
+
+      const requestId = await raiseInEnglish("item.delete", actor, { itemId: task.id });
+
+      expect((await notificationOf(requestId)).body).toBe(
+        'Delete the item "Tax return" in the database "Tasks". This can be undone later.',
+      );
+    });
+
+    it("renders an item without a name as the unnamed label, never as a placeholder", async () => {
+      const tasks = await chokePoint.createDatabase({ name: "Tasks" });
+      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: {} });
+      const actor = await makeActor();
+
+      const requestId = await raiseInEnglish("item.delete", actor, { itemId: task.id });
+
+      expect((await notificationOf(requestId)).body).toBe(
+        'Delete the item "unnamed" in the database "Tasks". This can be undone later.',
+      );
+    });
+
+    it("gives database.archive an undo sentence and view.delete and relation.delete the irreversible one", async () => {
+      const tasks = await chokePoint.createDatabase({ name: "Tasks" });
+      const people = await chokePoint.createDatabase({ name: "People" });
+      await chokePoint.createProperty({ databaseId: tasks.id, key: "name", name: "Name", type: "text" });
+      await chokePoint.createProperty({ databaseId: people.id, key: "name", name: "Name", type: "text" });
+      const { property: assignedTo } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: tasks.id,
+        key: "assignedTo",
+        name: "Assigned To",
+        targetDatabaseId: people.id,
+        inverse: { key: "assignedTasks", name: "Assigned Tasks" },
+      });
+      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { name: "Tax return" } });
+      const person = await chokePoint.createItem({ databaseId: people.id, properties: { name: "Eva" } });
+      await chokePoint.createRelation({
+        relationPropertyId: assignedTo.id,
+        callerItemId: task.id,
+        targetItemId: person.id,
+      });
+      const actor = await makeActor();
+      const view = await chokePoint.createView(
+        { databaseId: tasks.id, type: "table", name: "Open tasks" },
+        { type: "ai_agent", agentProjectItemId: actor.agentProjectItemId },
+      );
+
+      const archiveId = await raiseInEnglish("database.archive", actor, { databaseId: tasks.id });
+      expect((await notificationOf(archiveId)).body).toBe('Archive the database "Tasks". This can be undone later.');
+
+      const viewId = await raiseInEnglish("view.delete", actor, { viewId: view.id });
+      expect((await notificationOf(viewId)).body).toBe('Delete the view "Open tasks". This action is irreversible.');
+
+      const relationId = await raiseInEnglish("relation.delete", actor, {
+        relationPropertyId: assignedTo.id,
+        callerItemId: task.id,
+        targetItemId: person.id,
+      });
+      expect((await notificationOf(relationId)).body).toBe(
+        'Remove the link between "Tax return" and "Eva". This action is irreversible.',
+      );
     });
   });
 
@@ -709,6 +1003,118 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
   });
 
+  describe("page.restoreVersion through the approval gate (issue #1617)", () => {
+    async function makeAgentActor(): Promise<AuthenticatedActor> {
+      const projectItemId = await createRealAgentProjectItemId();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "page restore" });
+      return { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+    }
+
+    async function replayRequest(requestId: string) {
+      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
+        payload: GenericOperationApprovalRequestPayload;
+      };
+      const outcome = await replayApprovedGenericOperation(pool, request);
+      return { outcome, finished: await getApprovalRequest(pool, requestId) };
+    }
+
+    /**
+     * A page whose history starts two hours before the database clock, with block `b1` written an hour
+     * before it. The instant returned is half an hour before the clock, so it sits between the two.
+     */
+    async function pageWithFirstBlock(): Promise<{ itemId: string; docId: string; at: Date }> {
+      const docStore = createDocStore(pool);
+      const { rows } = await pool.query<{ now: Date }>(`SELECT transaction_timestamp() AS now`);
+      const now = rows[0]!.now;
+      const hoursBefore = (hours: number) => new Date(now.getTime() - hours * 60 * 60 * 1000);
+      const database = await chokePoint.createDatabase({ name: "Pages" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "name", name: "Name", type: "text" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: { name: "Chapter one" } });
+      const doc = await docStore.getOrCreateDoc(item.id, "page");
+      await pool.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [doc.id, hoursBefore(2)]);
+      await pool.query(
+        `UPDATE doc_snapshot_history SET represented_at = $2 WHERE doc_id = $1 AND through_update_id = 0`,
+        [doc.id, hoursBefore(2)],
+      );
+      await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph", fields: { content: "first" } }, "user");
+      await pool.query(`UPDATE doc_updates SET created_at = $2 WHERE doc_id = $1`, [doc.id, hoursBefore(1)]);
+      await pool.query(`UPDATE doc_history_updates SET created_at = $2 WHERE doc_id = $1`, [doc.id, hoursBefore(1)]);
+      return { itemId: item.id, docId: doc.id, at: hoursBefore(0.5) };
+    }
+
+    async function blockIdsOf(itemId: string): Promise<string[]> {
+      const blocks = await createDocStore(pool).listBlocks(itemId);
+      return blocks.map((block) => String(block["sys:id"])).sort();
+    }
+
+    it("holds an agent call for approval, and the approved replay restores the page as one user update", async () => {
+      const page = await pageWithFirstBlock();
+      const docStore = createDocStore(pool);
+      await docStore.putBlock(page.itemId, { id: "b2", flavour: "paragraph", fields: { content: "second" } }, "user");
+      const actor = await makeAgentActor();
+      const input = { itemId: page.itemId, at: page.at.toISOString() };
+
+      const requestId = await approveDestructive("page.restoreVersion", actor, input);
+      // Approval alone changes nothing: the restore runs when the approved request is replayed.
+      expect(await blockIdsOf(page.itemId)).toEqual(["b1", "b2"]);
+      const request = await getApprovalRequest(pool, requestId);
+      expect(request).toMatchObject({
+        toolName: "page.restoreVersion",
+        riskClass: "destructive",
+        description: {
+          key: "approval.pageRestore",
+          params: { itemName: "Chapter one", databaseKey: null, databaseName: "Pages" },
+        },
+      });
+
+      const { outcome, finished } = await replayRequest(requestId);
+
+      expect(outcome.error).toBe(false);
+      expect(finished!.executionStatus).toBe("succeeded");
+      expect(await blockIdsOf(page.itemId)).toEqual(["b1"]);
+      const { rows } = await pool.query<{ created_by: string }>(
+        `SELECT created_by FROM doc_updates WHERE doc_id = $1 ORDER BY id DESC LIMIT 1`,
+        [page.docId],
+      );
+      expect(rows[0]!.created_by).toBe("user");
+    });
+
+    it("ends the replay as a conflict, restoring nothing, when the page was edited after the request", async () => {
+      const page = await pageWithFirstBlock();
+      const actor = await makeAgentActor();
+      const requestId = await approveDestructive("page.restoreVersion", actor, {
+        itemId: page.itemId,
+        at: page.at.toISOString(),
+      });
+      await createDocStore(pool).putBlock(
+        page.itemId,
+        { id: "b2", flavour: "paragraph", fields: { content: "second" } },
+        "user",
+      );
+
+      const { finished } = await replayRequest(requestId);
+
+      expect(finished!.executionStatus).toBe("conflict");
+      expect(await blockIdsOf(page.itemId)).toEqual(["b1", "b2"]);
+    });
+
+    it("refuses a request for an unknown page without queuing an approval", async () => {
+      const actor = await makeAgentActor();
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+
+      await expect(
+        gateway.invoke("page.restoreVersion", actor, ALL_CAPABILITIES, {
+          itemId: randomUUID(),
+          at: new Date().toISOString(),
+        }),
+      ).rejects.toBeInstanceOf(NotFoundError);
+      const { rows } = await pool.query<{ count: string }>(
+        `SELECT count(*) AS count FROM approval_requests WHERE tool_name = 'page.restoreVersion'`,
+      );
+      expect(rows[0]!.count).toBe("0");
+    });
+  });
+
   describe("handleApprovalRequestExecuteTask (worker path, issue #220)", () => {
     // `createCoreTaskList`'s later positional parameters (library metadata fetcher, mail
     // adapters, ...) are irrelevant to this task and default sensibly on their own; only the
@@ -728,7 +1134,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     }
 
     async function createPendingDeleteAndApprove(): Promise<{ requestId: string; itemId: string }> {
-      const gateway = createGenericOperationGateway(pool);
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const database = await chokePoint.createDatabase({ name: "Worker path DB" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       const projectItemId = randomUUID();
@@ -824,9 +1230,14 @@ describe("approval_pending recipient in a tenant (issue #1018)", () => {
       const run = await createAgentRun(runtimePool, { projectItemId, triggeredBy: "user", task: "delete it" });
       const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
       try {
-        await createGenericOperationGateway(runtimePool).invoke("item.delete", actor, ALL_CAPABILITIES, {
-          itemId: item.id,
-        });
+        await createGenericOperationGateway(runtimePool, testMetadataResolver).invoke(
+          "item.delete",
+          actor,
+          ALL_CAPABILITIES,
+          {
+            itemId: item.id,
+          },
+        );
       } catch (err) {
         if (err instanceof ApprovalRequiredError) return err.details.approvalRequestId;
         throw err;

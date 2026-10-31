@@ -139,6 +139,44 @@ export class HeartbeatEventTriggeredError extends ChokePointError {
   }
 }
 
+/**
+ * The `heartbeat_disabled` code of the REST error contract (issue #1453) — a manual trigger of a
+ * heartbeat the user disabled. Kept distinct from `heartbeat_event_triggered` and `validation_failed`
+ * so a client can offer "enable it first" instead of a generic bad-request message.
+ */
+export class HeartbeatDisabledError extends ChokePointError {
+  constructor(message: string, details?: unknown) {
+    super(409, "heartbeat_disabled", message, details);
+    this.name = "HeartbeatDisabledError";
+  }
+}
+
+/**
+ * The run of a heartbeat that is still active, as the REST error contract shows it: ids, status and
+ * timestamps only. The run's task text and result stay out of an error response.
+ */
+export interface ActiveHeartbeatRunSummary {
+  id: string;
+  status: string;
+  triggeredBy: string;
+  startedAt: string;
+  threadId: string | null;
+}
+
+/**
+ * The `heartbeat_running` code of the REST error contract (issue #1453) — a manual trigger while a
+ * run of the heartbeat is running or a fire job of it is already waiting. `details.activeRun` is the
+ * running run, or `null` while only a job is waiting for a worker to create the run.
+ */
+export class HeartbeatRunningError extends ChokePointError {
+  declare readonly details: { activeRun: ActiveHeartbeatRunSummary | null };
+
+  constructor(message: string, details: { activeRun: ActiveHeartbeatRunSummary | null }) {
+    super(409, "heartbeat_running", message, details);
+    this.name = "HeartbeatRunningError";
+  }
+}
+
 const PASSWORD_RESET_TOKEN_ERROR_MESSAGES = {
   invalid: "Password reset token is invalid",
   expired: "Password reset token has expired",

@@ -1,5 +1,5 @@
 import { resolveCatalogLabel, type ModuleCatalogs, type ModuleRegistry } from "@semprec/module-registry";
-import type { PropertyRow } from "../types.js";
+import type { PropertyRow, PropertyType, RelationDefinitionRow } from "../types.js";
 
 /** The two locales `resolveCatalogLabel` resolves against (issue #236's scope note). */
 export type ManifestLocale = "cs" | "en";
@@ -19,19 +19,42 @@ export interface ResolvedOption {
   label: string;
 }
 
+/**
+ * Typed projection of a property's stored config (issue #1360), not a dump of the stored object.
+ * Select and multi_select options stay in `ResolvedProperty.options`, never here.
+ */
+export interface ResolvedPropertyConfig {
+  default?: unknown;
+  /** relation only; present together with `cardinality` when the relation definition is readable. */
+  targetDatabaseId?: string;
+  cardinality?: RelationDefinitionRow["cardinality"];
+  /** date only; `false` when the stored config has no value. */
+  includeTime?: boolean;
+  /** number only; passed through as stored. */
+  filterPresets?: unknown;
+}
+
 export interface ResolvedProperty {
+  id: string;
+  type: PropertyType;
+  /** Whether a filter can be built on this property (issue #1360). */
+  filterable: boolean;
   key: string;
   name: string;
   owner: PropertyRow["owner"];
   locked: boolean;
   /** Resolved select/multi_select option labels (issue #147) — absent for every other property type. */
   options?: ResolvedOption[];
-  config?: { default: unknown };
+  config: ResolvedPropertyConfig;
 }
 
 export interface CatalogResolver {
   getCatalogsForDbKey(dbKey: string | null): Promise<ModuleCatalogs | undefined>;
+  getCatalogsForModuleId(moduleId: string): Promise<ModuleCatalogs | undefined>;
 }
+
+/** Module that owns the generic `collection.custom.searchPlaceholder` entry. */
+const SYSTEM_DATABASES_MODULE_ID = "systemDatabases";
 
 /**
  * Builds the dbKey -> catalogs lookup shared by every locale-aware projection (issue #147),
@@ -45,23 +68,31 @@ export interface CatalogResolver {
  */
 export async function createCatalogResolver(moduleRegistry: ModuleRegistry | undefined): Promise<CatalogResolver> {
   if (!moduleRegistry) {
-    return { getCatalogsForDbKey: () => Promise.resolve(undefined) };
+    return {
+      getCatalogsForDbKey: () => Promise.resolve(undefined),
+      getCatalogsForModuleId: () => Promise.resolve(undefined),
+    };
   }
 
   const allDbs = await moduleRegistry.getDatabases();
   const dbKeyToModuleId = new Map(allDbs.map((d) => [d.key, d.moduleId]));
   const catalogsByModuleId = new Map<string, ModuleCatalogs | undefined>();
 
+  const getCatalogsForModuleId = async (moduleId: string): Promise<ModuleCatalogs | undefined> => {
+    if (!catalogsByModuleId.has(moduleId)) {
+      catalogsByModuleId.set(moduleId, await moduleRegistry.getCatalogs(moduleId));
+    }
+    return catalogsByModuleId.get(moduleId);
+  };
+
   return {
     async getCatalogsForDbKey(dbKey) {
       if (!dbKey) return undefined;
       const moduleId = dbKeyToModuleId.get(dbKey);
       if (!moduleId) return undefined;
-      if (!catalogsByModuleId.has(moduleId)) {
-        catalogsByModuleId.set(moduleId, await moduleRegistry.getCatalogs(moduleId));
-      }
-      return catalogsByModuleId.get(moduleId);
+      return getCatalogsForModuleId(moduleId);
     },
+    getCatalogsForModuleId,
   };
 }
 
@@ -98,17 +129,85 @@ export function resolveDatabaseName(
     : rawKeyFallback(dbName, dbKey, dbId);
 }
 
+/**
+ * The search-field placeholder of a collection: the requested locale, then English, then `null`
+ * (never the raw key). `dbKey` is the entry's database key, or `null` for a user-created
+ * database, which reads the generic `collection.custom.searchPlaceholder` entry of `catalogs`.
+ */
+export function resolveDatabaseSearchPlaceholder(
+  dbKey: string | null,
+  catalogs: ModuleCatalogs | undefined,
+  locale: ManifestLocale,
+): string | null {
+  if (!catalogs) return null;
+  const catalogKey = dbKey === null ? "collection.custom.searchPlaceholder" : `database.${dbKey}.searchPlaceholder`;
+  return catalogs[locale][catalogKey] ?? catalogs.en[catalogKey] ?? null;
+}
+
+/**
+ * `resolveDatabaseSearchPlaceholder` for a database row: a keyed database reads its owning
+ * module's catalog, a user-created one (no key, not a system database) the system databases
+ * module's generic entry. A keyless system database has no entry and resolves to `null`.
+ */
+export async function resolveDatabasePlaceholderForRow(
+  catalogResolver: CatalogResolver,
+  database: { key: string | null; system: boolean },
+  locale: ManifestLocale,
+): Promise<string | null> {
+  if (database.key === null && database.system) return null;
+  const catalogs =
+    database.key === null
+      ? await catalogResolver.getCatalogsForModuleId(SYSTEM_DATABASES_MODULE_ID)
+      : await catalogResolver.getCatalogsForDbKey(database.key);
+  return resolveDatabaseSearchPlaceholder(database.key, catalogs, locale);
+}
+
+const ALWAYS_FILTERABLE_TYPES: readonly PropertyType[] = ["select", "multi_select", "relation", "date", "checkbox"];
+const DEFAULT_TYPES: readonly PropertyType[] = ["select", "multi_select", "checkbox", "number", "text", "date"];
+
+function isFilterable(p: PropertyRow): boolean {
+  if (p.type === "number") return Array.isArray(p.config.filterPresets) && p.config.filterPresets.length > 0;
+  return ALWAYS_FILTERABLE_TYPES.includes(p.type);
+}
+
+function resolveConfig(
+  p: PropertyRow,
+  relationDefinitions: ReadonlyMap<string, RelationDefinitionRow> | undefined,
+): ResolvedPropertyConfig {
+  if (p.type === "relation") {
+    const definition = relationDefinitions?.get(p.id);
+    const targetDatabaseId = p.config.targetDatabaseId;
+    if (!definition || typeof targetDatabaseId !== "string") return {};
+    return { targetDatabaseId, cardinality: definition.cardinality };
+  }
+  const config: ResolvedPropertyConfig = {};
+  if (p.type === "date") config.includeTime = p.config.includeTime === true;
+  if (p.type === "number" && Object.hasOwn(p.config, "filterPresets")) config.filterPresets = p.config.filterPresets;
+  if (DEFAULT_TYPES.includes(p.type) && Object.hasOwn(p.config, "default")) config.default = p.config.default;
+  return config;
+}
+
 export function resolveProperty(
   p: PropertyRow,
   dbKey: string | null,
   catalogs: ModuleCatalogs | undefined,
   locale: ManifestLocale,
+  relationDefinitions?: ReadonlyMap<string, RelationDefinitionRow>,
 ): ResolvedProperty {
   const propName = catalogs
     ? resolveCatalogLabel(p.name, catalogs[locale], catalogs.en, `property.${dbKey}.${p.key}.name`)
     : rawKeyFallback(p.name, p.key, p.key);
 
-  const resolved: ResolvedProperty = { key: p.key, name: propName, owner: p.owner, locked: p.locked };
+  const resolved: ResolvedProperty = {
+    id: p.id,
+    type: p.type,
+    filterable: isFilterable(p),
+    key: p.key,
+    name: propName,
+    owner: p.owner,
+    locked: p.locked,
+    config: resolveConfig(p, relationDefinitions),
+  };
 
   if (p.type === "select" || p.type === "multi_select") {
     const rawOptions = p.config.options;
@@ -127,11 +226,5 @@ export function resolveProperty(
     }
   }
 
-  if (
-    ["select", "multi_select", "checkbox", "number", "text", "date"].includes(p.type) &&
-    Object.hasOwn(p.config, "default")
-  ) {
-    resolved.config = { default: p.config.default };
-  }
   return resolved;
 }

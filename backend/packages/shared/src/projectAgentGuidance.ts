@@ -97,3 +97,32 @@ export interface GuidanceReferenceStore<Tx> {
 export interface GuidanceHeartbeatStore<Tx> {
   upsertDriftHeartbeat(tx: Tx, projectItemId: string): Promise<void>;
 }
+
+/** The four sections of a project's agent guidance, in the order the canonical Markdown lists them (issue #1449). */
+export const PROJECT_AGENT_GUIDANCE_SECTION_KEYS = ["purpose", "allowed", "notAllowed", "generalInstructions"] as const;
+
+export type ProjectAgentGuidanceSectionKey = (typeof PROJECT_AGENT_GUIDANCE_SECTION_KEYS)[number];
+
+/** The reserved level-2 heading that opens each section of the canonical Markdown. */
+export const PROJECT_AGENT_GUIDANCE_HEADINGS: Readonly<Record<ProjectAgentGuidanceSectionKey, string>> = {
+  purpose: "## Purpose",
+  allowed: "## Allowed",
+  notAllowed: "## Not allowed",
+  generalInstructions: "## General instructions",
+};
+
+/** The text of each section, without its heading. */
+export type ProjectAgentGuidanceSections = Record<ProjectAgentGuidanceSectionKey, string>;
+
+/**
+ * Renders the canonical guidance Markdown: the reserved headings in order, each section's text trimmed,
+ * empty sections omitted, sections separated by one blank line and the document ending with one newline.
+ * Sections that all hold no text render as the empty string.
+ */
+export function composeProjectAgentGuidanceMarkdown(sections: ProjectAgentGuidanceSections): string {
+  const blocks = PROJECT_AGENT_GUIDANCE_SECTION_KEYS.flatMap((key) => {
+    const text = sections[key].trim();
+    return text === "" ? [] : [`${PROJECT_AGENT_GUIDANCE_HEADINGS[key]}\n${text}`];
+  });
+  return blocks.length === 0 ? "" : `${blocks.join("\n\n")}\n`;
+}

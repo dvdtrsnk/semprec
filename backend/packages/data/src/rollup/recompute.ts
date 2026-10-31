@@ -136,6 +136,7 @@ export async function recomputeRollupCell(pool: Pool, rollupPropertyId: string, 
        FROM item_relations ir
        JOIN items t ON t.database_id = $4 AND t.id = (CASE WHEN ir.item_a = $2 THEN ir.item_b ELSE ir.item_a END)
        WHERE ir.relation_definition_id = $1 AND (ir.item_a = $2 OR ir.item_b = $2) AND t.deleted_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM databases d WHERE d.id = t.database_id AND d.archived_at IS NOT NULL)
          AND ($3::text IS NULL OR $3::text IS NOT NULL)`,
       [dependency.relationDefinitionId, itemId, config.targetPropertyKey ?? null, dependency.sourceDatabaseId],
     );

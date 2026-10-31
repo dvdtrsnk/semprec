@@ -35,6 +35,50 @@ describe("choke-point databaseOps", () => {
     expect(renamedSystem.name).toBe("System After");
   });
 
+  it("stores icon and color on create, uppercase-normalized, and leaves them NULL without a pick", async () => {
+    const picked = await chokePoint.createDatabase({ name: "Gifts", icon: "gift", color: "#34c759" });
+    expect(picked.icon).toBe("gift");
+    expect(picked.color).toBe("#34C759");
+    const bare = await chokePoint.createDatabase({ name: "Bare" });
+    expect(bare.icon).toBeNull();
+    expect(bare.color).toBeNull();
+    const { rows } = await pool.query("SELECT icon, color FROM databases WHERE id = $1", [bare.id]);
+    expect(rows[0]).toEqual({ icon: null, color: null });
+  });
+
+  it("patchDatabase changes only the given fields and null resets one to NULL", async () => {
+    const db = await chokePoint.createDatabase({ name: "Gifts", icon: "gift", color: "#34C759" });
+    const recolored = await chokePoint.patchDatabase(db.id, { color: "#007aff" });
+    expect(recolored).toMatchObject({ name: "Gifts", icon: "gift", color: "#007AFF" });
+    const reset = await chokePoint.patchDatabase(db.id, { icon: null });
+    expect(reset).toMatchObject({ name: "Gifts", icon: null, color: "#007AFF" });
+    const all = await chokePoint.patchDatabase(db.id, { name: "Ideas", icon: "star", color: null });
+    expect(all).toMatchObject({ name: "Ideas", icon: "star", color: null });
+  });
+
+  it("patchDatabase rejects icon and color on a system database but allows a rename", async () => {
+    const system = await chokePoint.createDatabase({ name: "System", system: true });
+    await expect(chokePoint.patchDatabase(system.id, { color: "#007AFF" })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(chokePoint.patchDatabase(system.id, { icon: null })).rejects.toBeInstanceOf(ForbiddenError);
+    expect((await chokePoint.patchDatabase(system.id, { name: "Renamed" })).name).toBe("Renamed");
+    await expect(chokePoint.createDatabase({ name: "S2", system: true, icon: "gift" })).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+  });
+
+  it("the database table rejects a malformed icon or color", async () => {
+    const db = await chokePoint.createDatabase({ name: "Gifts" });
+    await expect(pool.query("UPDATE databases SET color = '#12345' WHERE id = $1", [db.id])).rejects.toThrow(
+      /databases_color_format/,
+    );
+    await expect(pool.query("UPDATE databases SET color = '#aabbcc' WHERE id = $1", [db.id])).rejects.toThrow(
+      /databases_color_format/,
+    );
+    await expect(pool.query("UPDATE databases SET icon = 'my icon' WHERE id = $1", [db.id])).rejects.toThrow(
+      /databases_icon_format/,
+    );
+  });
+
   it("renameDatabase on a missing database raises NotFoundError", async () => {
     await expect(chokePoint.renameDatabase(randomUUID(), "New Name")).rejects.toBeInstanceOf(NotFoundError);
   });
@@ -48,5 +92,36 @@ describe("choke-point databaseOps", () => {
     const ids = listed.map((db) => db.id);
     expect(ids).toContain(kept.id);
     expect(ids).not.toContain(archived.id);
+  });
+
+  it("createDatabaseWithProperties creates the title first, then the listed properties, in one transaction", async () => {
+    const db = await chokePoint.createDatabaseWithProperties({ name: "Gifts" }, "Name", [
+      { key: "recipient", name: "Recipient", type: "text" },
+      { key: "when", name: "When", type: "date" },
+    ]);
+    const properties = await chokePoint.listProperties(db.id);
+    expect(properties.map((p) => [p.key, p.type, p.name])).toEqual([
+      ["name", "title", "Name"],
+      ["recipient", "text", "Recipient"],
+      ["when", "date", "When"],
+    ]);
+  });
+
+  it("createDatabaseWithProperties rolls back the database and partition when a later property fails", async () => {
+    const countRows = async () =>
+      (
+        await pool.query<{ databases: string; partitions: string }>(
+          `SELECT (SELECT count(*) FROM databases) AS databases,
+                  (SELECT count(*) FROM pg_class WHERE relname LIKE 'items\\_p\\_%') AS partitions`,
+        )
+      ).rows[0];
+    const before = await countRows();
+    await expect(
+      chokePoint.createDatabaseWithProperties({ name: "Broken" }, "Name", [
+        { key: "a", name: "A", type: "text" },
+        { key: "a", name: "A again", type: "text" },
+      ]),
+    ).rejects.toThrow();
+    expect(await countRows()).toEqual(before);
   });
 });

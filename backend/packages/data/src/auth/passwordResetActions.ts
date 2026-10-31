@@ -102,7 +102,11 @@ export async function requestPasswordReset(
     await createPasswordResetToken(client, { userId: user.id, tokenHash, expiresAt });
     runAfterCommit(client, () => {
       void mailer
-        .sendPasswordResetEmail({ to: user.email, resetUrl: buildPasswordResetUrl(input.appBaseUrl, token) })
+        .sendPasswordResetEmail({
+          to: user.email,
+          resetUrl: buildPasswordResetUrl(input.appBaseUrl, token),
+          locale: user.locale,
+        })
         .catch((err: unknown) => {
           // An SMTP refusal can echo the recipient address, so the error object is never logged.
           logger.error(

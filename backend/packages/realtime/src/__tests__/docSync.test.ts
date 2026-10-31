@@ -14,7 +14,7 @@ import {
 } from "@semprec/data/testSupport";
 import { runInTenant } from "@semprec/shared";
 import { createDocSyncRegistry, type DocSyncRegistry } from "../docSync.js";
-import { decodeDocId, parseBinaryFrame } from "../protocolV1.js";
+import { appendClientUpdateId, decodeDocId, parseBinaryFrame } from "../protocolV1.js";
 
 let pool: Pool;
 
@@ -479,5 +479,212 @@ describe("createDocSyncRegistry tenant isolation (issue #1026)", () => {
     const received = new Y.Doc();
     Y.applyUpdate(received, decoding.readVarUint8Array(decoder));
     expect(received.getText("body").toJSON()).toBe("");
+  });
+});
+
+describe("createDocSyncRegistry doc:ack (issue #1362)", () => {
+  let runtimePool: Pool;
+  let registry: DocSyncRegistry;
+  let tenantA: string;
+  let tenantB: string;
+  let docId: string;
+
+  /** Records, at the instant each ack is sent, how many rows `doc_updates` holds for the doc. */
+  class AckSocket extends FakeSocket {
+    readonly rowsAtAck: Promise<number>[] = [];
+    override send(data: Buffer | string): void {
+      super.send(data as Buffer);
+      if (typeof data === "string" && JSON.parse(data).type === "doc:ack") {
+        this.rowsAtAck.push(
+          pool
+            .query<{ count: string }>(`SELECT count(*) FROM doc_updates WHERE doc_id = $1`, [docId])
+            .then((r) => Number(r.rows[0]!.count)),
+        );
+      }
+    }
+  }
+
+  function acks(socket: FakeSocket): unknown[] {
+    return (socket.sent as (Buffer | string)[])
+      .filter((d): d is string => typeof d === "string")
+      .map((d) => JSON.parse(d) as { type: string })
+      .filter((f) => f.type === "doc:ack");
+  }
+
+  function updateBytes(text: string): Uint8Array {
+    const clientDoc = new Y.Doc();
+    clientDoc.gc = false;
+    let captured: Uint8Array | null = null;
+    clientDoc.on("update", (u: Uint8Array) => (captured = u));
+    clientDoc.getText("body").insert(0, text);
+    return captured!;
+  }
+
+  /** An Update message, optionally with a trailing client update id. */
+  function frame(update: Uint8Array, clientUpdateId?: string): Buffer {
+    const message = encodeClientUpdate(update);
+    return Buffer.from(clientUpdateId === undefined ? message : appendClientUpdateId(message, clientUpdateId));
+  }
+
+  async function countUpdates(): Promise<number> {
+    const { rows } = await pool.query<{ count: string }>(`SELECT count(*) FROM doc_updates`);
+    return Number(rows[0]!.count);
+  }
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    tenantA = getTenantZeroId();
+    tenantB = await createTestTenant(pool);
+    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    registry = createDocSyncRegistry(runtimePool);
+    docId = await runInTenant(tenantA, async () => {
+      const db = await createChokePoint(runtimePool).createDatabase({ name: "Pages" });
+      const item = await createChokePoint(runtimePool).createItem({ databaseId: db.id, properties: {} });
+      const store = createDocStore(runtimePool);
+      await store.putBlock(item.id, { id: "root", flavour: "page" }, "user");
+      return (await store.getDoc(item.id))!.id;
+    });
+  });
+
+  afterEach(async () => {
+    await runtimePool.end();
+  });
+
+  it("acknowledges to the sender only, after the update is stored, and fans the update out to the others", async () => {
+    const writer = new AckSocket();
+    const peer = new AckSocket();
+    await registry.handleOpen(writer as unknown as never, tenantA, docId);
+    await registry.handleOpen(peer as unknown as never, tenantA, docId);
+    const before = await countUpdates();
+
+    await registry.handleBinaryFrame(writer as unknown as never, tenantA, docId, frame(updateBytes("hi"), "edit-1"));
+
+    expect(acks(writer)).toEqual([{ type: "doc:ack", docId, clientUpdateId: "edit-1" }]);
+    expect(await Promise.all(writer.rowsAtAck)).toEqual([before + 1]);
+    expect(acks(peer)).toEqual([]);
+
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM doc_updates WHERE doc_id = $1 ORDER BY id DESC LIMIT 1`,
+      [docId],
+    );
+    await registry.fanOutDocUpdate(tenantA, docId, rows[0]!.id);
+    const decoder = decoding.createDecoder(lastFramePayload(peer, docId));
+    expect(decoding.readVarUint(decoder)).toBe(syncProtocol.messageYjsUpdate);
+    expect(acks(peer)).toEqual([]);
+  });
+
+  it("acknowledges a SyncStep2 message that carries an id", async () => {
+    const socket = new FakeSocket();
+    await registry.handleOpen(socket as unknown as never, tenantA, docId);
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, syncProtocol.messageYjsSyncStep2);
+    encoding.writeVarUint8Array(encoder, updateBytes("step2"));
+    const payload = appendClientUpdateId(encoding.toUint8Array(encoder), "s2");
+
+    await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, Buffer.from(payload));
+
+    expect(acks(socket)).toEqual([{ type: "doc:ack", docId, clientUpdateId: "s2" }]);
+  });
+
+  it("acknowledges a replayed update again without storing a second row", async () => {
+    const socket = new FakeSocket();
+    await registry.handleOpen(socket as unknown as never, tenantA, docId);
+    const update = updateBytes("once");
+
+    await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(update, "first"));
+    const stored = await countUpdates();
+    await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(update, "again"));
+
+    expect(await countUpdates()).toBe(stored);
+    expect(acks(socket)).toEqual([
+      { type: "doc:ack", docId, clientUpdateId: "first" },
+      { type: "doc:ack", docId, clientUpdateId: "again" },
+    ]);
+  });
+
+  it.each([
+    ["no id", undefined],
+    ["an over-long id", "a".repeat(65)],
+    ["an id with other characters", "bad id!"],
+    ["an empty id", ""],
+  ])("persists an update with %s and sends no ack", async (_label, id) => {
+    const socket = new FakeSocket();
+    await registry.handleOpen(socket as unknown as never, tenantA, docId);
+    const before = await countUpdates();
+
+    await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(updateBytes("x"), id));
+
+    expect(await countUpdates()).toBe(before + 1);
+    expect(acks(socket)).toEqual([]);
+  });
+
+  it("accepts a 64-character id", async () => {
+    const socket = new FakeSocket();
+    await registry.handleOpen(socket as unknown as never, tenantA, docId);
+    const id = "a".repeat(64);
+    await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(updateBytes("x"), id));
+    expect(acks(socket)).toEqual([{ type: "doc:ack", docId, clientUpdateId: id }]);
+  });
+
+  it("sends no ack and writes nothing for a document the socket never opened", async () => {
+    const socket = new FakeSocket();
+    const before = await countUpdates();
+    await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(updateBytes("x"), "id-1"));
+    expect(await countUpdates()).toBe(before);
+    expect(socket.sent).toHaveLength(0);
+  });
+
+  it("sends no ack and writes nothing for another tenant's document", async () => {
+    const foreign = new FakeSocket();
+    await registry.handleOpen(foreign as unknown as never, tenantB, docId);
+    const before = await countUpdates();
+    await registry.handleBinaryFrame(foreign as unknown as never, tenantB, docId, frame(updateBytes("x"), "id-1"));
+    expect(await countUpdates()).toBe(before);
+    expect(foreign.sent).toHaveLength(0);
+  });
+
+  it("sends no ack for a frame over the per-socket rate limit", async () => {
+    const socket = new FakeSocket();
+    await registry.handleOpen(socket as unknown as never, tenantA, docId);
+    for (let i = 0; i < 50; i++) {
+      await registry.handleBinaryFrame(
+        socket as unknown as never,
+        tenantA,
+        docId,
+        frame(updateBytes(`u${i}`), `id-${i}`),
+      );
+    }
+    expect(acks(socket)).toHaveLength(50);
+    const before = await countUpdates();
+
+    await registry.handleBinaryFrame(
+      socket as unknown as never,
+      tenantA,
+      docId,
+      frame(updateBytes("over"), "over-limit"),
+    );
+
+    expect(acks(socket)).toHaveLength(50);
+    expect(await countUpdates()).toBe(before);
+  });
+
+  it("sends no ack when persisting fails", async () => {
+    const socket = new FakeSocket();
+    await registry.handleOpen(socket as unknown as never, tenantA, docId);
+    const before = await countUpdates();
+
+    // Bytes that are not a valid Yjs update make the apply inside the transaction throw.
+    await expect(
+      registry.handleBinaryFrame(
+        socket as unknown as never,
+        tenantA,
+        docId,
+        frame(new Uint8Array([255, 255, 255]), "bad"),
+      ),
+    ).rejects.toThrow();
+
+    expect(acks(socket)).toEqual([]);
+    expect(await countUpdates()).toBe(before);
   });
 });

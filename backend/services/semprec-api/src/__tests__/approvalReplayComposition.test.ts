@@ -1,3 +1,4 @@
+import type { CollectionMetadataResolver } from "@semprec/data";
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -19,6 +20,10 @@ import {
 import { createGenericOperationGateway } from "@semprec/application";
 import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
 import { createApiQueueRuntime, type ApiQueueRuntime } from "../queueRuntime.js";
+
+const testMetadataResolver: CollectionMetadataResolver = {
+  resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+};
 
 const ALL_CAPABILITIES = new Set(CAPABILITY_IDS);
 const TERMINAL_EXECUTION_STATUSES: ReadonlySet<ApprovalRequest["executionStatus"]> = new Set([
@@ -44,7 +49,7 @@ async function createUser(pool: Pool): Promise<string> {
 /** Mirrors `genericOperationGateway.test.ts`'s `createPendingDeleteAndApprove`: an agent-run `item.delete`, gated, then approved (which enqueues `approvalExecute`). */
 async function createPendingDeleteAndApprove(pool: Pool): Promise<{ requestId: string; itemId: string }> {
   const chokePoint = createChokePoint(pool);
-  const gateway = createGenericOperationGateway(pool);
+  const gateway = createGenericOperationGateway(pool, testMetadataResolver);
   const database = await chokePoint.createDatabase({ name: "Approval replay composition DB" });
   const item = await inTenantZero(() => chokePoint.createItem({ databaseId: database.id, properties: {} }));
   const projectItemId = randomUUID();

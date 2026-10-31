@@ -1,7 +1,9 @@
 // Owns the single authorize-and-project call for approved destructive operations: the read-only
-// projection and `resource_snapshot` hash of the resource each of the five approval-gated destructive
-// kinds targets, with the exact domain error the matching mutation would throw. Nothing that performs
-// a write, and no mutation logic of the destructive operations themselves, belongs here.
+// projection and `resource_snapshot` hash of the resource each approval-gated destructive kind targets,
+// with the exact domain error the matching mutation would throw. `page_restore` is the one kind this
+// file does not project: `docs/docPageRestore.ts` does, because `chokePoint/` may not import `docs/`.
+// Nothing that performs a write, and no mutation logic of the destructive operations themselves,
+// belongs here.
 // Constrained by: docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
 import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
@@ -21,9 +23,9 @@ import {
   normalizeRelationSides,
 } from "./relationEdgeContext.js";
 
-/** The five approval-gated destructive kinds a `resource_snapshot` can carry (issue #89). */
+/** The approval-gated destructive kinds a `resource_snapshot` can carry (issue #89; `page_restore` is issue #1617's, computed in `docs/docPageRestore.ts`). */
 export type ResourceSnapshotKind =
-  "database_archive" | "property_delete" | "view_delete" | "item_delete" | "relation_delete";
+  "database_archive" | "property_delete" | "view_delete" | "item_delete" | "relation_delete" | "page_restore";
 
 /** Persisted alongside every new destructive approval request, and re-derived at execution time to detect a resource that changed since approval was granted. */
 export interface ResourceSnapshot {
@@ -38,7 +40,12 @@ export interface DestructiveResourceProjection {
   currentResource: unknown;
 }
 
-function buildResourceSnapshot(kind: ResourceSnapshotKind, resourceId: string, projection: unknown): ResourceSnapshot {
+/** Hashes one projection into a `ResourceSnapshot`; exported so a destructive kind computed outside the choke point hashes the same way. */
+export function buildResourceSnapshot(
+  kind: ResourceSnapshotKind,
+  resourceId: string,
+  projection: unknown,
+): ResourceSnapshot {
   return { kind, resourceId, sha256: createHash("sha256").update(canonicalizeJson(projection), "utf8").digest("hex") };
 }
 

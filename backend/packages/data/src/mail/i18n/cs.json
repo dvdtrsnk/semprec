@@ -34,6 +34,7 @@
   "property.folders.emails.name": "E-maily",
 
   "database.emails.name": "E-maily",
+  "database.emails.searchPlaceholder": "Hledat v e-mailech",
   "property.emails.name.name": "Předmět",
   "property.emails.sender.name": "Odesílatel",
   "property.emails.recipients.name": "Příjemci",

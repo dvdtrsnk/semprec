@@ -11,7 +11,7 @@ import {
   getTestPool,
   resetDatabase,
 } from "@semprec/data/testSupport";
-import { createAgentRun, finishAgentRun, TASKS_MODULE_ID } from "@semprec/data";
+import { createAgentRun, finishAgentRun, seedSystem, TASKS_MODULE_ID } from "@semprec/data";
 import { runInTenant } from "@semprec/shared";
 import {
   BUSY_ERROR_MESSAGE,
@@ -340,7 +340,7 @@ describe("DelegationRegistry", () => {
       targetProjectItemId,
     ]);
     const runId = runs[0]!.id;
-    expect(await finishAgentRun(pool, runId, "error", "closed elsewhere")).toBe(true);
+    expect(await finishAgentRun(pool, runId, "error", "closed elsewhere", "internal")).toBe(true);
 
     await waitFor(async () => {
       const { rows } = await pool.query<{ status: string }>(
@@ -841,6 +841,8 @@ describe("DelegationRegistry", () => {
   });
 
   it("refuses a random, trashed or non-Projects target without creating a session", async () => {
+    // A Tasks item needs the seeded Tasks catalog: its pre-write transform stores the derived `time` key.
+    await seedSystem(pool);
     const registry = new DelegationRegistry(pool);
     const supervisorRunId = await newSupervisorRunId();
     const trashedProjectItemId = await createTestProjectItem(pool);
@@ -1001,13 +1003,14 @@ describe("DelegationRegistry", () => {
       registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: "fails" }),
     ).rejects.toThrow("boom");
 
-    const { rows } = await pool.query<{ status: string; result: string | null }>(
-      `SELECT status, result FROM agent_runs WHERE project_item_id = $1`,
+    const { rows } = await pool.query<{ status: string; result: string | null; error_code: string | null }>(
+      `SELECT status, result, error_code FROM agent_runs WHERE project_item_id = $1`,
       [targetProjectItemId],
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe("error");
     expect(rows[0]!.result).toBe("boom");
+    expect(rows[0]!.error_code).toBe("internal");
 
     // The failed session must not be left registered for reuse — a retry creates a fresh one.
     const { createAgentSession: retrySession } = scriptedSession([

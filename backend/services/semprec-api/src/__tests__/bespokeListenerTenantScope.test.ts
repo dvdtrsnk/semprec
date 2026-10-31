@@ -220,7 +220,14 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
       await resetDatabase(pool);
       recorded.length = 0;
       const strictFirst = await withScopeMode("strict", setup);
-      expectAllSystem();
+      // The bootstrap seeds the new account's project guidance inside that tenant's scope
+      // (seedAccountSystemProjectGuidance), so the success path may enter tenant zero; nothing else leaves the system scope.
+      expect(recorded.length).toBeGreaterThan(0);
+      expect(
+        recorded.every(
+          (scope) => scope?.kind === "system" || (scope?.kind === "tenant" && scope.tenantId === getTenantZeroId()),
+        ),
+      ).toBe(true);
       recorded.length = 0;
       const strictSecond = await withScopeMode("strict", setup);
 

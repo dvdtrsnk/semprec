@@ -226,6 +226,8 @@ describe("createApprovalRequestsRequestListener", () => {
     expect(body).not.toHaveProperty("payload");
     expect(JSON.stringify(body)).not.toContain('"hi"');
     expect(body.safeSummary.argKeys).toEqual(["query"]);
+    // The fixture's server item and registration do not exist: still 200, with null names.
+    expect(body.safeSummary).toMatchObject({ mcpServerName: null, mcpToolName: null });
   });
 
   it("treats a repeated decision by the owner as a deterministic no-op, returning the current state with 200", async () => {
@@ -361,7 +363,7 @@ describe("createApprovalRequestsRequestListener", () => {
       await createPendingApprovalRequest(pool, {
         agentRunId: run.id,
         toolName: "send_email",
-        riskClass: "moderate",
+        riskClass: "write",
         payload,
         resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
       });
@@ -374,13 +376,15 @@ describe("createApprovalRequestsRequestListener", () => {
       expect(body.rows).toHaveLength(1);
       expect(body.rows[0]).toMatchObject({
         toolName: "send_email",
-        riskClass: "moderate",
+        riskClass: "write",
         agentRunId: run.id,
         projectItemId: projectItem.id,
         projectName: "Kitchen",
         safeSummary: {
           mcpToolRegistrationId: payload.mcpToolRegistrationId,
           mcpServerItemId: payload.mcpServerItemId,
+          mcpServerName: null,
+          mcpToolName: null,
           argKeys: ["to"],
         },
       });

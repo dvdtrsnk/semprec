@@ -52,6 +52,8 @@ export interface SyncClientOptions {
   onNotification?: (notification: NotificationRow) => void;
   onAgentEvent?: (agentRunId: string, event: AgentRunEventRow) => void;
   onAgentDelta?: (agentRunId: string, delta: unknown, chunk: AgentDeltaChunk | undefined) => void;
+  /** The server stored the doc update that carried `clientUpdateId`. */
+  onDocAck?: (docId: string, clientUpdateId: string) => void;
   /** The session was revoked (close code 4401) — terminal, this client will not reconnect on its own. */
   onSessionRevoked?: () => void;
   /** Observability hook: a reconnect attempt was just scheduled `delayMs` from now. */
@@ -129,6 +131,9 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
       }
       case "agent:delta":
         options.onAgentDelta?.(frame.agentRunId, frame.delta, frame.chunk);
+        return;
+      case "doc:ack":
+        options.onDocAck?.(frame.docId, frame.clientUpdateId);
         return;
     }
   }

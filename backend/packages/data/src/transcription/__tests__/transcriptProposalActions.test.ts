@@ -189,18 +189,42 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
       expect((await cardProperties(cardId)).status).toBe("proposed");
     });
 
-    it("leaves no edge and the card proposed when the relation write fails for a link-existing card", async () => {
+    it("leaves no edge and the card proposed when the transcript is already linked to another Event", async () => {
       const { transcriptId, cardId } = await createTranscriptCard();
+      const otherEventId = await createItem(eventsId, "Linked meanwhile");
+      await linkTranscriptToEvent(transcriptId, otherEventId);
       const eventId = await createItem(eventsId, "Planning");
       await revise(cardId, linkExisting(eventId));
-      const otherTranscriptId = await createTranscript("Another recording");
-      await linkTranscriptToEvent(otherTranscriptId, eventId);
 
       await expect(confirm(cardId)).rejects.toMatchObject({ code: "cardinality_violation" });
 
-      expect(await transcriptEventEdges()).toEqual([{ transcriptId: otherTranscriptId, eventId }]);
-      expect(await transcriptEventEdges()).not.toContainEqual(expect.objectContaining({ transcriptId }));
+      expect(await transcriptEventEdges()).toEqual([{ transcriptId, eventId: otherEventId }]);
       expect((await cardProperties(cardId)).status).toBe("proposed");
+    });
+
+    it("links a card's transcript to an Event that already holds another transcript (issue #1464)", async () => {
+      const { transcriptId, cardId } = await createTranscriptCard();
+      const eventId = await createItem(eventsId, "Planning");
+      const otherTranscriptId = await createTranscript("Another recording");
+      await linkTranscriptToEvent(otherTranscriptId, eventId);
+      await revise(cardId, linkExisting(eventId));
+
+      const confirmed = await confirm(cardId);
+
+      expect(await eventIds()).toEqual([eventId]);
+      const edges = await transcriptEventEdges();
+      expect(edges).toHaveLength(2);
+      expect(edges).toEqual(
+        expect.arrayContaining([
+          { transcriptId: otherTranscriptId, eventId },
+          { transcriptId, eventId },
+        ]),
+      );
+      expect(confirmed.properties).toMatchObject({
+        status: "confirmed",
+        resultItemId: eventId,
+        resultLabel: "Planning",
+      });
     });
 
     it("is idempotent under retry for a create-Event card: no second Event or edge", async () => {

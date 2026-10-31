@@ -8,12 +8,14 @@ import type {
   GuidanceDriftFindingStore,
   GuidanceManifestPort,
   GuidanceNotificationWriter,
+  GuidanceProblemWriter,
+  RaiseGuidanceDriftProblemInput,
   GuidanceReferenceStore,
   ProjectAgentGuidance,
   ProjectAgentGuidanceStore,
   TransactionRunner,
 } from "@semprec/shared";
-import { fingerprintGuidanceDriftContradiction } from "@semprec/shared";
+import { fingerprintGuidanceDriftSubject } from "@semprec/shared";
 import { createAgentGuidanceDriftAction } from "../driftAction.js";
 import { GuidanceChangedError, GuidanceContextChangedError, GuidanceMissingError } from "../driftErrors.js";
 
@@ -126,6 +128,16 @@ function fakeFindings(): GuidanceDriftFindingStore<FakeTx> & { rows: Map<string,
   };
 }
 
+function fakeProblems(): GuidanceProblemWriter<FakeTx> & { raised: RaiseGuidanceDriftProblemInput[] } {
+  const raised: RaiseGuidanceDriftProblemInput[] = [];
+  return {
+    raised,
+    async raise(_tx, input) {
+      raised.push(input);
+    },
+  };
+}
+
 function fakeNotifications(): GuidanceNotificationWriter<FakeTx> & { created: CreateGuidanceNotificationInput[] } {
   const created: CreateGuidanceNotificationInput[] = [];
   return {
@@ -148,6 +160,8 @@ function fakeGateway(
 }
 
 const CONTRADICTION_A: GuidanceDriftContradiction = {
+  kind: "permission",
+  subject: { operation: "files.delete", databaseId: null },
   claim: "The agent can delete files without approval.",
   guidanceExcerpt: "Agents may delete any file directly.",
   manifestFacts: ["capability.files.delete requires approval"],
@@ -155,6 +169,8 @@ const CONTRADICTION_A: GuidanceDriftContradiction = {
 };
 
 const CONTRADICTION_B: GuidanceDriftContradiction = {
+  kind: "permission",
+  subject: { operation: "mail.read", databaseId: "db-mail" },
   claim: "The agent can read every mailbox.",
   guidanceExcerpt: "Agents may read all mail.",
   manifestFacts: ["capability.mail.read scoped to owned mailboxes"],
@@ -176,12 +192,14 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
     const guidance = fakeGuidance(baseGuidanceRow());
     const findings = fakeFindings();
     const notifications = fakeNotifications();
+    const problems = fakeProblems();
     const action = createAgentGuidanceDriftAction({
       transactions: fakeTransactions(),
       guidance,
       references: fakeReferences(),
       findings,
       notifications,
+      problems,
       manifest: fakeManifest(),
       gateway: fakeGateway(() => [CONTRADICTION_A]),
       clock: () => new Date("2026-02-01T00:00:00.000Z"),
@@ -190,6 +208,9 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
     await action({ projectItemId: "project-1" });
 
     expect(findings.rows.size).toBe(1);
+    expect(problems.raised).toHaveLength(1);
+    expect(problems.raised[0]).toMatchObject({ userId: "owner-1", projectItemId: "project-1" });
+    expect(problems.raised[0]?.occurrenceKey).toBe(`${problems.raised[0]?.fingerprint}:2026-02-01T00:00:00.000Z`);
     expect(notifications.created).toHaveLength(1);
     expect(notifications.created[0]).toMatchObject({
       userId: "owner-1",
@@ -216,6 +237,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings,
       notifications,
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: fakeGateway(() => [CONTRADICTION_A]),
       clock: () => new Date("2026-02-01T00:00:00.000Z"),
@@ -239,6 +261,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings,
       notifications,
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: fakeGateway(() => (respondWithContradiction ? [CONTRADICTION_A] : [])),
       clock: () => new Date("2026-02-01T00:00:00.000Z"),
@@ -255,7 +278,13 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
     expect(notifications.created[1]).toMatchObject({
       userId: "owner-1",
       kind: "agent_guidance_drift_resolved",
-      payload: { projectItemId: "project-1", fingerprint: fingerprintGuidanceDriftContradiction(CONTRADICTION_A) },
+      payload: {
+        projectItemId: "project-1",
+        fingerprint: fingerprintGuidanceDriftSubject("project-1", "permission", {
+          operation: "files.delete",
+          databaseId: null,
+        }),
+      },
     });
   });
 
@@ -268,6 +297,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings: findingsA,
       notifications: fakeNotifications(),
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: fakeGateway(() => [CONTRADICTION_A, CONTRADICTION_B]),
       clock: () => new Date("2026-02-01T00:00:00.000Z"),
@@ -281,6 +311,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings: findingsB,
       notifications: fakeNotifications(),
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: fakeGateway(() => [CONTRADICTION_B, CONTRADICTION_A]),
       clock: () => new Date("2026-02-01T00:00:00.000Z"),
@@ -294,6 +325,100 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
     expect(fingerprintsA).toEqual(fingerprintsB);
   });
 
+  it("keeps one active finding with an advancing lastSeenAt when the AI rewords the same subject", async () => {
+    const findings = fakeFindings();
+    const notifications = fakeNotifications();
+    let night = 0;
+    const action = createAgentGuidanceDriftAction({
+      transactions: fakeTransactions(),
+      guidance: fakeGuidance(baseGuidanceRow()),
+      references: fakeReferences(),
+      findings,
+      notifications,
+      problems: fakeProblems(),
+      manifest: fakeManifest(),
+      gateway: fakeGateway(() => [
+        night === 0
+          ? CONTRADICTION_A
+          : {
+              ...CONTRADICTION_A,
+              claim: "Deleting files needs no approval.",
+              guidanceExcerpt: "Agents delete files directly.",
+              manifestFacts: ["files.delete: approval required"],
+            },
+      ]),
+      clock: () => new Date(night === 0 ? "2026-02-01T00:00:00.000Z" : "2026-02-02T00:00:00.000Z"),
+    });
+
+    await action({ projectItemId: "project-1" });
+    night = 1;
+    await action({ projectItemId: "project-1" });
+
+    const rows = [...findings.rows.values()];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: "active", lastSeenAt: "2026-02-02T00:00:00.000Z" });
+    expect(notifications.created).toHaveLength(1);
+  });
+
+  it("keeps the higher severity when two contradictions share a subject, in either report order", async () => {
+    const warning: GuidanceDriftContradiction = {
+      ...CONTRADICTION_A,
+      claim: "Other wording.",
+      severity: "warning",
+    };
+    for (const order of [
+      [CONTRADICTION_A, warning],
+      [warning, CONTRADICTION_A],
+    ]) {
+      const findings = fakeFindings();
+      const action = createAgentGuidanceDriftAction({
+        transactions: fakeTransactions(),
+        guidance: fakeGuidance(baseGuidanceRow()),
+        references: fakeReferences(),
+        findings,
+        notifications: fakeNotifications(),
+        problems: fakeProblems(),
+        manifest: fakeManifest(),
+        gateway: fakeGateway(() => order),
+        clock: () => new Date("2026-02-01T00:00:00.000Z"),
+      });
+
+      await action({ projectItemId: "project-1" });
+
+      const rows = [...findings.rows.values()];
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.payload.severity).toBe("blocking");
+    }
+  });
+
+  it("fails validation without changing any finding when a contradiction has no subject", async () => {
+    const findings = fakeFindings();
+    const notifications = fakeNotifications();
+    const { subject: _subject, ...withoutSubject } = CONTRADICTION_A;
+    const action = createAgentGuidanceDriftAction({
+      transactions: fakeTransactions(),
+      guidance: fakeGuidance(baseGuidanceRow()),
+      references: fakeReferences(),
+      findings,
+      notifications,
+      problems: fakeProblems(),
+      manifest: fakeManifest(),
+      gateway: {
+        async complete() {
+          return {
+            content: { contradictions: [CONTRADICTION_B, withoutSubject] },
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        },
+      },
+      clock: () => new Date("2026-02-01T00:00:00.000Z"),
+    });
+
+    await expect(action({ projectItemId: "project-1" })).rejects.toThrow(/missing its subject/);
+    expect(findings.rows.size).toBe(0);
+    expect(notifications.created).toHaveLength(0);
+  });
+
   it("discards stale gateway output when the guidance row changes mid-call, with no writes", async () => {
     const guidance = fakeGuidance(baseGuidanceRow());
     const findings = fakeFindings();
@@ -304,6 +429,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings,
       notifications,
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: fakeGateway(() => {
         // Simulates a concurrent guidance rewrite landing while the (non-transactional)
@@ -330,6 +456,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings,
       notifications,
+      problems: fakeProblems(),
       manifest,
       gateway: fakeGateway(() => {
         // A concurrent permission mutation (e.g. a heartbeat/capability change) while the
@@ -356,6 +483,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings,
       notifications,
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway,
       clock: () => new Date("2026-02-01T00:00:00.000Z"),
@@ -377,6 +505,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings,
       notifications,
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: fakeGateway(() => {
         guidance.row = null;
@@ -401,6 +530,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings,
       notifications,
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: { complete: vi.fn(async () => Promise.reject(gatewayError)) },
       clock: () => new Date("2026-02-01T00:00:00.000Z"),
@@ -419,6 +549,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings: fakeFindings(),
       notifications: fakeNotifications(),
+      problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: fakeGateway(() => [{ ...CONTRADICTION_A, manifestFacts: [] }]),
       clock: () => new Date("2026-02-01T00:00:00.000Z"),

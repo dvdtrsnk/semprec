@@ -70,3 +70,35 @@ describe("parseToolEventPayload", () => {
     expect(parseToolEventPayload("message", use)).toBeNull();
   });
 });
+
+describe("parseToolEventPayload result details (issue #1527)", () => {
+  it("reads approvalRequestId and changes from the stored result details", () => {
+    const changes = [{ key: "due", before: "a", after: "b" }, { key: "body" }];
+    const stored = {
+      ...result,
+      result: { content: [], details: { error: false, approvalRequestId: "req-1", changes } },
+    };
+    expect(parseToolEventPayload("tool_result", stored)).toEqual({
+      ...stored,
+      details: { approvalRequestId: "req-1", changes },
+    });
+  });
+
+  it("drops a malformed changes entry and ignores a malformed id instead of throwing", () => {
+    const stored = {
+      ...result,
+      result: { details: { approvalRequestId: 5, changes: [{ key: 1 }, "x", null, { key: "k", after: 2 }] } },
+    };
+    expect(parseToolEventPayload("tool_result", stored)).toEqual({
+      ...stored,
+      details: { changes: [{ key: "k", after: 2 }] },
+    });
+  });
+
+  it("has no details for a result without them", () => {
+    expect(parseToolEventPayload("tool_result", { ...result, result: { details: { error: false } } })).toEqual({
+      ...result,
+      result: { details: { error: false } },
+    });
+  });
+});

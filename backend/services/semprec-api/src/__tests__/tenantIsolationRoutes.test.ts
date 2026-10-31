@@ -26,6 +26,7 @@ import {
   createChokePoint,
   createCoreTaskList,
   createHeartbeat,
+  createInvite,
   createItemWithClient,
   createPendingApprovalRequest,
   createUser,
@@ -36,6 +37,8 @@ import {
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   provisionTenant,
+  recordTokenGatewayCall,
+  revokeInvite,
   setProjectMcpGrantForAgentPage,
   upsertMcpToolRegistration,
   withTransaction,
@@ -138,6 +141,8 @@ interface TenantFixture {
   mcpToolRegistrationId: string;
   transcriptItemId: string;
   proposalItemId: string;
+  /** A Mailboxes item of the tenant, the target of the removal-impact route (issue gh-1501). */
+  mailboxItemId: string;
   pushSubscriptionId: string;
   pushDeviceToken: string;
   exportId: string;
@@ -186,6 +191,28 @@ function readIdArray(text: string, field: string): string[] {
 /** Test SQL inside `tenantId`'s scope on the runtime-role pool, which strict enforcement requires. */
 function inTenantTransaction<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(pool, fn));
+}
+
+/** The raw token of an invitation created and revoked through the production functions; invitations are global, so no tenant scope applies. */
+function revokedInvitationToken(invitedBy: string): Promise<string> {
+  return runAsSystem("isolation test invitation", () =>
+    withTransaction(pool, async (client) => {
+      const created = await createInvite(client, {
+        email: `${randomUUID()}@example.test`,
+        invitedBy,
+        appBaseUrl: "https://app.example.test",
+        mailer: null,
+      });
+      await revokeInvite(client, created.invite.id);
+      return new URL(created.inviteUrl).hash.replace("#token=", "");
+    }),
+  );
+}
+
+/** The number of tenant rows, read as the superuser so the count sees every tenant. */
+async function tenantCount(): Promise<number> {
+  const { rows } = await adminPool.query<{ n: number }>("SELECT count(*)::int AS n FROM tenants");
+  return rows[0]?.n ?? -1;
 }
 
 async function send(caller: Caller | null, request: Request): Promise<Answer> {
@@ -485,7 +512,8 @@ async function seedTenant(): Promise<TenantFixture> {
   // Re-read after the relation write, which may have bumped the item's version.
   const itemVersion = readString(await sendOk(member, { method: "GET", path: `/api/items/${item.id}` }), "updatedAt");
 
-  const fileContent = `audio of ${randomUUID()}`;
+  // Starts with an ID3 tag so content detection treats the upload as audio.
+  const fileContent = `ID3 audio of ${randomUUID()}`;
   const fileItemId = readString(
     await sendOk(member, {
       method: "POST",
@@ -660,6 +688,7 @@ async function seedTenant(): Promise<TenantFixture> {
     ...scoped,
     transcriptItemId,
     proposalItemId,
+    mailboxItemId,
     pushSubscriptionId,
     pushDeviceToken,
     exportId,
@@ -808,6 +837,18 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     });
     expect(masked(known, [a.member.email])).toEqual(masked(unknown, [unknownEmail]));
   },
+  "accept invitation": async () => {
+    // A revoked invitation's token stands in for a foreign one: it must answer exactly like a random token,
+    // and no tenant may be created by either request.
+    const revokedToken = await revokedInvitationToken(a.member.userId);
+    const tenantsBefore = await tenantCount();
+    await expectForeignLikeRandom(null, [revokedToken], ([token]) => ({
+      method: "POST",
+      path: "/api/invitations/accept",
+      body: { token, password: "accepted-password" },
+    }));
+    expect(await tenantCount()).toBe(tenantsBefore);
+  },
   "Microsoft Graph mail webhook": async () => {
     await expectForeignLikeRandom(null, [a.graphSubscriptionId], ([subscriptionId]) => ({
       method: "POST",
@@ -831,6 +872,31 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       body: {},
     }));
     await expectAAccountActive();
+  },
+  "set self person": async () => {
+    const person = async (fixture: TenantFixture) =>
+      inTenantTransaction(fixture.tenantId, async (client) => {
+        const people = await getDatabaseByModuleId(client, "people");
+        if (!people) throw new Error("People not seeded");
+        return createItemWithClient(client, { databaseId: people.id, properties: { name: "Self" } });
+      });
+    const ownA = await person(a);
+    const ownB = await person(b);
+    const set = (personId: string | null): Request => ({
+      method: "PUT",
+      path: "/api/auth/self-person",
+      body: { personId },
+    });
+    expect((await send(a.member, set(ownA.id))).status).toBe(200);
+    const foreign = await send(b.member, set(ownA.id));
+    const missing = await send(b.member, set(randomUUID()));
+    expect(foreign.status).toBe(404);
+    expect(foreign).toEqual(missing);
+    expect((await send(b.member, set(ownB.id))).status).toBe(200);
+    const sessionB = await send(b.member, { method: "GET", path: "/api/auth/session" });
+    expect(readString(sessionB.text, "user", "personId")).toBe(ownB.id);
+    const sessionA = await send(a.member, { method: "GET", path: "/api/auth/session" });
+    expect(readString(sessionA.text, "user", "personId")).toBe(ownA.id);
   },
   "current session": async () => {
     for (const session of [b.member, b.webSession]) {
@@ -895,14 +961,95 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         b.notificationId,
       ]);
     }),
+  // Preferences hold no ids, so these cases compare values: A stores values away from the defaults,
+  // and B must read its own defaults and change only its own row (issue #1441).
+  "get notification preferences": async () => {
+    await sendOk(a.member, { method: "PATCH", path: "/api/notification-preferences", body: { badgeInbox: true } });
+    try {
+      const own: unknown = JSON.parse(await sendOk(a.member, { method: "GET", path: "/api/notification-preferences" }));
+      expect(own).toMatchObject({ badgeInbox: true });
+      const foreign = await expectExcludesA(b.member, { method: "GET", path: "/api/notification-preferences" });
+      const foreignBody: unknown = JSON.parse(foreign.text);
+      expect(foreignBody).toMatchObject({ approvals: true, badgeInbox: false });
+    } finally {
+      await sendOk(a.member, { method: "PATCH", path: "/api/notification-preferences", body: { badgeInbox: false } });
+    }
+  },
+  "patch notification preferences": async () => {
+    const aBefore = await sendOk(a.member, { method: "GET", path: "/api/notification-preferences" });
+    try {
+      const own: unknown = JSON.parse(
+        await sendOk(b.member, {
+          method: "PATCH",
+          path: "/api/notification-preferences",
+          body: { approvals: false, badgeApprovals: false },
+        }),
+      );
+      expect(own).toMatchObject({ approvals: false, badgeApprovals: false });
+      expect(await sendOk(a.member, { method: "GET", path: "/api/notification-preferences" })).toEqual(aBefore);
+    } finally {
+      await sendOk(b.member, {
+        method: "PATCH",
+        path: "/api/notification-preferences",
+        body: { approvals: true, badgeApprovals: true },
+      });
+    }
+  },
+  // A's heartbeat answers B exactly as a random id does (issue #1453): the lookup is tenant-scoped,
+  // and a refused trigger writes nothing, so A's state is compared before and after.
+  "trigger heartbeat": () =>
+    leavesAUnchanged(async () => {
+      await expectForeignLikeRandom(b.member, [a.heartbeatId], ([id]) => ({
+        method: "POST",
+        path: entryPath("trigger heartbeat", id!),
+        body: {},
+      }));
+    }),
   "schema projection": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/schema" });
   },
   "ai usage report": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/ai-usage?from=2026-01-01&to=2026-12-31" });
   },
+  // A's spend goes through the gateway's own accounting writer, so B's summary must show none of it:
+  // B has no spend of its own in this fixture, and its figures stay at zero.
+  "ai usage summary": async () => {
+    await runInTenant(a.tenantId, () =>
+      recordTokenGatewayCall(pool, {
+        provider: "anthropic",
+        model: "isolation-test",
+        inputTokens: 1,
+        outputTokens: 1,
+        costUsd: 7,
+      }),
+    );
+    const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/ai-usage/summary" });
+    expect(JSON.parse(answer.text)).toMatchObject({ spentTodayUsd: 0, spentMonthUsd: 0 });
+  },
   "system health report": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/system-health" });
+  },
+  // A's mailbox answers B exactly as a random id does, and both answers are the 404 of an unknown mailbox (issue gh-1501).
+  "mail contacts": async () => {
+    async function person(tenantId: string, email: string) {
+      return inTenantTransaction(tenantId, async (client) => {
+        const db = await getDatabaseByModuleId(client, "people");
+        if (!db) throw new Error("People not seeded");
+        return createItemWithClient(client, { databaseId: db.id, properties: { name: "Contact", emails: email } });
+      });
+    }
+    const foreign = await person(a.tenantId, "foreign-contact@example.com");
+    const own = await person(b.tenantId, "own-contact@example.com");
+    const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/mail/contacts?q=contact" }, [own.id]);
+    expect(answer.text).not.toContain(foreign.id);
+    expect(answer.text).not.toContain("foreign-contact@example.com");
+  },
+  "mailbox removal impact": async () => {
+    const answer = await expectForeignLikeRandom(b.member, [a.mailboxItemId], ([id]) => ({
+      method: "GET",
+      path: entryPath("mailbox removal impact", id!),
+    }));
+    expect(answer.status).toBe(404);
   },
   "confirm proposal": () =>
     leavesAUnchanged(async () => {
@@ -1250,8 +1397,28 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     leavesAUnchanged(async () => {
       await relationCases("DELETE", undefined);
     }),
+  "list relations": async () => {
+    // A foreign item answers exactly as a random one does, with or without the `propertyKey` filter.
+    await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "GET",
+      path: `/api/items/${id}/relations`,
+    }));
+    await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "GET",
+      path: `/api/items/${id}/relations?propertyKey=${a.relationPropertyKey}`,
+    }));
+  },
 
   // --- tenant: files, exports, account deletion ----------------------------------------------
+  "restore page version": () =>
+    leavesAUnchanged(async () => {
+      // A foreign item answers exactly as a random one does, and nothing of A's page is written.
+      await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+        method: "POST",
+        path: `/api/items/${id}/page/restore`,
+        body: { at: new Date(Date.now() - 60 * 1000).toISOString() },
+      }));
+    }),
   "upload file": () =>
     leavesAUnchanged(async () => {
       // The bodies differ by the created ids, so the statuses are compared: B uploading bytes A
@@ -1264,9 +1431,25 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       });
       const foreign = await send(b.member, upload(a.fileContent));
       expectNoneOf(foreign.text, a.ids, "upload of A's bytes");
-      const random = await expectExcludesA(b.member, upload(`audio of ${randomUUID()}`));
+      const random = await expectExcludesA(b.member, upload(`ID3 audio of ${randomUUID()}`));
       expect(random.status).toBe(201);
       expect(foreign.status, foreign.text).toBe(random.status);
+    }),
+  "upload blob": () =>
+    leavesAUnchanged(async () => {
+      // B uploading bytes A already stored must never be handed A's blob. The status is not
+      // compared: an earlier case may already have stored the same bytes in B.
+      const upload = (content: string): Request => ({
+        method: "POST",
+        path: "/api/blobs",
+        body: content,
+        headers: { "Content-Type": "image/png" },
+      });
+      const foreign = await send(b.member, upload(a.fileContent));
+      expectNoneOf(foreign.text, a.ids, "blob upload of A's bytes");
+      const random = await expectExcludesA(b.member, upload(`image bytes of ${randomUUID()}`));
+      expect(random.status).toBe(201);
+      expect(foreign.text).not.toContain(a.blobId);
     }),
   "download blob": async () => {
     await expectForeignLikeRandom(b.member, [a.blobId], ([id]) => ({ method: "GET", path: `/api/blobs/${id}` }));
@@ -1411,6 +1594,12 @@ function ownerProbes(): OwnerProbe[] {
     return (values: readonly string[]): Request => ({ method, path: path(values), body });
   };
   return [
+    {
+      label: "mailbox removal impact",
+      ids: [a.mailboxItemId],
+      build: get(([id]) => `/api/mail/mailboxes/${id}/removal-impact`),
+      status: 200,
+    },
     { label: "database detail", ids: [a.databaseId], build: get(([id]) => `/api/databases/${id}`), status: 200 },
     {
       label: "archived database detail",
@@ -1436,6 +1625,13 @@ function ownerProbes(): OwnerProbe[] {
     { label: "view detail", ids: [a.viewId], build: get(([id]) => `/api/views/${id}`), status: 200 },
     { label: "curated view detail", ids: [a.curatedViewId], build: get(([id]) => `/api/views/${id}`), status: 200 },
     { label: "item detail", ids: [a.itemId], build: get(([id]) => `/api/items/${id}?include=path`), status: 200 },
+    {
+      label: "list relations",
+      ids: [a.itemId],
+      build: get(([id]) => `/api/items/${id}/relations`),
+      status: 200,
+      contains: [a.targetItemId],
+    },
     {
       label: "query database",
       ids: [a.databaseId],
@@ -1722,6 +1918,15 @@ const MCP_CASES = {
       relationPropertyId: b.relationPropertyId,
       callerItemId: b.itemId,
       targetItemId,
+    }));
+  },
+  "relation.list": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId }));
+  },
+  "page.restoreVersion": async (p) => {
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({
+      itemId,
+      at: new Date(Date.now() - 60 * 1000).toISOString(),
     }));
   },
 } satisfies Record<GenericOperationName, McpCase>;

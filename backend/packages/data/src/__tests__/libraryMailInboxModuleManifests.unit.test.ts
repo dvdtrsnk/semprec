@@ -41,6 +41,16 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     await Promise.all([LIBRARY_PATH, MAIL_PATH, INBOX_PATH].map((path) => import(path)));
   }, 30_000);
 
+  it("loads Czech and English labels for Books publication year and ISBN", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await registry.loadModule(LIBRARY_PATH);
+    const catalogs = await registry.getCatalogs("library");
+    expect(catalogs?.cs["property.books.year.name"]).toBe("Rok");
+    expect(catalogs?.en["property.books.year.name"]).toBe("Year");
+    expect(catalogs?.cs["property.books.isbn.name"]).toBe("ISBN");
+    expect(catalogs?.en["property.books.isbn.name"]).toBe("ISBN");
+  });
+
   it("loads the library manifest with Books/Movies and the library-grid view type", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     const moduleId = await registry.loadModule(LIBRARY_PATH);
@@ -48,6 +58,20 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     expect(moduleId).toBe("library");
     const databases = await registry.getDatabases();
     expect(databases.map((db) => db.key).sort()).toEqual([BOOKS_MODULE_ID, MOVIES_MODULE_ID].sort());
+    expect(databases.find((db) => db.key === BOOKS_MODULE_ID)).toMatchObject({
+      icon: "book-open",
+      color: "#A2845E",
+      overviewOrder: 7,
+      switcherOrder: null,
+      clientVisible: true,
+    });
+    expect(databases.find((db) => db.key === MOVIES_MODULE_ID)).toMatchObject({
+      icon: "film",
+      color: "#FF6482",
+      overviewOrder: 8,
+      switcherOrder: null,
+      clientVisible: true,
+    });
     expect(await registry.getViewTypes()).toEqual([LIBRARY_GRID_VIEW_TYPE]);
     expect(await registry.getHeartbeatActions()).toEqual([]);
     expect(await registry.getTasks()).toEqual([]);
@@ -63,6 +87,21 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     expect(databases.map((db) => db.key).sort()).toEqual(
       [EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID].sort(),
     );
+    expect(databases.find((db) => db.key === EMAILS_MODULE_ID)).toMatchObject({
+      icon: "envelope",
+      color: "#007AFF",
+      overviewOrder: null,
+      switcherOrder: null,
+      clientVisible: true,
+    });
+    for (const key of [MAILBOXES_MODULE_ID, FOLDERS_MODULE_ID]) {
+      const db = databases.find((d) => d.key === key)!;
+      expect(db.icon).toBeUndefined();
+      expect(db.color).toBeUndefined();
+      expect(db.overviewOrder).toBeUndefined();
+      expect(db.switcherOrder).toBeUndefined();
+      expect(db.clientVisible).toBeUndefined();
+    }
     expect(await registry.getViewTypes()).toEqual([MAILBOX_CLIENT_VIEW_TYPE]);
     expect(await registry.getHeartbeatActions()).toEqual([
       MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,

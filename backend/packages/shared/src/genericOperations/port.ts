@@ -1,9 +1,20 @@
 import type { AuthenticatedActor } from "./actor.js";
 import type { GenericOperationName } from "./operationNames.js";
 import type { InputByOperation, ItemPatchOutput } from "./schemas.js";
-import type { Database, Item, ItemPage, Page, Property, RelationEdge, View, ViewItem } from "./rows.js";
+import type {
+  Database,
+  Item,
+  ItemPage,
+  Page,
+  PageRestoreOutput,
+  Property,
+  RelationEdge,
+  RelationListEntry,
+  View,
+  ViewItem,
+} from "./rows.js";
 
-/** Exhaustive mapped type over the 29 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 31 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
 export interface OutputByOperation {
   "database.list": Page<Database>;
   "database.get": Database;
@@ -39,6 +50,8 @@ export interface OutputByOperation {
   "database.query": ItemPage;
   "relation.put": RelationEdge;
   "relation.delete": RelationEdge;
+  "relation.list": RelationListEntry[];
+  "page.restoreVersion": PageRestoreOutput;
 }
 
 type AssertSameKeys<T, U> = [T] extends [U] ? ([U] extends [T] ? true : never) : never;
@@ -102,7 +115,7 @@ export interface GenericApplicationPort {
    * REST-only extension of `patchProperty` (issue #789): the property's owning `Database`, read
    * inside the same transaction the patch itself commits in, so `PATCH /api/properties/:id` can
    * resolve catalog/locale without a second, independently-committed `database.get` call after
-   * the patch. Not one of the 29 catalog operations — `OutputByOperation["property.patch"]` (the
+   * the patch. Not one of the 30 catalog operations — `OutputByOperation["property.patch"]` (the
    * shape every MCP/AgentTool `property.patch` call returns) is untouched by this. Only
    * `services/semprec-api`'s REST handler may call this directly; `mcpHandler.ts` and the
    * AgentTool composition root never call a catalog-external port method. See
@@ -167,4 +180,12 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["relation.delete"],
   ): Promise<OutputByOperation["relation.delete"]>;
+  listRelations(
+    actor: AuthenticatedActor,
+    input: InputByOperation["relation.list"],
+  ): Promise<OutputByOperation["relation.list"]>;
+  restorePageVersion(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.restoreVersion"],
+  ): Promise<OutputByOperation["page.restoreVersion"]>;
 }

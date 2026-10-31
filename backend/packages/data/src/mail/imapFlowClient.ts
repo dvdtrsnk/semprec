@@ -32,10 +32,18 @@ const IMAP_PARTIAL_FETCH_TIMEOUT_MS = 30_000;
 // single part. Chosen generously above any real mailbox's message count.
 const MAX_FLAG_FETCH_RESULTS = 100_000;
 
+// close() waits this long for the server to answer LOGOUT, then releases the socket without it, so a
+// server that stops responding cannot hold a finished sync pass open.
+const IMAP_LOGOUT_TIMEOUT_MS = 10_000;
+
 // Same rationale as IMAP_PARTIAL_FETCH_TIMEOUT_MS above, applied per iteration step of the
 // flag-fetch response stream rather than to a single fetchOne() call, since a full-mailbox
 // flag fetch is itself a long-lived `for await` rather than one bounded request.
 const IMAP_FLAG_FETCH_STEP_TIMEOUT_MS = 30_000;
+
+// APPEND sends a whole message in one command. A minute is twice the SMTP send deadline (smtpClient.ts), and it bounds a
+// copy of a sent message that a server never acknowledges (issue #1641).
+const IMAP_APPEND_TIMEOUT_MS = 60_000;
 
 /**
  * `MAX_ATTACHMENT_BYTES` (providerTypes.ts, shared with the Gmail/Graph adapters) is passed to
@@ -56,6 +64,10 @@ const IMAP_FLAG_FETCH_STEP_TIMEOUT_MS = 30_000;
 
 function toEnvelopeAddress(value: MessageAddressObject | undefined): MailEnvelopeAddress | undefined {
   return value?.address ? { name: value.name || undefined, address: value.address } : undefined;
+}
+
+function optionalReplyTo(replyTo: MailEnvelopeAddress[]): { replyTo?: MailEnvelopeAddress[] } {
+  return replyTo.length > 0 ? { replyTo } : {};
 }
 
 function toEnvelopeAddressList(list: MessageAddressObject[] | undefined): MailEnvelopeAddress[] {
@@ -335,6 +347,7 @@ export class ImapFlowMailClient implements ImapMailClient {
         to: toEnvelopeAddressList(envelope?.to),
         cc: toEnvelopeAddressList(envelope?.cc),
         bcc: toEnvelopeAddressList(envelope?.bcc),
+        ...optionalReplyTo(toEnvelopeAddressList(envelope?.replyTo)),
       },
       bodyText,
       bodyHtml,
@@ -347,6 +360,12 @@ export class ImapFlowMailClient implements ImapMailClient {
       deliveredToHeaders: headerValues(headerList, "delivered-to"),
       xOriginalTo: headerValues(headerList, "x-original-to")[0] ?? null,
       envelopeTo: headerValues(headerList, "envelope-to")[0] ?? null,
+      bulkHeaders: {
+        listUnsubscribe: headerValues(headerList, "list-unsubscribe")[0] ?? null,
+        listId: headerValues(headerList, "list-id")[0] ?? null,
+        precedence: headerValues(headerList, "precedence")[0] ?? null,
+        autoSubmitted: headerValues(headerList, "auto-submitted")[0] ?? null,
+      },
       isDsn: isDeliveryStatusReport(raw.bodyStructure?.type, raw.bodyStructure?.parameters),
       // The `\Seen`/`\Flagged` state a message already has on the server — mail/ingest.ts
       // seeds a newly ingested message's read/flag properties from it (mail/messageFlags.ts).
@@ -356,7 +375,7 @@ export class ImapFlowMailClient implements ImapMailClient {
 
   async fetchMessagesSince(path: string, sinceUid: number): Promise<ImapFetchedMessage[]> {
     await this.client.mailboxOpen(path);
-    const results: ImapFetchedMessage[] = [];
+    const raws: FetchMessageObject[] = [];
     // Deliberately no `source: true`: that field is a fully-materialized `Buffer` of the whole
     // raw message, attachments included — see walkBodyStructure's header note. BODYSTRUCTURE +
     // ENVELOPE + a handful of cheap headers are all bounded fetches; the actual body/
@@ -371,14 +390,28 @@ export class ImapFlowMailClient implements ImapMailClient {
         envelope: true,
         bodyStructure: true,
         flags: true,
-        headers: ["references", "delivered-to", "x-original-to", "envelope-to"],
+        headers: [
+          "references",
+          "delivered-to",
+          "x-original-to",
+          "envelope-to",
+          "list-unsubscribe",
+          "list-id",
+          "precedence",
+          "auto-submitted",
+        ],
         labels: true,
       },
       { uid: true },
     )) {
       if (raw.uid < sinceUid) continue; // "*" in a range can include one message below sinceUid on an empty-range edge case
-      results.push({ uid: raw.uid, message: await this.parseFetchedMessage(raw) });
+      raws.push(raw);
     }
+    // Parsed only once the FETCH has ended (issue #1510). imapflow keeps a FETCH command open until its consumer has
+    // read every untagged response, so a body download issued inside the loop above queued behind that command and
+    // never ran. The raw responses hold no body bytes (see above), so buffering them adds only header-sized memory.
+    const results: ImapFetchedMessage[] = [];
+    for (const raw of raws) results.push({ uid: raw.uid, message: await this.parseFetchedMessage(raw) });
     return results;
   }
 
@@ -483,6 +516,63 @@ export class ImapFlowMailClient implements ImapMailClient {
     if (value) await this.client.messageFlagsAdd(String(uid), [flag], { uid: true });
     else await this.client.messageFlagsRemove(String(uid), [flag], { uid: true });
   }
+
+  /**
+   * IMAP APPEND of one complete message with its flags (issue #1641): the copy of a sent message that mailTransport.ts
+   * keeps in the Sent folder. The whole message travels in one command, so the call races a timer, the same way
+   * `fetchOneWithTimeout` does. A timeout rejects while the command may still be in flight on the socket; the caller's
+   * `close()` ends it. A server refusal rejects with imapflow's own error.
+   */
+  async appendMessage(path: string, raw: Buffer, flags: readonly WritableImapFlag[]): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        this.client.append(path, raw, [...flags]),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`IMAP append timed out after ${IMAP_APPEND_TIMEOUT_MS}ms`)),
+            IMAP_APPEND_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Logs out, then releases the socket (issue #1510). It never rejects: the sync job calls it in a `finally`
+   * after a pass that may already have failed, and a cleanup failure must not replace that error. A LOGOUT
+   * that fails or does not answer within IMAP_LOGOUT_TIMEOUT_MS is logged by error name only, and the socket
+   * is closed regardless.
+   */
+  async close(): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        this.client.logout(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`IMAP logout timed out after ${IMAP_LOGOUT_TIMEOUT_MS}ms`)),
+            IMAP_LOGOUT_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } catch (error) {
+      logger.warn({ errorName: errorNameOf(error) }, "IMAP logout did not complete; closing the socket");
+    } finally {
+      clearTimeout(timer);
+      try {
+        this.client.close();
+      } catch (error) {
+        logger.warn({ errorName: errorNameOf(error) }, "Closing an IMAP socket failed");
+      }
+    }
+  }
+}
+
+function errorNameOf(error: unknown): string {
+  return error instanceof Error ? error.name : "NonError";
 }
 
 const CONNECTION_LIMIT_ERROR_CODES = new Set(["ClosedAfterConnectTLS", "ClosedAfterConnectText"]);

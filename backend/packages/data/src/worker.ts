@@ -11,7 +11,11 @@ import {
 } from "./scheduler/sweep.js";
 import { handleRollupRecomputeTask, handleRollupRecomputeFullTask } from "./rollup/recompute.js";
 import { handleJournalInboxRecomputeTask } from "./inbox/journalInboxCompute.js";
+import { handleMailGmailPseudoFolderCleanupTask } from "./mail/gmailPseudoFolderCleanupJob.js";
+import { handleMailMessagePreviewBackfillTask } from "./mail/mailMessagePreviewBackfillJob.js";
+import { handleMailThreadBackfillTask } from "./mail/mailThreadBackfillJob.js";
 import { handleItemSearchBackfillTask } from "./search/itemSearchBackfill.js";
+import { handleItemSearchPageTextTask } from "./search/pageTextJob.js";
 import { handlePropertyTypeMigrationTask } from "./migrationJob/propertyTypeMigration.js";
 import { handleDocCompactionSweepTask } from "./docs/docPersistence.js";
 import { handleDocHistoryCleanupTask } from "./docs/docHistory.js";
@@ -44,9 +48,12 @@ import {
 } from "./mcp/approvalRequestExecution.js";
 import { handleNotificationFanoutTask } from "./notifications/notificationFanoutJob.js";
 import type { PushSenders } from "./push/pushSenders.js";
+import { handleBlobsUnreferencedSweepTask } from "./blobs/unreferencedBlobSweep.js";
 import { handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
 import { handleObservabilityCheckSystemTask } from "./observability/observabilityCheckSystem.js";
+import { handleMailOauthStatesSweepTask } from "./mail/mailOauthStatesSweep.js";
 import { handleMcpRunCredentialExpirySweepTask } from "./mcp/mcpRunCredentialExpiry.js";
+import { handleSempProblemsPruneTask } from "./semp/sempProblemsPrune.js";
 import { handleAgentRunEventsRetentionTask } from "./agentRuns/agentRunEventsRetention.js";
 import { handleQueueFailedJobsPruneTask } from "./observability/queueFailedJobsPrune.js";
 import { handleTenantExportExpirySweepTask, handleTenantExportTask } from "./tenancy/tenantExportJob.js";
@@ -92,8 +99,11 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 0 4 * * * ${CORE_TASK_NAMES.TRASH_PURGE}
 20 4 * * * ${CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION}
 20 4 * * * ${CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE}
+30 4 * * * ${CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE}
 10 * * * * ${CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP}
+*/10 * * * * ${CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP}
 40 4 * * * ${CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP}
+50 4 * * * ${CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP}
 * * * * * ${CORE_TASK_NAMES.TENANT_PURGE}
 `;
 
@@ -126,6 +136,9 @@ export function createCoreTaskList(
   const handlers: TaskList = {
     [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: async (payload) => {
       await handleItemSearchBackfillTask(pool, payload);
+    },
+    [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: async (payload) => {
+      await handleItemSearchPageTextTask(pool, payload);
     },
     [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {
       await handleHeartbeatSweepTask(pool, moduleRegistry);
@@ -187,6 +200,15 @@ export function createCoreTaskList(
         }),
       );
     },
+    [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: async () => {
+      await handleMailMessagePreviewBackfillTask(pool);
+    },
+    [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: async () => {
+      await handleMailGmailPseudoFolderCleanupTask(pool);
+    },
+    [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: async () => {
+      await handleMailThreadBackfillTask(pool);
+    },
     [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: async () => {
       await handleMailSearchReindexSweepTask(pool);
     },
@@ -219,14 +241,24 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.TRASH_PURGE]: async () => {
       await handleItemTrashPurgeSweepTask(pool, mailBlobStorage);
     },
+    // Issue #1401: removes standalone upload blobs nothing references 24 hours after creation.
+    [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: async () => {
+      await handleBlobsUnreferencedSweepTask(pool, filesBlobStorage);
+    },
     [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: async (_payload, taskHelpers) => {
       await handleObservabilityCheckSystemTask(pool, { job: { id: taskHelpers.job.id } });
     },
     [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: async () => {
       await handleMcpRunCredentialExpirySweepTask(pool);
     },
+    [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: async () => {
+      await handleMailOauthStatesSweepTask(pool);
+    },
     [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: async () => {
       await handleAgentRunEventsRetentionTask(pool);
+    },
+    [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: async () => {
+      await handleSempProblemsPruneTask(pool);
     },
     [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: async () => {
       await handleQueueFailedJobsPruneTask(pool);

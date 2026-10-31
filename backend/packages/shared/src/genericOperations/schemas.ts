@@ -4,7 +4,7 @@ import { filterNodeSchema, sortSpecSchema } from "./filterSort.js";
 import type { GenericOperationName } from "./operationNames.js";
 
 /**
- * Strict Zod input schemas for the 29-operation catalog (issue #252), extracted from #37's
+ * Strict Zod input schemas for the 30-operation catalog (issues #252, #1404), extracted from #37's
  * domain-command validators into transport-independent shape. Every schema below is a strict
  * object: an unrecognized key — including a spoofed `actor`/`userId`/`agentProjectItemId` or a
  * server-derived/protected field like `system`, `schemaLocked`, `ownerProjectItemId`,
@@ -25,18 +25,76 @@ export type DatabaseListInput = z.infer<typeof DatabaseListInputSchema>;
 export const DatabaseGetInputSchema = z.object({ databaseId: z.string() }).strict();
 export type DatabaseGetInput = z.infer<typeof DatabaseGetInputSchema>;
 
+/** Lower-case kebab-case icon name; the clients own which names they can render. */
+const DatabaseIconSchema = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/, "icon must be lower-case kebab-case");
+/** `#RRGGBB` in either case, normalized to upper case before it is stored. */
+const DatabaseColorSchema = z
+  .string()
+  .regex(/^#[0-9A-Fa-f]{6}$/, "color must be #RRGGBB")
+  .transform((color) => color.toUpperCase());
+
+/** Property types a collection can be created with; `title` is added by the operation itself, the rest are added afterwards through the property operations. */
+const DATABASE_CREATE_PROPERTY_TYPES = ["text", "number", "select", "date", "checkbox", "url", "file"] as const;
+/** Key of the title property created together with `properties`. */
+export const DATABASE_CREATE_TITLE_PROPERTY_KEY = "name";
+const DATABASE_CREATE_MAX_PROPERTIES = 50;
+
+const DatabaseCreatePropertySchema = z.union([
+  z
+    .object({
+      key: z.string().min(1),
+      name: z.string().min(1),
+      type: z.enum(DATABASE_CREATE_PROPERTY_TYPES),
+      config: jsonObject.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      key: z.string().min(1),
+      name: z.string().min(1),
+      type: z.literal("relation"),
+      targetDatabaseId: z.string(),
+      cardinality: z.enum(["one_to_one", "one_to_many", "many_to_many"]),
+    })
+    .strict(),
+]);
+export type DatabaseCreateProperty = z.infer<typeof DatabaseCreatePropertySchema>;
+
 export const DatabaseCreateInputSchema = z
   .object({
     name: z.string().min(1),
     parentItemId: z.string().optional(),
+    icon: DatabaseIconSchema.optional(),
+    color: DatabaseColorSchema.optional(),
+    titlePropertyName: z.string().min(1).optional(),
+    properties: z.array(DatabaseCreatePropertySchema).max(DATABASE_CREATE_MAX_PROPERTIES).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((input, ctx) => {
+    const seen = new Set<string>([DATABASE_CREATE_TITLE_PROPERTY_KEY]);
+    (input.properties ?? []).forEach((property, index) => {
+      if (seen.has(property.key)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["properties", index, "key"],
+          message: `Duplicate property key '${property.key}'`,
+        });
+      }
+      seen.add(property.key);
+    });
+  });
 export type DatabaseCreateInput = z.infer<typeof DatabaseCreateInputSchema>;
 
 export const DatabasePatchInputSchema = z
   .object({
     databaseId: z.string(),
-    patch: z.object({ name: z.string().min(1).optional() }).strict(),
+    patch: z
+      .object({
+        name: z.string().min(1).optional(),
+        icon: DatabaseIconSchema.nullable().optional(),
+        color: DatabaseColorSchema.nullable().optional(),
+      })
+      .strict(),
   })
   .strict();
 export type DatabasePatchInput = z.infer<typeof DatabasePatchInputSchema>;
@@ -166,12 +224,26 @@ export type ViewDeleteInput = z.infer<typeof ViewDeleteInputSchema>;
 /** Bounds sort-spec fan-out the same way `MAX_FILTER_NODES_PER_LEVEL` bounds filter fan-out. */
 const MAX_SORT_SPECS = 10;
 
+/** Opt-in extras on an item read (issue #1403); a read without `include` returns exactly what it did before. */
+export const RelationIncludeSchema = z
+  .record(z.string().min(1), z.array(z.string().min(1)).max(10))
+  .refine((relations) => Object.keys(relations).length <= 5, "At most five relation keys are allowed");
+const includeField = z
+  .union([
+    z.object({ links: z.boolean().optional(), relations: RelationIncludeSchema.optional() }).strict(),
+    z.array(z.enum(["links"])).max(1),
+  ])
+  .optional();
+export type ItemReadInclude = z.infer<typeof includeField>;
+
 const queryFields = {
+  include: includeField,
   cursor,
   limit,
   filter: filterNodeSchema.optional(),
   sort: z.array(sortSpecSchema).max(MAX_SORT_SPECS).optional(),
   inTrash: z.boolean().optional(),
+  includeCount: z.boolean().optional(),
 };
 
 export const ViewQueryInputSchema = z.object({ viewId: z.string(), ...queryFields }).strict();
@@ -197,7 +269,7 @@ export const ViewItemReorderInputSchema = z
   .strict();
 export type ViewItemReorderInput = z.infer<typeof ViewItemReorderInputSchema>;
 
-export const ItemGetInputSchema = z.object({ itemId: z.string() }).strict();
+export const ItemGetInputSchema = z.object({ itemId: z.string(), include: includeField }).strict();
 export type ItemGetInput = z.infer<typeof ItemGetInputSchema>;
 
 /** Omitting `idempotencyKey` preserves #21/#37's non-retry create behavior; supplying one activates dedup. */
@@ -250,7 +322,25 @@ export const RelationDeleteInputSchema = z
   .strict();
 export type RelationDeleteInput = z.infer<typeof RelationDeleteInputSchema>;
 
-/** Exhaustive mapped type over the 29 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
+/** Every live edge of `itemId` (issue #1404), optionally narrowed to one of the item's own relation properties. */
+export const RelationListInputSchema = z
+  .object({
+    itemId: z.string(),
+    relationPropertyId: z.string().optional(),
+  })
+  .strict();
+export type RelationListInput = z.infer<typeof RelationListInputSchema>;
+
+/** Restores the page of `itemId` to its state at `at` (issue #1617); a future or unretained `at` is refused by the operation, not by this schema. */
+export const PageRestoreVersionInputSchema = z
+  .object({
+    itemId: z.string(),
+    at: z.iso.datetime({ offset: true }),
+  })
+  .strict();
+export type PageRestoreVersionInput = z.infer<typeof PageRestoreVersionInputSchema>;
+
+/** Exhaustive mapped type over the 31 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
 export interface InputByOperation {
   "database.list": DatabaseListInput;
   "database.get": DatabaseGetInput;
@@ -281,6 +371,8 @@ export interface InputByOperation {
   "database.query": DatabaseQueryInput;
   "relation.put": RelationPutInput;
   "relation.delete": RelationDeleteInput;
+  "relation.list": RelationListInput;
+  "page.restoreVersion": PageRestoreVersionInput;
 }
 
 /** Fails to compile if `InputByOperation`'s keys and `GenericOperationName`'s literals ever diverge in either direction. */

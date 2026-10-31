@@ -37,6 +37,14 @@ function markConverted(properties: Record<string, unknown>): Record<string, unkn
   return { ...properties, converted: true };
 }
 
+/** Idempotent, and records the time zone and item id of every call it receives into `seen`. */
+function recordingConverter(seen: Array<{ timezone: string; itemId: string }>): ModuleDataMigrationConverter {
+  return (properties, context) => {
+    seen.push({ timezone: context.timezone, itemId: context.itemId });
+    return markConverted(properties);
+  };
+}
+
 function runIn(tenantId: string, converter: ModuleDataMigrationConverter, pageSize?: number): Promise<void> {
   return runInTenant(tenantId, () =>
     runModuleDataMigration(dataPool!, {
@@ -70,6 +78,20 @@ async function seedTenantFixture(tenantId: string, count: number): Promise<Fixtu
       }
       itemIds.sort();
       return { databaseId: database.id, itemIds };
+    }),
+  );
+}
+
+/** Seeds `tenantId`'s system settings database with one settings item carrying `timezone`. */
+async function seedTimezone(tenantId: string, timezone: string): Promise<void> {
+  await runInTenant(tenantId, () =>
+    withTransaction(dataPool!, async (client) => {
+      const database = await createDatabase(client, {
+        name: "System settings",
+        system: true,
+        ownerModuleId: "systemSettings",
+      });
+      await itemsStore.insertItem(client, { databaseId: database.id, properties: { timezone } });
     }),
   );
 }
@@ -313,5 +335,26 @@ describe("module data migration per tenant (issue #1006)", () => {
     }
     expect(await countAdvisoryLocks(tenantLockKey(tenantZero))).toBe(0);
     expect(await countAdvisoryLocks(tenantLockKey(tenantB))).toBe(0);
+  });
+
+  it("gives each tenant's converter its own time zone when the tenants run together", async () => {
+    const tenantZero = getTenantZeroId();
+    const tenantB = await createTestTenant(pool);
+    await seedTimezone(tenantZero, "Europe/Prague");
+    await seedTimezone(tenantB, "America/New_York");
+    const zeroFixture = await seedTenantFixture(tenantZero, 2);
+    const bFixture = await seedTenantFixture(tenantB, 3);
+    const zeroSeen: Array<{ timezone: string; itemId: string }> = [];
+    const bSeen: Array<{ timezone: string; itemId: string }> = [];
+
+    await Promise.all([runIn(tenantZero, recordingConverter(zeroSeen)), runIn(tenantB, recordingConverter(bSeen))]);
+
+    // Two passes over each tenant's items.
+    expect(zeroSeen).toHaveLength(4);
+    expect(new Set(zeroSeen.map((call) => call.timezone))).toEqual(new Set(["Europe/Prague"]));
+    expect(new Set(zeroSeen.map((call) => call.itemId))).toEqual(new Set(zeroFixture.itemIds));
+    expect(bSeen).toHaveLength(6);
+    expect(new Set(bSeen.map((call) => call.timezone))).toEqual(new Set(["America/New_York"]));
+    expect(new Set(bSeen.map((call) => call.itemId))).toEqual(new Set(bFixture.itemIds));
   });
 });

@@ -58,4 +58,4 @@ What this means for each checklist item of #1068:
 | Seven days without `TenantScopeMissingError`, `tenant_scope_missing` and `tenant_task_without_tenant` | Not observed                        |
 | Background work kept running under strict mode for the window                                         | Not observed                        |
 
-The go-live security gate #1086, which follows this checkpoint, is not waived.
+The go-live security gate #1086, which follows this checkpoint, still gates the production go-live of a second tenant. It no longer blocks implementation dispatch: code that drops the single-tenant guard (#1087) may merge, but a second tenant must not be deployed until #1086 is signed.

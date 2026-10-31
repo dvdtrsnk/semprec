@@ -1,6 +1,13 @@
 import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import type { AgentMessage, AgentSession, CreateAgentSession, ToolEventMetadata } from "@semprec/agent-runtime";
+import type {
+  AgentMessage,
+  AgentSession,
+  CreateAgentSession,
+  ToolEventMetadata,
+  UserTurnContextRef,
+} from "@semprec/agent-runtime";
+import { AgentRunError, AiBudgetExceededError } from "@semprec/data";
 import { logger } from "./logger.js";
 import { toPiMessages } from "./piConversationHistory.js";
 
@@ -11,6 +18,13 @@ export interface PiAgentSessionFactoryOptions {
   toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>;
   /** The default prompt a session's `systemPromptOverride` receives, and the one used without it. */
   systemPrompt: string;
+  /**
+   * Pending system messages of the thread since the last turn (approval outcomes), prepended to
+   * the next prompt text. Called once per turn; absent means none.
+   */
+  pendingSystemMessages?: () => readonly string[];
+  /** Whether a failed assistant message came from a call the gateway refused for the budget. */
+  isBudgetRefusal?: (message: AssistantMessage) => boolean;
 }
 
 function isAssistantMessage(message: unknown): message is AssistantMessage {
@@ -27,7 +41,7 @@ function assistantText(message: AssistantMessage): string {
 /**
  * Maps one pi-agent-core `AgentEvent` onto the runtime's `AgentMessage` vocabulary, or `null` for
  * an event the run log does not record: agent/message start markers, a tool's partial progress,
- * and every non-assistant `message_end` — the prompt is already `agent_runs.task`, and a tool
+ * and every non-assistant `message_end` — a user message is persisted by `promptMessages` itself, and a tool
  * result message duplicates the `tool_result` its `tool_execution_end` produced.
  */
 function toAgentMessage(
@@ -104,11 +118,15 @@ function toAgentMessage(
  * pi reports a failed or aborted model call as a final assistant message rather than a rejected
  * `prompt()`; turn that into a thrown error so the caller closes the run as `error`.
  */
-function assertModelSucceeded(agent: Agent): void {
+function assertModelSucceeded(
+  agent: Agent,
+  isBudgetRefusal: ((message: AssistantMessage) => boolean) | undefined,
+): void {
   const last = agent.state.messages.at(-1);
   if (!isAssistantMessage(last)) return;
   if (last.stopReason === "error" || last.stopReason === "aborted") {
-    throw new Error(last.errorMessage ?? `model call ended with stopReason '${last.stopReason}'`);
+    if (isBudgetRefusal?.(last)) throw new AiBudgetExceededError();
+    throw new AgentRunError("modelError", last.errorMessage ?? `model call ended with stopReason '${last.stopReason}'`);
   }
 }
 
@@ -121,10 +139,16 @@ function assertModelSucceeded(agent: Agent): void {
 async function* promptMessages(
   agent: Agent,
   task: string,
+  context: readonly UserTurnContextRef[],
+  promptText: string,
   toolFailure: { error: Error | undefined },
   toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>,
+  isBudgetRefusal: ((message: AssistantMessage) => boolean) | undefined,
   signal?: AbortSignal,
 ): AsyncGenerator<AgentMessage> {
+  signal?.throwIfAborted();
+  // Yielded (and so persisted by the consumer) before the prompt is sent to the model.
+  yield { kind: "user_message", text: task, context };
   signal?.throwIfAborted();
   const queue: AgentMessage[] = [];
   let wake: (() => void) | null = null;
@@ -141,7 +165,7 @@ async function* promptMessages(
     queue.push(message);
     notify();
   });
-  const prompt = agent.prompt(task).finally(() => {
+  const prompt = agent.prompt(promptText).finally(() => {
     settled = true;
     notify();
   });
@@ -179,7 +203,7 @@ async function* promptMessages(
   }
 
   if (toolFailure.error) throw toolFailure.error;
-  assertModelSucceeded(agent);
+  assertModelSucceeded(agent, isBudgetRefusal);
 }
 
 /**
@@ -224,12 +248,22 @@ export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOption
 
     // Each prompt starts with no recorded tool failure; only one runs at a time (pi refuses a
     // second `prompt()` while one is active).
-    const prompt = (task: string): AsyncIterable<AgentMessage> => {
+    const prompt = (task: string, context: readonly UserTurnContextRef[] = []): AsyncIterable<AgentMessage> => {
       toolFailure.error = undefined;
-      return promptMessages(piAgent, task, toolFailure, options.toolEventMetadata, sessionOptions.signal);
+      const promptText = [...(options.pendingSystemMessages?.() ?? []), task].join("\n\n");
+      return promptMessages(
+        piAgent,
+        task,
+        context,
+        promptText,
+        toolFailure,
+        options.toolEventMetadata,
+        options.isBudgetRefusal,
+        sessionOptions.signal,
+      );
     };
     const session: AgentSession = {
-      messages: () => prompt(sessionOptions.task),
+      messages: () => prompt(sessionOptions.task, sessionOptions.context),
       send: prompt,
     };
     return session;

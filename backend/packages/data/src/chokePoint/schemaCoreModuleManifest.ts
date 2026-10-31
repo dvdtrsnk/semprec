@@ -10,8 +10,13 @@ export {
   createRegisterPushSubscriptionRouteHandler,
   createRevokePushSubscriptionRouteHandler,
 } from "../push/pushRouteHandlers.js";
-export { createAiUsageRouteHandler } from "../aiGateway/aiUsageRouteHandler.js";
+export { createAiUsageRouteHandler, createAiUsageSummaryRouteHandler } from "../aiGateway/aiUsageRouteHandler.js";
 export { createSystemHealthRouteHandler } from "../observability/systemHealthRouteHandler.js";
+export {
+  createGetNotificationPreferencesRouteHandler,
+  createPatchNotificationPreferencesRouteHandler,
+} from "../notifications/notificationPreferencesRoutes.js";
+export { createTriggerHeartbeatRouteHandler } from "../scheduler/triggerHeartbeatRoute.js";
 
 /**
  * Retrofit manifest (module-contract issue #226) for the schema/data core: the choke point
@@ -31,7 +36,7 @@ export { createSystemHealthRouteHandler } from "../observability/systemHealthRou
  *
  * `capabilities` registers the eight generic-operation capability ids from #252's
  * `CAPABILITY_IDS` (issue #220) — the same eight `OPERATION_METADATA.requiresCapability` values
- * every one of the 29 generic operations is keyed against, so a project's granted subset of
+ * every one of the 30 generic operations is keyed against, so a project's granted subset of
  * these is what `packages/application`'s `genericOperationGateway.ts` filters AgentTool/MCP
  * discovery and invocation by.
  */
@@ -76,6 +81,16 @@ export const manifest: ModuleManifest = {
       justification: "transactional-semantics",
     },
     {
+      name: "aiUsageSummary",
+      method: "GET",
+      path: "/api/ai-usage/summary",
+      handlerExport: "createAiUsageSummaryRouteHandler",
+      // One read shaped for the caller's own spend against its own caps (issue gh-1456): the budget
+      // row, the system timezone and the gateway's spend. The request carries no input.
+      // The "single-consumer-read" justification.
+      justification: "single-consumer-read",
+    },
+    {
       name: "systemHealthReport",
       method: "GET",
       path: "/api/system-health",
@@ -86,6 +101,34 @@ export const manifest: ModuleManifest = {
       // block) — the "single-consumer-read" justification. Operator data is not served here
       // (issue #1038, GET /api/admin/health).
       justification: "single-consumer-read",
+    },
+    {
+      name: "getNotificationPreferences",
+      method: "GET",
+      path: "/api/notification-preferences",
+      handlerExport: "createGetNotificationPreferencesRouteHandler",
+      // Shaped for exactly one consumer, the settings screen's notification section: the caller's
+      // own preferences row, or the defaults, and no other table.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "patchNotificationPreferences",
+      method: "PATCH",
+      path: "/api/notification-preferences",
+      handlerExport: "createPatchNotificationPreferencesRouteHandler",
+      // The first change inserts the caller's row and the update that sets its fields commits with
+      // it in one transaction, a shape the generic item-write endpoint can't express.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "triggerHeartbeat",
+      method: "POST",
+      path: "/api/heartbeats/:id/trigger",
+      handlerExport: "createTriggerHeartbeatRouteHandler",
+      // The active-run and waiting-job checks and the enqueue commit or roll back together under the
+      // heartbeat's row lock (issue #1453): the transactional shape the generic item-write endpoint
+      // can't express.
+      justification: "transactional-semantics",
     },
   ],
 };

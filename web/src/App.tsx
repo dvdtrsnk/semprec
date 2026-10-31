@@ -23,6 +23,8 @@ import { AdminPage } from "./views/admin/AdminPage.js";
 import type { SetupOperations } from "./api/setupOperations.js";
 import type { AccountOperations } from "./api/accountOperations.js";
 import { AccountPage } from "./views/account/AccountPage.js";
+import type { InvitationOperations } from "./api/invitationOperations.js";
+import { InvitationAcceptPage } from "./views/invite/InvitationAcceptPage.js";
 import "./styles/tokens.css";
 import "./styles/app.css";
 
@@ -63,6 +65,12 @@ export interface PasswordResetRoute {
   token: string | null;
 }
 
+/** Present only when the composition root routed to the invitation acceptance page (issue #1088). `token` is `null` when the link carries none. */
+export interface InviteRoute {
+  token: string | null;
+  operations: InvitationOperations;
+}
+
 type SessionState =
   | { status: "loading" }
   | { status: "anonymous" }
@@ -82,6 +90,7 @@ export function App({
   passwordReset,
   admin,
   account,
+  invite,
   auth,
   sessionEvents,
   login,
@@ -107,6 +116,8 @@ export function App({
   admin?: AdminRoute;
   /** Present only when the composition root routed to the caller's account page (issue #1083). */
   account?: AccountRoute;
+  /** Present only when the composition root routed to the invitation acceptance page (issue #1088). */
+  invite?: InviteRoute;
   auth: AuthOperations;
   /** Fires `"unauthorized"` whenever an adapter receives a 401 mid-session (see `createSessionFetch`). */
   sessionEvents: EventTarget;
@@ -117,7 +128,7 @@ export function App({
   const { session, setSession, retry } = useSession(
     auth,
     sessionEvents,
-    setup !== undefined || passwordReset !== undefined,
+    setup !== undefined || passwordReset !== undefined || invite !== undefined,
   );
   const locale: Locale =
     session.status === "authenticated" ? resolveLocale([session.user.locale]) : resolveLocale(languages);
@@ -128,6 +139,8 @@ export function App({
         <SetupWizard token={setup.token} operations={setup.operations} />
       ) : passwordReset ? (
         <PasswordResetPage token={passwordReset.token} auth={auth} />
+      ) : invite ? (
+        <InvitationAcceptPage token={invite.token} operations={invite.operations} />
       ) : (
         <SessionGate auth={auth} session={session} setSession={setSession} retry={retry} login={login}>
           <RoutedContent

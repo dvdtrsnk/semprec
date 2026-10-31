@@ -41,6 +41,7 @@ import {
   mergeModuleTaskListForAffinity,
   mintMcpRunCredential,
   provisionTenant,
+  resolveMailModuleIds,
   recordHeartbeatFailure,
   requestTenantExport,
   resolveTaskAffinitySets,
@@ -53,11 +54,13 @@ import {
 import {
   createRuntimeRolePool,
   createTestTenant,
+  ensureFolderItem,
   ensureMailAccountSyncState,
   getTenantZeroId,
   getTestPool,
   resetDatabase,
   storeCredential,
+  writePageTextBlocks,
 } from "@semprec/data/testSupport";
 import { createApiActionRegistry } from "../actionRegistryComposition.js";
 
@@ -398,7 +401,7 @@ async function seededSemprecProjectItemId(tenant: Tenant): Promise<string> {
   return row.id;
 }
 
-async function createMailbox(tenant: Tenant): Promise<string> {
+async function createMailbox(tenant: Tenant, syncMode: "imap" | "gmail_api" = "imap"): Promise<string> {
   const mailboxesId = await requireModuleDatabaseId(tenant, "mailboxes");
   return inTenant(tenant, () =>
     withTransaction(pool, async (client) => {
@@ -407,7 +410,7 @@ async function createMailbox(tenant: Tenant): Promise<string> {
         properties: { name: `Mailbox ${randomUUID()}`, provider: "generic" },
       });
       await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" });
-      await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" });
+      await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode });
       return mailbox.id;
     }),
   );
@@ -575,6 +578,24 @@ const cases: Record<string, TaskCase> = {
           [requirePayloadString(payload, "databaseId")],
         ),
       ).toEqual([{ title: "Legacy searchable", matches: true }]);
+    },
+  },
+  [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      return inTenant(tenant, async () => {
+        const databaseId = await requireModuleDatabaseId(tenant, "tasks");
+        const item = await chokePoint.createItem({ databaseId, properties: { name: "Isolated page" } });
+        await writePageTextBlocks(pool, item.id, ["Stránka tenanta A"]);
+        return { itemId: item.id };
+      });
+    },
+    async expectDone(tenant, payload) {
+      expect(
+        await rows<{ page_text: string | null }>(tenant, "SELECT page_text FROM item_search_index WHERE item_id = $1", [
+          requirePayloadString(payload, "itemId"),
+        ]),
+      ).toEqual([{ page_text: "Stránka tenanta A" }]);
     },
   },
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: {
@@ -752,12 +773,14 @@ const cases: Record<string, TaskCase> = {
         const notificationId = await withTransaction(pool, (client) =>
           writeNotification(client, {
             userId: tenant.userId,
-            kind: "heartbeat_error",
-            titleParams: { name: "Daily digest" },
+            // A critical Semp problem: the default preferences push it, a warning would not be pushed
+            // (issues #1443 and #1466).
+            kind: "semp_problem",
             linkHref: null,
-            sourceTable: "project_heartbeats",
+            sourceTable: "semp_problems",
             sourceId: randomUUID(),
             transitionInstance: randomUUID(),
+            payload: { severity: "critical" },
           }),
         );
         return { notificationId };
@@ -865,6 +888,83 @@ const cases: Record<string, TaskCase> = {
       });
     },
   },
+  [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const { itemId } = await createEmail(tenant);
+      // A row from before preview_text/ingested_at existed: no production path writes one without them.
+      await inTenant(tenant, () =>
+        pool.query(`INSERT INTO mail_message_meta (item_id, message_id, envelope) VALUES ($1, $2, '{}'::jsonb)`, [
+          itemId,
+          `<${randomUUID()}@example.com>`,
+        ]),
+      );
+      return marked([itemId], async () => {
+        expect(
+          await rows(
+            tenant,
+            "SELECT preview_text IS NOT NULL AS has_preview, ingested_at IS NOT NULL AS has_time FROM mail_message_meta WHERE item_id = $1",
+            [itemId],
+          ),
+        ).toEqual([{ has_preview: true, has_time: true }]);
+      });
+    },
+  },
+  [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const itemId = randomUUID();
+      // A sent message stored before #1474 gave sends a thread. No production writer leaves thread_id NULL now.
+      await inTenant(tenant, () =>
+        pool.query(`INSERT INTO mail_message_meta (item_id, message_id, envelope) VALUES ($1, $2, '{}'::jsonb)`, [
+          itemId,
+          `<${randomUUID()}@example.com>`,
+        ]),
+      );
+      return marked([itemId], async () => {
+        expect(
+          await rows(tenant, "SELECT thread_id IS NOT NULL AS threaded FROM mail_message_meta WHERE item_id = $1", [
+            itemId,
+          ]),
+        ).toEqual([{ threaded: true }]);
+      });
+    },
+  },
+  [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const mailboxItemId = await createMailbox(tenant, "gmail_api");
+      // The folder an earlier Gmail sync created for a label that is not a real folder.
+      const folderItemId = await inTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const moduleIds = await resolveMailModuleIds(client);
+          const { rows } = await client.query<{ id: string }>(
+            "SELECT id FROM properties WHERE database_id = $1 AND key = 'mailbox'",
+            [moduleIds.foldersDatabaseId],
+          );
+          const mailboxRelationPropertyId = rows[0]?.id;
+          if (!mailboxRelationPropertyId) throw new Error("expected the Folders mailbox relation property");
+          return ensureFolderItem(client, {
+            foldersDatabaseId: moduleIds.foldersDatabaseId,
+            mailboxItemId,
+            mailboxRelationPropertyId,
+            providerId: "UNREAD",
+            name: "Unread",
+            behavior: "label",
+            specialPurpose: "none",
+          });
+        }),
+      );
+      return marked([folderItemId], async () => {
+        expect(
+          await rows(tenant, "SELECT 1 AS present FROM items WHERE id = $1 AND deleted_at IS NULL", [folderItemId]),
+        ).toEqual([]);
+      });
+    },
+  },
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: {
     tenancy: "system",
     touchesTenantTables: true,
@@ -875,6 +975,25 @@ const cases: Record<string, TaskCase> = {
         expect(
           await rows(tenant, "SELECT last_error FROM mail_account_sync_state WHERE item_id = $1", [mailboxItemId]),
         ).toEqual([{ last_error: "No IMAP adapter configured for this composition root" }]);
+      });
+    },
+  },
+  [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const stateId = randomUUID();
+      // The row is inserted already expired; production only creates states valid for ten minutes.
+      await inTenant(tenant, () =>
+        pool.query(
+          `INSERT INTO mail_oauth_states
+             (id, user_id, provider, state_hash, code_verifier_ciphertext, code_verifier_nonce, expires_at)
+           VALUES ($1, $2, 'gmail', $3, $4, $5, now() - interval '1 minute')`,
+          [stateId, tenant.userId, randomUUID(), Buffer.from("ciphertext"), Buffer.from("nonce")],
+        ),
+      );
+      return marked([stateId], async () => {
+        expect(await rows(tenant, "SELECT 1 FROM mail_oauth_states WHERE id = $1", [stateId])).toEqual([]);
       });
     },
   },
@@ -901,6 +1020,25 @@ const cases: Record<string, TaskCase> = {
     tenancy: "system",
     touchesTenantTables: true,
     seed: createExpiredTrash,
+  },
+  [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const blobId = randomUUID();
+      // A standalone upload (`<tenantId>/blobs/...`) nothing references; only its age is back-dated,
+      // because the sweep leaves anything younger than 24 hours alone.
+      await inTenant(tenant, () =>
+        pool.query(
+          `INSERT INTO blobs (id, mime_type, byte_size, storage_key, created_at)
+           VALUES ($1, 'image/png', 1, $2, now() - interval '25 hours')`,
+          [blobId, `${tenant.tenantId}/blobs/${randomUUID()}`],
+        ),
+      );
+      return marked([blobId], async () => {
+        expect(await rows(tenant, "SELECT 1 FROM blobs WHERE id = $1", [blobId])).toEqual([]);
+      });
+    },
   },
   [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: {
     tenancy: "system",
@@ -976,6 +1114,23 @@ const cases: Record<string, TaskCase> = {
             runId,
           ]),
         ).toEqual([{ kind: "compaction" }]);
+      });
+    },
+  },
+  [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const problemId = randomUUID();
+      await adminPool.query(
+        `INSERT INTO semp_problems (id, tenant_id, user_id, category, kind, severity, source_table, source_id,
+                                    dedupe_key, resolved_at, resolution_kind)
+         VALUES ($1, $2, $3, 'mail', 'mailSyncFailed', 'warning', 'mail_account_sync_state', $4, $5,
+                 now() - interval '31 days', 'recovered')`,
+        [problemId, tenant.tenantId, tenant.userId, randomUUID(), `mail:sync:${problemId}`],
+      );
+      return marked([problemId], async () => {
+        expect(await rows(tenant, "SELECT 1 FROM semp_problems WHERE id = $1", [problemId])).toEqual([]);
       });
     },
   },

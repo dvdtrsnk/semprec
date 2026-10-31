@@ -12,6 +12,7 @@ import { createAuthOperations } from "./api/authOperations.js";
 import { createSessionFetch } from "./api/sessionFetch.js";
 import { createAdminOperations } from "./api/adminOperations.js";
 import { createAccountOperations } from "./api/accountOperations.js";
+import { createInvitationOperations } from "./api/invitationOperations.js";
 
 /**
  * Composition root: which backend to talk to and which view to open come from the
@@ -33,6 +34,9 @@ import { createAccountOperations } from "./api/accountOperations.js";
  * session, and a member sees a notice instead.
  * `?page=account` routes to the caller's own account page (issue #1083): the data export and
  * self-deletion. Every authenticated session may open it.
+ * `?page=invite#token=<token>` routes to the invitation acceptance page (issue #1088); the token travels
+ * in the fragment, which the browser never sends to the server, and the page clears it from the address
+ * bar on mount. The page is public: it runs without a session and calls the plain `fetch`.
  */
 const params = new URLSearchParams(window.location.search);
 const viewId = params.get("view") ?? "";
@@ -83,6 +87,15 @@ const passwordReset =
     ? { token: new URLSearchParams(window.location.hash.slice(1)).get("token") || null }
     : undefined;
 
+// Read the same way as the password-reset token: an empty `#token=` is no token, which the page shows as an invalid link.
+const invite =
+  page === "invite"
+    ? {
+        token: new URLSearchParams(window.location.hash.slice(1)).get("token") || null,
+        operations: createInvitationOperations({ baseUrl: apiBaseUrl }),
+      }
+    : undefined;
+
 const container = document.getElementById("root");
 if (!container) throw new Error("Missing #root container");
 
@@ -100,6 +113,7 @@ createRoot(container).render(
       passwordReset={passwordReset}
       admin={admin}
       account={account}
+      invite={invite}
       auth={auth}
       sessionEvents={sessionEvents}
       login={page === "login" ? true : undefined}

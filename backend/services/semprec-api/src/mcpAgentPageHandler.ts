@@ -2,7 +2,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   withTransaction,
   ChokePointError,
+  countEffectiveMcpGrants,
   listMcpToolGrantsForProject,
+  type McpToolDisplayLabel,
   reclassifyMcpTool,
   setProjectMcpGrantForAgentPage,
 } from "@semprec/data";
@@ -26,7 +28,8 @@ const MCP_TOOL_REGISTRATION_PATH = /^\/api\/mcp-tool-registrations\/([^/]+)$/;
  * - `PATCH /api/projects/:projectItemId/mcp-grants/:mcpToolRegistrationId` — toggles
  *   `project_mcp_grants.granted` for the exact project/tool pair, body `{ granted: boolean }`.
  * - `PATCH /api/mcp-tool-registrations/:id` — the minimal manual reclassification control,
- *   body `{ riskClass?: string, requiresApproval?: boolean }` (at least one required).
+ *   body `{ riskClass?: string, requiresApproval?: boolean, displayLabel?: { cs?, en? } | null }`
+ *   (at least one required; `null` clears the label).
  *
  * These mutations reach `mcpGrantsAdminStore.ts`'s user-only functions only through
  * `@semprec/data`'s `mcpAgentPageGrants.ts` wrappers (see that file's header) — this handler
@@ -51,8 +54,10 @@ export function createMcpAgentPageRequestListener(pool: Pool) {
             grantsMatch[2] === undefined ? undefined : assertUuid(grantsMatch[2], "mcpToolRegistrationId");
 
           if (req.method === "GET" && !mcpToolRegistrationId) {
-            const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, projectItemId));
-            sendJson(res, 200, { rows });
+            const rows = await withTransaction(pool, (client) =>
+              listMcpToolGrantsForProject(client, projectItemId, identity.user.locale),
+            );
+            sendJson(res, 200, { rows, counts: countEffectiveMcpGrants(rows) });
             return;
           }
 
@@ -84,6 +89,7 @@ export function createMcpAgentPageRequestListener(pool: Pool) {
           const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as {
             riskClass?: unknown;
             requiresApproval?: unknown;
+            displayLabel?: unknown;
           };
           if (body.riskClass !== undefined && typeof body.riskClass !== "string") {
             sendJson(res, 400, { error: "'riskClass' must be a string" });
@@ -93,11 +99,20 @@ export function createMcpAgentPageRequestListener(pool: Pool) {
             sendJson(res, 400, { error: "'requiresApproval' must be a boolean" });
             return;
           }
+          if (
+            body.displayLabel !== undefined &&
+            body.displayLabel !== null &&
+            (typeof body.displayLabel !== "object" || Array.isArray(body.displayLabel))
+          ) {
+            sendJson(res, 400, { error: "'displayLabel' must be an object or null" });
+            return;
+          }
           const registration = await withTransaction(pool, (client) =>
             reclassifyMcpTool(client, {
               mcpToolRegistrationId,
               riskClass: body.riskClass as string | undefined,
               requiresApproval: body.requiresApproval as boolean | undefined,
+              displayLabel: body.displayLabel as McpToolDisplayLabel | null | undefined,
             }),
           );
           sendJson(res, 200, registration);

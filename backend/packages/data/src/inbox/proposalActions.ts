@@ -1,4 +1,6 @@
+import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
+import { getSystemTimezone } from "../systemSettings.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -8,19 +10,28 @@ import { assertRelationCreatableWithClient, createRelationWithClient } from "../
 import { putBlockWithClient } from "../docs/docStore.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
 import {
+  aiProposalPatch,
   appendHistoryEntry,
   assertValidProposalEnvelope,
+  isFinalInvalid,
   parseStoredProposalEnvelope,
+  unknownStoredEntityKind,
   type ProposalEntityKind,
   type ProposalEnvelope,
 } from "./inboxTickAction.js";
+import { insertItemOrigins, type ItemOriginSource } from "./itemOriginsStore.js";
+import { executeProposalSteps } from "./proposalSteps.js";
 import { enqueueJournalInboxRecomputeForProposal } from "./journalInboxCompute.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { TRANSCRIPT_SPEAKERS_PROPERTY_KEY } from "../transcription/transcriptionSpeakerEdges.js";
 import { storeCredential, type CredentialType } from "../credentials/externalCredentialsStore.js";
-import { NotFoundError, ValidationError } from "../errors.js";
+import { ChokePointError, ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
+import type { WriterIdentity } from "../chokePoint/writerKind.js";
+
+/** Confirming a proposal is a person's decision, so every write in its transaction is a `user` write. */
+const CONFIRMING_USER_WRITER: WriterIdentity = { writerKind: "user" };
 
 export interface ProposalActionConfig {
   processingProposalsDatabaseId: string;
@@ -81,7 +92,14 @@ interface EnvelopeForCard {
   targetDatabase: DatabaseRow | null;
 }
 
-function transcriptCardRole(envelope: ProposalEnvelope): TranscriptCardRole {
+/** An unknown stored kind is displayed, never executed: this release cannot validate or run it. */
+function unsupportedEntityKindError(entityKind: string): ConflictError {
+  return new ConflictError(`Proposal entityKind '${entityKind}' is not supported by this release`, {
+    field: "entityKind",
+  });
+}
+
+export function transcriptCardRole(envelope: ProposalEnvelope): TranscriptCardRole {
   return envelope.entityKind === "relation" && envelope.properties.propertyKey === TRANSCRIPT_SPEAKERS_PROPERTY_KEY
     ? "speaker"
     : "event";
@@ -109,6 +127,37 @@ async function requireRelationPropertyId(client: PoolClient, databaseId: string,
   return property.id;
 }
 
+/**
+ * Writes the envelope's `relations` edges from the freshly created item, in the order of the keys
+ * and ids in the envelope. Runs in the confirm transaction, so a failing edge aborts the item and
+ * every earlier edge; the edge's own canonical error is rethrown with `details.field` set to the
+ * relation key.
+ */
+async function writeEnvelopeRelations(
+  client: PoolClient,
+  databaseId: string,
+  itemId: string,
+  relations: ProposalEnvelope["relations"],
+): Promise<void> {
+  for (const [key, targetItemIds] of Object.entries(relations ?? {})) {
+    const relationPropertyId = await requireRelationPropertyId(client, databaseId, key);
+    for (const targetItemId of targetItemIds) {
+      try {
+        await createRelationWithClient(
+          client,
+          { relationPropertyId, callerItemId: itemId, targetItemId },
+          undefined,
+          CONFIRMING_USER_WRITER,
+        );
+      } catch (error) {
+        if (!(error instanceof ChokePointError)) throw error;
+        const details = typeof error.details === "object" && error.details !== null ? error.details : {};
+        throw new ChokePointError(error.status, error.code, error.message, { ...details, field: key });
+      }
+    }
+  }
+}
+
 /** The transcript a `kind = 'transcript'` card was created for, via its `sourceTranscript` edge (written with the card by the match step). */
 async function requireSourceTranscriptId(
   client: PoolClient,
@@ -126,6 +175,54 @@ async function requireSourceTranscriptId(
     });
   }
   return relationsStore.otherSide(edge, proposal.id);
+}
+
+/**
+ * The moment an Inbox item was captured: its `date` and `time` (the user's meant moment, stored
+ * verbatim) read in the system timezone, or null when either is missing or unparseable.
+ */
+function inboxCaptureInstant(inboxItem: ItemRow, timezone: string): string | null {
+  const { date, time } = inboxItem.properties;
+  if (typeof date !== "string" || typeof time !== "string") return null;
+  const captured = DateTime.fromISO(`${date}T${time}`, { zone: timezone });
+  return captured.isValid ? captured.toUTC().toISO() : null;
+}
+
+/**
+ * Where the items a confirm creates came from: a transcript card names its transcript, and the
+ * card's last write time stands in for its creation time (items carry no creation timestamp); any
+ * other card names its `sourceInbox` item and takes that item's capture moment, with the same
+ * stand-in when the edge or the item is gone.
+ */
+async function resolveItemOriginSource(
+  client: PoolClient,
+  config: ProposalActionConfig,
+  proposal: ItemRow,
+  transcriptId: string | null,
+): Promise<ItemOriginSource> {
+  if (transcriptId !== null) {
+    return {
+      proposalId: proposal.id,
+      inboxItemId: null,
+      sourceTranscriptId: transcriptId,
+      capturedAt: proposal.updatedAt,
+      captureChannel: "transcript",
+    };
+  }
+  const propertyId = await requireRelationPropertyId(client, config.processingProposalsDatabaseId, "sourceInbox");
+  const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, propertyId);
+  if (!relationDefinition)
+    throw new NotFoundError(`Relation definition for Processing proposals 'sourceInbox' not found`);
+  const [edge] = await relationsStore.listRelationsForItem(client, relationDefinition.id, proposal.id);
+  const inboxItemId = edge ? relationsStore.otherSide(edge, proposal.id) : null;
+  const [inboxItem] = inboxItemId ? await itemsStore.getItemsByIds(client, [inboxItemId]) : [];
+  return {
+    proposalId: proposal.id,
+    inboxItemId,
+    sourceTranscriptId: null,
+    capturedAt: (inboxItem && inboxCaptureInstant(inboxItem, await getSystemTimezone(client))) ?? proposal.updatedAt,
+    captureChannel: "inbox",
+  };
 }
 
 /**
@@ -159,6 +256,7 @@ async function assertValidEnvelopeForCard(
 
   const role = transcriptCardRole(envelope);
   const current = parseStoredProposalEnvelope(proposal.properties.proposal, proposal.id);
+  if (current && "unknownKind" in current) throw unsupportedEntityKindError(current.entityKind);
   if (current && transcriptCardRole(current) !== role) {
     throw new ValidationError("A transcript proposal cannot switch between an Event and a speaker mapping", {
       field: "entityKind",
@@ -240,17 +338,21 @@ async function assertValidEnvelopeForCard(
  * `envelope.target`, and the result is that existing item. A `kind = 'transcript'` card also
  * gets its Transcription<->Event edge: for `'relation'` that edge is the relation write itself;
  * for `'database'` it is written right after the Event is created. Both run in the caller's one
- * transaction, so a failed edge write (e.g. the 1:1 relation's `cardinality_violation` when the
- * transcript or Event is already linked elsewhere) leaves no Event, no edge and the card still
- * `proposed`. A speaker-mapping transcript card (issue #185) writes its `speakers` edge with the
+ * transaction, so a failed edge write (e.g. `cardinality_violation` when the transcript is already
+ * linked to another Event; an Event may hold many transcripts) leaves no Event, no edge and the card still
+ * `proposed`. A `'database'` envelope's `relations` (issue #1476) are written the same way, after
+ * the item, one edge per target id with the new item as caller; any failing edge aborts the item
+ * and the earlier edges, and its error carries `details.field` = the relation key. A speaker-mapping transcript card (issue #185) writes its `speakers` edge with the
  * envelope's `{ speaker }` metadata as the relation write itself — the user-owned mapping only
- * ever exists once a human confirmed it.
+ * ever exists once a human confirmed it. A `fileFromAttachment` step (issue #1703) moves an attachment
+ * of the card's source Inbox item into Files inside the same transaction; `executeProposalSteps` does it.
  */
 export async function confirmProposalWithClient(
   client: PoolClient,
   config: ProposalActionConfig,
   proposalId: string,
   credential?: ConfirmProposalCredentialInput,
+  actingUserId?: string,
 ): Promise<ItemRow> {
   const proposal = await lockLiveProposal(client, config.processingProposalsDatabaseId, proposalId);
   const status = proposal.properties.status;
@@ -261,6 +363,7 @@ export async function confirmProposalWithClient(
 
   const envelope = parseStoredProposalEnvelope(proposal.properties.proposal, proposal.id);
   if (!envelope) throw new ValidationError("Proposal has no computed envelope to confirm", { field: "proposal" });
+  if ("unknownKind" in envelope) throw unsupportedEntityKindError(envelope.entityKind);
   const { transcriptCardEdge, targetDatabase } = await assertValidEnvelopeForCard(client, config, proposal, envelope);
 
   let resultItemId: string;
@@ -273,12 +376,33 @@ export async function confirmProposalWithClient(
         });
       }
     }
-    const created = await createItemWithClient(client, {
-      databaseId: envelope.target,
-      properties: envelope.properties,
-    });
+    const origin = await resolveItemOriginSource(client, config, proposal, transcriptCardEdge?.transcriptId ?? null);
+    // A multi-step envelope writes every active step; a single-step one keeps the direct path below.
+    let created: ItemRow;
+    let createdItemIds: string[];
+    let resultDatabaseId = envelope.target;
+    if (envelope.operations) {
+      const executed = await executeProposalSteps(client, envelope.operations, {
+        writer: CONFIRMING_USER_WRITER,
+        actingUserId,
+        sourceInboxItemId: origin.inboxItemId,
+      });
+      const [primaryItem] = await itemsStore.getItemsByIds(client, [executed.primaryItemId]);
+      if (!primaryItem) throw new Error(`Primary step item ${executed.primaryItemId} disappeared during confirm`);
+      created = primaryItem;
+      resultDatabaseId = executed.primaryDatabaseId;
+      createdItemIds = executed.createdItemIds;
+    } else {
+      created = await createItemWithClient(
+        client,
+        { databaseId: envelope.target, properties: envelope.properties },
+        { writer: CONFIRMING_USER_WRITER, actingUserId },
+      );
+      createdItemIds = [created.id];
+    }
+    await insertItemOrigins(client, createdItemIds, origin);
     resultItemId = created.id;
-    resultLabel = await resolveResultLabel(client, envelope.target, created);
+    resultLabel = await resolveResultLabel(client, resultDatabaseId, created);
     if (credential) {
       await storeCredential(client, {
         itemId: created.id,
@@ -288,23 +412,37 @@ export async function confirmProposalWithClient(
     }
     // A 'database' envelope on a transcript card is always its create-Event shape.
     if (transcriptCardEdge) {
-      await createRelationWithClient(client, {
-        relationPropertyId: transcriptCardEdge.relationPropertyId,
-        callerItemId: transcriptCardEdge.transcriptId,
-        targetItemId: created.id,
-      });
+      await createRelationWithClient(
+        client,
+        {
+          relationPropertyId: transcriptCardEdge.relationPropertyId,
+          callerItemId: transcriptCardEdge.transcriptId,
+          targetItemId: created.id,
+        },
+        undefined,
+        CONFIRMING_USER_WRITER,
+      );
+    }
+    // A multi-step envelope's relations live on its steps and were written by them.
+    if (!envelope.operations) {
+      await writeEnvelopeRelations(client, envelope.target, created.id, envelope.relations);
     }
   } else if (envelope.entityKind === "relation") {
     // `assertValidEnvelopeForCard` above only accepts a 'relation' envelope on a transcript
     // card, through the Transcripts `event` or `speakers` property — so `transcriptCardEdge`
     // names this write.
     if (!transcriptCardEdge) throw new Error(`Relation proposal ${proposal.id} has no source item to link from`);
-    await createRelationWithClient(client, {
-      relationPropertyId: transcriptCardEdge.relationPropertyId,
-      callerItemId: transcriptCardEdge.transcriptId,
-      targetItemId: envelope.target,
-      metadata: relationEnvelopeMetadata(envelope),
-    });
+    await createRelationWithClient(
+      client,
+      {
+        relationPropertyId: transcriptCardEdge.relationPropertyId,
+        callerItemId: transcriptCardEdge.transcriptId,
+        targetItemId: envelope.target,
+        metadata: relationEnvelopeMetadata(envelope),
+      },
+      undefined,
+      CONFIRMING_USER_WRITER,
+    );
     const [linked] = await itemsStore.getItemsByIds(client, [envelope.target]);
     resultItemId = envelope.target;
     resultLabel = linked ? await resolveResultLabel(client, linked.databaseId, linked) : envelope.target;
@@ -336,7 +474,11 @@ export async function confirmProposalWithClient(
         history: appendHistoryEntry(proposal.properties.history, "Confirmed by user.", "user"),
       },
     },
-    { allowedSystemKeys: ["status", "resultItemId", "resultLabel", "history"] },
+    {
+      allowedSystemKeys: ["status", "resultItemId", "resultLabel", "history"],
+      writer: CONFIRMING_USER_WRITER,
+      actingUserId,
+    },
   );
   // Issue #106's "proposal transition" invalidation trigger: confirm/reject/revise change
   // the source Inbox item's displayed status but never touch the Inbox item itself, so
@@ -385,6 +527,7 @@ export interface ReviseProposalInput {
   entityKind: ProposalEntityKind;
   target: string;
   properties: Record<string, unknown>;
+  relations?: ProposalEnvelope["relations"];
 }
 
 /**
@@ -398,7 +541,10 @@ export interface ReviseProposalInput {
  * refused here with its canonical error rather than only at confirm. Refused on a locked (`confirmed`/
  * `rejected`) proposal, per the epic's "a locked card is never recomputed again"; allowed
  * from `needsClarification`/`invalid` as well as `proposed`, since a user resolving one of
- * those into a valid envelope is exactly how a proposal is meant to leave that state.
+ * those into a valid envelope is exactly how a proposal is meant to leave that state. An `invalid`
+ * card whose `invalidReason` is `sourceDeleted` is refused (issue #1482): it can only be discarded,
+ * or reopened by the tick once its source is restored (issue #1604). A fixable `invalid` card is
+ * revised like any other, and its `invalidReason` is cleared in the same write.
  */
 export async function reviseProposalWithClient(
   client: PoolClient,
@@ -411,14 +557,23 @@ export async function reviseProposalWithClient(
   if (typeof status === "string" && LOCKED_PROPOSAL_STATUSES.has(status)) {
     throw new ValidationError(`Cannot revise a locked proposal (status '${status}')`, { field: "status" });
   }
+  if (isFinalInvalid(proposal.properties)) {
+    throw new ValidationError("Cannot revise a proposal whose source Inbox item was deleted", { field: "status" });
+  }
+
+  const storedUnknownKind = unknownStoredEntityKind(proposal.properties.proposal);
+  if (storedUnknownKind !== null) throw unsupportedEntityKindError(storedUnknownKind);
 
   const envelope: ProposalEnvelope = {
     entityKind: input.entityKind,
     target: input.target,
     properties: input.properties,
+    ...(input.relations === undefined ? {} : { relations: input.relations }),
   };
   await assertValidEnvelopeForCard(client, config, proposal, envelope);
 
+  // A fixable invalid card leaves `invalid` here, so its reason goes with it in this same write.
+  const clearedReason = status === "invalid" ? { invalidReason: null } : {};
   const updated = await updateItemWithClient(
     client,
     {
@@ -426,11 +581,13 @@ export async function reviseProposalWithClient(
       itemId: proposal.id,
       propertiesPatch: {
         proposal: envelope,
+        ...aiProposalPatch(proposal.properties, envelope),
         status: "proposed",
+        ...clearedReason,
         history: appendHistoryEntry(proposal.properties.history, input.message, "user"),
       },
     },
-    { allowedSystemKeys: ["proposal", "status", "history"] },
+    { allowedSystemKeys: ["proposal", "aiProposal", "aiVersion", "status", "invalidReason", "history"] },
   );
   await enqueueJournalInboxRecomputeForProposal(client, proposal.id);
   return updated;

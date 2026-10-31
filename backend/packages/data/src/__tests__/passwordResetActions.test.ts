@@ -81,6 +81,20 @@ describe("password reset actions (issue #142)", () => {
       expect(new URL(mailer.sent[0]!.resetUrl).searchParams.has("token")).toBe(false);
     });
 
+    it.each(["cs", "en"])("passes the requesting account's locale (%s) to the mailer", async (locale) => {
+      const user = await createUser(pool, {
+        tenantId: await tenantForNextTestUser(pool),
+        email: `locale-${locale}@example.com`,
+        passwordHash: await hashPassword(OLD_PASSWORD),
+        locale,
+      });
+      const mailer = fakeMailer();
+
+      await requestPasswordReset(pool, mailer, { email: user.email, appBaseUrl: APP_BASE_URL });
+
+      expect(mailer.sent.map((input) => input.locale)).toEqual([locale]);
+    });
+
     it("is a silent no-op for an unknown email — no mail sent, no error", async () => {
       const mailer = fakeMailer();
 

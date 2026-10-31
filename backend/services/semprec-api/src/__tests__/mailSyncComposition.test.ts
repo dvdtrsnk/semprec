@@ -123,7 +123,10 @@ describe("createApiQueueRuntime mail module ids (issue #648)", () => {
       `SELECT last_error FROM mail_account_sync_state WHERE item_id = $1`,
       [mailbox.id],
     );
-    expect(rows).toEqual([{ last_error: "No IMAP adapter configured for this composition root" }]);
+    // The API composition provides the IMAP adapter (issue #1510), which opens the mailbox from its stored
+    // server settings; this mailbox has none, so the adapter step refuses it.
+    const adapterError = `Mailbox ${mailbox.id} has no IMAP server settings; set the IMAP host before syncing it`;
+    expect(rows).toEqual([{ last_error: adapterError }]);
     const synced = await createChokePoint(pool).findItem(mailbox.id);
     expect(synced!.properties.syncStatus).toBe("error");
     // The handler rethrows after recording the failure, so the job row carries the same adapter error.
@@ -131,6 +134,6 @@ describe("createApiQueueRuntime mail module ids (issue #648)", () => {
       (await jobsFor(pool, CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC)).some((job) => job.last_error !== null),
     );
     const [failedJob] = await jobsFor(pool, CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC);
-    expect(failedJob!.last_error).toContain("No IMAP adapter configured for this composition root");
+    expect(failedJob!.last_error).toContain(adapterError);
   });
 });

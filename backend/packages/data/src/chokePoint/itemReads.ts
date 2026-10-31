@@ -1,3 +1,5 @@
+import { expandItemRelations, type RelationExpansionOptions } from "./relationExpansion.js";
+import { projectItemsForRead } from "./itemReadProjection.js";
 // Owns the choke point's item reads: single-item lookups (`getItem`, `findItem`,
 // `findItemIncludingDeleted`), the breadcrumb walk `getItemPath`, and filtered `listItems` /
 // `countItems` together with the filter-tree-to-SQL resolution they share. It does not own item
@@ -13,8 +15,9 @@ import type { ItemRow } from "../types.js";
 import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as itemsStore from "./itemsStore.js";
+import { withFromInbox } from "./itemOriginReads.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
-import { compileFilterNode } from "../views/filterCompiler.js";
+import { compileFilterNode, resolveFilterCompileContext } from "../views/filterCompiler.js";
 import { buildFilterProperties } from "../views/filterProperties.js";
 import { parseFilterNode } from "../views/filterTree.js";
 
@@ -28,20 +31,25 @@ async function buildFilterSqlForDatabase(
   client: PoolClient,
   databaseId: string,
   filter: unknown,
+  now: Date | undefined,
 ): Promise<(params: unknown[]) => string> {
   const properties = await propertiesStore.listPropertiesByDatabase(client, databaseId);
   const filterProperties = await buildFilterProperties(client, properties);
   const node = parseFilterNode(filter);
-  return (params) => compileFilterNode(node, filterProperties, params);
+  const context = await resolveFilterCompileContext(client, node, now);
+  return (params) => compileFilterNode(node, filterProperties, params, context);
 }
 
 export interface ListItemsInput extends itemsStore.ListItemsOptions {
   /** A filter tree (views/filterTree.ts), as a transport adapter receives it — validated here, never trusted. */
   filter?: unknown;
+  /** The clock `date_relative` conditions are evaluated at; defaults to the current time. */
+  now?: Date;
 }
 
 export interface CountItemsInput extends Pick<itemsStore.ListItemsOptions, "includeDeleted" | "buildFilterSql"> {
   filter?: unknown;
+  now?: Date;
 }
 
 /**
@@ -53,20 +61,26 @@ export interface CountItemsInput extends Pick<itemsStore.ListItemsOptions, "incl
 async function resolveFilterSql(
   client: PoolClient,
   databaseId: string,
-  options: { filter?: unknown; buildFilterSql?: (params: unknown[]) => string | undefined },
+  options: { filter?: unknown; now?: Date; buildFilterSql?: (params: unknown[]) => string | undefined },
 ): Promise<((params: unknown[]) => string | undefined) | undefined> {
   if (options.filter === undefined) return options.buildFilterSql;
   if (options.buildFilterSql) {
     throw new ValidationError("Pass either 'filter' or 'buildFilterSql', not both", { field: "filter" });
   }
-  return buildFilterSqlForDatabase(client, databaseId, options.filter);
+  return buildFilterSqlForDatabase(client, databaseId, options.filter, options.now);
 }
 
 export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
   const { pool } = deps;
   return {
-    async getItem(databaseId: string, itemId: string): Promise<ItemRow | null> {
-      return withTransaction(pool, (client) => itemsStore.getItemById(client, databaseId, itemId));
+    async getItem(databaseId: string, itemId: string, expansion?: RelationExpansionOptions) {
+      return withTransaction(pool, async (client) => {
+        const item = await itemsStore.getItemById(client, databaseId, itemId);
+        if (!item) return null;
+        const [stamped] = await withFromInbox(client, [item]);
+        const projected = await projectItemsForRead(client, [stamped ?? item]);
+        return (expansion ? await expandItemRelations(client, projected, expansion) : projected)[0]!;
+      });
     },
 
     /**
@@ -75,10 +89,13 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
      * `getItemsByIds` scan `assertItemExists` already uses for view membership — acceptable here
      * for the same reason: a single-row point lookup, not a scan over a large membership list.
      */
-    async findItem(itemId: string): Promise<ItemRow | null> {
+    async findItem(itemId: string, expansion?: RelationExpansionOptions) {
       return withTransaction(pool, async (client) => {
         const [item] = await itemsStore.getItemsByIds(client, [itemId]);
-        return item ?? null;
+        if (!item) return null;
+        const [stamped] = await withFromInbox(client, [item]);
+        const projected = await projectItemsForRead(client, [stamped ?? item]);
+        return (expansion ? await expandItemRelations(client, projected, expansion) : projected)[0]!;
       });
     },
 
@@ -91,7 +108,7 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
     async findItemIncludingDeleted(itemId: string): Promise<ItemRow | null> {
       return withTransaction(pool, async (client) => {
         const [item] = await itemsStore.getItemsByIdsIncludingDeleted(client, [itemId]);
-        return item ?? null;
+        return item ? (await projectItemsForRead(client, [item]))[0]! : null;
       });
     },
 
@@ -112,7 +129,7 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
      * Iterative per-level walk rather than a single recursive CTE — the trade-off is recorded in
      * `docs/adr/2026-09-11-iterative-parent-chain-traversal-in-choke-point.md`.
      */
-    async getItemPath(itemId: string): Promise<ItemRow[]> {
+    async getItemPath(itemId: string, expansion?: RelationExpansionOptions): Promise<ItemRow[]> {
       return withTransaction(pool, async (client) => {
         const chain: ItemRow[] = [];
         const visitedDatabaseIds = new Set<string>();
@@ -126,7 +143,11 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
           const database = await databasesStore.getDatabase(client, item.databaseId);
           currentId = database?.parentItemId ?? undefined;
         }
-        return chain;
+        const projected = await projectItemsForRead(client, chain);
+        const last = projected.at(-1);
+        if (!expansion || !last) return projected;
+        const expanded = await expandItemRelations(client, [last], expansion);
+        return [...projected.slice(0, -1), ...expanded];
       });
     },
 
@@ -134,21 +155,24 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
     async listItems(databaseId: string, options?: ListItemsInput) {
       return withTransaction(pool, async (client) => {
         // `filter` is consumed by resolveFilterSql; `rest` is what the store itself takes.
-        const { filter, ...rest } = options ?? {};
+        const { filter, now, ...rest } = options ?? {};
         const buildFilterSql = await resolveFilterSql(client, databaseId, {
           filter,
+          now,
           buildFilterSql: rest.buildFilterSql,
         });
-        return itemsStore.listItems(client, databaseId, { ...rest, buildFilterSql });
+        const page = await itemsStore.listItems(client, databaseId, { ...rest, buildFilterSql });
+        return { ...page, items: await projectItemsForRead(client, await withFromInbox(client, page.items)) };
       });
     },
 
     /** The matching count for the same `filter` `listItems` takes — a count without paging the rows in. */
     async countItems(databaseId: string, options?: CountItemsInput): Promise<number> {
       return withTransaction(pool, async (client) => {
-        const { filter, ...rest } = options ?? {};
+        const { filter, now, ...rest } = options ?? {};
         const buildFilterSql = await resolveFilterSql(client, databaseId, {
           filter,
+          now,
           buildFilterSql: rest.buildFilterSql,
         });
         return itemsStore.countItems(client, databaseId, { ...rest, buildFilterSql });

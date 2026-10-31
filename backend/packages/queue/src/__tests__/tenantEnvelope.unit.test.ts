@@ -28,14 +28,20 @@ const SYSTEM_TASKS = [
   "docHistoryCleanup",
   "mailAccountSyncSweep",
   "mailSearchReindexSweep",
+  "mailMessagePreviewBackfill",
+  "mailGmailPseudoFolderCleanup",
+  "mailThreadBackfill",
   "itemTrashPurgeSweep",
   "trashPurge",
   "observabilityCheckSystem",
   "mcpRunCredentialExpirySweep",
+  "mailOauthStatesSweep",
   "agentRunEventsRetention",
+  "sempProblemsPrune",
   "queueFailedJobsPrune",
   "tenantExportExpirySweep",
   "tenantPurge",
+  "blobsUnreferencedSweep",
 ];
 
 interface FakeHelperOptions {

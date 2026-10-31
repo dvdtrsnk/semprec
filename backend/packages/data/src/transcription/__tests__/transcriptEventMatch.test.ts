@@ -71,7 +71,7 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     );
   }
 
-  /** The Event ids linked to `transcriptId` through the Transcripts <-> Events 1:1 relation. */
+  /** The Event ids linked to `transcriptId` through the Transcripts <-> Events relation. */
   async function linkedEventIds(transcriptId: string): Promise<string[]> {
     const { rows } = await pool.query<{ other: string }>(
       `SELECT CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END AS other
@@ -174,25 +174,17 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     expect(await linkedEventIds(transcriptId)).toEqual([]);
   });
 
-  it("proposes a card rather than a second edge when the one candidate is already linked to another transcript", async () => {
+  it("links a second recording directly to the one Event that already holds a transcript, and creates no card (issue #1464)", async () => {
     const otherTranscriptId = await createTranscript();
     const eventId = await createEvent("meeting", "2024-03-01T12:00:00.000Z");
     expect(await match(otherTranscriptId)).toBe("linked");
     const transcriptId = await createTranscript();
 
-    expect(await match(transcriptId)).toBe("suggested");
+    expect(await match(transcriptId)).toBe("linked");
 
-    expect(await linkedEventIds(transcriptId)).toEqual([]);
+    expect(await linkedEventIds(transcriptId)).toEqual([eventId]);
     expect(await linkedEventIds(otherTranscriptId)).toEqual([eventId]);
-    const cards = await cardsFor(transcriptId);
-    expect(cards).toHaveLength(1);
-    expect(cards[0]?.properties).toMatchObject({
-      history: [
-        expect.objectContaining({
-          message: "1 Event matched the recording's time window, so none was linked; proposed a new Event.",
-        }),
-      ],
-    });
+    expect(await proposalCount()).toBe(0);
   });
 
   it("re-running on a linked transcript creates no card and no second edge", async () => {
@@ -242,5 +234,20 @@ describe("matchTranscriptToEvent (issue #247)", () => {
 
   it("rejects a transcript id that does not exist", async () => {
     await expect(match("00000000-0000-4000-8000-000000000000")).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("stores the create-Event envelope as aiProposal too, at aiVersion 1 (issue #1471)", async () => {
+    const transcriptId = await createTranscript();
+
+    expect(await match(transcriptId)).toBe("suggested");
+
+    const cards = await cardsFor(transcriptId);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.properties).toMatchObject({ aiVersion: 1 });
+    expect(cards[0]?.properties.aiProposal).toEqual({
+      entityKind: "database",
+      target: eventsId,
+      properties: { name: "Weekly sync", type: "meeting", date: RECORDING_START },
+    });
   });
 });

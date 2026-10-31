@@ -11,7 +11,13 @@ import {
   resetDatabase,
 } from "../testSupport/testDb.js";
 import { createUser } from "../auth/usersStore.js";
-import { createAgentRun, finishAgentRun, getAgentRun } from "../agentRuns/agentRunsStore.js";
+import {
+  createAgentRun,
+  createChainedAgentRun,
+  finishAgentRun,
+  getAgentRun,
+  getRetrySuccessorId,
+} from "../agentRuns/agentRunsStore.js";
 import { NotFoundError } from "../errors.js";
 
 let pool: Pool;
@@ -42,13 +48,42 @@ describe("finishAgentRun", () => {
     ["error", "done"],
   ] as const)("keeps the first close (%s) when a second one (%s) arrives and returns false", async (first, second) => {
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "do the thing" });
-    await expect(finishAgentRun(pool, run.id, first, "first")).resolves.toBe(true);
+    const close = (status: "done" | "error", result: string) =>
+      status === "done"
+        ? finishAgentRun(pool, run.id, "done", result)
+        : finishAgentRun(pool, run.id, "error", result, "internal");
+    await expect(close(first, "first")).resolves.toBe(true);
     const afterFirst = await getAgentRun(pool, run.id);
 
-    await expect(finishAgentRun(pool, run.id, second, "second")).resolves.toBe(false);
+    await expect(close(second, "second")).resolves.toBe(false);
 
     const afterSecond = await getAgentRun(pool, run.id);
     expect(afterSecond).toMatchObject({ status: first, result: "first", finishedAt: afterFirst!.finishedAt });
+  });
+
+  it("stores the error code and detail in the same update as the status, and reads null for a done run", async () => {
+    const failed = await createAgentRun(pool, { triggeredBy: "user", task: "fails" });
+    await finishAgentRun(pool, failed.id, "error", "boom", "modelError", { attempt: 2 });
+    expect(await getAgentRun(pool, failed.id)).toMatchObject({
+      status: "error",
+      errorCode: "modelError",
+      errorDetail: { attempt: 2 },
+    });
+
+    const done = await createAgentRun(pool, { triggeredBy: "user", task: "works" });
+    await finishAgentRun(pool, done.id, "done", "ok");
+    expect(await getAgentRun(pool, done.id)).toMatchObject({ errorCode: null, errorDetail: null });
+  });
+
+  it("reads a row closed as error without a code (previous release) as internal", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "legacy" });
+    await pool.query(`UPDATE agent_runs SET status = 'error', result = 'old' WHERE id = $1`, [run.id]);
+    expect(await getAgentRun(pool, run.id)).toMatchObject({ errorCode: "internal", errorDetail: null });
+  });
+
+  it("rejects a code outside the closed set at the database", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "bad" });
+    await expect(pool.query(`UPDATE agent_runs SET error_code = 'nope' WHERE id = $1`, [run.id])).rejects.toThrow();
   });
 
   it("throws NotFoundError for an unknown run id", async () => {
@@ -110,5 +145,78 @@ describe("createAgentRun actor in a tenant (issue #1018)", () => {
       createAgentRun(runtimePool, { triggeredBy: "user", task: "child", parentRunId: explicit.id, userId: userA }),
     );
     expect(child.actorUserId).toBe(userB);
+  });
+});
+
+describe("agent run retry chain (issue #1448)", () => {
+  let chainPool: Pool;
+
+  beforeEach(async () => {
+    chainPool ??= getTestPool();
+    await resetDatabase(chainPool);
+    await createTenantZeroUser(chainPool);
+  });
+
+  afterAll(async () => {
+    await chainPool?.end();
+  });
+
+  it("creates an unlinked run as attempt 1 with no retry link", async () => {
+    const run = await createAgentRun(chainPool, { triggeredBy: "user", task: "t" });
+    expect(run).toMatchObject({ attempt: 1, retryOfRunId: null });
+  });
+
+  it("inserts a chained run with the given attempt and the retried run's actor, once", async () => {
+    const first = await createAgentRun(chainPool, { triggeredBy: "user", task: "t" });
+
+    const retry = await createChainedAgentRun(chainPool, {
+      triggeredBy: "user",
+      task: "t",
+      retryOfRunId: first.id,
+      attempt: 2,
+    });
+    expect(retry).toMatchObject({ retryOfRunId: first.id, attempt: 2, actorUserId: first.actorUserId });
+
+    await expect(
+      createChainedAgentRun(chainPool, { triggeredBy: "user", task: "t", retryOfRunId: first.id, attempt: 2 }),
+    ).resolves.toBeNull();
+    const { rows } = await chainPool.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM agent_runs WHERE retry_of_run_id = $1",
+      [first.id],
+    );
+    expect(rows[0]?.n).toBe(1);
+  });
+
+  it("creates exactly one row for two concurrent chained runs of the same run", async () => {
+    const first = await createAgentRun(chainPool, { triggeredBy: "user", task: "t" });
+    const results = await Promise.all(
+      [1, 2].map(() =>
+        createChainedAgentRun(chainPool, { triggeredBy: "user", task: "t", retryOfRunId: first.id, attempt: 2 }),
+      ),
+    );
+    expect(results.filter((r) => r !== null)).toHaveLength(1);
+    const { rows } = await chainPool.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM agent_runs WHERE retry_of_run_id = $1",
+      [first.id],
+    );
+    expect(rows[0]?.n).toBe(1);
+  });
+
+  it("throws NotFoundError for a chained run of a run that does not exist", async () => {
+    await expect(
+      createChainedAgentRun(chainPool, { triggeredBy: "user", task: "t", retryOfRunId: randomUUID(), attempt: 2 }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("returns the successor id from getRetrySuccessorId, or null for a run that was not retried", async () => {
+    const first = await createAgentRun(chainPool, { triggeredBy: "user", task: "t" });
+    await expect(getRetrySuccessorId(chainPool, first.id)).resolves.toBeNull();
+    const retry = await createChainedAgentRun(chainPool, {
+      triggeredBy: "user",
+      task: "t",
+      retryOfRunId: first.id,
+      attempt: 2,
+    });
+    await expect(getRetrySuccessorId(chainPool, first.id)).resolves.toBe(retry!.id);
   });
 });

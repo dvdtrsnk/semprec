@@ -1,15 +1,20 @@
+import { ConflictError } from "../errors.js";
+import { projectItemsForRead } from "./itemReadProjection.js";
+import { z } from "zod";
 // Owns the choke point's item writes: `createItem` / `updateItem` and their transaction-scoped
 // `createItemWithClient` / `updateItemWithClient` counterparts, the property writability checks
-// they share, the archived-database create guard with its idempotent-replay exception, the inline
-// derivation of Tasks `time`, and `writeComputedAndAnnounce`. A domain's own transactional side
-// effect on an item update (e.g. the Emails flag-sync write, the Tasks recurrence advance on a
-// `status: 'done'` write) runs through `runItemUpdateHooks` (./hooks.ts), never a direct import
+// they share, the archived-database create guard with its idempotent-replay exception, the
+// owning module's pre-write transforms (the ownership check on the keys they add), and
+// `writeComputedAndAnnounce`. A domain's own derived property (e.g. Tasks' `time`) is a pre-write
+// transform registered by that domain, and a domain's own transactional side effect on an item
+// update (e.g. the Emails flag-sync write, the Tasks recurrence advance on a `status: 'done'`
+// write) runs through `runItemUpdateHooks` (./hooks.ts), never a direct import
 // of the domain, with `convergeObservedEmailFlagsWithClient` below as mail sync's own declared,
 // narrow ownership handoff for Emails' owner:'user' `read`/`flagged` properties — see its doc
 // comment. It does not own item reads
 // (itemReads.ts), trash and restore (itemTrash.ts), or relation writes (relationOps.ts).
 // Constrained by:
-// - docs/adr/2026-09-19-derived-system-properties-computed-inline-at-choke-point.md
+// - docs/adr/2026-10-29-item-pre-write-transforms-per-module-registry.md
 // - docs/adr/2026-09-28-module-transactional-side-effects-inline-at-choke-point.md
 // - docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
 // - docs/adr/2026-09-10-choke-point-api-for-state-writes.md
@@ -29,13 +34,21 @@ import { findDependenciesBySource } from "../rollup/dependencies.js";
 import { enqueueRollupRecompute } from "../rollup/recompute.js";
 import { triggerOnItemEventHeartbeats, recomputeAllForTimezoneChange } from "../scheduler/schedulerStore.js";
 import type { ActionQueueAffinity } from "../scheduler/actions.js";
-import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import { assertDatabaseNotArchived } from "./databaseGuards.js";
 import { assertValidTimezone } from "../timezone.js";
 import { getSystemTimezone, getSystemSettingsItemId } from "../systemSettings.js";
-import { deriveTaskTime } from "../tasks/deriveTaskTime.js";
-import { runItemCreateHooks, runItemUpdateHooks } from "./hooks.js";
+import {
+  hasItemPreWriteTransform,
+  runItemCreateHooks,
+  runItemPreWriteTransforms,
+  runItemUpdateHooks,
+  type ItemPreWriteTransformContext,
+} from "./hooks.js";
+import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
+import { assertValueLinkHandoff, breakValueLinks, VALUE_LINKS_OWNER_PROCESS } from "./valueLinkWrites.js";
+import { isDeepStrictEqual } from "node:util";
 
 interface AssertWritablePropertiesOptions {
   /**
@@ -50,6 +63,24 @@ interface AssertWritablePropertiesOptions {
   allowedSystemKeys?: readonly string[];
   /** The identity of a trusted in-process system writer, required to match each system field it writes. */
   systemOwnerProcess?: string;
+}
+
+const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
+
+/**
+ * Value check for `color` properties: `null` clears the color, anything else must be `#RRGGBB`.
+ * Inspects only the keys present in the write, so rows already stored in another format stay
+ * untouched until that key is written again. Runs unconditionally, independent of the
+ * `allowedSystemKeys` escape hatch.
+ */
+function assertColorValues(properties: PropertyRow[], values: Record<string, unknown>): void {
+  const byKey = new Map(properties.map((p) => [p.key, p]));
+  for (const [key, value] of Object.entries(values)) {
+    if (byKey.get(key)?.type !== "color" || value === null) continue;
+    if (typeof value !== "string" || !HEX_COLOR.test(value)) {
+      throw new ValidationError(`Property '${key}' must be a color in #RRGGBB format or null`, { field: key });
+    }
+  }
 }
 
 /** Keys the generic write path never accepts: relation values live only in item_relations, and computed is internal-only. */
@@ -83,9 +114,13 @@ function assertWritableProperties(
     }
     if (property.owner === "system") {
       if (!options.allowedSystemKeys?.includes(key)) {
-        throw new ForbiddenError(`Property '${key}' is owned by 'system' and cannot be written by this caller`, {
-          field: key,
-        });
+        // Same code as the relation-write refusal in relationEdgeContext.ts, so both refusals of a
+        // system-owned field share one code (issue #1454).
+        throw new ForbiddenError(
+          `Property '${key}' is owned by 'system' and cannot be written by this caller`,
+          { field: key },
+          "owner_violation",
+        );
       }
       if (options.systemOwnerProcess && property.ownerProcess !== options.systemOwnerProcess) {
         throw new ForbiddenError(
@@ -96,6 +131,88 @@ function assertWritableProperties(
       }
     }
   }
+}
+
+/**
+ * A user or agent write must leave the database's user-owned title property non-blank. Internal
+ * writers keep their behavior (several create items whose title is written later or derived) and
+ * Transcripts is exempt, since a transcript is named from its event or recording date. Stored
+ * titles are not trimmed; only a value that is blank after trimming is rejected. On create the
+ * title must be present; on patch only a title key that the patch mentions is checked.
+ */
+function assertTitlePresent(
+  properties: PropertyRow[],
+  values: Record<string, unknown>,
+  ownerModuleId: string | null,
+  writer: WriterIdentity,
+  mode: "create" | "patch",
+): void {
+  if (writer.writerKind === "system" || ownerModuleId === TRANSCRIPTS_MODULE_ID) return;
+  const title = properties.find((p) => p.type === "title" && p.owner === "user");
+  if (!title) return;
+  if (mode === "patch" && !Object.hasOwn(values, title.key)) return;
+  const value = values[title.key];
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new ValidationError(`Property '${title.key}' must be a non-empty title`, { field: title.key });
+  }
+}
+
+/**
+ * The ownership rule for keys a pre-write transform adds (the caller's own keys were already checked by
+ * `assertWritableProperties`): the key must exist on the database, must be writable through the generic
+ * path (not a rollup or relation), and when it is `owner: 'system'` its `ownerProcess` must be unset or
+ * name the transform's own module. Only keys absent from the caller's patch are inspected.
+ */
+function assertTransformAddedKeysWritable(
+  properties: PropertyRow[],
+  callerKeys: readonly string[],
+  transformed: Record<string, unknown>,
+  moduleId: string,
+): void {
+  const byKey = new Map(properties.map((p) => [p.key, p]));
+  for (const key of Object.keys(transformed)) {
+    if (callerKeys.includes(key)) continue;
+    const property = byKey.get(key);
+    if (!property) {
+      throw new ValidationError(`Unknown property key '${key}'`, { field: key });
+    }
+    if (property.type === "rollup") {
+      throw new ForbiddenError(
+        `Property '${key}' is a rollup; its value lives in computed and is read-only here`,
+        { field: key },
+        "computed_readonly",
+      );
+    }
+    if (property.type === "relation") {
+      throw new ValidationError(
+        `Property '${key}' is a relation; write it via createRelation/deleteRelation, not item properties`,
+        { field: key },
+      );
+    }
+    if (property.owner === "system" && property.ownerProcess !== null && property.ownerProcess !== moduleId) {
+      throw new ForbiddenError(
+        `Property '${key}' is owned by process '${property.ownerProcess}' and cannot be written by module '${moduleId}'`,
+        { field: key },
+        "owner_violation",
+      );
+    }
+  }
+}
+
+/**
+ * Runs the owning module's pre-write transforms over one write's properties, then enforces the ownership
+ * rule on the keys they added. The caller checks `hasItemPreWriteTransform` first, so a database whose
+ * module registered none never reaches this function.
+ */
+async function applyItemPreWriteTransforms(
+  moduleId: string,
+  context: ItemPreWriteTransformContext,
+  properties: PropertyRow[],
+): Promise<Record<string, unknown>> {
+  const callerKeys = Object.keys(context.patch);
+  const transformed = await runItemPreWriteTransforms(moduleId, context);
+  assertTransformAddedKeysWritable(properties, callerKeys, transformed, moduleId);
+  return transformed;
 }
 
 /**
@@ -135,6 +252,8 @@ export interface CreateItemWithClientOptions extends AssertWritablePropertiesOpt
   actingUserId?: string;
   /** Set only for a human REST writer (`restSession` actor); read by domain hooks that confine a write to humans. */
   humanWriterUserId?: string;
+  /** Who made the write; defaults to `SYSTEM_WRITER`. Derived server-side by the caller, never from a request body. */
+  writer?: WriterIdentity;
 }
 
 export interface CreateItemInput {
@@ -165,22 +284,30 @@ export async function createItemWithClient(
 
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   assertWritableProperties(properties, Object.keys(input.properties ?? {}), options);
+  assertColorValues(properties, input.properties ?? {});
 
   const database = await databasesStore.getDatabase(client, input.databaseId);
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
-  const inputProperties = input.properties ?? {};
-  // Ownership-keyed derived property, distinct from the allowedSystemKeys escape hatch above —
-  // see docs/adr/2026-09-19-derived-system-properties-computed-inline-at-choke-point.md.
-  let itemProperties =
-    database.ownerModuleId === TASKS_MODULE_ID
-      ? {
-          ...inputProperties,
-          time: deriveTaskTime(
-            typeof inputProperties.timeFrom === "string" ? inputProperties.timeFrom : null,
-            typeof inputProperties.timeTo === "string" ? inputProperties.timeTo : null,
-          ),
-        }
-      : inputProperties;
+  const writer = options.writer ?? SYSTEM_WRITER;
+  // The owning module's pre-write transforms (e.g. Tasks' derived `time`) run before the insert, so the
+  // row and its create hooks store what they return. An idempotency replay returns early below and
+  // discards this result; the transforms must therefore be deterministic.
+  let itemProperties = input.properties ?? {};
+  const moduleId = database.ownerModuleId;
+  if (moduleId !== null && hasItemPreWriteTransform(moduleId)) {
+    itemProperties = await applyItemPreWriteTransforms(
+      moduleId,
+      {
+        client,
+        database,
+        stored: null,
+        patch: itemProperties,
+        humanWriterUserId: options.humanWriterUserId,
+        writer,
+      },
+      properties,
+    );
+  }
 
   const { item, created } = await itemsStore.insertItemWithReplay(
     client,
@@ -189,7 +316,8 @@ export async function createItemWithClient(
       itemProperties = { ...itemProperties };
       let today: string | undefined;
       for (const property of properties) {
-        if (Object.hasOwn(inputProperties, property.key) || !Object.hasOwn(property.config, "default")) continue;
+        // A key already set by the caller or by a transform keeps its value; only an absent key takes its default.
+        if (Object.hasOwn(itemProperties, property.key) || !Object.hasOwn(property.config, "default")) continue;
         const value = property.config.default;
         if (property.type === "date" && value === "today") {
           if (today === undefined) {
@@ -202,6 +330,7 @@ export async function createItemWithClient(
           itemProperties[property.key] = value;
         }
       }
+      assertTitlePresent(properties, itemProperties, database.ownerModuleId, writer, "create");
       return itemProperties;
     },
   );
@@ -215,6 +344,7 @@ export async function createItemWithClient(
     item,
     properties: itemProperties,
     humanWriterUserId: options.humanWriterUserId,
+    writer,
   });
   await triggerOnItemEventHeartbeats(client, input.databaseId, "create", item.id, options.queueAffinity);
   runAfterCommit(client, () =>
@@ -262,6 +392,8 @@ export interface UpdateItemWithClientOptions extends AssertWritablePropertiesOpt
   actingUserId?: string;
   /** Set only for a human REST writer (`restSession` actor); read by domain hooks that confine a write to humans. */
   humanWriterUserId?: string;
+  /** Who made the write; defaults to `SYSTEM_WRITER`. Derived server-side by the caller, never from a request body. */
+  writer?: WriterIdentity;
   /**
    * Set only by `convergeObservedEmailFlagsWithClient` below, mail sync's declared, narrow
    * ownership handoff for Emails' owner:'user' `read`/`flagged` properties — never by a
@@ -290,38 +422,45 @@ export async function updateItemWithClient(
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   const patchKeys = Object.keys(input.propertiesPatch);
   assertWritableProperties(properties, patchKeys, options);
+  assertColorValues(properties, input.propertiesPatch);
+  // The declared handoff: the valueLinks process may write a user-owned value only while its link is on.
+  if (options.systemOwnerProcess === VALUE_LINKS_OWNER_PROCESS) {
+    for (const key of patchKeys) await assertValueLinkHandoff(client, { itemId: input.itemId, propertyKey: key });
+  }
 
   const database = await databasesStore.getDatabase(client, input.databaseId);
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
+  const writer = options.writer ?? SYSTEM_WRITER;
+  assertTitlePresent(properties, input.propertiesPatch, database.ownerModuleId, writer, "patch");
   let propertiesPatch = input.propertiesPatch;
-  // Same ownership-keyed derivation as createItemWithClient above — see
-  // docs/adr/2026-09-19-derived-system-properties-computed-inline-at-choke-point.md.
-  if (
-    database.ownerModuleId === TASKS_MODULE_ID &&
-    (Object.hasOwn(input.propertiesPatch, "timeFrom") || Object.hasOwn(input.propertiesPatch, "timeTo"))
-  ) {
-    const current = await itemsStore.lockItemById(client, input.databaseId, input.itemId);
-    if (!current || current.deletedAt) throw new NotFoundError(`Item ${input.itemId} not found`);
-    const effectiveTimeFrom = Object.hasOwn(input.propertiesPatch, "timeFrom")
-      ? input.propertiesPatch.timeFrom
-      : current.properties.timeFrom;
-    const effectiveTimeTo = Object.hasOwn(input.propertiesPatch, "timeTo")
-      ? input.propertiesPatch.timeTo
-      : current.properties.timeTo;
-    propertiesPatch = {
-      ...input.propertiesPatch,
-      time: deriveTaskTime(
-        typeof effectiveTimeFrom === "string" ? effectiveTimeFrom : null,
-        typeof effectiveTimeTo === "string" ? effectiveTimeTo : null,
-      ),
-    };
+  const moduleId = database.ownerModuleId;
+  if (moduleId !== null && hasItemPreWriteTransform(moduleId)) {
+    // The row lock is taken before the transforms read `stored`, so the decision is made on the row this
+    // update will replace; a database whose module has no transform takes no lock here.
+    const stored = await itemsStore.lockItemById(client, input.databaseId, input.itemId);
+    if (!stored || stored.deletedAt) throw new NotFoundError(`Item ${input.itemId} not found`);
+    propertiesPatch = await applyItemPreWriteTransforms(
+      moduleId,
+      { client, database, stored, patch: input.propertiesPatch, humanWriterUserId: options.humanWriterUserId, writer },
+      properties,
+    );
   }
+  // Every key this update writes, including any a transform added. Value links, rollup dependencies
+  // and the timezone check treat these like any other written key; `patchKeys` (the caller's keys)
+  // stays the basis of the returned `previous`.
+  const writtenKeys = Object.keys(propertiesPatch);
 
   const { previous, ...item } = await itemsStore.updateItemProperties(client, {
     databaseId: input.databaseId,
     itemId: input.itemId,
     propertiesPatch,
     ifVersion: input.ifVersion,
+  });
+  // A user or agent write that changes a linked value ends its link, in this transaction.
+  await breakValueLinks(client, {
+    itemId: item.id,
+    propertyKeys: writtenKeys.filter((key) => !isDeepStrictEqual(previous[key], propertiesPatch[key])),
+    writerKind: writer.writerKind,
   });
   // Every domain's transactional side effect on this write (the Tasks recurrence advance on a
   // `status: 'done'` write, the Emails flag-sync write, ...) runs here, in the same transaction,
@@ -334,11 +473,12 @@ export async function updateItemWithClient(
     item,
     propertiesPatch,
     humanWriterUserId: options.humanWriterUserId,
+    writer,
     skipMailDesiredStateRecording: options.skipMailDesiredStateRecording,
   });
   await triggerOnItemEventHeartbeats(client, input.databaseId, "update", item.id, options.queueAffinity);
 
-  for (const key of patchKeys) {
+  for (const key of writtenKeys) {
     const dependencies = await findDependenciesBySource(client, input.databaseId, key);
     for (const dependency of dependencies) {
       const edges = await relationsStore.listRelationsForItem(client, dependency.relationDefinitionId, item.id);
@@ -352,8 +492,8 @@ export async function updateItemWithClient(
     if (err instanceof NotFoundError) return null; // system not seeded yet
     throw err;
   });
-  if (settingsItemId === item.id && typeof input.propertiesPatch.timezone === "string") {
-    const timezone = input.propertiesPatch.timezone;
+  if (settingsItemId === item.id && typeof propertiesPatch.timezone === "string") {
+    const timezone = propertiesPatch.timezone;
     // Validated before it reaches computeNextFireAt, where an invalid zone would surface
     // much later as a Postgres "Invalid time value" from serializing next_fire_at = NaN.
     assertValidTimezone(timezone);
@@ -423,20 +563,60 @@ export async function lockItemForObservedMailFlags(
 export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAffinity">) {
   const { pool, queueAffinity } = deps;
   return {
-    async createItem(input: CreateItemInput, actingUserId?: string, humanWriterUserId?: string): Promise<ItemRow> {
-      return withTransaction(pool, (client) =>
-        createItemWithClient(client, input, { queueAffinity, actingUserId, humanWriterUserId }),
-      );
+    async createItem(
+      input: CreateItemInput,
+      actingUserId?: string,
+      humanWriterUserId?: string,
+      writer?: WriterIdentity,
+    ): Promise<ItemRow> {
+      return withTransaction(pool, async (client) => {
+        const item = await createItemWithClient(client, input, {
+          queueAffinity,
+          actingUserId,
+          humanWriterUserId,
+          writer,
+        });
+        return (await projectItemsForRead(client, [item]))[0]!;
+      });
     },
 
     async updateItem(
       input: UpdateItemInput,
       actingUserId?: string,
       humanWriterUserId?: string,
+      writer?: WriterIdentity,
     ): Promise<itemsStore.UpdateItemResult> {
-      return withTransaction(pool, (client) =>
-        updateItemWithClient(client, input, { queueAffinity, actingUserId, humanWriterUserId }),
-      );
+      return withTransaction(pool, async (client) => {
+        try {
+          const item = await updateItemWithClient(client, input, {
+            queueAffinity,
+            actingUserId,
+            humanWriterUserId,
+            writer,
+          });
+          return (await projectItemsForRead(client, [item]))[0]!;
+        } catch (error) {
+          if (!(error instanceof ConflictError)) throw error;
+          const details = z
+            .object({
+              current: z
+                .object({
+                  id: z.string(),
+                  databaseId: z.string(),
+                  properties: z.record(z.string(), z.unknown()),
+                  computed: z.record(z.string(), z.unknown()),
+                  updatedAt: z.string(),
+                  deletedAt: z.string().nullable(),
+                })
+                .passthrough(),
+            })
+            .passthrough()
+            .safeParse(error.details);
+          if (!details.success) throw error;
+          const current = (await projectItemsForRead(client, [details.data.current]))[0]!;
+          throw new ConflictError(error.message, { ...details.data, current });
+        }
+      });
     },
   };
 }
