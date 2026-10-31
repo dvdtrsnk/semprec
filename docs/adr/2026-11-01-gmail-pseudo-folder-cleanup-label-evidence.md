@@ -27,7 +27,21 @@ Cleanup uses bounded keyset pages and one transaction per page as in
 placement folder receive Archive even if a user-label edge remains. The existing OAuth refresh and
 token-lock contract is unchanged.
 
+Gmail reconciliation and cleanup share a transaction-scoped advisory lock keyed by
+`gmail-folder-state:v1:<lowercase tenant UUID>:<lowercase mailbox UUID>`, hashed using
+`hashtextextended($1::text, 0)`. A missing or system tenant scope fails before the lock query.
+Reconciliation takes the guard first, before mailbox state, item, folder or edge decisions.
+Every cleanup mutation page and its final folder-removal transaction takes the same guard first
+and rechecks the folder's current eligibility. Inventory loading stays outside those cleanup
+transactions. The guard releases on commit or rollback. Different keys are independent except for
+ordinary hash collisions, which can serialize unrelated work.
+
 ## Consequences
 
 An obsolete folder absent from the provider inventory is preserved because its former type cannot
 be established. A provider failure delays cleanup instead of authorizing a guessed deletion.
+Gmail reconciliation already performs provider I/O in its transaction; this guard inherits that
+duration and can delay cleanup for the same mailbox. This decision retains that existing boundary
+for this path and does not authorize new network work inside transactions. The guard coordinates
+only these participating writers; it does not guarantee deadlock freedom or control old-version or
+other writers. Waits use the normal transaction limits and failures propagate for retry.

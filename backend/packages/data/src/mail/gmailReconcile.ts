@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
 import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
@@ -66,6 +67,14 @@ export const GMAIL_ARCHIVE_PROVIDER_ID = "semprec:archive";
 /** Provider ids of the five system labels; a message carrying none of them is archived. */
 export const GMAIL_PLACEMENT_LABEL_IDS: readonly string[] = Object.keys(GMAIL_SYSTEM_FOLDER_PURPOSES);
 
+/** Serializes participating Gmail folder writers for one tenant and mailbox until transaction end. */
+export async function lockGmailFolderState(client: PoolClient, mailboxItemId: string): Promise<void> {
+  const scope = currentTenantScope();
+  if (scope?.kind !== "tenant") throw new TenantScopeMissingError("Gmail folder state requires a tenant scope");
+  const key = `gmail-folder-state:v1:${scope.tenantId.toLowerCase()}:${mailboxItemId.toLowerCase()}`;
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", [key]);
+}
+
 function specialPurposeForLabel(label: GmailLabelRef): string {
   return GMAIL_SYSTEM_FOLDER_PURPOSES[label.id] ?? "none";
 }
@@ -108,6 +117,7 @@ export async function reconcileGmailAccount(
   gmail: GmailMailClient,
   params: ReconcileGmailAccountParams,
 ): Promise<void> {
+  await lockGmailFolderState(dbClient, params.mailboxItemId);
   const relationDefinition = await getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId);
   if (!relationDefinition)
     throw new ValidationError(`Folder relation property ${params.folderRelationPropertyId} has no relation definition`);

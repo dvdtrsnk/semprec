@@ -10,7 +10,12 @@ import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { ensureFolderItem } from "./folderDiscovery.js";
-import { GMAIL_ARCHIVE_PROVIDER_ID, GMAIL_PLACEMENT_LABEL_IDS, type GmailLabelRef } from "./gmailReconcile.js";
+import {
+  GMAIL_ARCHIVE_PROVIDER_ID,
+  GMAIL_PLACEMENT_LABEL_IDS,
+  lockGmailFolderState,
+  type GmailLabelRef,
+} from "./gmailReconcile.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
 
 const PAGE_SIZE = 200;
@@ -78,6 +83,26 @@ async function listPseudoFolderIds(
     [context.foldersDatabaseId, ids, context.mailboxFolderRelationPropertyId, mailboxItemId, afterId, PAGE_SIZE],
   );
   return rows.map((row) => row.id);
+}
+
+async function folderStillEligible(
+  client: PoolClient,
+  context: CleanupContext,
+  mailboxItemId: string,
+  folderItemId: string,
+  ids: string[],
+): Promise<boolean> {
+  const { rows } = await client.query<{ eligible: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM items i JOIN item_relations r ON (r.item_a = i.id OR r.item_b = i.id)
+        WHERE i.id = $1 AND i.database_id = $2 AND i.deleted_at IS NULL
+          AND i.properties ->> 'providerId' = ANY($3::text[])
+          AND r.relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $4 OR property_id_b = $4)
+          AND (r.item_a = $5 OR r.item_b = $5)
+     ) AS eligible`,
+    [folderItemId, context.foldersDatabaseId, ids, context.mailboxFolderRelationPropertyId, mailboxItemId],
+  );
+  return rows[0]?.eligible === true;
 }
 
 /** Whether the message still has an edge to INBOX/SPAM/TRASH/SENT/DRAFT of this mailbox. */
@@ -156,6 +181,8 @@ export async function handleMailGmailPseudoFolderCleanupTask(
           let afterMessageId: string | null = null;
           for (;;) {
             const lastMessageId: string | null = await withTransaction(pool, async (client) => {
+              await lockGmailFolderState(client, mailboxItemId);
+              if (!(await folderStillEligible(client, context, mailboxItemId, folderItemId, ids))) return null;
               const archiveFolderItemId = await ensureFolderItem(client, {
                 foldersDatabaseId: context.foldersDatabaseId,
                 mailboxItemId,
@@ -204,6 +231,8 @@ export async function handleMailGmailPseudoFolderCleanupTask(
             afterMessageId = lastMessageId;
           }
           await withTransaction(pool, async (client) => {
+            await lockGmailFolderState(client, mailboxItemId);
+            if (!(await folderStillEligible(client, context, mailboxItemId, folderItemId, ids))) return;
             await deleteRelationWithClient(
               client,
               {
