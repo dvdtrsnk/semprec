@@ -162,10 +162,16 @@ describe("Inbox tick write phase recomputes the day's Inbox summary (issue #1390
     const item = await captureItem("Buy milk", type.id);
     const dayId = await journalDayIdFor(item.id);
     await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const first = (await chokePoint.listItems(proposalsId)).items;
+    expect(first).toHaveLength(1);
     await chokePoint.updateItem({ databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "Buy oat milk" } });
 
     await tickWithClearedJobs(item.id);
 
+    const revised = (await chokePoint.listItems(proposalsId)).items;
+    expect(revised).toHaveLength(1);
+    expect(revised[0]?.id).toBe(first[0]?.id);
+    expect(revised[0]?.properties.fingerprint).not.toBe(first[0]?.properties.fingerprint);
     expect(await pendingRecomputeJobKeys()).toEqual([journalInboxRecomputeJobKey(dayId)]);
     await drainQueue();
     expect(await cachedStatus(dayId)).toBe("proposed");

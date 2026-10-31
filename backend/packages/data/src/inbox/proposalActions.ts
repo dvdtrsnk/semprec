@@ -96,6 +96,7 @@ interface EnvelopeForCard {
 function unsupportedEntityKindError(entityKind: string): ConflictError {
   return new ConflictError(`Proposal entityKind '${entityKind}' is not supported by this release`, {
     field: "entityKind",
+    entityKind,
   });
 }
 

@@ -6,6 +6,13 @@ import { moduleManifestSchema, type ModuleManifest } from "../manifest.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ModuleRegistry } from "../registry.js";
 import { loadModuleCatalogs } from "../catalog.js";
+import {
+  editorConditionSchema,
+  editorFieldValueSchema,
+  editorFieldDescriptorSchema,
+  editorGroupDescriptorSchema,
+  editorSchemaDescriptorSchema,
+} from "../index.js";
 
 // `../catalog.js`'s named export binding can't be `vi.spyOn`'d directly under vitest's
 // ESM module loader, so `vi.mock` with a factory that wraps the real implementation in a
@@ -29,6 +36,15 @@ function fixturePath(name: string): string {
 const alwaysActive: () => ReadonlySet<string> = () => new Set(["fixture-good", "fixture-second"]);
 
 describe("ModuleRegistry.loadModule", () => {
+  it("exports the editor schemas through the public entry point", () => {
+    const field = { key: "name", control: "text", labelKey: "name" };
+    const group = { key: "main", fields: [field] };
+    expect(editorFieldValueSchema.parse("value")).toBe("value");
+    expect(editorConditionSchema.parse({ field: "name", equals: "value" })).toEqual({ field: "name", equals: "value" });
+    expect(editorFieldDescriptorSchema.parse(field)).toEqual(field);
+    expect(editorGroupDescriptorSchema.parse(group)).toEqual(group);
+    expect(editorSchemaDescriptorSchema.parse({ groups: [group] })).toEqual({ groups: [group] });
+  });
   it("loads a structurally valid module and returns only its id", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     const moduleId = await registry.loadModule(fixturePath("goodModule.js"));

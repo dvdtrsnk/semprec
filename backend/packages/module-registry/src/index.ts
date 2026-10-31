@@ -24,6 +24,11 @@ export type {
 } from "./manifest.js";
 export {
   moduleManifestSchema,
+  editorFieldValueSchema,
+  editorConditionSchema,
+  editorFieldDescriptorSchema,
+  editorGroupDescriptorSchema,
+  editorSchemaDescriptorSchema,
   CUSTOM_ROUTE_METHODS,
   CUSTOM_ROUTE_JUSTIFICATIONS,
   MODULE_TASK_AFFINITIES,

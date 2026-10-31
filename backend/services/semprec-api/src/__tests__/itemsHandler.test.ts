@@ -264,6 +264,50 @@ describe("item routes (issue #241)", () => {
       expect(await countTargets()).toBe(originalCount);
       expect(await countEdges()).toBe(originalEdges);
     }
+    const futureEnvelope = {
+      entityKind: "someFutureKind",
+      target: fixture.companiesId,
+      properties: { name: "Future" },
+    };
+    await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          {
+            databaseId: fixture.processingProposalsDatabaseId,
+            itemId: fixture.cardId,
+            propertiesPatch: { proposal: futureEnvelope },
+          },
+          { allowedSystemKeys: ["proposal"] },
+        ),
+      ),
+    );
+    const futureBefore = await runInTenant(getTenantZeroId(), () =>
+      chokePoint.getItem(fixture.processingProposalsDatabaseId, fixture.cardId),
+    );
+    const unsupported = await fetch(`${baseUrl}/api/proposals/${fixture.cardId}/confirm`, {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    expect(unsupported.status).toBe(409);
+    const conflict = z
+      .object({
+        error: z.object({ code: z.string(), details: z.object({ field: z.string(), entityKind: z.string() }) }),
+      })
+      .parse(await unsupported.json());
+    expect(conflict.error).toEqual({
+      code: "version_conflict",
+      details: { field: "entityKind", entityKind: "someFutureKind" },
+    });
+    expect(
+      await runInTenant(getTenantZeroId(), () =>
+        chokePoint.getItem(fixture.processingProposalsDatabaseId, fixture.cardId),
+      ),
+    ).toEqual(futureBefore);
+    expect(futureBefore?.properties.status).toBe("proposed");
+    expect(await countTargets()).toBe(originalCount);
+    expect(await countEdges()).toBe(originalEdges);
     await runInTenant(getTenantZeroId(), () =>
       withTransaction(pool, (client) =>
         updateItemWithClient(

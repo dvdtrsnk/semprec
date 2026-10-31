@@ -10,6 +10,7 @@ import {
   TASKS_MODULE_ID,
 } from "../seed/tenDatabaseKeys.js";
 import type { ProposalEnvelope } from "./inboxTickAction.js";
+import type { UnknownKindProposalEnvelope } from "./proposalEnvelope.js";
 import { transcriptCardRole } from "./proposalActions.js";
 
 /**
@@ -48,7 +49,7 @@ export interface InboxCardKindInput {
   /** The stored proposal status, or the compute state (`computing`, `computeFailed`) of a card being computed. */
   status: string;
   /** The stored envelope, or `null` when none was computed. */
-  envelope: ProposalEnvelope | null;
+  envelope: ProposalEnvelope | UnknownKindProposalEnvelope | null;
   /**
    * `databases.owner_module_id` of the envelope's target: the target database of a `database`
    * envelope, or the database owning the target page of a `pageContent` envelope (the Journal
@@ -75,7 +76,11 @@ export function deriveApprovalCardKind(): InboxCardKinds {
   return { cardKind: "approval", baseKind: "approval" };
 }
 
-function deriveFromEnvelope(input: InboxCardKindInput, envelope: ProposalEnvelope): InboxCardKinds {
+function deriveFromEnvelope(
+  input: InboxCardKindInput,
+  envelope: ProposalEnvelope | UnknownKindProposalEnvelope,
+): InboxCardKinds {
+  if ("unknownKind" in envelope) return { cardKind: "clarify", baseKind: "page" };
   if (input.kind === "transcript") {
     return transcriptCardRole(envelope) === "speaker"
       ? { cardKind: "speaker", baseKind: "speaker" }
@@ -83,7 +88,10 @@ function deriveFromEnvelope(input: InboxCardKindInput, envelope: ProposalEnvelop
   }
   switch (envelope.entityKind) {
     case "database": {
-      const known = input.ownerModuleId === null ? undefined : KIND_BY_OWNER_MODULE[input.ownerModuleId];
+      const known =
+        input.ownerModuleId !== null && Object.hasOwn(KIND_BY_OWNER_MODULE, input.ownerModuleId)
+          ? KIND_BY_OWNER_MODULE[input.ownerModuleId]
+          : undefined;
       return known ? { cardKind: known, baseKind: known } : { cardKind: "clarify", baseKind: "page" };
     }
     case "pageContent": {

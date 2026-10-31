@@ -329,9 +329,9 @@ const moduleLinkRuleDescriptorSchema = z.strictObject({
   via: z.strictObject({ databaseKey: z.string().min(1), relationKey: z.string().min(1) }),
 });
 
-const editorFieldValueSchema = z.union([z.string(), z.number(), z.boolean()]);
+export const editorFieldValueSchema = z.union([z.string(), z.number(), z.boolean()]);
 
-const editorConditionSchema = z.union([
+export const editorConditionSchema = z.union([
   z.strictObject({ field: z.string().min(1), equals: editorFieldValueSchema }),
   z.strictObject({ field: z.string().min(1), notEquals: editorFieldValueSchema }),
 ]);
@@ -342,7 +342,7 @@ const editorConditionSchema = z.union([
  * declaration that pairs an attribute with a control it does not apply to, or an `info` row without
  * `infoKey`, fails at load time.
  */
-const editorFieldDescriptorSchema = z
+export const editorFieldDescriptorSchema = z
   .strictObject({
     key: z.string().min(1),
     control: z.enum(EDITOR_FIELD_CONTROLS),
@@ -376,12 +376,12 @@ const editorFieldDescriptorSchema = z
     }
   });
 
-const editorGroupDescriptorSchema = z.strictObject({
+export const editorGroupDescriptorSchema = z.strictObject({
   key: z.string().min(1),
   fields: z.array(editorFieldDescriptorSchema).min(1),
 });
 
-const editorSchemaDescriptorSchema = z.strictObject({
+export const editorSchemaDescriptorSchema = z.strictObject({
   groups: z.array(editorGroupDescriptorSchema),
 });
 

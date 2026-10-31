@@ -298,6 +298,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
       ).catch((e: unknown) => e);
       expect(error).toBeInstanceOf(ConflictError);
+      expect(error).toMatchObject({ details: { field: "entityKind", entityKind: "someFutureKind" } });
       expect((error as ConflictError).status).toBe(409);
       expect((error as ConflictError).message).toContain("someFutureKind");
 
