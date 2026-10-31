@@ -1,11 +1,13 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import type { Pool } from "pg";
 import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { ForbiddenError, NotFoundError } from "../errors.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
+import { withTransaction } from "../db/pool.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -112,6 +114,22 @@ describe("choke-point databaseOps", () => {
       { column_name: "color", is_nullable: "YES", column_default: null },
       { column_name: "icon", is_nullable: "YES", column_default: null },
     ]);
+  });
+
+  it("preserves a row created before the appearance migration", async () => {
+    const migration = await readFile(new URL("../db/migrations/0113_database_icon_color.sql", import.meta.url), "utf8");
+    await withTransaction(pool, async (client) => {
+      await client.query("CREATE TEMP TABLE databases (id uuid PRIMARY KEY, name text NOT NULL) ON COMMIT DROP");
+      await client.query("SET LOCAL search_path = pg_temp");
+      const id = randomUUID();
+      await client.query("INSERT INTO databases (id, name) VALUES ($1, $2)", [id, "Before upgrade"]);
+      await client.query(migration);
+      const { rows } = await client.query<{ id: string; name: string; icon: string | null; color: string | null }>(
+        "SELECT id, name, icon, color FROM databases WHERE id = $1",
+        [id],
+      );
+      expect(rows).toEqual([{ id, name: "Before upgrade", icon: null, color: null }]);
+    });
   });
 
   it("allows the data runtime role to write both appearance columns", async () => {

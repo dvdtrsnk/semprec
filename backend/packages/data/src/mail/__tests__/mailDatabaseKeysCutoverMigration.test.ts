@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import {
   createRuntimeRolePool,
@@ -170,11 +170,39 @@ describe("mail database key cutover", () => {
     }
   });
 
+  it("bounds a cutover waiting for an exhausted owned pool", async () => {
+    const exhausted = new Pool({
+      ...pool.options,
+      max: 1,
+      connectionTimeoutMillis: 200,
+      statement_timeout: 1000,
+      query_timeout: 1500,
+    });
+    const held = await exhausted.connect();
+    const start = Date.now();
+    try {
+      await expect(runInTenant(tenant, () => runMailDatabaseKeysCutoverMigration(exhausted))).rejects.toThrow(
+        /timeout/i,
+      );
+      expect(Date.now() - start).toBeLessThan(2000);
+    } finally {
+      held.release();
+      await exhausted.end();
+    }
+  });
+
   it("serializes overlapping cutovers and rolls back on a concurrent key collision without blocking another tenant", async () => {
     const other = await createTestTenant(admin);
     await runInTenant(other, () => seedSystem(pool));
     await runInTenant(tenant, makeLegacy);
     await runInTenant(other, makeLegacy);
+    const boundedPool = new Pool({
+      ...pool.options,
+      max: 6,
+      connectionTimeoutMillis: 2000,
+      statement_timeout: 4000,
+      query_timeout: 6000,
+    });
     let release = () => {};
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -186,7 +214,7 @@ describe("mail database key cutover", () => {
       fail = reject;
     });
     const holder = runInTenant(tenant, () =>
-      withTransaction(pool, async (client) => {
+      withTransaction(boundedPool, async (client) => {
         try {
           await client.query(
             "SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND owner_module_id = 'mailboxes' AND system FOR UPDATE",
@@ -220,7 +248,7 @@ describe("mail database key cutover", () => {
           if (state.value !== null) throw new Error("Cutover rejected with a non-error value", { cause: state.value });
           throw new Error("Cutover finished before blocking");
         }
-        const result = await admin.query<{ pid: number }>(
+        const result = await boundedPool.query<{ pid: number }>(
           "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
           [blockerPid],
         );
@@ -247,20 +275,20 @@ describe("mail database key cutover", () => {
       } finally {
         if (timer !== undefined) clearTimeout(timer);
       }
-      first = runInTenant(tenant, () => runMailDatabaseKeysCutoverMigration(pool)).then(
+      first = runInTenant(tenant, () => runMailDatabaseKeysCutoverMigration(boundedPool)).then(
         () => null,
         (error: unknown) => error,
       );
       const firstPid = await waitForBlocked(holderPid, first);
-      second = runInTenant(tenant, () => runMailDatabaseKeysCutoverMigration(pool)).then(
+      second = runInTenant(tenant, () => runMailDatabaseKeysCutoverMigration(boundedPool)).then(
         () => null,
         (error: unknown) => error,
       );
       await waitForBlocked(firstPid, second);
-      await runInTenant(other, () => runMailDatabaseKeysCutoverMigration(pool));
+      await runInTenant(other, () => runMailDatabaseKeysCutoverMigration(boundedPool));
       expect((await runInTenant(other, rows)).map((row) => row.key)).toEqual(keys);
       await runInTenant(tenant, () =>
-        withTransaction(pool, (client) =>
+        withTransaction(boundedPool, (client) =>
           createDatabase(client, {
             name: "Key collision",
             key: "mailboxes",
@@ -284,6 +312,7 @@ describe("mail database key cutover", () => {
     } finally {
       release();
       await Promise.allSettled([holder, ...(first ? [first] : []), ...(second ? [second] : [])]);
+      await boundedPool.end();
     }
   });
 });

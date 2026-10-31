@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool, PoolClient } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { ValidationError } from "../../errors.js";
 import { setNotificationCreatedHook, type NotificationCreatedEvent } from "../../realtimeHook.js";
 import { createDatabase } from "../../chokePoint/databasesStore.js";
@@ -66,7 +66,17 @@ async function rowsFor(tenantId: string, dedupeKey: string) {
   return rows;
 }
 
-async function overlapRaises(firstInput: RaiseProblemInput, secondInput: RaiseProblemInput) {
+async function overlapRaises(firstInput: RaiseProblemInput, secondInput: RaiseProblemInput, suppliedPool?: Pool) {
+  const boundedPool =
+    suppliedPool ??
+    new Pool({
+      ...pool.options,
+      max: 3,
+      connectionTimeoutMillis: 2000,
+      statement_timeout: 4000,
+      query_timeout: 6000,
+    });
+  const scoped = <T>(fn: (client: PoolClient) => Promise<T>) => withTenantTransaction(boundedPool, tenantZero, fn);
   let release = () => {};
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -77,7 +87,7 @@ async function overlapRaises(firstInput: RaiseProblemInput, secondInput: RaisePr
     signal = resolve;
     fail = reject;
   });
-  const first = inZero(async (client) => {
+  const first = scoped(async (client) => {
     try {
       const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
       const pid = rows[0]?.pid;
@@ -114,7 +124,7 @@ async function overlapRaises(firstInput: RaiseProblemInput, secondInput: RaisePr
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
-    second = inZero((client) => raiseProblem(client, secondInput)).then(
+    second = scoped((client) => raiseProblem(client, secondInput)).then(
       (result) => ({ ok: true as const, result }),
       (error: unknown) => ({ ok: false as const, error }),
     );
@@ -129,7 +139,7 @@ async function overlapRaises(firstInput: RaiseProblemInput, secondInput: RaisePr
         if (!finished.ok) throw finished.error;
         throw new Error("Second raise finished before blocking");
       }
-      const result = await pool.query<{ count: string }>(
+      const result = await boundedPool.query<{ count: string }>(
         "SELECT count(*)::text AS count FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
         [held.pid],
       );
@@ -149,6 +159,7 @@ async function overlapRaises(firstInput: RaiseProblemInput, secondInput: RaisePr
   } finally {
     release();
     await Promise.allSettled(second ? [first, second] : [first]);
+    await boundedPool.end();
   }
 }
 
@@ -308,6 +319,31 @@ describe("semp problems store", () => {
       name: "ValidationError",
       message: "Invalid projectItemId",
     });
+  });
+
+  it("bounds a queued checkout and closes its owned pool", async () => {
+    const exhausted = new Pool({
+      ...pool.options,
+      max: 1,
+      connectionTimeoutMillis: 200,
+      query_timeout: 1000,
+      statement_timeout: 1000,
+    });
+    const held = await exhausted.connect();
+    let released = false;
+    const release = () => {
+      if (!released) {
+        released = true;
+        held.release();
+      }
+    };
+    const timer = setTimeout(release, 600);
+    try {
+      await expect(overlapRaises(input(), input(), exhausted)).rejects.toThrow(/timeout/i);
+    } finally {
+      clearTimeout(timer);
+      release();
+    }
   });
 
   it("reports an escalation once when two critical raises race over a warning", async () => {
