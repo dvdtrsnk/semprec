@@ -8,3 +8,21 @@ gh-1478 Task3 asked for an appended note in the accepted 2026-10-16 outbound-add
 - Batch05 aggregate authorization: 0af5fcaf0cee8e56a6d82f40ac5b2c103b9c1fe6cb8ce3d1c55cfc7e4bc1b0bc
 
 All other source contracts remain unchanged. Approval of the exact aggregate and previously unapproved gh-1478 is granted under owner delegation. One worktree/writer, local feature/backend-delivery integration, complete review/AC/full-backend gates, no web/mobile work, no develop merge/push/deploy.
+
+## Gmail label evidence and safe cleanup
+
+Official Gmail [Label resource](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.labels) defines an opaque id and explicit user/system type. Its [label guide](https://developers.google.com/workspace/gmail/api/guides/labels) lists common reserved system labels, not an exhaustive ID classifier. Current local Folder rows store only providerId; the recovered cleanup regex and Label_* assumption cannot establish the Task's negative predicate for every id.
+
+Preserve type-based sync and authorize an authoritative per-mailbox label-inventory loader in the existing Gmail/OAuth adapter composition. Fetch/validate before cleanup mutation transactions; retain existing approved OAuth refresh/token-lock behavior rather than refactoring it. A narrow loader capability on MailSyncAdapterFactory shares real mailbox-scoped OAuth client construction, with no placeholder credential/new auth flow. Validate listLabels provider payloads; malformed/conflicting data fails closed. Fake provider tests must exercise production adapter wiring; no live provider call, mail send or remote label modification is authorized.
+
+Remove only positively confirmed non-placement system folders. Keep INBOX/SENT/SPAM/TRASH/DRAFT, synthetic Archive, all user labels regardless of id spelling, and unknown/absent ids. Missing inventory membership does not prove an old label was system; this explicit preservation rule narrows the obsolete overbroad negative predicate. Unavailable provider/adapter fails that mailbox before destructive cleanup, preserving an error/retry outcome rather than a false cleaned status. Keep bounded tenant-scoped keyset/choke-point mutations and Archive placement for affected messages without a placement folder, including user-label-only mail; no Archive for sent/drafts. The new docs/adr/2026-11-01-gmail-pseudo-folder-cleanup-label-evidence.md records this decision; historical accepted ADR bodies remain unchanged.
+
+Scope now explicitly includes existing adapter/client validation, their tests, cleanup job fixture/composition and the already-required deploy enqueue. gh-1468 receives the same deploy entry point solely for its own existing fixed-key preview-backfill enqueue Task. No broader worker/auth/Graph/IMAP refactor is authorized. Only obsolete descriptive gh-1496 Context prose is compressed; other contracts remain.
+
+## Auth mail link count
+
+gh-1356 preserves exact prior English wording and visible URL. Interpret one link as exactly one HTML anchor with one href; its escaped visible text repeats the URL deliberately, so two serialized occurrences are expected. Plain text contains one URL. Test one anchor/href and escaped visible URL, not merely an arbitrary count of two. Keep both catalog languages, escaping and existing action/mailer/build contracts. No English template or global link/token behavior change is authorized.
+
+- gh-1496: bee53719e9f241939e8bbce0a37053beef63bbbfd198125d86d010a1699396c1 -> 46016b255950f5be48ad4dce264d4c86bfadfbb6564cad5d7b4c45b66f0ed2bf
+- gh-1468: 713a882a016fafd15faf89bef41ba3c9a3f045894c1f67e7271ec7dc6a18d9d2 -> 1b762a6386c3e75610e93c03ab1ed16355d96c4b2912babaa304ce9d4f937544
+- gh-1356: 54c8e1b144d4d507465d5a983c7a3b10964cb8d7a7e714ab82193f7f1c0213a5 -> 452ce2b2b3b639d3d88a135c27da01b554a2a0ed48e4ee400e5834c0c6c7918c
