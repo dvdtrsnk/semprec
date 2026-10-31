@@ -27,6 +27,7 @@ import {
   LocalFsBlobStorageWriter,
   login,
   seedSystem,
+  updateItemWithClient,
   withTransaction,
   type AuthenticatedIdentity,
   type ChokePoint,
@@ -138,6 +139,8 @@ describe("item routes (issue #241)", () => {
       const inboxItemTypesDatabaseId = await idFor("inboxItemTypes");
       const processingProposalsDatabaseId = await idFor("processingProposals");
       const filesId = await idFor("files");
+      const companiesId = await idFor("companies");
+      const peopleId = await idFor("people");
       const type = await chokePoint.createItem({
         databaseId: inboxItemTypesDatabaseId,
         properties: {
@@ -175,8 +178,105 @@ describe("item routes (issue #241)", () => {
       ]);
       if (cards.rows.length !== 1 || !cards.rows[0]) throw new Error("Expected one proposal");
       const view = await chokePoint.createView({ databaseId: filesId, type: "list", name: "Files", config: {} });
-      return { filesId, cardId: cards.rows[0].id, viewId: view.id };
+      return {
+        filesId,
+        companiesId,
+        peopleId,
+        processingProposalsDatabaseId,
+        cardId: cards.rows[0].id,
+        viewId: view.id,
+      };
     });
+    const originalCard = await runInTenant(getTenantZeroId(), () =>
+      chokePoint.getItem(fixture.processingProposalsDatabaseId, fixture.cardId),
+    );
+    if (!originalCard) throw new Error("Missing proposal card");
+    const initialProposal = originalCard.properties.proposal;
+    const countTargets = async () =>
+      (
+        await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM items WHERE database_id = ANY($1::uuid[])",
+          [[fixture.companiesId, fixture.peopleId]],
+        )
+      ).rows[0]?.count;
+    const originalCount = await countTargets();
+    const countEdges = async () =>
+      (await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM item_relations")).rows[0]?.count;
+    const originalEdges = await countEdges();
+    for (const [properties, field] of [
+      [{ name: "Jane", bogus: 1 }, "bogus"],
+      [{ name: 42 }, "name"],
+    ] as const) {
+      const company = {
+        ref: "company",
+        op: "create",
+        databaseKey: "companies",
+        role: "primary",
+        properties: { name: "Acme" },
+      };
+      const person = {
+        ref: "person",
+        op: "create",
+        databaseKey: "people",
+        role: "secondary",
+        properties,
+        relations: { companies: [{ ref: "company" }] },
+      };
+      await runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, (client) =>
+          updateItemWithClient(
+            client,
+            {
+              databaseId: fixture.processingProposalsDatabaseId,
+              itemId: fixture.cardId,
+              propertiesPatch: {
+                proposal: {
+                  entityKind: "database",
+                  target: fixture.companiesId,
+                  properties: company.properties,
+                  operations: [company, person],
+                },
+              },
+            },
+            { allowedSystemKeys: ["proposal"] },
+          ),
+        ),
+      );
+      const before = await runInTenant(getTenantZeroId(), () =>
+        chokePoint.getItem(fixture.processingProposalsDatabaseId, fixture.cardId),
+      );
+      const failure = await fetch(`${baseUrl}/api/proposals/${fixture.cardId}/confirm`, {
+        method: "POST",
+        headers,
+        body: "{}",
+      });
+      expect(failure.status).toBe(400);
+      expect(
+        z
+          .object({ error: z.object({ details: z.object({ ref: z.string(), field: z.string() }) }) })
+          .parse(await failure.json()).error.details,
+      ).toEqual({ ref: "person", field });
+      const after = await runInTenant(getTenantZeroId(), () =>
+        chokePoint.getItem(fixture.processingProposalsDatabaseId, fixture.cardId),
+      );
+      expect(after).toEqual(before);
+      expect(after?.properties.status).toBe("proposed");
+      expect(await countTargets()).toBe(originalCount);
+      expect(await countEdges()).toBe(originalEdges);
+    }
+    await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          {
+            databaseId: fixture.processingProposalsDatabaseId,
+            itemId: fixture.cardId,
+            propertiesPatch: { proposal: initialProposal },
+          },
+          { allowedSystemKeys: ["proposal"] },
+        ),
+      ),
+    );
     const confirmed = await fetch(`${baseUrl}/api/proposals/${fixture.cardId}/confirm`, {
       method: "POST",
       headers,
