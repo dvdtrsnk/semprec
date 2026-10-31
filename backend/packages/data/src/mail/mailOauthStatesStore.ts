@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { openSecret, sealSecret } from "@semprec/credentials";
 import { getOrCreateTenantDataKey, getTenantDataKey } from "../credentials/tenantKeysStore.js";
 import type { Queryable } from "../db/pool.js";
+import { assertKnownValue } from "../dbRowValidation.js";
 
 /**
  * One-time OAuth states for connecting a Gmail or Outlook mailbox (issue #1483). The `state` sent to
@@ -83,7 +84,7 @@ export async function consumeMailOauthState(
   const { rows } = await client.query<{
     id: string;
     tenant_id: string;
-    provider: MailOauthProvider;
+    provider: string;
     mailbox_item_id: string | null;
     code_verifier_ciphertext: Buffer;
     code_verifier_nonce: Buffer;
@@ -106,5 +107,9 @@ export async function consumeMailOauthState(
     tenantKey.dataKey,
     verifierAssociatedData(row.tenant_id, row.id),
   );
-  return { provider: row.provider, mailboxItemId: row.mailbox_item_id, codeVerifier: verifier.toString("utf8") };
+  return {
+    provider: assertKnownValue(MAIL_OAUTH_PROVIDERS, row.provider, "mail_oauth_states.provider"),
+    mailboxItemId: row.mailbox_item_id,
+    codeVerifier: verifier.toString("utf8"),
+  };
 }
