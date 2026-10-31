@@ -250,6 +250,8 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
   describe("bytes in either storage root", () => {
     it("downloads a Sent attachment after real reconciliation and upload deduplication", async () => {
       const content = "sent attachment bytes";
+      const uploadedFirstContent = "upload-first attachment bytes";
+      const uploadedFirst = await uploadIn(tenantA, "first.txt", uploadedFirstContent);
       const gmail: GmailMailClient = {
         getCurrentHistoryId: async () => "100",
         listHistorySince: async () => ({
@@ -258,14 +260,14 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
           changedMessageIds: [],
           removedMessageIds: [],
         }),
-        listAllMessageIds: async () => ["sent-message"],
+        listAllMessageIds: async () => ["sent-message", "uploaded-first"],
         listLabels: async () => [{ id: "SENT", name: "Sent", type: "system" }],
-        fetchMessage: async () => ({
-          id: "sent-message",
+        fetchMessage: async (id) => ({
+          id,
           threadId: "thread",
           labelIds: ["SENT"],
           message: {
-            messageId: "<sent@example.test>",
+            messageId: `<${id}@example.test>`,
             subject: "Sent",
             envelope: { from: { address: "sender@example.test" }, to: [{ address: "recipient@example.test" }] },
             attachments: [
@@ -274,7 +276,7 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
                 contentType: "text/plain",
                 contentId: null,
                 disposition: "attachment",
-                openStream: () => Readable.from([content]),
+                openStream: () => Readable.from([id === "sent-message" ? content : uploadedFirstContent]),
               },
             ],
           },
@@ -310,11 +312,17 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
         }),
       );
       const { rows } = await runInTenant(tenantA, () =>
-        withTransaction(pool, (client) => client.query<{ blob_id: string }>("SELECT blob_id FROM mail_attachments")),
+        withTransaction(pool, (client) =>
+          client.query<{ blob_id: string; provider_message_id: string }>(
+            `SELECT attachment.blob_id, meta.provider_message_id FROM mail_attachments attachment
+             JOIN mail_message_meta meta ON meta.item_id = attachment.message_item_id`,
+          ),
+        ),
       );
-      expect(rows).toHaveLength(1);
-      const blobId = rows[0]?.blob_id;
+      expect(rows).toHaveLength(2);
+      const blobId = rows.find((row) => row.provider_message_id === "sent-message")?.blob_id;
       if (!blobId) throw new Error("Missing Sent attachment blob");
+      expect(rows.find((row) => row.provider_message_id === "uploaded-first")?.blob_id).toBe(uploadedFirst.blobId);
       const sentEdges = await runInTenant(tenantA, () =>
         withTransaction(pool, (client) =>
           client.query<{ provider_id: string }>(
@@ -340,6 +348,22 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
       expect(existsSync(join(tmpMailDir, key))).toBe(true);
       expect(existsSync(join(tmpBlobDir, key))).toBe(false);
       const headers = await createUserIn(tenantA);
+      const firstKeyRows = await runInTenant(tenantA, () =>
+        withTransaction(pool, (client) =>
+          client.query<{ storage_key: string }>("SELECT storage_key FROM blobs WHERE id = $1", [uploadedFirst.blobId]),
+        ),
+      );
+      const firstKey = firstKeyRows.rows[0]?.storage_key;
+      if (!firstKey) throw new Error("Missing uploaded blob storage key");
+      expect(existsSync(join(tmpBlobDir, firstKey))).toBe(true);
+      expect(existsSync(join(tmpMailDir, firstKey))).toBe(false);
+      const mailReads = vi.spyOn(mailStorage, "readStream");
+      const fileReads = vi.spyOn(storage, "readStream");
+      const fallback = await download(headers, uploadedFirst.blobId);
+      expect(fallback.status).toBe(200);
+      expect(fallback.text).toBe(uploadedFirstContent);
+      expect(mailReads).toHaveBeenCalledWith(firstKey, undefined);
+      expect(fileReads).toHaveBeenCalledWith(firstKey, undefined);
       const full = await download(headers, blobId);
       expect(full.status).toBe(200);
       expect(full.text).toBe(content);
