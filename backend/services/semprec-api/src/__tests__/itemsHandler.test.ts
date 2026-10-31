@@ -427,7 +427,7 @@ describe("item routes (issue #241)", () => {
       expect(writers).toEqual([{ writerKind: "user" }]);
     });
 
-    it("ignores a writerKind field in a create or patch body and still writes as the user", async () => {
+    it("rejects caller-supplied writerKind on create and patch without writing", async () => {
       const db = await makeMoviesDb();
       const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
       const headers = { ...(await authHeader()), "Content-Type": "application/json" };
@@ -452,10 +452,15 @@ describe("item routes (issue #241)", () => {
         body: JSON.stringify({ properties: { title: "New" }, writerKind: "system" }),
       });
 
-      expect(patch.status).toBe(200);
-      expect(create.status).toBe(201);
-      expect(updated).toEqual([{ writerKind: "user" }]);
-      expect(created).toEqual([{ writerKind: "user" }]);
+      expect(patch.status).toBe(400);
+      const patchBody: unknown = await patch.json();
+      expect(patchBody).toMatchObject({ error: { code: "validation_failed", details: { field: "writerKind" } } });
+      expect(create.status).toBe(400);
+      const createBody: unknown = await create.json();
+      expect(createBody).toMatchObject({ error: { code: "validation_failed", details: { field: "writerKind" } } });
+      expect(updated).toEqual([]);
+      expect(created).toEqual([]);
+      expect((await chokePoint.getItem(db.id, item.id))?.properties).toEqual({ title: "Dune" });
     });
 
     it("returns 404 patching an unknown item", async () => {

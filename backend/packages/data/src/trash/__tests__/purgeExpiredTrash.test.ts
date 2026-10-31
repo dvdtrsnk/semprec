@@ -502,6 +502,58 @@ describe("purgeExpiredTrash (issue #156)", () => {
         expect(rowsSeenByDelete).toEqual([0, 0, 0]);
       });
 
+      it("keeps the Files item and all blobs and skips byte deletion when the purge transaction rolls back", async () => {
+        const db = await chokePoint.createDatabase({ name: "Files" });
+        const file = await makeFilesItem(db.id, (await newBlob("rollback-orig-key")).id);
+        const originalId = (
+          await pool.query<{ blob_id: string }>(
+            "SELECT properties #>> '{file,blobId}' AS blob_id FROM items WHERE id = $1",
+            [file.id],
+          )
+        ).rows[0]?.blob_id;
+        if (!originalId) throw new Error("Files fixture did not retain its original blob id");
+        const normalized = await newBlob("rollback-norm-key");
+        const playback = await newBlob("rollback-play-key");
+        await setComputed(file.id, { normalizedBlobId: normalized.id, playbackBlobId: playback.id });
+        const inlineDb = await chokePoint.createInlineDatabase({ name: "Rollback blocker", parentItemId: file.id });
+        await trash(db.id, file.id);
+
+        // This test-only FK makes the final inline-database cleanup fail, after deleteItemDependents
+        // has deleted all three blob rows inside the same purge transaction.
+        await pool.query(
+          "CREATE TABLE purge_rollback_database_guard (database_id uuid NOT NULL REFERENCES databases(id))",
+        );
+        await pool.query("INSERT INTO purge_rollback_database_guard (database_id) VALUES ($1)", [inlineDb.id]);
+
+        const { storage, deleteMock } = fakeStorage();
+        const purgeError = vi.spyOn(logger, "error").mockImplementation(() => {});
+        try {
+          expect(await purgeExpiredTrash(pool, storage)).toBe(0);
+          expect(purgeError).toHaveBeenCalledWith(
+            expect.objectContaining({
+              err: expect.objectContaining({
+                code: "23503",
+                constraint: "purge_rollback_database_guard_database_id_fkey",
+              }),
+              itemId: file.id,
+            }),
+            "Failed to purge trashed item",
+          );
+
+          const { rows: fileRows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE id = $1", [file.id]);
+          expect(fileRows.map((row) => row.id)).toEqual([file.id]);
+          const { rows: blobRows } = await pool.query<{ id: string }>(
+            "SELECT id FROM blobs WHERE id = ANY($1::uuid[])",
+            [[originalId, normalized.id, playback.id]],
+          );
+          expect(blobRows.map((row) => row.id).sort()).toEqual([originalId, normalized.id, playback.id].sort());
+          expect(deleteMock).not.toHaveBeenCalled();
+        } finally {
+          purgeError.mockRestore();
+          await pool.query("DROP TABLE purge_rollback_database_guard");
+        }
+      });
+
       it("behaves as before for an item without a checkpoint", async () => {
         const db = await chokePoint.createDatabase({ name: "Files" });
         const original = await newBlob("only-key");
