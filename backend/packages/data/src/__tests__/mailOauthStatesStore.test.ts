@@ -1,4 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { inflateRawSync } from "node:zlib";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { openSecret } from "@semprec/credentials";
@@ -7,6 +11,9 @@ import { getOrCreateTenantDataKey } from "../credentials/tenantKeysStore.js";
 import { withTransaction } from "../db/pool.js";
 import { consumeMailOauthState, createMailOauthState } from "../mail/mailOauthStatesStore.js";
 import { handleMailOauthStatesSweepTask } from "../mail/mailOauthStatesSweep.js";
+import { LocalFsBlobStorageWriter } from "../mail/blobStorage.js";
+import { handleTenantExportTask } from "../tenancy/tenantExportJob.js";
+import { requestTenantExport } from "../tenancy/tenantExportsStore.js";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -208,6 +215,53 @@ describe("mail OAuth states (issue #1483)", () => {
     const userB = await createUser(tenantB);
     expect(await consume(tenantB, state, userB)).toBeNull();
     expect((await rowFor(state))!.used_at).toBeNull();
+  });
+
+  it("excludes OAuth state rows from the actual tenant export archive", async () => {
+    const created = await create(tenantA, userA);
+    const stateRow = await rowFor(created.state);
+    if (!stateRow) throw new Error("Missing OAuth state row");
+    const consumed = await consume(tenantA, created.state, userA);
+    if (!consumed) throw new Error("Expected OAuth state consumption");
+    const root = await mkdtemp(join(tmpdir(), "semprec-oauth-export-"));
+    try {
+      const files = new LocalFsBlobStorageWriter(join(root, "files"));
+      const mailAttachments = new LocalFsBlobStorageWriter(join(root, "mail"));
+      const exportId = await runInTenant(tenantA, async () => {
+        const request = await withTransaction(pool, (client) => requestTenantExport(client, userA));
+        await handleTenantExportTask(pool, { files, mailAttachments }, { exportId: request.export.id }, {});
+        return request.export.id;
+      });
+      const archive = await readFile(join(root, "files", tenantA, "exports", `${exportId}.zip`));
+      const eocd = archive.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+      if (eocd < 0) throw new Error("Missing ZIP central directory");
+      const count = archive.readUInt16LE(eocd + 10);
+      let offset = archive.readUInt32LE(eocd + 16);
+      const names: string[] = [];
+      for (let index = 0; index < count; index += 1) {
+        if (archive.readUInt32LE(offset) !== 0x02014b50) throw new Error("Invalid ZIP central directory");
+        const nameLength = archive.readUInt16LE(offset + 28);
+        const extraLength = archive.readUInt16LE(offset + 30);
+        const commentLength = archive.readUInt16LE(offset + 32);
+        const method = archive.readUInt16LE(offset + 10);
+        const size = archive.readUInt32LE(offset + 20);
+        const localOffset = archive.readUInt32LE(offset + 42);
+        const dataStart =
+          localOffset + 30 + archive.readUInt16LE(localOffset + 26) + archive.readUInt16LE(localOffset + 28);
+        const raw = archive.subarray(dataStart, dataStart + size);
+        const content = method === 8 ? inflateRawSync(raw) : raw;
+        expect(content.includes(Buffer.from(created.state))).toBe(false);
+        expect(content.includes(Buffer.from(consumed.codeVerifier))).toBe(false);
+        expect(content.includes(Buffer.from(createHash("sha256").update(created.state).digest("hex")))).toBe(false);
+        expect(content.includes(stateRow.code_verifier_ciphertext)).toBe(false);
+        names.push(archive.toString("utf8", offset + 46, offset + 46 + nameLength));
+        offset += 46 + nameLength + extraLength + commentLength;
+      }
+      expect(names).toContain("tables/mail_account_sync_state.jsonl");
+      expect(names).not.toContain("tables/mail_oauth_states.jsonl");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("sweeps expired and long-used rows of every tenant and keeps live ones", async () => {

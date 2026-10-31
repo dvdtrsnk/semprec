@@ -13,6 +13,7 @@ import {
 import { createAgentRun, finishAgentRun } from "../agentRuns/agentRunsStore.js";
 import { insertAgentRunEvent } from "../agentRuns/agentRunEventsStore.js";
 import { handleAgentRunEventsRetentionTask } from "../agentRuns/agentRunEventsRetention.js";
+import { orderTablesForPurge } from "../tenancy/tenantPurgeOrder.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -122,6 +123,34 @@ describe("semp_threads and semp_messages schema (issue #1367)", () => {
         ).rejects.toMatchObject({ code: "23503" });
       });
     });
+  });
+
+  it("orders the actual tenant catalog with messages before threads and runs", async () => {
+    const { rows: tables } = await adminPool.query<{ name: string }>(
+      `SELECT c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition
+          AND obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'`,
+    );
+    const { rows: foreignKeys } = await adminPool.query<{ table_name: string; referenced_table: string }>(
+      `SELECT child.relname AS table_name, parent.relname AS referenced_table
+         FROM pg_constraint con JOIN pg_class child ON child.oid = con.conrelid
+         JOIN pg_class parent ON parent.oid = con.confrelid
+         JOIN pg_namespace n ON n.oid = child.relnamespace
+        WHERE con.contype = 'f' AND n.nspname = 'public' AND NOT child.relispartition AND NOT parent.relispartition`,
+    );
+    const order = orderTablesForPurge(
+      tables.map((row) => row.name),
+      foreignKeys.map((row) => ({
+        table: row.table_name,
+        referencedTable: row.referenced_table,
+      })),
+    );
+    const messages = order.indexOf("semp_messages");
+    const threads = order.indexOf("semp_threads");
+    const runs = order.indexOf("agent_runs");
+    expect(messages).toBeGreaterThanOrEqual(0);
+    expect(threads).toBeGreaterThan(messages);
+    expect(runs).toBeGreaterThan(messages);
   });
 
   describe("thread uniqueness", () => {
