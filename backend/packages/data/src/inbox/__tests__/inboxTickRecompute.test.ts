@@ -14,6 +14,7 @@ import * as propertiesStore from "../../chokePoint/propertiesStore.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
 import { createInboxTypeWithClient } from "../inboxTypesStore.js";
 import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inboxTickAction.js";
+import { confirmProposalWithClient } from "../proposalActions.js";
 import {
   JOURNAL_INBOX_COMPUTED_KEY,
   journalInboxRecomputeJobKey,
@@ -175,6 +176,34 @@ describe("Inbox tick write phase recomputes the day's Inbox summary (issue #1390
     expect(await pendingRecomputeJobKeys()).toEqual([journalInboxRecomputeJobKey(dayId)]);
     await drainQueue();
     expect(await cachedStatus(dayId)).toBe("proposed");
+  });
+
+  it("refreshes edited source text for a locked card without a card write", async () => {
+    const type = await createTaskType();
+    const item = await captureItem("Buy milk", type.id);
+    const dayId = await journalDayIdFor(item.id);
+    await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const cards = (await chokePoint.listItems(proposalsId)).items;
+    if (cards.length !== 1 || !cards[0]) throw new Error("Expected one proposal");
+    const confirmed = await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cards[0]!.id),
+      ),
+    );
+    await drainQueue();
+    await chokePoint.updateItem({ databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "Buy oat milk" } });
+    await clearRecomputeJobs();
+    await runTick(item.id, async () => {
+      throw new Error("Locked card must not be recomputed");
+    });
+    expect(await pendingRecomputeJobKeys()).toEqual([journalInboxRecomputeJobKey(dayId)]);
+    const after = await chokePoint.getItem(proposalsId, confirmed.id);
+    expect(after?.properties).toEqual(confirmed.properties);
+    expect(after?.updatedAt).toBe(confirmed.updatedAt);
+    await drainQueue();
+    const day = await chokePoint.getItem(journalId, dayId);
+    const items = day?.computed[JOURNAL_INBOX_COMPUTED_KEY];
+    expect(items).toMatchObject([{ id: item.id, text: "Buy oat milk", status: "confirmed" }]);
   });
 
   it("enqueues the day's recompute when the tick creates a needs-clarification proposal", async () => {

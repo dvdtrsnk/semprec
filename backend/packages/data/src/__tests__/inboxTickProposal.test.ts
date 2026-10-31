@@ -5,7 +5,14 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool, type PoolClient } from "pg";
 import { AiGatewayFailedError, type AiGatewayFailureReason, runInTenant } from "@semprec/shared";
 import { createUser } from "../auth/usersStore.js";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+  withTenantTransaction,
+} from "../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
@@ -2616,12 +2623,44 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
     expect(error.details).toEqual({ ref: "person", field: "companies" });
   });
 
+  it("rejects a forged link before list that names a missing target", async () => {
+    const person = await createItem("people", { name: "Jane" });
+    const missing = "00000000-0000-4000-8000-000000000001";
+    const error = await failure(
+      envelopeOf([
+        { ...companyStep, role: "primary" },
+        {
+          ref: "person",
+          op: "link",
+          role: "secondary",
+          itemId: person,
+          relations: { companies: [missing] },
+          before: { relations: { companies: [missing] } },
+        },
+      ]),
+    );
+    expect(error.details).toMatchObject({ ref: "person", field: "companies" });
+  });
+
   it("rejects two primary steps and duplicate refs", async () => {
     const twoPrimaries = await failure(envelopeOf([{ ...companyStep, role: "primary" }, personStep], personStep));
     const duplicate = await failure(envelopeOf([{ ...companyStep, ref: "person" }, personStep]));
 
     expect(twoPrimaries.details).toMatchObject({ field: "role" });
     expect(duplicate.details).toEqual({ ref: "person", field: "ref" });
+  });
+
+  it("enforces proposal identity and primary invariants on skipped steps", async () => {
+    const active = { ...personStep, relations: undefined };
+    for (const skipped of [
+      { ...companyStep, enabled: false, ref: "person" },
+      { ...companyStep, optional: true, ref: "person" },
+      { ...companyStep, enabled: false, ref: "" },
+    ]) {
+      expect((await failure(envelopeOf([active, skipped]))).details).toMatchObject({ field: "ref" });
+    }
+    const primary = { ...companyStep, enabled: false, role: "primary" as const };
+    expect((await failure(envelopeOf([active, primary], active))).details).toMatchObject({ field: "role" });
   });
 
   it("rejects a primary step that differs from the top level", async () => {
@@ -2930,6 +2969,92 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
         ),
       );
       expect(error.details).toMatchObject({ ref: "move", field: "area" });
+    });
+
+    it("does not treat a forged update before target as an existing edge", async () => {
+      const project = await createItem("projects", { name: "Home" });
+      const missing = "00000000-0000-4000-8000-000000000001";
+      const error = await failure(
+        await updateEnvelope(
+          {
+            before: { relations: { area: [missing] } },
+            after: { relations: { area: [missing] } },
+          },
+          project,
+        ),
+      );
+      expect(error.details).toMatchObject({ ref: "move", field: "area" });
+    });
+
+    it("validates an actually retained edge and rejects its archived or deleted target", async () => {
+      const project = await createItem("projects", { name: "Project", status: "inProgress" });
+      const task = await createItem("tasks", { name: "Task" });
+      const tasksDb = await databaseIdFor("tasks");
+      const databaseIdForProject = await databaseIdFor("projects");
+      const property = await withTransaction(pool, (client) =>
+        propertiesStore.getPropertyByKey(client, tasksDb, "project"),
+      );
+      if (!property) throw new Error("Missing Tasks.project");
+      await withTransaction(pool, (client) =>
+        createRelationWithClient(client, {
+          relationPropertyId: property.id,
+          callerItemId: task,
+          targetItemId: project,
+        }),
+      );
+      const envelope = await updateEnvelope(
+        {
+          before: { relations: { project: [project] } },
+          after: { relations: { project: [project] } },
+        },
+        task,
+        "tasks",
+      );
+      await validate(envelope);
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(client, {
+          databaseId: databaseIdForProject,
+          itemId: project,
+          propertiesPatch: { status: "archived" },
+        }),
+      );
+      expect((await failure(envelope)).details).toMatchObject({
+        ref: "move",
+        field: "project",
+        code: "targetArchived",
+      });
+      await createChokePoint(pool).softDeleteItem(databaseIdForProject, project);
+      expect((await failure(envelope)).details).toMatchObject({ ref: "move", field: "project", code: "targetDeleted" });
+    });
+
+    it("rejects a foreign-tenant target under the runtime role even if before claims it", async () => {
+      const foreignTenant = await createTestTenant(pool);
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        await runInTenant(foreignTenant, () => seedSystem(runtime, createViewTypeRegistry()));
+        const foreignProject = await runInTenant(foreignTenant, () =>
+          withTransaction(runtime, async (client) => {
+            const database = await client.query<{ id: string }>(
+              "SELECT id FROM databases WHERE owner_module_id = 'projects'",
+            );
+            if (!database.rows[0]) throw new Error("Missing foreign Projects database");
+            return (
+              await createItemWithClient(client, { databaseId: database.rows[0].id, properties: { name: "Foreign" } })
+            ).id;
+          }),
+        );
+        const task = await createItem("tasks", { name: "Task" });
+        const envelope = await updateEnvelope(
+          { before: { relations: { project: [foreignProject] } }, after: { relations: { project: [foreignProject] } } },
+          task,
+          "tasks",
+        );
+        await expect(
+          withTenantTransaction(runtime, getTenantZeroId(), (client) => assertValidProposalEnvelope(client, envelope)),
+        ).rejects.toMatchObject({ status: 400, details: { ref: "move", field: "project" } });
+      } finally {
+        await runtime.end();
+      }
     });
 
     it("accepts an update step moving a project to another area", async () => {

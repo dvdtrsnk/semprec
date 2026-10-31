@@ -25,11 +25,19 @@ transaction-bound allocation is stateful; proposal preparation must remain read-
 Within the confirming transaction, lock the existing update items in sorted id order,
 then acquire the relation-definition advisory keys in sorted id order. These are the
 same keys used by the relation cardinality insert trigger. Lock existing incident
-edges before comparing. The advisory keys also protect an empty edge set from inserts;
+edges before comparing, including definitions named only in declared before values.
+The advisory keys also protect an empty edge set from inserts;
 the edge row locks coordinate with deletes. Immediately before each update compare
 the changed properties, treating an absent property as null, and compare relation
 targets as sets after rejecting duplicates. A mismatch returns a validation error
 identifying the step and field and rolls back the confirmation.
+
+Preflight validates every existing target through the relation choke point. When an
+existing caller is supplied, only the identical persisted caller/definition/target
+edge is excluded from the new-edge cardinality collision check; target, ownership,
+database, tenant and hook checks still run. A caller-supplied before list is never
+evidence that an edge exists. This check does not replace the locked confirmation
+preconditions and does not claim to serialize preflight with concurrent writers.
 
 Proposal validation uses registered read-only preparation alongside each write
 transform. Preparation shares deterministic checks and normalization, receives no

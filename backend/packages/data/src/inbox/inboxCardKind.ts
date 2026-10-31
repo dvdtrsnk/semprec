@@ -81,7 +81,12 @@ function deriveFromEnvelope(
   envelope: ProposalEnvelope | UnknownKindProposalEnvelope,
 ): InboxCardKinds {
   if ("unknownKind" in envelope) return { cardKind: "clarify", baseKind: "page" };
-  if (input.kind === "transcript") {
+  if (input.kind === "transcript" && envelope.entityKind === "database") {
+    return input.ownerModuleId === EVENTS_MODULE_ID
+      ? { cardKind: "transcriptEvent", baseKind: "event" }
+      : { cardKind: "clarify", baseKind: "page" };
+  }
+  if (input.kind === "transcript" && envelope.entityKind === "relation") {
     return transcriptCardRole(envelope) === "speaker"
       ? { cardKind: "speaker", baseKind: "speaker" }
       : { cardKind: "transcriptEvent", baseKind: "event" };

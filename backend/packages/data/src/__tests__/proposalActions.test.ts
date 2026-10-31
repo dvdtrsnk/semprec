@@ -768,6 +768,102 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(await edgeExists(project, newArea)).toBe(true);
     });
 
+    it("guards an unchanged declared relation and rolls back an earlier create when it is stale", async () => {
+      const oldArea = await createIn("areas", { name: "Old" });
+      const newArea = await createIn("areas", { name: "New" });
+      const project = await createIn("projects", { name: "Before" });
+      const projectsDb = await databaseIdFor("projects");
+      const property = await withTransaction(pool, (client) =>
+        propertiesStore.getPropertyByKey(client, projectsDb, "area"),
+      );
+      if (!property) throw new Error("Missing Projects.area");
+      const oldEdge = { relationPropertyId: property.id, callerItemId: project, targetItemId: oldArea };
+      await withTransaction(pool, (client) => createRelationWithClient(client, oldEdge));
+      const card = await cardWithSteps("companies", [
+        { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
+        {
+          ref: "project",
+          op: "update",
+          itemId: project,
+          role: "secondary",
+          properties: { name: "After" },
+          before: { properties: { name: "Before" }, relations: { area: [oldArea] } },
+          after: { properties: { name: "After" } },
+        },
+      ]);
+      await withTransaction(pool, async (client) => {
+        await deleteRelationWithClient(client, oldEdge);
+        await createRelationWithClient(client, { ...oldEdge, targetItemId: newArea });
+      });
+      await expect(confirm(card)).rejects.toMatchObject({ status: 400, details: { ref: "project", field: "area" } });
+      expect(await countItems("companies")).toBe(0);
+      expect(await cardStatus(card)).toBe("proposed");
+      const [current] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
+      expect(current?.properties.name).toBe("Before");
+      expect(await edgeExists(project, newArea)).toBe(true);
+    });
+
+    it("links an existing person to a created company once and rolls back a later failure", async () => {
+      const person = await createIn("people", { name: "Jane" });
+      const steps: Step[] = [
+        { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
+        {
+          ref: "person",
+          op: "link",
+          itemId: person,
+          role: "secondary",
+          relations: { companies: [{ ref: "company" }] },
+        },
+      ];
+      const failing = await cardWithSteps("companies", [
+        ...steps,
+        { ref: "task", op: "create", databaseKey: "tasks", role: "secondary", properties: { name: 42 } },
+      ]);
+      await expect(confirm(failing)).rejects.toMatchObject({ status: 400, details: { ref: "task", field: "name" } });
+      expect(await countItems("companies")).toBe(0);
+      expect(await countItems("people")).toBe(1);
+      expect(await cardStatus(failing)).toBe("proposed");
+      const card = await cardWithSteps("companies", steps);
+      const first = await confirm(card);
+      const company = first.properties.resultItemId;
+      if (typeof company !== "string") throw new Error("Expected created company");
+      expect(await edgeExists(person, company)).toBe(true);
+      const repeated = await confirm(card);
+      expect(repeated.id).toBe(first.id);
+      expect(repeated.properties).toEqual(first.properties);
+      expect(repeated.updatedAt).toBe(first.updatedAt);
+      expect(await countItems("companies")).toBe(1);
+      const edges = await pool.query<{ n: number }>(
+        "SELECT count(*)::int AS n FROM item_relations WHERE (item_a = $1 AND item_b = $2) OR (item_a = $2 AND item_b = $1)",
+        [person, company],
+      );
+      expect(edges.rows[0]?.n).toBe(1);
+    });
+
+    it("rejects a forged link before list during confirm without creating anything", async () => {
+      const person = await createIn("people", { name: "Jane" });
+      const missing = randomUUID();
+      const card = await cardWithSteps("companies", [
+        { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
+        {
+          ref: "person",
+          op: "link",
+          itemId: person,
+          role: "secondary",
+          relations: { companies: [missing] },
+          before: { relations: { companies: [missing] } },
+        },
+      ]);
+      await expect(confirm(card)).rejects.toMatchObject({
+        status: 400,
+        details: { ref: "person", field: "companies" },
+      });
+      expect(await countItems("companies")).toBe(0);
+      expect(await countItems("people")).toBe(1);
+      expect(await cardStatus(card)).toBe("proposed");
+      expect(await edgeExists(person, missing)).toBe(false);
+    });
+
     it("writes a relation declared only in after using the validated targets", async () => {
       const oldArea = await createIn("areas", { name: "Old" });
       const newArea = await createIn("areas", { name: "New" });
@@ -1151,7 +1247,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(await statusOf()).toBe("done");
     });
 
-    it.each(["property", "insert", "delete"] as const)(
+    it.each(["property", "insert", "delete", "insert-extra", "delete-extra"] as const)(
       "rejects stale before state after an overlapping %s commits",
       async (change) => {
         const project = await createIn("projects", { name: "Before" });
@@ -1162,8 +1258,10 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         );
         if (!property) throw new Error("Missing Projects.area property");
         const edge = { relationPropertyId: property.id, callerItemId: project, targetItemId: area };
-        if (change === "delete") await withTransaction(pool, (client) => createRelationWithClient(client, edge));
-        const beforeTargets = change === "delete" ? [area] : [];
+        if (change === "delete" || change === "delete-extra")
+          await withTransaction(pool, (client) => createRelationWithClient(client, edge));
+        const beforeTargets = change === "delete" || change === "delete-extra" ? [area] : [];
+        const extraOnly = change.endsWith("-extra");
         const card = await cardWithSteps("projects", [
           {
             ref: "project",
@@ -1171,9 +1269,9 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
             itemId: project,
             role: "primary",
             properties: { name: "After" },
-            relations: { area: beforeTargets },
+            ...(extraOnly ? {} : { relations: { area: beforeTargets } }),
             before: { properties: { name: "Before" }, relations: { area: beforeTargets } },
-            after: { properties: { name: "After" }, relations: { area: beforeTargets } },
+            after: { properties: { name: "After" }, ...(extraOnly ? {} : { relations: { area: beforeTargets } }) },
           },
         ]);
         const writerPool = getTestPool({ max: 1 });
@@ -1194,7 +1292,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
               itemId: project,
               propertiesPatch: { name: "Changed" },
             });
-          } else if (change === "insert") {
+          } else if (change === "insert" || change === "insert-extra") {
             await createRelationWithClient(client, edge);
           } else {
             await deleteRelationWithClient(client, edge);
@@ -1235,7 +1333,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           expect(await cardStatus(card)).toBe("proposed");
           const [current] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
           expect(current?.properties.name).toBe(change === "property" ? "Changed" : "Before");
-          expect(await edgeExists(project, area)).toBe(change === "insert");
+          expect(await edgeExists(project, area)).toBe(change === "insert" || change === "insert-extra");
         } finally {
           release();
           await writerOutcome;

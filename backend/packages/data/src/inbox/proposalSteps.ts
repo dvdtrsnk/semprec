@@ -53,6 +53,12 @@ interface StepOutcome {
   movedAttachmentId?: string;
 }
 
+function guardedRelationKeys(step: ProposalStep): string[] {
+  return [
+    ...new Set([...Object.keys(effectiveStepRelations(step)), ...Object.keys(step.before?.relations ?? {})]),
+  ].sort();
+}
+
 /** Locks the existing rows and relation definitions needed by update preconditions. */
 async function lockUpdatePreconditions(client: PoolClient, steps: ProposalStep[]): Promise<void> {
   const updates = steps.filter((step) => step.op === "update" && step.itemId !== undefined);
@@ -73,7 +79,7 @@ async function lockUpdatePreconditions(client: PoolClient, steps: ProposalStep[]
   for (const step of updates) {
     const item = step.itemId ? byId.get(step.itemId) : undefined;
     if (!item) continue;
-    for (const key of Object.keys(effectiveStepRelations(step))) {
+    for (const key of guardedRelationKeys(step)) {
       const propertyId = await requireRelationPropertyId(client, step, item.databaseId, key);
       const definition = await relationsStore.getRelationDefinitionByPropertyId(client, propertyId);
       if (!definition) throw new ValidationError(`Relation '${key}' has no definition`, { ref: step.ref, field: key });
@@ -123,7 +129,7 @@ async function assertUpdateBefore(
         : { patch: {}, deferredKeys: [] };
     assertUpdateStepShape(step, prepared, item, new Map(properties.map((property) => [property.key, property])));
   });
-  for (const key of Object.keys(effectiveStepRelations(step))) {
+  for (const key of guardedRelationKeys(step)) {
     const propertyId = await requireRelationPropertyId(client, step, databaseId, key);
     const definition = await relationsStore.getRelationDefinitionByPropertyId(client, propertyId);
     if (!definition) throw new ValidationError(`Relation '${key}' has no definition`, { ref: step.ref, field: key });

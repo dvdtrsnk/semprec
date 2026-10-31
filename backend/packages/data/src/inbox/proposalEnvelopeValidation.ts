@@ -16,6 +16,7 @@ export async function assertValidEnvelopeRelations(
   targetDatabaseId: string,
   propertiesByKey: ReadonlyMap<string, PropertyRow>,
   relations: NonNullable<ProposalEnvelope["relations"]>,
+  callerItemId?: string,
 ): Promise<void> {
   for (const [key, targetItemIds] of Object.entries(relations)) {
     const property = propertiesByKey.get(key);
@@ -29,7 +30,11 @@ export async function assertValidEnvelopeRelations(
       throw new ValidationError(`Proposal relations for '${key}' list the same target more than once`, { field: key });
     }
     for (const targetItemId of targetItemIds) {
-      await assertRelationTargetLinkableWithClient(client, { relationPropertyId: property.id, targetItemId });
+      await assertRelationTargetLinkableWithClient(client, {
+        relationPropertyId: property.id,
+        targetItemId,
+        callerItemId,
+      });
     }
   }
 }
@@ -81,14 +86,11 @@ export async function withStepRef<T>(ref: string, run: () => Promise<T>): Promis
 }
 
 /** A step's relations with the `{ ref }` targets dropped (they name items that do not exist yet); a key holding only refs stays, as an empty list. */
-export function existingItemRelations(
-  step: ProposalStep,
-  alreadyLinked: Record<string, string[]> = {},
-): Record<string, string[]> {
+export function existingItemRelations(step: ProposalStep): Record<string, string[]> {
   return Object.fromEntries(
     Object.entries(effectiveStepRelations(step)).map(([key, list]) => [
       key,
-      list.filter((target): target is string => typeof target === "string" && !alreadyLinked[key]?.includes(target)),
+      list.filter((target): target is string => typeof target === "string"),
     ]),
   );
 }
@@ -161,6 +163,14 @@ export function assertUpdateStepShape(
       throw stepError(step, `before contains unsupported property '${key}'`, key);
   }
   const relations = effectiveStepRelations(step);
+  for (const [key, before] of Object.entries(step.before?.relations ?? {})) {
+    if (propertiesByKey.get(key)?.type !== "relation") {
+      throw stepError(step, `before contains unsupported relation '${key}'`, key);
+    }
+    if (new Set(before).size !== before.length) {
+      throw stepError(step, `relation '${key}' contains duplicate targets`, key);
+    }
+  }
   for (const [key, targets] of Object.entries(relations)) {
     if (!Object.hasOwn(step.before?.relations ?? {}, key)) {
       throw stepError(step, `before does not hold the current targets of relation '${key}'`, key);

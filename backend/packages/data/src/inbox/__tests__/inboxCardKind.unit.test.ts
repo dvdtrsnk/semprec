@@ -34,6 +34,19 @@ describe("deriveInboxCardKind", () => {
     expect(deriveInboxCardKind(input({ ownerModuleId }))).toEqual({ cardKind: expected, baseKind: expected });
   });
 
+  it("derives page content by page ownership even on a transcript card", () => {
+    expect(deriveInboxCardKind(input({ kind: "transcript", envelope: pageContent, ownerModuleId: "journal" }))).toEqual(
+      {
+        cardKind: "journal",
+        baseKind: "journal",
+      },
+    );
+    expect(deriveInboxCardKind(input({ kind: "transcript", envelope: pageContent, ownerModuleId: null }))).toEqual({
+      cardKind: "page",
+      baseKind: "page",
+    });
+  });
+
   it.each([
     ["journal", "journal"],
     ["pages", "page"],
@@ -57,6 +70,17 @@ describe("deriveInboxCardKind", () => {
     expect(deriveInboxCardKind(input({ kind: "transcript", ownerModuleId: "events" }))).toEqual({
       cardKind: "transcriptEvent",
       baseKind: "event",
+    });
+  });
+
+  it.each([null, "futureModule", "tasks"])("falls back for a transcript database with owner %s", (ownerModuleId) => {
+    expect(deriveInboxCardKind(input({ kind: "transcript", ownerModuleId }))).toEqual({
+      cardKind: "clarify",
+      baseKind: "page",
+    });
+    expect(deriveInboxCardKind(input({ kind: "transcript", status: "invalid", ownerModuleId }))).toEqual({
+      cardKind: "invalid",
+      baseKind: "page",
     });
   });
 

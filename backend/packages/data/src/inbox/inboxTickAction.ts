@@ -242,8 +242,7 @@ async function assertValidStep(client: PoolClient, step: ProposalStep): Promise<
           : { patch: {}, deferredKeys: [] };
       assertUpdateStepShape(step, prepared, item, byKey);
     }
-    // A target the item already holds is not re-linked, so the cardinality check skips it.
-    await assertValidEnvelopeRelations(client, database.id, byKey, existingItemRelations(step, step.before?.relations));
+    await assertValidEnvelopeRelations(client, database.id, byKey, existingItemRelations(step), item.id);
   });
   return database;
 }
