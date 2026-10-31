@@ -224,6 +224,8 @@ describe("Gmail label folders (issue #1496)", () => {
       ]),
     ).rejects.toThrow();
     expect(await folderProviderIds(params)).toEqual(before);
+    await handleMailGmailPseudoFolderCleanupTask(pool, async () => LABELS);
+    expect(await folderProviderIds(params)).not.toContain("UNREAD");
   });
 
   it("cleanup removes pseudo-folders, keeps archived mail visible through Archive, and a second run changes nothing", async () => {
