@@ -38,3 +38,10 @@ To retain the aggregate's 60000-character bound, historical explanatory Context 
 - gh-1486: 279a5a6a70e7ca68126226d08ef2c0068494bd857fbb1f6eeb17ba704a054601 -> 923c2df25d7f053ac1c2a90dc752215705b656bd8a268d3381d2951c4a5820ae
 - gh-1358: 376371cc3aab71e9b55e645a8374c87255220eb03aadd2522d2f29e2ac58b219 -> 3b8acea3771e7da7f1f322cffccc679fbad8a82a0bbdb9a96ccad0b3b73ee45b
 - gh-1716: 248454e103798cd6475805d60e9c24fde1157d0acd804668357c22fc742498c6 -> a157115bb160f7c4065423763809ff15e9447e04e8a90a6778f5eeee04567251
+
+## Deferred allocation has no predicted after value
+
+Clarify the earlier ambiguous "may omit" wording: implicit Projects allocation MUST omit after.pinnedOrder; every predicted after value is unsupported and returns 400 with the step ref and pinnedOrder field. Its before value remains mandatory and guarded. Explicit caller-supplied properties.pinnedOrder continues to require matching ordinary before/after. Do not silently ignore or imply validation of a guessed server allocation. This does not change the allocation algorithm or ordinary write behavior.
+
+- gh-1479: 1f128ea22f04ef564578c6346081e397d827f01a654f8894115e0f72e882c4cf -> df2c6a0d990e81554ac9886762f36236840aa6df0200830fbf89f96e1c617774
+- gh-1486: 923c2df25d7f053ac1c2a90dc752215705b656bd8a268d3381d2951c4a5820ae -> f7ea9e8da3007555cfc49d06b0c2a436e000647a391f4c8add6764cc2b4d2ec8
