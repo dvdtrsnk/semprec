@@ -170,39 +170,7 @@ describe("mail database key cutover", () => {
     }
   });
 
-  it("bounds a cutover waiting for an exhausted owned pool", async () => {
-    const exhausted = new Pool({
-      ...pool.options,
-      max: 1,
-      connectionTimeoutMillis: 200,
-      statement_timeout: 1000,
-      query_timeout: 1500,
-    });
-    const held = await exhausted.connect();
-    const start = Date.now();
-    try {
-      await expect(runInTenant(tenant, () => runMailDatabaseKeysCutoverMigration(exhausted))).rejects.toThrow(
-        /timeout/i,
-      );
-      expect(Date.now() - start).toBeLessThan(2000);
-    } finally {
-      held.release();
-      await exhausted.end();
-    }
-  });
-
-  it("serializes overlapping cutovers and rolls back on a concurrent key collision without blocking another tenant", async () => {
-    const other = await createTestTenant(admin);
-    await runInTenant(other, () => seedSystem(pool));
-    await runInTenant(tenant, makeLegacy);
-    await runInTenant(other, makeLegacy);
-    const boundedPool = new Pool({
-      ...pool.options,
-      max: 6,
-      connectionTimeoutMillis: 2000,
-      statement_timeout: 4000,
-      query_timeout: 6000,
-    });
+  async function exerciseConcurrentCutovers(boundedPool: Pool, other: string): Promise<void> {
     let release = () => {};
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -314,5 +282,48 @@ describe("mail database key cutover", () => {
       await Promise.allSettled([holder, ...(first ? [first] : []), ...(second ? [second] : [])]);
       await boundedPool.end();
     }
+  }
+
+  it("bounds exhausted checkout in the concurrent cutover helper", async () => {
+    const other = await createTestTenant(admin);
+    const exhausted = new Pool({
+      ...pool.options,
+      max: 1,
+      connectionTimeoutMillis: 200,
+      statement_timeout: 1000,
+      query_timeout: 1500,
+    });
+    const held = await exhausted.connect();
+    let released = false;
+    const releaseHeld = () => {
+      if (!released) {
+        released = true;
+        held.release();
+      }
+    };
+    const fallback = setTimeout(releaseHeld, 600);
+    const started = Date.now();
+    try {
+      await expect(exerciseConcurrentCutovers(exhausted, other)).rejects.toThrow(/timeout/i);
+      expect(Date.now() - started).toBeLessThan(2000);
+    } finally {
+      clearTimeout(fallback);
+      releaseHeld();
+    }
+  });
+
+  it("serializes overlapping cutovers and rolls back on a concurrent key collision without blocking another tenant", async () => {
+    const other = await createTestTenant(admin);
+    await runInTenant(other, () => seedSystem(pool));
+    await runInTenant(tenant, makeLegacy);
+    await runInTenant(other, makeLegacy);
+    const boundedPool = new Pool({
+      ...pool.options,
+      max: 6,
+      connectionTimeoutMillis: 2000,
+      statement_timeout: 4000,
+      query_timeout: 6000,
+    });
+    await exerciseConcurrentCutovers(boundedPool, other);
   });
 });
