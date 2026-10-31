@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+  withTenantTransaction,
+} from "../testSupport/testDb.js";
 import { ValidationError } from "../errors.js";
 import {
   deleteMailServerSettings,
@@ -37,7 +44,8 @@ async function expectField(input: MailServerSettingsInput, field: string): Promi
   await inRolledBackTransaction(async (client) => {
     const error = await upsertMailServerSettings(client, randomUUID(), input).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).details).toEqual({ field });
+    if (!(error instanceof ValidationError)) throw error;
+    expect(error.details).toEqual({ field });
   });
 }
 
@@ -140,26 +148,25 @@ describe("mail server settings store (issue #1473)", () => {
   });
 
   it("hides another tenant's row under row-level security", async () => {
-    await inRolledBackTransaction(async (client) => {
-      const { rows: existing } = await client.query<{ id: string }>("SELECT id FROM tenants");
-      const a = existing[0]?.id;
-      if (!a) throw new Error("no existing tenant");
-      await client.query("DROP INDEX IF EXISTS tenants_single_tenant_guard");
-      const { rows } = await client.query<{ id: string }>(
-        "INSERT INTO tenants (status) VALUES ('active') RETURNING id",
-      );
-      const b = rows[0]?.id;
-      if (!b) throw new Error("second tenant was not inserted");
-      await client.query("SET LOCAL ROLE semprec_data");
-      const id = randomUUID();
-      await client.query("SELECT set_config('app.tenant_id', $1, true)", [a]);
-      await upsertMailServerSettings(client, id, VALID);
-      expect(await getMailServerSettings(client, id)).not.toBeNull();
-      await client.query("SELECT set_config('app.tenant_id', $1, true)", [b]);
-      expect(await getMailServerSettings(client, id)).toBeNull();
-      const { rows: all } = await client.query("SELECT 1 FROM mail_account_server_settings");
-      expect(all).toEqual([]);
-      expect(await deleteMailServerSettings(client, id)).toBe(false);
-    });
+    const tenantA = getTenantZeroId();
+    const tenantB = await createTestTenant(pool);
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const id = randomUUID();
+    try {
+      await withTenantTransaction(runtimePool, tenantA, async (client) => {
+        await upsertMailServerSettings(client, id, VALID);
+        expect(await getMailServerSettings(client, id)).not.toBeNull();
+      });
+      await withTenantTransaction(runtimePool, tenantB, async (client) => {
+        expect(await getMailServerSettings(client, id)).toBeNull();
+        expect((await client.query("SELECT 1 FROM mail_account_server_settings")).rows).toEqual([]);
+        expect(await deleteMailServerSettings(client, id)).toBe(false);
+      });
+      await withTenantTransaction(runtimePool, tenantA, async (client) => {
+        expect(await getMailServerSettings(client, id)).not.toBeNull();
+      });
+    } finally {
+      await runtimePool.end();
+    }
   });
 });
