@@ -37,6 +37,7 @@ import { provisionTenant } from "../tenancy/provisionTenant.js";
 import { handleTenantExportTask } from "../tenancy/tenantExportJob.js";
 import { requestTenantExport } from "../tenancy/tenantExportsStore.js";
 import { handleTenantPurgeTask, type TenantPurgeDirs } from "../tenancy/tenantPurgeJob.js";
+import { insertItemOrigins } from "../inbox/itemOriginsStore.js";
 import {
   createRuntimeRolePool,
   createTestProjectItem,
@@ -189,6 +190,16 @@ async function seedTenant(tenantId: string): Promise<SeededTenant> {
       });
       return ingested.itemId;
     });
+    await withTransaction(pool, (client) =>
+      insertItemOrigins(client, [mailItemId], {
+        proposalId: mailItemId,
+        inboxItemId: null,
+        sourceTranscriptId: null,
+        capturedAt: null,
+        captureChannel: "inbox",
+        captureTimeBasis: "unknown",
+      }),
+    );
     const { rows: mailBlobs } = await pool.query<{ storage_key: string }>(
       "SELECT b.storage_key FROM blobs b JOIN mail_attachments m ON m.blob_id = b.id",
     );
@@ -411,6 +422,8 @@ describe("tenant purge (issue #1055)", () => {
     );
     const requestedAt = before[0]?.status_changed_at;
     const countsA = await rowCounts(tenantA);
+    expect(countsA.item_origins).toBe(1);
+    expect((await rowCounts(tenantB)).item_origins).toBe(1);
     expect((await nonEmptyTables(tenantB)).length).toBeGreaterThan(10);
     expect(b.databaseIds.length).toBeGreaterThan(0);
     for (const path of b.filePaths) expect(existsSync(path)).toBe(true);

@@ -7,7 +7,8 @@ export interface ItemOriginSource {
   proposalId: string;
   inboxItemId: string | null;
   sourceTranscriptId: string | null;
-  capturedAt: string;
+  capturedAt: string | null;
+  captureTimeBasis: "inboxCapture" | "unknown";
   captureChannel: CaptureChannel;
 }
 
@@ -22,8 +23,8 @@ export async function insertItemOrigins(
 ): Promise<void> {
   if (itemIds.length === 0) return;
   await client.query(
-    `INSERT INTO item_origins (item_id, proposal_id, inbox_item_id, source_transcript_id, captured_at, capture_channel)
-     SELECT unnest($1::uuid[]), $2, $3, $4, $5, $6
+    `INSERT INTO item_origins (item_id, proposal_id, inbox_item_id, source_transcript_id, captured_at, capture_channel, capture_time_basis)
+     SELECT unnest($1::uuid[]), $2, $3, $4, $5, $6, $7
      ON CONFLICT (tenant_id, item_id) DO NOTHING`,
     [
       itemIds,
@@ -32,6 +33,7 @@ export async function insertItemOrigins(
       source.sourceTranscriptId,
       source.capturedAt,
       source.captureChannel,
+      source.captureTimeBasis,
     ],
   );
 }

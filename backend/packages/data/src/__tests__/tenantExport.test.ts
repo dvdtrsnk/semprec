@@ -18,6 +18,7 @@ import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { getOrCreateTenantDataKey } from "../credentials/tenantKeysStore.js";
 import { withTransaction } from "../db/pool.js";
+import { insertItemOrigins } from "../inbox/itemOriginsStore.js";
 import { LocalFsBlobStorageWriter, MaxBytesExceededError, type BlobStorageWriter } from "../mail/blobStorage.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -378,6 +379,23 @@ describe("tenant data export (issue #1043)", () => {
   it("archives exactly tenant A's data, with every table counted and every blob byte-identical", async () => {
     const seededA = await seedTenant(tenantA);
     const seededB = await seedTenant(tenantB);
+    for (const [tenant, seeded] of [
+      [tenantA, seededA],
+      [tenantB, seededB],
+    ] as const) {
+      await runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          insertItemOrigins(client, [seeded.itemIds[0]!], {
+            proposalId: seeded.itemIds[1]!,
+            inboxItemId: null,
+            sourceTranscriptId: null,
+            capturedAt: null,
+            captureChannel: "inbox",
+            captureTimeBasis: "unknown",
+          }),
+        ),
+      );
+    }
     const exportId = await requestExportIn(tenantA);
 
     await runExport(tenantA, exportId);
@@ -391,6 +409,14 @@ describe("tenant data export (issue #1043)", () => {
     expect(row!.expires_at!.getTime() - row!.completed_at!.getTime()).toBe(7 * 24 * 60 * 60 * 1000);
 
     const entries = readZip(archiveBytes);
+    const originFile = entries.get("tables/item_origins.jsonl");
+    if (!originFile) throw new Error("Missing origin table in export");
+    const exportedOrigin: unknown = JSON.parse(originFile.toString("utf8").trim());
+    expect(exportedOrigin).toMatchObject({
+      item_id: seededA.itemIds[0],
+      capture_time_basis: "unknown",
+      captured_at: null,
+    });
     const tableNames = await expectedTableNames();
     expect(tableNames).toEqual(
       expect.arrayContaining(["items", "item_relations", "docs", "mail_attachments", "blobs"]),

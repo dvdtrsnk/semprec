@@ -1,8 +1,9 @@
+import { isDeepStrictEqual } from "node:util";
 import { CardinalityViolationError, ForbiddenError } from "../errors.js";
 import type { ProposalStep } from "./proposalEnvelope.js";
-import type { DatabaseRow } from "../types.js";
+import type { DatabaseRow, ItemRow } from "../types.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
-import { stepError } from "./proposalStepGraph.js";
+import { effectiveStepRelations, stepError } from "./proposalStepGraph.js";
 import type { PoolClient } from "pg";
 import type { PropertyRow } from "../types.js";
 import type { ProposalEnvelope } from "./proposalEnvelope.js";
@@ -15,6 +16,7 @@ export async function assertValidEnvelopeRelations(
   targetDatabaseId: string,
   propertiesByKey: ReadonlyMap<string, PropertyRow>,
   relations: NonNullable<ProposalEnvelope["relations"]>,
+  callerItemId?: string,
 ): Promise<void> {
   for (const [key, targetItemIds] of Object.entries(relations)) {
     const property = propertiesByKey.get(key);
@@ -28,7 +30,11 @@ export async function assertValidEnvelopeRelations(
       throw new ValidationError(`Proposal relations for '${key}' list the same target more than once`, { field: key });
     }
     for (const targetItemId of targetItemIds) {
-      await assertRelationTargetLinkableWithClient(client, { relationPropertyId: property.id, targetItemId });
+      await assertRelationTargetLinkableWithClient(client, {
+        relationPropertyId: property.id,
+        targetItemId,
+        callerItemId,
+      });
     }
   }
 }
@@ -80,14 +86,11 @@ export async function withStepRef<T>(ref: string, run: () => Promise<T>): Promis
 }
 
 /** A step's relations with the `{ ref }` targets dropped (they name items that do not exist yet); a key holding only refs stays, as an empty list. */
-export function existingItemRelations(
-  step: ProposalStep,
-  alreadyLinked: Record<string, string[]> = {},
-): Record<string, string[]> {
+export function existingItemRelations(step: ProposalStep): Record<string, string[]> {
   return Object.fromEntries(
-    Object.entries(step.relations ?? {}).map(([key, list]) => [
+    Object.entries(effectiveStepRelations(step)).map(([key, list]) => [
       key,
-      list.filter((target): target is string => typeof target === "string" && !alreadyLinked[key]?.includes(target)),
+      list.filter((target): target is string => typeof target === "string"),
     ]),
   );
 }
@@ -103,4 +106,85 @@ export function assertStepDatabaseWritable(
     throw stepError(step, "its database is not a writable target database", field);
   }
   return database;
+}
+
+/** Checks that update representations and their before/after keys agree. */
+export function assertUpdateStepShape(
+  step: ProposalStep,
+  prepared: { patch: Record<string, unknown>; deferredKeys: string[] },
+  stored: ItemRow,
+  propertiesByKey: ReadonlyMap<string, PropertyRow>,
+): void {
+  const properties = step.properties ?? {};
+  const required = new Set(Object.keys(properties));
+  for (const [key, value] of Object.entries(prepared.patch)) {
+    if (
+      propertiesByKey.get(key)?.owner === "user" &&
+      !isDeepStrictEqual(stored.properties[key] ?? null, value ?? null)
+    ) {
+      required.add(key);
+    }
+  }
+  for (const key of prepared.deferredKeys) required.add(key);
+  for (const key of required) {
+    if (!Object.hasOwn(step.before?.properties ?? {}, key)) {
+      throw stepError(step, `before does not hold the current value of property '${key}'`, key);
+    }
+    if (prepared.deferredKeys.includes(key) && !Object.hasOwn(properties, key)) continue;
+    if (!Object.hasOwn(step.after?.properties ?? {}, key)) {
+      throw stepError(step, `after does not hold the new value of property '${key}'`, key);
+    }
+    if (!isDeepStrictEqual(prepared.patch[key] ?? null, step.after?.properties?.[key] ?? null)) {
+      throw stepError(step, `after differs from property '${key}'`, key);
+    }
+  }
+  for (const key of Object.keys(step.after?.properties ?? {})) {
+    if (!Object.hasOwn(step.before?.properties ?? {}, key) || propertiesByKey.get(key)?.owner !== "user") {
+      throw stepError(step, `after contains unsupported property '${key}'`, key);
+    }
+    if (prepared.deferredKeys.includes(key) && !Object.hasOwn(properties, key)) {
+      throw stepError(step, `after cannot predict allocated property '${key}'`, key);
+    }
+    if (
+      Object.hasOwn(prepared.patch, key) &&
+      !isDeepStrictEqual(prepared.patch[key] ?? null, step.after?.properties?.[key] ?? null)
+    ) {
+      throw stepError(step, `after differs from property '${key}'`, key);
+    }
+    if (
+      !Object.hasOwn(prepared.patch, key) &&
+      isDeepStrictEqual(step.before?.properties?.[key] ?? null, stored.properties[key] ?? null)
+    ) {
+      throw stepError(step, `after contains unwritten property '${key}'`, key);
+    }
+  }
+  for (const key of Object.keys(step.before?.properties ?? {})) {
+    if (propertiesByKey.get(key)?.owner !== "user")
+      throw stepError(step, `before contains unsupported property '${key}'`, key);
+  }
+  const relations = effectiveStepRelations(step);
+  for (const [key, before] of Object.entries(step.before?.relations ?? {})) {
+    if (propertiesByKey.get(key)?.type !== "relation") {
+      throw stepError(step, `before contains unsupported relation '${key}'`, key);
+    }
+    if (new Set(before).size !== before.length) {
+      throw stepError(step, `relation '${key}' contains duplicate targets`, key);
+    }
+  }
+  for (const [key, targets] of Object.entries(relations)) {
+    if (!Object.hasOwn(step.before?.relations ?? {}, key)) {
+      throw stepError(step, `before does not hold the current targets of relation '${key}'`, key);
+    }
+    if (!Object.hasOwn(step.after?.relations ?? {}, key)) {
+      throw stepError(step, `after does not hold the new targets of relation '${key}'`, key);
+    }
+    if (step.relations?.[key] && !isDeepStrictEqual(step.relations[key], targets)) {
+      throw stepError(step, `after differs from relation '${key}'`, key);
+    }
+    const keys = targets.map((target) => (typeof target === "string" ? `id:${target}` : `ref:${target.ref}`));
+    const before = step.before?.relations?.[key] ?? [];
+    if (new Set(keys).size !== keys.length || new Set(before).size !== before.length) {
+      throw stepError(step, `relation '${key}' contains duplicate targets`, key);
+    }
+  }
 }

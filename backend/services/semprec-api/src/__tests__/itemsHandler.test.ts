@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import {
   getTestPool,
+  getTenantZeroId,
   registerItemCreateHook,
   registerItemUpdateHook,
   resetDatabase,
@@ -16,6 +17,7 @@ import {
 } from "@semprec/data/testSupport";
 import {
   createChokePoint,
+  createSemprecTickAction,
   createDocStore,
   createUser,
   createViewTypeRegistry,
@@ -25,12 +27,14 @@ import {
   LocalFsBlobStorageWriter,
   login,
   seedSystem,
+  updateItemWithClient,
   withTransaction,
   type AuthenticatedIdentity,
   type ChokePoint,
   type PasswordResetMailer,
   type WriterIdentity,
 } from "@semprec/data";
+import { runInTenant } from "@semprec/shared";
 import { createGenericApplicationService } from "@semprec/application";
 import { createDispatcher } from "../app.js";
 import { createItemRoutes } from "../itemsHandler.js";
@@ -119,6 +123,237 @@ describe("item routes (issue #241)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("projects confirmed Inbox origin through item, database and view HTTP reads", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const idFor = async (moduleId: string) =>
+        withTransaction(pool, async (client) => {
+          const database = await getDatabaseByModuleId(client, moduleId);
+          if (!database) throw new Error(`Missing database ${moduleId}`);
+          return database.id;
+        });
+      const inboxDatabaseId = await idFor("inbox");
+      const inboxItemTypesDatabaseId = await idFor("inboxItemTypes");
+      const processingProposalsDatabaseId = await idFor("processingProposals");
+      const filesId = await idFor("files");
+      const companiesId = await idFor("companies");
+      const peopleId = await idFor("people");
+      const type = await chokePoint.createItem({
+        databaseId: inboxItemTypesDatabaseId,
+        properties: {
+          name: "File",
+          emoji: "📄",
+          processingMethod: "database",
+          targetDatabase: "files",
+        },
+      });
+      const source = await chokePoint.createItem({
+        databaseId: inboxDatabaseId,
+        properties: {
+          text: "A file",
+          date: "2026-08-28",
+          time: "09:00",
+        },
+      });
+      const property = await pool.query<{ id: string }>(
+        "SELECT id FROM properties WHERE database_id = $1 AND key = 'type'",
+        [inboxDatabaseId],
+      );
+      if (!property.rows[0]) throw new Error("Missing Inbox type property");
+      await chokePoint.createRelation({
+        relationPropertyId: property.rows[0].id,
+        callerItemId: source.id,
+        targetItemId: type.id,
+      });
+      const tick = createSemprecTickAction(pool, async () => ({ properties: { name: "From Inbox" } }));
+      await tick(
+        { inboxDatabaseId, inboxItemTypesDatabaseId, processingProposalsDatabaseId },
+        { heartbeatId: "hb", projectItemId: "proj", itemId: source.id },
+      );
+      const cards = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [
+        processingProposalsDatabaseId,
+      ]);
+      if (cards.rows.length !== 1 || !cards.rows[0]) throw new Error("Expected one proposal");
+      const view = await chokePoint.createView({ databaseId: filesId, type: "list", name: "Files", config: {} });
+      return {
+        filesId,
+        companiesId,
+        peopleId,
+        processingProposalsDatabaseId,
+        cardId: cards.rows[0].id,
+        viewId: view.id,
+      };
+    });
+    const originalCard = await runInTenant(getTenantZeroId(), () =>
+      chokePoint.getItem(fixture.processingProposalsDatabaseId, fixture.cardId),
+    );
+    if (!originalCard) throw new Error("Missing proposal card");
+    const initialProposal = originalCard.properties.proposal;
+    const countTargets = async () =>
+      (
+        await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM items WHERE database_id = ANY($1::uuid[])",
+          [[fixture.companiesId, fixture.peopleId]],
+        )
+      ).rows[0]?.count;
+    const originalCount = await countTargets();
+    const countEdges = async () =>
+      (await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM item_relations")).rows[0]?.count;
+    const originalEdges = await countEdges();
+    for (const [properties, field] of [
+      [{ name: "Jane", bogus: 1 }, "bogus"],
+      [{ name: 42 }, "name"],
+    ] as const) {
+      const company = {
+        ref: "company",
+        op: "create",
+        databaseKey: "companies",
+        role: "primary",
+        properties: { name: "Acme" },
+      };
+      const person = {
+        ref: "person",
+        op: "create",
+        databaseKey: "people",
+        role: "secondary",
+        properties,
+        relations: { companies: [{ ref: "company" }] },
+      };
+      await runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, (client) =>
+          updateItemWithClient(
+            client,
+            {
+              databaseId: fixture.processingProposalsDatabaseId,
+              itemId: fixture.cardId,
+              propertiesPatch: {
+                proposal: {
+                  entityKind: "database",
+                  target: fixture.companiesId,
+                  properties: company.properties,
+                  operations: [company, person],
+                },
+              },
+            },
+            { allowedSystemKeys: ["proposal"] },
+          ),
+        ),
+      );
+      const before = await runInTenant(getTenantZeroId(), () =>
+        chokePoint.getItem(fixture.processingProposalsDatabaseId, fixture.cardId),
+      );
+      const failure = await fetch(`${baseUrl}/api/proposals/${fixture.cardId}/confirm`, {
+        method: "POST",
+        headers,
+        body: "{}",
+      });
+      expect(failure.status).toBe(400);
+      expect(
+        z
+          .object({ error: z.object({ details: z.object({ ref: z.string(), field: z.string() }) }) })
+          .parse(await failure.json()).error.details,
+      ).toEqual({ ref: "person", field });
+      const after = await runInTenant(getTenantZeroId(), () =>
+        chokePoint.getItem(fixture.processingProposalsDatabaseId, fixture.cardId),
+      );
+      expect(after).toEqual(before);
+      expect(after?.properties.status).toBe("proposed");
+      expect(await countTargets()).toBe(originalCount);
+      expect(await countEdges()).toBe(originalEdges);
+    }
+    const futureEnvelope = {
+      entityKind: "someFutureKind",
+      target: fixture.companiesId,
+      properties: { name: "Future" },
+    };
+    await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          {
+            databaseId: fixture.processingProposalsDatabaseId,
+            itemId: fixture.cardId,
+            propertiesPatch: { proposal: futureEnvelope },
+          },
+          { allowedSystemKeys: ["proposal"] },
+        ),
+      ),
+    );
+    const futureBefore = await runInTenant(getTenantZeroId(), () =>
+      chokePoint.getItem(fixture.processingProposalsDatabaseId, fixture.cardId),
+    );
+    const unsupported = await fetch(`${baseUrl}/api/proposals/${fixture.cardId}/confirm`, {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    expect(unsupported.status).toBe(409);
+    const conflict = z
+      .object({
+        error: z.object({ code: z.string(), details: z.object({ field: z.string(), entityKind: z.string() }) }),
+      })
+      .parse(await unsupported.json());
+    expect(conflict.error).toEqual({
+      code: "version_conflict",
+      details: { field: "entityKind", entityKind: "someFutureKind" },
+    });
+    expect(
+      await runInTenant(getTenantZeroId(), () =>
+        chokePoint.getItem(fixture.processingProposalsDatabaseId, fixture.cardId),
+      ),
+    ).toEqual(futureBefore);
+    expect(futureBefore?.properties.status).toBe("proposed");
+    expect(await countTargets()).toBe(originalCount);
+    expect(await countEdges()).toBe(originalEdges);
+    await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          {
+            databaseId: fixture.processingProposalsDatabaseId,
+            itemId: fixture.cardId,
+            propertiesPatch: { proposal: initialProposal },
+          },
+          { allowedSystemKeys: ["proposal"] },
+        ),
+      ),
+    );
+    const confirmed = await fetch(`${baseUrl}/api/proposals/${fixture.cardId}/confirm`, {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    expect(confirmed.status).toBe(200);
+    const card = z.object({ properties: z.object({ resultItemId: z.string() }) }).parse(await confirmed.json());
+    const manual = await fetch(`${baseUrl}/api/databases/${fixture.filesId}/items`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ properties: { name: "Manual" } }),
+    });
+    expect(manual.status).toBe(201);
+    const manualBody = z.object({ id: z.string(), fromInbox: z.boolean().optional() }).parse(await manual.json());
+    expect(manualBody.fromInbox).toBeUndefined();
+    const schema = z.object({ id: z.string(), fromInbox: z.boolean() });
+    for (const [id, expected] of [
+      [card.properties.resultItemId, true],
+      [manualBody.id, false],
+    ] as const) {
+      const response = await fetch(`${baseUrl}/api/items/${id}`, { headers });
+      expect(response.status).toBe(200);
+      expect(schema.parse(await response.json())).toMatchObject({ id, fromInbox: expected });
+    }
+    for (const url of [`/api/databases/${fixture.filesId}/query`, `/api/views/${fixture.viewId}/query`]) {
+      const response = await fetch(`${baseUrl}${url}`, { method: "POST", headers, body: "{}" });
+      expect(response.status).toBe(200);
+      const page = z.object({ items: z.array(schema) }).parse(await response.json());
+      expect(Object.fromEntries(page.items.map((item) => [item.id, item.fromInbox]))).toEqual({
+        [card.properties.resultItemId]: true,
+        [manualBody.id]: false,
+      });
+    }
   });
 
   it.each(["item get", "database query", "view query", "patch", "conflict"])(

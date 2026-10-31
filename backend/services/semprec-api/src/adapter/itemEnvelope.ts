@@ -19,6 +19,7 @@ export interface ItemEnvelope {
   computed: Record<string, unknown>;
   updatedAt: string;
   deletedAt: string | null;
+  fromInbox?: boolean;
   /** Present only when the read asked for `include=links` (issue #1403). */
   links?: ItemValueLinks;
   /**
@@ -47,6 +48,7 @@ export function toItemEnvelope(
     computed: item.computed,
     updatedAt: item.updatedAt,
     deletedAt: item.deletedAt,
+    ...(item.fromInbox === undefined ? {} : { fromInbox: item.fromInbox }),
     ...(item.links === undefined ? {} : { links: item.links }),
   };
 }

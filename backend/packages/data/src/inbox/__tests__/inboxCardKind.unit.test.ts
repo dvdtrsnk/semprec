@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { deriveApprovalCardKind, deriveInboxCardKind, type InboxCardKindInput } from "../inboxCardKind.js";
 import type { ProposalEnvelope } from "../inboxTickAction.js";
+import { parseStoredProposalEnvelope } from "../proposalEnvelope.js";
 
 const database: ProposalEnvelope = { entityKind: "database", target: "db-1", properties: {} };
 const pageContent: ProposalEnvelope = { entityKind: "pageContent", target: "page-1", properties: {} };
@@ -33,6 +34,19 @@ describe("deriveInboxCardKind", () => {
     expect(deriveInboxCardKind(input({ ownerModuleId }))).toEqual({ cardKind: expected, baseKind: expected });
   });
 
+  it("derives page content by page ownership even on a transcript card", () => {
+    expect(deriveInboxCardKind(input({ kind: "transcript", envelope: pageContent, ownerModuleId: "journal" }))).toEqual(
+      {
+        cardKind: "journal",
+        baseKind: "journal",
+      },
+    );
+    expect(deriveInboxCardKind(input({ kind: "transcript", envelope: pageContent, ownerModuleId: null }))).toEqual({
+      cardKind: "page",
+      baseKind: "page",
+    });
+  });
+
   it.each([
     ["journal", "journal"],
     ["pages", "page"],
@@ -56,6 +70,17 @@ describe("deriveInboxCardKind", () => {
     expect(deriveInboxCardKind(input({ kind: "transcript", ownerModuleId: "events" }))).toEqual({
       cardKind: "transcriptEvent",
       baseKind: "event",
+    });
+  });
+
+  it.each([null, "futureModule", "tasks"])("falls back for a transcript database with owner %s", (ownerModuleId) => {
+    expect(deriveInboxCardKind(input({ kind: "transcript", ownerModuleId }))).toEqual({
+      cardKind: "clarify",
+      baseKind: "page",
+    });
+    expect(deriveInboxCardKind(input({ kind: "transcript", status: "invalid", ownerModuleId }))).toEqual({
+      cardKind: "invalid",
+      baseKind: "page",
     });
   });
 
@@ -88,11 +113,20 @@ describe("deriveInboxCardKind", () => {
       baseKind: "page",
     });
     expect(deriveInboxCardKind(input({ ownerModuleId: null }))).toEqual({ cardKind: "clarify", baseKind: "page" });
-    const unknownEnvelope = { entityKind: "future", target: "x", properties: {} } as unknown as ProposalEnvelope;
-    expect(deriveInboxCardKind(input({ envelope: unknownEnvelope }))).toEqual({
-      cardKind: "clarify",
-      baseKind: "page",
-    });
+    const unknownEnvelope = parseStoredProposalEnvelope({ entityKind: "future", target: "x", properties: {} }, "p1");
+    for (const kind of ["inbox", "transcript"] as const) {
+      expect(deriveInboxCardKind(input({ kind, envelope: unknownEnvelope }))).toEqual({
+        cardKind: "clarify",
+        baseKind: "page",
+      });
+      expect(deriveInboxCardKind(input({ kind, status: "invalid", envelope: unknownEnvelope }))).toEqual({
+        cardKind: "invalid",
+        baseKind: "page",
+      });
+    }
+    for (const ownerModuleId of ["constructor", "toString", "__proto__"]) {
+      expect(deriveInboxCardKind(input({ ownerModuleId }))).toEqual({ cardKind: "clarify", baseKind: "page" });
+    }
     expect(deriveInboxCardKind(input({ envelope: speakerRelation }))).toEqual({
       cardKind: "clarify",
       baseKind: "page",

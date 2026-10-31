@@ -1,5 +1,5 @@
 import { DateTime } from "luxon";
-import type { ItemPreWriteTransform } from "../chokePoint/hooks.js";
+import type { ItemPreWriteTransform, ItemPreWriteTransformContext } from "../chokePoint/hooks.js";
 import type { ItemRow } from "../types.js";
 import { ValidationError } from "../errors.js";
 import { normalizeWallClockTime } from "../timezone.js";
@@ -18,7 +18,10 @@ const CALENDAR_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
  * `timeTo` for the time rules), so an unrelated write such as a status change still succeeds on a stored row that
  * predates these rules. A create runs the time rules always and the name rule when it sends a `name`.
  */
-export const taskPreWriteTransform: ItemPreWriteTransform = async ({ stored, patch }) => {
+export const prepareTaskWrite = async ({
+  stored,
+  patch,
+}: Pick<ItemPreWriteTransformContext, "stored" | "patch">): Promise<Record<string, unknown>> => {
   const creating = stored === null;
   const nameNamed = patch.name !== undefined;
   const timeNamed = patch.date !== undefined || patch.timeFrom !== undefined || patch.timeTo !== undefined;
@@ -27,6 +30,8 @@ export const taskPreWriteTransform: ItemPreWriteTransform = async ({ stored, pat
   if (!creating && !timeNamed) return patch;
   return deriveTimeAndCheckSchedule(stored, patch);
 };
+
+export const taskPreWriteTransform: ItemPreWriteTransform = prepareTaskWrite;
 
 function assertNonBlankName(value: unknown): void {
   if (typeof value !== "string" || value.trim() === "") {

@@ -109,11 +109,14 @@ const PROPOSED_CALLER_ITEM_ID = "00000000-0000-0000-0000-000000000000";
 export interface LinkableRelationTargetInput {
   relationPropertyId: string;
   targetItemId: string;
+  /** Existing caller, when validating a proposed relation on an existing item. */
+  callerItemId?: string;
 }
 
 /**
- * Rejects a relation target an edge could not point at, without the caller item, which a proposed
- * item does not have yet. Target-validation failures carry `details.field` = the relation property key:
+ * Rejects a relation target an edge could not point at. A proposed new item has no caller yet;
+ * an existing caller may instead be supplied and its own persisted edge is not a cardinality collision.
+ * Target-validation failures carry `details.field` = the relation property key:
  * - the target is missing from the relation's other database (another tenant's item is missing
  *   too), `code: 'targetNotFound'`; soft-deleted, `code: 'targetDeleted'`; a project whose
  *   `status` is `archived`, `code: 'targetArchived'` (a `done` project stays linkable);
@@ -130,6 +133,11 @@ export async function assertRelationTargetLinkableWithClient(
 ): Promise<void> {
   const edgeContext = await loadWritableRelationEdgeContext(client, input.relationPropertyId, context);
   const field = edgeContext.property.key;
+
+  if (input.callerItemId !== undefined) {
+    if (!UUID_RE.test(input.callerItemId)) throw new ValidationError("Relation caller must be a UUID", { field });
+    await assertRelationEndpointValid(client, edgeContext.property.databaseId, input.callerItemId, "callerItemId");
+  }
 
   if (!UUID_RE.test(input.targetItemId)) {
     throw new ValidationError("Relation target must be a UUID", { field });
@@ -158,7 +166,7 @@ export async function assertRelationTargetLinkableWithClient(
   await runRelationEdgeWriteHooks({
     client,
     edgeContext,
-    callerItemId: PROPOSED_CALLER_ITEM_ID,
+    callerItemId: input.callerItemId ?? PROPOSED_CALLER_ITEM_ID,
     targetItemId: input.targetItemId,
     writer,
   });
@@ -168,7 +176,11 @@ export async function assertRelationTargetLinkableWithClient(
   const { cardinality } = edgeContext.reldef;
   if (cardinality === "one_to_one" || (cardinality === "one_to_many" && targetIsSideB)) {
     const edges = await relationsStore.listRelationsForItem(client, edgeContext.reldef.id, input.targetItemId);
-    if (edges.length > 0) {
+    const existing =
+      input.callerItemId === undefined
+        ? null
+        : normalizeRelationSides(edgeContext.reldef, input.relationPropertyId, input.callerItemId, input.targetItemId);
+    if (edges.some((edge) => existing === null || edge.itemA !== existing.itemA || edge.itemB !== existing.itemB)) {
       throw new CardinalityViolationError(
         `Relation target ${input.targetItemId} already holds the only edge ${cardinality} relation ${edgeContext.reldef.id} allows`,
         { field, code: "cardinalityViolation", relationDefinitionId: edgeContext.reldef.id, cardinality },

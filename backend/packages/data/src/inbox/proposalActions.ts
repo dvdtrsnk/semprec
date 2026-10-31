@@ -96,6 +96,7 @@ interface EnvelopeForCard {
 function unsupportedEntityKindError(entityKind: string): ConflictError {
   return new ConflictError(`Proposal entityKind '${entityKind}' is not supported by this release`, {
     field: "entityKind",
+    entityKind,
   });
 }
 
@@ -189,10 +190,8 @@ function inboxCaptureInstant(inboxItem: ItemRow, timezone: string): string | nul
 }
 
 /**
- * Where the items a confirm creates came from: a transcript card names its transcript, and the
- * card's last write time stands in for its creation time (items carry no creation timestamp); any
- * other card names its `sourceInbox` item and takes that item's capture moment, with the same
- * stand-in when the edge or the item is gone.
+ * Where the items a confirm creates came from. Only a valid Inbox capture date and time supplies
+ * a known timestamp; transcript cards and missing or invalid capture times remain unknown.
  */
 async function resolveItemOriginSource(
   client: PoolClient,
@@ -205,7 +204,8 @@ async function resolveItemOriginSource(
       proposalId: proposal.id,
       inboxItemId: null,
       sourceTranscriptId: transcriptId,
-      capturedAt: proposal.updatedAt,
+      capturedAt: null,
+      captureTimeBasis: "unknown",
       captureChannel: "transcript",
     };
   }
@@ -216,11 +216,13 @@ async function resolveItemOriginSource(
   const [edge] = await relationsStore.listRelationsForItem(client, relationDefinition.id, proposal.id);
   const inboxItemId = edge ? relationsStore.otherSide(edge, proposal.id) : null;
   const [inboxItem] = inboxItemId ? await itemsStore.getItemsByIds(client, [inboxItemId]) : [];
+  const capturedAt = inboxItem ? inboxCaptureInstant(inboxItem, await getSystemTimezone(client)) : null;
   return {
     proposalId: proposal.id,
     inboxItemId,
     sourceTranscriptId: null,
-    capturedAt: (inboxItem && inboxCaptureInstant(inboxItem, await getSystemTimezone(client))) ?? proposal.updatedAt,
+    capturedAt,
+    captureTimeBasis: capturedAt === null ? "unknown" : "inboxCapture",
     captureChannel: "inbox",
   };
 }
