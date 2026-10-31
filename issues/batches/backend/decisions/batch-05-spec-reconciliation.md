@@ -26,3 +26,12 @@ gh-1356 preserves exact prior English wording and visible URL. Interpret one lin
 - gh-1496: bee53719e9f241939e8bbce0a37053beef63bbbfd198125d86d010a1699396c1 -> 46016b255950f5be48ad4dce264d4c86bfadfbb6564cad5d7b4c45b66f0ed2bf
 - gh-1468: 713a882a016fafd15faf89bef41ba3c9a3f045894c1f67e7271ec7dc6a18d9d2 -> 1b762a6386c3e75610e93c03ab1ed16355d96c4b2912babaa304ce9d4f937544
 - gh-1356: 54c8e1b144d4d507465d5a983c7a3b10964cb8d7a7e714ab82193f7f1c0213a5 -> 452ce2b2b3b639d3d88a135c27da01b554a2a0ed48e4ee400e5834c0c6c7918c
+
+## Real Sent attachment fixture and repeated auth catalog builds
+
+gh-1487's existing API tests cannot import private reconciliation entry points through the production data barrel. Reuse the established testSupport pattern: allow only reconcileGmailAccount plus needed Gmail client/message types to be re-exported in backend/packages/data/src/testSupport/testDb.ts. Drive real Sent-labelled reconciliation/attachment ingest with a deterministic transport fake, real upload dedup, then actual authenticated full/range blob reads and tenant refusal. No new production barrel API, synthetic attachment-row substitute, copied ingest logic or generic fixture framework. This proves the stated data-ingest/download seam, not an unexecuted queue/provider transport chain.
+
+gh-1356's literal recursive cp command is unsafe on repeated builds: the parent reproduced it in an isolated temporary directory; the second copy retained the first root en.json and wrote the updated file under i18n/i18n. Replace only auth copying with mkdir -p and explicit JSON file copying into the flat destination. Preserve exact catalog contents and every unrelated build command. Evidence must exercise the actual package build twice with an ignored stale built-catalog sentinel and assert both runtime catalogs match source afterwards; a duplicated copy-fragment test alone is insufficient. Tracked source catalogs stay unchanged. Only historical explanatory Context and redundant aggregate introduction are compressed; all other mail/link/token decisions and execution constraints remain.
+
+- gh-1487: 40e9fa707c5c616197275f67ba2c360cd589bdb0130361690883b30117e9322a -> 682f11a8f10b2ed5c65f25cec1433c57d88876921eebdddad6f6bc9ff181ddc4
+- gh-1356: 452ce2b2b3b639d3d88a135c27da01b554a2a0ed48e4ee400e5834c0c6c7918c -> 0534497a5b712a581f007f9e62c7ee2409cbadb21e7acbeb1ab77066761ebde3
