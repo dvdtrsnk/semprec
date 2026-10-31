@@ -1,14 +1,18 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import "../domainWriteHooks.js";
 import { DateTime } from "luxon";
-import { readFile } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Pool } from "pg";
 import { getSystemTimezone } from "../systemSettings.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { withTransaction } from "../db/pool.js";
+import { createPool, withTransaction } from "../db/pool.js";
+import { runMigrations } from "../db/migrate.js";
 import { ConflictError, ValidationError } from "../errors.js";
 import { randomUUID } from "node:crypto";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
@@ -795,6 +799,47 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(await edgeExists(project, newArea)).toBe(true);
     });
 
+    it("moves relations on a legacy pinned project without preparing an item write", async () => {
+      const oldArea = await createIn("areas", { name: "Old" });
+      const newArea = await createIn("areas", { name: "New" });
+      const project = await createIn("projects", { name: "Project", pinned: false });
+      const projectsDb = await databaseIdFor("projects");
+      await withTransaction(pool, (client) =>
+        itemsStore.updateItemProperties(client, {
+          databaseId: projectsDb,
+          itemId: project,
+          propertiesPatch: { pinned: true, pinnedOrder: null },
+        }),
+      );
+      const property = await withTransaction(pool, (client) =>
+        propertiesStore.getPropertyByKey(client, projectsDb, "area"),
+      );
+      if (!property) throw new Error("Missing Projects.area property");
+      await withTransaction(pool, (client) =>
+        createRelationWithClient(client, {
+          relationPropertyId: property.id,
+          callerItemId: project,
+          targetItemId: oldArea,
+        }),
+      );
+      const card = await cardWithSteps("projects", [
+        {
+          ref: "project",
+          op: "update",
+          itemId: project,
+          role: "primary",
+          properties: {},
+          before: { relations: { area: [oldArea] } },
+          after: { relations: { area: [newArea] } },
+        },
+      ]);
+      await confirm(card);
+      const [result] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
+      expect(result?.properties).toMatchObject({ pinned: true, pinnedOrder: null });
+      expect(await edgeExists(project, oldArea)).toBe(false);
+      expect(await edgeExists(project, newArea)).toBe(true);
+    });
+
     it("clears task times only with explicit before and after coverage", async () => {
       const task = await createIn("tasks", { name: "Task", date: "2026-11-01", timeFrom: "09:00", timeTo: "10:00" });
       const base: Step = {
@@ -1430,6 +1475,82 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           expect(rows[0]?.capture_time_basis).toBe("legacyUnverified");
         });
       });
+
+      it("upgrades populated tenant origins through the migration runner and retains runtime isolation", async () => {
+        const connection = process.env.TEST_DATABASE_URL;
+        if (!connection) throw new Error("Missing TEST_DATABASE_URL");
+        const name = `origin_upgrade_${randomUUID().replaceAll("-", "")}`;
+        const admin = createPool(connection);
+        const url = new URL(connection);
+        url.pathname = `/${name}`;
+        const scratch = createPool(url.toString());
+        const directory = await mkdtemp(path.join(tmpdir(), "semprec-origin-upgrade-"));
+        const migrations = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "db", "migrations");
+        const current = "0126_item_origin_capture_time_basis.sql";
+        let created = false;
+        let failure: { error: unknown } | undefined;
+        try {
+          await admin.query(`CREATE DATABASE "${name}" ENCODING 'UTF8' TEMPLATE template0`);
+          created = true;
+          for (const file of (await readdir(migrations)).filter((f) => f.endsWith(".sql") && f < current).sort()) {
+            await copyFile(path.join(migrations, file), path.join(directory, file));
+          }
+          await runMigrations(scratch, directory);
+          const tenants = await scratch.query<{ id: string }>("SELECT id FROM tenants");
+          const first = tenants.rows[0]?.id;
+          if (!first) throw new Error("Missing migrated tenant");
+          const second = randomUUID();
+          await scratch.query("INSERT INTO tenants (id, status) VALUES ($1, 'active')", [second]);
+          const firstItem = randomUUID();
+          const secondItem = randomUUID();
+          // Simulate the prior release's writer on the real tenant-scoped table.
+          await scratch.query(
+            `INSERT INTO item_origins (tenant_id, item_id, proposal_id, captured_at, capture_channel)
+             VALUES ($1, $2, $3, '2026-01-01T00:00:00Z', 'inbox'),
+                    ($4, $5, $6, '2026-02-01T00:00:00Z', 'inbox')`,
+            [first, firstItem, randomUUID(), second, secondItem, randomUUID()],
+          );
+          await copyFile(path.join(migrations, current), path.join(directory, current));
+          await runMigrations(scratch, directory);
+          await withTransaction(scratch, async (client) => {
+            await client.query("SET LOCAL ROLE semprec_side");
+            await client.query("SELECT set_config('app.tenant_id', $1, true)", [first]);
+            const { rows } = await client.query<{ item_id: string; captured_at: Date; capture_time_basis: string }>(
+              "SELECT item_id, captured_at, capture_time_basis FROM item_origins",
+            );
+            expect(rows).toHaveLength(1);
+            expect(rows[0]).toMatchObject({ item_id: firstItem, capture_time_basis: "legacyUnverified" });
+            expect(rows[0]?.captured_at.toISOString()).toBe("2026-01-01T00:00:00.000Z");
+          });
+          await withTransaction(scratch, async (client) => {
+            await client.query("SET LOCAL ROLE semprec_side");
+            await client.query("SELECT set_config('app.tenant_id', $1, true)", [second]);
+            const { rows } = await client.query<{ item_id: string; captured_at: Date; capture_time_basis: string }>(
+              "SELECT item_id, captured_at, capture_time_basis FROM item_origins",
+            );
+            expect(rows).toHaveLength(1);
+            expect(rows[0]).toMatchObject({ item_id: secondItem, capture_time_basis: "legacyUnverified" });
+            expect(rows[0]?.captured_at.toISOString()).toBe("2026-02-01T00:00:00.000Z");
+          });
+        } catch (error) {
+          failure = { error };
+        }
+        for (const cleanup of [
+          () => scratch.end(),
+          async () => {
+            if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+          },
+          () => admin.end(),
+          () => rm(directory, { recursive: true, force: true }),
+        ]) {
+          try {
+            await cleanup();
+          } catch (error) {
+            failure ??= { error };
+          }
+        }
+        if (failure) throw failure.error;
+      }, 120_000);
 
       it("records no guessed time for a revised transcript card", async () => {
         const transcriptsId = await databaseIdFor("transcripts");

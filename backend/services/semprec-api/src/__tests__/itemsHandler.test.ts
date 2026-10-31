@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import {
   getTestPool,
+  getTenantZeroId,
   registerItemCreateHook,
   registerItemUpdateHook,
   resetDatabase,
@@ -16,6 +17,7 @@ import {
 } from "@semprec/data/testSupport";
 import {
   createChokePoint,
+  createSemprecTickAction,
   createDocStore,
   createUser,
   createViewTypeRegistry,
@@ -31,6 +33,7 @@ import {
   type PasswordResetMailer,
   type WriterIdentity,
 } from "@semprec/data";
+import { runInTenant } from "@semprec/shared";
 import { createGenericApplicationService } from "@semprec/application";
 import { createDispatcher } from "../app.js";
 import { createItemRoutes } from "../itemsHandler.js";
@@ -119,6 +122,94 @@ describe("item routes (issue #241)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("projects confirmed Inbox origin through item, database and view HTTP reads", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const idFor = async (moduleId: string) =>
+        withTransaction(pool, async (client) => {
+          const database = await getDatabaseByModuleId(client, moduleId);
+          if (!database) throw new Error(`Missing database ${moduleId}`);
+          return database.id;
+        });
+      const inboxDatabaseId = await idFor("inbox");
+      const inboxItemTypesDatabaseId = await idFor("inboxItemTypes");
+      const processingProposalsDatabaseId = await idFor("processingProposals");
+      const filesId = await idFor("files");
+      const type = await chokePoint.createItem({
+        databaseId: inboxItemTypesDatabaseId,
+        properties: {
+          name: "File",
+          emoji: "📄",
+          processingMethod: "database",
+          targetDatabase: "files",
+        },
+      });
+      const source = await chokePoint.createItem({
+        databaseId: inboxDatabaseId,
+        properties: {
+          text: "A file",
+          date: "2026-08-28",
+          time: "09:00",
+        },
+      });
+      const property = await pool.query<{ id: string }>(
+        "SELECT id FROM properties WHERE database_id = $1 AND key = 'type'",
+        [inboxDatabaseId],
+      );
+      if (!property.rows[0]) throw new Error("Missing Inbox type property");
+      await chokePoint.createRelation({
+        relationPropertyId: property.rows[0].id,
+        callerItemId: source.id,
+        targetItemId: type.id,
+      });
+      const tick = createSemprecTickAction(pool, async () => ({ properties: { name: "From Inbox" } }));
+      await tick(
+        { inboxDatabaseId, inboxItemTypesDatabaseId, processingProposalsDatabaseId },
+        { heartbeatId: "hb", projectItemId: "proj", itemId: source.id },
+      );
+      const cards = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [
+        processingProposalsDatabaseId,
+      ]);
+      if (cards.rows.length !== 1 || !cards.rows[0]) throw new Error("Expected one proposal");
+      const view = await chokePoint.createView({ databaseId: filesId, type: "list", name: "Files", config: {} });
+      return { filesId, cardId: cards.rows[0].id, viewId: view.id };
+    });
+    const confirmed = await fetch(`${baseUrl}/api/proposals/${fixture.cardId}/confirm`, {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    expect(confirmed.status).toBe(200);
+    const card = z.object({ properties: z.object({ resultItemId: z.string() }) }).parse(await confirmed.json());
+    const manual = await fetch(`${baseUrl}/api/databases/${fixture.filesId}/items`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ properties: { name: "Manual" } }),
+    });
+    expect(manual.status).toBe(201);
+    const manualBody = z.object({ id: z.string(), fromInbox: z.boolean().optional() }).parse(await manual.json());
+    expect(manualBody.fromInbox).toBeUndefined();
+    const schema = z.object({ id: z.string(), fromInbox: z.boolean() });
+    for (const [id, expected] of [
+      [card.properties.resultItemId, true],
+      [manualBody.id, false],
+    ] as const) {
+      const response = await fetch(`${baseUrl}/api/items/${id}`, { headers });
+      expect(response.status).toBe(200);
+      expect(schema.parse(await response.json())).toMatchObject({ id, fromInbox: expected });
+    }
+    for (const url of [`/api/databases/${fixture.filesId}/query`, `/api/views/${fixture.viewId}/query`]) {
+      const response = await fetch(`${baseUrl}${url}`, { method: "POST", headers, body: "{}" });
+      expect(response.status).toBe(200);
+      const page = z.object({ items: z.array(schema) }).parse(await response.json());
+      expect(Object.fromEntries(page.items.map((item) => [item.id, item.fromInbox]))).toEqual({
+        [card.properties.resultItemId]: true,
+        [manualBody.id]: false,
+      });
+    }
   });
 
   it.each(["item get", "database query", "view query", "patch", "conflict"])(

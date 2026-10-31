@@ -2645,6 +2645,17 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
     expect(error.details).toEqual({ ref: "company", field: "bogus" });
   });
 
+  it.each(["missing", "company"])("ignores a bad %s reference on an unreferenced optional step", async (ref) => {
+    const optional = { ...companyStep, optional: true, relations: { people: [{ ref }] } };
+    await validate(envelopeOf([optional, { ...personStep, relations: undefined }]));
+  });
+
+  it("rejects a required step referring to an optional step skipped for a missing reference", async () => {
+    const optional = { ...companyStep, optional: true, relations: { people: [{ ref: "missing" }] } };
+    const error = await failure(envelopeOf([optional, personStep]));
+    expect(error.details).toEqual({ ref: "person", field: "companies" });
+  });
+
   it("skips an optional step that refers to a disabled step, but rejects a required one", async () => {
     const disabled = { ...companyStep, enabled: false };
     const optionalReferrer = {

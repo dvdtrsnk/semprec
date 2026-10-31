@@ -41,14 +41,6 @@ export function selectActiveSteps(steps: ProposalStep[]): ProposalStep[] {
   const active = new Set(steps.filter((step) => step.enabled !== false).map((step) => step.ref));
   if (!active.has(primaries[0]!.ref)) throw stepError(primaries[0]!, "the primary step cannot be disabled", "enabled");
 
-  for (const step of steps) {
-    if (!active.has(step.ref)) continue;
-    for (const { key, ref } of stepRefTargets(step)) {
-      if (!refs.has(ref)) throw stepError(step, `relation '${key}' refers to '${ref}', which is not a step`, key);
-      if (ref === step.ref) throw stepError(step, `relation '${key}' refers to the step itself`, key);
-    }
-  }
-
   const isReferred = (ref: string) =>
     steps.some(
       (other) => other.ref !== ref && active.has(other.ref) && stepRefTargets(other).some((t) => t.ref === ref),
@@ -67,6 +59,13 @@ export function selectActiveSteps(steps: ProposalStep[]): ProposalStep[] {
         active.delete(step.ref);
         changed = true;
       }
+    }
+  }
+  for (const step of steps) {
+    if (!active.has(step.ref)) continue;
+    for (const { key, ref } of stepRefTargets(step)) {
+      if (!refs.has(ref)) throw stepError(step, `relation '${key}' refers to '${ref}', which is not a step`, key);
+      if (ref === step.ref) throw stepError(step, `relation '${key}' refers to the step itself`, key);
     }
   }
   return steps.filter((step) => active.has(step.ref));

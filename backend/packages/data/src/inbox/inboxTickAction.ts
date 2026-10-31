@@ -236,7 +236,10 @@ async function assertValidStep(client: PoolClient, step: ProposalStep): Promise<
     const byKey = new Map(databaseProperties.map((property) => [property.key, property]));
     assertWritableProposalPropertyKeys(properties, byKey, database.id);
     if (step.op === "update") {
-      const prepared = await prepareUserItemPatch(databaseProperties, properties, database, item);
+      const prepared =
+        Object.keys(properties).length > 0
+          ? await prepareUserItemPatch(databaseProperties, properties, database, item)
+          : { patch: {}, deferredKeys: [] };
       assertUpdateStepShape(step, prepared, item, byKey);
     }
     // A target the item already holds is not re-linked, so the cardinality check skips it.

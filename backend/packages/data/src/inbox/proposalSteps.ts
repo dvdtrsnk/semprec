@@ -116,7 +116,11 @@ async function assertUpdateBefore(
     throw new ValidationError("Proposal update database no longer exists", { ref: step.ref, field: "itemId" });
   const properties = await propertiesStore.listPropertiesByDatabase(client, databaseId);
   await withStepRef(step.ref, async () => {
-    const prepared = await prepareUserItemPatch(properties, step.properties ?? {}, database, item);
+    const patch = step.properties ?? {};
+    const prepared =
+      Object.keys(patch).length > 0
+        ? await prepareUserItemPatch(properties, patch, database, item)
+        : { patch: {}, deferredKeys: [] };
     assertUpdateStepShape(step, prepared, item, new Map(properties.map((property) => [property.key, property])));
   });
   for (const key of Object.keys(effectiveStepRelations(step))) {
