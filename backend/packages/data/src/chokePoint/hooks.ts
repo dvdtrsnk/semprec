@@ -88,8 +88,14 @@ export interface ItemPreWriteTransformContext {
   writer: WriterIdentity;
 }
 
-/** Returns the properties to store, or throws (`ValidationError` for a rejected value). Must be deterministic: a create replay runs it and discards the result. */
+/** Returns properties to store or throws. Real transforms run in the write transaction and may allocate values under their own locks; see [[2026-10-31-confirmed-proposal-update-preconditions]]. */
 export type ItemPreWriteTransform = (context: ItemPreWriteTransformContext) => Promise<Record<string, unknown>>;
+
+/** A preparation cannot access a client or allocate server-assigned values. */
+export type ItemPreWritePreparation = (context: Pick<ItemPreWriteTransformContext, "stored" | "patch">) => Promise<{
+  patch: Record<string, unknown>;
+  deferredKeys: string[];
+}>;
 
 const itemCreateHooks = new Set<ItemCreateHook>();
 const itemUpdateHooks = new Set<ItemUpdateHook>();
@@ -97,6 +103,7 @@ const relationEdgeWriteHooks = new Set<RelationEdgeWriteHook>();
 const relationEdgeDeleteHooks = new Set<RelationEdgeDeleteHook>();
 /** Keyed by owning module id; each module's transforms keep their registration order. */
 const itemPreWriteTransforms = new Map<string, ItemPreWriteTransform[]>();
+const itemPreWritePreparations = new Map<string, Map<ItemPreWriteTransform, ItemPreWritePreparation>>();
 
 export function registerItemCreateHook(hook: ItemCreateHook): void {
   itemCreateHooks.add(hook);
@@ -119,10 +126,37 @@ export function registerRelationEdgeDeleteHook(hook: RelationEdgeDeleteHook): vo
  * Attaches a pre-write transform to one owning module. The caller runs it only for a database whose
  * `ownerModuleId` is `moduleId`. Registering the same `(moduleId, transform)` twice is a no-op.
  */
-export function registerItemPreWriteTransform(moduleId: string, transform: ItemPreWriteTransform): void {
+export function registerItemPreWriteTransform(
+  moduleId: string,
+  transform: ItemPreWriteTransform,
+  prepare?: ItemPreWritePreparation,
+): void {
   const registered = itemPreWriteTransforms.get(moduleId) ?? [];
   if (registered.includes(transform)) return;
   itemPreWriteTransforms.set(moduleId, [...registered, transform]);
+  if (prepare) {
+    const preparations =
+      itemPreWritePreparations.get(moduleId) ?? new Map<ItemPreWriteTransform, ItemPreWritePreparation>();
+    preparations.set(transform, prepare);
+    itemPreWritePreparations.set(moduleId, preparations);
+  }
+}
+
+/** Returns null when any registered transform cannot safely be prepared. */
+export async function prepareItemPreWriteTransforms(
+  moduleId: string,
+  context: Pick<ItemPreWriteTransformContext, "stored" | "patch">,
+): Promise<{ patch: Record<string, unknown>; deferredKeys: string[] } | null> {
+  let patch = context.patch;
+  const deferredKeys: string[] = [];
+  for (const transform of itemPreWriteTransforms.get(moduleId) ?? []) {
+    const prepare = itemPreWritePreparations.get(moduleId)?.get(transform);
+    if (!prepare || deferredKeys.length > 0) return null;
+    const result = await prepare({ ...context, patch });
+    patch = result.patch;
+    deferredKeys.push(...result.deferredKeys);
+  }
+  return { patch, deferredKeys };
 }
 
 /** Whether a module has at least one pre-write transform; an update of a database without one takes no extra row lock. */
@@ -184,6 +218,7 @@ export function clearHooksForTests(): void {
   relationEdgeDeleteHooks.clear();
   itemReadProjections.clear();
   itemPreWriteTransforms.clear();
+  itemPreWritePreparations.clear();
 }
 
 export interface ItemReadProjection {

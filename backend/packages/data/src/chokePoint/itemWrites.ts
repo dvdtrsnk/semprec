@@ -25,7 +25,7 @@ import type { PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
-import type { ItemRow, PropertyRow } from "../types.js";
+import type { DatabaseRow, ItemRow, PropertyRow } from "../types.js";
 import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as itemsStore from "./itemsStore.js";
@@ -41,6 +41,7 @@ import { assertValidTimezone } from "../timezone.js";
 import { getSystemTimezone, getSystemSettingsItemId } from "../systemSettings.js";
 import {
   hasItemPreWriteTransform,
+  prepareItemPreWriteTransforms,
   runItemCreateHooks,
   runItemPreWriteTransforms,
   runItemUpdateHooks,
@@ -166,6 +167,28 @@ export function assertUserItemPatchValid(
   assertWritableProperties(properties, Object.keys(values));
   assertColorValues(properties, values);
   assertTitlePresent(properties, values, ownerModuleId, { writerKind: "user" }, "patch");
+}
+
+/** Prepares a user patch without a database client or write hooks. */
+export async function prepareUserItemPatch(
+  properties: PropertyRow[],
+  values: Record<string, unknown>,
+  database: DatabaseRow,
+  stored: ItemRow,
+): Promise<{ patch: Record<string, unknown>; deferredKeys: string[] }> {
+  assertUserItemPatchValid(properties, values, database.ownerModuleId);
+  if (database.ownerModuleId === null) return { patch: values, deferredKeys: [] };
+  const result = await prepareItemPreWriteTransforms(database.ownerModuleId, { stored, patch: values });
+  if (!result)
+    throw new ValidationError("The item's write transform cannot be safely prepared", { field: "properties" });
+  assertTransformAddedKeysWritable(properties, Object.keys(values), result.patch, database.ownerModuleId);
+  for (const key of result.deferredKeys) {
+    const property = properties.find((candidate) => candidate.key === key);
+    if (!property || property.owner !== "user" || Object.hasOwn(values, key) || Object.hasOwn(result.patch, key)) {
+      throw new ValidationError("The item's write transform declared an invalid deferred key", { field: key });
+    }
+  }
+  return result;
 }
 
 /**

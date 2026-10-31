@@ -1,5 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import "../domainWriteHooks.js";
 import { DateTime } from "luxon";
+import { readFile } from "node:fs/promises";
 import type { Pool } from "pg";
 import { getSystemTimezone } from "../systemSettings.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -37,6 +39,23 @@ import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.j
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
 let docStore: DocStore;
+
+async function waitForStart(ready: Promise<void>, operation: Promise<unknown>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      ready,
+      operation.then(() => {
+        throw new Error("Transaction finished before the start signal");
+      }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Timed out waiting for transaction")), 5000);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 async function databaseIdFor(moduleId: string): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
@@ -744,6 +763,309 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(await edgeExists(project, newArea)).toBe(true);
     });
 
+    it("writes a relation declared only in after using the validated targets", async () => {
+      const oldArea = await createIn("areas", { name: "Old" });
+      const newArea = await createIn("areas", { name: "New" });
+      const project = await createIn("projects", { name: "Move" });
+      const projectsDb = await databaseIdFor("projects");
+      const property = await withTransaction(pool, (client) =>
+        propertiesStore.getPropertyByKey(client, projectsDb, "area"),
+      );
+      if (!property) throw new Error("Missing Projects.area property");
+      await withTransaction(pool, (client) =>
+        createRelationWithClient(client, {
+          relationPropertyId: property.id,
+          callerItemId: project,
+          targetItemId: oldArea,
+        }),
+      );
+      const card = await cardWithSteps("projects", [
+        {
+          ref: "project",
+          op: "update",
+          itemId: project,
+          role: "primary",
+          properties: {},
+          before: { relations: { area: [oldArea] } },
+          after: { relations: { area: [newArea] } },
+        },
+      ]);
+      await confirm(card);
+      expect(await edgeExists(project, oldArea)).toBe(false);
+      expect(await edgeExists(project, newArea)).toBe(true);
+    });
+
+    it("clears task times only with explicit before and after coverage", async () => {
+      const task = await createIn("tasks", { name: "Task", date: "2026-11-01", timeFrom: "09:00", timeTo: "10:00" });
+      const base: Step = {
+        ref: "task",
+        op: "update",
+        itemId: task,
+        role: "primary",
+        properties: { date: null },
+        before: { properties: { date: "2026-11-01" } },
+        after: { properties: { date: null } },
+      };
+      const missing = await cardWithSteps("tasks", [base]);
+      await expect(confirm(missing)).rejects.toMatchObject({
+        status: 400,
+        details: { ref: "task", field: "timeFrom" },
+      });
+      expect(await cardStatus(missing)).toBe("proposed");
+      const [unchanged] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
+      expect(unchanged?.properties).toMatchObject({ date: "2026-11-01", timeFrom: "09:00", timeTo: "10:00" });
+      const complete = await cardWithSteps("tasks", [
+        {
+          ...base,
+          before: { properties: { date: "2026-11-01", timeFrom: "09:00", timeTo: "10:00" } },
+          after: { properties: { date: null, timeFrom: null, timeTo: null } },
+        },
+      ]);
+      await confirm(complete);
+      const [result] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
+      expect(result?.properties).toMatchObject({ date: null, timeFrom: null, timeTo: null, time: null });
+    });
+
+    it("rejects a stale implicitly cleared task time without writing the card", async () => {
+      const task = await createIn("tasks", { name: "Task", date: "2026-11-01", timeFrom: "09:00", timeTo: "10:00" });
+      const card = await cardWithSteps("tasks", [
+        {
+          ref: "task",
+          op: "update",
+          itemId: task,
+          role: "primary",
+          properties: { date: null },
+          before: { properties: { date: "2026-11-01", timeFrom: "09:00", timeTo: "10:00" } },
+          after: { properties: { date: null, timeFrom: null, timeTo: null } },
+        },
+      ]);
+      const tasksDb = await databaseIdFor("tasks");
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(client, {
+          databaseId: tasksDb,
+          itemId: task,
+          propertiesPatch: { timeFrom: "09:30" },
+        }),
+      );
+      await expect(confirm(card)).rejects.toMatchObject({ status: 400, details: { ref: "task", field: "timeFrom" } });
+      expect(await cardStatus(card)).toBe("proposed");
+    });
+
+    it("checks an implicit time precondition even when the current transform no longer emits it", async () => {
+      const task = await createIn("tasks", { name: "Task", date: "2026-11-01", timeFrom: "09:00", timeTo: null });
+      const card = await cardWithSteps("tasks", [
+        {
+          ref: "task",
+          op: "update",
+          itemId: task,
+          role: "primary",
+          properties: { date: null },
+          before: { properties: { date: "2026-11-01", timeFrom: "09:00" } },
+          after: { properties: { date: null, timeFrom: null } },
+        },
+      ]);
+      const tasksDb = await databaseIdFor("tasks");
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(client, {
+          databaseId: tasksDb,
+          itemId: task,
+          propertiesPatch: { timeFrom: null, timeTo: null },
+        }),
+      );
+      await expect(confirm(card)).rejects.toMatchObject({ status: 400, details: { ref: "task", field: "timeFrom" } });
+      expect(await cardStatus(card)).toBe("proposed");
+    });
+
+    it("waits for an overlapping task time change and rejects the stale implicit clear", async () => {
+      const task = await createIn("tasks", { name: "Task", date: "2026-11-01", timeFrom: "09:00", timeTo: "10:00" });
+      const card = await cardWithSteps("tasks", [
+        {
+          ref: "task",
+          op: "update",
+          itemId: task,
+          role: "primary",
+          properties: { date: null },
+          before: { properties: { date: "2026-11-01", timeFrom: "09:00", timeTo: "10:00" } },
+          after: { properties: { date: null, timeFrom: null, timeTo: null } },
+        },
+      ]);
+      const tasksDb = await databaseIdFor("tasks");
+      const writerPool = getTestPool({ max: 1 });
+      const contenderPool = getTestPool({ max: 1 });
+      let release = () => {};
+      let started = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const ready = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const writer = withTransaction(writerPool, async (client) => {
+        await client.query("SET LOCAL statement_timeout = '10s'");
+        await updateItemWithClient(client, {
+          databaseId: tasksDb,
+          itemId: task,
+          propertiesPatch: { timeFrom: "09:30" },
+        });
+        started();
+        await gate;
+      });
+      const writerOutcome = Promise.allSettled([writer]);
+      let contenderOutcome: Promise<PromiseSettledResult<unknown>[]> | undefined;
+      try {
+        await waitForStart(ready, writer);
+        const { rows } = await contenderPool.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+        const pid = rows[0]?.pid;
+        if (pid === undefined) throw new Error("Missing contender pid");
+        const contender = withTransaction(contenderPool, async (client) => {
+          await client.query("SET LOCAL statement_timeout = '10s'");
+          return confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card);
+        });
+        contenderOutcome = Promise.allSettled([contender]);
+        await expect
+          .poll(
+            async () => {
+              const result = await pool.query<{ blocked: boolean }>(
+                "SELECT cardinality(pg_blocking_pids($1)) > 0 AS blocked",
+                [pid],
+              );
+              return result.rows[0]?.blocked;
+            },
+            { timeout: 5000 },
+          )
+          .toBe(true);
+        release();
+        await writer;
+        await expect(contender).rejects.toMatchObject({ status: 400, details: { ref: "task", field: "timeFrom" } });
+        expect(await cardStatus(card)).toBe("proposed");
+        const [current] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
+        expect(current?.properties).toMatchObject({ date: "2026-11-01", timeFrom: "09:30", timeTo: "10:00" });
+      } finally {
+        release();
+        await writerOutcome;
+        if (contenderOutcome) await contenderOutcome;
+        await writerPool.end();
+        await contenderPool.end();
+      }
+    });
+
+    it("rolls back an earlier created item when a later update has stale before values", async () => {
+      const task = await createIn("tasks", { name: "Actual" });
+      const card = await cardWithSteps("companies", [
+        { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
+        {
+          ref: "task",
+          op: "update",
+          itemId: task,
+          role: "secondary",
+          properties: { name: "After" },
+          before: { properties: { name: "Old" } },
+          after: { properties: { name: "After" } },
+        },
+      ]);
+      await expect(confirm(card)).rejects.toMatchObject({ status: 400, details: { ref: "task", field: "name" } });
+      expect(await countItems("companies")).toBe(0);
+      expect(await cardStatus(card)).toBe("proposed");
+      const [result] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
+      expect(result?.properties.name).toBe("Actual");
+    });
+
+    it("allocates a project pin order after another project is pinned", async () => {
+      const project = await createIn("projects", { name: "First", pinned: false });
+      const other = await createIn("projects", { name: "Other", pinned: false });
+      const card = await cardWithSteps("projects", [
+        {
+          ref: "project",
+          op: "update",
+          itemId: project,
+          role: "primary",
+          properties: { pinned: true },
+          before: { properties: { pinned: false, pinnedOrder: null } },
+          after: { properties: { pinned: true } },
+        },
+      ]);
+      const projectsDb = await databaseIdFor("projects");
+      const earlier = await withTransaction(pool, (client) =>
+        updateItemWithClient(client, {
+          databaseId: projectsDb,
+          itemId: other,
+          propertiesPatch: { pinned: true },
+        }),
+      );
+      await confirm(card);
+      const [result] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
+      expect(typeof earlier.properties.pinnedOrder).toBe("number");
+      expect(result?.properties.pinnedOrder).toBe(Number(earlier.properties.pinnedOrder) + 1);
+    });
+
+    it("requires coverage for automatic project unpinning and order clearing", async () => {
+      const project = await createIn("projects", { name: "Project", status: "inProgress", pinned: true });
+      const [current] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
+      const order = current?.properties.pinnedOrder;
+      if (typeof order !== "number") throw new Error("Missing allocated pin order");
+      const step: Step = {
+        ref: "project",
+        op: "update",
+        itemId: project,
+        role: "primary",
+        properties: { status: "done" },
+        before: { properties: { status: "inProgress" } },
+        after: { properties: { status: "done" } },
+      };
+      const incomplete = await cardWithSteps("projects", [step]);
+      await expect(confirm(incomplete)).rejects.toMatchObject({
+        status: 400,
+        details: { ref: "project", field: "pinned" },
+      });
+      expect(await cardStatus(incomplete)).toBe("proposed");
+      const complete = await cardWithSteps("projects", [
+        {
+          ...step,
+          before: { properties: { status: "inProgress", pinned: true, pinnedOrder: order } },
+          after: { properties: { status: "done", pinned: false, pinnedOrder: null } },
+        },
+      ]);
+      await confirm(complete);
+      const [updated] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
+      expect(updated?.properties).toMatchObject({ status: "done", pinned: false, pinnedOrder: null });
+    });
+
+    it("retains a declared pin-order precondition when a concurrent pin removes the deferred allocation", async () => {
+      const project = await createIn("projects", { name: "Project", pinned: false });
+      const projectsDb = await databaseIdFor("projects");
+      // Simulate a legacy pinned row predating automatic pin-order allocation.
+      await withTransaction(pool, (client) =>
+        itemsStore.updateItemProperties(client, {
+          databaseId: projectsDb,
+          itemId: project,
+          propertiesPatch: { pinned: true, pinnedOrder: null },
+        }),
+      );
+      const card = await cardWithSteps("projects", [
+        {
+          ref: "project",
+          op: "update",
+          itemId: project,
+          role: "primary",
+          properties: { pinned: true },
+          before: { properties: { pinnedOrder: null, pinned: true } },
+          after: { properties: { pinned: true } },
+        },
+      ]);
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(client, {
+          databaseId: projectsDb,
+          itemId: project,
+          propertiesPatch: { pinned: true },
+        }),
+      );
+      await expect(confirm(card)).rejects.toMatchObject({
+        status: 400,
+        details: { ref: "project", field: "pinnedOrder" },
+      });
+      expect(await cardStatus(card)).toBe("proposed");
+    });
+
     it("an update step's status goes through the choke point; a failing later step restores the old status and edge", async () => {
       const project = await createIn("projects", { name: "Ship" });
       const area = await createIn("areas", { name: "Work" });
@@ -819,6 +1141,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           started = resolve;
         });
         const writer = withTransaction(writerPool, async (client) => {
+          await client.query("SET LOCAL statement_timeout = '10s'");
           if (change === "property") {
             await updateItemWithClient(client, {
               databaseId: projectsDb,
@@ -836,13 +1159,14 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         const writerOutcome = Promise.allSettled([writer]);
         let contenderOutcome: Promise<PromiseSettledResult<unknown>[]> | undefined;
         try {
-          await Promise.race([ready, writer]);
+          await waitForStart(ready, writer);
           const pidResult = await contenderPool.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
           const pid = pidResult.rows[0]?.pid;
           if (pid === undefined) throw new Error("Missing contender pid");
-          const contender = withTransaction(contenderPool, (client) =>
-            confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card),
-          );
+          const contender = withTransaction(contenderPool, async (client) => {
+            await client.query("SET LOCAL statement_timeout = '10s'");
+            return confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card);
+          });
           contenderOutcome = Promise.allSettled([contender]);
           await expect
             .poll(
@@ -872,6 +1196,99 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           if (contenderOutcome) await contenderOutcome;
           await writerPool.end();
           await contenderPool.end();
+        }
+      },
+    );
+
+    it.each(["property", "insert", "delete"] as const)(
+      "holds precondition locks against a later overlapping %s",
+      async (change) => {
+        const project = await createIn("projects", { name: "Before" });
+        const area = await createIn("areas", { name: "Area" });
+        const projectsDb = await databaseIdFor("projects");
+        const property = await withTransaction(pool, (client) =>
+          propertiesStore.getPropertyByKey(client, projectsDb, "area"),
+        );
+        if (!property) throw new Error("Missing Projects.area property");
+        const edge = { relationPropertyId: property.id, callerItemId: project, targetItemId: area };
+        if (change === "delete") await withTransaction(pool, (client) => createRelationWithClient(client, edge));
+        const beforeTargets = change === "delete" ? [area] : [];
+        const card = await cardWithSteps("projects", [
+          {
+            ref: "project",
+            op: "update",
+            itemId: project,
+            role: "primary",
+            properties: { name: "After" },
+            relations: { area: beforeTargets },
+            before: { properties: { name: "Before" }, relations: { area: beforeTargets } },
+            after: { properties: { name: "After" }, relations: { area: beforeTargets } },
+          },
+        ]);
+        const confirmPool = getTestPool({ max: 1 });
+        const writerPool = getTestPool({ max: 1 });
+        let release = () => {};
+        let started = () => {};
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const ready = new Promise<void>((resolve) => {
+          started = resolve;
+        });
+        const confirmation = withTransaction(confirmPool, async (client) => {
+          await client.query("SET LOCAL statement_timeout = '10s'");
+          const result = await confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card);
+          started();
+          await gate;
+          return result;
+        });
+        const confirmationOutcome = Promise.allSettled([confirmation]);
+        let writerOutcome: Promise<PromiseSettledResult<unknown>[]> | undefined;
+        try {
+          await waitForStart(ready, confirmation);
+          const pidResult = await writerPool.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          const pid = pidResult.rows[0]?.pid;
+          if (pid === undefined) throw new Error("Missing writer pid");
+          const writer = withTransaction(writerPool, async (client) => {
+            await client.query("SET LOCAL statement_timeout = '10s'");
+            if (change === "property") {
+              await updateItemWithClient(client, {
+                databaseId: projectsDb,
+                itemId: project,
+                propertiesPatch: { name: "Later" },
+              });
+            } else if (change === "insert") {
+              await createRelationWithClient(client, edge);
+            } else {
+              await deleteRelationWithClient(client, edge);
+            }
+          });
+          writerOutcome = Promise.allSettled([writer]);
+          await expect
+            .poll(
+              async () => {
+                const { rows } = await pool.query<{ blocked: boolean }>(
+                  "SELECT cardinality(pg_blocking_pids($1)) > 0 AS blocked",
+                  [pid],
+                );
+                return rows[0]?.blocked;
+              },
+              { timeout: 5000 },
+            )
+            .toBe(true);
+          release();
+          await confirmation;
+          await writer;
+          expect(await cardStatus(card)).toBe("confirmed");
+          const [current] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
+          expect(current?.properties.name).toBe(change === "property" ? "Later" : "After");
+          expect(await edgeExists(project, area)).toBe(change === "insert");
+        } finally {
+          release();
+          await confirmationOutcome;
+          if (writerOutcome) await writerOutcome;
+          await confirmPool.end();
+          await writerPool.end();
         }
       },
     );
@@ -982,6 +1399,36 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         const [row] = await originRows();
         expect(row?.captured_at?.toISOString()).toBe("2026-01-01T00:00:00.000Z");
         expect(row?.capture_time_basis).toBe("legacyUnverified");
+      });
+
+      it.each([
+        ["inboxCapture", null],
+        ["unknown", "2026-01-01T00:00:00Z"],
+      ])("rejects inconsistent %s capture provenance", async (basis, capturedAt) => {
+        await expect(
+          pool.query(
+            `INSERT INTO item_origins (item_id, proposal_id, captured_at, capture_channel, capture_time_basis)
+           VALUES ($1, $2, $3, 'inbox', $4)`,
+            [randomUUID(), randomUUID(), capturedAt, basis],
+          ),
+        ).rejects.toMatchObject({ code: "23514", constraint: "item_origins_capture_provenance_check" });
+      });
+
+      it("preserves populated legacy timestamps when the migration runs", async () => {
+        const migration = await readFile(
+          new URL("../db/migrations/0126_item_origin_capture_time_basis.sql", import.meta.url),
+          "utf8",
+        );
+        await withTransaction(pool, async (client) => {
+          await client.query("CREATE TEMP TABLE item_origins (captured_at timestamptz NOT NULL) ON COMMIT DROP");
+          await client.query("INSERT INTO item_origins (captured_at) VALUES ($1)", ["2026-01-01T00:00:00Z"]);
+          await client.query(migration);
+          const { rows } = await client.query<{ captured_at: Date; capture_time_basis: string }>(
+            "SELECT captured_at, capture_time_basis FROM item_origins",
+          );
+          expect(rows[0]?.captured_at.toISOString()).toBe("2026-01-01T00:00:00.000Z");
+          expect(rows[0]?.capture_time_basis).toBe("legacyUnverified");
+        });
       });
 
       it("records no guessed time for a revised transcript card", async () => {

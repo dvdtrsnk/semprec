@@ -1,19 +1,28 @@
 import { requireSingleRow } from "../db/pool.js";
 import type { ItemRow } from "../types.js";
-import type { ItemPreWriteTransform } from "../chokePoint/hooks.js";
+import type { ItemPreWritePreparation, ItemPreWriteTransform } from "../chokePoint/hooks.js";
 import { ValidationError } from "../errors.js";
 
 /** Applies the terminal-status rule before assigning or clearing the pinned project order. */
-export const projectWriteTransform: ItemPreWriteTransform = async (context) => {
-  const patch = unpinTerminalProject(context.stored, context.patch);
-  const pinned = Object.hasOwn(patch, "pinned") ? patch.pinned : context.stored?.properties.pinned;
+export const prepareProjectWrite: ItemPreWritePreparation = async ({ stored, patch: original }) => {
+  const patch = unpinTerminalProject(stored, original);
+  const pinned = Object.hasOwn(patch, "pinned") ? patch.pinned : stored?.properties.pinned;
   if (pinned !== true) {
-    return Object.hasOwn(patch, "pinnedOrder") || context.stored?.properties.pinnedOrder != null
-      ? { ...patch, pinnedOrder: null }
-      : patch;
+    return {
+      patch:
+        Object.hasOwn(patch, "pinnedOrder") || stored?.properties.pinnedOrder != null
+          ? { ...patch, pinnedOrder: null }
+          : patch,
+      deferredKeys: [],
+    };
   }
-  if (Object.hasOwn(patch, "pinnedOrder")) return patch;
-  if (context.stored?.properties.pinnedOrder != null) return patch;
+  if (Object.hasOwn(patch, "pinnedOrder") || stored?.properties.pinnedOrder != null) return { patch, deferredKeys: [] };
+  return { patch, deferredKeys: ["pinnedOrder"] };
+};
+
+export const projectWriteTransform: ItemPreWriteTransform = async (context) => {
+  const prepared = await prepareProjectWrite(context);
+  if (prepared.deferredKeys.length === 0) return prepared.patch;
   await context.client.query(
     "SELECT pg_advisory_xact_lock(hashtextextended('projects-pinned-order:' || $1::text, 0))",
     [context.database.id],
@@ -25,7 +34,7 @@ export const projectWriteTransform: ItemPreWriteTransform = async (context) => {
     [context.database.id],
   );
   const position = requireSingleRow(rows, "next pinned project order").next_order;
-  return { ...patch, pinnedOrder: position };
+  return { ...prepared.patch, pinnedOrder: position };
 };
 
 function unpinTerminalProject(stored: ItemRow | null, patch: Record<string, unknown>): Record<string, unknown> {

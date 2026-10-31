@@ -1,6 +1,7 @@
 import { z } from "zod";
+import "../domainWriteHooks.js";
 import { createHash } from "node:crypto";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool, type PoolClient } from "pg";
 import { AiGatewayFailedError, type AiGatewayFailureReason, runInTenant } from "@semprec/shared";
 import { createUser } from "../auth/usersStore.js";
@@ -17,6 +18,8 @@ import { createRelationWithClient, deleteRelationWithClient } from "../chokePoin
 import { createBlob } from "../blobs/blobsStore.js";
 import { deleteInboxAttachment, insertInboxAttachments, listInboxAttachments } from "../inbox/inboxAttachmentsStore.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { createChokePoint } from "../chokePoint/chokePoint.js";
+import { registerItemPreWriteTransform } from "../chokePoint/hooks.js";
 import { ValidationError } from "../errors.js";
 import {
   aiProposalPatch,
@@ -500,6 +503,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       const card = await findProposalForItem(pool, proposalsId, itemId);
       expect(card?.properties.reason).toBe(expected);
     });
+
     it("clears the model reason when the source is deleted", async () => {
       const itemId = await createTaskInboxItem();
       await runTick(pool, databaseIds, itemId, async () => ({ properties: { name: "Task" }, reason: "A task." }));
@@ -2660,6 +2664,107 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
   });
 
   describe("update steps", () => {
+    it("prepares a project pin without taking its allocation lock", async () => {
+      const project = await createItem("projects", { name: "Project", pinned: false });
+      const envelope = await updateEnvelope(
+        {
+          properties: { pinned: true },
+          before: { properties: { pinned: false, pinnedOrder: null } },
+          after: { properties: { pinned: true } },
+        },
+        project,
+      );
+      await withTransaction(pool, async (client) => {
+        const spy = vi.spyOn(client, "query");
+        try {
+          await assertValidProposalEnvelope(client, envelope);
+          expect(
+            spy.mock.calls.some((args) => typeof args[0] === "string" && args[0].includes("projects-pinned-order")),
+          ).toBe(false);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+    });
+
+    it("validates an explicit pin order and rejects a conflicting after value", async () => {
+      const project = await createItem("projects", { name: "Project", pinned: false });
+      const step: Partial<ProposalStep> = {
+        properties: { pinned: true, pinnedOrder: 7 },
+        before: { properties: { pinned: false, pinnedOrder: null } },
+        after: { properties: { pinned: true, pinnedOrder: 7 } },
+      };
+      await validate(await updateEnvelope(step, project));
+      const error = await failure(
+        await updateEnvelope({ ...step, after: { properties: { pinned: true, pinnedOrder: 8 } } }, project),
+      );
+      expect(error.details).toEqual({ ref: "move", field: "pinnedOrder" });
+    });
+
+    it("rejects a predicted after value for an implicitly allocated pin order", async () => {
+      const project = await createItem("projects", { name: "Project", pinned: false });
+      const error = await failure(
+        await updateEnvelope(
+          {
+            properties: { pinned: true },
+            before: { properties: { pinned: false, pinnedOrder: null } },
+            after: { properties: { pinned: true, pinnedOrder: 1 } },
+          },
+          project,
+        ),
+      );
+      expect(error.details).toEqual({ ref: "move", field: "pinnedOrder" });
+    });
+
+    it("validates a Books year through its registered preparation", async () => {
+      const book = await createItem("books", { name: "Book" });
+      const error = await failure(
+        await updateEnvelope(
+          {
+            properties: { year: "invalid" },
+            before: { properties: { year: null } },
+            after: { properties: { year: "invalid" } },
+          },
+          book,
+          "books",
+        ),
+      );
+      expect(error.details).toMatchObject({ ref: "move", field: "year" });
+    });
+
+    it("fails closed without invoking an unprepared registered transform", async () => {
+      const chokePoint = createChokePoint(pool);
+      const database = await chokePoint.createDatabase({
+        name: "Preparation fixture",
+        ownerModuleId: "unpreparedFixture",
+      });
+      await chokePoint.createProperty({ databaseId: database.id, key: "name", name: "Name", type: "text" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: { name: "Before" } });
+      let calls = 0;
+      registerItemPreWriteTransform("unpreparedFixture", async ({ patch }) => {
+        calls++;
+        return patch;
+      });
+      const error = await failure({
+        entityKind: "database",
+        target: database.id,
+        properties: { name: "After" },
+        operations: [
+          {
+            ref: "item",
+            op: "update",
+            role: "primary",
+            itemId: item.id,
+            properties: { name: "After" },
+            before: { properties: { name: "Before" } },
+            after: { properties: { name: "After" } },
+          },
+        ],
+      });
+      expect(error.details).toEqual({ ref: "item", field: "properties" });
+      expect(calls).toBe(0);
+    });
+
     async function updateEnvelope(step: Partial<ProposalStep>, itemId: string, moduleId = "projects") {
       const primary: ProposalStep = {
         ref: "move",
@@ -2730,6 +2835,25 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
       expect(error.details).toEqual({ ref: "move", field: "name" });
     });
 
+    it.each([
+      [{ date: "2026-02-30" }, { date: null }, "date"],
+      [{ timeFrom: "10:00" }, { timeFrom: null }, "timeFrom"],
+    ])("rejects an invalid Tasks schedule through its registered preparation", async (patch, before, field) => {
+      const task = await createItem("tasks", { name: "Task" });
+      const error = await failure(
+        await updateEnvelope(
+          {
+            properties: patch,
+            before: { properties: before },
+            after: { properties: patch },
+          },
+          task,
+          "tasks",
+        ),
+      );
+      expect(error.details).toMatchObject({ ref: "move", field });
+    });
+
     it("rejects an after-only relation with no before coverage", async () => {
       const project = await createItem("projects", { name: "Home" });
       const error = await failure(await updateEnvelope({ after: { relations: { area: [] } } }, project));
@@ -2749,6 +2873,21 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
         ),
       );
       expect(error.details).toEqual({ ref: "move", field: "name" });
+    });
+
+    it("rejects an unsupported redundant after property", async () => {
+      const project = await createItem("projects", { name: "Home", pinned: false });
+      const error = await failure(
+        await updateEnvelope(
+          {
+            properties: { name: "Next" },
+            before: { properties: { name: "Home", pinned: false } },
+            after: { properties: { name: "Next", pinned: false } },
+          },
+          project,
+        ),
+      );
+      expect(error.details).toEqual({ ref: "move", field: "pinned" });
     });
 
     it("rejects conflicting relation representations", async () => {

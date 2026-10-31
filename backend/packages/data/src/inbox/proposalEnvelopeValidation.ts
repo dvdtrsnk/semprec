@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { CardinalityViolationError, ForbiddenError } from "../errors.js";
 import type { ProposalStep } from "./proposalEnvelope.js";
-import type { DatabaseRow } from "../types.js";
+import type { DatabaseRow, ItemRow } from "../types.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
 import { effectiveStepRelations, stepError } from "./proposalStepGraph.js";
 import type { PoolClient } from "pg";
@@ -107,21 +107,58 @@ export function assertStepDatabaseWritable(
 }
 
 /** Checks that update representations and their before/after keys agree. */
-export function assertUpdateStepShape(step: ProposalStep): void {
+export function assertUpdateStepShape(
+  step: ProposalStep,
+  prepared: { patch: Record<string, unknown>; deferredKeys: string[] },
+  stored: ItemRow,
+  propertiesByKey: ReadonlyMap<string, PropertyRow>,
+): void {
   const properties = step.properties ?? {};
-  for (const key of Object.keys(properties)) {
+  const required = new Set(Object.keys(properties));
+  for (const [key, value] of Object.entries(prepared.patch)) {
+    if (
+      propertiesByKey.get(key)?.owner === "user" &&
+      !isDeepStrictEqual(stored.properties[key] ?? null, value ?? null)
+    ) {
+      required.add(key);
+    }
+  }
+  for (const key of prepared.deferredKeys) required.add(key);
+  for (const key of required) {
     if (!Object.hasOwn(step.before?.properties ?? {}, key)) {
       throw stepError(step, `before does not hold the current value of property '${key}'`, key);
     }
+    if (prepared.deferredKeys.includes(key) && !Object.hasOwn(properties, key)) continue;
     if (!Object.hasOwn(step.after?.properties ?? {}, key)) {
       throw stepError(step, `after does not hold the new value of property '${key}'`, key);
     }
-    if (!isDeepStrictEqual(properties[key], step.after?.properties?.[key])) {
+    if (!isDeepStrictEqual(prepared.patch[key] ?? null, step.after?.properties?.[key] ?? null)) {
       throw stepError(step, `after differs from property '${key}'`, key);
     }
   }
   for (const key of Object.keys(step.after?.properties ?? {})) {
-    if (!Object.hasOwn(properties, key)) throw stepError(step, `after contains unwritten property '${key}'`, key);
+    if (!Object.hasOwn(step.before?.properties ?? {}, key) || propertiesByKey.get(key)?.owner !== "user") {
+      throw stepError(step, `after contains unsupported property '${key}'`, key);
+    }
+    if (prepared.deferredKeys.includes(key) && !Object.hasOwn(properties, key)) {
+      throw stepError(step, `after cannot predict allocated property '${key}'`, key);
+    }
+    if (
+      Object.hasOwn(prepared.patch, key) &&
+      !isDeepStrictEqual(prepared.patch[key] ?? null, step.after?.properties?.[key] ?? null)
+    ) {
+      throw stepError(step, `after differs from property '${key}'`, key);
+    }
+    if (
+      !Object.hasOwn(prepared.patch, key) &&
+      isDeepStrictEqual(step.before?.properties?.[key] ?? null, stored.properties[key] ?? null)
+    ) {
+      throw stepError(step, `after contains unwritten property '${key}'`, key);
+    }
+  }
+  for (const key of Object.keys(step.before?.properties ?? {})) {
+    if (propertiesByKey.get(key)?.owner !== "user")
+      throw stepError(step, `before contains unsupported property '${key}'`, key);
   }
   const relations = effectiveStepRelations(step);
   for (const [key, targets] of Object.entries(relations)) {

@@ -1,4 +1,4 @@
-import { projectWriteTransform } from "./projects/projectWriteTransform.js";
+import { prepareProjectWrite, projectWriteTransform } from "./projects/projectWriteTransform.js";
 import { areaItemCreateHook, areaItemUpdateHook } from "./areas/areaWriteHook.js";
 import { booksPreWriteTransform } from "./library/booksPreWriteTransform.js";
 import { BOOKS_MODULE_ID } from "./seed/libraryModuleKeys.js";
@@ -26,7 +26,7 @@ import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "./mcp/mcpServe
 import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.js";
 import { TASKS_MODULE_ID, PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
 import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHook.js";
-import { taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
+import { prepareTaskWrite, taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
 import { itemSearchCreateHook, itemSearchUpdateHook } from "./search/itemSearchIndexer.js";
 import {
@@ -38,9 +38,15 @@ import { journalItemCreateHook } from "./journal/journalWriteHook.js";
 import { inboxItemCreateHook } from "./inbox/inboxCreateHook.js";
 import { inboxTypeItemCreateHook, inboxTypeItemUpdateHook } from "./inbox/inboxTypeWriteHook.js";
 
-registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform);
-registerItemPreWriteTransform(BOOKS_MODULE_ID, booksPreWriteTransform);
-registerItemPreWriteTransform(PROJECTS_MODULE_ID, projectWriteTransform);
+registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform, async (context) => ({
+  patch: await prepareTaskWrite(context),
+  deferredKeys: [],
+}));
+registerItemPreWriteTransform(BOOKS_MODULE_ID, booksPreWriteTransform, async (context) => ({
+  patch: await booksPreWriteTransform(context),
+  deferredKeys: [],
+}));
+registerItemPreWriteTransform(PROJECTS_MODULE_ID, projectWriteTransform, prepareProjectWrite);
 registerItemCreateHook(mcpServerItemCreateHook);
 registerItemCreateHook(itemSearchCreateHook);
 registerItemUpdateHook(mcpServerItemUpdateHook);

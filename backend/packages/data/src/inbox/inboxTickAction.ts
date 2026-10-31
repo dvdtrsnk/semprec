@@ -55,7 +55,7 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import { assertUserItemPatchValid, createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { prepareUserItemPatch, createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
@@ -235,11 +235,13 @@ async function assertValidStep(client: PoolClient, step: ProposalStep): Promise<
     const databaseProperties = await propertiesStore.listPropertiesByDatabase(client, database.id);
     const byKey = new Map(databaseProperties.map((property) => [property.key, property]));
     assertWritableProposalPropertyKeys(properties, byKey, database.id);
-    assertUserItemPatchValid(databaseProperties, properties, database.ownerModuleId);
+    if (step.op === "update") {
+      const prepared = await prepareUserItemPatch(databaseProperties, properties, database, item);
+      assertUpdateStepShape(step, prepared, item, byKey);
+    }
     // A target the item already holds is not re-linked, so the cardinality check skips it.
     await assertValidEnvelopeRelations(client, database.id, byKey, existingItemRelations(step, step.before?.relations));
   });
-  if (step.op === "update") assertUpdateStepShape(step);
   return database;
 }
 

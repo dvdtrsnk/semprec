@@ -3,7 +3,7 @@ import { z } from "zod";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
-import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { createItemWithClient, prepareUserItemPatch, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { ChokePointError, ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
@@ -16,6 +16,7 @@ import type { ProposalStep } from "./inboxTickAction.js";
 import { effectiveStepRelations, selectActiveSteps } from "./proposalStepGraph.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { isDeepStrictEqual } from "node:util";
+import { assertUpdateStepShape, withStepRef } from "./proposalEnvelopeValidation.js";
 
 /** What a `fileFromAttachment` step resolved to: the Files item, the attachment it moved, and whether this step created the item. */
 export interface FileFromAttachmentResult {
@@ -102,7 +103,7 @@ async function assertUpdateBefore(
   const item = await itemsStore.lockItemById(client, databaseId, itemId);
   if (!item || item.deletedAt)
     throw new ValidationError("Proposal update item no longer exists", { ref: step.ref, field: "itemId" });
-  for (const key of Object.keys(step.properties ?? {})) {
+  for (const key of Object.keys(step.before?.properties ?? {})) {
     if (!isDeepStrictEqual(item.properties[key] ?? null, step.before?.properties?.[key] ?? null)) {
       throw new ValidationError(`Proposal step '${step.ref}': property '${key}' changed`, {
         ref: step.ref,
@@ -110,6 +111,14 @@ async function assertUpdateBefore(
       });
     }
   }
+  const database = await databasesStore.getDatabase(client, databaseId);
+  if (!database)
+    throw new ValidationError("Proposal update database no longer exists", { ref: step.ref, field: "itemId" });
+  const properties = await propertiesStore.listPropertiesByDatabase(client, databaseId);
+  await withStepRef(step.ref, async () => {
+    const prepared = await prepareUserItemPatch(properties, step.properties ?? {}, database, item);
+    assertUpdateStepShape(step, prepared, item, new Map(properties.map((property) => [property.key, property])));
+  });
   for (const key of Object.keys(effectiveStepRelations(step))) {
     const propertyId = await requireRelationPropertyId(client, step, databaseId, key);
     const definition = await relationsStore.getRelationDefinitionByPropertyId(client, propertyId);
