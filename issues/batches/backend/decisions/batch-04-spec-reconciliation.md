@@ -64,3 +64,16 @@ The global HTTP error envelope intentionally excludes internal exception message
 Only the historical introductory Context paragraph is compressed to retain the aggregate body limit; the rollback sequencing decision and all other Task/AC remain.
 
 - gh-1419: 337af8821395a0c6aef1f32f864669a1ca3d79dcd14ec721f51db4a6b90f27f6 -> f511cad62c9a37eef42e9e820585a2a9b8b5e96c36cf6f2795adc7e8760e18a2
+
+## Global step identity, transcript ownership and retained edges
+
+gh-1479 keeps global nonempty/unique refs and exactly one primary even for skipped steps, consistent with the accepted multi-step ADR's identity contract. Skipping waives payload/outgoing-target validation and writes after pruning, not global structural identity. Test disabled/unreferenced empty/duplicate refs separately from skipped malformed payloads; preserve active required-reference errors. Historical accepted ADR bodies remain unchanged.
+
+gh-1425's required ownerModuleId string-or-null input keeps null as unknown, not unprovided. Transcript database envelopes produce transcriptEvent/base event only for Events; null, unknown and known non-Events owners produce clarify/base page. Invalid status still overrides cardKind and retains derived base. Known transcript relation event/speaker roles keep their existing derivation with null owner. Do not add an undefined ownership state, new storage access, list route or transcript write authorization. Only historical descriptive Context prose is compressed; all other decisions and Tasks/AC remain.
+
+Caller before lists never authorize skipping target guards. A real retained edge can exempt its own same-caller/definition/target pair only from the new-edge cardinality collision. All existing tenant, existence, deletion, archived-target/database, ownership and hook guards remain. Authorize narrow caller-aware validation in the existing chokePoint/relationOps.ts, with retained-edge positive and invalid/foreign/deleted/archived-target evidence. Updates continue to lock/compare every declared before relation; link preflight validates its actual targets. No write probes or global cardinality redesign.
+
+The gh-1390 source-edit -> locked/no-card-write tick -> real day-worker updated-text scenario is already authorized; do not relocate the independent source/read trigger. Review-05 findings and missing link execution/rollback/retry evidence remain blocking pending fixes and full review.
+
+- gh-1479: df2c6a0d990e81554ac9886762f36236840aa6df0200830fbf89f96e1c617774 -> 4632c6e063bf5685f35acfa9a1ef85b6014f21b73d6912379d83098902452ebf
+- gh-1425: 6a0a2d88f30185946fcad83919e6b691fc5ed2fcde720d0407d3cb5afd1d44e0 -> 40dfb2687c3329e3149963acfdf88264fe8a3e79e85fc417da8b2fe4cec227f6
