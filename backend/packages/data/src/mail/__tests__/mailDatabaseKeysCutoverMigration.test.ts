@@ -170,7 +170,11 @@ describe("mail database key cutover", () => {
     }
   });
 
-  async function exerciseConcurrentCutovers(boundedPool: Pool, other: string): Promise<void> {
+  async function exerciseConcurrentCutovers(
+    boundedPool: Pool,
+    other: string,
+    control?: { stop: Promise<void>; onHolderSettled: (result: { ok: true } | { ok: false; error: unknown }) => void },
+  ): Promise<void> {
     let release = () => {};
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -197,10 +201,15 @@ describe("mail database key cutover", () => {
           throw error;
         }
       }),
-    ).then(
-      () => ({ ok: true as const }),
-      (error: unknown) => ({ ok: false as const, error }),
-    );
+    )
+      .then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      )
+      .then((result) => {
+        control?.onHolderSettled(result);
+        return result;
+      });
     let first: Promise<unknown> | undefined;
     let second: Promise<unknown> | undefined;
     async function waitForBlocked(blockerPid: number, operation: Promise<unknown>): Promise<number> {
@@ -235,6 +244,13 @@ describe("mail database key cutover", () => {
         holderPid = await Promise.race([
           ready,
           timeout,
+          ...(control
+            ? [
+                control.stop.then(() => {
+                  throw new Error("Test stopped before holder readiness");
+                }),
+              ]
+            : []),
           holder.then((result) => {
             if (!result.ok) throw result.error;
             throw new Error("Lock holder finished before signaling readiness");
@@ -301,14 +317,34 @@ describe("mail database key cutover", () => {
         held.release();
       }
     };
-    const fallback = setTimeout(releaseHeld, 600);
+    let stop = () => {};
+    const stopped = new Promise<void>((resolve) => {
+      stop = resolve;
+    });
+    let report: (result: { ok: true } | { ok: false; error: unknown } | null) => void = () => {};
+    const observed = new Promise<{ ok: true } | { ok: false; error: unknown } | null>((resolve) => {
+      report = resolve;
+    });
+    const fallback = setTimeout(() => {
+      stop();
+      releaseHeld();
+      report(null);
+    }, 1000);
     const started = Date.now();
+    const operation = exerciseConcurrentCutovers(exhausted, other, { stop: stopped, onHolderSettled: report }).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
     try {
-      await expect(exerciseConcurrentCutovers(exhausted, other)).rejects.toThrow(/timeout/i);
-      expect(Date.now() - started).toBeLessThan(2000);
+      const initial = await observed;
+      expect(initial).toMatchObject({ ok: false, error: { message: "timeout exceeded when trying to connect" } });
+      expect(released).toBe(false);
+      expect(Date.now() - started).toBeLessThan(900);
     } finally {
       clearTimeout(fallback);
+      stop();
       releaseHeld();
+      await operation;
     }
   });
 
