@@ -4,6 +4,7 @@ import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { ForbiddenError, NotFoundError } from "../errors.js";
+import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -54,6 +55,22 @@ describe("choke-point databaseOps", () => {
     expect(reset).toMatchObject({ name: "Gifts", icon: null, color: "#007AFF" });
     const all = await chokePoint.patchDatabase(db.id, { name: "Ideas", icon: "star", color: null });
     expect(all).toMatchObject({ name: "Ideas", icon: "star", color: null });
+  });
+
+  it("publishes a schema invalidation after icon and color changes", async () => {
+    const db = await chokePoint.createDatabase({ name: "Gifts" });
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      await chokePoint.patchDatabase(db.id, { icon: "gift" });
+      await chokePoint.patchDatabase(db.id, { color: "#007AFF" });
+      expect(events).toEqual([
+        { scope: "schema", databaseId: db.id, userId: undefined },
+        { scope: "schema", databaseId: db.id, userId: undefined },
+      ]);
+    } finally {
+      setInvalidationHook(() => {});
+    }
   });
 
   it("patchDatabase rejects icon and color on a system database but allows a rename", async () => {

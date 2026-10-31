@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import { ValidationError } from "../errors.js";
 import { writeNotification } from "../notifications/notify.js";
+import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 
 /** Mirrors the CHECK on `semp_problems.category`. */
 export type SempProblemCategory = "mail" | "agents" | "guidance" | "automation" | "transcription" | "backup";
@@ -23,7 +24,7 @@ export interface RaiseProblemInput {
   sourceId: string;
   /** Identifies "the same problem" within the tenant while it is active. */
   dedupeKey: string;
-  projectItemId?: string;
+  projectItemId?: string | null;
   /** When the problem started, for a first raise that happens after the fact. Defaults to now. */
   since?: Date;
   /** Identifies the job or run reporting; a repeat of the stored key adds no occurrence. */
@@ -60,6 +61,11 @@ interface RaiseRow {
  * report `escalated`; it is released with the caller's transaction.
  */
 export async function raiseProblem(client: PoolClient, input: RaiseProblemInput): Promise<RaiseProblemResult> {
+  if (input.projectItemId != null) {
+    if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(input.projectItemId)) {
+      throw new ValidationError("Invalid projectItemId", { field: "projectItemId" });
+    }
+  }
   await client.query(
     "SELECT pg_advisory_xact_lock(hashtextextended('semp_problems:' || app_tenant_default()::text || ':' || $1::text, 0))",
     [input.dedupeKey],
@@ -72,7 +78,12 @@ export async function raiseProblem(client: PoolClient, input: RaiseProblemInput)
      INSERT INTO semp_problems
        (user_id, category, kind, severity, source_table, source_id, dedupe_key, project_item_id,
         first_seen_at, last_seen_at, last_occurrence_key)
-     VALUES ($1, $2, $3, $4, $5, $7, $6, $8, COALESCE($9::timestamptz, now()), now(), $10)
+     SELECT $1, $2, $3, $4, $5, $7, $6, $8::uuid, COALESCE($9::timestamptz, now()), now(), $10
+     WHERE $8::uuid IS NULL OR EXISTS (
+       SELECT 1 FROM items i JOIN databases d ON d.id = i.database_id AND d.tenant_id = i.tenant_id
+        WHERE i.tenant_id = app_tenant_default() AND d.tenant_id = app_tenant_default()
+          AND d.system AND d.owner_module_id = $11 AND i.id = $8::uuid
+     )
      ON CONFLICT (tenant_id, dedupe_key) WHERE resolved_at IS NULL DO UPDATE SET
        occurrence_count = semp_problems.occurrence_count
          + CASE WHEN EXCLUDED.last_occurrence_key IS NOT NULL
@@ -94,10 +105,11 @@ export async function raiseProblem(client: PoolClient, input: RaiseProblemInput)
       input.projectItemId ?? null,
       input.since?.toISOString() ?? null,
       input.occurrenceKey ?? null,
+      PROJECTS_MODULE_ID,
     ],
   );
   const row = rows[0];
-  if (!row) throw new Error("raiseProblem: INSERT ... ON CONFLICT returned no row");
+  if (!row) throw new ValidationError("Invalid projectItemId", { field: "projectItemId" });
   const escalated = row.prior_severity === "warning" && row.severity === "critical";
   const outcome: RaiseProblemOutcome = row.inserted ? "created" : escalated ? "escalated" : "merged";
   if (outcome !== "merged") {
