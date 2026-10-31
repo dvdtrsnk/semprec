@@ -197,7 +197,13 @@ describe("mail OAuth states (issue #1483)", () => {
 
   it("hides tenant A's rows from tenant B", async () => {
     const { state } = await create(tenantA, userA);
-    const visible = await runInTenant(tenantB, () => pool.query("SELECT id FROM mail_oauth_states"));
+    const own = await runInTenant(tenantA, () =>
+      withTransaction(pool, (client) => client.query("SELECT id FROM mail_oauth_states")),
+    );
+    expect(own.rows).toHaveLength(1);
+    const visible = await runInTenant(tenantB, () =>
+      withTransaction(pool, (client) => client.query("SELECT id FROM mail_oauth_states")),
+    );
     expect(visible.rows).toHaveLength(0);
     const userB = await createUser(tenantB);
     expect(await consume(tenantB, state, userB)).toBeNull();
