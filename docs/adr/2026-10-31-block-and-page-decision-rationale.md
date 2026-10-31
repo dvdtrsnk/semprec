@@ -18,6 +18,15 @@ in those records.
 
 ## Decision
 
+The closed block type registry rejects an open set of flavours; the accepted
+trade-off is reduced extensibility until the registry is deliberately changed.
+The `Y.Text` inline model rejects whole JSON or Markdown strings; its accepted
+trade-off is the additional shared rich-text model dependency for consumers.
+
+A side-effect-free `page.get` and idempotent `page.ensure` reject creating a
+document on read. The accepted trade-off is a separate creation operation when
+a document is needed.
+
 For existing documents, reject a migration sweep in favor of read-time
 normalization: a sweep would add a dedicated write and rollout path for data
 the original decision says was not present in production. The trade-off is
