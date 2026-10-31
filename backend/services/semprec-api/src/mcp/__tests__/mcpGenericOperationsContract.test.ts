@@ -443,7 +443,7 @@ describe("generic operation MCP contract (issue #220)", () => {
       patch: {},
     });
     expect(response.error?.code).toBe(-32602);
-    expect(response.error?.data).toMatchObject({ field: "patch" });
+    expect(response.error?.data).toMatchObject({ reason: "empty_patch" });
     expect((await chokePoint.getDatabase(database.id))?.name).toBe("MCP patch fixture");
   });
 

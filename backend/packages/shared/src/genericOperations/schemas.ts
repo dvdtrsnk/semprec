@@ -95,7 +95,10 @@ export const DatabasePatchInputSchema = z
         color: DatabaseColorSchema.nullable().optional(),
       })
       .strict()
-      .refine((patch) => Object.values(patch).some((value) => value !== undefined), "patch must not be empty")
+      .refine((patch) => Object.values(patch).some((value) => value !== undefined), {
+        message: "Patch must include at least one field",
+        params: { reason: "empty_patch" },
+      })
       .meta({ minProperties: 1 }),
   })
   .strict();

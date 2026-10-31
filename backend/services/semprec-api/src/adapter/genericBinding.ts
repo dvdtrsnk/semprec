@@ -34,6 +34,9 @@ export function parseOperationInput<K extends GenericOperationName>(operation: K
   if (!parsed.success) {
     const firstIssue = parsed.error.issues[0];
     const field = validationIssueField(parsed.error.issues);
+    if (operation === "database.patch" && firstIssue?.params?.reason === "empty_patch") {
+      throw new ValidationError(firstIssue.message, { reason: "empty_patch" });
+    }
     throw new ValidationError(
       firstIssue?.message ?? "Request failed validation",
       field === undefined ? undefined : { field },

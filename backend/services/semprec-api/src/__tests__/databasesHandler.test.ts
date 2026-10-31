@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
+import { z } from "zod";
 import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
 import {
   createChokePoint,
@@ -84,7 +85,7 @@ interface PropertyCatalogBody {
 
 async function findSystemDatabase(): Promise<DatabaseRow> {
   const databases = await chokePoint.listDatabases();
-  const system = databases.find((db) => db.system);
+  const system = databases.find((db) => db.system && db.key === "projects");
   if (!system) throw new Error("expected at least one system database from seedSystem");
   return system;
 }
@@ -301,6 +302,15 @@ describe("database routes (issue #240)", () => {
     expect(byKey.get("tasks")).toMatchObject({ overviewOrder: null, switcherOrder: 2, clientVisible: true });
     expect(byKey.get("journal")).toMatchObject({ overviewOrder: null, switcherOrder: 4, clientVisible: true });
     expect(byKey.get("healthRecords")).toMatchObject({ overviewOrder: 6, switcherOrder: 8 });
+    for (const [key, icon, color, overviewOrder] of [
+      ["events", "calendar", "#FF3B30", 2],
+      ["people", "person", "#5856D6", 3],
+      ["companies", "building", "#5AC8FA", 4],
+      ["files", "document", "#8E8E93", 5],
+      ["healthRecords", "heart", "#FF2D55", 6],
+    ] as const) {
+      expect(byKey.get(key)).toMatchObject({ icon, color, overviewOrder });
+    }
     for (const key of ["areas", "transcripts"]) {
       expect(byKey.get(key)).toMatchObject({ overviewOrder: null, switcherOrder: null, clientVisible: true });
     }
@@ -369,6 +379,35 @@ describe("database routes (issue #240)", () => {
       headers: await authHeader("cs"),
     });
     expect(((await detail.json()) as DatabaseBody).searchPlaceholder).toBe("Hledat v Lidech");
+  });
+
+  it("projects the same five collection metadata fields in the list and schema endpoints", async () => {
+    const headers = await authHeader("en");
+    const metadata = z.object({
+      icon: z.string().nullable(),
+      color: z.string().nullable(),
+      overviewOrder: z.number().nullable(),
+      switcherOrder: z.number().nullable(),
+      clientVisible: z.boolean(),
+    });
+    const listResponse = await fetch(`${baseUrl}/api/databases?limit=200`, { headers });
+    const schemaResponse = await fetch(`${baseUrl}/api/schema`, { headers });
+    expect(listResponse.status).toBe(200);
+    expect(schemaResponse.status).toBe(200);
+    const list = z.object({ databases: z.array(metadata.extend({ id: z.string() })) }).parse(await listResponse.json());
+    const schema = z
+      .object({ databases: z.array(metadata.extend({ databaseId: z.string() })) })
+      .parse(await schemaResponse.json());
+    const project = ({ icon, color, overviewOrder, switcherOrder, clientVisible }: z.infer<typeof metadata>) => ({
+      icon,
+      color,
+      overviewOrder,
+      switcherOrder,
+      clientVisible,
+    });
+    expect(new Map(schema.databases.map((db) => [db.databaseId, project(db)]))).toEqual(
+      new Map(list.databases.map((db) => [db.id, project(db)])),
+    );
   });
 
   it("walks every database exactly once with limit=2 and resumes after the cursor row was archived", async () => {
@@ -464,6 +503,10 @@ describe("database routes (issue #240)", () => {
           body: JSON.stringify(patch),
         });
         expect(response.status).toBe(400);
+        if (Object.keys(patch).length === 0) {
+          const body: unknown = await response.json();
+          expect(body).toMatchObject({ error: { code: "validation_failed", details: { reason: "empty_patch" } } });
+        }
       }
       expect(invalidations).toEqual([]);
     } finally {
@@ -617,6 +660,7 @@ describe("database routes (issue #240)", () => {
       fetch(`${baseUrl}/api/databases/${system.id}`, { method: "PATCH", headers, body: JSON.stringify(body) });
 
     const before = (await (await fetch(`${baseUrl}/api/databases/${system.id}`, { headers })).json()) as DatabaseBody;
+    expect(before).toMatchObject({ icon: "folder", color: "#007AFF" });
     expect((await patch({ color: "#007AFF" })).status).toBe(403);
     expect((await patch({ icon: "gift" })).status).toBe(403);
     const renamed = await patch({ name: "Renamed system" });

@@ -1,7 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { ForbiddenError, NotFoundError } from "../errors.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
@@ -94,6 +95,22 @@ describe("choke-point databaseOps", () => {
     await expect(pool.query("UPDATE databases SET icon = 'my icon' WHERE id = $1", [db.id])).rejects.toThrow(
       /databases_icon_format/,
     );
+  });
+
+  it("allows the data runtime role to write both appearance columns", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      await runInTenant(getTenantZeroId(), async () => {
+        const runtimeChokePoint = createChokePoint(runtime);
+        const db = await runtimeChokePoint.createDatabase({ name: "Runtime", icon: "gift", color: "#34C759" });
+        expect(await runtimeChokePoint.patchDatabase(db.id, { icon: "star", color: "#007AFF" })).toMatchObject({
+          icon: "star",
+          color: "#007AFF",
+        });
+      });
+    } finally {
+      await runtime.end();
+    }
   });
 
   it("renameDatabase on a missing database raises NotFoundError", async () => {

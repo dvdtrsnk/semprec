@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { ValidationError } from "../../errors.js";
+import { setNotificationCreatedHook, type NotificationCreatedEvent } from "../../realtimeHook.js";
 import { createDatabase } from "../../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import {
@@ -63,6 +64,55 @@ async function rowsFor(tenantId: string, dedupeKey: string) {
     [tenantId, dedupeKey],
   );
   return rows;
+}
+
+async function overlapRaises(firstInput: RaiseProblemInput, secondInput: RaiseProblemInput) {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let signal: (value: { pid: number; outcome: string }) => void = () => {};
+  let fail: (reason: unknown) => void = () => {};
+  const ready = new Promise<{ pid: number; outcome: string }>((resolve, reject) => {
+    signal = resolve;
+    fail = reject;
+  });
+  const first = inZero(async (client) => {
+    try {
+      const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+      const pid = rows[0]?.pid;
+      if (pid === undefined) throw new Error("Missing backend pid");
+      const result = await raiseProblem(client, firstInput);
+      signal({ pid, outcome: result.outcome });
+      await gate;
+      return result;
+    } catch (error) {
+      fail(error);
+      throw error;
+    }
+  });
+  let second: Promise<Awaited<ReturnType<typeof raiseProblem>>> | undefined;
+  try {
+    const held = await ready;
+    second = inZero((client) => raiseProblem(client, secondInput));
+    await expect
+      .poll(
+        async () => {
+          const result = await pool.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+            [held.pid],
+          );
+          return result.rows[0]?.count;
+        },
+        { timeout: 5000 },
+      )
+      .toBe("1");
+    release();
+    return [held.outcome, (await first).outcome, (await second).outcome];
+  } finally {
+    release();
+    await Promise.allSettled(second ? [first, second] : [first]);
+  }
 }
 
 describe("semp problems store", () => {
@@ -197,51 +247,32 @@ describe("semp problems store", () => {
   });
 
   it("leaves one row when two transactions raise the same key concurrently", async () => {
-    const results = await Promise.all([
-      inZero((client) => raiseProblem(client, input())),
-      inZero((client) => raiseProblem(client, input())),
-    ]);
-    expect(results.map((r) => r.outcome).sort()).toEqual(["created", "merged"]);
-    const rows = await rowsFor(tenantZero, "mail:sync:account-1");
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.occurrence_count).toBe(2);
+    const notifications: NotificationCreatedEvent[] = [];
+    setNotificationCreatedHook((event) => notifications.push(event));
+    try {
+      expect(await overlapRaises(input(), input())).toEqual(["created", "created", "merged"]);
+      const rows = await rowsFor(tenantZero, "mail:sync:account-1");
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.occurrence_count).toBe(2);
+      expect(notifications).toHaveLength(1);
+      await inZero(async () => {});
+      expect(notifications).toHaveLength(1);
+    } finally {
+      setNotificationCreatedHook(() => {});
+    }
   });
 
   it("reports an escalation once when two critical raises race over a warning", async () => {
     await inZero((client) => raiseProblem(client, input({ severity: "warning" })));
-    const first = await pool.connect();
-    let second: Promise<Awaited<ReturnType<typeof raiseProblem>>> | undefined;
-    try {
-      await first.query("BEGIN");
-      await first.query("SELECT set_config('app.tenant_id', $1, true)", [tenantZero]);
-      const { rows } = await first.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-      const pid = rows[0]?.pid;
-      if (pid === undefined) throw new Error("Missing backend pid");
-      expect((await raiseProblem(first, input({ severity: "critical" }))).outcome).toBe("escalated");
-      second = inZero((client) => raiseProblem(client, input({ severity: "critical" })));
-      await expect
-        .poll(
-          async () => {
-            const result = await pool.query<{ count: string }>(
-              "SELECT count(*)::text AS count FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
-              [pid],
-            );
-            return result.rows[0]?.count;
-          },
-          { timeout: 5000 },
-        )
-        .toBe("1");
-      await first.query("COMMIT");
-      expect((await second).outcome).toBe("merged");
-      const notifications = await pool.query<{ count: string }>(
-        "SELECT count(*)::text AS count FROM notifications WHERE kind = 'semp_problem'",
-      );
-      expect(notifications.rows[0]?.count).toBe("2");
-    } finally {
-      await first.query("ROLLBACK");
-      first.release();
-      if (second) await second;
-    }
+    expect(await overlapRaises(input({ severity: "critical" }), input({ severity: "critical" }))).toEqual([
+      "escalated",
+      "escalated",
+      "merged",
+    ]);
+    const notifications = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM notifications WHERE kind = 'semp_problem'",
+    );
+    expect(notifications.rows[0]?.count).toBe("2");
   });
 
   it("leaves no row when the raising transaction rolls back", async () => {

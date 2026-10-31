@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { ModuleRegistry } from "@semprec/module-registry";
 import {
@@ -145,5 +145,19 @@ describe("link rule schema drift", () => {
     const registry = await loadFullModuleRegistry();
     const findings = await withTransaction(pool, (client) => findInvalidLinkRuleReferences(client, registry));
     expect(findings).toEqual([]);
+  });
+
+  it("the full registry guard detects newly declared invalid schema references", async () => {
+    const registry = await loadFullModuleRegistry();
+    const invalid = await registryWith(["fixtureLinkRuleInvalid", "linkRuleInvalidModule.js"]);
+    const rules = [...(await registry.getLinkRules()), ...(await invalid.getLinkRules())];
+    const spy = vi.spyOn(registry, "getLinkRules").mockResolvedValue(rules);
+    try {
+      const findings = await withTransaction(pool, (client) => findInvalidLinkRuleReferences(client, registry));
+      expect(findings.map((finding) => finding.reason)).toContain("missingSourceProperty");
+      expect(findings.map((finding) => finding.reason)).toContain("missingViaProperty");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
