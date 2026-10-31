@@ -816,7 +816,11 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           after: { properties: { name: "After" } },
         },
       ]);
-      await expect(confirm(card)).rejects.toMatchObject({ status: 400, details: { ref: "project", field: "area" } });
+      await expect(confirm(card)).rejects.toMatchObject({
+        status: 400,
+        message: expect.stringContaining("contains duplicate targets"),
+        details: { ref: "project", field: "area" },
+      });
       const [current] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
       expect(current?.properties.name).toBe("Before");
       expect(await cardStatus(card)).toBe("proposed");
@@ -1768,6 +1772,9 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
       it("rolls back created items and origins when origin insertion fails", async () => {
         const card = await cardWithSteps("companies", companyAndPerson());
+        const cardBefore = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, card));
+        const edgeCountBefore = (await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM item_relations"))
+          .rows[0]?.n;
         await pool.query(`CREATE FUNCTION reject_second_origin_test() RETURNS trigger LANGUAGE plpgsql AS $$
           BEGIN
             IF EXISTS (SELECT 1 FROM item_origins WHERE proposal_id = NEW.proposal_id) THEN
@@ -1782,7 +1789,12 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           expect(await countItems("companies")).toBe(0);
           expect(await countItems("people")).toBe(0);
           expect(await originRows()).toEqual([]);
-          expect(await cardStatus(card)).toBe("proposed");
+          expect((await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM item_relations")).rows[0]?.n).toBe(
+            edgeCountBefore,
+          );
+          expect(await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, card))).toEqual(
+            cardBefore,
+          );
         } finally {
           await pool.query("DROP TRIGGER IF EXISTS reject_second_origin_test ON item_origins");
           await pool.query("DROP FUNCTION reject_second_origin_test()");
