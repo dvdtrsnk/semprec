@@ -540,8 +540,8 @@
       "sequence": 5,
       "status": "proposed",
       "title": "[backend-delivery 05/74] Implement data/mail, data/tenancy, queue changes",
-      "bodyCharacters": 59907,
-      "specSha256": "73679367d4664e7c8c4511a68e52a7e5574d3548e5e78c63e73801c0fc4f5a8a",
+      "bodyCharacters": 59706,
+      "specSha256": "001a9faf2fa928d97190cd0fed278107d454dfa9ee00dff946465d095dcfe105",
       "members": [
         {
           "id": "gh-1367",
@@ -573,7 +573,7 @@
         },
         {
           "id": "gh-1478",
-          "specSha256": "87316739e6ec826209c5c419b2165d168ea09ed30784d05ced2355cd53801ebf",
+          "specSha256": "bc08b62ba740e59f0015a8ab083a1c5c94fc022aa1534302e18d21c495ffa20e",
           "parent": "gh-1336",
           "dependencies": [],
           "approval": "approved"
@@ -596,7 +596,7 @@
         },
         {
           "id": "gh-1483",
-          "specSha256": "c40e6be4bdd9b83266b38ab8f4c9642ddf5e58a77857b9f9481aff9d7551a0d1",
+          "specSha256": "cfb990587734cb8d98694e7205ab774c0ee830cce267d74ceb369dad7d04402e",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1468"

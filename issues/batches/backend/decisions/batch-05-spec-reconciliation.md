@@ -35,3 +35,14 @@ gh-1356's literal recursive cp command is unsafe on repeated builds: the parent 
 
 - gh-1487: 40e9fa707c5c616197275f67ba2c360cd589bdb0130361690883b30117e9322a -> 682f11a8f10b2ed5c65f25cec1433c57d88876921eebdddad6f6bc9ff181ddc4
 - gh-1356: 452ce2b2b3b639d3d88a135c27da01b554a2a0ed48e4ee400e5834c0c6c7918c -> 0534497a5b712a581f007f9e62c7ee2409cbadb21e7acbeb1ab77066761ebde3
+
+## Non-outbound transport evidence and OAuth hash identity
+
+gh-1478's runtime security contract remains pinned public address selection, original TLS hostname, one DNS resolution and uniform refused/unreachable errors with authentication distinct. No external mail/public dial is authorized. For both protocols, the actual factory connection attempt must invoke its wired policy lookup during execution at the low-level connector boundary; assert approved public result, original hostname and one lookup before a test-only transport stop/loopback route. Capturing options and manually invoking lookup only after a manufactured failure is insufficient. Combine selection with real loopback TLS/login/certificate/auth evidence including successful supported STARTTLS upgrade; keep default private refusal tests separate from the enabled local seam. This supports the local engineering criterion without claiming physical public connectivity, which remains NOT RUN. Do not change production policy, host routing, provider credentials or create an unrelated release gate.
+
+Direct installed imapflow inspection confirms its net/tls connectors both receive options.tls, and STARTTLS wraps the existing socket; the option name alone is not evidence of a bypass. Tests must prove the actual supported paths. Only obsolete descriptive Context prose is compressed.
+
+gh-1483's state_hash is unique per tenant, as implemented by applied 0110_mail_oauth_states.sql and required by the accepted tenant-leading index rule. Preserve the migration and index; add no global uniqueness/existence coupling. Require same-tenant duplicate rejection and independent same-hash rows across tenants, with runtime-role isolation and scoped consumption denying access to the other tenant row. This changes neither the random-token generation, PKCE, one-time expiry/consume contract nor the provider boundary validation requirement. Only historical explanatory OAuth Context is compressed, retaining its decisions and mechanism scope.
+
+- gh-1478: 87316739e6ec826209c5c419b2165d168ea09ed30784d05ced2355cd53801ebf -> bc08b62ba740e59f0015a8ab083a1c5c94fc022aa1534302e18d21c495ffa20e
+- gh-1483: c40e6be4bdd9b83266b38ab8f4c9642ddf5e58a77857b9f9481aff9d7551a0d1 -> cfb990587734cb8d98694e7205ab774c0ee830cce267d74ceb369dad7d04402e
