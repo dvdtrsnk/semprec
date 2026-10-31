@@ -97,6 +97,23 @@ describe("choke-point databaseOps", () => {
     );
   });
 
+  it("keeps appearance null for rows written in the pre-migration shape", async () => {
+    // The legacy insert omits both columns, as code deployed before migration 0113 did.
+    const { rows } = await pool.query<{ icon: string | null; color: string | null }>(
+      "INSERT INTO databases (name, system) VALUES ($1, false) RETURNING icon, color",
+      ["Legacy"],
+    );
+    expect(rows).toEqual([{ icon: null, color: null }]);
+    const columns = await pool.query<{ column_name: string; is_nullable: string; column_default: string | null }>(
+      "SELECT column_name, is_nullable, column_default FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'databases' AND column_name = ANY($1::text[]) ORDER BY column_name",
+      [["icon", "color"]],
+    );
+    expect(columns.rows).toEqual([
+      { column_name: "color", is_nullable: "YES", column_default: null },
+      { column_name: "icon", is_nullable: "YES", column_default: null },
+    ]);
+  });
+
   it("allows the data runtime role to write both appearance columns", async () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     try {

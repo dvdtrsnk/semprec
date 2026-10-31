@@ -97,23 +97,49 @@ async function overlapRaises(firstInput: RaiseProblemInput, secondInput: RaisePr
   let second:
     Promise<{ ok: true; result: Awaited<ReturnType<typeof raiseProblem>> } | { ok: false; error: unknown }> | undefined;
   try {
-    const held = await ready;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Timed out waiting for the first raise")), 5000);
+    });
+    let held: { pid: number; outcome: string };
+    try {
+      held = await Promise.race([
+        ready,
+        timeout,
+        first.then((value) => {
+          if (!value.ok) throw value.error;
+          throw new Error("First raise finished before signaling readiness");
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
     second = inZero((client) => raiseProblem(client, secondInput)).then(
       (result) => ({ ok: true as const, result }),
       (error: unknown) => ({ ok: false as const, error }),
     );
-    await expect
-      .poll(
-        async () => {
-          const result = await pool.query<{ count: string }>(
-            "SELECT count(*)::text AS count FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
-            [held.pid],
-          );
-          return result.rows[0]?.count;
-        },
-        { timeout: 5000 },
-      )
-      .toBe("1");
+    let finished: Awaited<typeof second> | undefined;
+    void second.then((value) => {
+      finished = value;
+    });
+    const deadline = Date.now() + 5000;
+    let blocked = false;
+    while (Date.now() < deadline) {
+      if (finished !== undefined) {
+        if (!finished.ok) throw finished.error;
+        throw new Error("Second raise finished before blocking");
+      }
+      const result = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+        [held.pid],
+      );
+      if (result.rows[0]?.count === "1") {
+        blocked = true;
+        break;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    }
+    if (!blocked) throw new Error("Timed out waiting for the second raise to block");
     release();
     const settled = await second;
     if (!settled.ok) throw settled.error;
@@ -271,6 +297,17 @@ describe("semp problems store", () => {
     } finally {
       setNotificationCreatedHook(() => {});
     }
+  });
+
+  it("propagates an early error from either concurrent raise", async () => {
+    await expect(overlapRaises(input({ projectItemId: "invalid" }), input())).rejects.toMatchObject({
+      name: "ValidationError",
+      message: "Invalid projectItemId",
+    });
+    await expect(overlapRaises(input(), input({ projectItemId: "invalid" }))).rejects.toMatchObject({
+      name: "ValidationError",
+      message: "Invalid projectItemId",
+    });
   });
 
   it("reports an escalation once when two critical raises race over a warning", async () => {

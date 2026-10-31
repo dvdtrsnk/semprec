@@ -201,45 +201,62 @@ describe("mail database key cutover", () => {
           throw error;
         }
       }),
+    ).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
     );
     let first: Promise<unknown> | undefined;
     let second: Promise<unknown> | undefined;
+    async function waitForBlocked(blockerPid: number, operation: Promise<unknown>): Promise<number> {
+      const state: { finished: boolean; value: unknown } = { finished: false, value: undefined };
+      void operation.then((value) => {
+        state.finished = true;
+        state.value = value;
+      });
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (state.finished) {
+          if (state.value instanceof Error) throw state.value;
+          if (state.value !== null) throw new Error("Cutover rejected with a non-error value", { cause: state.value });
+          throw new Error("Cutover finished before blocking");
+        }
+        const result = await admin.query<{ pid: number }>(
+          "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+          [blockerPid],
+        );
+        if (result.rows[0]) return result.rows[0].pid;
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error("Timed out waiting for the cutover to block");
+    }
     try {
-      const holderPid = await ready;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Timed out waiting for the lock holder")), 5000);
+      });
+      let holderPid: number;
+      try {
+        holderPid = await Promise.race([
+          ready,
+          timeout,
+          holder.then((result) => {
+            if (!result.ok) throw result.error;
+            throw new Error("Lock holder finished before signaling readiness");
+          }),
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
       first = runInTenant(tenant, () => runMailDatabaseKeysCutoverMigration(pool)).then(
         () => null,
         (error: unknown) => error,
       );
-      let firstPid = 0;
-      await expect
-        .poll(
-          async () => {
-            const result = await admin.query<{ pid: number }>(
-              "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
-              [holderPid],
-            );
-            firstPid = result.rows[0]?.pid ?? 0;
-            return firstPid > 0;
-          },
-          { timeout: 5000 },
-        )
-        .toBe(true);
+      const firstPid = await waitForBlocked(holderPid, first);
       second = runInTenant(tenant, () => runMailDatabaseKeysCutoverMigration(pool)).then(
         () => null,
         (error: unknown) => error,
       );
-      await expect
-        .poll(
-          async () => {
-            const result = await admin.query<{ count: string }>(
-              "SELECT count(*)::text AS count FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
-              [firstPid],
-            );
-            return result.rows[0]?.count;
-          },
-          { timeout: 5000 },
-        )
-        .toBe("1");
+      await waitForBlocked(firstPid, second);
       await runInTenant(other, () => runMailDatabaseKeysCutoverMigration(pool));
       expect((await runInTenant(other, rows)).map((row) => row.key)).toEqual(keys);
       await runInTenant(tenant, () =>
@@ -253,7 +270,8 @@ describe("mail database key cutover", () => {
         ),
       );
       release();
-      await holder;
+      const holderResult = await holder;
+      if (!holderResult.ok) throw holderResult.error;
       expect(await first).toMatchObject({ code: "23505", constraint: "databases_key_unique" });
       expect(await second).toMatchObject({ message: "Mail database key mailboxes is already occupied" });
       const occupant = await runInTenant(tenant, () =>
