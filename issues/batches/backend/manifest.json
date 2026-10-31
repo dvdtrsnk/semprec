@@ -279,12 +279,12 @@
       "sequence": 2,
       "status": "proposed",
       "title": "[backend-delivery 02/74] Implement data/manifest, module-registry, application changes",
-      "bodyCharacters": 55496,
-      "specSha256": "b2b356f60cda818bdb47fae6589d262b11be8dc568dea1786415034c708cf694",
+      "bodyCharacters": 58176,
+      "specSha256": "59d0c766c2e2603ac88caa53aae583bed53adc65a37a275a0bd9002508e383e3",
       "members": [
         {
           "id": "gh-1459",
-          "specSha256": "08799f92d266790b7e5ab00b0874b7f2aac066857b234d19afb6469537942e3c",
+          "specSha256": "71a2254f0df58f303b82fc487adac3b0862a1d00e3b5499930693d37e42ea5d6",
           "parent": "gh-1311",
           "dependencies": [],
           "approval": "approved"
@@ -309,7 +309,7 @@
         },
         {
           "id": "gh-1427",
-          "specSha256": "9b6720159991c5997a99ce65b5b706359c0417b04b3240bad7d93bf4d101e90e",
+          "specSha256": "b0cd0f1d573b358eb40b0e0608474f5e04f98eb751a4b5eee0e902e3b566addb",
           "parent": "gh-1301",
           "dependencies": [
             "gh-1411"
@@ -334,12 +334,12 @@
         },
         {
           "id": "gh-1414",
-          "specSha256": "783d5d197b3fbccec89902272a114b7125bbf0c397e5d1b29f72b7664dc65d22",
+          "specSha256": "34e7b7ce3760ad9284f5f9b0c6f67255b5bc1e01eeec62524ffab5f3045b0dd7",
           "parent": "gh-1329",
           "dependencies": [
             "gh-1411"
           ],
-          "approval": "unapproved"
+          "approval": "approved"
         }
       ]
     },
