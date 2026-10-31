@@ -42,3 +42,15 @@ Source gh-1407: 9bb36fb24ac5d80aaf6b96604fd63d1872778dae0fe0ce253aab887e248d0baa
 The diagnostic run exposed two guidance-drift tests passing fabricated project UUIDs through the real producer into raiseProblem. These are invalid positive fixtures under the approved guard. Authorize replacing only those project fixtures with real same-tenant Projects items created through production writes in backend/packages/data/src/__tests__/sempProblemsProducers.test.ts; preserve dedupe and stored-attribution assertions and verify rollback reaches its intended sentinel after a successful raise. No producer behavior change or validation bypass is authorized; producer implementation remains out of scope. The mixed-source run remains diagnostic, not acceptance evidence.
 
 Source gh-1459: e1aeba010e772ce13d583edc2a71077e7e06e20adefbb30ab65c243dfe509c69 -> 57b9ed88d2e85a5a529e7bdf3e0a56a172f83d4472d0b9bcb8f6e0e5e1a93229. Aggregate: e6f6a3fb22a49bcf517866c4e6b5b9117590c09d58b9ece130b9489036531089.
+
+## Final re-review: error compatibility and sibling tenant scans
+
+Candidate 39ecb78e remains unaccepted despite the integration run failing only the known macOS environment assertion. Preserve the existing empty_patch reason at the actual REST and MCP boundaries while rejecting empty patches in the schema and advertising minProperties. A compatible additive patch field is allowed; unrelated error mapping stays unchanged. Scope the required adapters/gateway and regression tests explicitly.
+
+The sibling isolation correction includes both moduleRegistryDriftCheck scans, properties and heartbeats. Both require explicit current-tenant predicates, fail-closed no-scope behavior and runtime-role/scoped-owner two-tenant evidence. Its global description refers to modules within one tenant. No cross-tenant collector or privilege expansion is authorized. Fix the after-commit test callback leak by retaining production transaction wrappers and prove forced initial-create/escalation overlap. Mail cutover tests must demonstrate late-failure rollback and actual overlap/collision, not only preflight refusal. These test corrections preserve the already approved contracts.
+
+Only duplicate explanatory annotations in aggregate Touches were removed to respect the body limit; source snapshots and file paths remain.
+
+Source gh-1427: 08b569b61e76ccdcd95d40722cea00cb18e064a1d475a839eae28c3a605b9a97 -> 7d2649534df5344ec93d666f32e2ba0d19c49cb880cfc7dba2c9a26f8df36eea.
+Source gh-1528: 900c2cb6d8566bb4409a511d12fe2afab777dfe77105be59cea8f75d2e93f66b -> 77de1557812a3be8abcb837fd5f95e72c3da1153d636397a01918782f4889afe.
+Aggregate: 4287361526ab7afa169509047adcf75e685c27a7dd63df74c44c9dab2b74b01b.
