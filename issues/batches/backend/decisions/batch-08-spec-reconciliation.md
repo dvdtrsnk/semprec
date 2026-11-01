@@ -154,3 +154,53 @@ those tests actually pass and the wiring is verified. It grants no test PASS
 in advance, no general helper-only acceptance exception, and no waiver of job,
 queue, storage or transport evidence for existing notification kinds. Reapprove
 the exact source and propagated aggregate with updated specification hashes.
+
+## Approval decisions reaching tenant-scoped connected clients
+
+Gh-1463 AC1 names connected clients. An injected data-layer callback and a
+separate synthetic NOTIFY test do not establish the composed decision path.
+Add exactly
+`backend/services/semprec-api/src/__tests__/tenantIsolationRealtime.test.ts`
+to gh-1463 and aggregate Touches. That existing runtime-role, two-tenant socket
+harness composes the actual dispatcher, sync server and realtime hooks.
+
+Use a real approval decision and its committed notification resolution to
+exercise the hook, NOTIFY bridge and actual client wire-frame mapping. Assert
+receipt on the intended user's sockets and absence in the other tenant; replay
+and rollback must produce no additional read-state publication. Use the
+existing ordered sentinel method for absence, not arbitrary sleeps or a
+synthetic replacement for the event under test. Respect existing fixture and
+resource cleanup. The callback-only tests remain useful for transactional
+state, but do not substitute for this boundary. No new realtime mechanism or
+production path change is authorized by the added test scope.
+
+## Human label wrapper versus agent capabilities
+
+Gh-1391 Task 2 asks for a wrapper used by the human route while its last AC
+imprecisely attributes agent isolation to package non-export. The raw
+`setMcpToolDisplayLabel` setter is private; `reclassifyMcpTool` is intentionally
+exported for the API service and already accepts `displayLabel`. The handler
+uses `authenticateRequest`, which verifies a user session rather than treating
+a run credential as that session. Existing backend rules forbid direct agent
+writes. Removing the wrapper export would break the specified API composition;
+its existence is not evidence that a model has a callable tool for it.
+
+Clarify Task 2 and the last AC, preserving human-route ownership: keep the raw
+setter private and the API wrapper exported. No current agent tool,
+generic/MCP operation, proposal-confirm path, sync or background job may expose
+a capability that writes labels. The worker and independent reviewer must
+trace actual catalogs, callbacks and write call sites, retain the human-route
+positive control and provide discriminating automated exposure/refusal checks
+where applicable in the already scoped label/API suites. An export-name search
+alone does not establish capability isolation. A demonstrated agent write path
+is a defect requiring repair or a concrete new scope decision, not accepted by
+this clarification. Package exports are not an arbitrary-code security sandbox,
+and no such guarantee is introduced.
+
+No new actor/token protocol, grants, ownership exception, generic administrative
+tool or package dependency is authorized. Reconcile only the misleading raw
+setter/export wording. The aggregate's redundant introductory Context is
+compacted to retain the 60,000-character limit; all embedded requirements,
+model classification, dependency order, scope limits and aggregate gates stay
+present. Exact modified source/aggregate records are reapproved and hashes
+propagated. No acceptance result is granted.
