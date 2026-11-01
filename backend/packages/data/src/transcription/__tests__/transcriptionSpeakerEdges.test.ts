@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import "../../domainWriteHooks.js";
 import {
   createRuntimeRolePool,
@@ -45,6 +45,128 @@ async function bounded<T>(promise: Promise<T>, milliseconds = 3000): Promise<T> 
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+interface RuntimeOperations {
+  run<T>(start: () => Promise<T>): Promise<T>;
+  settle(): Promise<void>;
+  onCancel(cancel: () => void): void;
+}
+
+// Local to these serial fixtures: every barrier is released if any owning pool closes early.
+const fixtureCancellations = new Set<Set<() => void>>();
+
+async function withRuntimePool<T>(body: (runtime: Pool, operations: RuntimeOperations) => Promise<T>): Promise<T> {
+  const runtime = await createRuntimeRolePool(pool, "semprec_data");
+  runtime.options.connectionTimeoutMillis = 2500;
+  runtime.options.statement_timeout = 5000;
+  const active = new Map<PoolClient, object>();
+  const clientErrors: unknown[] = [];
+  const onClientError = (error: Error) => clientErrors.push(error);
+  let closing = false;
+  const cancellations = new Set<() => void>();
+  fixtureCancellations.add(cancellations);
+  const destroy = (client: PoolClient, token: object) => {
+    if (active.get(client) !== token) return;
+    try {
+      client.release(true);
+    } catch (error) {
+      clientErrors.push(error);
+    }
+  };
+  const onAcquire = (client: PoolClient) => {
+    const token = {};
+    active.set(client, token);
+    client.on("error", onClientError);
+    // pg-pool 3.14 emits acquire before assigning release; defer until that stack returns.
+    if (closing) queueMicrotask(() => destroy(client, token));
+  };
+  const onRelease = (_error: Error | undefined, client: PoolClient) => {
+    active.delete(client);
+    client.removeListener("error", onClientError);
+  };
+  runtime.on("acquire", onAcquire);
+  runtime.on("release", onRelease);
+  const pending = new Set<Promise<void>>();
+  const operations: RuntimeOperations = {
+    run: <U>(start: () => Promise<U>): Promise<U> => {
+      const started = Promise.resolve().then(() => {
+        if (closing) throw new Error("Runtime fixture is closing");
+        return start();
+      });
+      const settled = started.then(
+        () => {},
+        () => {},
+      );
+      pending.add(settled);
+      void settled.then(() => pending.delete(settled));
+      return started;
+    },
+    settle: async () => {
+      while (pending.size > 0) await Promise.all([...pending]);
+    },
+    onCancel: (cancel) => {
+      if (closing) cancel();
+      else cancellations.add(cancel);
+    },
+  };
+  const work = Promise.resolve()
+    .then(() => body(runtime, operations))
+    .then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+  let outcome: { value: T } | { error: unknown };
+  try {
+    outcome = await bounded(work, 12000);
+  } catch (error) {
+    outcome = { error };
+  }
+  closing = true;
+  for (const cancel of cancellations) {
+    try {
+      cancel();
+    } catch (error) {
+      clientErrors.push(error);
+    }
+  }
+  if ("value" in outcome && (active.size > 0 || pending.size > 0 || runtime.waitingCount > 0)) {
+    clientErrors.push(new Error("Runtime body returned with owned work still pending"));
+  }
+  for (const [client, token] of active) destroy(client, token);
+  const end = runtime.end();
+  const waiting = (async () => {
+    const deadline = Date.now() + 4000;
+    while (runtime.waitingCount > 0) {
+      if (Date.now() >= deadline) throw new Error("Runtime pool waiters did not settle");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  })();
+  const cleanup = Promise.allSettled([end, work, operations.settle(), waiting]);
+  const removeListeners = () => {
+    runtime.removeListener("acquire", onAcquire);
+    runtime.removeListener("release", onRelease);
+    fixtureCancellations.delete(cancellations);
+  };
+  try {
+    const results = await bounded(cleanup, 10000);
+    for (const result of results) if (result.status === "rejected") clientErrors.push(result.reason);
+    const finished = await work;
+    if ("error" in finished && (!("error" in outcome) || finished.error !== outcome.error)) {
+      clientErrors.push(finished.error);
+    }
+    removeListeners();
+  } catch (error) {
+    clientErrors.push(error);
+    // A failed watchdog must keep owning late arrivals until the actual cleanup settles.
+    void cleanup.then(removeListeners);
+  }
+  if (clientErrors.length) {
+    const errors = "error" in outcome ? [outcome.error, ...clientErrors] : clientErrors;
+    throw new AggregateError(errors, "Test and runtime cleanup failed", { cause: errors[0] });
+  }
+  if ("error" in outcome) throwFailure(outcome.error);
+  return outcome.value;
 }
 
 const SEGMENTS = [
@@ -176,191 +298,135 @@ describe("Transcript speaker mappings (issue #185)", () => {
       const personId = await createPerson("Alice");
       const otherPersonId = await createPerson("Bob");
       const tenant = getTenantZeroId();
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
-      let release!: () => void;
-      let acquired!: () => void;
-      const ready = new Promise<void>((resolve) => {
-        acquired = resolve;
-      });
-      const gate = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      let holderPid: number | undefined;
-      let contenderPid: number | undefined;
-      await withTenantTransaction(runtime, tenant, (client) =>
-        insertValueLink(client, { itemId: transcriptId, propertyKey: "speakers", ruleKey: "test", sources: [] }),
-      );
-      const beforeJobs = await pool.query<{ count: string }>(
-        "SELECT count(*)::text AS count FROM graphile_worker.jobs",
-      );
-      const beforeLinks = await withTenantTransaction(runtime, tenant, (client) =>
-        listValueLinksByItemIds(client, [transcriptId]),
-      );
-      const beforeSpeakers = await speakers(transcriptId);
-      const events: InvalidationEvent[] = [];
-      setInvalidationHook((event) => events.push(event));
-      const contenders: Array<{ pid: number | undefined; settled: boolean; done: Promise<void> }> = [];
-      let holderSettled = false;
-      const holder = runInTenant(tenant, () =>
-        withTransaction(runtime, async (client) => {
-          holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-          await updateItemWithClient(client, {
-            databaseId: transcriptsId,
-            itemId: transcriptId,
-            propertiesPatch: { name: "Held" },
-          });
-          acquired();
-          await bounded(gate, 10000);
-        }),
-      )
-        .then(
-          () => ({ ok: true as const }),
-          (error: unknown) => ({ ok: false as const, error }),
-        )
-        .finally(() => {
-          holderSettled = true;
+      await withRuntimePool(async (runtime, operations) => {
+        let release!: () => void;
+        let acquired!: () => void;
+        const ready = new Promise<void>((resolve) => {
+          acquired = resolve;
         });
-      let failure: unknown;
-      try {
-        await bounded(ready);
-        const lock = await pool.query<{ held: boolean }>(
-          `SELECT EXISTS (SELECT 1 FROM items i JOIN pg_locks l ON l.transactionid::text = i.xmax::text
-             WHERE i.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.granted) AS held`,
-          [transcriptId, holderPid],
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        operations.onCancel(release);
+        let holderPid: number | undefined;
+        let contenderPid: number | undefined;
+        await withTenantTransaction(runtime, tenant, (client) =>
+          insertValueLink(client, { itemId: transcriptId, propertyKey: "speakers", ruleKey: "test", sources: [] }),
         );
-        expect(lock.rows[0]?.held).toBe(true);
-        const attempt = (metadata: Record<string, unknown>, target = personId) => {
-          const participant: { pid: number | undefined; settled: boolean; done: Promise<void> } = {
-            pid: undefined,
-            settled: false,
-            done: Promise.resolve(),
-          };
-          contenders.push(participant);
-          const operation = runInTenant(tenant, () =>
-            withTransaction(runtime, async (client) => {
-              contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-              participant.pid = contenderPid;
-              return createRelationWithClient(
-                client,
-                {
-                  relationPropertyId: speakersPropertyId,
-                  callerItemId: transcriptId,
-                  targetItemId: target,
-                  metadata,
-                },
-                { ownerProcess: "valueLinks" },
-              );
-            }),
+        const beforeJobs = await pool.query<{ count: string }>(
+          "SELECT count(*)::text AS count FROM graphile_worker.jobs",
+        );
+        const beforeLinks = await withTenantTransaction(runtime, tenant, (client) =>
+          listValueLinksByItemIds(client, [transcriptId]),
+        );
+        const beforeSpeakers = await speakers(transcriptId);
+        const events: InvalidationEvent[] = [];
+        setInvalidationHook((event) => events.push(event));
+        const holder = operations
+          .run(() =>
+            runInTenant(tenant, () =>
+              withTransaction(runtime, async (client) => {
+                holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                await updateItemWithClient(client, {
+                  databaseId: transcriptsId,
+                  itemId: transcriptId,
+                  propertiesPatch: { name: "Held" },
+                });
+                acquired();
+                await bounded(gate, 10000);
+              }),
+            ),
+          )
+          .then(
+            () => ({ ok: true as const }),
+            (error: unknown) => ({ ok: false as const, error }),
           );
-          participant.done = operation.then(
-            () => {
-              participant.settled = true;
-            },
-            () => {
-              participant.settled = true;
-            },
+        let failure: unknown;
+        try {
+          await bounded(ready);
+          const lock = await pool.query<{ held: boolean }>(
+            `SELECT EXISTS (SELECT 1 FROM items i JOIN pg_locks l ON l.transactionid::text = i.xmax::text
+             WHERE i.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.granted) AS held`,
+            [transcriptId, holderPid],
           );
-          return bounded(operation);
-        };
-        await expect(attempt({})).rejects.toMatchObject({ status: 400, code: "validation_failed" });
-        await expect(attempt({ speaker: "SPEAKER_01" })).rejects.toMatchObject({
-          status: 409,
-          code: "value_link_busy",
-        });
-        expect(holderPid).toBeTypeOf("number");
-        expect(contenderPid).toBeTypeOf("number");
-        expect(await speakers(transcriptId)).toEqual(beforeSpeakers);
-        expect(
-          await withTenantTransaction(runtime, tenant, (client) => listValueLinksByItemIds(client, [transcriptId])),
-        ).toEqual(beforeLinks);
-        expect(
-          (await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
-        ).toEqual(beforeJobs.rows);
-        expect(events).toEqual([]);
-        release();
-        requireSuccessful(await bounded(holder));
-        events.length = 0;
-        const edge = await attempt({ speaker: "SPEAKER_01" });
-        expect(edge.metadata).toEqual({ speaker: "SPEAKER_01" });
-        expect((await speakers(transcriptId))[0]?.person?.id).toBe(personId);
-        expect(
-          await withTenantTransaction(runtime, tenant, (client) => listValueLinksByItemIds(client, [transcriptId])),
-        ).toEqual(beforeLinks);
-        expect(events).toEqual([]);
-        await expect(attempt({ speaker: "SPEAKER_99" }, otherPersonId)).rejects.toMatchObject({
-          status: 400,
-          code: "validation_failed",
-          details: { reason: "unknownSpeaker" },
-        });
-        await expect(attempt({ speaker: "SPEAKER_01" }, otherPersonId)).rejects.toMatchObject({
-          status: 400,
-          code: "validation_failed",
-          details: { reason: "speakerAlreadyMapped" },
-        });
-        expect((await speakers(transcriptId))[0]?.person?.id).toBe(personId);
-        expect(
-          (await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
-        ).toEqual(beforeJobs.rows);
-        expect(events).toEqual([]);
-      } catch (error) {
-        failure = error;
-      } finally {
-        release();
-        setInvalidationHook(() => {});
-        for (const participant of contenders) {
-          if (participant.settled) continue;
+          expect(lock.rows[0]?.held).toBe(true);
+          const attempt = (metadata: Record<string, unknown>, target = personId) =>
+            bounded(
+              operations.run(() =>
+                runInTenant(tenant, () =>
+                  withTransaction(runtime, async (client) => {
+                    contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                    return createRelationWithClient(
+                      client,
+                      {
+                        relationPropertyId: speakersPropertyId,
+                        callerItemId: transcriptId,
+                        targetItemId: target,
+                        metadata,
+                      },
+                      { ownerProcess: "valueLinks" },
+                    );
+                  }),
+                ),
+              ),
+            );
+          await expect(attempt({})).rejects.toMatchObject({ status: 400, code: "validation_failed" });
+          await expect(attempt({ speaker: "SPEAKER_01" })).rejects.toMatchObject({
+            status: 409,
+            code: "value_link_busy",
+          });
+          expect(holderPid).toBeTypeOf("number");
+          expect(contenderPid).toBeTypeOf("number");
+          expect(await speakers(transcriptId)).toEqual(beforeSpeakers);
+          expect(
+            await withTenantTransaction(runtime, tenant, (client) => listValueLinksByItemIds(client, [transcriptId])),
+          ).toEqual(beforeLinks);
+          expect(
+            (await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
+          ).toEqual(beforeJobs.rows);
+          expect(events).toEqual([]);
+          release();
+          requireSuccessful(await bounded(holder));
+          events.length = 0;
+          const edge = await attempt({ speaker: "SPEAKER_01" });
+          expect(edge.metadata).toEqual({ speaker: "SPEAKER_01" });
+          expect((await speakers(transcriptId))[0]?.person?.id).toBe(personId);
+          expect(
+            await withTenantTransaction(runtime, tenant, (client) => listValueLinksByItemIds(client, [transcriptId])),
+          ).toEqual(beforeLinks);
+          expect(events).toEqual([]);
+          await expect(attempt({ speaker: "SPEAKER_99" }, otherPersonId)).rejects.toMatchObject({
+            status: 400,
+            code: "validation_failed",
+            details: { reason: "unknownSpeaker" },
+          });
+          await expect(attempt({ speaker: "SPEAKER_01" }, otherPersonId)).rejects.toMatchObject({
+            status: 400,
+            code: "validation_failed",
+            details: { reason: "speakerAlreadyMapped" },
+          });
+          expect((await speakers(transcriptId))[0]?.person?.id).toBe(personId);
+          expect(
+            (await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
+          ).toEqual(beforeJobs.rows);
+          expect(events).toEqual([]);
+        } catch (error) {
+          failure = error;
+        } finally {
+          release();
           try {
-            await bounded(participant.done);
+            await operations.settle();
+            requireSuccessful(await bounded(holder));
           } catch (error) {
             failure =
-              failure === undefined ? error : new AggregateError([failure, error], "Test and contender cleanup failed");
-            if (!participant.settled && participant.pid === undefined) {
-              try {
-                await bounded(participant.done);
-              } catch (lateError) {
-                failure = new AggregateError([failure, lateError], "Late contender settlement failed");
-              }
-            }
-            if (!participant.settled && participant.pid !== undefined) {
-              try {
-                await bounded(pool.query("SELECT pg_terminate_backend($1::int)", [participant.pid]));
-                await bounded(participant.done);
-              } catch (cleanupError) {
-                failure = new AggregateError([failure, cleanupError], "Contender termination failed");
-              }
-            }
+              failure === undefined
+                ? error
+                : new AggregateError([failure, error], "Test and participant cleanup failed");
           }
+          setInvalidationHook(() => {});
         }
-        try {
-          const outcome = await bounded(holder);
-          requireSuccessful(outcome);
-        } catch (error) {
-          failure =
-            failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
-          if (!holderSettled && !holderPid) {
-            try {
-              await bounded(holder);
-            } catch (lateError) {
-              failure = new AggregateError([failure, lateError], "Late holder cleanup failed");
-            }
-          }
-          if (!holderSettled && holderPid) {
-            try {
-              await bounded(pool.query("SELECT pg_terminate_backend($1::int)", [holderPid]));
-              await bounded(holder);
-            } catch (cleanupError) {
-              failure = new AggregateError([failure, cleanupError], "Holder termination failed");
-            }
-          }
-        }
-        try {
-          await bounded(runtime.end());
-        } catch (error) {
-          failure =
-            failure === undefined ? error : new AggregateError([failure, error], "Test and pool cleanup failed");
-        }
-      }
-      if (failure !== undefined) throwFailure(failure);
+        if (failure !== undefined) throwFailure(failure);
+      });
     });
 
     it("replaces a person's key by writing the edge again", async () => {

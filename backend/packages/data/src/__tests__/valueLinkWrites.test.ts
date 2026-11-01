@@ -98,20 +98,133 @@ function requireSuccessful(outcome: { ok: true } | { ok: false; error: unknown }
   if (!outcome.ok) throwFailure(outcome.error);
 }
 
-async function withRuntimePool<T>(body: (runtime: Pool) => Promise<T>): Promise<T> {
+function expectFixtureClosed(runtime: Pool | undefined): void {
+  if (!runtime) throw new Error("Missing fixture pool");
+  expect(runtime.ended).toBe(true);
+  expect(runtime.totalCount).toBe(0);
+  expect(runtime.waitingCount).toBe(0);
+  expect(runtime.listenerCount("acquire")).toBe(0);
+  expect(runtime.listenerCount("release")).toBe(0);
+  expect(fixtureCancellations.size).toBe(0);
+}
+
+interface RuntimeOperations {
+  run<T>(start: () => Promise<T>): Promise<T>;
+  settle(): Promise<void>;
+  onCancel(cancel: () => void): void;
+}
+
+// Local to these serial fixtures: every barrier is released if any owning pool closes early.
+const fixtureCancellations = new Set<Set<() => void>>();
+
+async function withRuntimePool<T>(body: (runtime: Pool, operations: RuntimeOperations) => Promise<T>): Promise<T> {
   const runtime = await createRuntimeRolePool(pool, "semprec_data");
+  runtime.options.connectionTimeoutMillis = 2500;
+  runtime.options.statement_timeout = 5000;
+  const active = new Map<PoolClient, object>();
+  const clientErrors: unknown[] = [];
+  const onClientError = (error: Error) => clientErrors.push(error);
+  let closing = false;
+  const cancellations = new Set<() => void>();
+  fixtureCancellations.add(cancellations);
+  const destroy = (client: PoolClient, token: object) => {
+    if (active.get(client) !== token) return;
+    try {
+      client.release(true);
+    } catch (error) {
+      clientErrors.push(error);
+    }
+  };
+  const onAcquire = (client: PoolClient) => {
+    const token = {};
+    active.set(client, token);
+    client.on("error", onClientError);
+    // pg-pool 3.14 emits acquire before assigning release; defer until that stack returns.
+    if (closing) queueMicrotask(() => destroy(client, token));
+  };
+  const onRelease = (_error: Error | undefined, client: PoolClient) => {
+    active.delete(client);
+    client.removeListener("error", onClientError);
+  };
+  runtime.on("acquire", onAcquire);
+  runtime.on("release", onRelease);
+  const pending = new Set<Promise<void>>();
+  const operations: RuntimeOperations = {
+    run: <U>(start: () => Promise<U>): Promise<U> => {
+      const started = Promise.resolve().then(() => {
+        if (closing) throw new Error("Runtime fixture is closing");
+        return start();
+      });
+      const settled = started.then(
+        () => {},
+        () => {},
+      );
+      pending.add(settled);
+      void settled.then(() => pending.delete(settled));
+      return started;
+    },
+    settle: async () => {
+      while (pending.size > 0) await Promise.all([...pending]);
+    },
+    onCancel: (cancel) => {
+      if (closing) cancel();
+      else cancellations.add(cancel);
+    },
+  };
+  const work = Promise.resolve()
+    .then(() => body(runtime, operations))
+    .then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
   let outcome: { value: T } | { error: unknown };
   try {
-    outcome = { value: await body(runtime) };
+    outcome = await bounded(work, 12000);
   } catch (error) {
     outcome = { error };
   }
+  closing = true;
+  for (const cancel of cancellations) {
+    try {
+      cancel();
+    } catch (error) {
+      clientErrors.push(error);
+    }
+  }
+  if ("value" in outcome && (active.size > 0 || pending.size > 0 || runtime.waitingCount > 0)) {
+    clientErrors.push(new Error("Runtime body returned with owned work still pending"));
+  }
+  for (const [client, token] of active) destroy(client, token);
+  const end = runtime.end();
+  const waiting = (async () => {
+    const deadline = Date.now() + 4000;
+    while (runtime.waitingCount > 0) {
+      if (Date.now() >= deadline) throw new Error("Runtime pool waiters did not settle");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  })();
+  const cleanup = Promise.allSettled([end, work, operations.settle(), waiting]);
+  const removeListeners = () => {
+    runtime.removeListener("acquire", onAcquire);
+    runtime.removeListener("release", onRelease);
+    fixtureCancellations.delete(cancellations);
+  };
   try {
-    await bounded(runtime.end(), 10000);
+    const results = await bounded(cleanup, 10000);
+    for (const result of results) if (result.status === "rejected") clientErrors.push(result.reason);
+    const finished = await work;
+    if ("error" in finished && (!("error" in outcome) || finished.error !== outcome.error)) {
+      clientErrors.push(finished.error);
+    }
+    removeListeners();
   } catch (error) {
-    if ("error" in outcome)
-      throw new AggregateError([outcome.error, error], "Test and runtime cleanup failed", { cause: error });
-    throw error;
+    clientErrors.push(error);
+    // A failed watchdog must keep owning late arrivals until the actual cleanup settles.
+    void cleanup.then(removeListeners);
+  }
+  if (clientErrors.length) {
+    const errors = "error" in outcome ? [outcome.error, ...clientErrors] : clientErrors;
+    throw new AggregateError(errors, "Test and runtime cleanup failed", { cause: errors[0] });
   }
   if ("error" in outcome) throwFailure(outcome.error);
   return outcome.value;
@@ -122,6 +235,7 @@ function barrier() {
   const promise = new Promise<void>((done) => {
     resolve = done;
   });
+  for (const cancellations of fixtureCancellations) cancellations.add(resolve);
   return { promise, resolve };
 }
 
@@ -139,39 +253,9 @@ async function bounded<T>(promise: Promise<T>, milliseconds = 8000): Promise<T> 
   }
 }
 
-async function settleOwned<T>(promise: Promise<T>, getPid: () => number | undefined): Promise<T> {
-  let settled = false;
-  const tracked = promise.finally(() => {
-    settled = true;
-  });
-  try {
-    return await bounded(tracked);
-  } catch (initial) {
-    if (settled) throw initial;
-    let pid = getPid();
-    if (!pid) {
-      try {
-        await bounded(tracked);
-      } catch {
-        pid = getPid();
-      }
-    }
-    if (settled) throw initial;
-    const errors: unknown[] = [initial];
-    if (pid) {
-      try {
-        await bounded(pool.query("SELECT pg_terminate_backend($1::int)", [pid]));
-      } catch (error) {
-        errors.push(error);
-      }
-      try {
-        await bounded(tracked);
-      } catch (error) {
-        errors.push(error);
-      }
-    }
-    throw new AggregateError(errors, "Owned participant did not settle", { cause: initial });
-  }
+async function settleOwned<T>(promise: Promise<T>, _getPid: () => number | undefined): Promise<T> {
+  // The enclosing runtime-pool watchdog destroys only checked-out owned clients first.
+  return bounded(promise, 15000);
 }
 
 async function settleParticipants<T>(
@@ -203,12 +287,247 @@ async function waitBlocked(holderPid: number, competitorPid: number): Promise<vo
 describe("value link state on writes (issue #1516)", () => {
   beforeAll(() => {
     pool = getTestPool();
+    pool.options.connectionTimeoutMillis = 2500;
+    pool.options.statement_timeout = 5000;
+    pool.options.query_timeout = 7000;
     chokePoint = createChokePoint(pool);
   });
 
   beforeEach(async () => {
     await resetDatabase(pool);
   });
+
+  it("settles a client delivered after pool cleanup starts without running its transaction", async () => {
+    const tenant = await createTestTenant(pool);
+    const bodyError = new Error("forced body failure");
+    const verifying = barrier();
+    let delivered = false;
+    let transactionRan = false;
+    let operationSettled = false;
+    let observedPool: Pool | undefined;
+    await expect(
+      withRuntimePool(async (runtime, operations) => {
+        observedPool = runtime;
+        runtime.options.verify = (_client, done) => {
+          operations.onCancel(() =>
+            queueMicrotask(() => {
+              delivered = true;
+              done();
+            }),
+          );
+          verifying.resolve();
+        };
+        const operation = operations.run(() =>
+          runInTenant(tenant, () =>
+            withTransaction(runtime, async () => {
+              transactionRan = true;
+            }),
+          ),
+        );
+        void operation.then(
+          () => {
+            operationSettled = true;
+          },
+          () => {
+            operationSettled = true;
+          },
+        );
+        await bounded(verifying.promise);
+        throw bodyError;
+      }),
+    ).rejects.toBe(bodyError);
+    expect(delivered).toBe(true);
+    expect(operationSettled).toBe(true);
+    expect(transactionRan).toBe(false);
+    expectFixtureClosed(observedPool);
+  }, 30000);
+
+  it("preserves a body failure alongside an owned client cleanup error", async () => {
+    const tenant = await createTestTenant(pool);
+    const bodyError = new Error("body failure");
+    const clientError = new Error("owned client error");
+    let observed: unknown;
+    let observedPool: Pool | undefined;
+    try {
+      await withRuntimePool(async (runtime) => {
+        observedPool = runtime;
+        const client = await runInTenant(tenant, () => runtime.connect());
+        client.emit("error", clientError);
+        throw bodyError;
+      });
+    } catch (error) {
+      observed = error;
+    }
+    expect(observed).toBeInstanceOf(AggregateError);
+    if (!(observed instanceof AggregateError)) throw new Error("Expected cleanup errors");
+    expect(observed.errors).toEqual([bodyError, clientError]);
+    expect(observed.cause).toBe(bodyError);
+    expectFixtureClosed(observedPool);
+  }, 30000);
+
+  it("refuses success when the body leaves an owned client checked out", async () => {
+    const tenant = await createTestTenant(pool);
+    let observedPool: Pool | undefined;
+    await expect(
+      withRuntimePool(async (runtime) => {
+        observedPool = runtime;
+        await runInTenant(tenant, () => runtime.connect());
+        return "not a successful fixture";
+      }),
+    ).rejects.toMatchObject({ message: "Test and runtime cleanup failed" });
+    expectFixtureClosed(observedPool);
+  }, 30000);
+
+  it("settles a participant paused before its PID query when cleanup begins", async () => {
+    const tenant = await createTestTenant(pool);
+    const bodyError = new Error("cancel before PID");
+    let ranAfterPid = false;
+    let settled = false;
+    let observedPool: Pool | undefined;
+    await expect(
+      withRuntimePool(async (runtime, operations) => {
+        observedPool = runtime;
+        const started = barrier();
+        const release = barrier();
+        const participant = operations.run(() =>
+          runInTenant(tenant, () =>
+            withTransaction(runtime, async (client) => {
+              started.resolve();
+              await bounded(release.promise);
+              await client.query("SELECT pg_backend_pid()");
+              ranAfterPid = true;
+            }),
+          ),
+        );
+        void participant.then(
+          () => {
+            settled = true;
+          },
+          () => {
+            settled = true;
+          },
+        );
+        await bounded(started.promise);
+        throw bodyError;
+      }),
+    ).rejects.toBe(bodyError);
+    expect(settled).toBe(true);
+    expect(ranAfterPid).toBe(false);
+    expectFixtureClosed(observedPool);
+  }, 30000);
+
+  it("settles a real blocked contender and holder when fixture cleanup starts", async () => {
+    const tenant = await createTestTenant(pool);
+    const bodyError = new Error("stop blocked participants");
+    const acquired = barrier();
+    const release = barrier();
+    let holderPid: number | undefined;
+    let contenderPid: number | undefined;
+    let holderSettled = false;
+    let contenderSettled = false;
+    let progressSettled = false;
+    let observedPool: Pool | undefined;
+    let items: { databaseId: string; heldId: string; progressId: string } | undefined;
+    await expect(
+      withRuntimePool(async (runtime, operations) => {
+        observedPool = runtime;
+        const cp = createChokePoint(runtime);
+        const fx = await runInTenant(tenant, () => setup(cp));
+        const progressItem = await runInTenant(tenant, () =>
+          cp.createItem({ databaseId: fx.files.id, properties: { name: "independent" } }),
+        );
+        items = { databaseId: fx.files.id, heldId: fx.file.id, progressId: progressItem.id };
+        runtime.once("release", () => release.resolve());
+        const holder = operations.run(() =>
+          runInTenant(tenant, () =>
+            withTransaction(runtime, async (client) => {
+              holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              await updateItemWithClient(client, {
+                databaseId: fx.files.id,
+                itemId: fx.file.id,
+                propertiesPatch: { name: "held" },
+              });
+              acquired.resolve();
+              await bounded(release.promise);
+            }),
+          ),
+        );
+        void holder.then(
+          () => {
+            holderSettled = true;
+          },
+          () => {
+            holderSettled = true;
+          },
+        );
+        await bounded(acquired.promise);
+        const contenderStarted = barrier();
+        const contender = operations.run(() =>
+          runInTenant(tenant, () =>
+            withTransaction(runtime, async (client) => {
+              contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              contenderStarted.resolve();
+              await updateItemWithClient(client, {
+                databaseId: fx.files.id,
+                itemId: fx.file.id,
+                propertiesPatch: { name: "contender" },
+              });
+            }),
+          ),
+        );
+        void contender.then(
+          () => {
+            contenderSettled = true;
+          },
+          () => {
+            contenderSettled = true;
+          },
+        );
+        await bounded(contenderStarted.promise);
+        if (!holderPid || !contenderPid) throw new Error("Missing participant PID");
+        await waitBlocked(holderPid, contenderPid);
+        const progressStarted = barrier();
+        const progressRelease = barrier();
+        const progress = operations.run(() =>
+          runInTenant(tenant, () =>
+            withTransaction(runtime, async (client) => {
+              await updateItemWithClient(client, {
+                databaseId: fx.files.id,
+                itemId: progressItem.id,
+                propertiesPatch: { name: "progress" },
+              });
+              progressStarted.resolve();
+              await bounded(progressRelease.promise);
+            }),
+          ),
+        );
+        void progress.then(
+          () => {
+            progressSettled = true;
+          },
+          () => {
+            progressSettled = true;
+          },
+        );
+        await bounded(progressStarted.promise);
+        throw bodyError;
+      }),
+    ).rejects.toBe(bodyError);
+    expect(holderSettled).toBe(true);
+    expect(contenderSettled).toBe(true);
+    expect(progressSettled).toBe(true);
+    expectFixtureClosed(observedPool);
+    if (!items) throw new Error("Missing fixture items");
+    const resultItems = items;
+    expect(
+      (await runInTenant(tenant, () => chokePoint.getItem(resultItems.databaseId, resultItems.heldId)))?.properties
+        .name,
+    ).toBe("a.pdf");
+    expect(
+      (await runInTenant(tenant, () => chokePoint.getItem(resultItems.databaseId, resultItems.progressId)))?.properties
+        .name,
+    ).toBe("independent");
+  }, 30000);
 
   afterAll(async () => {
     await pool.end();
@@ -1562,7 +1881,7 @@ describe("value link state on writes (issue #1516)", () => {
       async (operation, state) => {
         const tenant = await createTestTenant(pool);
         await withRuntimePool(async (holderPool) =>
-          withRuntimePool(async (contenderPool) => {
+          withRuntimePool(async (contenderPool, operations) => {
             const cp = createChokePoint(holderPool);
             const fx = await runInTenant(tenant, () => setup(cp));
             const edge = {
@@ -1617,25 +1936,30 @@ describe("value link state on writes (issue #1516)", () => {
               );
               expect(edgeLock.rows[0]?.held).toBe(true);
               await expect(
-                runInTenant(tenant, () =>
-                  withTransaction(contenderPool, async (client) => {
-                    contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                    if (operation === "create")
-                      return createRelationWithClient(
-                        client,
-                        { ...edge, metadata: { contender: true } },
-                        VALUE_LINKS,
-                        SYSTEM_WRITER,
-                      );
-                    if (operation === "update")
-                      return updateRelationWithClient(
-                        client,
-                        { ...edge, metadata: { contender: true } },
-                        VALUE_LINKS,
-                        SYSTEM_WRITER,
-                      );
-                    return deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
-                  }),
+                bounded(
+                  operations.run(() =>
+                    runInTenant(tenant, () =>
+                      withTransaction(contenderPool, async (client) => {
+                        contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
+                          ?.pid;
+                        if (operation === "create")
+                          return createRelationWithClient(
+                            client,
+                            { ...edge, metadata: { contender: true } },
+                            VALUE_LINKS,
+                            SYSTEM_WRITER,
+                          );
+                        if (operation === "update")
+                          return updateRelationWithClient(
+                            client,
+                            { ...edge, metadata: { contender: true } },
+                            VALUE_LINKS,
+                            SYSTEM_WRITER,
+                          );
+                        return deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
+                      }),
+                    ),
+                  ),
                 ),
               ).rejects.toMatchObject(
                 state === "on" ? { status: 409, code: "value_link_busy" } : { status: 403, code: "owner_violation" },
@@ -1652,6 +1976,7 @@ describe("value link state on writes (issue #1516)", () => {
             } finally {
               release.resolve();
               try {
+                await operations.settle();
                 const outcome = await settleOwned(holder, () => holderPid);
                 requireSuccessful(outcome);
               } catch (error) {
@@ -1794,7 +2119,7 @@ describe("value link state on writes (issue #1516)", () => {
     it("keeps a caught NOWAIT failure rollback-only after savepoint recovery", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (holderPool) =>
-        withRuntimePool(async (contenderPool) => {
+        withRuntimePool(async (contenderPool, operations) => {
           contenderPool.options.max = 1;
           const cp = createChokePoint(holderPool);
           const fx = await runInTenant(tenant, () => setup(cp));
@@ -1862,42 +2187,47 @@ describe("value link state on writes (issue #1516)", () => {
             );
             expect(linkLock.rows[0]?.held).toBe(true);
             await expect(
-              runInTenant(tenant, () =>
-                withTransaction(contenderPool, async (client) => {
-                  competitorPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                  await updateItemWithClient(
-                    client,
-                    { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "before" } },
-                    { writer: USER },
-                  );
-                  await enqueueRollupRecompute(client, rollup.id, unrelated.id);
-                  const queued = await client.query<{ key: string }>(
-                    "SELECT key FROM graphile_worker.jobs WHERE key = $1",
-                    [jobKey],
-                  );
-                  expect(queued.rows).toEqual([{ key: jobKey }]);
-                  runAfterCommit(client, callback);
-                  await client.query("SAVEPOINT relation_busy");
-                  await expect(
-                    updateRelationWithClient(
-                      client,
-                      {
-                        relationPropertyId: fx.projectsProperty.id,
-                        callerItemId: fx.file.id,
-                        targetItemId: fx.beta.id,
-                        metadata: {},
-                      },
-                      VALUE_LINKS,
-                      SYSTEM_WRITER,
-                    ),
-                  ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
-                  await client.query("ROLLBACK TO SAVEPOINT relation_busy");
-                  await updateItemWithClient(
-                    client,
-                    { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "after" } },
-                    { writer: USER },
-                  );
-                }),
+              bounded(
+                operations.run(() =>
+                  runInTenant(tenant, () =>
+                    withTransaction(contenderPool, async (client) => {
+                      competitorPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
+                        ?.pid;
+                      await updateItemWithClient(
+                        client,
+                        { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "before" } },
+                        { writer: USER },
+                      );
+                      await enqueueRollupRecompute(client, rollup.id, unrelated.id);
+                      const queued = await client.query<{ key: string }>(
+                        "SELECT key FROM graphile_worker.jobs WHERE key = $1",
+                        [jobKey],
+                      );
+                      expect(queued.rows).toEqual([{ key: jobKey }]);
+                      runAfterCommit(client, callback);
+                      await client.query("SAVEPOINT relation_busy");
+                      await expect(
+                        updateRelationWithClient(
+                          client,
+                          {
+                            relationPropertyId: fx.projectsProperty.id,
+                            callerItemId: fx.file.id,
+                            targetItemId: fx.beta.id,
+                            metadata: {},
+                          },
+                          VALUE_LINKS,
+                          SYSTEM_WRITER,
+                        ),
+                      ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
+                      await client.query("ROLLBACK TO SAVEPOINT relation_busy");
+                      await updateItemWithClient(
+                        client,
+                        { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "after" } },
+                        { writer: USER },
+                      );
+                    }),
+                  ),
+                ),
               ),
             ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
             expect(holderPid).toBeTypeOf("number");
@@ -1934,6 +2264,7 @@ describe("value link state on writes (issue #1516)", () => {
           } finally {
             release.resolve();
             try {
+              await operations.settle();
               const result = await settleOwned(holder, () => holderPid);
               requireSuccessful(result);
             } catch (error) {
@@ -1950,7 +2281,7 @@ describe("value link state on writes (issue #1516)", () => {
     it("rolls back all earlier and later writes when caught advisory busy reaches the transaction owner", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (holderPool) =>
-        withRuntimePool(async (contenderPool) => {
+        withRuntimePool(async (contenderPool, operations) => {
           const cp = createChokePoint(holderPool);
           const fx = await runInTenant(tenant, () => setup(cp));
           const unrelated = await runInTenant(tenant, () =>
@@ -2020,39 +2351,44 @@ describe("value link state on writes (issue #1516)", () => {
           try {
             await bounded(held.promise);
             await expect(
-              runInTenant(tenant, () =>
-                withTransaction(contenderPool, async (client) => {
-                  competitorPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                  await updateItemWithClient(
-                    client,
-                    { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "before" } },
-                    { writer: USER },
-                  );
-                  await enqueueRollupRecompute(client, rollup.id, unrelated.id);
-                  const queued = await client.query<{ key: string }>(
-                    "SELECT key FROM graphile_worker.jobs WHERE key = $1",
-                    [jobKey],
-                  );
-                  expect(queued.rows).toEqual([{ key: jobKey }]);
-                  runAfterCommit(client, callback);
-                  await expect(
-                    createRelationWithClient(
-                      client,
-                      {
-                        relationPropertyId: fx.projectsProperty.id,
-                        callerItemId: fx.file.id,
-                        targetItemId: fx.beta.id,
-                      },
-                      VALUE_LINKS,
-                      SYSTEM_WRITER,
-                    ),
-                  ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
-                  await updateItemWithClient(
-                    client,
-                    { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "after" } },
-                    { writer: USER },
-                  );
-                }),
+              bounded(
+                operations.run(() =>
+                  runInTenant(tenant, () =>
+                    withTransaction(contenderPool, async (client) => {
+                      competitorPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
+                        ?.pid;
+                      await updateItemWithClient(
+                        client,
+                        { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "before" } },
+                        { writer: USER },
+                      );
+                      await enqueueRollupRecompute(client, rollup.id, unrelated.id);
+                      const queued = await client.query<{ key: string }>(
+                        "SELECT key FROM graphile_worker.jobs WHERE key = $1",
+                        [jobKey],
+                      );
+                      expect(queued.rows).toEqual([{ key: jobKey }]);
+                      runAfterCommit(client, callback);
+                      await expect(
+                        createRelationWithClient(
+                          client,
+                          {
+                            relationPropertyId: fx.projectsProperty.id,
+                            callerItemId: fx.file.id,
+                            targetItemId: fx.beta.id,
+                          },
+                          VALUE_LINKS,
+                          SYSTEM_WRITER,
+                        ),
+                      ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
+                      await updateItemWithClient(
+                        client,
+                        { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "after" } },
+                        { writer: USER },
+                      );
+                    }),
+                  ),
+                ),
               ),
             ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
             expect(holderPid).toBeTypeOf("number");
@@ -2068,6 +2404,7 @@ describe("value link state on writes (issue #1516)", () => {
           } finally {
             release.resolve();
             try {
+              await operations.settle();
               const result = await settleOwned(settledHolder, () => holderPid);
               requireSuccessful(result);
             } catch (error) {
@@ -2707,8 +3044,8 @@ describe("value link state on writes (issue #1516)", () => {
         if (kind === "transformed") await seedSystem(pool);
         const tenant = kind === "transformed" ? getTenantZeroId() : await createTestTenant(pool);
         const otherTenant = await createTestTenant(pool);
-        await withRuntimePool(async (userPool) =>
-          withRuntimePool(async (systemPool) => {
+        await withRuntimePool(async (userPool, userOperations) =>
+          withRuntimePool(async (systemPool, systemOperations) => {
             const cp = createChokePoint(userPool);
             const fx = await runInTenant(tenant, async () => {
               if (kind === "plain") return setup(cp);
@@ -2805,9 +3142,9 @@ describe("value link state on writes (issue #1516)", () => {
             setInvalidationHook((event) => events.push(event));
             try {
               if (order === "user-first") {
-                user = run("user");
+                user = userOperations.run(() => run("user"));
                 await bounded(userHeld.promise);
-                system = run("system");
+                system = systemOperations.run(() => run("system"));
                 await bounded(systemStarted.promise);
                 if (!userPid || !systemPid) throw new Error("Missing participant PID");
                 await waitBlocked(userPid, systemPid);
@@ -2820,29 +3157,37 @@ describe("value link state on writes (issue #1516)", () => {
                 releaseUser.resolve();
                 releaseSystem.resolve();
               } else {
-                system = run("system");
+                system = systemOperations.run(() => run("system"));
                 await bounded(systemHeld.promise);
                 await bounded(
-                  runInTenant(tenant, () =>
-                    cp.updateItem(
-                      { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "progress" } },
-                      undefined,
-                      undefined,
-                      USER,
+                  userOperations.run(() =>
+                    runInTenant(tenant, () =>
+                      cp.updateItem(
+                        { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "progress" } },
+                        undefined,
+                        undefined,
+                        USER,
+                      ),
                     ),
                   ),
                 );
                 await bounded(
-                  runInTenant(otherTenant, () =>
-                    cp.updateItem(
-                      { databaseId: foreign.files.id, itemId: foreign.file.id, propertiesPatch: { name: "progress" } },
-                      undefined,
-                      undefined,
-                      USER,
+                  userOperations.run(() =>
+                    runInTenant(otherTenant, () =>
+                      cp.updateItem(
+                        {
+                          databaseId: foreign.files.id,
+                          itemId: foreign.file.id,
+                          propertiesPatch: { name: "progress" },
+                        },
+                        undefined,
+                        undefined,
+                        USER,
+                      ),
                     ),
                   ),
                 );
-                user = run("user");
+                user = userOperations.run(() => run("user"));
                 await bounded(userStarted.promise);
                 if (!userPid || !systemPid) throw new Error("Missing participant PID");
                 await waitBlocked(systemPid, userPid);
@@ -2892,6 +3237,8 @@ describe("value link state on writes (issue #1516)", () => {
             } finally {
               releaseUser.resolve();
               releaseSystem.resolve();
+              await userOperations.settle();
+              await systemOperations.settle();
               const cleanupErrors = await settleParticipants(
                 user,
                 system,
