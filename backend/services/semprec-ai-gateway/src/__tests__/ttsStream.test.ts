@@ -1,5 +1,5 @@
 import { createServer, request, type ClientRequest, type IncomingMessage, type Server } from "node:http";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { seedSystem } from "@semprec/data";
 import { getTestPool, resetDatabase, getTenantZeroId, setTenantAiBudget } from "@semprec/data/testSupport";
@@ -185,7 +185,6 @@ describe("POST /internal/tts/stream", () => {
     provider.release();
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    vi.restoreAllMocks();
   });
 
   afterAll(async () => {
@@ -427,20 +426,31 @@ describe("POST /internal/tts/stream", () => {
   });
 
   it("never writes the synthesized text to the logs", async () => {
-    const spies = [
-      vi.spyOn(logger, "info"),
-      vi.spyOn(logger, "warn"),
-      vi.spyOn(logger, "error"),
-      vi.spyOn(logger, "debug"),
-    ];
-    provider.failure = new AudioProviderCallError("boom");
-    await startServer(provider);
-
-    const failed = await open({ text: SECRET_TEXT, voice: "alloy" });
-    await readAll(failed.res);
-
-    const logged = spies.flatMap((spy) => spy.mock.calls.map((call) => JSON.stringify(call)));
-    expect(logged.length).toBeGreaterThan(0);
-    expect(logged.join("\n")).not.toContain(SECRET_TEXT);
+    const symbol = Reflect.ownKeys(logger).find((key) => typeof key === "symbol" && key.description === "pino.stream");
+    if (typeof symbol !== "symbol") throw new Error("Pino logger destination is unavailable");
+    const stream: unknown = Reflect.get(logger, symbol);
+    if (typeof stream !== "object" || stream === null) throw new Error("Invalid Pino logger destination");
+    const original: unknown = Reflect.get(stream, "write");
+    if (typeof original !== "function") throw new Error("Invalid Pino destination writer");
+    const descriptor = Object.getOwnPropertyDescriptor(stream, "write");
+    const chunks: string[] = [];
+    if (
+      !Reflect.set(stream, "write", function (this: unknown, ...args: unknown[]) {
+        if (typeof args[0] === "string") chunks.push(args[0]);
+        return Reflect.apply(original, this, args);
+      })
+    )
+      throw new Error("Cannot observe Pino destination");
+    try {
+      provider.failure = new AudioProviderCallError(SECRET_TEXT);
+      await startServer(provider);
+      const failed = await open({ text: SECRET_TEXT, voice: "alloy" });
+      await readAll(failed.res);
+      expect(chunks.join("\n")).toContain("Speech provider call failed");
+      expect(chunks.join("\n")).not.toContain(SECRET_TEXT);
+    } finally {
+      if (descriptor) Object.defineProperty(stream, "write", descriptor);
+      else Reflect.deleteProperty(stream, "write");
+    }
   });
 });
