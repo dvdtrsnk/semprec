@@ -533,16 +533,16 @@ describe("POST /internal/complete", () => {
           });
           req.on("error", reject);
           let offset = 0;
-          const limit = 8 * 1024 * 1024 + 64 * 1024;
           const writeMore = (): void => {
-            while (offset < limit && !received) {
+            while (offset < body.length && !received && !req.destroyed) {
               const slice = body.slice(offset, offset + 64 * 1024);
               offset += slice.length;
               if (!req.write(slice)) {
-                req.once("drain", writeMore);
+                req.once("drain", () => setImmediate(writeMore));
                 return;
               }
             }
+            if (offset === body.length && !received && !req.destroyed) req.end();
           };
           writeMore();
         },
@@ -687,6 +687,113 @@ describe("POST /internal/complete", () => {
       },
       15000,
     );
+
+    it.each(["end", "close", "abort", "error"] as const)(
+      "removes the rejected request timer and owned listeners on %s",
+      async (mode) => {
+        const provider = new FakeProvider();
+        startServer(provider);
+        await listen();
+        const setTimer = vi.spyOn(globalThis, "setTimeout");
+        const clearTimer = vi.spyOn(globalThis, "clearTimeout");
+        let incomingRequest: import("node:http").IncomingMessage | undefined;
+        let installed = false;
+        let observed = false;
+        server.prependOnceListener("request", (incoming, response) => {
+          incomingRequest = incoming;
+          vi.spyOn(response, "end").mockImplementation(() => response);
+          incoming.on("newListener", (event: unknown, listener: unknown) => {
+            if (event === "data" && typeof listener === "function" && listener.name === "onData") installed = true;
+          });
+          incoming.on(mode === "abort" ? "aborted" : mode, () => {
+            observed = true;
+          });
+        });
+        const req = request(new URL("/internal/complete", baseUrl), {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "content-length": 9 * 1024 * 1024,
+            authorization: "Bearer test-internal-token",
+            "x-semprec-tenant-id": getTenantZeroId(),
+          },
+        });
+        req.on("error", () => undefined);
+        try {
+          const chunk = Buffer.alloc(64 * 1024, 0x61);
+          const limit = mode === "end" ? 9 * 1024 * 1024 : 8 * 1024 * 1024 + 64 * 1024;
+          let written = 0;
+          const writeMore = (): void => {
+            while (written < limit && !req.destroyed) {
+              written += chunk.length;
+              if (!req.write(chunk)) {
+                req.once("drain", writeMore);
+                return;
+              }
+            }
+            if (mode === "end" && !req.destroyed) req.end();
+          };
+          writeMore();
+          await waitFor(() => installed && incomingRequest !== undefined);
+          const incoming = incomingRequest;
+          if (!incoming) throw new Error("Missing request");
+          const timerIndex = setTimer.mock.calls.findIndex((args) => args[1] === 2000);
+          const timerResult = setTimer.mock.results[timerIndex];
+          if (!timerResult || timerResult.type !== "return") throw new Error("Missing rejection timer");
+          if (mode === "abort") req.destroy();
+          if (mode === "close") incoming.destroy();
+          if (mode === "error") incoming.emit("error", new Error("owned request error"));
+          await waitFor(() => observed);
+          await waitFor(() =>
+            ["data", "end", "close", "aborted", "error"].every((event) =>
+              incoming.listeners(event).every((listener) => listener.name !== "onData" && listener.name !== "dispose"),
+            ),
+          );
+          expect(clearTimer).toHaveBeenCalledWith(timerResult.value);
+          expect(provider.calls).toHaveLength(0);
+          expect((await pool.query("SELECT 1 FROM ai_gateway_calls")).rowCount).toBe(0);
+        } finally {
+          req.destroy();
+          incomingRequest?.destroy();
+          setTimer.mockRestore();
+          clearTimer.mockRestore();
+        }
+      },
+      15000,
+    );
+
+    it("does not attempt a response for an already closed request", async () => {
+      const provider = new FakeProvider();
+      startServer(provider);
+      await listen();
+      let writes = 0;
+      server.prependOnceListener("request", (incoming, response) => {
+        vi.spyOn(response, "writeHead").mockImplementation(() => {
+          writes += 1;
+          return response;
+        });
+        incoming.destroy();
+      });
+      await new Promise<void>((resolve, reject) => {
+        const req = request(new URL("/internal/complete", baseUrl), {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "content-length": 9 * 1024 * 1024,
+            authorization: "Bearer test-internal-token",
+            "x-semprec-tenant-id": getTenantZeroId(),
+          },
+        });
+        req.setTimeout(5000, () => reject(new Error("Closed request did not settle")));
+        req.once("error", () => resolve());
+        req.once("response", () => reject(new Error("Unexpected response on a closed request")));
+        req.write("{");
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(writes).toBe(0);
+      expect(provider.calls).toHaveLength(0);
+      expect((await pool.query("SELECT 1 FROM ai_gateway_calls")).rowCount).toBe(0);
+    });
 
     it("still answers 413 for a text-only body above 1 MiB", async () => {
       const provider = new FakeProvider();
