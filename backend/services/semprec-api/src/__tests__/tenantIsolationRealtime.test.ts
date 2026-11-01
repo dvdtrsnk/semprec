@@ -9,6 +9,9 @@ import { WebSocket, type RawData } from "ws";
 import * as Y from "yjs";
 import {
   createAgentRun,
+  createPendingApprovalRequest,
+  decideAndEnqueueApprovalRequest,
+  getNotificationById,
   createChokePoint,
   createDocStore,
   createUser,
@@ -854,6 +857,90 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
 
   afterEach(() => {
     for (const socket of [a1, a2, b1]) socket?.close();
+  });
+
+  it("delivers committed approval resolution to its user's sockets, with no replay or rollback event", async () => {
+    async function createApprovalNotification(): Promise<{ requestId: string; notificationId: string }> {
+      const request = await runInTenant(tenantA.tenantId, () =>
+        createPendingApprovalRequest(pool, {
+          agentRunId: tenantA.runId,
+          toolName: "search",
+          riskClass: "write",
+          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+        }),
+      );
+      const notificationId = await runInTenant(tenantA.tenantId, () =>
+        withTransaction(pool, (client) =>
+          writeNotification(client, {
+            userId: tenantA.userId,
+            kind: "approval_pending",
+            linkHref: null,
+            sourceTable: "approval_requests",
+            sourceId: request.id,
+            transitionInstance: "pending",
+          }),
+        ),
+      );
+      const matches = (frame: Frame) =>
+        frame.kind === "text" &&
+        frame.type === "notification" &&
+        isRecord(frame.body.notification) &&
+        frame.body.notification.id === notificationId;
+      await Promise.all([a1.nextMatching(matches), a2.nextMatching(matches)]);
+      await expectNothingReceived(b1, tenantB.tenantId);
+      return { requestId: request.id, notificationId };
+    }
+    async function noMoreForA(): Promise<void> {
+      const sentinel = await publishSentinel(tenantA.tenantId);
+      const drained = await Promise.all([a1.drainUntil(isSentinel(sentinel)), a2.drainUntil(isSentinel(sentinel))]);
+      expect(drained).toEqual([[], []]);
+    }
+    async function decideOverHttp(id: string): Promise<Response> {
+      return fetch(`${baseUrl}/api/approval-requests/${id}`, {
+        method: "PATCH",
+        headers: { Cookie: a1Cookie, Origin: baseUrl, "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: "rejected" }),
+      });
+    }
+    const first = await createApprovalNotification();
+    expect((await decideOverHttp(first.requestId)).status).toBe(200);
+    const matchesResolved = (frame: Frame) =>
+      frame.kind === "text" &&
+      frame.type === "notification" &&
+      isRecord(frame.body.notification) &&
+      frame.body.notification.id === first.notificationId;
+    const frames = await Promise.all([a1.nextMatching(matchesResolved), a2.nextMatching(matchesResolved)]);
+    for (const frame of frames) {
+      expect(frame).toMatchObject({
+        body: {
+          notification: { id: first.notificationId, readAt: expect.any(String), resolvedAt: expect.any(String) },
+        },
+      });
+    }
+    await expectNothingReceived(b1, tenantB.tenantId);
+    expect((await decideOverHttp(first.requestId)).status).toBe(200);
+    await noMoreForA();
+    await expectNothingReceived(b1, tenantB.tenantId);
+
+    const rollback = await createApprovalNotification();
+    await expect(
+      runInTenant(tenantA.tenantId, () =>
+        withTransaction(pool, async (client) => {
+          const result = await decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: rollback.requestId,
+            decidedByUserId: tenantA.userId,
+            decision: "rejected",
+          });
+          expect(result?.outcome).toBe("decided");
+          throw new Error("intentional rollback");
+        }),
+      ),
+    ).rejects.toThrow("intentional rollback");
+    const unchanged = await runInTenant(tenantA.tenantId, () => getNotificationById(pool, rollback.notificationId));
+    expect(unchanged).toMatchObject({ readAt: null, resolvedAt: null });
+    await noMoreForA();
+    await expectNothingReceived(b1, tenantB.tenantId);
   });
 
   describe("NOTIFY messages on semprec_events", () => {

@@ -72,7 +72,7 @@ describe("notificationsStore (issue #152)", () => {
   }
 
   describe("listUnreadNotificationsForUser", () => {
-    it.each([null, [], "invalid", 1])("refuses a malformed stored payload %j", async (payload) => {
+    it.each([[null], [[]], ["invalid"], [1]])("refuses a malformed stored payload %j", async (payload) => {
       const userId = await createTestUser();
       await writeTestNotification(userId, "payload-test");
       const [row] = await listUnreadNotificationsForUser(pool, userId);

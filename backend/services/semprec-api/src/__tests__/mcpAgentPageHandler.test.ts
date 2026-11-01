@@ -2,7 +2,15 @@ import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
+import {
+  createTestProjectItem,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+  tenantForNextTestUser,
+} from "@semprec/data/testSupport";
+import { CAPABILITY_IDS, runInTenant } from "@semprec/shared";
+import { createGenericOperationGateway } from "@semprec/application";
 import {
   createViewTypeRegistry,
   seedSystem,
@@ -14,8 +22,11 @@ import {
   login,
   recordMcpConnectionFailure,
   recordMcpConnectionSuccess,
+  mintMcpRunCredential,
+  resolveMcpRunCredential,
 } from "@semprec/data";
 import { createMcpAgentPageRequestListener } from "../mcpAgentPageHandler.js";
+import { createMcpRequestListener } from "../mcp/mcpHandler.js";
 
 const PASSWORD = "s3cret-password";
 
@@ -328,6 +339,56 @@ describe("createMcpAgentPageRequestListener", () => {
       expect(await listedLabel(headers)).toBe("Read");
     });
 
+    it("accepts a human label change but refuses a valid MCP run credential", async () => {
+      const id = await registerTool();
+      const tenantId = getTenantZeroId();
+      const email = `${randomUUID()}@example.com`;
+      const user = await createUser(pool, { tenantId, email, passwordHash: await hashPassword(PASSWORD) });
+      const session = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+      const humanHeaders = { Authorization: `Bearer ${session.token}` };
+      expect((await patchLabel(humanHeaders, id, { en: "Human label" })).status).toBe(200);
+      const projectItemId = await runInTenant(tenantId, () => createTestProjectItem(pool));
+      const minted = await runInTenant(tenantId, () =>
+        withTransaction(pool, (client) =>
+          mintMcpRunCredential(client, { projectItemId, userId: user.id, capabilities: [...CAPABILITY_IDS] }),
+        ),
+      );
+      expect((await resolveMcpRunCredential(pool, minted.token))?.runId).toBe(minted.run.id);
+      expect((await patchLabel({ Authorization: `Bearer ${minted.token}` }, id, { en: "Agent label" })).status).toBe(
+        401,
+      );
+      expect(await listedLabel(humanHeaders)).toBe("Human label");
+
+      const gateway = createGenericOperationGateway(pool, {
+        resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
+      });
+      const mcp = createServer(createMcpRequestListener(pool, gateway, new Set(CAPABILITY_IDS)));
+      await new Promise<void>((resolve) => mcp.listen(0, resolve));
+      try {
+        const address = mcp.address();
+        if (!address || typeof address === "string") throw new Error("Missing MCP listener address");
+        const response = await fetch(`http://127.0.0.1:${address.port}/mcp`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${minted.token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: {
+              name: "semprec.mcpToolRegistration.patch",
+              arguments: { id, displayLabel: { en: "Agent label" } },
+            },
+          }),
+        });
+        expect(response.status).toBe(200);
+        const body: unknown = await response.json();
+        expect(body).toMatchObject({ error: { code: -32601 } });
+        expect(await listedLabel(humanHeaders)).toBe("Human label");
+      } finally {
+        await new Promise<void>((resolve, reject) => mcp.close((err) => (err ? reject(err) : resolve())));
+      }
+    });
+
     it.each([
       ["a non-object", "text"],
       ["an array", ["x"]],
@@ -350,6 +411,22 @@ describe("createMcpAgentPageRequestListener", () => {
       const body: unknown = await res.json();
       expect(body).toMatchObject({ error: expect.stringContaining("displayLabel") });
     });
+
+    it.each([[null], [[]], ["invalid"], [42]])(
+      "rejects a non-object registration PATCH body %j without changing the label",
+      async (body) => {
+        const id = await registerTool();
+        const headers = await authHeader();
+        expect((await patchLabel(headers, id, { en: "Original" })).status).toBe(200);
+        const response = await fetch(`${baseUrl}/api/mcp-tool-registrations/${id}`, {
+          method: "PATCH",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        expect(response.status).toBe(400);
+        expect(await listedLabel(headers)).toBe("Original");
+      },
+    );
   });
 
   describe("non-UUID path ids", () => {
