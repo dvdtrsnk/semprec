@@ -928,9 +928,11 @@ describe("value link state on writes (issue #1516)", () => {
     it.each([
       ["timeFrom", "missing"],
       ["timeFrom", "broken"],
+      ["timeFrom", "on"],
       ["timeTo", "missing"],
       ["timeTo", "broken"],
-    ] as const)("rejects a date-off Tasks transform when the %s link is %s", async (missingKey, state) => {
+      ["timeTo", "on"],
+    ] as const)("enforces date-off Tasks handoff when the %s link is %s", async (missingKey, state) => {
       await seedSystem(pool);
       const tenant = getTenantZeroId();
       await withRuntimePool(async (runtime) => {
@@ -947,50 +949,92 @@ describe("value link state on writes (issue #1516)", () => {
           for (const propertyKey of ["date", "timeFrom", "timeTo"].filter((key) => key !== missingKey)) {
             await insertValueLink(client, { itemId: task.id, propertyKey, ruleKey: "test", sources: [] });
           }
-          if (state === "broken") {
+          if (state !== "missing") {
             await insertValueLink(client, {
               itemId: task.id,
               propertyKey: missingKey,
               ruleKey: "test",
-              state: "broken",
-              brokenBy: "user",
-              brokenAt: new Date("2026-01-01T00:00:00Z"),
               sources: [],
+              ...(state === "broken"
+                ? { state: "broken" as const, brokenBy: "user" as const, brokenAt: new Date("2026-01-01T00:00:00Z") }
+                : {}),
             });
           }
         });
+        const heartbeat = await withTenantTransaction(runtime, tenant, async (client) => {
+          const project = await client.query<{ id: string }>(
+            "SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id WHERE d.key = 'projects' LIMIT 1",
+          );
+          if (!project.rows[0]) throw new Error("Missing seeded project");
+          return schedulerStore.createHeartbeat(client, {
+            projectItemId: project.rows[0].id,
+            name: "Dated date-off probe",
+            rule: { kind: "onItemEvent", databaseId: task.databaseId, event: "update" },
+            actionId: "noop",
+          });
+        });
+        const jobKey = schedulerStore.heartbeatFireJobKey(heartbeat.id, task.id);
+        const readJobs = () =>
+          pool.query<{ key: string | null; locked_at: Date | null; attempts: number; max_attempts: number }>(
+            "SELECT key, locked_at, attempts, max_attempts FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
+          );
+        const beforeJobs = (await readJobs()).rows;
+        expect(beforeJobs.some((row) => row.key === jobKey)).toBe(false);
         const beforeItem = await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id));
         const beforeStoredItem = await readStoredItem(runtime, tenant, task.databaseId, task.id);
         const beforeLinks = await readStoredLinks(runtime, tenant, task.id);
         const events: InvalidationEvent[] = [];
+        const enqueue = vi.spyOn(queue, "enqueueJob");
         setInvalidationHook((event) => events.push(event));
         try {
-          await expect(
+          let writeClient: PoolClient | undefined;
+          const write = () =>
             runInTenant(tenant, () =>
-              withTransaction(runtime, (client) =>
-                updateItemWithClient(
+              withTransaction(runtime, (client) => {
+                writeClient = client;
+                return updateItemWithClient(
                   client,
                   { databaseId: task.databaseId, itemId: task.id, propertiesPatch: { date: null } },
                   { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
-                ),
-              ),
-            ),
-          ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-          expect(events).toEqual([]);
+                );
+              }),
+            );
+          if (state === "on") {
+            const result = await write();
+            expect(result.properties).toMatchObject({ date: null, timeFrom: null, timeTo: null, time: null });
+            expect((await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id)))?.properties).toMatchObject({
+              date: null,
+              timeFrom: null,
+              timeTo: null,
+              time: null,
+            });
+            expect((await readJobs()).rows).toContainEqual({
+              key: jobKey,
+              locked_at: null,
+              attempts: 0,
+              max_attempts: 3,
+            });
+            expect(writeClient).toBeDefined();
+            expect(enqueue).toHaveBeenCalledWith(
+              writeClient,
+              queue.CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE,
+              { heartbeatId: heartbeat.id, itemId: task.id },
+              expect.objectContaining({ jobKey }),
+            );
+            expect(events).toEqual([expect.objectContaining({ scope: "item", itemId: task.id, op: "update" })]);
+          } else {
+            await expect(write()).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+            expect(await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id))).toEqual(beforeItem);
+            expect(await readStoredItem(runtime, tenant, task.databaseId, task.id)).toEqual(beforeStoredItem);
+            expect((await readJobs()).rows).toEqual(beforeJobs);
+            expect(enqueue).not.toHaveBeenCalled();
+            expect(events).toEqual([]);
+          }
+          expect(await readStoredLinks(runtime, tenant, task.id)).toEqual(beforeLinks);
         } finally {
+          enqueue.mockRestore();
           setInvalidationHook(() => {});
         }
-        expect(await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id))).toEqual(beforeItem);
-        expect(await readStoredItem(runtime, tenant, task.databaseId, task.id)).toEqual(beforeStoredItem);
-        expect(await readStoredLinks(runtime, tenant, task.id)).toEqual(beforeLinks);
-        const links = await withTenantTransaction(runtime, tenant, (client) =>
-          listValueLinksByItemIds(client, [task.id]),
-        );
-        expect(links.map((entry) => [entry.propertyKey, entry.state])).toEqual(
-          ["date", "timeFrom", "timeTo"]
-            .filter((key) => state !== "missing" || key !== missingKey)
-            .map((key) => [key, key === missingKey ? "broken" : "on"]),
-        );
       });
     });
 

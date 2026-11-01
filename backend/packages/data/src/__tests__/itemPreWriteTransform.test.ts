@@ -456,6 +456,7 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
         propertiesPatch: { timeFrom: "9:00" },
       });
       expect(updated.properties.timeFrom).toBe("09:00");
+      expect(events).toEqual([expect.objectContaining({ scope: "item", op: "update", databaseId, itemId: first.id })]);
       expect((await readJob(first.id)).rows).toEqual([
         { key: job(first.id), locked_at: null, attempts: 0, max_attempts: 3 },
       ]);

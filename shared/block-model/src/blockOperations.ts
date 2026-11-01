@@ -14,11 +14,13 @@ import {
 
 /**
  * Multi-block edits on the shared block model. Every function validates against the current
- * state first, so a refusal changes nothing, then performs all its changes in exactly one
- * `doc.transact` carrying the optional `origin`. Within that transaction `order` is tidied:
+ * state first, so a refusal changes nothing. Successful nonempty operations perform their changes
+ * in one `doc.transact` carrying the optional `origin`; empty operations do not write. Within that
+ * transaction `order` is tidied:
  * repeated ids keep their first occurrence, ids without a block are dropped and blocks missing
  * from `order` are appended in ascending id order, which is the order readers already see.
- * Nothing here touches the database; blocks of type `page` need database work and are refused.
+ * Nothing here touches the database. Page blocks can be inserted, moved and deleted; operations
+ * that convert, split, merge or duplicate a page block refuse it.
  */
 
 export type BlockOperationErrorCode =
