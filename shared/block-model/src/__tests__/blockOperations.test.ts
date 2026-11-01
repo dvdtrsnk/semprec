@@ -94,6 +94,15 @@ describe("insertBlocks", () => {
     expectCode(() => insertBlocks(new Y.Doc(), "x", [{ type: "text" }]), "invalid_after_id");
   });
 
+  it("validates every block before mutating a bulk insert", () => {
+    const doc = docWith({ id: "a", type: "text", text: "unchanged" });
+    const before = Y.encodeStateAsUpdate(doc);
+    expect(() => insertBlocks(doc, "a", [{ id: "new", type: "text" }, { id: "bad", type: "page" }])).toThrow(
+      BlockInputError,
+    );
+    expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
+  });
+
   it("keeps both blocks in the same order after concurrent inserts after the same block", () => {
     const a = docWith({ id: "base", type: "text" });
     const b = clone(a);
