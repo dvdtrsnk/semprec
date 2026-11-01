@@ -28,6 +28,7 @@ import * as valueLinksStore from "../chokePoint/valueLinksStore.js";
 import * as inboxSourceGuard from "../inbox/inboxSourceGuard.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
+import * as relationsStore from "../chokePoint/relationsStore.js";
 
 /** Issue #1516: user and agent writes end value links; the valueLinks process needs an `on` link. */
 const USER: WriterIdentity = { writerKind: "user" };
@@ -645,6 +646,130 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
+    it("diagnoses relation definition advisory and handoff lock ordering", async () => {
+      const tenant = await createTestTenant(pool);
+      await withRuntimePool(async (userPool) =>
+        withRuntimePool(async (systemPool) => {
+          const cp = createChokePoint(userPool);
+          const fx = await runInTenant(tenant, () => setup(cp));
+          await withTenantTransaction(userPool, tenant, (client) =>
+            insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+          );
+          const edgeHeld = barrier();
+          const linkHeld = barrier();
+          const releaseEdge = barrier();
+          const releaseLink = barrier();
+          let userClient: PoolClient | undefined;
+          let systemClient: PoolClient | undefined;
+          let userPid: number | undefined;
+          let systemPid: number | undefined;
+          const originalInsert = relationsStore.createItemRelationReportingInsert;
+          const originalLink = valueLinksStore.lockOnValueLink;
+          const edgeSpy = vi
+            .spyOn(relationsStore, "createItemRelationReportingInsert")
+            .mockImplementation(async (client, input) => {
+              const result = await originalInsert(client, input);
+              if (client === userClient) {
+                edgeHeld.resolve();
+                await bounded(releaseEdge.promise);
+              }
+              return result;
+            });
+          const linkSpy = vi.spyOn(valueLinksStore, "lockOnValueLink").mockImplementation(async (client, id, key) => {
+            const result = await originalLink(client, id, key);
+            if (client === systemClient && result) {
+              linkHeld.resolve();
+              await bounded(releaseLink.promise);
+            }
+            return result;
+          });
+          type Outcome = { ok: true } | { ok: false; error: unknown };
+          const run = (kind: "user" | "system"): Promise<Outcome> =>
+            runInTenant(tenant, () =>
+              withTransaction(kind === "user" ? userPool : systemPool, async (client) => {
+                await client.query("SET LOCAL statement_timeout = '7s'");
+                const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                if (!pid) throw new Error("Missing relation participant PID");
+                if (kind === "user") {
+                  userClient = client;
+                  userPid = pid;
+                } else {
+                  systemClient = client;
+                  systemPid = pid;
+                }
+                return createRelationWithClient(
+                  client,
+                  {
+                    relationPropertyId: fx.projectsProperty.id,
+                    callerItemId: fx.file.id,
+                    targetItemId: kind === "user" ? fx.alpha.id : fx.beta.id,
+                  },
+                  kind === "system" ? VALUE_LINKS : undefined,
+                  kind === "user" ? USER : SYSTEM_WRITER,
+                );
+              }),
+            ).then(
+              () => ({ ok: true }),
+              (error: unknown) => ({ ok: false, error }),
+            );
+          let user: Promise<Outcome> | undefined;
+          let system: Promise<Outcome> | undefined;
+          let failure: unknown;
+          try {
+            system = run("system");
+            await bounded(linkHeld.promise);
+            user = run("user");
+            await bounded(edgeHeld.promise);
+            if (!userPid || !systemPid) throw new Error("Missing relation participant PID");
+            releaseLink.resolve();
+            await waitBlocked(userPid, systemPid);
+            releaseEdge.resolve();
+            const outcomes = await bounded(Promise.all([user, system]));
+            console.info("Observed relation advisory cycle", { userPid, systemPid, outcomes });
+            expect(outcomes.filter((result) => result.ok)).toHaveLength(1);
+            expect(outcomes.filter((result) => !result.ok)).toMatchObject([{ error: { code: "40P01" } }]);
+            const links = await withTenantTransaction(userPool, tenant, (client) =>
+              listValueLinksByItemIds(client, [fx.file.id]),
+            );
+            expect(links[0]).toMatchObject(outcomes[0]?.ok ? { state: "broken", brokenBy: "user" } : { state: "on" });
+          } catch (error) {
+            failure = error;
+          } finally {
+            releaseEdge.resolve();
+            releaseLink.resolve();
+            const participants = [user, system].filter((value): value is Promise<Outcome> => value !== undefined);
+            const errors: unknown[] = [];
+            try {
+              await bounded(Promise.all(participants), 9000);
+            } catch (error) {
+              errors.push(error);
+              for (const pid of [userPid, systemPid])
+                if (pid) {
+                  try {
+                    await bounded(pool.query("SELECT pg_terminate_backend($1::int)", [pid]));
+                  } catch (error) {
+                    errors.push(error);
+                  }
+                }
+              try {
+                await bounded(Promise.all(participants));
+              } catch (error) {
+                errors.push(error);
+              }
+            }
+            edgeSpy.mockRestore();
+            linkSpy.mockRestore();
+            if (errors.length)
+              failure = new AggregateError(
+                failure === undefined ? errors : [failure, ...errors],
+                "Relation diagnostic cleanup failed",
+              );
+          }
+          if (failure !== undefined) throw failure;
+        }),
+      );
+    }, 30000);
+
     it.each(["system-first", "user-first"] as const)(
       "diagnoses the supported Inbox source and relation handoff with %s",
       async (order) => {
