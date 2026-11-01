@@ -387,6 +387,45 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     }
   });
 
+  it.each(["403 without header", "500", "network error", "provider error"])(
+    "closes a composed %s as modelError",
+    async (kind) => {
+      const gatewayServer = createServer((req, res) => {
+        req.resume();
+        req.on("end", () => {
+          if (kind === "network error") return res.destroy();
+          if (kind === "provider error") {
+            res.writeHead(200, { "content-type": "text/event-stream" });
+            res.end(
+              `data: ${JSON.stringify({ type: "error", reason: "error", errorMessage: "provider failure" })}\n\n`,
+            );
+            return;
+          }
+          res.writeHead(kind === "500" ? 500 : 403, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "refused" }));
+        });
+      });
+      await new Promise<void>((resolve) => gatewayServer.listen(0, "127.0.0.1", resolve));
+      try {
+        const { port } = gatewayServer.address() as AddressInfo;
+        const gateway = createGatewayModel({
+          AI_GATEWAY_BASE_URL: `http://127.0.0.1:${port}/internal/pi`,
+          AI_GATEWAY_INTERNAL_TOKEN: "test-token",
+          AGENT_MODEL: "test-model",
+        });
+        const projectItemId = await seededSemprecProjectItemId();
+        const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "test" });
+        const task = createAgentRunTask(pool, registry, gateway, createInFlightAgentRuns());
+        await expect(
+          runInTenant(getTenantZeroId(), () => task({ agentRunId: run.id }, { job: { id: "1" } })),
+        ).rejects.toThrow();
+        expect(await getAgentRun(pool, run.id)).toMatchObject({ status: "error", errorCode: "modelError" });
+      } finally {
+        await new Promise<void>((resolve, reject) => gatewayServer.close((err) => (err ? reject(err) : resolve())));
+      }
+    },
+  );
+
   it("writes nothing for a job naming a run that is no longer running", async () => {
     const projectItemId = await seededSemprecProjectItemId();
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "say hello" });

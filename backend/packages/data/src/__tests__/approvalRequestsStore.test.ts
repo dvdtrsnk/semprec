@@ -668,6 +668,11 @@ describe("approvalRequestsStore (issue #130)", () => {
         JSON.stringify(result),
       ]);
       expect((await getApprovalRequest(pool, request.id))?.executionResult).toEqual(result);
+      await pool.query(
+        "UPDATE approval_requests SET payload = jsonb_set(payload, '{operationName}', $2::jsonb) WHERE id = $1",
+        [request.id, JSON.stringify("legacy.retiredOperation")],
+      );
+      expect((await getApprovalRequest(pool, request.id))?.executionResult).toEqual(result);
     });
 
     it("rejects malformed payload discriminators and MCP fields before reading failure metadata", async () => {
@@ -680,7 +685,7 @@ describe("approvalRequestsStore (issue #130)", () => {
         [],
         "text",
         { operationName: 4 },
-        { operationName: "unknown" },
+        { operationName: "" },
         { mcpToolRegistrationId: "bad", mcpServerItemId: server, args: {} },
         { mcpToolRegistrationId: registration, mcpServerItemId: "bad", args: {} },
         { mcpToolRegistrationId: registration, mcpServerItemId: server, args: [] },

@@ -1,5 +1,5 @@
 import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
-import { GENERIC_OPERATION_NAMES, RISK_CLASSES, type RiskClass } from "@semprec/shared";
+import { RISK_CLASSES, type RiskClass } from "@semprec/shared";
 import { assertKnownValue, assertShape } from "../dbRowValidation.js";
 import type { ApprovalOutcomeKind } from "./approvalConflictReason.js";
 import { isMcpItemId, parseMcpInvokeFailure, type McpInvokeFailure } from "./mcpFailure.js";
@@ -189,10 +189,7 @@ function assertNullableString(value: unknown, column: string): string | null {
 function classifyOutcomePayload(value: unknown): "generic" | "mcp" {
   if (!isRecord(value)) throw new Error("Invalid approval outcome payload");
   if ("operationName" in value) {
-    if (
-      typeof value.operationName !== "string" ||
-      !GENERIC_OPERATION_NAMES.some((name) => name === value.operationName)
-    ) {
+    if (typeof value.operationName !== "string" || value.operationName.length === 0) {
       throw new Error("Invalid approval outcome payload");
     }
     return "generic";
