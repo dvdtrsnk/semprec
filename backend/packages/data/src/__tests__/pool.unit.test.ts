@@ -192,6 +192,60 @@ describe("withTransaction", () => {
     ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
   });
 
+  it.each(["40P01", "57014", "23505"])("preserves PostgreSQL %s from the protected body", async (code) => {
+    const { pool, query } = fakeClient({});
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes("current_setting('lock_timeout')")) return { rows: [{ setting: "0" }], rowCount: 1 };
+      if (sql.includes("FROM value_links")) return { rows: [{ exists: 1 }], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    });
+    const failure = new DatabaseError("database failure", 0, "error");
+    failure.code = code;
+    const input = { definitionId: "d", itemA: "a", itemB: "b", callerItemId: "a", propertyKey: "x", insert: false };
+    await expect(
+      withTransaction(pool, async (client) =>
+        withValueLinkRelationAdmission(
+          client,
+          input,
+          async () => {},
+          async () => {
+            throw failure;
+          },
+        ),
+      ),
+    ).rejects.toBe(failure);
+    expect(
+      sqlCalls(query).filter((sql) => typeof sql === "string" && sql.includes("set_config('lock_timeout'")),
+    ).toHaveLength(1);
+  });
+
+  it("rolls back if timeout restoration fails even when the callback catches it", async () => {
+    const { pool, query } = fakeClient({});
+    const failure = new Error("restore failed");
+    let settings = 0;
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes("current_setting('lock_timeout')")) return { rows: [{ setting: "5s" }], rowCount: 1 };
+      if (sql.includes("FROM value_links")) return { rows: [{ exists: 1 }], rowCount: 1 };
+      if (sql.includes("set_config('lock_timeout'") && ++settings === 2) throw failure;
+      return { rows: [], rowCount: 0 };
+    });
+    const input = { definitionId: "d", itemA: "a", itemB: "b", callerItemId: "a", propertyKey: "x", insert: false };
+    await expect(
+      withTransaction(pool, async (client) => {
+        await expect(
+          withValueLinkRelationAdmission(
+            client,
+            input,
+            async () => {},
+            async () => "done",
+          ),
+        ).rejects.toBe(failure);
+      }),
+    ).rejects.toBe(failure);
+    expect(sqlCalls(query).at(-1)).toBe("ROLLBACK");
+    expect(sqlCalls(query)).not.toContain("COMMIT");
+  });
+
   it("rethrows fn's error and discards the client when ROLLBACK fails", async () => {
     const fnError = new Error("E1");
     const rollbackError = new Error("E2");

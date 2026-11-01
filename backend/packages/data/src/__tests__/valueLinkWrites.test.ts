@@ -647,6 +647,115 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
+    it("refuses a protected update while the exact existing edge is held", async () => {
+      const tenant = await createTestTenant(pool);
+      await withRuntimePool(async (holderPool) =>
+        withRuntimePool(async (contenderPool) => {
+          const cp = createChokePoint(holderPool);
+          const fx = await runInTenant(tenant, () => setup(cp));
+          const edge = {
+            relationPropertyId: fx.projectsProperty.id,
+            callerItemId: fx.file.id,
+            targetItemId: fx.alpha.id,
+          };
+          await runInTenant(tenant, () => cp.createRelation(edge));
+          await withTenantTransaction(holderPool, tenant, (client) =>
+            insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+          );
+          const held = barrier();
+          const release = barrier();
+          let holderPid: number | undefined;
+          let contenderPid: number | undefined;
+          const holder = runInTenant(tenant, () =>
+            withTransaction(holderPool, async (client) => {
+              holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              await updateRelationWithClient(client, { ...edge, metadata: { holder: true } });
+              held.resolve();
+              await bounded(release.promise);
+            }),
+          ).then(
+            () => ({ ok: true as const }),
+            (error: unknown) => ({ ok: false as const, error }),
+          );
+          let failure: unknown;
+          try {
+            await bounded(held.promise);
+            await expect(
+              runInTenant(tenant, () =>
+                withTransaction(contenderPool, async (client) => {
+                  contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                  return updateRelationWithClient(
+                    client,
+                    { ...edge, metadata: { contender: true } },
+                    VALUE_LINKS,
+                    SYSTEM_WRITER,
+                  );
+                }),
+              ),
+            ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
+            expect(holderPid).toBeTypeOf("number");
+            expect(contenderPid).toBeTypeOf("number");
+          } catch (error) {
+            failure = error;
+          } finally {
+            release.resolve();
+            try {
+              const outcome = await bounded(holder);
+              if (!outcome.ok) throw outcome.error;
+            } catch (error) {
+              failure =
+                failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
+            }
+          }
+          if (failure !== undefined) throw failure;
+          const edges = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
+          expect(edges?.[0]?.metadata).toEqual({ holder: true });
+        }),
+      );
+    }, 30000);
+
+    it.each(["A", "B"] as const)(
+      "admits protected create, replay, update and delete from definition side %s",
+      async (side) => {
+        const tenant = await createTestTenant(pool);
+        await withRuntimePool(async (runtime) => {
+          const cp = createChokePoint(runtime);
+          const fx = await runInTenant(tenant, () => setup(cp));
+          const edge =
+            side === "A"
+              ? { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id }
+              : { relationPropertyId: fx.filesProperty.id, callerItemId: fx.alpha.id, targetItemId: fx.file.id };
+          const propertyKey = side === "A" ? "projects" : "files";
+          await withTenantTransaction(runtime, tenant, (client) =>
+            insertValueLink(client, { itemId: edge.callerItemId, propertyKey, ruleKey: "test", sources: [] }),
+          );
+          await runInTenant(tenant, () =>
+            withTransaction(runtime, async (client) => {
+              await createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
+              await createRelationWithClient(
+                client,
+                { ...edge, metadata: { replay: true } },
+                VALUE_LINKS,
+                SYSTEM_WRITER,
+              );
+              await updateRelationWithClient(
+                client,
+                { ...edge, metadata: { update: true } },
+                VALUE_LINKS,
+                SYSTEM_WRITER,
+              );
+              expect(await deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER)).not.toBeNull();
+              expect(await deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER)).toBeNull();
+            }),
+          );
+          const links = await withTenantTransaction(runtime, tenant, (client) =>
+            listValueLinksByItemIds(client, [edge.callerItemId]),
+          );
+          expect(links[0]).toMatchObject({ state: "on" });
+        });
+      },
+    );
+
     it.each(["0", "5s"])(
       "restores the effective lock timeout %s after protected success and no-op",
       async (setting) => {
