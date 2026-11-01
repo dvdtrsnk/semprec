@@ -495,7 +495,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
       req.resume();
       req.on("end", () => {
         res.writeHead(403, { "content-type": "application/json", "x-semprec-error-code": "budget_exceeded" });
-        res.end(JSON.stringify({ error: "response-secret-sentinel" }));
+        res.end(JSON.stringify({ error: "response-secret-sentinel", providerError: "provider-exception-sentinel" }));
       });
     });
     await new Promise<void>((resolve) => gatewayServer.listen(0, "127.0.0.1", resolve));
