@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { createRuntimeRolePool, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
@@ -961,9 +961,10 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       folder?: string,
       inReplyTo?: string,
       references?: string[],
+      operationPool: Pool = pool,
     ): Promise<void> {
       const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
-      await withTransaction(pool, async (client) => {
+      await withTransaction(operationPool, async (client) => {
         await ingestEmailMessage(client, {
           emailsDatabaseId: emailsId,
           filesDatabaseId: await databaseIdFor("files"),
@@ -999,9 +1000,14 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       return draft.id;
     }
 
-    function send(draftItemId: string, smtp: MailTransport, threadHeaders: { inReplyTo?: string } = {}) {
+    function send(
+      draftItemId: string,
+      smtp: MailTransport,
+      threadHeaders: { inReplyTo?: string } = {},
+      operationPool: Pool = pool,
+    ) {
       return sendDraftEmail(
-        pool,
+        operationPool,
         {
           mailboxItemId: mailboxId,
           draftItemId,
@@ -1030,6 +1036,20 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
           async () => {
             const ownerPool = pool;
             const runtimePool = await createRuntimeRolePool(ownerPool, "semprec_data");
+            const failedPool = await createRuntimeRolePool(ownerPool, "semprec_data");
+            const competitorPool = await createRuntimeRolePool(ownerPool, "semprec_data");
+            const failedPids: Array<Promise<number>> = [];
+            const competitorPids: Array<Promise<number>> = [];
+            const recordPid = (client: PoolClient, pids: Array<Promise<number>>) => {
+              pids.push(
+                client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid").then(({ rows }) => {
+                  if (rows[0] === undefined) throw new Error("Missing participant PID");
+                  return rows[0].pid;
+                }),
+              );
+            };
+            failedPool.on("acquire", (client: PoolClient) => recordPid(client, failedPids));
+            competitorPool.on("acquire", (client: PoolClient) => recordPid(client, competitorPids));
             const controller = await ownerPool.connect();
             pool = runtimePool;
             const { rows: controllerRows } = await controller.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
@@ -1067,13 +1087,20 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
                 if (timer) clearTimeout(timer);
               }
             }
-            const waitBlocked = async (holder: number, queryText: string): Promise<number> => {
+            const waitBlocked = async (
+              holder: number,
+              queryText: string,
+              pids: Array<Promise<number>>,
+            ): Promise<number> => {
               const deadline = Date.now() + 5000;
               while (Date.now() < deadline) {
                 const { rows } = await ownerPool.query<{ pid: number; blockers: number[]; query: string }>(
                   "SELECT pid, pg_blocking_pids(pid) AS blockers, query FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()",
                 );
-                const blocked = rows.find((row) => row.blockers.includes(holder) && row.query.includes(queryText));
+                const owned = await bounded(Promise.all(pids));
+                const blocked = rows.find(
+                  (row) => owned.includes(row.pid) && row.blockers.includes(holder) && row.query.includes(queryText),
+                );
                 if (blocked) return blocked.pid;
                 await new Promise((resolve) => setTimeout(resolve, 10));
               }
@@ -1087,7 +1114,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
               if (competitor === "bridge") await ingestSynced("<bridge-anchor@example.com>");
               const failedDraft = await newDraft();
               const otherDraft = competitor === "send" ? await newDraft() : undefined;
-              failedSend = send(failedDraft, smtp).then(
+              failedSend = send(failedDraft, smtp, {}, failedPool).then(
                 () => ({ success: true }),
                 (error: unknown) => ({ success: false, error }),
               );
@@ -1113,13 +1140,14 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
               }
               const startCompetitor = () =>
                 competitor === "send"
-                  ? send(otherDraft ?? "", recordingTransport(), { inReplyTo: messageId })
+                  ? send(otherDraft ?? "", recordingTransport(), { inReplyTo: messageId }, competitorPool)
                   : ingestSynced(
                       "<guarded-reply@example.com>",
                       mailboxId,
                       undefined,
                       messageId,
                       competitor === "bridge" ? ["<bridge-anchor@example.com>"] : undefined,
+                      competitorPool,
                     );
               let holderPid: number;
               let waiterPid: number;
@@ -1128,17 +1156,17 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
                   (value) => ({ success: true, value }),
                   (error: unknown) => ({ success: false, error }),
                 );
-                holderPid = await waitBlocked(controllerPid, "INSERT INTO mail_message_meta");
+                holderPid = await waitBlocked(controllerPid, "INSERT INTO mail_message_meta", competitorPids);
                 releaseSmtp();
-                waiterPid = await waitBlocked(holderPid, "pg_advisory_xact_lock");
+                waiterPid = await waitBlocked(holderPid, "pg_advisory_xact_lock", failedPids);
               } else {
                 releaseSmtp();
-                holderPid = await waitBlocked(controllerPid, "DELETE FROM mail_threads");
+                holderPid = await waitBlocked(controllerPid, "DELETE FROM mail_threads", failedPids);
                 other = startCompetitor().then(
                   (value) => ({ success: true, value }),
                   (error: unknown) => ({ success: false, error }),
                 );
-                waiterPid = await waitBlocked(holderPid, "pg_advisory_xact_lock");
+                waiterPid = await waitBlocked(holderPid, "pg_advisory_xact_lock", competitorPids);
               }
               expect(waiterPid).not.toBe(holderPid);
               console.info("MAIL_GUARD_OVERLAP", { competitor, order, holderPid, waiterPid });
@@ -1181,19 +1209,30 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
             } finally {
               releaseSmtp();
               await controller.query("SELECT pg_advisory_unlock_all()");
-              await Promise.allSettled([...(failedSend ? [failedSend] : []), ...(other ? [other] : [])]);
-              await ownerPool.query(
-                order === "competitor-first"
-                  ? "DROP TRIGGER IF EXISTS test_mail_guard_gate ON mail_message_meta"
-                  : "DROP TRIGGER IF EXISTS test_mail_guard_gate ON mail_threads",
-              );
-              await ownerPool.query("DROP FUNCTION IF EXISTS test_mail_guard_gate()");
-              controller.release();
-              pool = ownerPool;
-              await runtimePool.end();
+              const operations = Promise.allSettled([...(failedSend ? [failedSend] : []), ...(other ? [other] : [])]);
+              try {
+                await bounded(operations).catch(async (error: unknown) => {
+                  const pids = await bounded(Promise.all([...failedPids, ...competitorPids]));
+                  for (const pid of new Set(pids)) {
+                    await ownerPool.query("SELECT pg_terminate_backend($1)", [pid]);
+                  }
+                  await bounded(operations);
+                  throw error;
+                });
+              } finally {
+                await ownerPool.query(
+                  order === "competitor-first"
+                    ? "DROP TRIGGER IF EXISTS test_mail_guard_gate ON mail_message_meta"
+                    : "DROP TRIGGER IF EXISTS test_mail_guard_gate ON mail_threads",
+                );
+                await ownerPool.query("DROP FUNCTION IF EXISTS test_mail_guard_gate()");
+                controller.release();
+                pool = ownerPool;
+                await bounded(Promise.all([runtimePool.end(), failedPool.end(), competitorPool.end()]));
+              }
             }
           },
-          15000,
+          30000,
         );
       }
     }

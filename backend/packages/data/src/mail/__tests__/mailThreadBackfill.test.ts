@@ -175,8 +175,8 @@ async function snapshot(
   });
 }
 
-function runBackfill(): Promise<void> {
-  return runAsSystem("test", () => handleMailThreadBackfillTask(pool));
+function runBackfill(operationPool: Pool = pool): Promise<void> {
+  return runAsSystem("test", () => handleMailThreadBackfillTask(operationPool));
 }
 
 describe("mailThreadBackfill (issue #1570)", () => {
@@ -229,6 +229,15 @@ describe("mailThreadBackfill (issue #1570)", () => {
   });
 
   it("releases the tenant guard on rollback while another tenant proceeds", async () => {
+    const operationPool = await createRuntimeRolePool(admin, "semprec_data");
+    const operationPids: Array<Promise<number>> = [];
+    operationPool.on("acquire", (client: PoolClient) => {
+      operationPids.push(
+        client
+          .query<{ pid: number }>("SELECT pg_backend_pid() AS pid")
+          .then(({ rows }) => requireSingleRow(rows, "participant pid").pid),
+      );
+    });
     let release: () => void = () => undefined;
     let reportHolder: (pid: number) => void = () => undefined;
     let reportWaiter: (pid: number) => void = () => undefined;
@@ -255,7 +264,7 @@ describe("mailThreadBackfill (issue #1570)", () => {
       }
     }
     const holder = runInTenant(tenantZero, () =>
-      withTransaction(pool, async (client) => {
+      withTransaction(operationPool, async (client) => {
         await lockMailThreadMutation(client);
         const result = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
         reportHolder(requireSingleRow(result.rows, "holder pid").pid);
@@ -271,7 +280,7 @@ describe("mailThreadBackfill (issue #1570)", () => {
     try {
       const holderPid = await bounded(holderStarted);
       waiter = runInTenant(tenantZero, () =>
-        withTransaction(pool, async (client) => {
+        withTransaction(operationPool, async (client) => {
           const result = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
           reportWaiter(requireSingleRow(result.rows, "waiter pid").pid);
           await lockMailThreadMutation(client);
@@ -296,7 +305,7 @@ describe("mailThreadBackfill (issue #1570)", () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
       expect(blocked).toBe(true);
-      otherTenant = runInTenant(tenantB, () => withTransaction(pool, lockMailThreadMutation));
+      otherTenant = runInTenant(tenantB, () => withTransaction(operationPool, lockMailThreadMutation));
       await bounded(otherTenant);
       console.info("MAIL_GUARD_ROLLBACK", { holderPid, waiterPid });
       release();
@@ -307,9 +316,23 @@ describe("mailThreadBackfill (issue #1570)", () => {
       expect(await bounded(waiterSettled)).toEqual({ ok: true });
     } finally {
       release();
-      await Promise.allSettled([holder, ...(waiter ? [waiter] : []), ...(otherTenant ? [otherTenant] : [])]);
+      const operations = Promise.allSettled([
+        holder,
+        ...(waiter ? [waiter] : []),
+        ...(otherTenant ? [otherTenant] : []),
+      ]);
+      try {
+        await bounded(operations).catch(async (error: unknown) => {
+          const pids = await bounded(Promise.all(operationPids));
+          for (const pid of new Set(pids)) await admin.query("SELECT pg_terminate_backend($1)", [pid]);
+          await bounded(operations);
+          throw error;
+        });
+      } finally {
+        await bounded(operationPool.end());
+      }
     }
-  }, 15000);
+  }, 30000);
 
   it.each(["backfill-first", "bridge-first"] as const)(
     "serializes a multi-thread bridge with backfill in %s order",
@@ -337,19 +360,35 @@ describe("mailThreadBackfill (issue #1570)", () => {
         threadId: third,
       });
       const control = await admin.connect();
+      const backfillPool = await createRuntimeRolePool(admin, "semprec_data");
+      const bridgePool = await createRuntimeRolePool(admin, "semprec_data");
+      const backfillPids: Array<Promise<number>> = [];
+      const bridgePids: Array<Promise<number>> = [];
+      const recordPid = (client: PoolClient, pids: Array<Promise<number>>) => {
+        pids.push(
+          client
+            .query<{ pid: number }>("SELECT pg_backend_pid() AS pid")
+            .then(({ rows }) => requireSingleRow(rows, "participant pid").pid),
+        );
+      };
+      backfillPool.on("acquire", (client: PoolClient) => recordPid(client, backfillPids));
+      bridgePool.on("acquire", (client: PoolClient) => recordPid(client, bridgePids));
       const controlPid = requireSingleRow(
         (await control.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows,
         "control pid",
       ).pid;
       let backfill: Promise<void> | undefined;
       let bridge: Promise<void> | undefined;
-      const waitBlocked = async (holder: number, query: string): Promise<number> => {
+      const waitBlocked = async (holder: number, query: string, pids: Array<Promise<number>>): Promise<number> => {
         const deadline = Date.now() + 5000;
         while (Date.now() < deadline) {
           const result = await admin.query<{ pid: number; blockers: number[]; query: string }>(
             "SELECT pid, pg_blocking_pids(pid) AS blockers, query FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()",
           );
-          const match = result.rows.find((row) => row.blockers.includes(holder) && row.query.includes(query));
+          const owned = await bounded(Promise.all(pids));
+          const match = result.rows.find(
+            (row) => owned.includes(row.pid) && row.blockers.includes(holder) && row.query.includes(query),
+          );
           if (match) return match.pid;
           await new Promise((resolve) => setTimeout(resolve, 10));
         }
@@ -378,7 +417,7 @@ describe("mailThreadBackfill (issue #1570)", () => {
         );
         const startBridge = () =>
           runInTenant(tenantZero, () =>
-            withTransaction(pool, async (client) => {
+            withTransaction(bridgePool, async (client) => {
               const threadId = await resolveThreadId(client, {
                 messageId: "<bridge@x>",
                 references: ["<split@x>", "<other@x>"],
@@ -395,18 +434,18 @@ describe("mailThreadBackfill (issue #1570)", () => {
         let holderPid: number;
         let waiterPid: number;
         if (order === "backfill-first") {
-          backfill = runBackfill();
+          backfill = runBackfill(backfillPool);
           const observed = backfill.then(
             () => null,
             (error: unknown) => error,
           );
-          holderPid = await waitBlocked(controlPid, "UPDATE mail_message_meta");
+          holderPid = await waitBlocked(controlPid, "UPDATE mail_message_meta", backfillPids);
           bridge = startBridge();
           const bridgeObserved = bridge.then(
             () => null,
             (error: unknown) => error,
           );
-          waiterPid = await waitBlocked(holderPid, "pg_advisory_xact_lock");
+          waiterPid = await waitBlocked(holderPid, "pg_advisory_xact_lock", bridgePids);
           await control.query("SELECT pg_advisory_unlock(712340003)");
           expect(await bounded(observed)).toBeNull();
           expect(await bounded(bridgeObserved)).toBeNull();
@@ -416,13 +455,13 @@ describe("mailThreadBackfill (issue #1570)", () => {
             () => null,
             (error: unknown) => error,
           );
-          holderPid = await waitBlocked(controlPid, "UPDATE mail_message_meta");
-          backfill = runBackfill();
+          holderPid = await waitBlocked(controlPid, "UPDATE mail_message_meta", bridgePids);
+          backfill = runBackfill(backfillPool);
           const backfillObserved = backfill.then(
             () => null,
             (error: unknown) => error,
           );
-          waiterPid = await waitBlocked(holderPid, "pg_advisory_xact_lock");
+          waiterPid = await waitBlocked(holderPid, "pg_advisory_xact_lock", backfillPids);
           await control.query("SELECT pg_advisory_unlock(712340003)");
           expect(await bounded(observed)).toBeNull();
           expect(await bounded(backfillObserved)).toBeNull();
@@ -439,13 +478,23 @@ describe("mailThreadBackfill (issue #1570)", () => {
         expect(await orphanThreads(tenantZero)).toBe(0);
       } finally {
         await control.query("SELECT pg_advisory_unlock_all()");
-        await Promise.allSettled([...(backfill ? [backfill] : []), ...(bridge ? [bridge] : [])]);
-        await admin.query("DROP TRIGGER IF EXISTS test_mail_bridge_gate ON mail_message_meta");
-        await admin.query("DROP FUNCTION IF EXISTS test_mail_bridge_gate()");
-        control.release();
+        const operations = Promise.allSettled([...(backfill ? [backfill] : []), ...(bridge ? [bridge] : [])]);
+        try {
+          await bounded(operations).catch(async (error: unknown) => {
+            const pids = await bounded(Promise.all([...backfillPids, ...bridgePids]));
+            for (const pid of new Set(pids)) await admin.query("SELECT pg_terminate_backend($1)", [pid]);
+            await bounded(operations);
+            throw error;
+          });
+        } finally {
+          await admin.query("DROP TRIGGER IF EXISTS test_mail_bridge_gate ON mail_message_meta");
+          await admin.query("DROP FUNCTION IF EXISTS test_mail_bridge_gate()");
+          control.release();
+          await bounded(Promise.all([backfillPool.end(), bridgePool.end()]));
+        }
       }
     },
-    15000,
+    30000,
   );
 
   it("gives a sent message its replied-to message's thread, and a send with no ancestors a new thread named by its subject", async () => {

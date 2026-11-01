@@ -776,7 +776,17 @@ describe("provider_message_id uniqueness convergence (issue #204)", () => {
       const conflictInput = await baseInput("<conflict@x>", { providerMessageId: "guarded-provider" });
       const continuationInput = await baseInput("<continuation@x>");
       const nextInput = await baseInput("<next@x>");
-      const winner = await withTransaction(pool, (client) => ingestEmailMessage(client, winnerInput));
+      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const operationPids: Array<Promise<number>> = [];
+      runtimePool.on("acquire", (client: PoolClient) => {
+        operationPids.push(
+          client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid").then(({ rows }) => {
+            if (rows[0] === undefined) throw new Error("Missing participant PID");
+            return rows[0].pid;
+          }),
+        );
+      });
+      const winner = await withTransaction(runtimePool, (client) => ingestEmailMessage(client, winnerInput));
       let release: () => void = () => undefined;
       let reportHolder: (pid: number) => void = () => undefined;
       let reportWaiter: (pid: number) => void = () => undefined;
@@ -802,7 +812,7 @@ describe("provider_message_id uniqueness convergence (issue #204)", () => {
           if (timer) clearTimeout(timer);
         }
       }
-      const holder = withTransaction(pool, async (client) => {
+      const holder = withTransaction(runtimePool, async (client) => {
         const result = await ingestEmailMessage(client, conflictInput);
         expect(result).toEqual({ itemId: winner.itemId, created: false });
         const continuation = await ingestEmailMessage(client, continuationInput);
@@ -819,8 +829,12 @@ describe("provider_message_id uniqueness convergence (issue #204)", () => {
       );
       let waiter: Promise<Awaited<ReturnType<typeof ingestEmailMessage>>> | undefined;
       try {
+        const role = await runtimePool.query<{ name: string; bypass: boolean; superuser: boolean }>(
+          "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+        );
+        expect(role.rows[0]).toEqual({ name: "semprec_data", bypass: false, superuser: false });
         const holderPid = await bounded(holderStarted);
-        waiter = withTransaction(pool, async (client) => {
+        waiter = withTransaction(runtimePool, async (client) => {
           const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
           if (pid.rows[0] === undefined) throw new Error("Missing waiter PID");
           reportWaiter(pid.rows[0].pid);
@@ -855,10 +869,20 @@ describe("provider_message_id uniqueness convergence (issue #204)", () => {
         expect(rows[0]?.count).toBe(0);
       } finally {
         release();
-        await Promise.allSettled([holder, ...(waiter ? [waiter] : [])]);
+        const operations = Promise.allSettled([holder, ...(waiter ? [waiter] : [])]);
+        try {
+          await bounded(operations).catch(async (error: unknown) => {
+            const pids = await bounded(Promise.all(operationPids));
+            for (const pid of new Set(pids)) await pool.query("SELECT pg_terminate_backend($1)", [pid]);
+            await bounded(operations);
+            throw error;
+          });
+        } finally {
+          await bounded(runtimePool.end());
+        }
       }
     },
-    15000,
+    30000,
   );
 
   tenantIt(
