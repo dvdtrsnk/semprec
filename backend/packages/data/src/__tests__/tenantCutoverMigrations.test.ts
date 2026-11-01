@@ -232,6 +232,12 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
       "SELECT id, item_a, item_b, metadata::text AS metadata FROM item_relations ORDER BY id",
     );
     expect(after.rows).toEqual(before.rows);
+    const speakerCatalogAfterSecondRun = await adminPool.query<Record<string, unknown>>(
+      `SELECT to_jsonb(p)::text AS property, to_jsonb(r)::text AS definition FROM properties p
+       JOIN relation_definitions r ON r.id = (p.config->>'relationDefinitionId')::uuid
+       WHERE p.key = 'speakers' ORDER BY p.id`,
+    );
+    expect(catalogSchema.parse(speakerCatalogAfterSecondRun.rows)).toEqual(speakerBefore);
     for (const tenantId of [zero, b]) {
       const state = await readState(tenantId);
       const properties = await runInTenant(tenantId, () =>
