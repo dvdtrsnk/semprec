@@ -81,3 +81,52 @@ inherited-name test to obtain a passing pipeline. Preserve the previously
 accepted transport classification and safe logging behavior. No live provider
 probe, new connection mechanism or package dependency is authorized. Existing
 Task/AC obligations remain unchanged; no test result or exception is granted.
+
+## Same-severity notification deduplication preserves problem bookkeeping
+
+Gh-1466's Context, Task 6 and third acceptance criterion say a repeated raise
+writes nothing. Read literally across all state, that contradicts gh-1459's
+existing occurrence-count and last-seen bookkeeping for a distinct occurrence,
+and gh-1466's own requirement to store source notifications while suppressing
+their pushes. The current writer performs that bookkeeping and writes a
+`semp_problem` notification only for creation or severity escalation.
+
+Clarify the three gh-1466 clauses: a repeated same-severity raise creates no
+new `semp_problem` notification or additional push. Preserve distinct-occurrence
+bookkeeping and producer-owned source notifications. An identical
+`occurrenceKey` keeps gh-1459's existing replay semantics; this is not a claim
+that no SQL statement executes or that every stored column remains unchanged.
+Do not suppress occurrence counting or source notifications to satisfy the old
+ambiguous wording. Existing escalation and preference behavior remains intact.
+The original handover is unchanged; the corrected source and aggregate are
+reapproved with regenerated hashes. No production behavior change is authorized
+by this wording correction.
+
+## Populated upgrades for the five batch migrations
+
+Add the existing permanent integration suite
+`backend/packages/data/src/__tests__/migrationCompatibility.test.ts` to the
+Touches of gh-1391, gh-1463, gh-1450, gh-1441 and gh-1466 and their batch
+aggregate. Its current real-runner scratch-database fixture is an appropriate
+place for the required populated historical upgrade evidence for migrations
+0093, 0098, 0099, 0119 and 0121. Reuse that setup instead of treating an
+already-migrated integration database as upgrade evidence.
+
+Establish populated state before the relevant migration, apply the exact
+repository migration files through the real runner, and assert preservation of
+old rows and compatible existing-column reads/writes plus the new columns,
+tables, defaults and widened constraint required by each issue. A sequential
+fixture may cover several migrations if every pre-upgrade state and assertion
+is explicit; five duplicate full histories are not required. Keep owned pools,
+databases, temporary directories and asynchronous work bounded and fully
+cleaned up. Historical single-tenant restrictions must be respected or any
+fixture-only modification disclosed; owner upgrade fixtures do not replace
+current runtime-role RLS evidence.
+
+No historical migration rewrite, production runner change, new package or
+release/rollback guarantee is authorized. In particular, preserving existing
+notification kinds through the widened check does not prove that an old binary
+can interpret newly introduced `semp_problem` rows. Report the actual legacy
+read/write coverage and any such limitation precisely. All existing migration
+and functional acceptance obligations remain; these scope additions establish
+where to prove them, not a passing result.
