@@ -96,3 +96,24 @@ gh-1401 blob-store scope; add the new ADR path to gh-1410 and the aggregate.
 The existing dedup requirement is retained. Acceptance needs real bounded
 both-order overlap, committed-row identity and rollback/cleanup evidence, not
 the diagnostic's intentionally unsafe assertions.
+
+## Persist the initial property list order
+
+The literal gh-1592 example exposed alphabetical property reads instead of its
+required input order. Retain that acceptance criterion and apply
+`2026-11-01-atomic-collection-creation-preserves-property-order`: additive
+nullable internal positions for the atomic title/list cohort, both catalog
+read forms honoring them, and an alphabetical null-position tail for later
+ordinary properties. Existing all-null databases retain key order. No backfill,
+append allocator or public reorder field is authorized.
+
+Extend gh-1592 scope to the owning property store, the additive migration,
+existing real-runner migration compatibility test and the new ADR. The current
+database operation can assign positions through the property store on its
+existing transaction client after ordinary/relation creation. Preserve all
+authorization, rollback and invalidation behavior. Compress only redundant
+historical Context prose in the source snapshot to retain the aggregate size
+bound; preserve the frozen Tasks, decisions and AC with this explicit addition.
+
+The localhost `ETIMEDOUT` in the same diagnostic run remains a separate observed
+failure. This decision does not resolve, attribute or waive it.
