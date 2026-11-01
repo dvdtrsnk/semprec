@@ -91,3 +91,30 @@ implementation and exact refreeze; they do not accept a candidate.
    receives a response after cutoff. Reviewer disagreement with this delegated
    contract is recorded, not resolved by changing correct rejection code to
    consume an otherwise refused whole request.
+
+7. The df86c183 full verification failed nine tests in seven files. Five tests in
+   three previously unscoped suites call guarded send/ingest without a real tenant
+   scope. Add the exact existing data test paths `blobsPerTenant.test.ts`,
+   `itemRelationFilter.test.ts` and `mailMessagePreview.test.ts` under
+   `backend/packages/data/src/__tests__/` for wrapping those existing production
+   calls/fixtures in their correct explicit tenant, preserving their storage,
+   pruning, preview and send assertions. Do not weaken scope, role, transaction or
+   guard requirements or replace production writes with direct fixtures.
+
+   Add the exact existing `gmailLabelFolders.test.ts` in that same directory to
+   reconcile the approved tenant-thread guard with its old independence test.
+   The held sync and second same-tenant mailbox reconcile must now serialize;
+   prove the second operation's actual PID waits on the exact holder and then
+   succeeds after release. A different tenant must still complete before release.
+   Preserve the same-mailbox cleanup wait, final folders and rollback assertions;
+   cleanup itself keeps only its existing mailbox guard. Use bounded owned pools,
+   complete settlement and exact operation PID binding. The old full log's
+   advisory statement timeout and status-only assertion do not establish which
+   participant timed out, so distinguish that diagnosis from new measured proof.
+
+   This is a test-path/fixture reconciliation of decision1, not a new production
+   lock order, migration, permission or mail lifecycle change. The source Task/AC
+   and all original handovers remain unchanged. Obtain delta review and a fresh
+   complete frozen gate after the repairs. The two unrelated HTTPParserError/SSH
+   banner failures passed an isolated unchanged rerun; their cause is unproven and
+   neither they nor the MCP inherited-name assertion receive a standing waiver.
