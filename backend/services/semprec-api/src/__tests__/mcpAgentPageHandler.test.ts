@@ -12,6 +12,8 @@ import {
   createUser,
   hashPassword,
   login,
+  recordMcpConnectionFailure,
+  recordMcpConnectionSuccess,
 } from "@semprec/data";
 import { createMcpAgentPageRequestListener } from "../mcpAgentPageHandler.js";
 
@@ -131,6 +133,76 @@ describe("createMcpAgentPageRequestListener", () => {
     });
     const body: unknown = await getRes.json();
     expect(body).toMatchObject({ rows: [{ granted: true, effective: true }], counts: { effective: 1, total: 1 } });
+  });
+
+  it("returns effective counts and server states over HTTP for five registrations", async () => {
+    const active = await createMcpServerItem("Active", true);
+    const inactive = await createMcpServerItem("Inactive", false);
+    const neverCalled = await createMcpServerItem("Never called", true);
+    const projectId = randomUUID();
+    const headers = await authHeader();
+    const registrations = [];
+    for (const [serverId, name, granted] of [
+      [active.id, "a", true],
+      [active.id, "b", true],
+      [neverCalled.id, "c", true],
+      [inactive.id, "d", true],
+      [active.id, "e", false],
+    ] as const) {
+      const registration = await upsertMcpToolRegistration(pool, {
+        mcpServerItemId: serverId,
+        toolName: name,
+        toolSchema: {},
+      });
+      registrations.push(registration);
+      if (granted) {
+        const response = await fetch(`${baseUrl}/api/projects/${projectId}/mcp-grants/${registration.id}`, {
+          method: "PATCH",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ granted: true }),
+        });
+        expect(response.status).toBe(200);
+      }
+    }
+    await recordMcpConnectionFailure(pool, active.id, "handshake_failed");
+    const list = async (): Promise<unknown> => {
+      const response = await fetch(`${baseUrl}/api/projects/${projectId}/mcp-grants`, { headers });
+      expect(response.status).toBe(200);
+      return response.json();
+    };
+    expect(await list()).toMatchObject({
+      counts: { effective: 3, total: 5 },
+      rows: expect.arrayContaining([
+        expect.objectContaining({
+          mcpToolRegistrationId: registrations[0]?.id,
+          granted: true,
+          effective: true,
+          server: { state: "offline", lastConnectedAt: null, lastErrorReason: "handshake_failed" },
+        }),
+        expect.objectContaining({
+          mcpToolRegistrationId: registrations[2]?.id,
+          granted: true,
+          effective: true,
+          server: { state: "connected", lastConnectedAt: null, lastErrorReason: null },
+        }),
+        expect.objectContaining({
+          mcpToolRegistrationId: registrations[3]?.id,
+          granted: true,
+          effective: false,
+          server: { state: "offline", lastConnectedAt: null, lastErrorReason: null },
+        }),
+      ]),
+    });
+    await recordMcpConnectionSuccess(pool, active.id);
+    expect(await list()).toMatchObject({
+      counts: { effective: 3, total: 5 },
+      rows: expect.arrayContaining([
+        expect.objectContaining({
+          mcpToolRegistrationId: registrations[0]?.id,
+          server: { state: "connected", lastConnectedAt: expect.any(String), lastErrorReason: null },
+        }),
+      ]),
+    });
   });
 
   it("rejects a grant PATCH with a non-boolean 'granted'", async () => {
