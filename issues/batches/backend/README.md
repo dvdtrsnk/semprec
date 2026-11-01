@@ -155,7 +155,7 @@ reported by the ordinary validator; they are not silently repaired by batching.
 | 8 | [[backend-delivery 08/74] Implement data/mcp, data/notifications, data/push changes](../../items/sp-f1ddb03e-a6ec-486e-818d-56c7101ab2a0.md) | 11 | 56612 |
 | 9 | [[backend-delivery 09/74] Implement data/inbox, data/transcription, semprec-transcribe changes](../../items/sp-6ae4040a-6669-4c5d-b236-3e20eb9fb477.md) | 11 | 59446 |
 | 10 | [[backend-delivery 10/74] Implement ai-gateway-client, semprec-ai-gateway, shared changes](../../items/sp-ea66e986-936d-4135-ac13-d49d81e64540.md) | 10 | 59877 |
-| 11 | [[backend-delivery 11/74] Implement data/chokePoint, data/tasks changes](../../items/sp-aeb88605-77ac-4921-a8b1-3f259c52ecf4.md) | 7 | 56555 |
+| 11 | [[backend-delivery 11/74] Implement data/chokePoint, data/tasks changes](../../items/sp-aeb88605-77ac-4921-a8b1-3f259c52ecf4.md) | 7 | 59461 |
 | 12 | [[backend-delivery 12/74] Implement data/aiGateway, data/scheduler, data/agentRuns changes](../../items/sp-44a1d0e0-66ca-4dbe-947a-6602d9e44b5a.md) | 11 | 57567 |
 | 13 | [[backend-delivery 13/74] Implement data/mail, semprec-api/adapter changes](../../items/sp-de8ab38c-761c-4ec7-b5f5-e7a7f4207af7.md) | 12 | 56211 |
 | 14 | [[backend-delivery 14/74] Implement data/views, data/chokePoint, shared/genericOperations changes](../../items/sp-bbaffb18-fc40-4d14-a793-18f5554b7171.md) | 12 | 57910 |
