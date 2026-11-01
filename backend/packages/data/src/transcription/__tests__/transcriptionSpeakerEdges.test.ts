@@ -1,18 +1,41 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import "../../domainWriteHooks.js";
-import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+  withTenantTransaction,
+} from "../../testSupport/testDb.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
-import { createItemWithClient } from "../../chokePoint/itemWrites.js";
+import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
+import { createRelationWithClient } from "../../chokePoint/relationOps.js";
+import { insertValueLink } from "../../chokePoint/valueLinksStore.js";
+import { runInTenant } from "@semprec/shared";
 import { writeComputed } from "../../chokePoint/itemsStore.js";
 import { NotFoundError, ValidationError } from "../../errors.js";
 import { listTranscriptSpeakers } from "../transcriptionSpeakerEdges.js";
 import { createTranscriptSpeakersRouteHandler } from "../transcriptionRouteHandlers.js";
 
 let pool: Pool;
+
+async function bounded<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Participant timed out")), 8000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 const SEGMENTS = [
   { speaker: "SPEAKER_01", text: "Hello.", startsAt: 0, endsAt: 1 },
@@ -138,6 +161,94 @@ describe("Transcript speaker mappings (issue #185)", () => {
   });
 
   describe("writing through the generic relation operation", () => {
+    it("validates protected speaker metadata before refusing a busy transcript lock", async () => {
+      const transcriptId = await createTranscript();
+      const personId = await createPerson("Alice");
+      const tenant = getTenantZeroId();
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      let release!: () => void;
+      let acquired!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        acquired = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let holderPid: number | undefined;
+      let contenderPid: number | undefined;
+      await withTenantTransaction(runtime, tenant, (client) =>
+        insertValueLink(client, { itemId: transcriptId, propertyKey: "speakers", ruleKey: "test", sources: [] }),
+      );
+      const holder = runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          await updateItemWithClient(client, {
+            databaseId: transcriptsId,
+            itemId: transcriptId,
+            propertiesPatch: { name: "Held" },
+          });
+          acquired();
+          await gate;
+        }),
+      ).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      let failure: unknown;
+      try {
+        await bounded(ready);
+        const attempt = (metadata: Record<string, unknown>) =>
+          runInTenant(tenant, () =>
+            withTransaction(runtime, async (client) => {
+              contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              return createRelationWithClient(
+                client,
+                {
+                  relationPropertyId: speakersPropertyId,
+                  callerItemId: transcriptId,
+                  targetItemId: personId,
+                  metadata,
+                },
+                { ownerProcess: "valueLinks" },
+              );
+            }),
+          );
+        await expect(attempt({})).rejects.toMatchObject({ status: 400, code: "validation_failed" });
+        await expect(attempt({ speaker: "SPEAKER_01" })).rejects.toMatchObject({
+          status: 409,
+          code: "value_link_busy",
+        });
+        expect(holderPid).toBeTypeOf("number");
+        expect(contenderPid).toBeTypeOf("number");
+      } catch (error) {
+        failure = error;
+      } finally {
+        release();
+        try {
+          const outcome = await bounded(holder);
+          if (!outcome.ok) throw outcome.error;
+        } catch (error) {
+          failure =
+            failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
+          if (holderPid) {
+            try {
+              await bounded(pool.query("SELECT pg_terminate_backend($1::int)", [holderPid]));
+              await bounded(holder);
+            } catch (cleanupError) {
+              failure = new AggregateError([failure, cleanupError], "Holder termination failed");
+            }
+          }
+        }
+        try {
+          await bounded(runtime.end());
+        } catch (error) {
+          failure =
+            failure === undefined ? error : new AggregateError([failure, error], "Test and pool cleanup failed");
+        }
+      }
+      if (failure !== undefined) throw failure;
+    });
+
     it("replaces a person's key by writing the edge again", async () => {
       const transcriptId = await createTranscript();
       const aliceId = await createPerson("Alice");
