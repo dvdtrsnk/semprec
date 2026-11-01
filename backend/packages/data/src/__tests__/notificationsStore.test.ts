@@ -21,6 +21,7 @@ import {
   visitNotification,
   markAllNotificationsRead,
   resolveNotificationsBySource,
+  getNotificationById,
 } from "../notifications/notificationsStore.js";
 import { setNotificationReadStateHook, type NotificationReadStateEvent } from "../realtimeHook.js";
 
@@ -70,6 +71,16 @@ describe("notificationsStore (issue #152)", () => {
   }
 
   describe("listUnreadNotificationsForUser", () => {
+    it.each([null, [], "invalid", 1])("refuses a malformed stored payload %j", async (payload) => {
+      const userId = await createTestUser();
+      await writeTestNotification(userId, "payload-test");
+      const [row] = await listUnreadNotificationsForUser(pool, userId);
+      if (!row) throw new Error("Missing notification fixture");
+      // JSONB historically permits non-object values, which production writers do not create.
+      await pool.query("UPDATE notifications SET payload = $2::jsonb WHERE id = $1", [row.id, JSON.stringify(payload)]);
+      await expect(getNotificationById(pool, row.id)).rejects.toThrow("Invalid notification payload");
+      await expect(listUnreadNotificationsForUser(pool, userId)).rejects.toThrow("Invalid notification payload");
+    });
     it("returns only the caller's unread rows, ordered by creation then id", async () => {
       const userId = await createTestUser();
       const otherUserId = await createTestUser();
