@@ -946,6 +946,36 @@ describe("MCP connection factory (issue #231)", () => {
     }
   });
 
+  it("keeps a real failed invocation's connection state after the caller rolls back", async () => {
+    const tenantId = getTenantZeroId();
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const contract = await startHttpContractServer();
+      const item = await (async () => {
+        try {
+          return await createMcpServerItem(contract.connectionConfig);
+        } finally {
+          await contract.stop();
+        }
+      })();
+      await expect(
+        runInTenant(tenantId, () =>
+          withTransaction(runtimePool, async () => {
+            const outcome = await executeMcpInvocation(runtimePool, { serverItem: item, toolName: "search" }, {});
+            expect(outcome.error).toBe(true);
+            throw new Error("intentional caller rollback");
+          }),
+        ),
+      ).rejects.toThrow("intentional caller rollback");
+      const states = await runInTenant(tenantId, () => getMcpConnectionStates(runtimePool, [item.id]));
+      expect(states).toMatchObject([
+        { mcpServerItemId: item.id, lastErrorReason: "handshake_failed", lastConnectedAt: null },
+      ]);
+    } finally {
+      await runtimePool.end();
+    }
+  });
+
   describe("sse", () => {
     it("connects, completes the handshake, and injects the credential as a bearer token", async () => {
       const contract = await startSseContractServer();
