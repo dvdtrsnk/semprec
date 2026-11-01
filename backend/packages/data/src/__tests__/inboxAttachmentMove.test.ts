@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
 import { runOnce, CORE_TASK_NAMES } from "@semprec/queue";
 import { runInTenant } from "@semprec/shared";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import {
   createRuntimeRolePool,
   getTenantZeroId,
@@ -55,6 +55,136 @@ let tasksId: string;
 let projectsId: string;
 let taskType: ItemRow;
 
+/** Owns only this overlap's runtime clients, gates and operations. */
+function ownOverlap(runtime: Pool, cancel: () => void) {
+  runtime.options.connectionTimeoutMillis = 2500;
+  runtime.options.statement_timeout = 5000;
+  const active = new Map<PoolClient, object>();
+  const tasks = new Set<Promise<void>>();
+  const errors: unknown[] = [];
+  let closing = false;
+  let expired = false;
+  let closingPromise: Promise<void> | undefined;
+  const onClientError = (error: Error) => errors.push(error);
+  const destroy = (client: PoolClient, token: object) => {
+    if (active.get(client) !== token) return;
+    try {
+      client.release(true);
+    } catch (error) {
+      errors.push(error);
+    }
+  };
+  const onAcquire = (client: PoolClient) => {
+    const token = {};
+    active.set(client, token);
+    client.on("error", onClientError);
+    // pg-pool 3.14 assigns release after the acquire event.
+    if (closing) queueMicrotask(() => destroy(client, token));
+  };
+  const onRelease = (_error: Error | undefined, client: PoolClient) => {
+    active.delete(client);
+    client.removeListener("error", onClientError);
+  };
+  runtime.on("acquire", onAcquire);
+  runtime.on("release", onRelease);
+  const run = <T>(start: () => Promise<T>): Promise<T> => {
+    const operation = Promise.resolve().then(() => {
+      if (closing) throw new Error("Overlap is closing");
+      return start();
+    });
+    const settled = operation.then(
+      () => {},
+      () => {},
+    );
+    tasks.add(settled);
+    void settled.then(() => tasks.delete(settled));
+    return operation;
+  };
+  const finish = (bodyFailed = false): Promise<void> => {
+    if (closingPromise) return closingPromise;
+    closing = true;
+    clearTimeout(timer);
+    const detach = () => {
+      runtime.removeListener("acquire", onAcquire);
+      runtime.removeListener("release", onRelease);
+    };
+    closingPromise = (async () => {
+      if (!bodyFailed) {
+        try {
+          const deadline = Date.now() + 3000;
+          while (tasks.size > 0 || active.size > 0 || runtime.waitingCount > 0) {
+            if (Date.now() >= deadline) throw new Error("Overlap returned with owned work pending");
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      try {
+        cancel();
+      } catch (error) {
+        errors.push(error);
+      }
+      for (const [client, token] of active) destroy(client, token);
+      const end = runtime.end();
+      const joined = (async () => {
+        const results = await Promise.allSettled([end, ...tasks]);
+        for (const result of results) if (result.status === "rejected") errors.push(result.reason);
+        while (tasks.size > 0) await Promise.all([...tasks]);
+        const deadline = Date.now() + 3000;
+        while (runtime.waitingCount > 0) {
+          if (Date.now() >= deadline) throw new Error("Overlap pool waiters did not settle");
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      })();
+      try {
+        await overlapBounded(joined, 8000);
+        detach();
+      } catch (error) {
+        errors.push(error);
+        // Only an unestablished driver/host stall reaches this failure fallback.
+        void joined.then(detach, detach);
+      }
+      if (expired) errors.unshift(new Error("Overlap timed out"));
+      if (errors.length) throw new AggregateError(errors, "Overlap cleanup failed", { cause: errors[0] });
+    })();
+    return closingPromise;
+  };
+  const timer = setTimeout(() => {
+    expired = true;
+    void finish(true).catch(() => {});
+  }, 8000);
+  return { run, finish };
+}
+
+async function overlapBounded<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Overlap cleanup timed out")), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function combineOverlapFailure(body: { error: unknown } | undefined, cleanup: unknown): { error: unknown } {
+  return {
+    error:
+      body === undefined
+        ? cleanup
+        : new AggregateError([body.error, cleanup], "Overlap and cleanup failed", { cause: body.error }),
+  };
+}
+
+function rethrowOverlap(error: unknown): never {
+  // Preserve even non-Error thrown identities from the tested operation.
+  throw error;
+}
+
 async function bounded<T>(promise: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -81,12 +211,14 @@ async function jobExists(key: string): Promise<boolean> {
 }
 
 /** Polls until a confirm is blocked on the blob row lock (`SELECT ... FROM blobs ... FOR UPDATE`); fails after two seconds. */
-async function waitForBlobLockWait(holderPid: number, competitorPid: number): Promise<void> {
+async function waitForBlobLockWait(holderPid: number, competitorPid: number, queryPool: Pool = pool): Promise<void> {
   const deadline = Date.now() + 2000;
   while (Date.now() < deadline) {
-    const { rows } = await pool.query<{ waiting: boolean }>(
-      `SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS waiting`,
-      [holderPid, competitorPid],
+    const { rows } = await runInTenant(getTenantZeroId(), () =>
+      queryPool.query<{ waiting: boolean }>(`SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS waiting`, [
+        holderPid,
+        competitorPid,
+      ]),
     );
     if (rows[0]?.waiting) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -820,6 +952,91 @@ describe("file from attachment on confirm (issue #1703)", () => {
     expect(firstCard?.properties.status).toBe("proposed");
   });
 
+  it("settles blocked overlap participants on an injected body failure", async () => {
+    const itemId = await plainInboxItem("cleanup source");
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let release = () => {};
+    let holderReady = () => {};
+    let contenderReady = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holderStarted = new Promise<void>((resolve) => {
+      holderReady = resolve;
+    });
+    const contenderStarted = new Promise<void>((resolve) => {
+      contenderReady = resolve;
+    });
+    const owned = ownOverlap(runtime, () => {
+      release();
+      holderReady();
+      contenderReady();
+    });
+    let holderPid: number | undefined;
+    let contenderPid: number | undefined;
+    let holderSettled = false;
+    let contenderSettled = false;
+    const bodyError = new Error("forced overlap body failure");
+    let failure: { error: unknown } | undefined;
+    try {
+      const holder = owned.run(() =>
+        withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+          holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          await updateItemWithClient(client, { databaseId: inboxId, itemId, propertiesPatch: { text: "held" } });
+          holderReady();
+          await gate;
+        }),
+      );
+      void holder.then(
+        () => {
+          holderSettled = true;
+        },
+        () => {
+          holderSettled = true;
+        },
+      );
+      await bounded(holderStarted);
+      const contender = owned.run(() =>
+        withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+          contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          contenderReady();
+          await updateItemWithClient(client, { databaseId: inboxId, itemId, propertiesPatch: { text: "contender" } });
+        }),
+      );
+      void contender.then(
+        () => {
+          contenderSettled = true;
+        },
+        () => {
+          contenderSettled = true;
+        },
+      );
+      await bounded(contenderStarted);
+      if (!holderPid || !contenderPid) throw new Error("Missing participant PID");
+      const holderId = holderPid;
+      const contenderId = contenderPid;
+      await bounded(owned.run(() => waitForBlobLockWait(holderId, contenderId, runtime)));
+      throw bodyError;
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await owned.finish(failure !== undefined);
+      } catch (error) {
+        failure = combineOverlapFailure(failure, error);
+      }
+    }
+    expect(failure?.error).toBe(bodyError);
+    expect(holderSettled).toBe(true);
+    expect(contenderSettled).toBe(true);
+    expect(runtime.ended).toBe(true);
+    expect(runtime.totalCount).toBe(0);
+    expect(runtime.waitingCount).toBe(0);
+    expect(runtime.listenerCount("acquire")).toBe(0);
+    expect(runtime.listenerCount("release")).toBe(0);
+    expect((await createChokePoint(pool).getItem(inboxId, itemId))?.properties.text).toBe("cleanup source");
+  }, 20000);
+
   it.each([false, true])(
     "settles confirm and a shared-blob purge in both orders, purge first: %s",
     async (purgeFirst) => {
@@ -848,6 +1065,12 @@ describe("file from attachment on confirm (issue #1703)", () => {
       });
       const confirmGate = new Promise<void>((resolve) => {
         releaseConfirm = resolve;
+      });
+      const owned = ownOverlap(runtime, () => {
+        releasePurge();
+        releaseConfirm();
+        purgeReady();
+        confirmReady();
       });
       const observed = new Proxy(runtime, {
         get(target, key, receiver) {
@@ -889,29 +1112,34 @@ describe("file from attachment on confirm (issue #1703)", () => {
         confirm?: Promise<ItemRow>;
       } = {};
       const startPurge = () => {
-        pending.purge = runInTenant(getTenantZeroId(), () =>
-          createChokePoint(observed).purgeExpiredTrashSubtree(trashed, new Date(Date.now() + 60_000)),
+        pending.purge = owned.run(() =>
+          runInTenant(getTenantZeroId(), () =>
+            createChokePoint(observed).purgeExpiredTrashSubtree(trashed, new Date(Date.now() + 60_000)),
+          ),
         );
         pending.purge.catch(() => {});
       };
       const startConfirm = () => {
-        pending.confirm = withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-          await client.query("SET LOCAL statement_timeout = '5s'");
-          confirmPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-          if (purgeFirst) confirmReady();
-          const result = await confirmProposalWithClient(
-            client,
-            { processingProposalsDatabaseId: proposalsId },
-            source.cardId,
-          );
-          if (!purgeFirst) {
-            confirmReady();
-            await confirmGate;
-          }
-          return result;
-        });
+        pending.confirm = owned.run(() =>
+          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+            await client.query("SET LOCAL statement_timeout = '5s'");
+            confirmPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            if (purgeFirst) confirmReady();
+            const result = await confirmProposalWithClient(
+              client,
+              { processingProposalsDatabaseId: proposalsId },
+              source.cardId,
+            );
+            if (!purgeFirst) {
+              confirmReady();
+              await confirmGate;
+            }
+            return result;
+          }),
+        );
         pending.confirm.catch(() => {});
       };
+      let failure: { error: unknown } | undefined;
       try {
         if (purgeFirst) {
           startPurge();
@@ -925,7 +1153,17 @@ describe("file from attachment on confirm (issue #1703)", () => {
           await bounded(purgeAtBlob);
         }
         if (!purgePid || !confirmPid) throw new Error("Missing competing backend PID");
-        await waitForBlobLockWait(purgeFirst ? purgePid : confirmPid, purgeFirst ? confirmPid : purgePid);
+        const actualPurgePid = purgePid;
+        const actualConfirmPid = confirmPid;
+        await bounded(
+          owned.run(() =>
+            waitForBlobLockWait(
+              purgeFirst ? actualPurgePid : actualConfirmPid,
+              purgeFirst ? actualConfirmPid : actualPurgePid,
+              runtime,
+            ),
+          ),
+        );
         releasePurge();
         releaseConfirm();
         const purge = pending.purge;
@@ -938,15 +1176,18 @@ describe("file from attachment on confirm (issue #1703)", () => {
         expect(await filesItemsFor(blobId)).toHaveLength(1);
         expect(await attachmentCount(source.inboxItemId)).toBe(0);
         expect(await withTransaction(pool, (client) => getBlob(client, blobId))).not.toBeNull();
+      } catch (error) {
+        failure = { error };
       } finally {
         releasePurge();
         releaseConfirm();
-        await Promise.allSettled([
-          ...(pending.purge ? [pending.purge] : []),
-          ...(pending.confirm ? [pending.confirm] : []),
-        ]);
-        await runtime.end();
+        try {
+          await owned.finish(failure !== undefined);
+        } catch (error) {
+          failure = combineOverlapFailure(failure, error);
+        }
       }
+      if (failure !== undefined) rethrowOverlap(failure.error);
     },
     20000,
   );

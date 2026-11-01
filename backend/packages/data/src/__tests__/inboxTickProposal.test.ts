@@ -51,6 +51,136 @@ import { confirmProposalWithClient } from "../inbox/proposalActions.js";
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
 
+/** Owns only this overlap's runtime clients, gates and operations. */
+function ownOverlap(runtime: Pool, cancel: () => void) {
+  runtime.options.connectionTimeoutMillis = 2500;
+  runtime.options.statement_timeout = 5000;
+  const active = new Map<PoolClient, object>();
+  const tasks = new Set<Promise<void>>();
+  const errors: unknown[] = [];
+  let closing = false;
+  let expired = false;
+  let closingPromise: Promise<void> | undefined;
+  const onClientError = (error: Error) => errors.push(error);
+  const destroy = (client: PoolClient, token: object) => {
+    if (active.get(client) !== token) return;
+    try {
+      client.release(true);
+    } catch (error) {
+      errors.push(error);
+    }
+  };
+  const onAcquire = (client: PoolClient) => {
+    const token = {};
+    active.set(client, token);
+    client.on("error", onClientError);
+    // pg-pool 3.14 assigns release after the acquire event.
+    if (closing) queueMicrotask(() => destroy(client, token));
+  };
+  const onRelease = (_error: Error | undefined, client: PoolClient) => {
+    active.delete(client);
+    client.removeListener("error", onClientError);
+  };
+  runtime.on("acquire", onAcquire);
+  runtime.on("release", onRelease);
+  const run = <T>(start: () => Promise<T>): Promise<T> => {
+    const operation = Promise.resolve().then(() => {
+      if (closing) throw new Error("Overlap is closing");
+      return start();
+    });
+    const settled = operation.then(
+      () => {},
+      () => {},
+    );
+    tasks.add(settled);
+    void settled.then(() => tasks.delete(settled));
+    return operation;
+  };
+  const finish = (bodyFailed = false): Promise<void> => {
+    if (closingPromise) return closingPromise;
+    closing = true;
+    clearTimeout(timer);
+    const detach = () => {
+      runtime.removeListener("acquire", onAcquire);
+      runtime.removeListener("release", onRelease);
+    };
+    closingPromise = (async () => {
+      if (!bodyFailed) {
+        try {
+          const deadline = Date.now() + 3000;
+          while (tasks.size > 0 || active.size > 0 || runtime.waitingCount > 0) {
+            if (Date.now() >= deadline) throw new Error("Overlap returned with owned work pending");
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      try {
+        cancel();
+      } catch (error) {
+        errors.push(error);
+      }
+      for (const [client, token] of active) destroy(client, token);
+      const end = runtime.end();
+      const joined = (async () => {
+        const results = await Promise.allSettled([end, ...tasks]);
+        for (const result of results) if (result.status === "rejected") errors.push(result.reason);
+        while (tasks.size > 0) await Promise.all([...tasks]);
+        const deadline = Date.now() + 3000;
+        while (runtime.waitingCount > 0) {
+          if (Date.now() >= deadline) throw new Error("Overlap pool waiters did not settle");
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      })();
+      try {
+        await overlapBounded(joined, 8000);
+        detach();
+      } catch (error) {
+        errors.push(error);
+        // Only an unestablished driver/host stall reaches this failure fallback.
+        void joined.then(detach, detach);
+      }
+      if (expired) errors.unshift(new Error("Overlap timed out"));
+      if (errors.length) throw new AggregateError(errors, "Overlap cleanup failed", { cause: errors[0] });
+    })();
+    return closingPromise;
+  };
+  const timer = setTimeout(() => {
+    expired = true;
+    void finish(true).catch(() => {});
+  }, 8000);
+  return { run, finish };
+}
+
+async function overlapBounded<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Overlap cleanup timed out")), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function combineOverlapFailure(body: { error: unknown } | undefined, cleanup: unknown): { error: unknown } {
+  return {
+    error:
+      body === undefined
+        ? cleanup
+        : new AggregateError([body.error, cleanup], "Overlap and cleanup failed", { cause: body.error }),
+  };
+}
+
+function rethrowOverlap(error: unknown): never {
+  // Preserve even non-Error thrown identities from the tested operation.
+  throw error;
+}
+
 async function boundedBarrier<T>(promise: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -2210,6 +2340,71 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     });
   });
 
+  it("refuses overlap success while a runtime client remains checked out", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const owned = ownOverlap(runtime, () => {});
+    await runInTenant(getTenantZeroId(), () => runtime.connect());
+    await expect(owned.finish()).rejects.toMatchObject({ message: "Overlap cleanup failed" });
+    expect(runtime.ended).toBe(true);
+    expect(runtime.totalCount).toBe(0);
+    expect(runtime.listenerCount("acquire")).toBe(0);
+    expect(runtime.listenerCount("release")).toBe(0);
+  }, 20000);
+
+  it("settles late overlap checkout and preserves a simultaneous cleanup failure", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let deliver = () => {};
+    let ready = () => {};
+    const verifying = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const bodyError = new Error("body failure");
+    const cleanupError = new Error("cleanup failure");
+    let ran = false;
+    let settled = false;
+    runtime.options.verify = (_client, done) => {
+      deliver = () => queueMicrotask(() => done());
+      ready();
+    };
+    const owned = ownOverlap(runtime, () => {
+      deliver();
+      throw cleanupError;
+    });
+    const operation = owned.run(() =>
+      withTenantTransaction(runtime, getTenantZeroId(), async () => {
+        ran = true;
+      }),
+    );
+    void operation.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await boundedBarrier(verifying);
+    let failure: unknown = bodyError;
+    try {
+      await owned.finish(true);
+    } catch (error) {
+      failure = combineOverlapFailure({ error: failure }, error).error;
+    }
+    expect(failure).toBeInstanceOf(AggregateError);
+    if (!(failure instanceof AggregateError)) throw new Error("Expected combined failure");
+    expect(failure.cause).toBe(bodyError);
+    expect(failure.errors[0]).toBe(bodyError);
+    expect(failure.errors[1]).toBeInstanceOf(AggregateError);
+    expect(failure.errors[1] instanceof AggregateError && failure.errors[1].errors).toContain(cleanupError);
+    expect(ran).toBe(false);
+    expect(settled).toBe(true);
+    expect(runtime.ended).toBe(true);
+    expect(runtime.totalCount).toBe(0);
+    expect(runtime.waitingCount).toBe(0);
+    expect(runtime.listenerCount("acquire")).toBe(0);
+    expect(runtime.listenerCount("release")).toBe(0);
+  }, 20000);
+
   it("holds the source through the proposal commit before a competing edit", async () => {
     const { item } = await createTypedItem("Before the race");
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
@@ -2258,13 +2453,6 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       postModel = true;
       return { properties: { name: "Old proposal" } };
     });
-    const tick = runInTenant(getTenantZeroId(), () =>
-      handler(
-        { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
-        { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
-      ),
-    );
-    tick.catch(() => {});
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let writer: Promise<void> | undefined;
     let writerPid: number | undefined;
@@ -2280,6 +2468,23 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     const writerGate = new Promise<void>((resolve) => {
       releaseWriter = resolve;
     });
+    const owned = ownOverlap(runtime, () => {
+      resume();
+      releaseWriter();
+      writerStarted();
+      writerUpdated();
+      reached();
+    });
+    const tick = owned.run(() =>
+      runInTenant(getTenantZeroId(), () =>
+        handler(
+          { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
+          { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
+        ),
+      ),
+    );
+    tick.catch(() => {});
+    let failure: { error: unknown } | undefined;
     try {
       await Promise.race([
         atFingerprint,
@@ -2288,26 +2493,34 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         }),
       ]);
       expect(tickPid).toBeGreaterThan(0);
-      writer = withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-        writerPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-        writerStarted();
-        await updateItemWithClient(client, {
-          databaseId: inboxId,
-          itemId: item.id,
-          propertiesPatch: { text: "After the race" },
-        });
-        writerUpdated();
-        await writerGate;
-      });
+      writer = owned.run(() =>
+        withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+          writerPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          writerStarted();
+          await updateItemWithClient(client, {
+            databaseId: inboxId,
+            itemId: item.id,
+            propertiesPatch: { text: "After the race" },
+          });
+          writerUpdated();
+          await writerGate;
+        }),
+      );
       writer.catch(() => {});
       await boundedBarrier(started);
       expect(writerPid).toBeGreaterThan(0);
       expect(writerPid).not.toBe(tickPid);
       let blocked = false;
       for (let n = 0; n < 100 && !blocked; n++) {
-        const result = await pool.query<{ blocked: boolean }>(
-          "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
-          [tickPid, writerPid],
+        const result = await boundedBarrier(
+          owned.run(() =>
+            runInTenant(getTenantZeroId(), () =>
+              runtime.query<{ blocked: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked", [
+                tickPid,
+                writerPid,
+              ]),
+            ),
+          ),
         );
         blocked = result.rows[0]?.blocked === true;
         if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
@@ -2316,17 +2529,25 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       resume();
       await tick;
       await boundedBarrier(updated);
-      const card = await findProposalForItem(pool, proposalsId, item.id);
+      const card = await boundedBarrier(
+        owned.run(() => runInTenant(getTenantZeroId(), () => findProposalForItem(runtime, proposalsId, item.id))),
+      );
       expect(card?.properties.proposal).toMatchObject({ properties: { name: "Old proposal" } });
       releaseWriter();
       await writer;
+    } catch (error) {
+      failure = { error };
     } finally {
       if (timeout) clearTimeout(timeout);
       resume();
       releaseWriter();
-      await Promise.allSettled([tick, ...(writer ? [writer] : [])]);
-      await runtime.end();
+      try {
+        await owned.finish(failure !== undefined);
+      } catch (error) {
+        failure = combineOverlapFailure(failure, error);
+      }
     }
+    if (failure !== undefined) rethrowOverlap(failure.error);
     const source = await withTransaction(pool, (client) => itemsStore.getItemById(client, inboxId, item.id));
     expect(source?.properties.text).toBe("After the race");
   }, 20000);
@@ -2352,6 +2573,11 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       let tickPid: number | undefined;
       let postModel = false;
       const rollbackMarker = new Error("intentional edit rollback");
+      const owned = ownOverlap(runtime, () => {
+        releaseWriter();
+        writerReady();
+        tickWaiting();
+      });
       const observedPool = new Proxy(runtime, {
         get(target, property, receiver) {
           if (property !== "connect") {
@@ -2380,41 +2606,56 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
           };
         },
       });
-      const writer = withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-        writerPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-        await updateItemWithClient(client, {
-          databaseId: inboxId,
-          itemId: item.id,
-          propertiesPatch: { text: "After the edit" },
-        });
-        writerReady();
-        await writerGate;
-        if (rollback) throw rollbackMarker;
-      });
+      const writer = owned.run(() =>
+        withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+          writerPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          await updateItemWithClient(client, {
+            databaseId: inboxId,
+            itemId: item.id,
+            propertiesPatch: { text: "After the edit" },
+          });
+          writerReady();
+          await writerGate;
+          if (rollback) throw rollbackMarker;
+        }),
+      );
       const writerOutcome = writer.then(
         () => null,
         (error: unknown) => error,
       );
       let tick: Promise<void> | undefined;
+      let failure: { error: unknown } | undefined;
       try {
         await boundedBarrier(ready);
         const handler = createSemprecTickAction(observedPool, async () => {
           postModel = true;
           return { properties: { name: "Old proposal" } };
         });
-        tick = runInTenant(getTenantZeroId(), () =>
-          handler(
-            { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
-            { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
+        tick = owned.run(() =>
+          runInTenant(getTenantZeroId(), () =>
+            handler(
+              {
+                inboxDatabaseId: inboxId,
+                inboxItemTypesDatabaseId: typesId,
+                processingProposalsDatabaseId: proposalsId,
+              },
+              { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
+            ),
           ),
         );
         tick.catch(() => {});
         await boundedBarrier(waiting);
         let blocked = false;
         for (let n = 0; n < 100 && !blocked; n++) {
-          const result = await pool.query<{ blocked: boolean }>(
-            "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
-            [writerPid, tickPid],
+          const result = await boundedBarrier(
+            owned.run(() =>
+              runInTenant(getTenantZeroId(), () =>
+                runtime.query<{ blocked: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked", [
+                  writerPid,
+                  tickPid,
+                ]),
+              ),
+            ),
           );
           blocked = result.rows[0]?.blocked === true;
           if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
@@ -2424,14 +2665,22 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         releaseWriter();
         expect(await writerOutcome).toBe(rollback ? rollbackMarker : null);
         await tick;
-        const card = await findProposalForItem(pool, proposalsId, item.id);
+        const card = await boundedBarrier(
+          owned.run(() => runInTenant(getTenantZeroId(), () => findProposalForItem(runtime, proposalsId, item.id))),
+        );
         if (rollback) expect(card?.properties.proposal).toMatchObject({ properties: { name: "Old proposal" } });
         else expect(card).toBeNull();
+      } catch (error) {
+        failure = { error };
       } finally {
         releaseWriter();
-        await Promise.allSettled([writerOutcome, ...(tick ? [tick] : [])]);
-        await runtime.end();
+        try {
+          await owned.finish(failure !== undefined);
+        } catch (error) {
+          failure = combineOverlapFailure(failure, error);
+        }
       }
+      if (failure !== undefined) rethrowOverlap(failure.error);
     },
     20000,
   );
@@ -2488,6 +2737,14 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         });
         const mutationGate = new Promise<void>((resolve) => {
           startMutation = resolve;
+        });
+        const owned = ownOverlap(runtime, () => {
+          releaseTick();
+          releaseWriter();
+          startMutation();
+          tickReady();
+          writerReady();
+          writerDone();
         });
         const observed = new Proxy(runtime, {
           get(target, propertyKey, receiver) {
@@ -2547,34 +2804,39 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
             });
           })();
         };
-        const writer = withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-          await client.query("SET LOCAL statement_timeout = '5s'");
-          writerPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-          if (!writerFirst) {
-            writerReady();
-            await mutationGate;
-          }
-          await mutate(client);
-          writerDone();
-          if (writerFirst) writerReady();
-          await writerGate;
-        });
+        const writer = owned.run(() =>
+          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+            await client.query("SET LOCAL statement_timeout = '5s'");
+            writerPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            if (!writerFirst) {
+              writerReady();
+              await mutationGate;
+            }
+            await mutate(client);
+            writerDone();
+            if (writerFirst) writerReady();
+            await writerGate;
+          }),
+        );
         writer.catch(() => {});
         let tick: Promise<void> | undefined;
+        let failure: { error: unknown } | undefined;
         try {
           if (writerFirst) await boundedBarrier(writerAtBoundary);
           const handler = createSemprecTickAction(observed, async () => {
             postModel = true;
             return { properties: { name: "Old proposal" } };
           });
-          tick = runInTenant(getTenantZeroId(), () =>
-            handler(
-              {
-                inboxDatabaseId: inboxId,
-                inboxItemTypesDatabaseId: typesId,
-                processingProposalsDatabaseId: proposalsId,
-              },
-              { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
+          tick = owned.run(() =>
+            runInTenant(getTenantZeroId(), () =>
+              handler(
+                {
+                  inboxDatabaseId: inboxId,
+                  inboxItemTypesDatabaseId: typesId,
+                  processingProposalsDatabaseId: proposalsId,
+                },
+                { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
+              ),
             ),
           );
           tick.catch(() => {});
@@ -2587,9 +2849,15 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
           for (let n = 0; n < 100 && !blocked; n++) {
             const holder = writerFirst ? writerPid : tickPid;
             const competitor = writerFirst ? tickPid : writerPid;
-            const result = await pool.query<{ blocked: boolean }>(
-              "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
-              [holder, competitor],
+            const result = await boundedBarrier(
+              owned.run(() =>
+                runInTenant(getTenantZeroId(), () =>
+                  runtime.query<{ blocked: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked", [
+                    holder,
+                    competitor,
+                  ]),
+                ),
+              ),
             );
             blocked = result.rows[0]?.blocked === true;
             if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
@@ -2602,24 +2870,44 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
             releaseWriter();
             await writer;
             await tick;
-            expect(await findProposalForItem(pool, proposalsId, item.id)).toBeNull();
+            expect(
+              await boundedBarrier(
+                owned.run(() =>
+                  runInTenant(getTenantZeroId(), () => findProposalForItem(runtime, proposalsId, item.id)),
+                ),
+              ),
+            ).toBeNull();
           } else {
             releaseTick();
             await tick;
             await boundedBarrier(writerMutated);
-            expect((await findProposalForItem(pool, proposalsId, item.id))?.properties.proposal).toMatchObject({
+            expect(
+              (
+                await boundedBarrier(
+                  owned.run(() =>
+                    runInTenant(getTenantZeroId(), () => findProposalForItem(runtime, proposalsId, item.id)),
+                  ),
+                )
+              )?.properties.proposal,
+            ).toMatchObject({
               properties: { name: "Old proposal" },
             });
             releaseWriter();
             await writer;
           }
+        } catch (error) {
+          failure = { error };
         } finally {
           releaseTick();
           releaseWriter();
           startMutation();
-          await Promise.allSettled([writer, ...(tick ? [tick] : [])]);
-          await runtime.end();
+          try {
+            await owned.finish(failure !== undefined);
+          } catch (error) {
+            failure = combineOverlapFailure(failure, error);
+          }
         }
+        if (failure !== undefined) rethrowOverlap(failure.error);
       }
     },
     30000,
