@@ -450,6 +450,31 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     expect(JSON.stringify(request?.resourceSnapshot)).not.toContain("reason-sentinel");
   });
 
+  it("returns a validation error to the model without creating an approval for an oversized reason", async () => {
+    const projectItemId = await seededSemprecProjectItemId();
+    const chokePoint = createChokePoint(pool);
+    const database = await chokePoint.createDatabase({ name: "Oversized reason test" });
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: database.id, properties: {} }));
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "test" });
+    faux.setResponses([
+      fauxAssistantMessage(
+        [fauxToolCall("item_delete", { itemId: item.id, reason: "x".repeat(501) }, { id: "call-1" })],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("failed"),
+    ]);
+    const task = createAgentRunTask(pool, registry, fauxGateway, createInFlightAgentRuns());
+    await runInTenant(getTenantZeroId(), () => task({ agentRunId: run.id }, { job: { id: "1" } }));
+    const { rows } = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM approval_requests WHERE agent_run_id = $1",
+      [run.id],
+    );
+    expect(rows[0]?.count).toBe("0");
+    const result = (await runEvents(run.id)).find((event) => event.kind === "tool_result");
+    expect(result?.payload).toMatchObject({ isError: true });
+    expect(JSON.stringify(result?.payload)).toMatch(/reason/i);
+  });
+
   it("closes the row as error with one agent_run_error notification when the model call fails", async () => {
     const projectItemId = await seededSemprecProjectItemId();
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "say hello" });

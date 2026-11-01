@@ -70,6 +70,7 @@ describe("semprec-agents startup repair (issue #642)", () => {
     const { rows } = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
     const threadId = rows[0]!.id;
     const run = await createAgentRun(pool, { triggeredBy: "user", unit: "session", task: "test", threadId });
+    await insertAgentRunEvent(pool, run.id, "user_message", { kind: "user_message", text: "question", context: [] });
     await insertAgentRunEvent(pool, run.id, "tool_use", {
       kind: "tool_use",
       toolCallId: "call-1",
@@ -90,6 +91,7 @@ describe("semprec-agents startup repair (issue #642)", () => {
     const history = await reconstruct(pool, { threadId, projectItemId: "unused" });
     expect(history).not.toBeNull();
     const converted = toPiMessages(history!.entries, fauxProvider().getModel());
+    expect(converted[0]).toMatchObject({ role: "user", content: "question" });
     expect(converted).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
