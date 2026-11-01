@@ -93,7 +93,7 @@ async function withRuntimePool<T>(body: (runtime: Pool) => Promise<T>): Promise<
     outcome = { error };
   }
   try {
-    await runtime.end();
+    await bounded(runtime.end(), 10000);
   } catch (error) {
     if ("error" in outcome)
       throw new AggregateError([outcome.error, error], "Test and runtime cleanup failed", { cause: error });
@@ -123,6 +123,54 @@ async function bounded<T>(promise: Promise<T>, milliseconds = 8000): Promise<T> 
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+async function settleOwned<T>(promise: Promise<T>, getPid: () => number | undefined): Promise<T> {
+  let settled = false;
+  const tracked = promise.finally(() => {
+    settled = true;
+  });
+  try {
+    return await bounded(tracked);
+  } catch (initial) {
+    if (settled) throw initial;
+    let pid = getPid();
+    if (!pid) {
+      try {
+        await bounded(tracked);
+      } catch {
+        pid = getPid();
+      }
+    }
+    if (settled) throw initial;
+    const errors: unknown[] = [initial];
+    if (pid) {
+      try {
+        await bounded(pool.query("SELECT pg_terminate_backend($1::int)", [pid]));
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await bounded(tracked);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    throw new AggregateError(errors, "Owned participant did not settle", { cause: initial });
+  }
+}
+
+async function settleParticipants<T>(
+  user: Promise<T> | undefined,
+  system: Promise<T> | undefined,
+  userPid: () => number | undefined,
+  systemPid: () => number | undefined,
+): Promise<unknown[]> {
+  const owned: Promise<T>[] = [];
+  if (user) owned.push(settleOwned(user, userPid));
+  if (system) owned.push(settleOwned(system, systemPid));
+  const results = await Promise.allSettled(owned);
+  return results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
 }
 
 async function waitBlocked(holderPid: number, competitorPid: number): Promise<void> {
@@ -781,7 +829,7 @@ describe("value link state on writes (issue #1516)", () => {
           } finally {
             release.resolve();
             try {
-              const result = await bounded(holder);
+              const result = await settleOwned(holder, () => holderPid);
               requireSuccessful(result);
             } catch (error) {
               failure =
@@ -872,18 +920,10 @@ describe("value link state on writes (issue #1516)", () => {
           } finally {
             release.resolve();
             try {
-              await bounded(system);
+              await settleOwned(system, () => systemPid);
             } catch (error) {
               failure =
                 failure === undefined ? error : new AggregateError([failure, error], "Test and system cleanup failed");
-              if (systemPid) {
-                try {
-                  await bounded(pool.query("SELECT pg_terminate_backend($1::int)", [systemPid]));
-                  await bounded(system);
-                } catch (cleanupError) {
-                  failure = new AggregateError([failure, cleanupError], "System termination failed");
-                }
-              }
             }
             spy.mockRestore();
             setInvalidationHook(() => {});
@@ -946,7 +986,7 @@ describe("value link state on writes (issue #1516)", () => {
           } finally {
             release.resolve();
             try {
-              const outcome = await bounded(holder);
+              const outcome = await settleOwned(holder, () => holderPid);
               requireSuccessful(outcome);
             } catch (error) {
               failure =
@@ -1147,7 +1187,7 @@ describe("value link state on writes (issue #1516)", () => {
           } finally {
             release.resolve();
             try {
-              const result = await bounded(holder);
+              const result = await settleOwned(holder, () => holderPid);
               requireSuccessful(result);
             } catch (error) {
               failure =
@@ -1240,7 +1280,7 @@ describe("value link state on writes (issue #1516)", () => {
           } finally {
             release.resolve();
             try {
-              const result = await bounded(settledHolder);
+              const result = await settleOwned(settledHolder, () => holderPid);
               requireSuccessful(result);
             } catch (error) {
               failure =
@@ -1396,26 +1436,12 @@ describe("value link state on writes (issue #1516)", () => {
           } finally {
             releaseJob.resolve();
             releaseLink.resolve();
-            const participants = [user, system].filter((value): value is Promise<Outcome> => value !== undefined);
-            const errors: unknown[] = [];
-            try {
-              await bounded(Promise.all(participants), 9000);
-            } catch (error) {
-              errors.push(error);
-              for (const pid of [userPid, systemPid])
-                if (pid) {
-                  try {
-                    await bounded(pool.query("SELECT pg_terminate_backend($1::int)", [pid]));
-                  } catch (error) {
-                    errors.push(error);
-                  }
-                }
-              try {
-                await bounded(Promise.all(participants));
-              } catch (error) {
-                errors.push(error);
-              }
-            }
+            const errors = await settleParticipants(
+              user,
+              system,
+              () => userPid,
+              () => systemPid,
+            );
             linkSpy.mockRestore();
             setInvalidationHook(() => {});
             if (errors.length)
@@ -1538,26 +1564,12 @@ describe("value link state on writes (issue #1516)", () => {
             } finally {
               releaseEdge.resolve();
               releaseLink.resolve();
-              const participants = [user, system].filter((value): value is Promise<Outcome> => value !== undefined);
-              const errors: unknown[] = [];
-              try {
-                await bounded(Promise.all(participants), 9000);
-              } catch (error) {
-                errors.push(error);
-                for (const pid of [userPid, systemPid])
-                  if (pid) {
-                    try {
-                      await bounded(pool.query("SELECT pg_terminate_backend($1::int)", [pid]));
-                    } catch (error) {
-                      errors.push(error);
-                    }
-                  }
-                try {
-                  await bounded(Promise.all(participants));
-                } catch (error) {
-                  errors.push(error);
-                }
-              }
+              const errors = await settleParticipants(
+                user,
+                system,
+                () => userPid,
+                () => systemPid,
+              );
               edgeSpy.mockRestore();
               linkSpy.mockRestore();
               if (errors.length)
@@ -1707,26 +1719,12 @@ describe("value link state on writes (issue #1516)", () => {
             } finally {
               releaseSource.resolve();
               releaseLink.resolve();
-              const participants = [user, system].filter((value): value is Promise<Outcome> => value !== undefined);
-              const errors: unknown[] = [];
-              try {
-                await bounded(Promise.all(participants), 9000);
-              } catch (error) {
-                errors.push(error);
-                for (const pid of [userPid, systemPid])
-                  if (pid) {
-                    try {
-                      await bounded(pool.query("SELECT pg_terminate_backend($1::int)", [pid]));
-                    } catch (error) {
-                      errors.push(error);
-                    }
-                  }
-                try {
-                  await bounded(Promise.all(participants));
-                } catch (error) {
-                  errors.push(error);
-                }
-              }
+              const errors = await settleParticipants(
+                user,
+                system,
+                () => userPid,
+                () => systemPid,
+              );
               sourceSpy.mockRestore();
               linkSpy.mockRestore();
               if (errors.length)
@@ -2061,31 +2059,12 @@ describe("value link state on writes (issue #1516)", () => {
             } finally {
               releaseUser.resolve();
               releaseSystem.resolve();
-              const participants = [user, system].filter((value): value is Promise<Outcome> => value !== undefined);
-              const cleanupErrors: unknown[] = [];
-              try {
-                await bounded(Promise.all(participants), 9000);
-              } catch (cleanupError) {
-                cleanupErrors.push(cleanupError);
-                for (const pid of [userPid, systemPid]) {
-                  if (pid) {
-                    try {
-                      await bounded(
-                        pool.query<{ terminated: boolean }>("SELECT pg_terminate_backend($1::int) AS terminated", [
-                          pid,
-                        ]),
-                      );
-                    } catch (error) {
-                      cleanupErrors.push(error);
-                    }
-                  }
-                }
-                try {
-                  await bounded(Promise.all(participants));
-                } catch (error) {
-                  cleanupErrors.push(error);
-                }
-              }
+              const cleanupErrors = await settleParticipants(
+                user,
+                system,
+                () => userPid,
+                () => systemPid,
+              );
               updateSpy.mockRestore();
               lockSpy.mockRestore();
               setInvalidationHook(() => {});

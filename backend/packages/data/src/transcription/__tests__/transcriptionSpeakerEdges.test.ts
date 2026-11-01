@@ -188,6 +188,7 @@ describe("Transcript speaker mappings (issue #185)", () => {
       await withTenantTransaction(runtime, tenant, (client) =>
         insertValueLink(client, { itemId: transcriptId, propertyKey: "speakers", ruleKey: "test", sources: [] }),
       );
+      let holderSettled = false;
       const holder = runInTenant(tenant, () =>
         withTransaction(runtime, async (client) => {
           holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
@@ -199,10 +200,14 @@ describe("Transcript speaker mappings (issue #185)", () => {
           acquired();
           await gate;
         }),
-      ).then(
-        () => ({ ok: true as const }),
-        (error: unknown) => ({ ok: false as const, error }),
-      );
+      )
+        .then(
+          () => ({ ok: true as const }),
+          (error: unknown) => ({ ok: false as const, error }),
+        )
+        .finally(() => {
+          holderSettled = true;
+        });
       let failure: unknown;
       try {
         await bounded(ready);
@@ -239,7 +244,14 @@ describe("Transcript speaker mappings (issue #185)", () => {
         } catch (error) {
           failure =
             failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
-          if (holderPid) {
+          if (!holderSettled && !holderPid) {
+            try {
+              await bounded(holder);
+            } catch (lateError) {
+              failure = new AggregateError([failure, lateError], "Late holder cleanup failed");
+            }
+          }
+          if (!holderSettled && holderPid) {
             try {
               await bounded(pool.query("SELECT pg_terminate_backend($1::int)", [holderPid]));
               await bounded(holder);
