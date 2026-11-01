@@ -225,8 +225,15 @@ describe("batched relation expansion", () => {
         targetDatabaseId: target.id,
       });
       const a = await cp.createItem({ databaseId: source.id, properties: {} });
-      for (const blobId of [foreignBlob.id, randomUUID()]) {
-        const b = await cp.createItem({ databaseId: target.id, properties: { file: { blobId } } });
+      const missingBlobId = randomUUID();
+      for (const blobId of [foreignBlob.id, missingBlobId]) {
+        const b = await cp.createItem({ databaseId: target.id, properties: {} });
+        // A legacy invalid reference predating the blob-reference write hook.
+        const updated = await pool.query<{ id: string }>(
+          "UPDATE items SET properties = jsonb_build_object('file', jsonb_build_object('blobId', $3::text)) WHERE database_id = $1 AND id = $2 RETURNING id",
+          [target.id, b.id, blobId],
+        );
+        expect(updated.rows.map((row) => row.id)).toEqual([b.id]);
         await cp.createRelation({ relationPropertyId: relation.property.id, callerItemId: a.id, targetItemId: b.id });
       }
       const [result] = await expand([a], { targets: ["file"] });
@@ -235,6 +242,9 @@ describe("batched relation expansion", () => {
         expect(target.properties).toHaveProperty("file");
         expect(target).not.toHaveProperty("blobs");
       }
+      expect((result?.relations?.targets ?? []).map((target) => target.properties?.file)).toEqual(
+        expect.arrayContaining([{ blobId: foreignBlob.id }, { blobId: missingBlobId }]),
+      );
     });
   });
   it("never exposes a foreign target even through a dangling legacy edge", async () => {

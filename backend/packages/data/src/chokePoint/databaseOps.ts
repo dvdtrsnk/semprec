@@ -76,7 +76,7 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedK
         for (const key of [TITLE_PROPERTY_KEY, ...properties.map((property) => property.key)]) {
           assertNoComputedKeyCollision(computedKeyRegistry, key);
         }
-        await propertiesStore.createProperty(client, {
+        const title = await propertiesStore.createProperty(client, {
           databaseId: database.id,
           key: TITLE_PROPERTY_KEY,
           name: titlePropertyName,
@@ -84,9 +84,10 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedK
           locked: false,
           owner: "user",
         });
-        for (const property of properties) {
+        await propertiesStore.setInitialPosition(client, database.id, title.id, 0);
+        for (const [index, property] of properties.entries()) {
           if (property.type === "relation") {
-            await createRelationPropertyWithClient(
+            const created = await createRelationPropertyWithClient(
               client,
               {
                 sourceDatabaseId: database.id,
@@ -100,8 +101,9 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedK
               undefined,
               computedKeyRegistry,
             );
+            await propertiesStore.setInitialPosition(client, database.id, created.property.id, index + 1);
           } else {
-            await propertiesStore.createProperty(client, {
+            const created = await propertiesStore.createProperty(client, {
               databaseId: database.id,
               key: property.key,
               name: property.name,
@@ -110,6 +112,7 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedK
               locked: false,
               owner: "user",
             });
+            await propertiesStore.setInitialPosition(client, database.id, created.id, index + 1);
           }
         }
         runAfterCommit(client, () =>

@@ -95,7 +95,7 @@ export async function listItemRelationsWithClient(
   for (const side of sides) {
     for (const edge of edgesByDefinition.get(side.definitionId) ?? []) {
       const ownEnd = side.isSideA ? edge.itemA : edge.itemB;
-      if (ownEnd !== itemId) continue;
+      if (ownEnd !== itemId.toLowerCase()) continue;
       candidates.push({ side, edge, targetItemId: side.isSideA ? edge.itemB : edge.itemA });
     }
   }

@@ -1,15 +1,16 @@
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { ForbiddenError } from "../errors.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
-import { ingestUploadedFile } from "../blobs/fileUploadStore.js";
+import { ingestUploadedBlob, ingestUploadedFile } from "../blobs/fileUploadStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { logger } from "../blobs/logger.js";
+import { deleteBlobIfUnreferenced } from "../blobs/blobsStore.js";
 
 /**
  * In-memory stand-in for `LocalFsBlobStorageWriter`: records every `writeStream`/`delete` call
@@ -60,6 +61,59 @@ function requireDefined<T>(value: T | undefined, message: string): T {
   return value;
 }
 
+async function bounded<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("filing barrier timed out")), 5000);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/** Captures the backend on the very client that issues the matched production statement. */
+function observeStatementPid(runtime: Pool, statement: RegExp) {
+  let resolvePid!: (pid: number) => void;
+  const pid = new Promise<number>((resolve) => {
+    resolvePid = resolve;
+  });
+  const wrapped = new Map<PoolClient, PoolClient["query"]>();
+  let captured = false;
+  const instrument = (client: PoolClient) => {
+    if (wrapped.has(client)) return;
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    wrapped.set(client, client.query);
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    client.query = new Proxy(client.query, {
+      apply(target, receiver, args: unknown[]) {
+        if (captured || typeof args[0] !== "string" || !statement.test(args[0])) {
+          return Reflect.apply(target, receiver, args);
+        }
+        captured = true;
+        return (async () => {
+          const result = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          const actual = result.rows[0]?.pid;
+          if (actual === undefined) throw new Error("missing competing backend pid");
+          resolvePid(actual);
+          return Reflect.apply(target, receiver, args);
+        })();
+      },
+    });
+  };
+  runtime.on("acquire", instrument);
+  return {
+    pid,
+    restore() {
+      runtime.off("acquire", instrument);
+      for (const [client, query] of wrapped) client.query = query;
+    },
+  };
+}
+
 let pool: Pool;
 
 describe("ingestUploadedFile (issue #670)", () => {
@@ -99,10 +153,11 @@ describe("ingestUploadedFile (issue #670)", () => {
     filesDatabaseId: string,
     bytes: Buffer,
     contentType: string,
+    filename = "upload.bin",
   ) {
     return ingestUploadedFile(pool, {
       filesDatabaseId,
-      filename: "upload.bin",
+      filename,
       contentType,
       source: Readable.from([bytes]),
       storageKeyPrefix: "files",
@@ -154,6 +209,200 @@ describe("ingestUploadedFile (issue #670)", () => {
     expect(second.created).toBe(false);
     expect(second.item).toEqual(first.item);
   });
+
+  it("reuses a standalone blob and its original storage root when filing identical bytes", async () => {
+    const storage = new FakeBlobStorageWriter();
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+    const standalone = await ingestUploadedBlob(pool, {
+      mimeType: "image/png",
+      source: Readable.from([bytes]),
+      maxBytes: 1024,
+      storage,
+    });
+    const filed = await uploadBytes(storage, await filesDatabaseId(), bytes, "image/png");
+    expect(filed.created).toBe(true);
+    expect(filed.blob.id).toBe(standalone.blob.id);
+    expect(filed.blob.storageKey).toBe(standalone.blob.storageKey);
+    expect(filed.item.properties.file).toEqual({ blobId: standalone.blob.id });
+    expect(storage.bytesByKey.has(standalone.blob.storageKey)).toBe(true);
+  });
+
+  it.each([
+    ["first.bin", "second.bin", "commit"],
+    ["second.bin", "first.bin", "commit"],
+    ["first.bin", "second.bin", "rollback"],
+  ] as const)(
+    "serializes %s before %s when the first outcome is %s",
+    async (firstName, secondName, outcome) => {
+      const filesId = await filesDatabaseId();
+      const storage = new FakeBlobStorageWriter();
+      const bytes = Buffer.from("standalone race bytes");
+      const standalone = await ingestUploadedBlob(pool, {
+        mimeType: "image/png",
+        source: Readable.from([bytes]),
+        maxBytes: 1024,
+        storage,
+      });
+      let release!: () => void;
+      let ready!: (pid: number) => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<number>((resolve) => {
+        ready = resolve;
+      });
+      const wrapped = new Map<PoolClient, PoolClient["query"]>();
+      let held = false;
+      const instrument = (client: PoolClient) => {
+        if (wrapped.has(client)) return;
+        // The proxy forwards each call with its original receiver.
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        wrapped.set(client, client.query);
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        client.query = new Proxy(client.query, {
+          apply(target, receiver, args: unknown[]) {
+            const result: unknown = Reflect.apply(target, receiver, args);
+            if (held || typeof args[0] !== "string" || !args[0].includes("properties -> 'file' ->> 'blobId'"))
+              return result;
+            held = true;
+            return Promise.resolve(result).then(async (value: unknown) => {
+              const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              if (pid === undefined) throw new Error("missing filing pid");
+              ready(pid);
+              await gate;
+              if (outcome === "rollback") throw new Error("forced first filing rollback");
+              return value;
+            });
+          },
+        });
+      };
+      pool.on("acquire", instrument);
+      const first = uploadBytes(storage, filesId, bytes, "image/png", firstName);
+      const firstSettled = Promise.allSettled([first]);
+      let second: ReturnType<typeof uploadBytes> | undefined;
+      let competing: ReturnType<typeof observeStatementPid> | undefined;
+      try {
+        const pid = await bounded(
+          Promise.race([
+            started,
+            first.then(() => {
+              throw new Error("first filing exited before barrier");
+            }),
+          ]),
+        );
+        competing = observeStatementPid(pool, /FROM blobs\b[\s\S]*FOR UPDATE/i);
+        second = uploadBytes(storage, filesId, bytes, "image/png", secondName);
+        const secondSettled = Promise.allSettled([second]);
+        const competitorPid = await bounded(competing.pid);
+        await expect
+          .poll(
+            async () => {
+              const result = await pool.query<{ blocked: boolean }>(
+                "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+                [pid, competitorPid],
+              );
+              return result.rows[0]?.blocked;
+            },
+            { timeout: 5000 },
+          )
+          .toBe(true);
+        release();
+        const [firstResult] = await firstSettled;
+        const [secondResult] = await secondSettled;
+        if (outcome === "commit") {
+          expect(firstResult?.status).toBe("fulfilled");
+          expect(secondResult?.status).toBe("fulfilled");
+          if (firstResult?.status === "fulfilled" && secondResult?.status === "fulfilled") {
+            expect(firstResult.value.created).toBe(true);
+            expect(firstResult.value.item.properties.name).toBe(firstName);
+            expect(secondResult.value.created).toBe(false);
+            expect(secondResult.value.item.id).toBe(firstResult.value.item.id);
+            expect(secondResult.value.blob.id).toBe(standalone.blob.id);
+          }
+        } else {
+          expect(firstResult?.status).toBe("rejected");
+          if (firstResult?.status === "rejected")
+            expect(firstResult.reason).toMatchObject({ message: "forced first filing rollback" });
+          expect(secondResult?.status).toBe("fulfilled");
+          if (secondResult?.status === "fulfilled")
+            expect(secondResult.value).toMatchObject({
+              created: true,
+              blob: { id: standalone.blob.id },
+              item: { properties: { name: secondName } },
+            });
+        }
+        const rows = await pool.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM items WHERE database_id = $1 AND properties ? 'file'",
+          [filesId],
+        );
+        expect(rows.rows[0]?.n).toBe(1);
+        expect(storage.bytesByKey.has(standalone.blob.storageKey)).toBe(true);
+        await vi.waitFor(() => expect(storage.bytesByKey.size).toBe(1));
+        expect(storage.deleteCalls).toHaveLength(2);
+      } finally {
+        release();
+        await firstSettled;
+        if (second) await Promise.allSettled([second]);
+        competing?.restore();
+        pool.off("acquire", instrument);
+        for (const [client, query] of wrapped) client.query = query;
+      }
+    },
+    15000,
+  );
+
+  it("fails closed and cleans its bytes if the reused blob disappears before the filing lock", async () => {
+    const filesId = await filesDatabaseId();
+    const storage = new FakeBlobStorageWriter();
+    const bytes = Buffer.from("blob deleted before filing lock");
+    const standalone = await ingestUploadedBlob(pool, {
+      mimeType: "image/png",
+      source: Readable.from([bytes]),
+      maxBytes: 1024,
+      storage,
+    });
+    const wrapped = new Map<PoolClient, PoolClient["query"]>();
+    let intercepted = false;
+    let deletion: Promise<void> | undefined;
+    const instrument = (client: PoolClient) => {
+      if (wrapped.has(client)) return;
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      wrapped.set(client, client.query);
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      client.query = new Proxy(client.query, {
+        apply(target, receiver, args: unknown[]) {
+          if (intercepted || typeof args[0] !== "string" || !args[0].includes("AND id = $1 FOR UPDATE")) {
+            return Reflect.apply(target, receiver, args);
+          }
+          intercepted = true;
+          deletion = withTransaction(pool, async (other) => {
+            const key = await deleteBlobIfUnreferenced(other, standalone.blob.id);
+            expect(key).toBe(standalone.blob.storageKey);
+          }).then(async () => storage.delete(standalone.blob.storageKey));
+          return bounded(deletion).then(() => Reflect.apply(target, receiver, args));
+        },
+      });
+    };
+    pool.on("acquire", instrument);
+    try {
+      await expect(uploadBytes(storage, filesId, bytes, "image/png")).rejects.toMatchObject({
+        code: "validation_failed",
+        details: { field: "file" },
+      });
+      expect(intercepted).toBe(true);
+      expect(storage.bytesByKey.size).toBe(0);
+      expect(storage.deleteCalls).toHaveLength(2);
+      const rows = await pool.query<{ n: number }>(
+        "SELECT count(*)::int AS n FROM items WHERE database_id = $1 AND properties ? 'file'",
+        [filesId],
+      );
+      expect(rows.rows[0]?.n).toBe(0);
+    } finally {
+      if (deletion) await Promise.allSettled([deletion]);
+      pool.off("acquire", instrument);
+      for (const [client, query] of wrapped) client.query = query;
+    }
+  }, 15000);
 
   it("deletes the streamed bytes and leaves no blobs row when the transaction fails", async () => {
     const filesId = await filesDatabaseId();

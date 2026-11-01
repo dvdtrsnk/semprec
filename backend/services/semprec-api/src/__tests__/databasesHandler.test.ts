@@ -539,8 +539,8 @@ describe("database routes (issue #240)", () => {
     };
     const threeProperties = [
       { key: "recipient", name: "Recipient", type: "text" },
-      { key: "status", name: "Status", type: "select", config: { options: [{ key: "idea", label: "Idea" }] } },
       { key: "when", name: "When", type: "date" },
+      { key: "status", name: "Status", type: "select", config: { options: [{ key: "idea", label: "Idea" }] } },
     ];
 
     it("creates the database, a localized title property and the listed properties in order", async () => {
@@ -553,8 +553,8 @@ describe("database routes (issue #240)", () => {
       expect(body.properties.map((p) => [p.key, p.type])).toEqual([
         ["name", "title"],
         ["recipient", "text"],
-        ["status", "select"],
         ["when", "date"],
+        ["status", "select"],
       ]);
       expect(body.properties[0]?.label).toBe("Název");
       const item = await fetch(`${baseUrl}/api/databases/${created.id}/items`, {
@@ -569,6 +569,52 @@ describe("database routes (issue #240)", () => {
       const res = await post(await jsonHeaders(), { name: "Bare" });
       const created = (await res.json()) as DatabaseBody;
       expect(await chokePoint.listProperties(created.id)).toEqual([]);
+    });
+
+    it("creates and uses an initial relation whose existing target UUID is uppercase", async () => {
+      const headers = await jsonHeaders();
+      const target = await chokePoint.createDatabase({ name: "Uppercase target" });
+      const targetItem = await chokePoint.createItem({ databaseId: target.id, properties: {} });
+      const response = await post(headers, {
+        name: "Source",
+        properties: [
+          {
+            key: "link",
+            name: "Link",
+            type: "relation",
+            targetDatabaseId: target.id.toUpperCase(),
+            cardinality: "many_to_many",
+          },
+        ],
+      });
+      expect(response.status).toBe(201);
+      const body: unknown = await response.json();
+      if (typeof body !== "object" || body === null || !("id" in body) || typeof body.id !== "string") {
+        throw new Error("invalid database response");
+      }
+      const properties = await chokePoint.listProperties(body.id);
+      const relation = properties.find((property) => property.key === "link");
+      expect(relation?.type).toBe("relation");
+      const sourceItem = await chokePoint.createItem({ databaseId: body.id, properties: { name: "Source item" } });
+      const linked = await fetch(`${baseUrl}/api/items/${sourceItem.id}/relations/link/${targetItem.id}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ metadata: {} }),
+      });
+      expect(linked.status).toBe(200);
+      const listed = await fetch(`${baseUrl}/api/items/${sourceItem.id}/relations`, { headers });
+      expect(listed.status).toBe(200);
+      const result: unknown = await listed.json();
+      expect(result).toMatchObject({
+        relations: [
+          {
+            relationPropertyId: relation?.id,
+            propertyKey: "link",
+            targetItemId: targetItem.id,
+            targetDatabaseId: target.id,
+          },
+        ],
+      });
     });
 
     it.each([
@@ -613,6 +659,24 @@ describe("database routes (issue #240)", () => {
       });
       expect(noTarget.status).toBe(400);
       expect(JSON.stringify(await noTarget.json())).toContain("targetDatabaseId");
+      const noCardinality = await post(headers, {
+        name: "X",
+        properties: [{ key: "link", name: "Link", type: "relation", targetDatabaseId: randomUUID() }],
+      });
+      expect(noCardinality.status).toBe(400);
+      expect(JSON.stringify(await noCardinality.json())).toContain("cardinality");
+      const before = await footprint();
+      const malformed = await post(headers, {
+        name: "Malformed",
+        properties: [
+          { key: "link", name: "Link", type: "relation", targetDatabaseId: "not-a-uuid", cardinality: "one_to_one" },
+        ],
+      });
+      expect(malformed.status).toBe(400);
+      expect(await malformed.json()).toMatchObject({
+        error: { code: "validation_failed", details: { field: "properties.0.targetDatabaseId" } },
+      });
+      expect(await footprint()).toEqual(before);
       for (const type of ["rollup", "title", "multi_select"]) {
         const res = await post(headers, { name: "X", properties: [{ key: "k", name: "K", type }] });
         expect(res.status).toBe(400);

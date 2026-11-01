@@ -29,7 +29,7 @@ export function filenameFromStorageKey(storageKey: string): string | null {
 function readBlobId(value: unknown): string | undefined {
   if (typeof value !== "object" || value === null || !("blobId" in value)) return undefined;
   const blobId = value.blobId;
-  return typeof blobId === "string" && UUID_RE.test(blobId) ? blobId : undefined;
+  return typeof blobId === "string" && UUID_RE.test(blobId) ? blobId.toLowerCase() : undefined;
 }
 
 /**

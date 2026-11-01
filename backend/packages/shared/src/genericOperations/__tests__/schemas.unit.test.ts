@@ -86,7 +86,13 @@ describe("DatabaseCreateInputSchema", () => {
       titlePropertyName: "Název",
       properties: [
         { key: "recipient", name: "Recipient", type: "text" },
-        { key: "link", name: "Link", type: "relation", targetDatabaseId: "db", cardinality: "one_to_many" },
+        {
+          key: "link",
+          name: "Link",
+          type: "relation",
+          targetDatabaseId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          cardinality: "one_to_many",
+        },
       ],
     });
     expect(result.success).toBe(true);
@@ -304,39 +310,93 @@ describe("RelationDeleteInputSchema", () => {
 });
 
 describe("RelationListInputSchema (issue #1404)", () => {
+  it("rejects malformed identifiers while accepting uppercase UUIDs", () => {
+    const uuid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA";
+    expect(RelationListInputSchema.safeParse({ itemId: uuid, relationPropertyId: uuid }).success).toBe(true);
+    for (const input of [{ itemId: "bad" }, { itemId: uuid, relationPropertyId: "bad" }]) {
+      expect(RelationListInputSchema.safeParse(input).success).toBe(false);
+    }
+    expect(PageRestoreVersionInputSchema.safeParse({ itemId: "bad", at: "2026-10-01T10:00:00Z" }).success).toBe(false);
+    expect(
+      DatabaseCreateInputSchema.safeParse({
+        name: "X",
+        properties: [
+          { key: "link", name: "Link", type: "relation", targetDatabaseId: "bad", cardinality: "one_to_one" },
+        ],
+      }).success,
+    ).toBe(false);
+  });
   it("requires an itemId and takes the relation property as an optional narrowing", () => {
-    expect(RelationListInputSchema.safeParse({ itemId: "i1" }).success).toBe(true);
-    expect(RelationListInputSchema.safeParse({ itemId: "i1", relationPropertyId: "p1" }).success).toBe(true);
-    expect(RelationListInputSchema.safeParse({ relationPropertyId: "p1" }).success).toBe(false);
+    expect(RelationListInputSchema.safeParse({ itemId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" }).success).toBe(true);
+    expect(
+      RelationListInputSchema.safeParse({
+        itemId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        relationPropertyId: "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB",
+      }).success,
+    ).toBe(true);
+    expect(
+      RelationListInputSchema.safeParse({ relationPropertyId: "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB" }).success,
+    ).toBe(false);
   });
 
   it("rejects an unknown key, such as a relation direction or a metadata field", () => {
-    expect(RelationListInputSchema.safeParse({ itemId: "i1", propertyKey: "assignedTo" }).success).toBe(false);
-    expect(RelationListInputSchema.safeParse({ itemId: "i1", direction: "out" }).success).toBe(false);
+    expect(
+      RelationListInputSchema.safeParse({ itemId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", propertyKey: "assignedTo" })
+        .success,
+    ).toBe(false);
+    expect(
+      RelationListInputSchema.safeParse({ itemId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", direction: "out" }).success,
+    ).toBe(false);
   });
 });
 
 describe("PageRestoreVersionInputSchema (issue #1617)", () => {
   it("requires an itemId and an ISO 8601 timestamp with an offset", () => {
-    expect(PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "2026-10-01T10:00:00Z" }).success).toBe(true);
-    expect(PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "2026-10-01T10:00:00.250+02:00" }).success).toBe(
-      true,
-    );
+    expect(
+      PageRestoreVersionInputSchema.safeParse({
+        itemId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        at: "2026-10-01T10:00:00Z",
+      }).success,
+    ).toBe(true);
+    expect(
+      PageRestoreVersionInputSchema.safeParse({
+        itemId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        at: "2026-10-01T10:00:00.250+02:00",
+      }).success,
+    ).toBe(true);
   });
 
   it("rejects a missing itemId, a missing or non-ISO at, and an at without an offset", () => {
     expect(PageRestoreVersionInputSchema.safeParse({ at: "2026-10-01T10:00:00Z" }).success).toBe(false);
-    expect(PageRestoreVersionInputSchema.safeParse({ itemId: "i1" }).success).toBe(false);
-    expect(PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "yesterday" }).success).toBe(false);
-    expect(PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "2026-10-01T10:00:00" }).success).toBe(false);
+    expect(PageRestoreVersionInputSchema.safeParse({ itemId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" }).success).toBe(
+      false,
+    );
+    expect(
+      PageRestoreVersionInputSchema.safeParse({ itemId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", at: "yesterday" })
+        .success,
+    ).toBe(false);
+    expect(
+      PageRestoreVersionInputSchema.safeParse({
+        itemId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        at: "2026-10-01T10:00:00",
+      }).success,
+    ).toBe(false);
   });
 
   it("rejects an unknown key, such as a page id or a userId", () => {
     expect(
-      PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "2026-10-01T10:00:00Z", pageId: "p" }).success,
+      PageRestoreVersionInputSchema.safeParse({
+        itemId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        at: "2026-10-01T10:00:00Z",
+        pageId: "p",
+      }).success,
     ).toBe(false);
     expect(
-      PageRestoreVersionInputSchema.safeParse({ itemId: "i1", at: "2026-10-01T10:00:00Z", userId: "u" }).success,
+      PageRestoreVersionInputSchema.safeParse({
+        itemId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        at: "2026-10-01T10:00:00Z",
+        userId: "u",
+      }).success,
     ).toBe(false);
   });
 });

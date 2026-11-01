@@ -311,6 +311,14 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
       cutoff: Date,
     ): Promise<{ purgedItemIds: string[]; blobStorageKeys: string[] }> {
       return withTransaction(pool, async (client) => {
+        const scope = await client.query<{ tenant_id: string | null }>(
+          "SELECT app_tenant_default()::text AS tenant_id",
+        );
+        const tenantId = scope.rows[0]?.tenant_id;
+        if (!tenantId) throw new Error("Tenant scope is required for trash purge");
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", [
+          `trash-purge:v1:${tenantId.toLowerCase()}`,
+        ]);
         const [root] = await itemsStore.getItemsByIdsIncludingDeleted(client, [rootItemId]);
         if (!root || !root.deletedAt || new Date(root.deletedAt) >= cutoff) {
           return { purgedItemIds: [], blobStorageKeys: [] };

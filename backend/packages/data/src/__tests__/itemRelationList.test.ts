@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
+import { runInTenant } from "@semprec/shared";
+import { createRuntimeRolePool, getTenantZeroId } from "../testSupport/tenantFixtures.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { ValidationError } from "../errors.js";
@@ -43,6 +45,90 @@ describe("choke-point listItemRelations (issue #1404)", () => {
     return { tasks, people, assignedTo, assignedTasks, task, person };
   }
 
+  it("reads one or many nonempty relation sets with a fixed number of production queries", async () => {
+    const { tasks, people, task, person } = await makePairedRelation();
+    const singleDatabase = await chokePoint.createDatabase({ name: "Single relation" });
+    const { property: only } = await chokePoint.createRelationProperty({
+      sourceDatabaseId: singleDatabase.id,
+      key: "only",
+      name: "Only",
+      targetDatabaseId: people.id,
+    });
+    const single = await chokePoint.createItem({ databaseId: singleDatabase.id, properties: {} });
+    await chokePoint.createRelation({
+      relationPropertyId: only.id,
+      callerItemId: single.id,
+      targetItemId: person.id,
+    });
+    const expected = [];
+    for (let i = 0; i < 5; i += 1) {
+      const key = `group${i}`;
+      const { property } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: tasks.id,
+        key,
+        name: key,
+        targetDatabaseId: people.id,
+      });
+      const target = await chokePoint.createItem({ databaseId: people.id, properties: {} });
+      await chokePoint.createRelation({
+        relationPropertyId: property.id,
+        callerItemId: task.id,
+        targetItemId: target.id,
+      });
+      expected.push({
+        relationPropertyId: property.id,
+        propertyKey: key,
+        targetItemId: target.id,
+        targetDatabaseId: people.id,
+        metadata: {},
+      });
+    }
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const wrapped = new Map<PoolClient, PoolClient["query"]>();
+    let selects = 0;
+    const instrument = (client: PoolClient) => {
+      if (wrapped.has(client)) return;
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      wrapped.set(client, client.query);
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      client.query = new Proxy(client.query, {
+        apply(target, receiver, args: unknown[]) {
+          if (
+            typeof args[0] === "string" &&
+            !/^\s*(?:BEGIN|COMMIT|ROLLBACK|RESET)\b/i.test(args[0]) &&
+            !/set_config\('app\.tenant_id'/i.test(args[0])
+          )
+            selects += 1;
+          return Reflect.apply(target, receiver, args);
+        },
+      });
+    };
+    runtime.on("acquire", instrument);
+    try {
+      const cp = createChokePoint(runtime);
+      const one = await runInTenant(getTenantZeroId(), () => cp.listItemRelations(single.id));
+      const oneCount = selects;
+      selects = 0;
+      const many = await runInTenant(getTenantZeroId(), () => cp.listItemRelations(task.id));
+      expect(one).toEqual([
+        {
+          relationPropertyId: only.id,
+          propertyKey: "only",
+          targetItemId: person.id,
+          targetDatabaseId: people.id,
+          metadata: {},
+        },
+      ]);
+      expect(many).toEqual(expected);
+      expect(oneCount).toBe(7);
+      expect(selects).toBe(oneCount);
+    } finally {
+      runtime.off("acquire", instrument);
+      for (const [client, query] of wrapped) client.query = query;
+      await runtime.end();
+    }
+  });
+
   it("lists a one-directional edge from its source side only, with the target and its database", async () => {
     const files = await chokePoint.createDatabase({ name: "Files" });
     const areas = await chokePoint.createDatabase({ name: "Areas" });
@@ -79,6 +165,15 @@ describe("choke-point listItemRelations (issue #1404)", () => {
     });
 
     expect(await chokePoint.listItemRelations(task.id)).toEqual([
+      {
+        relationPropertyId: assignedTo.id,
+        propertyKey: "assignedTo",
+        targetItemId: person.id,
+        targetDatabaseId: people.id,
+        metadata: { role: "owner" },
+      },
+    ]);
+    expect(await chokePoint.listItemRelations(task.id.toUpperCase(), assignedTo.id.toUpperCase())).toEqual([
       {
         relationPropertyId: assignedTo.id,
         propertyKey: "assignedTo",

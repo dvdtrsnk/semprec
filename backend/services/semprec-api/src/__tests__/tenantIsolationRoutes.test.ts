@@ -1192,6 +1192,26 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         path: "/api/databases",
         body: { name: "Child of a foreign item", parentItemId },
       }));
+      const footprint = () =>
+        runInTenant(b.tenantId, () =>
+          pool.query<{ databases: number; properties: number; partitions: number }>(
+            "SELECT (SELECT count(*)::int FROM databases) AS databases, (SELECT count(*)::int FROM properties) AS properties, (SELECT count(*)::int FROM pg_class WHERE relname LIKE 'items\\_p\\_%') AS partitions",
+          ),
+        );
+      const before = (await footprint()).rows;
+      const foreignAnswer = await expectForeignLikeRandom(b.member, [a.targetDatabaseId], ([targetDatabaseId]) => ({
+        method: "POST",
+        path: "/api/databases",
+        body: {
+          name: "Foreign target",
+          properties: [
+            { key: "target", name: "Target", type: "relation", targetDatabaseId, cardinality: "many_to_many" },
+          ],
+        },
+      }));
+      expect(foreignAnswer.status).toBeGreaterThanOrEqual(400);
+      expect(foreignAnswer.status).toBeLessThan(500);
+      expect((await footprint()).rows).toEqual(before);
     }),
   "database detail": async () => {
     await expectForeignLikeRandom(b.member, [a.databaseId], ([id]) => ({
@@ -2032,6 +2052,37 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     ]);
     const notifications = await sendOk(a.member, { method: "GET", path: "/api/notifications/unread" });
     expect(readIdArray(notifications, "notifications")).toEqual([a.notificationId]);
+  });
+
+  it("omits a historical foreign blob from an authenticated item envelope", async () => {
+    const path = `/api/items/${a.fileItemId}`;
+    const ownText = await sendOk(a.member, { method: "GET", path });
+    const own: unknown = JSON.parse(ownText);
+    if (!isRecord(own) || !isRecord(own.properties)) throw new Error("expected item properties");
+    expect(own).toHaveProperty("blobs.file.blobId", a.blobId);
+    const original = own.properties;
+    const historical = { ...original, file: { blobId: b.blobId } };
+    // Historical invalid JSONB predates the blob-reference guard; the fixture is tenant-scoped.
+    async function replaceProperties(properties: Record<string, unknown>) {
+      await inTenantTransaction(a.tenantId, async (client) => {
+        const result = await client.query("UPDATE items SET properties = $3::jsonb WHERE tenant_id = $1 AND id = $2", [
+          a.tenantId,
+          a.fileItemId,
+          JSON.stringify(properties),
+        ]);
+        expect(result.rowCount).toBe(1);
+      });
+    }
+    try {
+      await replaceProperties(historical);
+      const answer = await send(a.member, { method: "GET", path });
+      expect(answer.status).toBe(200);
+      const body: unknown = JSON.parse(answer.text);
+      expect(body).toMatchObject({ properties: historical });
+      expect(body).not.toHaveProperty("blobs");
+    } finally {
+      await replaceProperties(original);
+    }
   });
 
   it("answers A's own ids differently from random ids on every probed route, so a foreign answer is a real refusal", async () => {

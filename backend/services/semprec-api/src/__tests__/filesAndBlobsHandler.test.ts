@@ -1,26 +1,35 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
-import { readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createUser,
+  createChokePoint,
+  createItemWithClient,
+  getDatabaseByModuleId,
   createViewTypeRegistry,
   hashPassword,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
   seedSystem,
+  withTransaction,
   type PasswordResetMailer,
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
 
 const PASSWORD = "s3cret-password";
 const MAX_FILE_SIZE_BYTES = 1024;
+// A complete 1×1 RGBA PNG, including its image data and chunk checksums.
+const PNG_IMAGE = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==",
+  "base64",
+);
 
 const noopMailer: PasswordResetMailer = {
   async sendPasswordResetEmail() {},
@@ -97,6 +106,44 @@ describe("files and blobs routes (issue #158)", () => {
   }
 
   describe("POST /api/files", () => {
+    function ftyp(brand: string): Buffer {
+      const bytes = Buffer.alloc(16);
+      bytes.writeUInt32BE(16, 0);
+      bytes.write("ftyp", 4, "latin1");
+      bytes.write(brand, 8, "latin1");
+      return bytes;
+    }
+
+    function zipEntry(name: string): Buffer {
+      const header = Buffer.alloc(30);
+      header.write("PK\x03\x04", 0, "latin1");
+      header.writeUInt16LE(name.length, 26);
+      return Buffer.concat([header, Buffer.from(name, "latin1")]);
+    }
+
+    it.each([
+      [Buffer.from("%PDF-1.7"), "pdf", "application/pdf"],
+      [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), "png", "image/png"],
+      [ftyp("heic"), "heic", "image/heic"],
+      [ftyp("M4A "), "audio", "audio/mp4"],
+      [Buffer.from("ID3audio"), "audio", "audio/mpeg"],
+      [zipEntry("xl/workbook.xml"), "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+      [
+        zipEntry("word/document.xml"),
+        "docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ],
+      [zipEntry("other.txt"), undefined, "application/octet-stream"],
+    ])("detects uploaded content through the Files route", async (bytes, type, mimeType) => {
+      const response = await uploadFile(bytes, { contentType: "image/jpeg" });
+      expect(response.status).toBe(201);
+      const body: unknown = await response.json();
+      expect(body).toMatchObject({
+        properties: type === undefined ? expect.not.objectContaining({ type: expect.anything() }) : { type },
+        blobs: { file: { mimeType } },
+      });
+    });
+
     it("rejects an unauthenticated request", async () => {
       const res = await fetch(`${baseUrl}/api/files`, {
         method: "POST",
@@ -195,7 +242,7 @@ describe("files and blobs routes (issue #158)", () => {
   });
 
   describe("POST /api/blobs (issue #1401)", () => {
-    async function uploadBlob(body: string, contentType = "image/png", authenticated = true) {
+    async function uploadBlob(body: string | Buffer, contentType = "image/png", authenticated = true) {
       const headers: Record<string, string> = {
         ...(authenticated ? await authHeader() : {}),
         "Content-Type": contentType,
@@ -216,10 +263,17 @@ describe("files and blobs routes (issue #158)", () => {
     });
 
     it("stores an image as a blob, 201, without creating a Files item", async () => {
-      const res = await uploadBlob("image bytes");
+      const png = PNG_IMAGE;
+      const res = await uploadBlob(png);
       expect(res.status).toBe(201);
       const body = (await res.json()) as { blobId: string; byteSize: number; mimeType: string };
-      expect(body).toEqual({ blobId: expect.any(String), byteSize: 11, mimeType: "image/png" });
+      expect(body).toEqual({ blobId: expect.any(String), byteSize: png.length, mimeType: "image/png" });
+      const stored = await pool.query<{ storage_key: string }>("SELECT storage_key FROM blobs WHERE id = $1", [
+        body.blobId,
+      ]);
+      const key = stored.rows[0]?.storage_key;
+      if (!key) throw new Error("missing stored blob key");
+      expect(await readFile(join(tmpBlobDir, key))).toEqual(png);
       const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE properties ? 'file'");
       expect(rows[0].n).toBe(0);
       expect(await storedFileCount()).toBe(1);
@@ -231,6 +285,26 @@ describe("files and blobs routes (issue #158)", () => {
       expect(res.status).toBe(200);
       expect(((await res.json()) as { blobId: string; mimeType: string }).blobId).toBe(first.blobId);
       // The duplicate's bytes are removed after the commit, without the response waiting for it.
+      await vi.waitFor(async () => expect(await storedFileCount()).toBe(1));
+    });
+
+    it("detects a mismatched PDF and falls back for unknown bytes despite an image header", async () => {
+      const pdf = await uploadBlob("%PDF-1.7 test", "image/jpeg");
+      expect(pdf.status).toBe(201);
+      expect(await pdf.json()).toMatchObject({ mimeType: "application/pdf" });
+      const unknown = await uploadBlob("unrecognised content", "image/png");
+      expect(unknown.status).toBe(201);
+      expect(await unknown.json()).toMatchObject({ mimeType: "application/octet-stream" });
+    });
+
+    it("returns existing historical metadata unchanged on a deduplication hit", async () => {
+      const first = await uploadBlob("%PDF-1.7 historical", "image/png");
+      expect(first.status).toBe(201);
+      const body = (await first.json()) as { blobId: string };
+      await pool.query("UPDATE blobs SET mime_type = $2 WHERE id = $1", [body.blobId, "image/legacy"]);
+      const second = await uploadBlob("%PDF-1.7 historical", "image/jpeg");
+      expect(second.status).toBe(200);
+      expect(await second.json()).toMatchObject({ blobId: body.blobId, mimeType: "image/legacy" });
       await vi.waitFor(async () => expect(await storedFileCount()).toBe(1));
     });
 
@@ -417,6 +491,42 @@ describe("files and blobs routes (issue #158)", () => {
       expect(queried.items.find((item) => item.id === uploaded.id)?.blobs).toEqual({ file: expected });
     });
 
+    it("returns blob metadata for a Library cover on the real item route", async () => {
+      const png = PNG_IMAGE;
+      const upload = await fetch(`${baseUrl}/api/blobs`, {
+        method: "POST",
+        headers: { ...(await authHeader()), "Content-Type": "image/png" },
+        body: png,
+      });
+      expect(upload.status).toBe(201);
+      const uploaded: unknown = await upload.json();
+      if (
+        typeof uploaded !== "object" ||
+        uploaded === null ||
+        !("blobId" in uploaded) ||
+        typeof uploaded.blobId !== "string"
+      ) {
+        throw new Error("expected uploaded blob id");
+      }
+      const blobId = uploaded.blobId;
+      const item = await withTransaction(pool, async (client) => {
+        const books = await getDatabaseByModuleId(client, "books");
+        if (!books) throw new Error("missing Books database");
+        return createItemWithClient(
+          client,
+          { databaseId: books.id, properties: { name: "A book", cover: { blobId } } },
+          { allowedSystemKeys: ["cover"] },
+        );
+      });
+      const response = await fetch(`${baseUrl}/api/items/${item.id}`, { headers: await authHeader() });
+      expect(response.status).toBe(200);
+      const body: unknown = await response.json();
+      expect(body).toMatchObject({
+        properties: { cover: { blobId } },
+        blobs: { cover: { blobId, byteSize: png.length, mimeType: "image/png", filename: null } },
+      });
+    });
+
     it("has no blobs key on an item without a file blob", async () => {
       const headers = await authHeader();
       const uploaded = (await (await uploadFile("x")).json()) as BlobsItemBody;
@@ -429,6 +539,120 @@ describe("files and blobs routes (issue #158)", () => {
       const body = (await created.json()) as BlobsItemBody;
       expect(body).not.toHaveProperty("blobs");
       expect(body.properties).toMatchObject({ name: "no file here" });
+    });
+
+    it("returns metadata on generic item create and PATCH, and omits it after clearing the image", async () => {
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const upload = await fetch(`${baseUrl}/api/blobs`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "image/png" },
+        body: PNG_IMAGE,
+      });
+      expect(upload.status).toBe(201);
+      const uploaded: unknown = await upload.json();
+      if (
+        typeof uploaded !== "object" ||
+        uploaded === null ||
+        !("blobId" in uploaded) ||
+        typeof uploaded.blobId !== "string"
+      )
+        throw new Error("expected blob id");
+      const blobId = uploaded.blobId;
+      const cp = createChokePoint(pool);
+      const db = await cp.createDatabase({ name: "Images" });
+      await cp.createProperty({ databaseId: db.id, key: "photo", name: "Photo", type: "image" });
+      const create = await fetch(`${baseUrl}/api/databases/${db.id}/items`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ properties: { photo: { blobId } } }),
+      });
+      expect(create.status).toBe(201);
+      const created: unknown = await create.json();
+      if (
+        typeof created !== "object" ||
+        created === null ||
+        !("id" in created) ||
+        typeof created.id !== "string" ||
+        !("updatedAt" in created) ||
+        typeof created.updatedAt !== "string"
+      )
+        throw new Error("expected created item");
+      const metadata = { blobId, byteSize: PNG_IMAGE.length, mimeType: "image/png", filename: null };
+      expect(created).toMatchObject({ properties: { photo: { blobId } }, blobs: { photo: metadata } });
+      const clear = await fetch(`${baseUrl}/api/items/${created.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties: { photo: null }, ifVersion: created.updatedAt }),
+      });
+      expect(clear.status).toBe(200);
+      const cleared: unknown = await clear.json();
+      if (
+        typeof cleared !== "object" ||
+        cleared === null ||
+        !("updatedAt" in cleared) ||
+        typeof cleared.updatedAt !== "string"
+      )
+        throw new Error("expected patched item");
+      expect(cleared).toMatchObject({ properties: { photo: null } });
+      expect(cleared).not.toHaveProperty("blobs");
+      const restore = await fetch(`${baseUrl}/api/items/${created.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties: { photo: { blobId } }, ifVersion: cleared.updatedAt }),
+      });
+      expect(restore.status).toBe(200);
+      expect(await restore.json()).toMatchObject({ properties: { photo: { blobId } }, blobs: { photo: metadata } });
+    });
+
+    it("fetches blobs once for an actual 50-item database query response", async () => {
+      const headers = await authHeader();
+      const uploaded = (await (await uploadFile("query-count-bytes")).json()) as BlobsItemBody;
+      const file = uploaded.properties.file;
+      const chokePoint = createChokePoint(pool);
+      for (let i = 0; i < 49; i += 1) {
+        await chokePoint.createItem({ databaseId: uploaded.databaseId, properties: { name: `File ${i}`, file } });
+      }
+      const view = await chokePoint.createView({ databaseId: uploaded.databaseId, type: "table", name: "All files" });
+
+      let blobQueries = 0;
+      const wrapped = new Map<PoolClient, PoolClient["query"]>();
+      const instrument = (client: PoolClient) => {
+        if (wrapped.has(client)) return;
+        // The proxy forwards the original receiver through Reflect.apply.
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        wrapped.set(client, client.query);
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        client.query = new Proxy(client.query, {
+          apply(target, thisArg, args: unknown[]) {
+            if (typeof args[0] === "string" && /FROM blobs\b/i.test(args[0])) blobQueries += 1;
+            return Reflect.apply(target, thisArg, args);
+          },
+        });
+      };
+      pool.on("acquire", instrument);
+      try {
+        for (const path of [`/api/databases/${uploaded.databaseId}/query`, `/api/views/${view.id}/query`]) {
+          blobQueries = 0;
+          const response = await fetch(`${baseUrl}${path}`, {
+            method: "POST",
+            headers: { ...headers, "Content-Type": "application/json" },
+            body: JSON.stringify({ limit: 50 }),
+          });
+          expect(response.status).toBe(200);
+          const body: unknown = await response.json();
+          if (typeof body !== "object" || body === null || !("items" in body) || !Array.isArray(body.items)) {
+            throw new Error("expected query items");
+          }
+          expect(body.items).toHaveLength(50);
+          for (const item of body.items) {
+            expect(item).toHaveProperty("blobs.file.blobId", uploaded.blobs?.file?.blobId);
+          }
+          expect(blobQueries).toBe(1);
+        }
+      } finally {
+        pool.off("acquire", instrument);
+        for (const [client, query] of wrapped) client.query = query;
+      }
     });
   });
 });

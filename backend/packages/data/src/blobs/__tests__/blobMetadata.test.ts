@@ -61,7 +61,11 @@ describe("loadBlobMetadataForItems", () => {
     const coverBlob = await seedBlob(`${tenantId}/covers/${randomUUID()}-cover.png`, "image/png", 99);
     const item = await chokePoint.createItem({
       databaseId,
-      properties: { title: "x", file: { blobId: fileBlob.id }, cover: { blobId: coverBlob.id } },
+      properties: {
+        title: "x",
+        file: { blobId: fileBlob.id.toUpperCase() },
+        cover: { blobId: coverBlob.id.toUpperCase() },
+      },
     });
 
     const map = await withTransaction(pool, (client) => loadBlobMetadataForItems(client, [item]));
@@ -70,6 +74,8 @@ describe("loadBlobMetadataForItems", () => {
       file: { blobId: fileBlob.id, byteSize: 2400, mimeType: "application/pdf", filename: "report.pdf" },
       cover: { blobId: coverBlob.id, byteSize: 99, mimeType: "image/png", filename: "cover.png" },
     });
+    expect(item.properties.file).toEqual({ blobId: fileBlob.id.toUpperCase() });
+    expect(item.properties.cover).toEqual({ blobId: coverBlob.id.toUpperCase() });
   });
 
   it("reports a null filename when the storage key does not follow the upload shape", async () => {
@@ -85,7 +91,8 @@ describe("loadBlobMetadataForItems", () => {
   it("omits an item without a blob property value, a non-blob property, and a blob that no longer exists", async () => {
     const { chokePoint, databaseId } = await seedDatabaseWithBlobProperties();
     const plain = await chokePoint.createItem({ databaseId, properties: { title: "plain" } });
-    const dangling = await chokePoint.createItem({ databaseId, properties: { file: { blobId: randomUUID() } } });
+    // Historical dangling references can predate the write hook; the read must still omit them.
+    const dangling = { ...plain, id: randomUUID(), properties: { file: { blobId: randomUUID() } } };
 
     const map = await withTransaction(pool, (client) => loadBlobMetadataForItems(client, [plain, dangling]));
 
@@ -135,7 +142,7 @@ describe("loadBlobMetadataForItems", () => {
     const ownBlob = await seedBlob(`${tenantA}/files/${randomUUID()}-own.pdf`);
     const item = await chokePoint.createItem({ databaseId, properties: { file: { blobId: ownBlob.id } } });
     // Raw object: production writes never store another tenant's blob id, so this state is built by hand.
-    const foreignItem = { ...item, id: randomUUID(), properties: { file: { blobId: foreignBlob.id } } };
+    const foreignItem = { ...item, id: randomUUID(), properties: { file: { blobId: foreignBlob.id.toUpperCase() } } };
     runtimePool ??= await createRuntimeRolePool(pool, "semprec_data");
 
     const map = await withTenantTransaction(runtimePool, tenantA, (client) =>

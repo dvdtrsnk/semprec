@@ -1,16 +1,74 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import * as Y from "yjs";
+import { runInTenant } from "@semprec/shared";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createRuntimeRolePool, getTenantZeroId } from "../testSupport/tenantFixtures.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
+import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { createDocStore, type DocStore } from "../docs/docStore.js";
 import { CANVAS_ELEMENT_TYPES } from "../docs/canvas.js";
-import { loadDoc, mutateDoc } from "../docs/docPersistence.js";
+import { loadDoc, mutateDoc, mutateDocWithClient } from "../docs/docPersistence.js";
+import { withTransaction } from "../db/pool.js";
 import { HistoryNotRetainedError, NotFoundError, ValidationError } from "../errors.js";
 import { setDocUpdateHook } from "../realtimeHook.js";
 
 const HOUR_MS = 60 * 60 * 1000;
+
+async function bounded<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("operation barrier timed out")), 5000);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/** Captures the backend on the very client that issues the matched production statement. */
+function observeStatementPid(runtime: Pool, statement: RegExp) {
+  let resolvePid!: (pid: number) => void;
+  const pid = new Promise<number>((resolve) => {
+    resolvePid = resolve;
+  });
+  const wrapped = new Map<PoolClient, PoolClient["query"]>();
+  let captured = false;
+  const instrument = (client: PoolClient) => {
+    if (wrapped.has(client)) return;
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    wrapped.set(client, client.query);
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    client.query = new Proxy(client.query, {
+      apply(target, receiver, args: unknown[]) {
+        if (captured || typeof args[0] !== "string" || !statement.test(args[0])) {
+          return Reflect.apply(target, receiver, args);
+        }
+        captured = true;
+        return (async () => {
+          const result = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          const actual = result.rows[0]?.pid;
+          if (actual === undefined) throw new Error("missing competing backend pid");
+          resolvePid(actual);
+          return Reflect.apply(target, receiver, args);
+        })();
+      },
+    });
+  };
+  runtime.on("acquire", instrument);
+  return {
+    pid,
+    restore() {
+      runtime.off("acquire", instrument);
+      for (const [client, query] of wrapped) client.query = query;
+    },
+  };
+}
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -214,6 +272,225 @@ describe("page.restoreVersion (issue #1617): restoring a page to an earlier vers
 
     expect(await blockContents(page.itemId)).toEqual({ b1: "first", b2: "second", b5: "from another client" });
   });
+
+  it("waits for an in-flight document mutation before computing the restore", async () => {
+    const page = await pageWithUserBlocks();
+    await agentEdit(page);
+    let releaseWriter!: () => void;
+    let writerReady!: (pid: number) => void;
+    const release = new Promise<void>((resolve) => {
+      releaseWriter = resolve;
+    });
+    const ready = new Promise<number>((resolve) => {
+      writerReady = resolve;
+    });
+    const writer = withTransaction(pool, async (client) => {
+      const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+      if (pid === undefined) throw new Error("missing writer pid");
+      await mutateDocWithClient(client, page.docId, "user", (doc) => {
+        const block = new Y.Map<unknown>();
+        doc.getMap<Y.Map<unknown>>("blocks").set("overlap", block);
+        block.set("sys:id", "overlap");
+        block.set("sys:flavour", "paragraph");
+        block.set("content", "in-flight");
+      });
+      writerReady(pid);
+      await release;
+    });
+    const writerSettled = Promise.allSettled([writer]);
+    let restore: Promise<unknown> | undefined;
+    let restoreSettled: Promise<PromiseSettledResult<unknown>[]> | undefined;
+    let competing: ReturnType<typeof observeStatementPid> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const pid = await Promise.race([
+        ready,
+        writer.then(() => {
+          throw new Error("writer finished before the barrier");
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("writer barrier timed out")), 5_000);
+        }),
+      ]);
+      competing = observeStatementPid(pool, /FROM doc_snapshots\b[\s\S]*FOR UPDATE/i);
+      restore = docStore.restoreVersion(page.itemId, page.at(-1.5));
+      restoreSettled = Promise.allSettled([restore]);
+      const restorePid = await bounded(competing.pid);
+      let blocked = false;
+      for (let attempt = 0; attempt < 100 && !blocked; attempt += 1) {
+        const result = await pool.query<{ blocked: boolean }>(
+          "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+          [pid, restorePid],
+        );
+        blocked = result.rows[0]?.blocked === true;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked).toBe(true);
+    } finally {
+      releaseWriter();
+      if (timer) clearTimeout(timer);
+      await writerSettled;
+      if (restoreSettled !== undefined) await restoreSettled;
+      competing?.restore();
+    }
+    const settled = [...(await writerSettled), ...(restoreSettled !== undefined ? await restoreSettled : [])];
+    for (const result of settled) if (result.status === "rejected") throw result.reason;
+    expect(await blockContents(page.itemId)).toEqual({ b1: "first", b2: "second" });
+  });
+
+  it("holds the live item while restore waits for the document, so deletion follows restore", async () => {
+    const page = await pageWithUserBlocks();
+    await agentEdit(page);
+    const restorePool = await createRuntimeRolePool(pool, "semprec_data");
+    const deletePool = await createRuntimeRolePool(pool, "semprec_data");
+    const restoring = observeStatementPid(restorePool, /FROM doc_snapshots\b[\s\S]*FOR UPDATE/i);
+    const deleting = observeStatementPid(deletePool, /FROM items\b[\s\S]*FOR UPDATE/i);
+    let release!: () => void;
+    let ready!: (pid: number) => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const acquired = new Promise<number>((resolve) => {
+      ready = resolve;
+    });
+    const holder = withTransaction(pool, async (client) => {
+      const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+      if (pid === undefined) throw new Error("missing document holder pid");
+      await client.query("SELECT doc_id FROM doc_snapshots WHERE doc_id = $1 FOR UPDATE", [page.docId]);
+      ready(pid);
+      await hold;
+    });
+    const holderSettled = Promise.allSettled([holder]);
+    let restore: ReturnType<DocStore["restoreVersion"]> | undefined;
+    let deletion: ReturnType<ChokePoint["softDeleteItem"]> | undefined;
+    let restoreSettled: Promise<PromiseSettledResult<unknown>[]> | undefined;
+    let deletionSettled: Promise<PromiseSettledResult<unknown>[]> | undefined;
+    try {
+      const ownerPid = await bounded(
+        Promise.race([
+          acquired,
+          holder.then(() => {
+            throw new Error("document holder ended before barrier");
+          }),
+        ]),
+      );
+      restore = runInTenant(getTenantZeroId(), () =>
+        createDocStore(restorePool).restoreVersion(page.itemId, page.at(-1.5)),
+      );
+      restoreSettled = Promise.allSettled([restore]);
+      const restorePid = await bounded(restoring.pid);
+      await expect
+        .poll(
+          async () =>
+            (
+              await pool.query<{ blocked: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked", [
+                ownerPid,
+                restorePid,
+              ])
+            ).rows[0]?.blocked,
+          { timeout: 5000 },
+        )
+        .toBe(true);
+      deletion = runInTenant(getTenantZeroId(), () =>
+        createChokePoint(deletePool).softDeleteItem(page.databaseId, page.itemId),
+      );
+      deletionSettled = Promise.allSettled([deletion]);
+      const deletePid = await bounded(deleting.pid);
+      let blocked = false;
+      for (let i = 0; i < 100 && !blocked; i++) {
+        blocked =
+          (
+            await pool.query<{ blocked: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked", [
+              restorePid,
+              deletePid,
+            ])
+          ).rows[0]?.blocked === true;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked).toBe(true);
+      release();
+      expect((await restore).blockIds).toEqual(["b1", "b2"]);
+      expect((await deletion)?.deletedAt).toBeTruthy();
+    } finally {
+      release();
+      await holderSettled;
+      if (restoreSettled) await restoreSettled;
+      if (deletionSettled) await deletionSettled;
+      restoring.restore();
+      deleting.restore();
+      await Promise.all([restorePool.end(), deletePool.end()]);
+    }
+  }, 15000);
+
+  it("refuses restore without appending when deletion commits first", async () => {
+    const page = await pageWithUserBlocks();
+    await agentEdit(page);
+    const before = await updateCount(page.docId);
+    const deletingPool = await createRuntimeRolePool(pool, "semprec_data");
+    const restoringPool = await createRuntimeRolePool(pool, "semprec_data");
+    const competing = observeStatementPid(restoringPool, /FROM items\b[\s\S]*FOR UPDATE/i);
+    let release!: () => void;
+    let ready!: (pid: number) => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const acquired = new Promise<number>((resolve) => {
+      ready = resolve;
+    });
+    const deletion = runInTenant(getTenantZeroId(), () =>
+      withTransaction(deletingPool, async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        if (pid === undefined) throw new Error("missing deletion pid");
+        expect(
+          await itemDeleteWithClient(client, page.databaseId, page.itemId, {
+            queueAffinity: createActionQueueAffinity(),
+          }),
+        ).not.toBeNull();
+        ready(pid);
+        await hold;
+      }),
+    );
+    const deletionSettled = Promise.allSettled([deletion]);
+    let restore: ReturnType<DocStore["restoreVersion"]> | undefined;
+    let restoreSettled: Promise<PromiseSettledResult<unknown>[]> | undefined;
+    try {
+      const pid = await bounded(
+        Promise.race([
+          acquired,
+          deletion.then(() => {
+            throw new Error("deletion ended before barrier");
+          }),
+        ]),
+      );
+      restore = runInTenant(getTenantZeroId(), () =>
+        createDocStore(restoringPool).restoreVersion(page.itemId, page.at(-1.5)),
+      );
+      restoreSettled = Promise.allSettled([restore]);
+      const restorePid = await bounded(competing.pid);
+      let blocked = false;
+      for (let i = 0; i < 100 && !blocked; i++) {
+        blocked =
+          (
+            await pool.query<{ blocked: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked", [
+              pid,
+              restorePid,
+            ])
+          ).rows[0]?.blocked === true;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked).toBe(true);
+      release();
+      await deletion;
+      expect((await restoreSettled)[0]).toMatchObject({ status: "rejected", reason: expect.any(NotFoundError) });
+      expect(await updateCount(page.docId)).toBe(before);
+    } finally {
+      release();
+      await deletionSettled;
+      if (restoreSettled) await restoreSettled;
+      competing.restore();
+      await Promise.all([deletingPool.end(), restoringPool.end()]);
+    }
+  }, 15000);
 
   it("refuses an instant outside the retention window with 410 and a future instant with 400, writing nothing", async () => {
     const page = await pageWithUserBlocks();
