@@ -25,6 +25,9 @@ import { seedSystem } from "../seed/seedSystem.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { clearHooksForTests, registerItemPreWriteTransform } from "../chokePoint/hooks.js";
 import * as valueLinksStore from "../chokePoint/valueLinksStore.js";
+import * as inboxSourceGuard from "../inbox/inboxSourceGuard.js";
+import { createInboxItemWithClient } from "../inbox/inboxStore.js";
+import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 
 /** Issue #1516: user and agent writes end value links; the valueLinks process needs an `on` link. */
 const USER: WriterIdentity = { writerKind: "user" };
@@ -642,6 +645,151 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
+    it("diagnoses the supported Inbox source and relation handoff schedule", async () => {
+      await seedSystem(pool);
+      const tenant = getTenantZeroId();
+      await withRuntimePool(async (userPool) =>
+        withRuntimePool(async (systemPool) => {
+          const cp = createChokePoint(userPool);
+          const databases = await runInTenant(tenant, () => cp.listDatabases());
+          const inbox = databases.find((db) => db.key === "inbox");
+          const types = databases.find((db) => db.key === "inboxItemTypes");
+          if (!inbox || !types) throw new Error("Missing seeded Inbox databases");
+          const property = await runInTenant(tenant, () => cp.getPropertyByKey(inbox.id, "type"));
+          if (!property) throw new Error("Missing Inbox type relation");
+          const fixture = await withTenantTransaction(userPool, tenant, async (client) => {
+            const type = await createInboxTypeWithClient(client, {
+              inboxItemTypesDatabaseId: types.id,
+              name: "Task",
+              emoji: "T",
+              processingMethod: "database",
+              targetDatabase: "tasks",
+            });
+            const other = await createInboxTypeWithClient(client, {
+              inboxItemTypesDatabaseId: types.id,
+              name: "Page",
+              emoji: "P",
+              processingMethod: "pageContent",
+            });
+            const item = await createInboxItemWithClient(client, {
+              inboxDatabaseId: inbox.id,
+              date: "2026-10-01",
+              time: "09:00",
+              text: "Source",
+            });
+            await insertValueLink(client, { itemId: item.id, propertyKey: "type", ruleKey: "test", sources: [] });
+            return { item, type, other };
+          });
+          const sourceHeld = barrier();
+          const linkHeld = barrier();
+          const releaseSource = barrier();
+          const releaseLink = barrier();
+          let userClient: PoolClient | undefined;
+          let systemClient: PoolClient | undefined;
+          let userPid: number | undefined;
+          let systemPid: number | undefined;
+          const originalSource = inboxSourceGuard.lockInboxSource;
+          const originalLink = valueLinksStore.lockOnValueLink;
+          const sourceSpy = vi
+            .spyOn(inboxSourceGuard, "lockInboxSource")
+            .mockImplementation(async (client, id, allowDeleted) => {
+              await originalSource(client, id, allowDeleted);
+              if (client === userClient) {
+                sourceHeld.resolve();
+                await bounded(releaseSource.promise);
+              }
+            });
+          const linkSpy = vi.spyOn(valueLinksStore, "lockOnValueLink").mockImplementation(async (client, id, key) => {
+            const found = await originalLink(client, id, key);
+            if (client === systemClient && found) {
+              linkHeld.resolve();
+              await bounded(releaseLink.promise);
+            }
+            return found;
+          });
+          type Outcome = { ok: true } | { ok: false; error: unknown };
+          const run = (kind: "user" | "system"): Promise<Outcome> =>
+            runInTenant(tenant, () =>
+              withTransaction(kind === "user" ? userPool : systemPool, async (client) => {
+                await client.query("SET LOCAL statement_timeout = '7s'");
+                const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                if (!pid) throw new Error("Missing relation participant PID");
+                if (kind === "user") {
+                  userClient = client;
+                  userPid = pid;
+                } else {
+                  systemClient = client;
+                  systemPid = pid;
+                }
+                return createRelationWithClient(
+                  client,
+                  {
+                    relationPropertyId: property.id,
+                    callerItemId: fixture.item.id,
+                    targetItemId: kind === "user" ? fixture.type.id : fixture.other.id,
+                  },
+                  kind === "system" ? VALUE_LINKS : undefined,
+                  kind === "user" ? USER : SYSTEM_WRITER,
+                );
+              }),
+            ).then(
+              () => ({ ok: true }),
+              (error: unknown) => ({ ok: false, error }),
+            );
+          let user: Promise<Outcome> | undefined;
+          let system: Promise<Outcome> | undefined;
+          let failure: unknown;
+          try {
+            system = run("system");
+            await bounded(linkHeld.promise);
+            user = run("user");
+            await bounded(sourceHeld.promise);
+            if (!userPid || !systemPid) throw new Error("Missing relation participant PID");
+            releaseSource.resolve();
+            await waitBlocked(systemPid, userPid);
+            releaseLink.resolve();
+            const outcomes = await bounded(Promise.all([user, system]));
+            console.info("Observed Inbox relation cycle", { userPid, systemPid, outcomes });
+            expect(outcomes.filter((result) => result.ok)).toHaveLength(1);
+            expect(outcomes.filter((result) => !result.ok)).toMatchObject([{ error: { code: "40P01" } }]);
+          } catch (error) {
+            failure = error;
+          } finally {
+            releaseSource.resolve();
+            releaseLink.resolve();
+            const participants = [user, system].filter((value): value is Promise<Outcome> => value !== undefined);
+            const errors: unknown[] = [];
+            try {
+              await bounded(Promise.all(participants), 9000);
+            } catch (error) {
+              errors.push(error);
+              for (const pid of [userPid, systemPid])
+                if (pid) {
+                  try {
+                    await bounded(pool.query("SELECT pg_terminate_backend($1::int)", [pid]));
+                  } catch (error) {
+                    errors.push(error);
+                  }
+                }
+              try {
+                await bounded(Promise.all(participants));
+              } catch (error) {
+                errors.push(error);
+              }
+            }
+            sourceSpy.mockRestore();
+            linkSpy.mockRestore();
+            if (errors.length)
+              failure = new AggregateError(
+                failure === undefined ? errors : [failure, ...errors],
+                "Relation diagnostic cleanup failed",
+              );
+          }
+          if (failure !== undefined) throw failure;
+        }),
+      );
+    }, 30000);
+
     it("checks multiple caller keys once in stable order and preserves ordinary writer locking", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (runtime) => {
