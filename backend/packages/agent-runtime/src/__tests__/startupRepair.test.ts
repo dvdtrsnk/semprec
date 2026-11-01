@@ -181,6 +181,25 @@ describe("repairInterruptedRuns", () => {
     expect(eventsFor(absent.id).map((row) => row.kind)).toEqual(["message"]);
   });
 
+  it.each([
+    [{ kind: "tool_use", name: "search" }, { name: "search" }],
+    [
+      { kind: "tool_use", toolCallId: "call-without-name" },
+      { name: "", toolCallId: "call-without-name" },
+    ],
+  ])("repairs a call with a missing identity field", async (payload, expectedIdentity) => {
+    const run = await createAgentRun(pool, { triggeredBy: "heartbeat", task: "missing tool identity" });
+    await insertAgentRunEvent(pool, run.id, "tool_use", payload);
+    await repairInterruptedRuns(pool);
+    const { rows } = await pool.query<{ payload: unknown }>(
+      "SELECT payload FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'tool_result'",
+      [run.id],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.payload).toMatchObject({ kind: "tool_result", isError: true, ...expectedIdentity });
+    if (!("toolCallId" in payload)) expect(rows[0]?.payload).not.toHaveProperty("toolCallId");
+  });
+
   it("falls back to a bare synthetic tool_result when the trailing tool_use payload is not a plain object", async () => {
     const run = await createAgentRun(pool, { triggeredBy: "heartbeat", task: "malformed payload" });
     await pool.query(`INSERT INTO agent_run_events (agent_run_id, kind, payload) VALUES ($1, 'tool_use', $2::jsonb)`, [
