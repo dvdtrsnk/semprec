@@ -3278,16 +3278,34 @@ describe("value link state on writes (issue #1516)", () => {
             ),
           );
         const readItem = () => runInTenant(tenant, () => cp.getItem(fx.files.id, fx.file.id));
-        const readLinks = () =>
-          withTenantTransaction(runtime, tenant, (client) => listValueLinksByItemIds(client, [fx.file.id]));
+        const readStoredLinks = () =>
+          withTenantTransaction(runtime, tenant, async (client) => {
+            const result = await client.query<{
+              id: string;
+              tenant_id: string;
+              item_id: string;
+              property_key: string;
+              rule_key: string;
+              state: string;
+              broken_by: string | null;
+              broken_at: string | null;
+              updated_at: string;
+            }>(
+              `SELECT id, tenant_id, item_id, property_key, rule_key, state, broken_by,
+                      broken_at::text, updated_at::text
+               FROM value_links WHERE tenant_id = $1 AND item_id = $2 ORDER BY id`,
+              [tenant, fx.file.id],
+            );
+            return result.rows;
+          });
         const events: InvalidationEvent[] = [];
         const expectRefusedWithoutEffects = async (value: string) => {
           const beforeItem = await readItem();
-          const beforeLinks = await readLinks();
+          const beforeLinks = await readStoredLinks();
           events.length = 0;
           await expect(write(value)).rejects.toMatchObject({ status: 403, code: "owner_violation" });
           expect(await readItem()).toEqual(beforeItem);
-          expect(await readLinks()).toEqual(beforeLinks);
+          expect(await readStoredLinks()).toEqual(beforeLinks);
           expect(events).toEqual([]);
         };
         setInvalidationHook((event) => events.push(event));
