@@ -125,3 +125,18 @@ The additional Touches apply only to these existing requirements. Preserve every
 member decision and behavioral clause; compress obsolete descriptive Context and
 redundant aggregate instructions only to respect the existing size bound. This
 refreeze is not implementation acceptance or a verification exception.
+
+## Realtime user-message evidence
+
+Gh-1566 explicitly requires agent:watch replay and watcher agent:event support.
+The data-store listing helper alone does not prove these boundaries. Include the
+existing backend realtime `syncServer.test.ts` for an actual authenticated,
+tenant/owner-scoped WebSocket scenario: persist a user_message, replay it through
+agent:watch, then deliver a later live user_message as agent:event and assert the
+payload and order. Use existing production publication and deterministic frame
+synchronization; do not replace the boundary with a direct list query. If an
+absence assertion is needed, use the existing ordered-sentinel pattern rather
+than a sleep. Preserve production authorization, protocol and isolation; report
+any discovered production gap separately. No realtime source or client change
+is authorized here. Obsolete descriptive source Context is compressed, retaining
+its contracts, references and all Tasks/ACs.
