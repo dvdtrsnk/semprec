@@ -117,3 +117,78 @@ bound; preserve the frozen Tasks, decisions and AC with this explicit addition.
 
 The localhost `ETIMEDOUT` in the same diagnostic run remains a separate observed
 failure. This decision does not resolve, attribute or waive it.
+
+## Complete static review and reproduced follow-ups
+
+The independent segmented review of `d17a39f2` covers 39 Tasks, 45 AC and six
+aggregate gates, with verdict NOT CLEAR. Its static coverage is complete;
+final-candidate execution and acceptance are not. Preserve the original and
+segmented reports and distinguish executed diagnostics from static schedules.
+
+### Standalone deduplication and purge
+
+R1 reproduced a reused blob disappearing before upload commit, including real
+local byte deletion. Take a checked tenant blob lock after `findOrCreateBlob`
+and before return/duplicate cleanup registration. Refuse a vanished blob with
+the existing missing-reference validation and remove only this attempt's bytes.
+Keep original creation age and metadata: a successful repeated upload grants no
+lease or attachment grace, and a later sweep may remove the old unreferenced
+blob. No renewal, new schema or automatic retry policy is authorized.
+
+R2 reproduced two real subtree purges deadlocking on reversed shared blob
+orders, with rollback and successful retry. Apply
+`2026-11-01-trash-purge-coordinates-roots-and-transactions`: one tenant-keyed
+transaction entry guard before subtree locks, rather than claiming a per-array
+sort establishes global ordering. Its physical-byte diagnostic limit remains.
+
+F1's production composition uses only mail storage for trash cleanup. Pass both
+existing roots and independently attempt post-commit deletion in each, as the
+same ADR specifies. Keep leading purge arguments compatible and best-effort
+semantics; add actual dual-root worker, dedup-origin and rollback evidence.
+
+### Validate the new operation UUID inputs
+
+F3 reproduced HTTP 500/SQL 22P02 for the new atomic relation target and actual
+MCP calls with malformed item IDs. In shared input schemas validate gh-1592
+`targetDatabaseId`, `relation.list` item/optional property IDs, and
+`page.restoreVersion.itemId` against the existing case-insensitive canonical
+UUID-shape convention. Preserve all hex-group UUID spellings, missing-field
+diagnostics and well-formed unknown/foreign equivalence. Do not impose a new
+RFC version restriction or retrofit every legacy operation. Typed field
+validation happens before SQL; do not log supplied values through a DB failure.
+Add real REST/MCP/agent boundary evidence within the explicit test paths.
+
+F7 is a valid-image fixture repair in already approved API tests: use complete
+PNG bytes for image claims and retain signature-only cases as detector-boundary
+evidence. It adds no complete-image admission policy to production.
+
+### Page restore lifetime and approval identity
+
+F4 reproduced restore appending after concurrent soft deletion. F5 reproduced
+actual approved replay over a real update with deliberately colliding old
+author/time fields: one defect-asserting diagnostic passed, 43 skipped. These
+are not acceptance results or measurements of natural collision frequency.
+
+Apply `2026-11-01-page-restore-locks-live-items-and-update-identity`: lock/recheck
+the live item before the document in projection and restore, and add the
+retained bigint update identity token as a decimal string in the approval
+projection. Use one tenant-scoped query under the document lock. Keep historical
+ADR bodies, timestamps, authorship, capability and other operation semantics.
+Old snapshots without the new token conflict; no approval backfill or schema
+revision counter. Require runtime isolation, real replay, both deletion orders,
+timestamp collisions, earlier transactions and compaction/retention evidence.
+
+### Relation target lifetime assessment
+
+F6 remains unconfirmed. The atomic-create path attaches its partition before
+looking up relation targets; existing `items` SHARE UPDATE EXCLUSIVE and
+`databases` SHARE ROW EXCLUSIVE locks conflict with purge's partition-drop and
+database deletion. Prove both real production acquisition orders and observed
+DDL blocking before closing this finding. Add no target lock before partition
+DDL: it can invert ordering. Ordinary relation creation is a separate path;
+this batch does not promise targets cannot be removed after creator commit.
+
+These decisions authorize fixes and evidence, not a merge, completion, failure
+waiver or next-batch dispatch. Compress only redundant historical Context prose
+where needed for the aggregate size bound; retain decisions and Task/AC text
+with the explicit additions above.
