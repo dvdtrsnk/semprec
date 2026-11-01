@@ -1,6 +1,6 @@
 import { z } from "zod";
 import "../domainWriteHooks.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool, type PoolClient } from "pg";
 import { AiGatewayFailedError, type AiGatewayFailureReason, runInTenant } from "@semprec/shared";
@@ -823,6 +823,48 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       const after = await findProposalForItem(pool, proposalsId, item.id);
       expect(after!.properties.fingerprint).toBe(before!.properties.fingerprint);
       expect(after!.updatedAt).toBe(before!.updatedAt);
+    });
+
+    it("uses legacy blob IDs for missing hashes on add, reorder and removal at an invoked tick", async () => {
+      const type = await createInboxType("Task", "☑️");
+      const item = await createInboxItemOfType("Buy milk", type.id);
+      let calls = 0;
+      const compute: ComputeSemprecProposalFn = async () => {
+        calls++;
+        return { properties: { name: "Buy milk" } };
+      };
+      await runTick(pool, databaseIds, item.id, compute);
+      const first = await createBlob(pool, {
+        mimeType: "image/jpeg",
+        byteSize: 1,
+        storageKey: `legacy/${randomUUID()}`,
+      });
+      const second = await createBlob(pool, {
+        mimeType: "image/jpeg",
+        byteSize: 1,
+        storageKey: `legacy/${randomUUID()}`,
+      });
+      await insertInboxAttachments(pool, item.id, [
+        { blobId: first.id, source: "camera" },
+        { blobId: second.id, source: "camera" },
+      ]);
+      await runTick(pool, databaseIds, item.id, compute);
+      expect(calls).toBe(2);
+      const before = await findProposalForItem(pool, proposalsId, item.id);
+      expect(before?.properties.fingerprint).toBe(
+        fingerprintV2Of({ typeId: type.id, text: "Buy milk", attachmentHashes: [first.id, second.id] }),
+      );
+      await detachBlob(item.id, first.id);
+      await insertInboxAttachments(pool, item.id, [{ blobId: first.id, source: "camera" }]);
+      await runTick(pool, databaseIds, item.id, compute);
+      expect(calls).toBe(2);
+      expect((await findProposalForItem(pool, proposalsId, item.id))?.updatedAt).toBe(before?.updatedAt);
+      await detachBlob(item.id, second.id);
+      await runTick(pool, databaseIds, item.id, compute);
+      expect(calls).toBe(3);
+      expect((await findProposalForItem(pool, proposalsId, item.id))?.properties.fingerprint).toBe(
+        fingerprintV2Of({ typeId: type.id, text: "Buy milk", attachmentHashes: [first.id] }),
+      );
     });
 
     it("choosing another type that shares the emoji recomputes the proposal", async () => {

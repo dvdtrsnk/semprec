@@ -396,6 +396,13 @@ export * from "./views/temporalSwitcherViewType.js";
 
 export * from "./inbox/inboxTickAction.js";
 export {
+  readProposalWorkspaceContext,
+  readProposalRelationCatalog,
+  type ProposalWorkspaceGroup,
+  type ProposalWorkspaceEntry,
+  type ProposalRelationCatalogEntry,
+} from "./inbox/proposalWorkspaceContext.js";
+export {
   MAX_PROPOSAL_OPERATIONS,
   listWritableProposalTargets,
   type ProposalComputationOperation,

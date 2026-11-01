@@ -54,14 +54,14 @@ async function jobExists(key: string): Promise<boolean> {
 }
 
 /** Polls until a confirm is blocked on the blob row lock (`SELECT ... FROM blobs ... FOR UPDATE`); fails after two seconds. */
-async function waitForBlobLockWait(): Promise<void> {
+async function waitForBlobLockWait(holderPid: number, competitorPid: number): Promise<void> {
   const deadline = Date.now() + 2000;
   while (Date.now() < deadline) {
-    const { rows } = await pool.query<{ waiting: number }>(
-      `SELECT count(*)::int AS waiting FROM pg_stat_activity
-        WHERE wait_event_type = 'Lock' AND query LIKE '%FROM blobs%FOR UPDATE%'`,
+    const { rows } = await pool.query<{ waiting: boolean }>(
+      `SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS waiting`,
+      [holderPid, competitorPid],
     );
-    if (rows[0]!.waiting > 0) return;
+    if (rows[0]?.waiting) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error("No transaction waited on the blob row lock");
@@ -342,6 +342,24 @@ describe("file from attachment on confirm (issue #1703)", () => {
     expect(await attachmentCount(inboxItemId)).toBe(0);
   });
 
+  it("returns the existing Files ID and moved attachment ID with created false", async () => {
+    const source = await plainInboxItem("Existing photo");
+    const blobId = await newBlob("image/jpeg");
+    const existingId = await createIn(filesId, { name: "Existing", file: { blobId } });
+    const attachmentId = await attach(source, blobId);
+    const result = await withTransaction(pool, (client) =>
+      executeProposalSteps(client, [taskPrimary(), fileStep(attachmentId)], {
+        writer: { writerKind: "user" },
+        sourceInboxItemId: source,
+      }),
+    );
+    expect(result.fileFromAttachments).toEqual([
+      { ref: "file", fileItemId: existingId, movedAttachmentId: attachmentId, created: false },
+    ]);
+    expect(result.createdItemIds).not.toContain(existingId);
+    expect(await attachmentCount(source)).toBe(0);
+  });
+
   it.each([
     ["another Inbox item's attachment", "foreign"],
     ["an attachment id that does not exist", "unknown"],
@@ -578,12 +596,32 @@ describe("file from attachment on confirm (issue #1703)", () => {
     await storeSteps(second.cardId, [taskPrimary("Second task"), fileStep(secondAttachment)]);
 
     const holder = await pool.connect();
+    const competitor = await pool.connect();
     let waiting: Promise<Outcome<ItemRow>> | undefined;
     try {
       await holder.query("BEGIN");
       await confirmProposalWithClient(holder, { processingProposalsDatabaseId: proposalsId }, first.cardId);
-      waiting = settle(confirm(second.cardId));
-      await waitForBlobLockWait();
+      await competitor.query("BEGIN");
+      const holderPid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+      const competitorPid = (await competitor.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+      if (!holderPid || !competitorPid) throw new Error("Missing backend PID");
+      waiting = settle(
+        (async () => {
+          try {
+            const result = await confirmProposalWithClient(
+              competitor,
+              { processingProposalsDatabaseId: proposalsId },
+              second.cardId,
+            );
+            await competitor.query("COMMIT");
+            return result;
+          } catch (error) {
+            await competitor.query("ROLLBACK");
+            throw error;
+          }
+        })(),
+      );
+      await waitForBlobLockWait(holderPid, competitorPid);
       await holder.query("COMMIT");
       const outcome = await waiting;
       if (!("value" in outcome)) throw outcome.error;
@@ -594,6 +632,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
       throw error;
     } finally {
       holder.release();
+      competitor.release(true);
     }
 
     const [fileItem] = await filesItemsFor(blobId);
@@ -611,12 +650,28 @@ describe("file from attachment on confirm (issue #1703)", () => {
     const options = { writer: { writerKind: "user" as const }, sourceInboxItemId: source };
 
     const holder = await pool.connect();
+    const competitor = await pool.connect();
     let waiting: Promise<Outcome<unknown>> | undefined;
     try {
       await holder.query("BEGIN");
       await executeProposalSteps(holder, steps, options);
-      waiting = settle(withTransaction(pool, (client) => executeProposalSteps(client, steps, options)));
-      await waitForBlobLockWait();
+      await competitor.query("BEGIN");
+      const holderPid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+      const competitorPid = (await competitor.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+      if (!holderPid || !competitorPid) throw new Error("Missing backend PID");
+      waiting = settle(
+        (async () => {
+          try {
+            const result = await executeProposalSteps(competitor, steps, options);
+            await competitor.query("COMMIT");
+            return result;
+          } catch (error) {
+            await competitor.query("ROLLBACK");
+            throw error;
+          }
+        })(),
+      );
+      await waitForBlobLockWait(holderPid, competitorPid);
       await holder.query("COMMIT");
       const outcome = await waiting;
       expect(outcome).toMatchObject({ error: { status: 409, code: "version_conflict" } });
@@ -626,6 +681,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
       throw error;
     } finally {
       holder.release();
+      competitor.release(true);
     }
 
     expect(await filesItemsFor(blobId)).toHaveLength(1);

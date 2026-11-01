@@ -539,6 +539,8 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "reactivateAccount",
   "readAiProposal",
   "readBlobId",
+  "readProposalRelationCatalog",
+  "readProposalWorkspaceContext",
   "readSpeakerSuggestionContext",
   "rebaselineDocHistory",
   "reclassifyMcpTool",

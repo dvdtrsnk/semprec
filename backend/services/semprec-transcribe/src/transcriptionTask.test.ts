@@ -2005,8 +2005,178 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       expect(lines.join("\n")).toContain("Transcription task failed");
       expect(lines.join("\n")).not.toContain(sentinel);
       const transcript = await readTranscript(file.id);
-      expect((await readAutomation(transcript.id)).error).toBe(sentinel);
+      expect((await readAutomation(transcript.id))?.error).toBe(sentinel);
     });
+
+    it("passes a safe failure to the real queue wrapper when the running task is superseded", async () => {
+      const { file } = await createSourceFile();
+      const sentinel = "PRIVATE_SUPERSEDED_SENTINEL_1386";
+      let release = () => {};
+      let started = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const reached = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      let first = true;
+      const gateway: AiGatewayClientPort = {
+        async complete(input) {
+          if (first) {
+            first = false;
+            started();
+            await gate;
+            throw new Error(sentinel);
+          }
+          return summaryClient.complete(input);
+        },
+      };
+      const key = `transcription-job:${file.id}`;
+      const task = createTranscriptionTask(pool, blobStorage, gatewayClient, gateway);
+      let outward: unknown;
+      const taskList = {
+        [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+          CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+          async (payload, helpers) => {
+            try {
+              await task(payload, helpers);
+            } catch (error) {
+              outward = error;
+              throw error;
+            }
+          },
+        ),
+      };
+      let worker: Promise<void> | undefined;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await inTenantZero(() =>
+          enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey: key, maxAttempts: 3 }),
+        );
+        worker = runOnce({ pgPool: pool, taskList });
+        await Promise.race([
+          reached,
+          new Promise<never>((_, reject) => {
+            timeout = setTimeout(() => reject(new Error("Timed out waiting for transcription")), 10000);
+          }),
+        ]);
+        await inTenantZero(() =>
+          enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey: key, maxAttempts: 3 }),
+        );
+        release();
+        await worker;
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        release();
+        await worker;
+      }
+      expect(outward).toMatchObject({
+        name: "TranscriptionQueueError",
+        message: "Transcription task failed",
+        code: "unknown",
+      });
+      expect(inspect(outward)).not.toContain(sentinel);
+      expect(summaryClient.calls.length).toBeGreaterThan(0);
+    });
+
+    it("preserves a safe worker failure when diagnostic recording itself fails", async () => {
+      const { file } = await createSourceFile();
+      await createUser();
+      summaryClient.failure = new Error("PRIVATE_ORIGINAL_RECORD_FAILURE_1386");
+      const key = `transcription-job:${file.id}`;
+      const taskList = {
+        [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+          CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+          createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient),
+        ),
+      };
+      // The trigger injects an otherwise unavailable notification persistence failure.
+      await pool.query(`CREATE FUNCTION test_failure_1386() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'PRIVATE_RECORDING_FAILURE_1386'; END $$`);
+      await pool.query(`CREATE TRIGGER test_failure_1386 BEFORE INSERT ON notifications
+        FOR EACH ROW EXECUTE FUNCTION test_failure_1386()`);
+      try {
+        await inTenantZero(() =>
+          enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey: key, maxAttempts: 1 }),
+        );
+        await runOnce({ pgPool: pool, taskList });
+        const job = await pool.query<{ last_error: string | null }>(
+          "SELECT last_error FROM graphile_worker.jobs WHERE key = $1",
+          [key],
+        );
+        expect(job.rows[0]?.last_error).toContain("Transcription task failed");
+        expect(job.rows[0]?.last_error).not.toContain("PRIVATE_ORIGINAL_RECORD_FAILURE_1386");
+        expect(job.rows[0]?.last_error).not.toContain("PRIVATE_RECORDING_FAILURE_1386");
+        const transcript = await readTranscript(file.id);
+        expect((await readAutomation(transcript.id))?.status).toBe("pending");
+        expect(await readNotifications(transcript.id)).toEqual([]);
+      } finally {
+        await pool.query("DROP TRIGGER test_failure_1386 ON notifications");
+        await pool.query("DROP FUNCTION test_failure_1386()");
+      }
+    });
+
+    it("reports a safe worker failure after storage and cleanup failures", async () => {
+      const { file } = await createSourceFile();
+      const storage: BlobStorageWriter = {
+        async writeStream(_key, stream) {
+          for await (const _chunk of stream) {
+            /* drain ffmpeg before the injected failure */
+          }
+          throw new Error("PRIVATE_STORAGE_FAILURE_1386");
+        },
+        async delete() {
+          throw new Error("PRIVATE_CLEANUP_FAILURE_1386");
+        },
+        readStream: (key, range) => blobStorage.readStream(key, range),
+      };
+      const key = `transcription-job:${file.id}`;
+      const taskList = {
+        [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+          CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+          createTranscriptionTask(pool, storage, gatewayClient, summaryClient),
+        ),
+      };
+      await inTenantZero(() =>
+        enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey: key, maxAttempts: 1 }),
+      );
+      await runOnce({ pgPool: pool, taskList });
+      const job = await pool.query<{ last_error: string | null }>(
+        "SELECT last_error FROM graphile_worker.jobs WHERE key = $1",
+        [key],
+      );
+      expect(job.rows[0]?.last_error).toContain("Transcription task failed");
+      expect(job.rows[0]?.last_error).not.toContain("PRIVATE_STORAGE_FAILURE_1386");
+      expect(job.rows[0]?.last_error).not.toContain("PRIVATE_CLEANUP_FAILURE_1386");
+    });
+
+    it.each(["files", "transcripts"] as const)(
+      "reports a safe worker failure when the %s catalog is unavailable before a transcript exists",
+      async (moduleId) => {
+        const { file } = await createSourceFile();
+        // Simulate a missing built-in catalog entry, which normal APIs cannot remove.
+        await pool.query("UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = $1", [moduleId]);
+        const key = `transcription-job:${file.id}`;
+        const taskList = {
+          [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+            CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+            createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient),
+          ),
+        };
+        await inTenantZero(() =>
+          enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey: key, maxAttempts: 1 }),
+        );
+        await runOnce({ pgPool: pool, taskList });
+        const job = await pool.query<{ last_error: string | null }>(
+          "SELECT last_error FROM graphile_worker.jobs WHERE key = $1",
+          [key],
+        );
+        expect(job.rows[0]?.last_error).toContain("Transcription task failed");
+        expect(job.rows[0]?.last_error).not.toContain("database not found");
+        const automations = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM item_automation");
+        expect(automations.rows[0]?.count).toBe(0);
+      },
+    );
 
     describe("daily requeue and manual rerun (issue #186)", () => {
       function createTaskList() {

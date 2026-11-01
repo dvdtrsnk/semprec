@@ -5,6 +5,7 @@ import {
   assertUpdateStepShape,
 } from "./proposalEnvelopeValidation.js";
 import { inboxFingerprintInput, getRelationDefinitionByKey, resolveRecognizedType } from "./inboxSourceFingerprint.js";
+import { prepareComputedUpdates } from "./proposalComputedUpdates.js";
 import {
   buildProposalEnvelope,
   type TickSnapshot,
@@ -901,12 +902,15 @@ async function writeTickResult(
   envelope: ProposalEnvelope,
   reason: string | null,
   recognitionPatch: Record<string, unknown> = {},
+  invalidProposal = false,
 ): Promise<void> {
   const current = await currentSourceFingerprint(client, config, snapshot);
   if (!current) return;
   const { item, fingerprint } = current;
 
   try {
+    if (invalidProposal) throw new ValidationError("Proposal needs clarification");
+    envelope = await prepareComputedUpdates(client, envelope);
     await assertValidProposalEnvelope(client, envelope);
   } catch (err) {
     if (!(err instanceof ValidationError)) throw err;
@@ -926,25 +930,11 @@ async function writeTickResult(
     return;
   }
 
-  if (snapshot.existingProposal) {
-    await reviseProposal(
-      client,
-      config,
-      snapshot.existingProposal,
-      item.id,
-      fingerprint,
-      envelope,
-      reason,
-      recognitionPatch,
-    );
-    return;
-  }
-
   // Another tick may have created a proposal for this source while this one waited on the AI
   // call — revise that one through the guarded path instead of creating a duplicate.
-  const raceProposal = await findExistingProposal(client, config, item.id);
-  if (raceProposal) {
-    await reviseProposal(client, config, raceProposal, item.id, fingerprint, envelope, reason, recognitionPatch);
+  const existing = snapshot.existingProposal ?? (await findExistingProposal(client, config, item.id));
+  if (existing) {
+    await reviseProposal(client, config, existing, item.id, fingerprint, envelope, reason, recognitionPatch);
     return;
   }
 
@@ -1149,6 +1139,7 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
           buildProposalEnvelope(resolved, result),
           result.reason?.trim().slice(0, 500) || null,
           { recognizedTypeId: selected?.id ?? null, typeCandidates: [] },
+          result.invalidProposal !== undefined,
         );
       });
       return;
@@ -1156,7 +1147,15 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
     const envelope = buildProposalEnvelope(snapshot, result);
 
     await withTickTransaction(pool, (client) =>
-      writeTickResult(client, config, snapshot, envelope, result.reason?.trim().slice(0, 500) || null),
+      writeTickResult(
+        client,
+        config,
+        snapshot,
+        envelope,
+        result.reason?.trim().slice(0, 500) || null,
+        {},
+        result.invalidProposal !== undefined,
+      ),
     );
   };
 }
