@@ -96,6 +96,11 @@ async function runProducer(
     let failure: Error | undefined;
     let emergencyTimer: ReturnType<typeof setTimeout> | undefined;
     let groupSignalSucceeded = false;
+    function reportCleanupFailure(message: string) {
+      if (observation)
+        observation.emergencyCleanupError = [observation.emergencyCleanupError, message].filter(Boolean).join("; ");
+      process.stderr.write(`Transcription fixture cleanup: ${message}\n`);
+    }
     function stop(reason: Error) {
       if (failure) return;
       failure = reason;
@@ -104,18 +109,19 @@ async function runProducer(
           process.kill(-child.pid, "SIGKILL");
           groupSignalSucceeded = true;
         } catch (error) {
-          if (observation) observation.emergencyCleanupError = `Group kill failed: ${String(error)}`;
+          reportCleanupFailure(`Group kill failed: ${String(error)}`);
           for (const ownedPid of [child.pid, observation?.descendantPid]) {
             if (!ownedPid) continue;
             try {
               process.kill(ownedPid, "SIGKILL");
             } catch (cleanupError) {
               if (!(cleanupError instanceof Error && "code" in cleanupError && cleanupError.code === "ESRCH")) {
-                if (observation) observation.emergencyCleanupError += `; fallback: ${String(cleanupError)}`;
+                reportCleanupFailure(`Fallback signal failed: ${String(cleanupError)}`);
               }
             }
           }
           emergencyTimer = setTimeout(() => {
+            reportCleanupFailure("Owned child did not close after fallback");
             child.stdin.destroy();
             child.stdout.destroy();
             child.stderr.destroy();
@@ -175,12 +181,12 @@ async function runProducer(
               gone && groupSignalSucceeded && failure?.message === "Transcription fixture timed out";
             if (!gone) process.kill(descendantPid, "SIGKILL");
           } catch (error) {
-            observation.emergencyCleanupError = String(error);
+            reportCleanupFailure(`Descendant observation failed: ${String(error)}`);
             try {
               process.kill(descendantPid, "SIGKILL");
             } catch (cleanupError) {
               if (!(cleanupError instanceof Error && "code" in cleanupError && cleanupError.code === "ESRCH"))
-                observation.emergencyCleanupError += `; fallback: ${String(cleanupError)}`;
+                reportCleanupFailure(`Descendant fallback failed: ${String(cleanupError)}`);
             }
           }
           if (!gone) {
@@ -198,9 +204,9 @@ async function runProducer(
                 }
                 await new Promise((resolveWait) => setTimeout(resolveWait, 50));
               } while (Date.now() < cleanupDeadline);
-              if (!gone) observation.emergencyCleanupError = "Owned descendant did not settle after fallback";
+              if (!gone) reportCleanupFailure("Owned descendant did not settle after fallback");
             } catch (error) {
-              observation.emergencyCleanupError = `Owned descendant settlement failed: ${String(error)}`;
+              reportCleanupFailure(`Owned descendant settlement failed: ${String(error)}`);
             }
           }
         }
@@ -331,6 +337,11 @@ async function runFixture(
 
 export function runTranscriptionFixture(input: FixtureInput, adminPool: Pool) {
   return runFixture(input, adminPool);
+}
+
+/** Exercise the same overflow failure with the producer's lack of a test observation. */
+export function runFixtureOverflowWithoutObservation(input: FixtureInput, adminPool: Pool) {
+  return runFixture(input, adminPool, "overflow");
 }
 
 /** Closed fault controls exercise the same runner, parser and ownership cleanup as the producer. */

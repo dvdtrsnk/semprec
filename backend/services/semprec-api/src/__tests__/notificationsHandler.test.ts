@@ -9,7 +9,12 @@ import { z } from "zod";
 import { getTenantZeroId, getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
 import { createViewTypeRegistry, seedSystem, createUser, hashPassword, login } from "@semprec/data";
 import { createNotificationsRequestListener } from "../notificationsHandler.js";
-import { runFixtureGuardControl, runTranscriptionFixture, withFixtureStorage } from "./transcriptionHttpFixture.js";
+import {
+  runFixtureGuardControl,
+  runFixtureOverflowWithoutObservation,
+  runTranscriptionFixture,
+  withFixtureStorage,
+} from "./transcriptionHttpFixture.js";
 
 const PASSWORD = "s3cret-password";
 
@@ -146,6 +151,7 @@ describe("createNotificationsRequestListener", () => {
     const storageRoot = await mkdtemp(join(tmpdir(), "semprec-fixture-guard-"));
     const originalKill = process.kill.bind(process);
     const signaled: number[] = [];
+    const stderr = vi.spyOn(process.stderr, "write");
     const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
       signaled.push(pid);
       if (pid < 0 && signal === "SIGKILL") throw Object.assign(new Error("group signal refused"), { code: "EPERM" });
@@ -164,12 +170,30 @@ describe("createNotificationsRequestListener", () => {
         expect(signaled).toContain(-result.pid);
         expect(signaled).toContain(result.pid);
         expect(result.emergencyCleanupError).toContain("group signal refused");
+        expect(
+          stderr.mock.calls.some(
+            ([chunk]) => typeof chunk === "string" && chunk.includes("Group kill failed: Error: group signal refused"),
+          ),
+        ).toBe(true);
         expect(result.closed).toBe(true);
         expect(result.temporaryRemoved).toBe(true);
         expect(result.poolClosed).toBe(true);
+        const previousWrites = stderr.mock.calls.length;
+        await expect(
+          runFixtureOverflowWithoutObservation({ mode: "failure", tenantId: getTenantZeroId(), storageRoot }, pool),
+        ).rejects.toThrow("Transcription fixture output exceeds limit");
+        expect(
+          stderr.mock.calls
+            .slice(previousWrites)
+            .some(
+              ([chunk]) =>
+                typeof chunk === "string" && chunk.includes("Group kill failed: Error: group signal refused"),
+            ),
+        ).toBe(true);
       });
     } finally {
       kill.mockRestore();
+      stderr.mockRestore();
     }
   }, 15000);
 
