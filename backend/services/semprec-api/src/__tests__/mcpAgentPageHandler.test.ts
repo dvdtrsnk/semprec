@@ -9,7 +9,7 @@ import {
   resetDatabase,
   tenantForNextTestUser,
 } from "@semprec/data/testSupport";
-import { CAPABILITY_IDS, runInTenant } from "@semprec/shared";
+import { CAPABILITY_IDS, GENERIC_OPERATION_NAMES, runInTenant } from "@semprec/shared";
 import { createGenericOperationGateway } from "@semprec/application";
 import {
   createViewTypeRegistry,
@@ -367,6 +367,30 @@ describe("createMcpAgentPageRequestListener", () => {
       try {
         const address = mcp.address();
         if (!address || typeof address === "string") throw new Error("Missing MCP listener address");
+        const listResponse = await fetch(`http://127.0.0.1:${address.port}/mcp`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${minted.token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+        });
+        expect(listResponse.status).toBe(200);
+        const list: unknown = await listResponse.json();
+        if (
+          list === null ||
+          typeof list !== "object" ||
+          !("result" in list) ||
+          list.result === null ||
+          typeof list.result !== "object" ||
+          !("tools" in list.result) ||
+          !Array.isArray(list.result.tools)
+        ) {
+          throw new Error("Invalid MCP tools response");
+        }
+        const names: string[] = list.result.tools.map((tool: unknown) => {
+          if (tool === null || typeof tool !== "object" || !("name" in tool) || typeof tool.name !== "string")
+            throw new Error("Invalid MCP tool");
+          return tool.name;
+        });
+        expect(names.sort()).toEqual(GENERIC_OPERATION_NAMES.map((name) => `semprec.${name}`).sort());
         const response = await fetch(`http://127.0.0.1:${address.port}/mcp`, {
           method: "POST",
           headers: { Authorization: `Bearer ${minted.token}`, "Content-Type": "application/json" },
