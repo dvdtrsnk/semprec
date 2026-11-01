@@ -894,8 +894,8 @@
       "sequence": 9,
       "status": "proposed",
       "title": "[backend-delivery 09/74] Implement data/inbox, data/transcription, semprec-transcribe changes",
-      "bodyCharacters": 57544,
-      "specSha256": "4c9b051dd84231ba8d76ac8d6b1b69d64dae92b52afcefc148b3dd2be4ae89ee",
+      "bodyCharacters": 59364,
+      "specSha256": "fd3a3ac7e571706dc5acfd46dcf620b861546ab0bab6fdc36e878b7a9b7e3301",
       "members": [
         {
           "id": "gh-1470",
@@ -906,7 +906,7 @@
         },
         {
           "id": "gh-1703",
-          "specSha256": "eeea781d86960fe959e2cbae69142b34f32f0c7726088282cd0fceda5988c56f",
+          "specSha256": "ce5689b2bca2d9e12db3db0b391e1112408105813d7f5435a1cda3a3d8482764",
           "parent": "gh-1314",
           "dependencies": [
             "gh-1564",
@@ -916,7 +916,7 @@
         },
         {
           "id": "gh-1577",
-          "specSha256": "61da3e5be5b052a098a6f902224dfdb227aa11b3fa9ba8cfdb065e9b9f782419",
+          "specSha256": "d2cad48cb187cfe8bc115eee57160e583dcf9e57e0b25ca62259fba2dc87980f",
           "parent": "gh-1319",
           "dependencies": [
             "gh-1421"
@@ -924,17 +924,8 @@
           "approval": "approved"
         },
         {
-          "id": "gh-1581",
-          "specSha256": "2d3341e972a0631af92ca05d196d2181671d3d9ffda7b442f5e3787f1974c792",
-          "parent": "gh-1319",
-          "dependencies": [
-            "gh-1470"
-          ],
-          "approval": "approved"
-        },
-        {
           "id": "gh-1386",
-          "specSha256": "145d42433c964cb9fd075c10f0bba48be781b1a1094c5972f44be8b0f7cf0325",
+          "specSha256": "a1e4d1ac0821b8e327b307a97e84111640a5532b5ec58b180f21124a0c9b8adf",
           "parent": "gh-1319",
           "dependencies": [],
           "approval": "approved"
@@ -957,7 +948,7 @@
         },
         {
           "id": "gh-1402",
-          "specSha256": "71fe444963ad4b8dab48457e9ed24e11496607d8dbc5f8156ce6b797548527bf",
+          "specSha256": "a2fade77beeb377dd2f8a9ae87013bbb29f11dc4fe7e385db9032864361cad3b",
           "parent": "gh-1299",
           "dependencies": [
             "gh-1397"
@@ -966,7 +957,7 @@
         },
         {
           "id": "gh-1488",
-          "specSha256": "be2367773aebbfc3dd71f595efb049772b58616321829d03133db9014801c437",
+          "specSha256": "96d789796e6a27effb5c8b89e7e530b9ec36b90d8bae59913b3ce580bf525889",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1426",
@@ -976,7 +967,7 @@
         },
         {
           "id": "gh-1492",
-          "specSha256": "758919a1c763f4e81f2e2c8f2d7b628494c139db921680570cdd4e38b66159d4",
+          "specSha256": "5acb6070dd9d2d294338efec1726647bf8f34f0adc3f3b08433c687895fb1120",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1434",
@@ -986,7 +977,7 @@
         },
         {
           "id": "gh-1606",
-          "specSha256": "16b359ff11061484127ae32e9d113ba711c19a30b7cc709cc496def33df1f99d",
+          "specSha256": "24390c67e66cd00022c663ab4fdd2fd05c447897dd49c7d53c23cc68b907d0a5",
           "parent": "gh-1313",
           "dependencies": [
             "gh-1564"
@@ -3378,8 +3369,8 @@
       "sequence": 35,
       "status": "proposed",
       "title": "[backend-delivery 35/74] Implement data/chokePoint, data/transcription, data/mail changes",
-      "bodyCharacters": 55463,
-      "specSha256": "93a59057b158b767db539cb03a4c43a39c697926da398ffd9b0b317b783d4e20",
+      "bodyCharacters": 58247,
+      "specSha256": "2fb595248619d08682d2f373d1ac07575b3c24ed59ab6902f0abaf879aab33a6",
       "members": [
         {
           "id": "gh-1630",
@@ -3424,6 +3415,16 @@
           "parent": "gh-1319",
           "dependencies": [
             "gh-1635"
+          ],
+          "approval": "approved"
+        },
+        {
+          "id": "gh-1581",
+          "specSha256": "994ad54f530f61d05dd31f352d5adc50a413a6ee9fdcb53c1db12792d740e632",
+          "parent": "gh-1319",
+          "dependencies": [
+            "gh-1470",
+            "gh-1636"
           ],
           "approval": "approved"
         },

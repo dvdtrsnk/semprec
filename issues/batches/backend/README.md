@@ -153,7 +153,7 @@ reported by the ordinary validator; they are not silently repaired by batching.
 | 6 | [[backend-delivery 06/74] Implement agent-runtime, semprec-agents, data/agentRuns changes](../../items/sp-cf3300f1-216a-4f23-b35a-32ed074552d0.md) | 9 | 57781 |
 | 7 | [[backend-delivery 07/74] Implement data/blobs, data/chokePoint, application changes](../../items/sp-fa7d01cf-279f-41e6-a0ab-f63701f998e3.md) | 8 | 57539 |
 | 8 | [[backend-delivery 08/74] Implement data/mcp, data/notifications, data/push changes](../../items/sp-f1ddb03e-a6ec-486e-818d-56c7101ab2a0.md) | 11 | 56612 |
-| 9 | [[backend-delivery 09/74] Implement data/inbox, data/transcription, semprec-transcribe changes](../../items/sp-6ae4040a-6669-4c5d-b236-3e20eb9fb477.md) | 12 | 57544 |
+| 9 | [[backend-delivery 09/74] Implement data/inbox, data/transcription, semprec-transcribe changes](../../items/sp-6ae4040a-6669-4c5d-b236-3e20eb9fb477.md) | 11 | 59364 |
 | 10 | [[backend-delivery 10/74] Implement ai-gateway-client, semprec-ai-gateway, shared changes](../../items/sp-ea66e986-936d-4135-ac13-d49d81e64540.md) | 10 | 57485 |
 | 11 | [[backend-delivery 11/74] Implement data/chokePoint, data/tasks changes](../../items/sp-aeb88605-77ac-4921-a8b1-3f259c52ecf4.md) | 7 | 55972 |
 | 12 | [[backend-delivery 12/74] Implement data/aiGateway, data/scheduler, data/agentRuns changes](../../items/sp-44a1d0e0-66ca-4dbe-947a-6602d9e44b5a.md) | 11 | 57567 |
@@ -179,7 +179,7 @@ reported by the ordinary validator; they are not silently repaired by batching.
 | 32 | [[backend-delivery 32/74] Implement data/inbox, data/semp, semprec-agents changes](../../items/sp-3c22fa5a-50b2-4eba-a22b-61220f6289dd.md) | 11 | 55084 |
 | 33 | [[backend-delivery 33/74] Implement data/calendar, data/chokePoint, data/views changes](../../items/sp-1385289a-c057-4dcf-a42f-b2aaded63f7b.md) | 8 | 57306 |
 | 34 | [[backend-delivery 34/74] Implement data/tasks, data/journal, data/chokePoint changes](../../items/sp-cc9b4e18-de0c-4fbd-aab3-85d5b5be52c8.md) | 10 | 56551 |
-| 35 | [[backend-delivery 35/74] Implement data/chokePoint, data/transcription, data/mail changes](../../items/sp-9f67b277-1c75-4496-8571-5686097ff725.md) | 9 | 55463 |
+| 35 | [[backend-delivery 35/74] Implement data/chokePoint, data/transcription, data/mail changes](../../items/sp-9f67b277-1c75-4496-8571-5686097ff725.md) | 10 | 58247 |
 | 36 | [[backend-delivery 36/74] Implement data/manifest, data/auth, data/library changes](../../items/sp-579f26a4-c5bf-4ea7-8b68-3c50cecf192b.md) | 8 | 55429 |
 | 37 | [[backend-delivery 37/74] Implement data/tasks, data/calendar, data/chokePoint changes](../../items/sp-72e8758a-f119-48d3-b09f-122a1f1babef.md) | 10 | 57693 |
 | 38 | [[backend-delivery 38/74] Implement data/docs, shared/genericOperations, application changes](../../items/sp-56a14b69-eb0e-4aa9-b024-3f0780d6f0ba.md) | 9 | 55339 |
