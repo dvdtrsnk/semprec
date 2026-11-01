@@ -174,3 +174,17 @@ and changes no claim/external-call/outcome state machine from
 remain unchanged. No Task/AC/Touches or approval digest changes are required.
 The separate reviewer must inspect this metadata/auth separation with the rest
 of the complete batch.
+
+## Open follow-up: writes before the session failure handler
+
+Static audit identifies a preexisting risk in SempConversation.send: the newly
+created run's running-status publication and compacted-history persistence occur
+before its session try/failRun handler. A rejection there can leave the run
+running until later startup repair. No injected-write reproduction is recorded
+by this decision. Gh-1398's factory/callback/signal Tasks and gh-1446's code-on-close
+Tasks do not request this broader lifecycle repair; a title alone does not expand
+them. Leave that control flow unchanged and record this OPEN follow-up in the
+review brief and final evidence. Do not claim that all failures universally close
+runs. A regression caused or worsened by the current batch remains in scope and
+must be distinguished from this preexisting path. This deferral neither fixes the
+risk nor accepts a failed in-scope criterion.
