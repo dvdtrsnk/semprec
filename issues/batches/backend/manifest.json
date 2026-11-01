@@ -894,12 +894,12 @@
       "sequence": 9,
       "status": "proposed",
       "title": "[backend-delivery 09/74] Implement data/inbox, data/transcription, semprec-transcribe changes",
-      "bodyCharacters": 59376,
-      "specSha256": "78cc14efc7aea07df2bce93c67e3d43de423a8d1dc8155f62893d86fd91b8afb",
+      "bodyCharacters": 59446,
+      "specSha256": "f36a457a6a434f92376499f5e87eb12010d290db62186a1afc3104aeec60314b",
       "members": [
         {
           "id": "gh-1470",
-          "specSha256": "829f6f1acbaaf3dd9850c0b4227f48a9baf709c38db93eba0c254533bbc179f0",
+          "specSha256": "5adbfd2c205b50fe95ba7adab8361852e27e746cfb9564331615578464078abd",
           "parent": "gh-1337",
           "dependencies": [],
           "approval": "approved"
