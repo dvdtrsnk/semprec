@@ -123,6 +123,7 @@ interface FakeApnsAnswer {
 async function withApnsPeer<T>(
   answer: FakeApnsAnswer,
   run: (requests: RecordedApnsRequest[]) => Promise<T>,
+  afterClose?: () => void,
 ): Promise<T> {
   const requests: RecordedApnsRequest[] = [];
   const sessions = new Set<http2.ServerHttp2Session>();
@@ -186,6 +187,7 @@ async function withApnsPeer<T>(
           else resolve();
         });
       });
+      afterClose?.();
     } catch (error) {
       cleanupFailure ??= { error };
     }
@@ -197,6 +199,48 @@ async function withApnsPeer<T>(
   if (cleanupFailure) throw cleanupFailure.error;
   return outcome.value;
 }
+
+describe("owned APNs peer cleanup", () => {
+  it("reports a cleanup failure after closing the peer", async () => {
+    const failure = new Error("cleanup-sentinel");
+    let closed = false;
+    await expect(
+      withApnsPeer(
+        { status: 200 },
+        async () => "ok",
+        () => {
+          closed = true;
+          throw failure;
+        },
+      ),
+    ).rejects.toBe(failure);
+    expect(closed).toBe(true);
+  });
+
+  it("preserves a body failure if cleanup also fails after closing the peer", async () => {
+    const failure = new Error("body-sentinel");
+    let closed = false;
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(
+        withApnsPeer(
+          { status: 200 },
+          async () => {
+            throw failure;
+          },
+          () => {
+            closed = true;
+            throw new Error("cleanup-secret-sentinel");
+          },
+        ),
+      ).rejects.toBe(failure);
+      expect(closed).toBe(true);
+      expect(log).toHaveBeenCalledExactlyOnceWith("APNs test peer cleanup failed after the test failed");
+    } finally {
+      log.mockRestore();
+    }
+  });
+});
 
 describe("sendApnsNotification interruption level (issue #1443)", () => {
   afterEach(() => {

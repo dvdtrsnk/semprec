@@ -408,7 +408,10 @@ describe("notificationsStore (issue #152)", () => {
       expect(events[0]!.userId).toBe(otherUserId);
     });
 
-    it("resolves a tenant's source without changing another tenant's different source", async () => {
+    it.each([
+      ["different", "source-b"],
+      ["same", "source-a"],
+    ])("resolves a tenant's source without changing another tenant's %s source", async (_label, foreignSource) => {
       const userA = await createTestUser();
       const userB = await createTestUser();
       const tenantA = tenantOfUser.get(userA);
@@ -429,7 +432,7 @@ describe("notificationsStore (issue #152)", () => {
             }),
           );
         const a = await write(tenantA, userA, "source-a");
-        const b = await write(tenantB, userB, "source-b");
+        const b = await write(tenantB, userB, foreignSource);
         const events: NotificationReadStateEvent[] = [];
         setNotificationReadStateHook((event) => events.push(event));
         const resolved = await withTenantTransaction(runtimePool, tenantA, (client) =>
@@ -441,6 +444,24 @@ describe("notificationsStore (issue #152)", () => {
         expect(own).toMatchObject({ id: a, readAt: expect.any(String), resolvedAt: expect.any(String) });
         expect(foreign).toMatchObject({ id: b, readAt: null, resolvedAt: null });
         expect(events).toEqual([expect.objectContaining({ userId: userA, notificationIds: [a] })]);
+        const second = await withTenantTransaction(runtimePool, tenantB, (client) =>
+          resolveNotificationsBySource(client, { sourceTable: "project_heartbeats", sourceId: foreignSource }),
+        );
+        expect(second).toHaveLength(1);
+        expect(
+          await withTenantTransaction(runtimePool, tenantB, (client) => getNotificationById(client, b)),
+        ).toMatchObject({
+          id: b,
+          readAt: expect.any(String),
+          resolvedAt: expect.any(String),
+        });
+        expect(await withTenantTransaction(runtimePool, tenantA, (client) => getNotificationById(client, a))).toEqual(
+          own,
+        );
+        expect(events).toEqual([
+          expect.objectContaining({ userId: userA, notificationIds: [a] }),
+          expect.objectContaining({ userId: userB, notificationIds: [b] }),
+        ]);
       } finally {
         await runtimePool.end();
       }
