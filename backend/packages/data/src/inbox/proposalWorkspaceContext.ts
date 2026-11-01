@@ -31,11 +31,11 @@ export async function readProposalRelationCatalog(
 ): Promise<ProposalRelationCatalogEntry[]> {
   const scope = currentTenantScope();
   if (scope?.kind !== "tenant") throw new Error("Proposal relation catalog requires tenant scope");
-  const visible = await client.query<{ present: boolean }>(
+  const visible = await client.query<Record<string, unknown>>(
     "SELECT EXISTS (SELECT 1 FROM databases WHERE id = $1 AND tenant_id = $2 AND archived_at IS NULL) AS present",
     [databaseId, scope.tenantId],
   );
-  if (!visible.rows[0]?.present) return [];
+  if (!z.object({ present: z.boolean() }).parse(visible.rows[0]).present) return [];
   const properties = await listPropertiesByDatabase(client, databaseId);
   const result: ProposalRelationCatalogEntry[] = [];
   for (const property of properties) {

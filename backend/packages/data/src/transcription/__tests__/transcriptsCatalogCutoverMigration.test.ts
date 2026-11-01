@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { z } from "zod";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
@@ -14,11 +15,14 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 }
 
 async function statusOptions(transcriptsId: string): Promise<string[]> {
-  const { rows } = await pool.query<{ config: { options?: { key: string }[] } }>(
+  const { rows } = await pool.query<Record<string, unknown>>(
     `SELECT config FROM properties WHERE database_id = $1 AND key = 'status'`,
     [transcriptsId],
   );
-  return (rows[0]?.config.options ?? []).map((option) => option.key);
+  const config = z
+    .object({ config: z.object({ options: z.array(z.object({ key: z.string() })).optional() }) })
+    .parse(rows[0]);
+  return (config.config.options ?? []).map((option) => option.key);
 }
 
 async function speakersPropertyCount(transcriptsId: string): Promise<number> {
@@ -35,23 +39,26 @@ const RELATION_PAIRS = [
   { moduleId: "people", transcriptsKey: "people", otherKey: "transcripts", cardinality: "many_to_many" },
 ] as const;
 
-interface PropertyRow {
-  id: string;
-  database_id: string;
-  config: { relationDefinitionId: string; targetDatabaseId: string };
-}
-
 /** Reads both sides of a Transcripts relation pair and its definition; throws when either side is missing. */
 async function relationPairShape(
   transcriptsId: string,
   otherDatabaseId: string,
   pair: (typeof RELATION_PAIRS)[number],
 ) {
-  const { rows } = await pool.query<PropertyRow>(
+  const result = await pool.query<Record<string, unknown>>(
     `SELECT id, database_id, config FROM properties
      WHERE (database_id = $1 AND key = $3) OR (database_id = $2 AND key = $4)`,
     [transcriptsId, otherDatabaseId, pair.transcriptsKey, pair.otherKey],
   );
+  const rows = z
+    .array(
+      z.object({
+        id: z.uuid(),
+        database_id: z.uuid(),
+        config: z.object({ relationDefinitionId: z.uuid(), targetDatabaseId: z.uuid() }),
+      }),
+    )
+    .parse(result.rows);
   const mine = rows.find((row) => row.database_id === transcriptsId);
   const other = rows.find((row) => row.database_id === otherDatabaseId);
   if (!mine || !other) throw new Error(`Relation pair '${pair.transcriptsKey}' is incomplete`);
@@ -97,10 +104,13 @@ describe("runTranscriptsCatalogCutoverMigration (issue #180)", () => {
        WHERE database_id = $1 AND key = 'status'`,
       [transcriptsId],
     );
-    const { rows: speakersRows } = await pool.query<{ id: string; config: { relationDefinitionId: string } }>(
+    const speakersResult = await pool.query<Record<string, unknown>>(
       `SELECT id, config FROM properties WHERE database_id = $1 AND key = 'speakers'`,
       [transcriptsId],
     );
+    const speakersRows = z
+      .array(z.object({ id: z.uuid(), config: z.object({ relationDefinitionId: z.uuid() }) }))
+      .parse(speakersResult.rows);
     const speakers = speakersRows[0];
     if (speakers) {
       await pool.query(`DELETE FROM properties WHERE id = $1`, [speakers.id]);
@@ -154,6 +164,45 @@ describe("runTranscriptsCatalogCutoverMigration (issue #180)", () => {
     expect(rows.map((row) => row.key).sort()).toEqual(["event", "speakers"]);
   });
 
+  it.each(RELATION_PAIRS)(
+    "skips a missing $moduleId target and adds its pair when that module exists",
+    async (pair) => {
+      const otherId = await databaseIdFor(pair.moduleId);
+      await pool.query("UPDATE databases SET owner_module_id = NULL WHERE id = $1", [otherId]);
+      await runTranscriptsCatalogCutoverMigration(pool);
+      const missing = await pool.query<Record<string, unknown>>(
+        "SELECT id FROM properties WHERE (database_id = $1 AND key = $3) OR (database_id = $2 AND key = $4)",
+        [transcriptsId, otherId, pair.transcriptsKey, pair.otherKey],
+      );
+      expect(missing.rows).toEqual([]);
+      for (const other of RELATION_PAIRS.filter((candidate) => candidate.moduleId !== pair.moduleId))
+        expect((await relationPairShape(transcriptsId, await databaseIdFor(other.moduleId), other)).cardinality).toBe(
+          other.cardinality,
+        );
+      await pool.query("UPDATE databases SET owner_module_id = $2 WHERE id = $1", [otherId, pair.moduleId]);
+      await runTranscriptsCatalogCutoverMigration(pool);
+      expect((await relationPairShape(transcriptsId, otherId, pair)).cardinality).toBe(pair.cardinality);
+    },
+  );
+
+  it("fails closed and rolls back when the existing status options are malformed", async () => {
+    await pool.query(
+      "UPDATE properties SET config = '{\"options\": \"invalid\"}'::jsonb, owner_process = 'previous-owner' WHERE database_id = $1 AND key = 'status'",
+      [transcriptsId],
+    );
+    await expect(runTranscriptsCatalogCutoverMigration(pool)).rejects.toThrow();
+    const result = await pool.query("SELECT key FROM properties WHERE database_id = $1 AND key = ANY($2::text[])", [
+      transcriptsId,
+      ["project", "company", "people", "speakers"],
+    ]);
+    expect(result.rows).toEqual([]);
+    const status = await pool.query<Record<string, unknown>>(
+      "SELECT owner_process FROM properties WHERE database_id = $1 AND key = 'status'",
+      [transcriptsId],
+    );
+    expect(z.object({ owner_process: z.string() }).parse(status.rows[0]).owner_process).toBe("previous-owner");
+  });
+
   it("adds the 'error' status option and the 'speakers' relation to an already-provisioned Transcripts database", async () => {
     expect(await statusOptions(transcriptsId)).not.toContain("error");
     expect(await speakersPropertyCount(transcriptsId)).toBe(0);
@@ -163,14 +212,17 @@ describe("runTranscriptsCatalogCutoverMigration (issue #180)", () => {
     expect(await statusOptions(transcriptsId)).toEqual(["recording", "processing", "done", "error"]);
     expect(await speakersPropertyCount(transcriptsId)).toBe(1);
 
-    const { rows } = await pool.query<{ config: { relationDefinitionId: string; targetDatabaseId: string } }>(
+    const { rows } = await pool.query<Record<string, unknown>>(
       `SELECT config FROM properties WHERE database_id = $1 AND key = 'speakers'`,
       [transcriptsId],
     );
-    expect(rows[0]!.config.targetDatabaseId).toBe(peopleId);
+    const speaker = z
+      .object({ config: z.object({ relationDefinitionId: z.uuid(), targetDatabaseId: z.uuid() }) })
+      .parse(rows[0]);
+    expect(speaker.config.targetDatabaseId).toBe(peopleId);
     const { rows: relationRows } = await pool.query<{ cardinality: string }>(
       `SELECT cardinality FROM relation_definitions WHERE id = $1`,
-      [rows[0]!.config.relationDefinitionId],
+      [speaker.config.relationDefinitionId],
     );
     expect(relationRows[0]!.cardinality).toBe("many_to_many");
   });

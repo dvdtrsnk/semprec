@@ -189,10 +189,10 @@ describe("transcription step 0", () => {
 
     const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
     if (!transcripts) throw new Error("Transcripts database was not seeded");
-    const { rows } = await pool.query<{ id: string; properties: Record<string, unknown> }>(
-      "SELECT id, properties FROM items WHERE database_id = $1",
-      [transcripts.id],
-    );
+    const raw = await pool.query<Record<string, unknown>>("SELECT id, properties FROM items WHERE database_id = $1", [
+      transcripts.id,
+    ]);
+    const rows = z.array(z.object({ id: z.uuid(), properties: z.record(z.string(), z.unknown()) })).parse(raw.rows);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.properties).toMatchObject({
       name: "recording.mp3",
@@ -228,7 +228,8 @@ describe("transcription step 0", () => {
       await promise;
       expect.unreachable("expected an owner_violation ForbiddenError");
     } catch (err) {
-      expect((err as ForbiddenError).code).toBe("owner_violation");
+      if (!(err instanceof ForbiddenError)) throw err;
+      expect(err.code).toBe("owner_violation");
     }
   });
 });
@@ -298,11 +299,12 @@ describe("transcription step 1 (prepare)", () => {
   }
 
   async function readTranscriptDate(source: ItemRow | null): Promise<unknown> {
-    const { rows } = await pool.query<{ properties: Record<string, unknown> }>(
-      "SELECT properties FROM items WHERE id = $1",
-      [z.string().parse(source?.computed.create)],
-    );
-    return rows[0]?.properties.date;
+    const { rows } = await pool.query<Record<string, unknown>>("SELECT properties FROM items WHERE id = $1", [
+      z.string().parse(source?.computed.create),
+    ]);
+    return rows[0]
+      ? z.object({ properties: z.record(z.string(), z.unknown()) }).parse(rows[0]).properties.date
+      : undefined;
   }
 
   /** The normalized audio left behind — neither a `blobs` row nor bytes in storage when step 1 discarded it. */
@@ -430,21 +432,22 @@ describe("transcription step 1 (prepare)", () => {
   it("opens its read and write transactions with the isolation level on BEGIN and issues no SET TRANSACTION", async () => {
     const { files, file } = await createSourceFile("audio/mp4", audioFixture);
     const statements: string[] = [];
-    // Pooled clients are reused across `connect()` calls: wrap each client's `query` once.
-    const wrappedClients = new WeakSet<PoolClient>();
     async function connectAndRecord(): Promise<PoolClient> {
       const client = await pool.connect();
-      if (!wrappedClients.has(client)) {
-        wrappedClients.add(client);
-        const originalQuery = client.query.bind(client) as (...args: unknown[]) => unknown;
-        (client as unknown as { query: unknown }).query = (...queryArgs: unknown[]) => {
-          const first = queryArgs[0];
-          const text = typeof first === "string" ? first : (first as { text?: string } | undefined)?.text;
-          if (text !== undefined) statements.push(text);
-          return originalQuery(...queryArgs);
-        };
-      }
-      return client;
+      return new Proxy(client, {
+        get(target, property, receiver) {
+          if (property === "query")
+            return (...args: unknown[]) => {
+              const first = args[0];
+              const parsed = z.object({ text: z.string() }).safeParse(first);
+              const sql = typeof first === "string" ? first : parsed.success ? parsed.data.text : undefined;
+              if (sql !== undefined) statements.push(sql);
+              return Reflect.apply(target.query.bind(target), undefined, args);
+            };
+          const value: unknown = Reflect.get(target, property, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
     }
     const recordingPool = new Proxy(pool, {
       get(target, prop, receiver) {
@@ -922,11 +925,13 @@ describe("transcription steps 2 and 3 (diarize, ASR)", () => {
     expect(automation.error).toBeNull();
     const source = await readSource(files.id, file.id);
     expect(source?.computed.asr).toBeDefined();
-    const { rows: transcriptRows } = await pool.query<{ computed: { segments?: unknown } }>(
+    const { rows: transcriptRows } = await pool.query<Record<string, unknown>>(
       "SELECT computed FROM items WHERE id = $1",
       [transcript.id],
     );
-    expect(transcriptRows[0]?.computed.segments).toBeUndefined();
+    expect(
+      z.object({ computed: z.record(z.string(), z.unknown()) }).parse(transcriptRows[0]).computed.segments,
+    ).toBeUndefined();
   });
 });
 
@@ -1509,13 +1514,14 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       ],
       ["a completion gateway failure", () => new AiGatewayFailedError("http"), "providerFailed"],
       ["any other error", () => new Error("secret transcript text"), "unknown"],
-      ["a thrown non-error", () => "secret transcript text" as unknown as Error, "unknown"],
+      ["a thrown non-error", () => "secret transcript text", "unknown"],
     ])("stores the code for %s and keeps its message out of the notification", async (_label, makeFailure, code) => {
       const { file } = await createSourceFile();
       await createUser();
       const failure = makeFailure();
       expect(classifyTranscriptionFailure(failure)).toBe(code);
-      summaryClient.failure = failure;
+      if (failure instanceof Error) summaryClient.failure = failure;
+      else vi.spyOn(summaryClient, "complete").mockRejectedValue(failure);
       const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
 
       await task({ fileItemId: file.id }, FINAL_ATTEMPT).catch(() => undefined);
@@ -1791,12 +1797,10 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
         summaryClient,
       )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
-      const { rows } = await pool.query<{ computed: Record<string, unknown> }>(
-        "SELECT computed FROM items WHERE id = $1",
-        [file.id],
-      );
-      expect(rows[0]?.computed).toHaveProperty("prepare");
-      expect(rows[0]?.computed).not.toHaveProperty("diarize");
+      const { rows } = await pool.query<Record<string, unknown>>("SELECT computed FROM items WHERE id = $1", [file.id]);
+      const computed = z.object({ computed: z.record(z.string(), z.unknown()) }).parse(rows[0]).computed;
+      expect(computed).toHaveProperty("prepare");
+      expect(computed).not.toHaveProperty("diarize");
       expect(lockingGateway.diarizeCalls).toHaveLength(1);
       expect(lockingGateway.transcribeCalls).toEqual([]);
       expect(summaryClient.calls).toEqual([]);
@@ -1950,17 +1954,28 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
           summaryClient,
         )({ fileItemId: file.id }, FIRST_ATTEMPT);
         const transcript = await readTranscript(file.id);
-        await pool.query("UPDATE items SET deleted_at = NULL WHERE id = $1", [transcript.id]);
+        const transcripts = await inTenantZero(() =>
+          withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts")),
+        );
+        if (!transcripts) throw new Error("Missing Transcripts database");
+        await inTenantZero(() => createChokePoint(pool).restoreItem(transcripts.id, transcript.id));
         gateway.deleteWhere = () => "SELECT 1";
 
-        await createTranscriptionTask(
-          pool,
-          blobStorage,
-          gateway,
-          summaryClient,
-        )({ fileItemId: file.id }, FIRST_ATTEMPT);
+        const requested = await inTenantZero(() =>
+          createRerunTranscriptionRouteHandler(pool)({ params: { id: transcript.id }, body: undefined }),
+        );
+        expect(requested).toEqual({ status: 202, body: { id: transcript.id, fileItemId: file.id } });
+        const taskList = {
+          [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+            CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+            createTranscriptionTask(pool, blobStorage, gateway, summaryClient),
+          ),
+        };
+        await runOnce({ pgPool: pool, taskList });
 
         expect(await readStoppedState(transcript.id)).toEqual({ status: "done", error_code: null });
+        expect(gateway.diarizeCalls).toHaveLength(2);
+        expect(gateway.transcribeCalls).toHaveLength(1);
       });
     });
 
