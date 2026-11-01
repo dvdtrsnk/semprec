@@ -12,7 +12,11 @@ import { generatePermissionManifest } from "../manifest/permissionManifest.js";
 import { createEmailDraft } from "../mail/draft.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
-import { getMailMessageMetaByItemId, getMailMessageMetaByMailboxAndMessageId } from "../mail/mailMessageMetaStore.js";
+import {
+  getMailMessageMetaByItemId,
+  getMailMessageMetaByMailboxAndMessageId,
+  resolveMergedThreadId,
+} from "../mail/mailMessageMetaStore.js";
 import {
   sendDraftEmail,
   assertEmailSendAuthorized,
@@ -1051,6 +1055,8 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
             failedPool.on("acquire", (client: PoolClient) => recordPid(client, failedPids));
             competitorPool.on("acquire", (client: PoolClient) => recordPid(client, competitorPids));
             const controller = await ownerPool.connect();
+            await controller.query("SET statement_timeout = '3s'");
+            await controller.query("SET lock_timeout = '2s'");
             pool = runtimePool;
             const { rows: controllerRows } = await controller.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
             const controllerPid = controllerRows[0]?.pid;
@@ -1111,7 +1117,16 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
                 "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
               );
               expect(runtimeRole.rows[0]).toEqual({ name: "semprec_data", bypass: false, superuser: false });
-              if (competitor === "bridge") await ingestSynced("<bridge-anchor@example.com>");
+              const anchorIds: string[] = [];
+              if (competitor === "bridge") {
+                for (const id of ["<bridge-anchor@example.com>", "<bridge-other@example.com>"]) {
+                  await ingestSynced(id);
+                  const meta = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, id);
+                  if (!meta?.threadId) throw new Error("Missing bridge anchor thread");
+                  anchorIds.push(meta.threadId);
+                }
+                expect(new Set(anchorIds).size).toBe(2);
+              }
               const failedDraft = await newDraft();
               const otherDraft = competitor === "send" ? await newDraft() : undefined;
               failedSend = send(failedDraft, smtp, {}, failedPool).then(
@@ -1146,7 +1161,9 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
                       mailboxId,
                       undefined,
                       messageId,
-                      competitor === "bridge" ? ["<bridge-anchor@example.com>"] : undefined,
+                      competitor === "bridge"
+                        ? ["<bridge-anchor@example.com>", "<bridge-other@example.com>"]
+                        : undefined,
                       competitorPool,
                     );
               let holderPid: number;
@@ -1196,6 +1213,18 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
                   "<bridge-anchor@example.com>",
                 );
                 expect(otherMeta?.threadId).toBe(anchor?.threadId);
+                if (!otherMeta?.threadId) throw new Error("Missing merged bridge thread");
+                for (const id of anchorIds) {
+                  expect(await withTransaction(pool, (client) => resolveMergedThreadId(client, id))).toBe(
+                    otherMeta.threadId,
+                  );
+                }
+                const aliases = await pool.query<{ from_thread_id: string; to_thread_id: string }>(
+                  "SELECT from_thread_id, to_thread_id FROM mail_thread_aliases WHERE from_thread_id = ANY($1::uuid[])",
+                  [anchorIds],
+                );
+                expect(aliases.rows.length).toBeGreaterThanOrEqual(1);
+                expect(aliases.rows.every((row) => row.to_thread_id === otherMeta.threadId)).toBe(true);
               } else if (order === "competitor-first") expect(otherMeta?.threadId).toBe(original.threadId);
               else expect(otherMeta?.threadId).not.toBe(original.threadId);
               const { rows: orphans } = await pool.query<{ count: number }>(
@@ -1208,27 +1237,32 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
               ).toBeTruthy();
             } finally {
               releaseSmtp();
-              await controller.query("SELECT pg_advisory_unlock_all()");
               const operations = Promise.allSettled([...(failedSend ? [failedSend] : []), ...(other ? [other] : [])]);
               try {
+                await bounded(controller.query("SELECT pg_advisory_unlock_all()"));
                 await bounded(operations).catch(async (error: unknown) => {
                   const pids = await bounded(Promise.all([...failedPids, ...competitorPids]));
                   for (const pid of new Set(pids)) {
-                    await ownerPool.query("SELECT pg_terminate_backend($1)", [pid]);
+                    await bounded(controller.query("SELECT pg_terminate_backend($1)", [pid]));
                   }
                   await bounded(operations);
                   throw error;
                 });
               } finally {
-                await ownerPool.query(
-                  order === "competitor-first"
-                    ? "DROP TRIGGER IF EXISTS test_mail_guard_gate ON mail_message_meta"
-                    : "DROP TRIGGER IF EXISTS test_mail_guard_gate ON mail_threads",
-                );
-                await ownerPool.query("DROP FUNCTION IF EXISTS test_mail_guard_gate()");
-                controller.release();
-                pool = ownerPool;
-                await bounded(Promise.all([runtimePool.end(), failedPool.end(), competitorPool.end()]));
+                try {
+                  await bounded(
+                    controller.query(
+                      order === "competitor-first"
+                        ? "DROP TRIGGER IF EXISTS test_mail_guard_gate ON mail_message_meta"
+                        : "DROP TRIGGER IF EXISTS test_mail_guard_gate ON mail_threads",
+                    ),
+                  );
+                  await bounded(controller.query("DROP FUNCTION IF EXISTS test_mail_guard_gate()"));
+                } finally {
+                  controller.release(true);
+                  pool = ownerPool;
+                  await bounded(Promise.all([runtimePool.end(), failedPool.end(), competitorPool.end()]));
+                }
               }
             }
           },

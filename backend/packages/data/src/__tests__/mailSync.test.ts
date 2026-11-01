@@ -873,7 +873,7 @@ describe("provider_message_id uniqueness convergence (issue #204)", () => {
         try {
           await bounded(operations).catch(async (error: unknown) => {
             const pids = await bounded(Promise.all(operationPids));
-            for (const pid of new Set(pids)) await pool.query("SELECT pg_terminate_backend($1)", [pid]);
+            for (const pid of new Set(pids)) await bounded(pool.query("SELECT pg_terminate_backend($1)", [pid]));
             await bounded(operations);
             throw error;
           });

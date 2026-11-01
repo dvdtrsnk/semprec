@@ -324,7 +324,7 @@ describe("mailThreadBackfill (issue #1570)", () => {
       try {
         await bounded(operations).catch(async (error: unknown) => {
           const pids = await bounded(Promise.all(operationPids));
-          for (const pid of new Set(pids)) await admin.query("SELECT pg_terminate_backend($1)", [pid]);
+          for (const pid of new Set(pids)) await bounded(admin.query("SELECT pg_terminate_backend($1)", [pid]));
           await bounded(operations);
           throw error;
         });
@@ -360,6 +360,8 @@ describe("mailThreadBackfill (issue #1570)", () => {
         threadId: third,
       });
       const control = await admin.connect();
+      await control.query("SET statement_timeout = '3s'");
+      await control.query("SET lock_timeout = '2s'");
       const backfillPool = await createRuntimeRolePool(admin, "semprec_data");
       const bridgePool = await createRuntimeRolePool(admin, "semprec_data");
       const backfillPids: Array<Promise<number>> = [];
@@ -477,20 +479,23 @@ describe("mailThreadBackfill (issue #1570)", () => {
         }
         expect(await orphanThreads(tenantZero)).toBe(0);
       } finally {
-        await control.query("SELECT pg_advisory_unlock_all()");
         const operations = Promise.allSettled([...(backfill ? [backfill] : []), ...(bridge ? [bridge] : [])]);
         try {
+          await bounded(control.query("SELECT pg_advisory_unlock_all()"));
           await bounded(operations).catch(async (error: unknown) => {
             const pids = await bounded(Promise.all([...backfillPids, ...bridgePids]));
-            for (const pid of new Set(pids)) await admin.query("SELECT pg_terminate_backend($1)", [pid]);
+            for (const pid of new Set(pids)) await bounded(control.query("SELECT pg_terminate_backend($1)", [pid]));
             await bounded(operations);
             throw error;
           });
         } finally {
-          await admin.query("DROP TRIGGER IF EXISTS test_mail_bridge_gate ON mail_message_meta");
-          await admin.query("DROP FUNCTION IF EXISTS test_mail_bridge_gate()");
-          control.release();
-          await bounded(Promise.all([backfillPool.end(), bridgePool.end()]));
+          try {
+            await bounded(control.query("DROP TRIGGER IF EXISTS test_mail_bridge_gate ON mail_message_meta"));
+            await bounded(control.query("DROP FUNCTION IF EXISTS test_mail_bridge_gate()"));
+          } finally {
+            control.release(true);
+            await bounded(Promise.all([backfillPool.end(), bridgePool.end()]));
+          }
         }
       }
     },
