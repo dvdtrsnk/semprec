@@ -47,6 +47,10 @@ describe("finishAgentRunWithErrorNotification (issue #149)", () => {
     await expect(
       withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, run.id, "boom", "internal")),
     ).resolves.toBe(true);
+    const stored = await pool.query<{ error_code: string | null }>("SELECT error_code FROM agent_runs WHERE id = $1", [
+      run.id,
+    ]);
+    expect(stored.rows).toEqual([{ error_code: "internal" }]);
 
     const { rows: afterFirst } = await pool.query(
       `SELECT user_id, kind, title, link_href, source_table, source_id, transition_instance FROM notifications WHERE source_id = $1`,
