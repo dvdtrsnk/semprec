@@ -1143,6 +1143,12 @@ describe("value link state on writes (issue #1516)", () => {
             let failure: unknown;
             try {
               await bounded(held.promise);
+              const edgeLock = await pool.query<{ held: boolean }>(
+                `SELECT EXISTS (SELECT 1 FROM item_relations e JOIN pg_locks l ON l.transactionid::text = e.xmax::text
+                 WHERE e.item_a = $1 AND e.item_b = $2 AND l.pid = $3 AND l.locktype = 'transactionid' AND l.mode = 'ExclusiveLock' AND l.granted) AS held`,
+                [fx.file.id, fx.alpha.id, holderPid],
+              );
+              expect(edgeLock.rows[0]?.held).toBe(true);
               await expect(
                 runInTenant(tenant, () =>
                   withTransaction(contenderPool, async (client) => {
