@@ -20,6 +20,38 @@ import {
 } from "../audioProviders/types.js";
 import { AudioProviderCallError } from "../audioProviders/types.js";
 import { GENEROUS_GLOBAL_CAPS } from "./globalCaps.js";
+import { createOpenAiStreamingTranscriptionProvider } from "../audioProviders/openAiStreamingTranscriptionProvider.js";
+
+const outboundFixture = vi.hoisted(() => ({
+  sockets: [] as Array<{ sent: string[]; terminated: boolean }>,
+}));
+vi.mock("ws", async (importOriginal) => {
+  const original = await importOriginal<typeof import("ws")>();
+  const { EventEmitter } = await import("node:events");
+  class ProviderSocket extends EventEmitter {
+    readyState = original.WebSocket.OPEN;
+    bufferedAmount = 0;
+    sent: string[] = [];
+    terminated = false;
+    constructor() {
+      super();
+      outboundFixture.sockets.push(this);
+      queueMicrotask(() => this.emit("open"));
+    }
+    send(data: string): void {
+      this.sent.push(data);
+      this.bufferedAmount = 256 * 1024;
+    }
+    terminate(): void {
+      this.terminated = true;
+    }
+  }
+  function Socket(url: string, options?: ConstructorParameters<typeof original.WebSocket>[1]) {
+    if (url.startsWith("wss://api.openai.com/")) return new ProviderSocket();
+    return new original.WebSocket(url, options);
+  }
+  return { ...original, WebSocket: Object.assign(Socket, { OPEN: original.WebSocket.OPEN }) };
+});
 
 const TOKEN = "test-internal-token";
 const PRICE_PER_HOUR = 36;
@@ -192,6 +224,7 @@ const frame = (): Buffer => Buffer.alloc(FRAME_BYTES, 1);
 
 describe("WebSocket /internal/stt/stream", () => {
   beforeEach(async () => {
+    outboundFixture.sockets.length = 0;
     pool ??= getTestPool();
     await resetDatabase(pool);
     tenantZero = getTenantZeroId();
@@ -384,6 +417,22 @@ describe("WebSocket /internal/stt/stream", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.status).toBe("settled");
     expect(Number(calls[0]?.audio_seconds)).toBeCloseTo(0.1, 6);
+  });
+
+  it("reports the real adapter's outbound overflow and clears the gateway reservation", async () => {
+    await start({ provider: createOpenAiStreamingTranscriptionProvider("local-fixture-only") });
+    const client = await connect();
+    client.ws.send(frame());
+
+    expect(await client.closed).toBe(1011);
+    expect(client.messages).toEqual([{ type: "error", code: "provider_error" }]);
+    await waitFor(async () => (await rows()).every((row) => row.status !== "reserved"));
+    const calls = await rows();
+    expect(calls).toHaveLength(1);
+    expect(["settled", "failed"]).toContain(calls[0]?.status);
+    const socket = outboundFixture.sockets[0];
+    expect(socket?.sent).toHaveLength(1);
+    expect(socket?.terminated).toBe(true);
   });
 
   it("omits streamed audio from serialized logs when the provider fails", async () => {
