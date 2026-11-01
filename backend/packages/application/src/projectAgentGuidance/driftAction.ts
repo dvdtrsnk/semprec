@@ -225,7 +225,9 @@ export function createAgentGuidanceDriftAction<Tx>(
  * package stays neutral (no schema-validation library dependency) and never trusts a value typed
  * `unknown` without narrowing it itself.
  */
-function validateContradictions(content: unknown): GuidanceDriftContradiction[] {
+type SubjectContradiction = GuidanceDriftContradiction & { subject: GuidanceDriftPermissionSubject };
+
+function validateContradictions(content: unknown): SubjectContradiction[] {
   if (typeof content !== "object" || content === null || !("contradictions" in content)) {
     throw new Error("agent guidance drift: gateway response missing contradictions");
   }
@@ -237,7 +239,7 @@ function validateContradictions(content: unknown): GuidanceDriftContradiction[] 
     const context = `agent guidance drift: contradiction ${index}`;
     const contradiction = validateGuidanceDriftContradiction(entry, context);
     if (contradiction.subject === null) throw new Error(`${context}: contradiction is missing its subject`);
-    return contradiction;
+    return { ...contradiction, subject: contradiction.subject };
   });
 }
 
@@ -253,13 +255,11 @@ interface RankedContradiction {
  */
 function dedupeBySubject(
   projectItemId: string,
-  contradictions: GuidanceDriftContradiction[],
+  contradictions: SubjectContradiction[],
 ): Map<string, RankedContradiction> {
   const byFingerprint = new Map<string, RankedContradiction>();
   for (const contradiction of contradictions) {
-    // validateContradictions has rejected every contradiction without a subject.
-    const subject = contradiction.subject as GuidanceDriftPermissionSubject;
-    const fingerprint = fingerprintGuidanceDriftSubject(projectItemId, contradiction.kind, subject);
+    const fingerprint = fingerprintGuidanceDriftSubject(projectItemId, contradiction.kind, contradiction.subject);
     const kept = byFingerprint.get(fingerprint);
     if (!kept || outranks(contradiction, kept.contradiction)) {
       byFingerprint.set(fingerprint, { contradiction, fingerprint });
