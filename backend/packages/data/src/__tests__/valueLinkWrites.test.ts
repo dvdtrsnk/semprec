@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
 import {
@@ -22,6 +22,8 @@ import { insertValueLink, listValueLinksByItemIds, type ValueLinkRow } from "../
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { SYSTEM_WRITER, type WriterIdentity } from "../chokePoint/writerKind.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import * as itemsStore from "../chokePoint/itemsStore.js";
+import * as valueLinksStore from "../chokePoint/valueLinksStore.js";
 
 /** Issue #1516: user and agent writes end value links; the valueLinks process needs an `on` link. */
 const USER: WriterIdentity = { writerKind: "user" };
@@ -82,6 +84,41 @@ async function withRuntimePool<T>(body: (runtime: Pool) => Promise<T>): Promise<
   }
   if ("error" in outcome) throw outcome.error;
   return outcome.value;
+}
+
+function barrier() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function bounded<T>(promise: Promise<T>, milliseconds = 8000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Barrier timed out")), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function waitBlocked(holderPid: number, competitorPid: number): Promise<void> {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    const { rows } = await pool.query<{ blocked: boolean }>(
+      "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+      [holderPid, competitorPid],
+    );
+    if (rows[0]?.blocked) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Expected ${competitorPid} to wait for ${holderPid}`);
 }
 
 describe("value link state on writes (issue #1516)", () => {
@@ -609,6 +646,174 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
+    it.each(["user-first", "system-first"] as const)(
+      "diagnoses the existing item/link lock inversion with %s",
+      async (order) => {
+        const tenant = await createTestTenant(pool);
+        await withRuntimePool(async (userPool) =>
+          withRuntimePool(async (systemPool) => {
+            const cp = createChokePoint(userPool);
+            const fx = await runInTenant(tenant, () => setup(cp));
+            await withTenantTransaction(userPool, tenant, (client) =>
+              insertValueLink(client, {
+                itemId: fx.file.id,
+                propertyKey: "name",
+                ruleKey: "test",
+                sources: [],
+              }),
+            );
+            const userHeld = barrier();
+            const systemHeld = barrier();
+            const releaseUser = barrier();
+            const releaseSystem = barrier();
+            let userClient: PoolClient | undefined;
+            let systemClient: PoolClient | undefined;
+            let userPid: number | undefined;
+            let systemPid: number | undefined;
+            const realUpdate = itemsStore.updateItemProperties;
+            const realHandoff = valueLinksStore.lockOnValueLink;
+            const updateSpy = vi.spyOn(itemsStore, "updateItemProperties").mockImplementation(async (client, input) => {
+              const result = await realUpdate(client, input);
+              if (client === userClient) {
+                userHeld.resolve();
+                await bounded(releaseUser.promise);
+              }
+              return result;
+            });
+            const handoffSpy = vi
+              .spyOn(valueLinksStore, "lockOnValueLink")
+              .mockImplementation(async (client, id, key) => {
+                const found = await realHandoff(client, id, key);
+                if (client === systemClient && found) {
+                  systemHeld.resolve();
+                  await bounded(releaseSystem.promise);
+                }
+                return found;
+              });
+            type Outcome = { ok: true } | { ok: false; error: unknown };
+            const settled = (promise: Promise<unknown>): Promise<Outcome> =>
+              promise.then(
+                () => ({ ok: true }),
+                (error: unknown) => ({ ok: false, error }),
+              );
+            const run = (kind: "user" | "system") =>
+              settled(
+                runInTenant(tenant, () =>
+                  withTransaction(kind === "user" ? userPool : systemPool, async (client) => {
+                    await client.query("SET LOCAL statement_timeout = '7s'");
+                    const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                    if (!pid) throw new Error("Missing operation PID");
+                    if (kind === "user") {
+                      userClient = client;
+                      userPid = pid;
+                    } else {
+                      systemClient = client;
+                      systemPid = pid;
+                    }
+                    return updateItemWithClient(
+                      client,
+                      { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: kind } },
+                      kind === "user"
+                        ? { writer: USER }
+                        : { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
+                    );
+                  }),
+                ),
+              );
+            let user: Promise<Outcome> | undefined;
+            let system: Promise<Outcome> | undefined;
+            let failure: unknown;
+            const events: InvalidationEvent[] = [];
+            setInvalidationHook((event) => events.push(event));
+            try {
+              if (order === "user-first") {
+                user = run("user");
+                await bounded(userHeld.promise);
+                system = run("system");
+                await bounded(systemHeld.promise);
+                if (!userPid || !systemPid) throw new Error("Missing participant PID");
+                releaseSystem.resolve();
+                await waitBlocked(userPid, systemPid);
+                releaseUser.resolve();
+              } else {
+                system = run("system");
+                await bounded(systemHeld.promise);
+                user = run("user");
+                await bounded(userHeld.promise);
+                if (!userPid || !systemPid) throw new Error("Missing participant PID");
+                releaseUser.resolve();
+                await waitBlocked(systemPid, userPid);
+                releaseSystem.resolve();
+              }
+              const results = await bounded(Promise.all([user, system]));
+              const failed = results.filter((result) => !result.ok);
+              const codes = failed.map((result) => {
+                if (result.ok || typeof result.error !== "object" || result.error === null || !("code" in result.error))
+                  return null;
+                return result.error.code;
+              });
+              console.info("value-link diagnostic", { order, userPid, systemPid, codes });
+              expect(codes).toEqual(["40P01"]);
+              expect(results.filter((result) => result.ok)).toHaveLength(1);
+              expect(events.filter((event) => event.scope === "item" && event.itemId === fx.file.id)).toHaveLength(1);
+              const current = await runInTenant(tenant, () => cp.getItem(fx.files.id, fx.file.id));
+              const links = await withTenantTransaction(userPool, tenant, (client) =>
+                listValueLinksByItemIds(client, [fx.file.id]),
+              );
+              if (results[0]?.ok) {
+                expect(current?.properties.name).toBe("user");
+                expect(links[0]).toMatchObject({ state: "broken", brokenBy: "user" });
+              } else {
+                expect(current?.properties.name).toBe("system");
+                expect(links[0]).toMatchObject({ state: "on" });
+              }
+            } catch (error) {
+              failure = error;
+            } finally {
+              releaseUser.resolve();
+              releaseSystem.resolve();
+              const participants = [user, system].filter((value): value is Promise<Outcome> => value !== undefined);
+              const cleanupErrors: unknown[] = [];
+              try {
+                await bounded(Promise.all(participants), 9000);
+              } catch (cleanupError) {
+                cleanupErrors.push(cleanupError);
+                for (const pid of [userPid, systemPid]) {
+                  if (pid) {
+                    try {
+                      await bounded(
+                        pool.query<{ terminated: boolean }>("SELECT pg_terminate_backend($1::int) AS terminated", [
+                          pid,
+                        ]),
+                      );
+                    } catch (error) {
+                      cleanupErrors.push(error);
+                    }
+                  }
+                }
+                try {
+                  await bounded(Promise.all(participants));
+                } catch (error) {
+                  cleanupErrors.push(error);
+                }
+              }
+              updateSpy.mockRestore();
+              handoffSpy.mockRestore();
+              setInvalidationHook(() => {});
+              if (cleanupErrors.length) {
+                failure = new AggregateError(
+                  failure === undefined ? cleanupErrors : [failure, ...cleanupErrors],
+                  "Diagnostic and cleanup failed",
+                );
+              }
+            }
+            if (failure !== undefined) throw failure;
+          }),
+        );
+      },
+      30000,
+    );
+
     it("enforces handoff and preserves unchanged links on scoped runtime connections without overlap", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (runtime) => {
