@@ -1228,6 +1228,13 @@ describe("value link state on writes (issue #1516)", () => {
               expect(await deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER)).toBeNull();
             }),
           );
+          await expect(
+            runInTenant(tenant, () =>
+              withTransaction(runtime, (client) =>
+                updateRelationWithClient(client, { ...edge, metadata: {} }, VALUE_LINKS, SYSTEM_WRITER),
+              ),
+            ),
+          ).rejects.toMatchObject({ status: 404, code: "not_found" });
           const links = await withTenantTransaction(runtime, tenant, (client) =>
             listValueLinksByItemIds(client, [edge.callerItemId]),
           );

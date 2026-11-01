@@ -176,6 +176,21 @@ describe("withTransaction", () => {
     }
   });
 
+  it("does not leave an active owner after transaction setup fails", async () => {
+    const { client, pool, query, release } = fakeClient({});
+    const failure = new Error("begin failed");
+    query.mockRejectedValueOnce(failure);
+    await expect(withTransaction(pool, async () => "never")).rejects.toBe(failure);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(() => requireManagedTransaction(client)).toThrow("active managed transaction");
+    await expect(
+      withTransaction(pool, async (owned) => {
+        requireManagedTransaction(owned);
+        return "clean";
+      }),
+    ).resolves.toBe("clean");
+  });
+
   it("maps only actual PostgreSQL lock errors inside the protected body and keeps the first failure", async () => {
     const { pool, query } = fakeClient({});
     query.mockImplementation(async (sql: string) => {
