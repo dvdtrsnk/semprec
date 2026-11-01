@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createHash, randomUUID } from "node:crypto";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -82,22 +82,24 @@ describe("itemRelationFilter partition pruning (issue #262)", () => {
       ),
     );
 
-    const { itemId: emailItemId } = await withTransaction(pool, (client) =>
-      ingestEmailMessage(client, {
-        emailsDatabaseId: emailsId,
-        filesDatabaseId: filesId,
-        folderRelationPropertyId: folderProperty.id,
-        attachmentsRelationPropertyId: attachmentsProperty.id,
-        folderItemId: inbox.id,
-        mailboxItemId: randomUUID(),
-        messageId: "<pruning1@example.com>",
-        subject: "Hello",
-        envelope: { from: { address: "alice@example.com", name: "Alice" }, to: [{ address: "bob@example.com" }] },
-        bodyText: "hi",
-        attachments: [],
-        storage: noopStorage,
-        storageKeyPrefix: "test",
-      }),
+    const { itemId: emailItemId } = await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          folderRelationPropertyId: folderProperty.id,
+          attachmentsRelationPropertyId: attachmentsProperty.id,
+          folderItemId: inbox.id,
+          mailboxItemId: randomUUID(),
+          messageId: "<pruning1@example.com>",
+          subject: "Hello",
+          envelope: { from: { address: "alice@example.com", name: "Alice" }, to: [{ address: "bob@example.com" }] },
+          bodyText: "hi",
+          attachments: [],
+          storage: noopStorage,
+          storageKeyPrefix: "test",
+        }),
+      ),
     );
 
     const { rows: partitionRows } = await pool.query<{ tablename: string }>(

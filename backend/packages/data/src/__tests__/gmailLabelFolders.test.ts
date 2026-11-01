@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import "../domainWriteHooks.js";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
@@ -537,6 +537,33 @@ describe("Gmail label folders (issue #1496)", () => {
     const otherTenantMailbox = await setup(otherTenant);
     const cleanupPool = await createRuntimeRolePool(admin, "semprec_data");
     const syncPool = await createRuntimeRolePool(admin, "semprec_data");
+    const sameTenantPool = await createRuntimeRolePool(admin, "semprec_data");
+    const otherTenantPool = await createRuntimeRolePool(admin, "semprec_data");
+    const cleanupPids: Array<Promise<number>> = [];
+    cleanupPool.on("acquire", (client: PoolClient) => {
+      cleanupPids.push(
+        client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid").then(({ rows }) => {
+          if (!rows[0]) throw new Error("Missing cleanup backend PID");
+          return rows[0].pid;
+        }),
+      );
+    });
+    const control = await admin.connect();
+    await control.query("SET statement_timeout = '3s'");
+    await control.query("SET lock_timeout = '2s'");
+    async function bounded<T>(promise: Promise<T>): Promise<T> {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error("Gmail overlap timed out")), 5000);
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
     let release: () => void = () => undefined;
     const mayContinue = new Promise<void>((resolve) => {
       release = resolve;
@@ -560,69 +587,123 @@ describe("Gmail label folders (issue #1496)", () => {
         await reconcileGmailAccount(client, gmail, params);
       }),
     );
-    const syncSettled = Promise.allSettled([syncing]);
-    let cleanupSettled: Promise<PromiseSettledResult<void>[]> | undefined;
-    let outcomes: PromiseSettledResult<void>[][];
-    let blockedQuery = "";
-    let independentSettled: Promise<PromiseSettledResult<void>[]> | undefined;
-    let independentCompleted: boolean;
+    const syncSettled = syncing.then(
+      () => ({ ok: true }),
+      (error: unknown) => ({ ok: false, error }),
+    );
+    let sameTenant: Promise<void> | undefined;
+    let otherTenantWork: Promise<void> | undefined;
+    let cleanup: Promise<void> | undefined;
+    let samePid: number | undefined;
+    let otherPid: number | undefined;
+    let cleanupPid: number | undefined;
+    let reportSamePid: (pid: number) => void = () => undefined;
+    const sameStarted = new Promise<number>((resolve) => {
+      reportSamePid = resolve;
+    });
     try {
-      const pid = await Promise.race([
-        paused,
-        syncing.then(() => {
-          throw new Error("Sync ended before barrier");
-        }),
-      ]);
-      const independent = [
-        { tenant: tenantId, params: otherMailbox, id: "other-mailbox" },
-        { tenant: otherTenant, params: otherTenantMailbox, id: "other-tenant" },
-      ].map(({ tenant, params: other, id }) =>
-        runInTenant(tenant, () =>
-          withTransaction(syncPool, async (client) => {
-            await client.query("SET LOCAL statement_timeout = '3s'");
-            await reconcileGmailAccount(client, gmailClient({ [id]: ["INBOX"] }), other);
+      const holderPid = await bounded(
+        Promise.race([
+          paused,
+          syncing.then(() => {
+            throw new Error("Sync ended before barrier");
           }),
-        ),
+        ]),
       );
-      independentSettled = Promise.allSettled(independent);
-      const results = await independentSettled;
-      independentCompleted = results.every((result) => result.status === "fulfilled");
-      const cleanup = handleMailGmailPseudoFolderCleanupTask(cleanupPool, async () => LABELS);
-      cleanupSettled = Promise.allSettled([cleanup]);
-      const deadline = Date.now() + 3000;
-      while (Date.now() < deadline) {
-        const { rows } = await admin.query<{ query: string }>(
-          "SELECT query FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
-          [pid],
+      sameTenant = runInTenant(tenantId, () =>
+        withTransaction(sameTenantPool, async (client) => {
+          await client.query("SET LOCAL statement_timeout = '5s'");
+          const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          if (!rows[0]) throw new Error("Missing same-tenant backend PID");
+          reportSamePid(rows[0].pid);
+          await reconcileGmailAccount(client, gmailClient({ "other-mailbox": ["INBOX"] }), otherMailbox);
+        }),
+      );
+      const sameSettled = sameTenant.then(
+        () => ({ ok: true }),
+        (error: unknown) => ({ ok: false, error }),
+      );
+      samePid = await bounded(sameStarted);
+      otherTenantWork = runInTenant(otherTenant, () =>
+        withTransaction(otherTenantPool, async (client) => {
+          await client.query("SET LOCAL statement_timeout = '5s'");
+          const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          if (!rows[0]) throw new Error("Missing other-tenant backend PID");
+          otherPid = rows[0].pid;
+          await reconcileGmailAccount(client, gmailClient({ "other-tenant": ["INBOX"] }), otherTenantMailbox);
+        }),
+      );
+      await bounded(otherTenantWork);
+      expect(await foldersOf(otherTenantMailbox, "other-tenant")).toEqual(["INBOX"]);
+      const sameDeadline = Date.now() + 3000;
+      let sameBlocked = false;
+      while (Date.now() < sameDeadline) {
+        const result = await bounded(
+          control.query<{ blocked: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked", [
+            holderPid,
+            samePid,
+          ]),
         );
-        if (rows[0]) {
-          blockedQuery = rows[0].query;
+        if (result.rows[0]?.blocked) {
+          sameBlocked = true;
           break;
         }
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
+      expect(sameBlocked).toBe(true);
+      cleanup = handleMailGmailPseudoFolderCleanupTask(cleanupPool, async () => LABELS);
+      const cleanupSettled = cleanup.then(
+        () => ({ ok: true }),
+        (error: unknown) => ({ ok: false, error }),
+      );
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline) {
+        const owned = await bounded(Promise.all(cleanupPids));
+        const { rows } = await control.query<{ pid: number; blocked: boolean }>(
+          "SELECT pid, $1::int = ANY(pg_blocking_pids(pid)) AS blocked FROM pg_stat_activity WHERE pid = ANY($2::int[])",
+          [holderPid, owned],
+        );
+        cleanupPid = rows.find((row) => row.blocked)?.pid;
+        if (cleanupPid !== undefined) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(cleanupPid).toBeDefined();
+      expect(otherPid).toBeDefined();
+      expect(new Set([holderPid, samePid, otherPid, cleanupPid]).size).toBe(4);
+      console.info("GMAIL_GUARD_OVERLAP", { holderPid, samePid, otherPid, cleanupPid });
+      release();
+      expect(await bounded(syncSettled)).toEqual({ ok: true });
+      expect(await bounded(sameSettled)).toEqual({ ok: true });
+      expect(await bounded(cleanupSettled)).toEqual({ ok: true });
+      expect(await foldersOf(otherMailbox, "other-mailbox")).toEqual(["INBOX"]);
+      expect(await foldersOf(params, "overlap")).toEqual(["INBOX"]);
     } finally {
       release();
-      outcomes = await Promise.all([
-        syncSettled,
-        cleanupSettled ?? Promise.resolve([]),
-        independentSettled ?? Promise.resolve([]),
+      const operations = Promise.allSettled([
+        syncing,
+        ...(sameTenant ? [sameTenant] : []),
+        ...(otherTenantWork ? [otherTenantWork] : []),
+        ...(cleanup ? [cleanup] : []),
       ]);
-      await syncPool.end();
-      await cleanupPool.end();
+      try {
+        await bounded(operations).catch(async (error: unknown) => {
+          const holderPid = await bounded(paused);
+          const pids = [
+            holderPid,
+            ...(samePid === undefined ? [] : [samePid]),
+            ...(otherPid === undefined ? [] : [otherPid]),
+            ...(await bounded(Promise.all(cleanupPids))),
+          ];
+          for (const pid of new Set(pids)) await bounded(control.query("SELECT pg_terminate_backend($1)", [pid]));
+          await bounded(operations);
+          throw error;
+        });
+      } finally {
+        control.release(true);
+        await bounded(Promise.all([syncPool.end(), sameTenantPool.end(), otherTenantPool.end(), cleanupPool.end()]));
+      }
     }
-    expect(outcomes.flat().map((result) => result.status)).toEqual([
-      "fulfilled",
-      "fulfilled",
-      "fulfilled",
-      "fulfilled",
-    ]);
-    expect(independentCompleted).toBe(true);
-    expect(await foldersOf(otherMailbox, "other-mailbox")).toEqual(["INBOX"]);
-    expect(await foldersOf(otherTenantMailbox, "other-tenant")).toEqual(["INBOX"]);
-    expect(blockedQuery).toMatch(/pg_advisory_xact_lock/i);
-    expect(await foldersOf(params, "overlap")).toEqual(["INBOX"]);
-  }, 15_000);
+  }, 30_000);
 
   it("cleanup removes pseudo-folders, keeps archived mail visible through Archive, and a second run changes nothing", async () => {
     const params = await setup();

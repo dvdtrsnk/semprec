@@ -98,22 +98,24 @@ describe("mail preview and ingest time on ingest and send", () => {
   }
 
   function ingest(messageId: string, body: { bodyText?: string; bodyHtml?: string }, folderItemId = inboxId) {
-    return withTransaction(pool, (client) =>
-      ingestEmailMessage(client, {
-        emailsDatabaseId: emailsId,
-        filesDatabaseId: filesId,
-        folderRelationPropertyId,
-        attachmentsRelationPropertyId,
-        folderItemId,
-        mailboxItemId: mailboxId,
-        messageId,
-        subject: "Subject",
-        envelope: { from: { address: "bob@example.com" }, to: [{ address: "me@example.com" }] },
-        attachments: [],
-        storage,
-        storageKeyPrefix: "test",
-        ...body,
-      }),
+    return runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          folderRelationPropertyId,
+          attachmentsRelationPropertyId,
+          folderItemId,
+          mailboxItemId: mailboxId,
+          messageId,
+          subject: "Subject",
+          envelope: { from: { address: "bob@example.com" }, to: [{ address: "me@example.com" }] },
+          attachments: [],
+          storage,
+          storageKeyPrefix: "test",
+          ...body,
+        }),
+      ),
     );
   }
 
@@ -196,19 +198,21 @@ describe("mail preview and ingest time on ingest and send", () => {
       }),
     );
 
-    const result = await sendDraftEmail(
-      pool,
-      {
-        mailboxItemId: mailboxId,
-        draftItemId: draft.id,
-        actor: { type: "user" },
-        from: { address: "me@example.com" },
-        to: [{ address: "bob@example.com" }],
-        subject: "Hello",
-        bodyHtml: "<p>hi   <i>bob</i></p>",
-      },
-      moduleIds,
-      sendAdapters(transportFor(recordingTransport())),
+    const result = await runInTenant(getTenantZeroId(), () =>
+      sendDraftEmail(
+        pool,
+        {
+          mailboxItemId: mailboxId,
+          draftItemId: draft.id,
+          actor: { type: "user" },
+          from: { address: "me@example.com" },
+          to: [{ address: "bob@example.com" }],
+          subject: "Hello",
+          bodyHtml: "<p>hi   <i>bob</i></p>",
+        },
+        moduleIds,
+        sendAdapters(transportFor(recordingTransport())),
+      ),
     );
 
     const claimed = await getMailMessageMetaByItemId(pool, draft.id);
