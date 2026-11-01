@@ -1,7 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
-import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
@@ -91,12 +90,27 @@ async function runRow(id: string): Promise<{ status: string; result: string | nu
   return rows[0]!;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 async function runEvents(id: string): Promise<{ kind: string; payload: Record<string, unknown> }[]> {
-  const { rows } = await pool.query<{ kind: string; payload: Record<string, unknown> }>(
+  const { rows } = await pool.query<{ kind: string; payload: unknown }>(
     `SELECT kind, payload FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id`,
     [id],
   );
-  return rows;
+  return rows.map((row) => {
+    if (!isRecord(row.payload)) {
+      throw new Error("Invalid agent event payload");
+    }
+    return { kind: row.kind, payload: row.payload };
+  });
+}
+
+function tcpPort(server: Server): number {
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Expected a TCP server address");
+  return address.port;
 }
 
 async function errorNotificationCount(runId: string): Promise<number> {
@@ -372,7 +386,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
       });
     });
     await new Promise<void>((resolve) => gatewayServer.listen(0, "127.0.0.1", resolve));
-    const { port } = gatewayServer.address() as AddressInfo;
+    const port = tcpPort(gatewayServer);
     const gateway = createGatewayModel({
       AI_GATEWAY_BASE_URL: `http://127.0.0.1:${port}/internal/pi`,
       AI_GATEWAY_INTERNAL_TOKEN: "test-token",
@@ -750,7 +764,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     });
     await new Promise<void>((resolve) => gatewayServer.listen(0, "127.0.0.1", resolve));
     try {
-      const { port } = gatewayServer.address() as AddressInfo;
+      const port = tcpPort(gatewayServer);
       const gateway = createGatewayModel({
         AI_GATEWAY_BASE_URL: `http://127.0.0.1:${port}/internal/pi`,
         AI_GATEWAY_INTERNAL_TOKEN: "credential-secret-sentinel",
@@ -800,7 +814,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     });
     await new Promise<void>((resolve) => gatewayServer.listen(0, "127.0.0.1", resolve));
     try {
-      const { port } = gatewayServer.address() as AddressInfo;
+      const port = tcpPort(gatewayServer);
       const gateway = createGatewayModel({
         AI_GATEWAY_BASE_URL: `http://127.0.0.1:${port}/internal/pi`,
         AI_GATEWAY_INTERNAL_TOKEN: "credential-sentinel",
@@ -852,7 +866,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
       });
       await new Promise<void>((resolve) => gatewayServer.listen(0, "127.0.0.1", resolve));
       try {
-        const { port } = gatewayServer.address() as AddressInfo;
+        const port = tcpPort(gatewayServer);
         const gateway = createGatewayModel({
           AI_GATEWAY_BASE_URL: `http://127.0.0.1:${port}/internal/pi`,
           AI_GATEWAY_INTERNAL_TOKEN: "test-token",
