@@ -707,6 +707,73 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
+    it("refuses a relation while its new active link is still uncommitted", async () => {
+      const tenant = await createTestTenant(pool);
+      await withRuntimePool(async (holderPool) =>
+        withRuntimePool(async (contenderPool) => {
+          const cp = createChokePoint(holderPool);
+          const fx = await runInTenant(tenant, () => setup(cp));
+          const held = barrier();
+          const release = barrier();
+          let holderPid: number | undefined;
+          let contenderPid: number | undefined;
+          const holder = runInTenant(tenant, () =>
+            withTransaction(holderPool, async (client) => {
+              holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              await insertValueLink(client, {
+                itemId: fx.file.id,
+                propertyKey: "projects",
+                ruleKey: "test",
+                sources: [],
+              });
+              held.resolve();
+              await bounded(release.promise);
+            }),
+          ).then(
+            () => ({ ok: true as const }),
+            (error: unknown) => ({ ok: false as const, error }),
+          );
+          let failure: unknown;
+          try {
+            await bounded(held.promise);
+            await expect(
+              runInTenant(tenant, () =>
+                withTransaction(contenderPool, async (client) => {
+                  contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                  return createRelationWithClient(
+                    client,
+                    { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id },
+                    VALUE_LINKS,
+                    SYSTEM_WRITER,
+                  );
+                }),
+              ),
+            ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+            expect(holderPid).toBeTypeOf("number");
+            expect(contenderPid).toBeTypeOf("number");
+            expect(await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id))).toEqual(
+              [],
+            );
+          } catch (error) {
+            failure = error;
+          } finally {
+            release.resolve();
+            try {
+              requireSuccessful(await settleOwned(holder, () => holderPid));
+            } catch (error) {
+              failure =
+                failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
+            }
+          }
+          if (failure !== undefined) throwFailure(failure);
+          const links = await withTenantTransaction(holderPool, tenant, (client) =>
+            listValueLinksByItemIds(client, [fx.file.id]),
+          );
+          expect(links[0]).toMatchObject({ state: "on" });
+        }),
+      );
+    }, 30000);
+
     it("uses a nonlocking prediction in relation validation and rechecks on mutation", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (validationPool) =>
@@ -1586,6 +1653,13 @@ describe("value link state on writes (issue #1516)", () => {
           try {
             user = run("user");
             await bounded(jobHeld.promise);
+            const queueLock = await pool.query<{ held: boolean }>(
+              `SELECT EXISTS (SELECT 1 FROM graphile_worker._private_jobs j JOIN pg_locks l
+                 ON l.transactionid::text = j.xmax::text
+                 WHERE j.key = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.mode = 'ExclusiveLock' AND l.granted) AS held`,
+              [jobKey, userPid],
+            );
+            expect(queueLock.rows[0]?.held).toBe(true);
             system = run("system");
             await bounded(linkHeld.promise);
             if (!userPid || !systemPid || !userClient) throw new Error("Missing queue participant PID");
@@ -1895,6 +1969,12 @@ describe("value link state on writes (issue #1516)", () => {
               } else {
                 user = run("user");
                 await bounded(sourceHeld.promise);
+                const sourceLock = await pool.query<{ held: boolean }>(
+                  `SELECT EXISTS (SELECT 1 FROM items i JOIN pg_locks l ON l.transactionid::text = i.xmax::text
+                     WHERE i.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.mode = 'ExclusiveLock' AND l.granted) AS held`,
+                  [fixture.item.id, userPid],
+                );
+                expect(sourceLock.rows[0]?.held).toBe(true);
                 system = run("system");
                 expect(await bounded(system)).toMatchObject({
                   ok: false,
