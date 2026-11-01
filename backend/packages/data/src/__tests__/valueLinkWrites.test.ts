@@ -30,6 +30,7 @@ import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { rollupRecomputeJobKey } from "../rollup/recompute.js";
+import { executeProposalSteps } from "../inbox/proposalSteps.js";
 
 /** Issue #1516: user and agent writes end value links; the valueLinks process needs an `on` link. */
 const USER: WriterIdentity = { writerKind: "user" };
@@ -647,6 +648,96 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
+    it("refuses a protected relation when a real proposal holds its definition and edge", async () => {
+      const tenant = await createTestTenant(pool);
+      await withRuntimePool(async (holderPool) =>
+        withRuntimePool(async (contenderPool) => {
+          const cp = createChokePoint(holderPool);
+          const fx = await runInTenant(tenant, () => setup(cp));
+          await runInTenant(tenant, () =>
+            cp.createRelation({
+              relationPropertyId: fx.projectsProperty.id,
+              callerItemId: fx.file.id,
+              targetItemId: fx.alpha.id,
+            }),
+          );
+          await withTenantTransaction(holderPool, tenant, (client) =>
+            insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+          );
+          const held = barrier();
+          const release = barrier();
+          let holderPid: number | undefined;
+          let contenderPid: number | undefined;
+          const holder = runInTenant(tenant, () =>
+            withTransaction(holderPool, async (client) => {
+              holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              await executeProposalSteps(
+                client,
+                [
+                  {
+                    ref: "same",
+                    op: "update",
+                    role: "primary",
+                    itemId: fx.file.id,
+                    before: { relations: { projects: [fx.alpha.id] } },
+                    after: { relations: { projects: [fx.alpha.id] } },
+                  },
+                ],
+                { writer: USER, sourceInboxItemId: null },
+              );
+              held.resolve();
+              await bounded(release.promise);
+            }),
+          ).then(
+            () => ({ ok: true as const }),
+            (error: unknown) => ({ ok: false as const, error }),
+          );
+          let failure: unknown;
+          try {
+            await bounded(held.promise);
+            const lock = await pool.query<{ held: boolean }>(
+              "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 AND locktype = 'advisory' AND granted) AS held",
+              [holderPid],
+            );
+            expect(lock.rows[0]?.held).toBe(true);
+            await expect(
+              runInTenant(tenant, () =>
+                withTransaction(contenderPool, async (client) => {
+                  contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                  return createRelationWithClient(
+                    client,
+                    { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.beta.id },
+                    VALUE_LINKS,
+                    SYSTEM_WRITER,
+                  );
+                }),
+              ),
+            ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
+            expect(holderPid).toBeTypeOf("number");
+            expect(contenderPid).toBeTypeOf("number");
+          } catch (error) {
+            failure = error;
+          } finally {
+            release.resolve();
+            try {
+              const result = await bounded(holder);
+              if (!result.ok) throw result.error;
+            } catch (error) {
+              failure =
+                failure === undefined
+                  ? error
+                  : new AggregateError([failure, error], "Test and proposal cleanup failed");
+            }
+          }
+          if (failure !== undefined) throw failure;
+          const links = await withTenantTransaction(holderPool, tenant, (client) =>
+            listValueLinksByItemIds(client, [fx.file.id]),
+          );
+          expect(links[0]).toMatchObject({ state: "on" });
+        }),
+      );
+    }, 30000);
+
     it("rechecks an active prediction after a concurrent user breaks the link", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (userPool) =>
