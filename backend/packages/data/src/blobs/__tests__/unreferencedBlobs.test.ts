@@ -283,6 +283,23 @@ describe("standalone blobs (issue #1401)", () => {
         const saved = await runInTenant(getTenantZeroId(), () => cp.getItem(database.id, item.id));
         expect(saved?.properties.note).toBe("safe");
         expect(saved?.properties.photo).not.toEqual({ blobId: foreign.id });
+        const own = await createBlob(pool, { mimeType: "image/png", byteSize: 1, storageKey: "tenant/blobs/own" });
+        const updated = await runInTenant(getTenantZeroId(), () =>
+          cp.updateItem({
+            databaseId: database.id,
+            itemId: item.id,
+            propertiesPatch: { photo: { blobId: own.id.toUpperCase() } },
+          }),
+        );
+        expect(updated.properties.photo).toEqual({ blobId: own.id.toUpperCase() });
+        expect(
+          await runInTenant(getTenantZeroId(), () =>
+            withTransaction(runtime, (client) => deleteBlobIfUnreferenced(client, own.id)),
+          ),
+        ).toBeNull();
+        await runInTenant(getTenantZeroId(), () =>
+          cp.updateItem({ databaseId: database.id, itemId: item.id, propertiesPatch: { photo: null } }),
+        );
         const count = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
           database.id,
         ]);

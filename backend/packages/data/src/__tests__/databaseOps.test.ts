@@ -2,12 +2,19 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { Pool } from "pg";
-import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 import { runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { ForbiddenError, NotFoundError } from "../errors.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { withTransaction } from "../db/pool.js";
+import { listPropertiesByDatabases, setInitialPosition } from "../chokePoint/propertiesStore.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -179,8 +186,10 @@ describe("choke-point databaseOps", () => {
   it("createDatabaseWithProperties rolls back the database and partition when a later property fails", async () => {
     const countRows = async () =>
       (
-        await pool.query<{ databases: string; partitions: string }>(
+        await pool.query<{ databases: string; properties: string; positioned: string; partitions: string }>(
           `SELECT (SELECT count(*) FROM databases) AS databases,
+                  (SELECT count(*) FROM properties) AS properties,
+                  (SELECT count(*) FROM properties WHERE initial_position IS NOT NULL) AS positioned,
                   (SELECT count(*) FROM pg_class WHERE relname LIKE 'items\\_p\\_%') AS partitions`,
         )
       ).rows[0];
@@ -192,5 +201,73 @@ describe("choke-point databaseOps", () => {
       ]),
     ).rejects.toThrow();
     expect(await countRows()).toEqual(before);
+  });
+
+  it("preserves initial relation and field order, then alphabetizes later and legacy properties", async () => {
+    const target = await chokePoint.createDatabase({ name: "Target" });
+    const db = await chokePoint.createDatabaseWithProperties({ name: "Ordered" }, "Name", [
+      { key: "zeta", name: "Zeta", type: "text" },
+      { key: "link", name: "Link", type: "relation", targetDatabaseId: target.id, cardinality: "many_to_many" },
+      { key: "beta", name: "Beta", type: "text" },
+    ]);
+    await chokePoint.createProperty({ databaseId: db.id, key: "zz", name: "ZZ", type: "text" });
+    await chokePoint.createProperty({ databaseId: db.id, key: "aa", name: "AA", type: "text" });
+    await chokePoint.createRelationProperty({
+      sourceDatabaseId: db.id,
+      targetDatabaseId: target.id,
+      key: "later",
+      name: "Later",
+    });
+    const legacy = await chokePoint.createDatabase({ name: "Legacy" });
+    await chokePoint.createProperty({ databaseId: legacy.id, key: "z", name: "Z", type: "text" });
+    await chokePoint.createProperty({ databaseId: legacy.id, key: "a", name: "A", type: "text" });
+    const expected = ["name", "zeta", "link", "beta", "aa", "later", "zz"];
+    expect((await chokePoint.listProperties(db.id)).map((p) => p.key)).toEqual(expected);
+    expect((await chokePoint.listProperties(legacy.id)).map((p) => p.key)).toEqual(["a", "z"]);
+    const grouped = await withTransaction(pool, (client) => listPropertiesByDatabases(client, [legacy.id, db.id]));
+    expect(grouped.get(db.id)?.map((p) => p.key)).toEqual(expected);
+    expect(grouped.get(legacy.id)?.map((p) => p.key)).toEqual(["a", "z"]);
+    const initial = (await chokePoint.listProperties(db.id)).find((p) => p.key === "zeta");
+    if (!initial) throw new Error("missing initially positioned property");
+    await chokePoint.renameProperty(initial.id, "Renamed");
+    expect((await chokePoint.listProperties(db.id)).map((p) => p.key)).toEqual(expected);
+    await chokePoint.deleteProperty(initial.id);
+    await chokePoint.createProperty({ databaseId: db.id, key: "zeta", name: "Recreated", type: "text" });
+    expect((await chokePoint.listProperties(db.id)).map((p) => p.key)).toEqual([
+      "name",
+      "link",
+      "beta",
+      "aa",
+      "later",
+      "zeta",
+      "zz",
+    ]);
+  });
+
+  it("confines positioned property reads and writes to the runtime tenant", async () => {
+    const db = await chokePoint.createDatabaseWithProperties({ name: "Tenant A" }, "Name", [
+      { key: "note", name: "Note", type: "text" },
+    ]);
+    const property = (await chokePoint.listProperties(db.id))[0];
+    if (!property) throw new Error("missing title property");
+    const other = await createTestTenant(pool);
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      await runInTenant(getTenantZeroId(), async () => {
+        const own = await withTransaction(runtime, (client) => listPropertiesByDatabases(client, [db.id]));
+        expect(own.get(db.id)?.map((p) => p.key)).toEqual(["name", "note"]);
+      });
+      await runInTenant(other, async () => {
+        expect(await withTransaction(runtime, (client) => listPropertiesByDatabases(client, [db.id]))).toEqual(
+          new Map(),
+        );
+        await expect(
+          withTransaction(runtime, (client) => setInitialPosition(client, db.id, property.id, 9)),
+        ).rejects.toThrow();
+      });
+      expect((await chokePoint.listProperties(db.id)).map((p) => p.key)).toEqual(["name", "note"]);
+    } finally {
+      await runtime.end();
+    }
   });
 });

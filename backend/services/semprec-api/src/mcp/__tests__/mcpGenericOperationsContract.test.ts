@@ -434,6 +434,29 @@ describe("generic operation MCP contract (issue #220)", () => {
     expect(Object.keys(CASES).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 
+  it("forbids MCP database creation with properties but permits a bare create", async () => {
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const headers = await authHeader();
+    const footprint = async () =>
+      (
+        await pool.query<{ databases: number; properties: number; partitions: number }>(
+          "SELECT (SELECT count(*)::int FROM databases) AS databases, (SELECT count(*)::int FROM properties) AS properties, (SELECT count(*)::int FROM pg_class WHERE relname LIKE 'items\\_p\\_%') AS partitions",
+        )
+      ).rows;
+    const before = await footprint();
+    const rejected = await rpc(baseUrl, headers, "semprec.database.create", {
+      name: "MCP with properties",
+      properties: [{ key: "note", name: "Note", type: "text" }],
+    });
+    expect(rejected.error?.code).toBe(-32000);
+    expect(rejected.error?.data).toMatchObject({ code: "forbidden" });
+    expect(await footprint()).toEqual(before);
+    const bare = await rpc(baseUrl, headers, "semprec.database.create", { name: "MCP bare" });
+    expect(bare.error).toBeUndefined();
+    expect((await chokePoint.listDatabases()).some((database) => database.name === "MCP bare")).toBe(true);
+  });
+
   it("rejects an empty database patch at the MCP operation boundary", async () => {
     const database = await chokePoint.createDatabase({ name: "MCP patch fixture" });
     const { server, baseUrl } = await startServer();

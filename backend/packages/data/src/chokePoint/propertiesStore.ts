@@ -167,7 +167,7 @@ export async function findPropertiesByKey(
 
 export async function listPropertiesByDatabase(client: PoolClient, databaseId: string): Promise<PropertyRow[]> {
   const { rows } = await client.query<PropertyDbRow>(
-    `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = $1 ORDER BY key`,
+    `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = $1 ORDER BY initial_position ASC NULLS LAST, key`,
     [databaseId],
   );
   return rows.map(mapPropertyRow);
@@ -186,7 +186,7 @@ export async function listPropertiesByDatabases(
   if (databaseIds.length === 0) return grouped;
 
   const { rows } = await client.query<PropertyDbRow>(
-    `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = ANY($1) ORDER BY database_id, key`,
+    `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = ANY($1) ORDER BY database_id, initial_position ASC NULLS LAST, key`,
     [databaseIds],
   );
   for (const row of rows) {
@@ -270,6 +270,21 @@ export async function createProperty(client: PoolClient, input: CreatePropertyIn
     }
     throw err;
   }
+}
+
+/** Records the initial cohort position inside the collection-creation transaction. */
+export async function setInitialPosition(
+  client: PoolClient,
+  databaseId: string,
+  propertyId: string,
+  position: number,
+): Promise<void> {
+  const result = await client.query("UPDATE properties SET initial_position = $3 WHERE database_id = $1 AND id = $2", [
+    databaseId,
+    propertyId,
+    position,
+  ]);
+  requireAffectedRows(result, "initial property position update");
 }
 
 /** The label is always renamable — `locked` governs deletion / type change, never the display name. */

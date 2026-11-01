@@ -539,8 +539,8 @@ describe("database routes (issue #240)", () => {
     };
     const threeProperties = [
       { key: "recipient", name: "Recipient", type: "text" },
-      { key: "status", name: "Status", type: "select", config: { options: [{ key: "idea", label: "Idea" }] } },
       { key: "when", name: "When", type: "date" },
+      { key: "status", name: "Status", type: "select", config: { options: [{ key: "idea", label: "Idea" }] } },
     ];
 
     it("creates the database, a localized title property and the listed properties in order", async () => {
@@ -553,8 +553,8 @@ describe("database routes (issue #240)", () => {
       expect(body.properties.map((p) => [p.key, p.type])).toEqual([
         ["name", "title"],
         ["recipient", "text"],
-        ["status", "select"],
         ["when", "date"],
+        ["status", "select"],
       ]);
       expect(body.properties[0]?.label).toBe("Název");
       const item = await fetch(`${baseUrl}/api/databases/${created.id}/items`, {
