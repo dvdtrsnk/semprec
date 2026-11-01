@@ -77,7 +77,10 @@ export async function breakValueLinksForRelationEdge(
     });
     for (const itemId of changed) {
       const item = await itemsStore.getItemById(client, property.databaseId, itemId);
-      if (item) announced.set(itemId, { itemId, databaseId: property.databaseId, updatedAt: item.updatedAt });
+      if (item) {
+        const key = JSON.stringify([property.databaseId, itemId]);
+        announced.set(key, { itemId, databaseId: property.databaseId, updatedAt: item.updatedAt });
+      }
     }
   }
   if (announced.size > 0) {
@@ -87,5 +90,5 @@ export async function breakValueLinksForRelationEdge(
       }
     });
   }
-  return [...announced.keys()];
+  return [...announced.values()].map((entry) => entry.itemId);
 }

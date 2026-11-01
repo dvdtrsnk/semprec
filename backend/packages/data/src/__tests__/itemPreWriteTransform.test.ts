@@ -168,6 +168,7 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
       });
       registerOutput(output);
       const properties = await chokePoint.listProperties(database.id);
+      const before = await chokePoint.getItem(database.id, item.id);
       const events: InvalidationEvent[] = [];
       const heartbeat = vi.spyOn(schedulerStore, "triggerOnItemEventHeartbeats");
       setInvalidationHook((event) => events.push(event));
@@ -178,6 +179,9 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
           code: "validation_failed",
           details: { field },
         });
+        expect(await chokePoint.getItem(database.id, item.id)).toEqual(before);
+        expect(events).toEqual([]);
+        expect(heartbeat).not.toHaveBeenCalled();
         await expect(
           chokePoint.updateItem(
             { databaseId: database.id, itemId: item.id, propertiesPatch: patch },
@@ -186,7 +190,7 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
             { writerKind: "user" },
           ),
         ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field } });
-        expect((await chokePoint.getItem(database.id, item.id))?.properties).toEqual(item.properties);
+        expect(await chokePoint.getItem(database.id, item.id)).toEqual(before);
         expect(events).toEqual([]);
         expect(heartbeat).not.toHaveBeenCalled();
       } finally {

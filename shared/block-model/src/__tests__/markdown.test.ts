@@ -258,6 +258,87 @@ describe("lossless canonical inline content", () => {
     expect(stripMarkdown(markdown, 100)).toContain("[Title]");
   });
 
+  it.each([false, true])("roundtrips destination LFs and literal references in Y.Text with ids=%s", (withIds) => {
+    const cases = [
+      ["https://\nleading", "https://&#xa;leading"],
+      ["https://a\nb", "https://a&#xa;b"],
+      ["https://trailing\n", "https://trailing&#xa;"],
+      ["semprec://page/a\n\nb", "semprec://page/a&#xa;&#xa;b"],
+      ["semprec://page/&#xa;", "semprec://page/\\&#xa;"],
+      ["semprec://page/\\&#xa;\n<end>", "semprec://page/\\\\\\&#xa;&#xa;\\<end\\>"],
+      ["https://a/(x)&#xA;&#x0a;&#10;", "https://a/(x)&#xA;&#x0a;&#10;"],
+    ] as const;
+    for (const [href, encoded] of cases) {
+      const doc = new Y.Doc();
+      const text: TextRun[] = [{ insert: "[Title]", attributes: { bold: true, italic: true, link: { href } } }];
+      writeBlock(doc, { id: "source", type: "text", text });
+      const markdown = serializeBlocks(readPageBlocks(doc), { withIds });
+      expect(markdown).toContain(`(<${encoded}>)`);
+      expect(markdown.split("\n").filter((line) => !line.startsWith("<!--"))).toHaveLength(1);
+      for (const allowPage of [false, true]) {
+        const parsed = parseMarkdown(markdown, { allowPage });
+        expect(parsed[0]).toMatchObject({ type: "text", text });
+        expect(serializeBlocks(parsed, { withIds })).toBe(markdown);
+      }
+    }
+    const bare = "[Plain](https://example.com/&#xa;)";
+    expect(serializeBlocks(parseMarkdown(bare))).toBe(bare);
+    expect(parseMarkdown("`&#xa;`")[0]?.text).toEqual([{ insert: "&#xa;", attributes: { code: true } }]);
+  });
+
+  it.each([false, true])("preserves opaque page IDs from real Yjs blocks with ids=%s", (withIds) => {
+    const ids = [
+      "p1",
+      "7c3c4df0-9ec4-40cb-8a31-4b87a39e8731",
+      " ",
+      "a b",
+      "\nstart",
+      "end\n",
+      "a\n\nb",
+      "a\rb\tc\u2028\u2029",
+      "a(b)c",
+      "\\u0041",
+      "%20&#xa;",
+      "\0[<]",
+      "ž😀",
+      "\ud800",
+      "\udc00",
+    ];
+    for (const pageId of ids) {
+      const doc = new Y.Doc();
+      writeBlock(doc, { id: "source", type: "page", pageId });
+      const resolver = () => "Title";
+      const markdown = serializeBlocks(readPageBlocks(doc), { withIds, resolvePageTitle: resolver });
+      expect(markdown.split("\n").filter((line) => !line.startsWith("<!--"))).toHaveLength(1);
+      const parsed = parseMarkdown(markdown, { allowPage: true });
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0]).toMatchObject({ type: "page", pageId });
+      expect(parsed[0]?.text).toBeUndefined();
+      expect(serializeBlocks(parsed, { withIds, resolvePageTitle: resolver })).toBe(markdown);
+      expect(() => parseMarkdown(markdown, { allowPage: false })).toThrow(BlockInputError);
+    }
+    expect(serializeBlocks([{ id: "x", type: "page", indent: 0, pageId: "p1" }])).toBe("[](semprec://page/p1)");
+    expect(parseMarkdown("[](semprec://page/\\u005Cu0041)")[0]?.pageId).toBe("\\u0041");
+    expect(parseMarkdown("[](semprec://page/\\u00e9)")[0]?.pageId).toBe("\\u00e9");
+    expect(parseMarkdown("[](semprec://page/%20)")[0]?.pageId).toBe("%20");
+  });
+
+  it.each([false, true])("keeps resolver captions on a single page line with ids=%s", (withIds) => {
+    const captions = ["\n", "First\nSecond", "a\rb\u2028c\u2029d", "[brackets] `code` <br> *bold* \\ tail"];
+    for (const title of captions) {
+      const doc = new Y.Doc();
+      writeBlock(doc, { id: "source", type: "page", pageId: "a b" });
+      const resolver = () => title;
+      const markdown = serializeBlocks(readPageBlocks(doc), { withIds, resolvePageTitle: resolver });
+      expect(markdown.split("\n").filter((line) => !line.startsWith("<!--"))).toHaveLength(1);
+      const parsed = parseMarkdown(markdown);
+      expect(parsed[0]).toMatchObject({ type: "page", pageId: "a b" });
+      expect(parsed[0]?.text).toBeUndefined();
+      expect(serializeBlocks(parsed, { withIds, resolvePageTitle: resolver })).toBe(markdown);
+      expect(stripMarkdown(markdown, 100)).toBe(title.replace(/\s+/g, " ").trim());
+    }
+  });
+
   it("keeps page links inline in preserved unknown types and alongside other text", () => {
     const text: TextRun[] = [
       { insert: "Page", attributes: { link: { href: "semprec://page/p1" } } },

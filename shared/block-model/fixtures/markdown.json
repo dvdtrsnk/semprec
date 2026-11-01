@@ -274,6 +274,57 @@
       ]
     },
     {
+      "name": "inline page href line feed uses destination token",
+      "markdown": "[Page](<semprec://page/a&#xa;b>)",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [
+            {
+              "insert": "Page",
+              "attributes": {
+                "link": {
+                  "href": "semprec://page/a\nb"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "angle href preserves literal line feed reference",
+      "markdown": "[Page](<semprec://page/\\&#xa;&#xa;b>)",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [
+            {
+              "insert": "Page",
+              "attributes": {
+                "link": {
+                  "href": "semprec://page/&#xa;\nb"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "page block encodes opaque identifier and resolver line feed",
+      "markdown": "[First<br>Second](semprec://page/a\\u0020b)",
+      "blocks": [
+        {
+          "type": "page",
+          "pageId": "a b"
+        }
+      ],
+      "pageTitles": {
+        "a b": "First\nSecond"
+      }
+    },
+    {
       "name": "synthetic empty document writes nothing",
       "direction": "serialize",
       "markdown": "",

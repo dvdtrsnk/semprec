@@ -735,13 +735,26 @@ describe("value link state on writes (issue #1516)", () => {
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
       try {
-        await withTransaction(pool, async (client) => {
-          await createRelationWithClient(
+        const createSelfEdge = (client: PoolClient) =>
+          createRelationWithClient(
             client,
             { relationPropertyId: property.id, callerItemId: item.id, targetItemId: item.id },
             undefined,
             USER,
           );
+        const rollback = new Error("rollback self-edge");
+        await expect(
+          withTransaction(pool, async (client) => {
+            await createSelfEdge(client);
+            expect(events).toEqual([]);
+            throw rollback;
+          }),
+        ).rejects.toBe(rollback);
+        expect(events).toEqual([]);
+        expect(await linkOf(item.id, "outgoing")).toMatchObject({ state: "on" });
+        expect(await linkOf(item.id, "incoming")).toMatchObject({ state: "on" });
+        await withTransaction(pool, async (client) => {
+          await createSelfEdge(client);
           expect(events).toEqual([]);
         });
         expect(await linkOf(item.id, "outgoing")).toMatchObject({ state: "broken", brokenBy: "user" });

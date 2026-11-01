@@ -202,9 +202,29 @@ function codeSpan(text: string): string {
   return `${fence}${pad}${text}${pad}${fence}`;
 }
 
+function encodePageId(pageId: string): string {
+  let encoded = "";
+  for (let index = 0; index < pageId.length; index += 1) {
+    const unit = pageId.charAt(index);
+    encoded += /^[A-Za-z0-9._~-]$/.test(unit)
+      ? unit
+      : `\\u${pageId.charCodeAt(index).toString(16).toUpperCase().padStart(4, "0")}`;
+  }
+  return encoded;
+}
+
+function decodePageId(encoded: string): string {
+  return encoded.replace(/\\u([0-9A-F]{4})/g, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
+}
+
 function linkDestination(href: string): string {
   if (href.startsWith(PAGE_LINK_PREFIX) || /[\s()<>\\]/.test(href)) {
-    return `<${href.replace(/[\\<>]/g, (char) => `\\${char}`)}>`;
+    const escaped = href.replace(/&#xa;|[\n\\<>]/g, (part) => {
+      if (part === "\n") return "&#xa;";
+      if (part === "&#xa;") return "\\&#xa;";
+      return `\\${part}`;
+    });
+    return `<${escaped}>`;
   }
   return href;
 }
@@ -318,7 +338,8 @@ export function serializeBlocks(blocks: readonly SerializableBlock[], options: S
     switch (type) {
       case "page": {
         const title = options.resolvePageTitle?.(block.pageId as string) ?? "";
-        line = `[${escapePlain(title, 0, title)}](${PAGE_LINK_PREFIX}${block.pageId as string})`;
+        const caption = serializeInline([{ insert: title }]);
+        line = `[${caption}](${PAGE_LINK_PREFIX}${encodePageId(block.pageId as string)})`;
         break;
       }
       case "h1":
@@ -462,9 +483,16 @@ function parseDestination(source: string, index: number): { href: string; next: 
   if (source[cursor] === "<") {
     cursor += 1;
     while (cursor < source.length && source[cursor] !== ">") {
-      if (source[cursor] === "\\" && cursor + 1 < source.length) cursor += 1;
-      href += source[cursor];
-      cursor += 1;
+      if (source[cursor] === "\\" && cursor + 1 < source.length) {
+        href += source[cursor + 1];
+        cursor += 2;
+      } else if (source.startsWith("&#xa;", cursor)) {
+        href += "\n";
+        cursor += "&#xa;".length;
+      } else {
+        href += source[cursor];
+        cursor += 1;
+      }
     }
     if (source[cursor] !== ">") return null;
     cursor += 1;
@@ -668,7 +696,7 @@ function parseLine(raw: string): ParsedLine {
   const line = raw.trim();
   const page = /^\[(?:\\.|[^\]\\])*\]\(semprec:\/\/page\/([^)\s]+)\)$/.exec(line);
   if (page) {
-    return { type: "page", lineIndent: null, pageId: page[1] as string };
+    return { type: "page", lineIndent: null, pageId: decodePageId(page[1] as string) };
   }
   const heading = /^(#{1,3})(?: +([\s\S]*))?$/.exec(line);
   if (heading) {
