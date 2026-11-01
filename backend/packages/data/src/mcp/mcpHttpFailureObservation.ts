@@ -81,7 +81,8 @@ export function createMcpHttpFailureObserver(hasAuthProvider: boolean) {
       const id = hasId ? message.id : undefined;
       if (
         (hasId && typeof id !== "string" && typeof id !== "number") ||
-        (!hasId && method !== "notifications/initialized")
+        (!hasId && method !== "notifications/initialized") ||
+        (hasId && method === "notifications/initialized")
       )
         return send(message, options);
       const parent = attempts.getStore();

@@ -72,6 +72,16 @@ describe("correlated MCP HTTP failure observation", () => {
     operation.close();
   });
 
+  it("does not infer status for a malformed initialized request with an id", async () => {
+    const { observer, transport } = harness(async () => new Response(null, { status: 403 }), terminal);
+    const operation = observer.begin();
+    const error: unknown = await operation
+      .run(() => transport.send({ jsonrpc: "2.0", id: 3, method: "notifications/initialized" }))
+      .catch((value: unknown) => value);
+    expect(operation.status(error)).toBeUndefined();
+    operation.close();
+  });
+
   it("does not reuse an accepted POST or unrelated GET for a later error", async () => {
     const { observer, transport } = harness(
       async (_url, init) => new Response(null, { status: init?.method === "POST" ? 200 : 403 }),
