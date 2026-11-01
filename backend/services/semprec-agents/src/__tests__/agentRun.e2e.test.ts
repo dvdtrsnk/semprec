@@ -37,6 +37,7 @@ import { createAgentSessionFactoryForRun } from "../agentSessionComposition.js";
 import { toPiMessages } from "../piConversationHistory.js";
 import { createGatewayModel, type GatewayModel } from "../modelComposition.js";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
+import { logger } from "../logger.js";
 
 /**
  * Lets a test run code while a run's session is being composed — to fail the composition, or to
@@ -202,6 +203,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
   });
 
   it("persists each validated turn's own refs before prompting in a composed conversation", async () => {
+    logger.error("log-capture-context-marker");
     const projectItemId = await seededSemprecProjectItemId();
     const { rows } = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
     const thread = { kind: "chat" as const, threadId: rows[0]!.id };
@@ -572,6 +574,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
   });
 
   it("executes the actual approved MCP job without forwarding the agent reason", async () => {
+    logger.error("log-capture-mcp-marker");
     const tool: ContractServerTool = {
       name: "search_web",
       inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
@@ -634,6 +637,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
   });
 
   it("stores an agent's generic-operation reason outside the canonical input and snapshot", async () => {
+    logger.error("log-capture-generic-marker");
     const projectItemId = await seededSemprecProjectItemId();
     const chokePoint = createChokePoint(pool);
     const database = await chokePoint.createDatabase({ name: "Reason test" });
@@ -657,6 +661,39 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     expect(request?.payload).toMatchObject({ canonicalInput: { itemId: item.id } });
     expect(JSON.stringify(request?.payload)).not.toContain("reason-sentinel");
     expect(JSON.stringify(request?.resourceSnapshot)).not.toContain("reason-sentinel");
+  });
+
+  it("keeps a reason out of logs when approval insertion fails", async () => {
+    logger.error("log-capture-failed-insert-marker");
+    const projectItemId = await seededSemprecProjectItemId();
+    const chokePoint = createChokePoint(pool);
+    const database = await chokePoint.createDatabase({ name: "Approval insertion failure" });
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: database.id, properties: {} }));
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "test" });
+    await pool.query(`CREATE FUNCTION fail_test_approval_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'controlled approval insert failure'; END $$`);
+    await pool.query(`CREATE TRIGGER fail_test_approval_insert BEFORE INSERT ON approval_requests
+      FOR EACH ROW EXECUTE FUNCTION fail_test_approval_insert()`);
+    try {
+      faux.setResponses([
+        fauxAssistantMessage(
+          [fauxToolCall("item_delete", { itemId: item.id, reason: "insert-failure-reason-sentinel" })],
+          { stopReason: "toolUse" },
+        ),
+        fauxAssistantMessage("handled"),
+      ]);
+      const task = createAgentRunTask(pool, registry, fauxGateway, createInFlightAgentRuns());
+      await runInTenant(getTenantZeroId(), () => task({ agentRunId: run.id }, { job: { id: "1" } }));
+      const events = await runEvents(run.id);
+      expect(events.find((event) => event.kind === "tool_result")?.payload).toMatchObject({
+        result: { details: { error: true } },
+      });
+      const { rows } = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests");
+      expect(rows[0]?.count).toBe("0");
+    } finally {
+      await pool.query("DROP TRIGGER fail_test_approval_insert ON approval_requests");
+      await pool.query("DROP FUNCTION fail_test_approval_insert()");
+    }
   });
 
   it.each([true, 123])("stores SDK-normalized generic reason %s after a composed tool call", async (rawReason) => {
@@ -715,6 +752,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
   });
 
   it("returns a validation error to the model without creating an approval for an oversized reason", async () => {
+    logger.error("log-capture-invalid-reason-marker");
     const projectItemId = await seededSemprecProjectItemId();
     const chokePoint = createChokePoint(pool);
     const database = await chokePoint.createDatabase({ name: "Oversized reason test" });
@@ -722,7 +760,13 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "test" });
     faux.setResponses([
       fauxAssistantMessage(
-        [fauxToolCall("item_delete", { itemId: item.id, reason: "x".repeat(501) }, { id: "call-1" })],
+        [
+          fauxToolCall(
+            "item_delete",
+            { itemId: item.id, reason: "oversized-reason-sentinel" + "x".repeat(500) },
+            { id: "call-1" },
+          ),
+        ],
         { stopReason: "toolUse" },
       ),
       fauxAssistantMessage("failed"),
