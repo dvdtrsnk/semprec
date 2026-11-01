@@ -88,6 +88,10 @@ describe("guidance drift production composition", () => {
     expect(first.problems).toHaveLength(1);
     expect(first.problems[0]).toMatchObject({ source_id: first.findings[0]?.id, occurrence_count: 1 });
     expect(first.notifications.map((n) => n.kind).sort()).toEqual(["agent_guidance_drift", "semp_problem"]);
+    const fanout = await admin.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE task_identifier = 'notificationFanout'",
+    );
+    expect(fanout.rows).toEqual([{ count: "2" }]);
     content = { contradictions: [finding("files.read", "reworded"), finding("files.write", "other")] };
     await runInTenant(tenant, () => action({ projectItemId: project }));
     const second = await snapshot();
@@ -163,11 +167,18 @@ describe("guidance drift production composition", () => {
       await admin.query(`CREATE TRIGGER test_fail_guidance_problem BEFORE INSERT ON semp_problems
         FOR EACH ROW EXECUTE FUNCTION test_fail_guidance_problem()`);
       const before = await snapshot();
+      const jobsBefore = await admin.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE task_identifier = 'notificationFanout'",
+      );
       const action = createAgentGuidanceDriftActionForApi(pool, gateway);
       await expect(runInTenant(tenant, () => action({ projectItemId: project }))).rejects.toThrow(
         "injected problem failure",
       );
       expect(await snapshot()).toEqual(before);
+      const jobsAfter = await admin.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE task_identifier = 'notificationFanout'",
+      );
+      expect(jobsAfter.rows).toEqual(jobsBefore.rows);
     } finally {
       await admin.query("DROP TRIGGER IF EXISTS test_fail_guidance_problem ON semp_problems");
       await admin.query("DROP FUNCTION IF EXISTS test_fail_guidance_problem()");
