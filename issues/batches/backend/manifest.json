@@ -628,8 +628,8 @@
       "sequence": 6,
       "status": "proposed",
       "title": "[backend-delivery 06/74] Implement agent-runtime, semprec-agents, data/agentRuns changes",
-      "bodyCharacters": 59926,
-      "specSha256": "553c3462adbff8f4cbff971384e23bd0de1149ac90e4d212945e0482c75bf2e7",
+      "bodyCharacters": 59929,
+      "specSha256": "ef3801927009c2a9846a502078443bb4d0f865c4105952d3bef1d66ef911a604",
       "members": [
         {
           "id": "gh-1452",
@@ -699,7 +699,7 @@
         },
         {
           "id": "gh-1374",
-          "specSha256": "0d6e61c9669fe7999486cb00c4b8727bbbf80bb6ba488111279c0a96976d1815",
+          "specSha256": "1e8b7c313fa859f69c232dfc09a5a23a78b1c872cf37abd76badace0b7639cdd",
           "parent": "gh-1308",
           "dependencies": [],
           "approval": "approved"

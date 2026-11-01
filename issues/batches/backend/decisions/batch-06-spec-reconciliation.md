@@ -223,3 +223,21 @@ its actual limits for local delivery; general expand/contract guidance remains
 unchanged. Include the corrected source AC, decision and observed versus inferred
 facts in the review ledger and acceptance evidence, without marking the old
 no-lock claim PASS.
+
+## Startup repair matches the complete history
+
+Independent review identified gh-1374 AC5's last-event wording as incompatible
+with its own "as before" intent. Both current code and integration base b2230f13
+call findDanglingToolUses over all stored events, preserving id-based and
+anonymous matching. An unmatched earlier call followed by a non-tool event can
+therefore still require a synthetic result. The issue changes result shape,
+not which eligible runs or unmatched calls are repaired.
+
+Correct AC5 to the existing whole-history behavior. An eligible interrupted run
+with no unmatched call gets no synthetic tool result; an earlier unmatched call
+followed by an ordinary event still gets one. Preserve existing eligibility and
+exemptions, matching rules, and original interruption text. Add actual repair
+regressions for this positive case and matched/no-call negatives in already
+scoped tests; do not implement a last-event-only filter or rewrite old rows.
+Preserve the original reviewer finding and obtain focused review of the revised
+clause and evidence. All other Tasks/ACs and historical ADRs remain unchanged.
