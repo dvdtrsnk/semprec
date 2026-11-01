@@ -32,3 +32,27 @@ scoped data upload tests for genuine recognized, unknown, mismatched-header and
 deduplicated standalone HTTP evidence. Use valid binary image fixtures when
 claiming image detection; arbitrary strings labeled as images prove only the
 header-admission and unknown-content branches.
+
+## Blob references racing collection
+
+The worker reproduced the JSONB item-reference race against `12c671ab`,
+including the stale DELETE snapshot after waiting for a writer. Evidence:
+`batch-07-run/race-diagnostic.ts` and `race-diagnostic-complete.log`, four
+deliberately asserted unsafe/contrast outcomes; storage deletion was a no-op.
+This establishes the row/reference defect, not physical deletion evidence.
+
+Apply `2026-11-01-blob-reference-writes-coordinate-with-collection`: a new
+blob-owned first-registered transactional create/update hook, sorted KEY SHARE
+locks, and a separate collector UPDATE lock before the fresh reference check.
+Use the existing domain composition seam; do not refactor the choke point or
+rewrite FK-protected attachment writers. Count declared file/image references
+consistently with accepted UUID spellings. Missing/foreign references are
+refused without exposing another tenant's existence. The ADR records precise
+scope, lock ordering, strict tenant setting, compatibility and limitations.
+
+Add only the blob hook, its composition registration and the existing standalone
+blob integration test path to gh-1401 Touches, alongside its existing blob
+store/test paths and the new ADR. Existing one-to-one derived-blob deletion is
+outside this protocol. The expanded Task and AC require production overlap,
+rollback, effective-value and isolation evidence; the diagnostic or an intended
+implementation is not acceptance.
