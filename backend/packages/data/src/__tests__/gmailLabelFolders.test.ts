@@ -125,6 +125,25 @@ async function settleOwnedPools(
   }
 }
 
+async function rollbackAndSettleOwned(
+  rollback: () => Promise<void>,
+  releaseFailedHolder: () => void,
+  settle: () => Promise<void>,
+): Promise<void> {
+  const [rollbackResult] = await Promise.allSettled([rollback()]);
+  if (rollbackResult?.status === "rejected") releaseFailedHolder();
+  const [settleResult] = await Promise.allSettled([settle()]);
+  if (rollbackResult?.status === "rejected") {
+    if (settleResult?.status === "rejected")
+      throw new AggregateError([rollbackResult.reason, settleResult.reason], "Gmail fixture cleanup failed", {
+        cause: rollbackResult.reason,
+      });
+    throw new Error("Gmail fixture rollback failed", { cause: rollbackResult.reason });
+  }
+  if (settleResult?.status === "rejected")
+    throw new Error("Gmail fixture settlement failed", { cause: settleResult.reason });
+}
+
 const storage: BlobStorageWriter = {
   async writeStream() {
     return { byteSize: 0, contentHash: "0" };
@@ -799,6 +818,7 @@ describe("Gmail label folders (issue #1496)", () => {
     const holder = await admin.connect();
     const control = await admin.connect();
     let guardHeld = false;
+    let holderReleased = false;
     let cleanupStarted = false;
     let barrierReached = false;
     let operation: Promise<void> | undefined;
@@ -871,15 +891,71 @@ describe("Gmail label folders (issue #1496)", () => {
       console.info("GMAIL_PRE_BARRIER_CLEANUP", { holderPid, participantPid });
     } finally {
       try {
-        if (guardHeld) await bounded(holder.query("ROLLBACK"));
-        if (!cleanupStarted)
-          await settleOwnedPools(control, [operationPool], operation ? [operation] : [], [capturedBackends]);
+        await rollbackAndSettleOwned(
+          async () => {
+            if (guardHeld) await bounded(holder.query("ROLLBACK"));
+          },
+          () => {
+            holder.release(true);
+            holderReleased = true;
+          },
+          async () => {
+            if (!cleanupStarted)
+              await settleOwnedPools(control, [operationPool], operation ? [operation] : [], [capturedBackends]);
+          },
+        );
       } finally {
         capture.detach();
         expect(operationPool.listeners("acquire")).not.toContain(capture.onAcquire);
-        holder.release(true);
+        if (!holderReleased) holder.release(true);
         control.release(true);
       }
+    }
+  }, 30_000);
+
+  it("settles an owned pool when fixture rollback fails", async () => {
+    const operationPool = await createRuntimeRolePool(admin, "semprec_data");
+    const backends: OwnedBackend[] = [];
+    const capture = capturePoolPids(operationPool, backends);
+    const holder = await admin.connect();
+    const control = await admin.connect();
+    let released = false;
+    let cleanupStarted = false;
+    try {
+      await bounded(holder.query("BEGIN"));
+      const operation = operationPool.query("SELECT 1");
+      await bounded(operation);
+      const backend = backends[0];
+      if (!backend) throw new Error("Missing owned backend");
+      const rollbackFailure = new Error("Injected rollback failure");
+      cleanupStarted = true;
+      await expect(
+        rollbackAndSettleOwned(
+          async () => {
+            throw rollbackFailure;
+          },
+          () => {
+            holder.release(true);
+            released = true;
+          },
+          () => settleOwnedPools(control, [operationPool], [operation], [backends]),
+        ),
+      ).rejects.toMatchObject({ message: "Gmail fixture rollback failed", cause: rollbackFailure });
+      expect(released).toBe(true);
+      expect(backend.errors).toEqual([]);
+      expect(backend.client.listeners("error")).not.toContain(backend.onError);
+      const remaining = await bounded(
+        control.query<{ present: boolean }>(
+          "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1) AS present",
+          [backend.pid],
+        ),
+      );
+      expect(remaining.rows[0]?.present).toBe(false);
+    } finally {
+      if (!released) holder.release(true);
+      if (!cleanupStarted) await settleOwnedPools(control, [operationPool], [], [backends]);
+      capture.detach();
+      control.release(true);
     }
   }, 30_000);
 
@@ -891,6 +967,7 @@ describe("Gmail label folders (issue #1496)", () => {
     const control = await admin.connect();
     let holder: PoolClient | undefined;
     let guardHeld = false;
+    let holderReleased = false;
     let releaseConnection: () => void = () => undefined;
     let signalConnecting: () => void = () => undefined;
     const connecting = new Promise<void>((resolve) => {
@@ -969,12 +1046,22 @@ describe("Gmail label folders (issue #1496)", () => {
       releaseConnection();
       try {
         if (observedCleanup) await bounded(observedCleanup, 20_000);
-        if (guardHeld && holder) await bounded(holder.query("ROLLBACK"));
-        if (!observedCleanup)
-          await settleOwnedPools(control, [operationPool], operation ? [operation] : [], [capturedBackends]);
+        await rollbackAndSettleOwned(
+          async () => {
+            if (guardHeld && holder) await bounded(holder.query("ROLLBACK"));
+          },
+          () => {
+            holder?.release(true);
+            holderReleased = true;
+          },
+          async () => {
+            if (!observedCleanup)
+              await settleOwnedPools(control, [operationPool], operation ? [operation] : [], [capturedBackends]);
+          },
+        );
       } finally {
         capture.detach();
-        holder?.release(true);
+        if (!holderReleased) holder?.release(true);
         control.release(true);
       }
     }
