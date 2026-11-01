@@ -87,7 +87,7 @@ describe("repairInterruptedRuns", () => {
 
     await repairInterruptedRuns(pool);
 
-    const { rows } = await pool.query<{ kind: string; payload: Record<string, unknown> }>(
+    const { rows } = await pool.query<{ kind: string; payload: unknown }>(
       `SELECT kind, payload FROM agent_run_events WHERE agent_run_id = $1 AND kind <> 'run_status' ORDER BY id ASC`,
       [run.id],
     );
@@ -209,7 +209,7 @@ describe("repairInterruptedRuns", () => {
 
     await expect(repairInterruptedRuns(pool)).resolves.toEqual({ repairedRunIds: [run.id], closedIdleRunIds: [] });
 
-    const { rows } = await pool.query<{ kind: string; payload: Record<string, unknown> }>(
+    const { rows } = await pool.query<{ kind: string; payload: unknown }>(
       `SELECT kind, payload FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id ASC`,
       [run.id],
     );
@@ -262,13 +262,12 @@ describe("repairInterruptedRuns", () => {
 
     const { rows: heartbeatEvents } = await pool.query<{
       kind: string;
-      payload: { toolCallId?: string; isError?: boolean };
+      payload: unknown;
     }>(`SELECT kind, payload FROM agent_run_events WHERE agent_run_id = $1 AND kind <> 'run_status' ORDER BY id ASC`, [
       heartbeatRun.id,
     ]);
     expect(heartbeatEvents.map((r) => r.kind)).toEqual(["tool_use", "tool_result"]);
-    expect(heartbeatEvents[1]!.payload.toolCallId).toBe("hb-1");
-    expect(heartbeatEvents[1]!.payload.isError).toBe(true);
+    expect(heartbeatEvents[1]!.payload).toMatchObject({ toolCallId: "hb-1", isError: true });
 
     const { rows: notifications } = await pool.query<{ kind: string; source_id: string }>(
       `SELECT kind, source_id FROM notifications ORDER BY source_id`,

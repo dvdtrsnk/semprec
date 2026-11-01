@@ -51,13 +51,12 @@ describe("semprec-agents startup repair (issue #642)", () => {
 
     const { rows: orphanEvents } = await pool.query<{
       kind: string;
-      payload: { toolCallId?: string; isError?: boolean };
+      payload: unknown;
     }>(`SELECT kind, payload FROM agent_run_events WHERE agent_run_id = $1 AND kind <> 'run_status' ORDER BY id ASC`, [
       orphan.id,
     ]);
     expect(orphanEvents.map((r) => r.kind)).toEqual(["tool_use", "tool_result"]);
-    expect(orphanEvents[1]!.payload.toolCallId).toBe("call-1");
-    expect(orphanEvents[1]!.payload.isError).toBe(true);
+    expect(orphanEvents[1]!.payload).toMatchObject({ toolCallId: "call-1", isError: true });
 
     const { rows: mcpEvents } = await pool.query<{ kind: string }>(
       `SELECT kind FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id ASC`,
