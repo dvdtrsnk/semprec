@@ -73,3 +73,26 @@ properties remain unchanged, metadata uses the actual blob row ID, and missing
 or foreign metadata remains omitted. Keep batched reads and add discriminating
 evidence in the existing blob metadata test. This is an implementation fix
 within the current metadata contract, not a new projection or storage format.
+
+## Filing an already committed standalone blob
+
+The worker reproduced two successful `ingestUploadedFile` calls creating two
+Files rows for one previously committed standalone blob. The held lookup
+barrier establishes the overlap; `dedup-diagnostic.ts` and
+`dedup-diagnostic.log` record one deliberately defect-asserting test passed and
+nine skipped. Content-hash conflict handling alone does not serialize this
+case.
+
+Apply `2026-11-01-file-uploads-share-the-blob-filing-lock`, a narrow extension of
+the existing attachment-filing row lock. In the upload transaction, lock the
+tenant's blob and check existence before a fresh Files-item lookup, then reuse
+unchanged or create through the choke point. Keep streaming/detection outside
+the transaction and existing byte cleanup ordering. No new retry policy,
+generic Files uniqueness constraint or arbitrary-write convergence guarantee
+is introduced.
+
+The implementation and tests remain within existing gh-1410 upload paths and
+gh-1401 blob-store scope; add the new ADR path to gh-1410 and the aggregate.
+The existing dedup requirement is retained. Acceptance needs real bounded
+both-order overlap, committed-row identity and rollback/cleanup evidence, not
+the diagnostic's intentionally unsafe assertions.
