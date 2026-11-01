@@ -66,6 +66,24 @@ async function linkOf(itemId: string, propertyKey: string): Promise<ValueLinkRow
   return rows.find((row) => row.propertyKey === propertyKey);
 }
 
+async function withRuntimePool<T>(body: (runtime: Pool) => Promise<T>): Promise<T> {
+  const runtime = await createRuntimeRolePool(pool, "semprec_data");
+  let outcome: { value: T } | { error: unknown };
+  try {
+    outcome = { value: await body(runtime) };
+  } catch (error) {
+    outcome = { error };
+  }
+  try {
+    await runtime.end();
+  } catch (error) {
+    if ("error" in outcome) throw new AggregateError([outcome.error, error], "Test and runtime cleanup failed");
+    throw error;
+  }
+  if ("error" in outcome) throw outcome.error;
+  return outcome.value;
+}
+
 describe("value link state on writes (issue #1516)", () => {
   beforeAll(() => {
     pool = getTestPool();
@@ -377,8 +395,7 @@ describe("value link state on writes (issue #1516)", () => {
       async (state) => {
         await seedSystem(pool);
         const tenant = getTenantZeroId();
-        const runtime = await createRuntimeRolePool(pool, "semprec_data");
-        try {
+        await withRuntimePool(async (runtime) => {
           const cp = createChokePoint(runtime);
           const task = await runInTenant(tenant, async () => {
             const db = (await cp.listDatabases()).find((entry) => entry.key === "tasks");
@@ -440,17 +457,14 @@ describe("value link state on writes (issue #1516)", () => {
                   ["timeTo", "broken"],
                 ],
           );
-        } finally {
-          await runtime.end();
-        }
+        });
       },
     );
 
     it("allows a date-off Tasks transform when every added user key has an on link", async () => {
       await seedSystem(pool);
       const tenant = getTenantZeroId();
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
-      try {
+      await withRuntimePool(async (runtime) => {
         const cp = createChokePoint(runtime);
         const task = await runInTenant(tenant, async () => {
           const db = (await cp.listDatabases()).find((entry) => entry.key === "tasks");
@@ -479,16 +493,13 @@ describe("value link state on writes (issue #1516)", () => {
           listValueLinksByItemIds(client, [task.id]),
         );
         expect(links.map((entry) => entry.state)).toEqual(["on", "on", "on"]);
-      } finally {
-        await runtime.end();
-      }
+      });
     });
 
     it("requires handoff even when a transform-added null equals the stored value", async () => {
       await seedSystem(pool);
       const tenant = getTenantZeroId();
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
-      try {
+      await withRuntimePool(async (runtime) => {
         const cp = createChokePoint(runtime);
         const task = await runInTenant(tenant, async () => {
           const db = (await cp.listDatabases()).find((entry) => entry.key === "tasks");
@@ -517,9 +528,7 @@ describe("value link state on writes (issue #1516)", () => {
         expect((await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id)))?.properties).toEqual(
           task.properties,
         );
-      } finally {
-        await runtime.end();
-      }
+      });
     });
 
     async function relationWrites(client: PoolClient, fx: Awaited<ReturnType<typeof setup>>) {
@@ -602,8 +611,7 @@ describe("value link state on writes (issue #1516)", () => {
   describe("tenants", () => {
     it("enforces handoff and preserves unchanged links on scoped runtime connections without overlap", async () => {
       const tenant = await createTestTenant(pool);
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
-      try {
+      await withRuntimePool(async (runtime) => {
         const cp = createChokePoint(runtime);
         const fx = await runInTenant(tenant, () => setup(cp));
         const write = (value: string) =>
@@ -648,9 +656,7 @@ describe("value link state on writes (issue #1516)", () => {
         expect((await read())[0]).toMatchObject({ state: "broken", brokenBy: "user" });
         await expect(write("blocked again")).rejects.toMatchObject({ status: 403, code: "owner_violation" });
         expect((await runInTenant(tenant, () => cp.getItem(fx.files.id, fx.file.id)))?.properties.name).toBe("user");
-      } finally {
-        await runtime.end();
-      }
+      });
     });
 
     it("never touches the links of another tenant", async () => {
