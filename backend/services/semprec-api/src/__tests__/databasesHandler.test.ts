@@ -571,6 +571,52 @@ describe("database routes (issue #240)", () => {
       expect(await chokePoint.listProperties(created.id)).toEqual([]);
     });
 
+    it("creates and uses an initial relation whose existing target UUID is uppercase", async () => {
+      const headers = await jsonHeaders();
+      const target = await chokePoint.createDatabase({ name: "Uppercase target" });
+      const targetItem = await chokePoint.createItem({ databaseId: target.id, properties: {} });
+      const response = await post(headers, {
+        name: "Source",
+        properties: [
+          {
+            key: "link",
+            name: "Link",
+            type: "relation",
+            targetDatabaseId: target.id.toUpperCase(),
+            cardinality: "many_to_many",
+          },
+        ],
+      });
+      expect(response.status).toBe(201);
+      const body: unknown = await response.json();
+      if (typeof body !== "object" || body === null || !("id" in body) || typeof body.id !== "string") {
+        throw new Error("invalid database response");
+      }
+      const properties = await chokePoint.listProperties(body.id);
+      const relation = properties.find((property) => property.key === "link");
+      expect(relation?.type).toBe("relation");
+      const sourceItem = await chokePoint.createItem({ databaseId: body.id, properties: { name: "Source item" } });
+      const linked = await fetch(`${baseUrl}/api/items/${sourceItem.id}/relations/link/${targetItem.id}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ metadata: {} }),
+      });
+      expect(linked.status).toBe(200);
+      const listed = await fetch(`${baseUrl}/api/items/${sourceItem.id}/relations`, { headers });
+      expect(listed.status).toBe(200);
+      const result: unknown = await listed.json();
+      expect(result).toMatchObject({
+        relations: [
+          {
+            relationPropertyId: relation?.id,
+            propertyKey: "link",
+            targetItemId: targetItem.id,
+            targetDatabaseId: target.id,
+          },
+        ],
+      });
+    });
+
     it.each([
       ["a bad select config", { key: "status", name: "Status", type: "select", config: { options: "nope" } }],
       ["a duplicate key", { key: "recipient", name: "Again", type: "text" }],

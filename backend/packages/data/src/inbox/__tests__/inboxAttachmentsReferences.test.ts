@@ -161,13 +161,17 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
   });
 
   it.each([
-    ["files-first", "retains the surviving mail reference"],
-    ["mail-first", "retains the surviving mail reference"],
-    ["files-first", "deletes after fixture-only mail reference removal"],
-    ["mail-first", "deletes after fixture-only mail reference removal"],
+    [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP, "files-first", "retains the surviving mail reference"],
+    [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP, "mail-first", "retains the surviving mail reference"],
+    [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP, "files-first", "deletes after fixture-only mail reference removal"],
+    [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP, "mail-first", "deletes after fixture-only mail reference removal"],
+    [CORE_TASK_NAMES.TRASH_PURGE, "files-first", "retains the surviving mail reference"],
+    [CORE_TASK_NAMES.TRASH_PURGE, "mail-first", "retains the surviving mail reference"],
+    [CORE_TASK_NAMES.TRASH_PURGE, "files-first", "deletes after fixture-only mail reference removal"],
+    [CORE_TASK_NAMES.TRASH_PURGE, "mail-first", "deletes after fixture-only mail reference removal"],
   ] as const)(
-    "%s: %s through the API purge task",
-    async (order, scenario) => {
+    "%s / %s: %s through the API purge task",
+    async (taskName, order, scenario) => {
       const directory = await mkdtemp(join(tmpdir(), "semprec-dual-origin-"));
       const filesDir = join(directory, "files");
       const mailDir = join(directory, "mail");
@@ -275,10 +279,10 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
           files,
           { files: filesDir, mailAttachments: mailDir },
         );
-        const handler = tasks[CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP];
+        const handler = tasks[taskName];
         if (!handler) throw new Error("missing API purge handler");
-        await runAsSystem("test trash purge", () => enqueueJob(pool, CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP, {}));
-        await runOnce({ pgPool: pool, taskList: { [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: handler } });
+        await runAsSystem("test trash purge", () => enqueueJob(pool, taskName, {}));
+        await runOnce({ pgPool: pool, taskList: { [taskName]: handler } });
         const remainingItems = await pool.query<{ count: number }>(
           "SELECT count(*)::int AS count FROM items WHERE id = ANY($1::uuid[])",
           [[message.itemId, ...fileItems.rows.map((item) => item.id)]],

@@ -28,6 +28,7 @@ import {
   decideAndEnqueueApprovalRequest,
   getApprovalRequest,
   getDatabaseByModuleId,
+  isGenericOperationApprovalRequestPayload,
   loadYDoc,
   mutateYDoc,
   rebaselineDocHistory,
@@ -1141,27 +1142,57 @@ describe("createGenericOperationGateway (issue #220)", () => {
         "UPDATE doc_snapshot_history SET represented_at = $2 WHERE doc_id = $1 AND through_update_id = 0",
         [page.docId, oldBaseline],
       );
+      const oldUpdate = new Date(page.at.getTime() - 36 * 60 * 60 * 1000);
+      const ids = await pool.query<{ update_id: string }>(
+        "UPDATE doc_history_updates SET created_at = $2 WHERE doc_id = $1 RETURNING update_id::text",
+        [page.docId, oldUpdate],
+      );
+      expect(ids.rows).toHaveLength(1);
+      const updateId = ids.rows[0]?.update_id;
+      if (!updateId || updateId === "0") throw new Error("missing nonzero history update");
+      await pool.query("UPDATE doc_updates SET created_at = $2 WHERE doc_id = $1", [page.docId, oldUpdate]);
       const input = { itemId: page.itemId, at: page.at.toISOString() };
       const requestId = await approveDestructive("page.restoreVersion", actor, input);
-      await loadYDoc(pool, page.docId, 1, 1);
-      const pending = await pool.query<{ count: string }>(
-        "SELECT count(*)::text AS count FROM doc_updates WHERE doc_id = $1",
-        [page.docId],
-      );
-      expect(pending.rows[0]?.count).toBe("0");
-      expect(await rebaselineDocHistory(pool, page.docId, 1)).toBe(true);
-      const first = await replayRequest(requestId);
-      expect(first.finished?.executionStatus).toBe("succeeded");
-      expect(await blockIdsOf(page.itemId)).toEqual(["b1"]);
-      const secondRequest = await approveDestructive("page.restoreVersion", actor, input);
-      await createDocStore(pool).putBlock(
-        page.itemId,
-        { id: "b2", flavour: "paragraph", fields: { content: "later" } },
-        "user",
-      );
-      const second = await replayRequest(secondRequest);
-      expect(second.finished?.executionStatus).toBe("conflict");
-      expect(await blockIdsOf(page.itemId)).toEqual(["b1", "b2"]);
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        await runInTenant(getTenantZeroId(), () => loadYDoc(runtime, page.docId, 1, 1));
+        const pending = await pool.query<{ count: string }>(
+          "SELECT count(*)::text AS count FROM doc_updates WHERE doc_id = $1",
+          [page.docId],
+        );
+        expect(pending.rows[0]?.count).toBe("0");
+        expect(await runInTenant(getTenantZeroId(), () => rebaselineDocHistory(runtime, page.docId, 1))).toBe(true);
+        const history = await pool.query<{ count: string }>(
+          "SELECT count(*)::text AS count FROM doc_history_updates WHERE doc_id = $1 AND update_id = $2::bigint",
+          [page.docId, updateId],
+        );
+        expect(history.rows[0]?.count).toBe("0");
+        const baseline = await pool.query<{ through_update_id: string }>(
+          "SELECT through_update_id::text FROM doc_snapshot_history WHERE doc_id = $1 AND expires_at IS NULL",
+          [page.docId],
+        );
+        expect(baseline.rows).toEqual([{ through_update_id: updateId }]);
+        const firstRequest = await getApprovalRequest(pool, requestId);
+        if (!firstRequest || !isGenericOperationApprovalRequestPayload(firstRequest.payload))
+          throw new Error("missing generic approval");
+        await runInTenant(getTenantZeroId(), () => replayApprovedGenericOperation(runtime, firstRequest));
+        expect((await getApprovalRequest(pool, requestId))?.executionStatus).toBe("succeeded");
+        expect(await blockIdsOf(page.itemId)).toEqual(["b1"]);
+        const secondRequest = await approveDestructive("page.restoreVersion", actor, input);
+        await createDocStore(pool).putBlock(
+          page.itemId,
+          { id: "b2", flavour: "paragraph", fields: { content: "later" } },
+          "user",
+        );
+        const secondApproval = await getApprovalRequest(pool, secondRequest);
+        if (!secondApproval || !isGenericOperationApprovalRequestPayload(secondApproval.payload))
+          throw new Error("missing generic approval");
+        await runInTenant(getTenantZeroId(), () => replayApprovedGenericOperation(runtime, secondApproval));
+        expect((await getApprovalRequest(pool, secondRequest))?.executionStatus).toBe("conflict");
+        expect(await blockIdsOf(page.itemId)).toEqual(["b1", "b2"]);
+      } finally {
+        await runtime.end();
+      }
     });
 
     it("rejects an approval whose snapshot was created before update identity was added", async () => {
