@@ -227,6 +227,31 @@ describe("MCP invoke adapter (issue #128)", () => {
   });
 
   describe("createApprovalGatedMcpInvokeTool (issue #130)", () => {
+    it("does not trust an argument hint when no server snapshot exists", async () => {
+      const contractServer = startStdioContractServer([SEARCH_TOOL]);
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+      const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
+      await withTransaction(pool, (client) =>
+        setProjectMcpGrantForAgentPage(client, {
+          projectItemId,
+          mcpToolRegistrationId: registration.id,
+          granted: false,
+        }),
+      );
+      const result = await invoke({ query: "test", mcpServerItemId: randomUUID() });
+      expect(result.failure).toEqual({ failureKind: "unavailable" });
+      expect(contractServer.getHandshakeCount()).toBe(0);
+      const { rows } = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests");
+      expect(rows[0]?.count).toBe("0");
+    });
+
+    it("rejects malformed trusted server metadata without echoing it", () => {
+      expect(() =>
+        createApprovalGatedMcpInvokeTool(pool, randomUUID(), randomUUID(), randomUUID(), {}, "bad-id"),
+      ).toThrow("Invalid MCP server item id");
+    });
     it("defers a tool that requires approval: no transport call, a pending request, a synthetic success result", async () => {
       const contractServer = startStdioContractServer([SEARCH_TOOL]);
       servers.push(contractServer);

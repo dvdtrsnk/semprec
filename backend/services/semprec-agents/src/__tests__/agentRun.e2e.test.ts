@@ -362,6 +362,79 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     }
   });
 
+  it("retains the composed server snapshot after the grant is revoked without invoking or queuing", async () => {
+    const tool: ContractServerTool = {
+      name: "search_web",
+      inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+    };
+    const server = startStdioContractServer([tool]);
+    try {
+      await pool.query("UPDATE users SET role = 'admin' WHERE tenant_id = $1", [getTenantZeroId()]);
+      const databases = await pool.query<{ id: string }>(
+        "SELECT id FROM databases WHERE owner_module_id = 'mcpServers'",
+      );
+      const itemId = randomUUID();
+      await pool.query("INSERT INTO items (id, database_id, properties) VALUES ($1, $2, $3::jsonb)", [
+        itemId,
+        databases.rows[0]!.id,
+        JSON.stringify({ name: "Contract server", active: true, connectionConfig: server.connectionConfig }),
+      ]);
+      const registration = await upsertMcpToolRegistration(pool, {
+        mcpServerItemId: itemId,
+        toolName: tool.name,
+        toolSchema: tool.inputSchema,
+        description: null,
+      });
+      const projectItemId = await seededSemprecProjectItemId();
+      await withTransaction(pool, (client) =>
+        setProjectMcpGrantForAgentPage(client, {
+          projectItemId,
+          mcpToolRegistrationId: registration.id,
+          granted: true,
+        }),
+      );
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "test" });
+      const factory = await runInTenant(getTenantZeroId(), () =>
+        createAgentSessionFactoryForRun(pool, registry, fauxGateway, run),
+      );
+      await withTransaction(pool, (client) =>
+        setProjectMcpGrantForAgentPage(client, {
+          projectItemId,
+          mcpToolRegistrationId: registration.id,
+          granted: false,
+        }),
+      );
+      faux.setResponses([
+        fauxAssistantMessage(
+          [fauxToolCall(`mcp_search_web_${itemId.replace(/-/g, "").slice(0, 8)}`, { query: "test" })],
+          { stopReason: "toolUse" },
+        ),
+        fauxAssistantMessage("done"),
+      ]);
+      const events = await runInTenant(getTenantZeroId(), async () => {
+        const observed = [];
+        for await (const event of factory({ task: "test" }).messages()) observed.push(event);
+        return observed;
+      });
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          kind: "tool_result",
+          result: expect.objectContaining({
+            details: expect.objectContaining({ failureKind: "unavailable", mcpServerItemId: itemId }),
+          }),
+        }),
+      );
+      expect(server.getHandshakeCount()).toBe(0);
+      const requests = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM approval_requests WHERE agent_run_id = $1",
+        [run.id],
+      );
+      expect(requests.rows[0]?.count).toBe("0");
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("executes the actual approved MCP job without forwarding the agent reason", async () => {
     const tool: ContractServerTool = {
       name: "search_web",

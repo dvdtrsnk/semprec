@@ -164,7 +164,14 @@ async function createMcpTools(pool: Pool, runId: string, projectItemId: string):
   return grants
     .filter((grant) => grant.granted && grant.mcpServerOnline)
     .map((grant) => {
-      const invoke = createApprovalGatedMcpInvokeTool(pool, runId, projectItemId, grant.mcpToolRegistrationId);
+      const invoke = createApprovalGatedMcpInvokeTool(
+        pool,
+        runId,
+        projectItemId,
+        grant.mcpToolRegistrationId,
+        {},
+        grant.mcpServerItemId,
+      );
       return {
         name: mcpModelToolName(grant.toolName, grant.mcpServerItemId),
         label: `${grant.mcpServerName}: ${grant.toolName}`,

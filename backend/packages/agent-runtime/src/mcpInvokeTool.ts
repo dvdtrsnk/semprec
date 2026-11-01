@@ -236,14 +236,31 @@ export function createApprovalGatedMcpInvokeTool(
   projectItemId: string,
   mcpToolRegistrationId: string,
   options: McpInvokeOptions = {},
+  knownServerItemId?: string,
 ): McpInvokeTool {
+  if (
+    knownServerItemId !== undefined &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(knownServerItemId)
+  ) {
+    throw new Error("Invalid MCP server item id");
+  }
   return async function invoke(rawArgs, signal, invokeOptions) {
     const extracted = extractReason(rawArgs);
     if (!extracted.ok) return { error: true, result: extracted.error };
     const { args, reason } = extracted;
 
     const resolution = await resolveMcpInvocation(pool, projectItemId, mcpToolRegistrationId, args);
-    if (!resolution.ok) return resolution.result;
+    if (!resolution.ok) {
+      const result = resolution.result;
+      if (result.failure?.failureKind === "unavailable" && knownServerItemId !== undefined) {
+        return {
+          error: true,
+          result: result.result,
+          failure: { failureKind: "unavailable", mcpServerItemId: knownServerItemId },
+        };
+      }
+      return result;
+    }
 
     const { target } = resolution;
     if (target.requiresApproval) {
