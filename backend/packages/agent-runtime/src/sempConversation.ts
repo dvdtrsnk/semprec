@@ -295,7 +295,9 @@ export class SempConversation {
 
   async send(task: string, thread: SempThread, sendOptions: SempSendOptions = {}): Promise<SempTurnResult> {
     const { signal, onTurnStart } = sendOptions;
-    const parsedContext = labeledSempMessageRefSchema.array().safeParse(sendOptions.context ?? []);
+    const parsedContext = labeledSempMessageRefSchema
+      .array()
+      .safeParse(sendOptions.context === undefined ? [] : sendOptions.context);
     if (!parsedContext.success) throw new Error("Invalid user turn context");
     const context = parsedContext.data;
     // Read synchronously, before any `await`: nothing is read or written without a tenant.

@@ -141,7 +141,7 @@ async function* promptMessages(
   agent: Agent,
   task: string,
   context: readonly UserTurnContextRef[],
-  promptText: string,
+  pendingSystemMessages: (() => readonly string[]) | undefined,
   toolFailure: { error: Error | undefined },
   toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>,
   isBudgetRefusal: ((message: AssistantMessage) => boolean) | undefined,
@@ -150,6 +150,7 @@ async function* promptMessages(
   signal?.throwIfAborted();
   const parsed = labeledSempMessageRefSchema.array().safeParse(context);
   if (!parsed.success) throw new Error("Invalid user turn context");
+  const promptText = [...(pendingSystemMessages?.() ?? []), task].join("\n\n");
   // Yielded (and so persisted by the consumer) before the prompt is sent to the model.
   yield { kind: "user_message", text: task, context: parsed.data };
   signal?.throwIfAborted();
@@ -253,12 +254,11 @@ export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOption
     // second `prompt()` while one is active).
     const prompt = (task: string, context: readonly UserTurnContextRef[] = []): AsyncIterable<AgentMessage> => {
       toolFailure.error = undefined;
-      const promptText = [...(options.pendingSystemMessages?.() ?? []), task].join("\n\n");
       return promptMessages(
         piAgent,
         task,
         context,
-        promptText,
+        options.pendingSystemMessages,
         toolFailure,
         options.toolEventMetadata,
         options.isBudgetRefusal,

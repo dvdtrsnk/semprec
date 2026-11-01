@@ -187,13 +187,14 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     });
     const starts: string[] = [];
     try {
-      const malformed: unknown = { ...ref, expanded: "expanded-secret-sentinel" };
-      await expect(
-        runInTenant(getTenantZeroId(), () =>
-          // @ts-expect-error Exercise invalid input crossing the conversation boundary.
-          conversation.send("invalid", thread, { context: [malformed] }),
-        ),
-      ).rejects.toThrow("Invalid user turn context");
+      for (const malformed of [null, "not-an-array", [{ ...ref, expanded: "expanded-secret-sentinel" }]]) {
+        await expect(
+          runInTenant(getTenantZeroId(), () =>
+            // @ts-expect-error Exercise invalid input crossing the conversation boundary.
+            conversation.send("invalid", thread, { context: malformed }),
+          ),
+        ).rejects.toThrow("Invalid user turn context");
+      }
       expect(requestHeaders).toHaveLength(0);
       const before = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM agent_run_events");
       expect(before.rows[0]?.count).toBe("0");

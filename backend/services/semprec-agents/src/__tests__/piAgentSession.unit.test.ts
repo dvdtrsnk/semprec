@@ -129,6 +129,34 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
     expect(observed).not.toHaveBeenCalled();
   });
 
+  it("does not consume pending system messages for invalid context", async () => {
+    const { faux, model, streamFn } = fauxModel();
+    faux.setResponses([fauxAssistantMessage("ok")]);
+    const seen: string[] = [];
+    const observed: StreamFn = (m, context, options) => {
+      seen.push(JSON.stringify(context.messages.at(-1)?.content));
+      return streamFn(m, context, options);
+    };
+    const pending = vi.fn(() => ["pending outcome"]);
+    const session = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn: observed,
+      tools: [],
+      systemPrompt: "base",
+      pendingSystemMessages: pending,
+      // @ts-expect-error Exercise invalid input crossing the runtime boundary.
+    })({ task: "invalid", context: null });
+    await expect(collect(session.messages())).rejects.toThrow("Invalid user turn context");
+    expect(pending).not.toHaveBeenCalled();
+    expect(seen).toEqual([]);
+    await collect(session.send!("valid"));
+    expect(pending).toHaveBeenCalledOnce();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain("pending outcome");
+    expect(seen[0]).toContain("valid");
+  });
+
   it("aborts a blocked production tool directly while its async generator waits", async () => {
     const { faux, model, streamFn } = fauxModel();
     faux.setResponses([
