@@ -370,6 +370,6 @@ export async function runFixtureGuardControl(control: GuardControl, input: Fixtu
     throw new Error("Guard control unexpectedly succeeded");
   } catch (error) {
     if (!(error instanceof Error)) throw error;
-    return { ...observation, message: error.message };
+    return { ...observation, message: error.message, error };
   }
 }

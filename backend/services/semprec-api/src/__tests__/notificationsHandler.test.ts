@@ -196,15 +196,20 @@ describe("createNotificationsRequestListener", () => {
             throw new Error("fixture diagnostic output failed");
           return Reflect.apply(originalStderrWrite, process.stderr, [chunk, encoding, callback]);
         });
-        let caught: unknown;
-        try {
-          await runFixtureOverflowWithoutObservation(
-            { mode: "failure", tenantId: getTenantZeroId(), storageRoot },
-            pool,
-          );
-        } catch (error) {
-          caught = error;
-        }
+        const previousSignals = signaled.length;
+        const reportingFailure = await runFixtureGuardControl(
+          "overflow",
+          { mode: "failure", tenantId: getTenantZeroId(), storageRoot },
+          pool,
+        );
+        const caught = reportingFailure.error;
+        expect(reportingFailure.pid).toEqual(expect.any(Number));
+        if (reportingFailure.pid === null) throw new Error("Missing fixture child PID");
+        expect(signaled.slice(previousSignals)).toContain(-reportingFailure.pid);
+        expect(signaled.slice(previousSignals)).toContain(reportingFailure.pid);
+        expect(reportingFailure.closed).toBe(true);
+        expect(reportingFailure.temporaryRemoved).toBe(true);
+        expect(reportingFailure.poolClosed).toBe(true);
         expect(caught).toBeInstanceOf(AggregateError);
         if (!(caught instanceof AggregateError)) throw new Error("Expected the original and reporting errors");
         expect(caught.message).toBe("Transcription fixture output exceeds limit");
