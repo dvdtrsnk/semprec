@@ -16,6 +16,7 @@ import {
   createRelationWithClient,
   deleteRelationWithClient,
   updateRelationWithClient,
+  assertRelationCreatableWithClient,
 } from "../chokePoint/relationOps.js";
 import { VALUE_LINKS_OWNER_PROCESS } from "../chokePoint/valueLinkWrites.js";
 import { insertValueLink, listValueLinksByItemIds, type ValueLinkRow } from "../chokePoint/valueLinksStore.js";
@@ -706,6 +707,69 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
+    it("uses a nonlocking prediction in relation validation and rechecks on mutation", async () => {
+      const tenant = await createTestTenant(pool);
+      await withRuntimePool(async (validationPool) =>
+        withRuntimePool(async (userPool) => {
+          const cp = createChokePoint(userPool);
+          const fx = await runInTenant(tenant, () => setup(cp));
+          await withTenantTransaction(userPool, tenant, (client) =>
+            insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+          );
+          const edge = {
+            relationPropertyId: fx.projectsProperty.id,
+            callerItemId: fx.file.id,
+            targetItemId: fx.alpha.id,
+          };
+          const spy = vi.spyOn(valueLinksStore, "lockOnValueLink");
+          let participant: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
+          let participantPid: number | undefined;
+          let failure: unknown;
+          try {
+            await runInTenant(tenant, () =>
+              withTransaction(validationPool, async (client) => {
+                await assertRelationCreatableWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
+                expect(spy.mock.calls.map((call) => call[3])).toEqual(["none"]);
+                participant = runInTenant(tenant, () =>
+                  withTransaction(userPool, async (userClient) => {
+                    participantPid = (await userClient.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
+                      ?.pid;
+                    return createRelationWithClient(userClient, edge, undefined, USER);
+                  }),
+                ).then(
+                  () => ({ ok: true as const }),
+                  (error: unknown) => ({ ok: false as const, error }),
+                );
+                requireSuccessful(await bounded(participant));
+              }),
+            );
+            await expect(
+              runInTenant(tenant, () =>
+                withTransaction(validationPool, (client) =>
+                  createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER),
+                ),
+              ),
+            ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+          } catch (error) {
+            failure = error;
+          } finally {
+            if (participant) {
+              try {
+                requireSuccessful(await settleOwned(participant, () => participantPid));
+              } catch (error) {
+                failure =
+                  failure === undefined
+                    ? error
+                    : new AggregateError([failure, error], "Validation and participant cleanup failed");
+              }
+            }
+            spy.mockRestore();
+          }
+          if (failure !== undefined) throwFailure(failure);
+        }),
+      );
+    });
+
     it("does not use another tenant's active relation handoff", async () => {
       const tenantA = await createTestTenant(pool);
       const tenantB = await createTestTenant(pool);
