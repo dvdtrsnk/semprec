@@ -658,6 +658,57 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
+    it("preserves Library rating validation on protected relation writes", async () => {
+      await seedSystem(pool);
+      const tenant = getTenantZeroId();
+      await withRuntimePool(async (runtime) => {
+        const cp = createChokePoint(runtime);
+        const databases = await runInTenant(tenant, () => cp.listDatabases());
+        const movies = databases.find((db) => db.ownerModuleId === "movies");
+        const people = databases.find((db) => db.ownerModuleId === "people");
+        if (!movies || !people) throw new Error("Missing seeded Library databases");
+        const property = await runInTenant(tenant, () => cp.getPropertyByKey(movies.id, "watchedWith"));
+        if (!property) throw new Error("Missing watchedWith relation");
+        const [movie, person] = await runInTenant(tenant, async () => [
+          await cp.createItem({ databaseId: movies.id, properties: { name: "Film" } }),
+          await cp.createItem({ databaseId: people.id, properties: { name: "Person" } }),
+        ]);
+        await withTenantTransaction(runtime, tenant, (client) =>
+          insertValueLink(client, { itemId: movie.id, propertyKey: "watchedWith", ruleKey: "test", sources: [] }),
+        );
+        const write = (rating: number) =>
+          runInTenant(tenant, () =>
+            withTransaction(runtime, (client) =>
+              createRelationWithClient(
+                client,
+                {
+                  relationPropertyId: property.id,
+                  callerItemId: movie.id,
+                  targetItemId: person.id,
+                  metadata: { rating },
+                },
+                VALUE_LINKS,
+                SYSTEM_WRITER,
+              ),
+            ),
+          );
+        const events: InvalidationEvent[] = [];
+        setInvalidationHook((event) => events.push(event));
+        try {
+          await expect(write(6)).rejects.toMatchObject({ status: 400, code: "validation_failed" });
+          expect(events).toEqual([]);
+          expect(await runInTenant(tenant, () => cp.listItemRelations(movie.id, property.id))).toEqual([]);
+          await expect(write(5)).resolves.toMatchObject({ metadata: { rating: 5 } });
+          const links = await withTenantTransaction(runtime, tenant, (client) =>
+            listValueLinksByItemIds(client, [movie.id]),
+          );
+          expect(links[0]).toMatchObject({ state: "on" });
+        } finally {
+          setInvalidationHook(() => {});
+        }
+      });
+    });
+
     it("refuses a protected relation when a real proposal holds its definition and edge", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (holderPool) =>
