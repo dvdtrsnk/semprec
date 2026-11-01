@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Pool, PoolClient } from "pg";
+import { DatabaseError, type Pool, type PoolClient } from "pg";
 import {
   createPool,
   markManagedTransactionRollbackOnly,
@@ -10,6 +10,7 @@ import {
   withTransaction,
 } from "../db/pool.js";
 import { logger } from "../db/logger.js";
+import { withValueLinkRelationAdmission } from "../chokePoint/valueLinkRelationAdmission.js";
 
 describe("createPool", () => {
   let pool: Pool | undefined;
@@ -101,7 +102,7 @@ describe("withClient", () => {
 describe("withTransaction", () => {
   function fakeClient(failOn: Partial<Record<"COMMIT" | "ROLLBACK", unknown>>) {
     const release = vi.fn();
-    const query = vi.fn(async (sql: string) => {
+    const query = vi.fn(async (sql: string): Promise<{ rows: Record<string, unknown>[]; rowCount: number }> => {
       if (sql === "COMMIT" && "COMMIT" in failOn) throw failOn.COMMIT;
       if (sql === "ROLLBACK" && "ROLLBACK" in failOn) throw failOn.ROLLBACK;
       return { rows: [], rowCount: 0 };
@@ -148,6 +149,47 @@ describe("withTransaction", () => {
       }),
     ).rejects.toBe(outer);
     expect(sqlCalls(query)).toEqual(["BEGIN", "ROLLBACK"]);
+  });
+
+  it("maps only actual PostgreSQL lock errors inside the protected body and keeps the first failure", async () => {
+    const { pool, query } = fakeClient({});
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes("current_setting('lock_timeout')")) return { rows: [{ setting: "0" }], rowCount: 1 };
+      if (sql.includes("FROM value_links")) return { rows: [{ exists: 1 }], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    });
+    const input = { definitionId: "d", itemA: "a", itemB: "b", callerItemId: "a", propertyKey: "x", insert: false };
+    const fake = { code: "55P03" };
+    await expect(
+      withTransaction(pool, async (client) => {
+        await expect(
+          withValueLinkRelationAdmission(
+            client,
+            input,
+            async () => {},
+            async () => {
+              throw fake;
+            },
+          ),
+        ).rejects.toBe(fake);
+      }),
+    ).rejects.toBe(fake);
+    const pgError = new DatabaseError("lock", 0, "error");
+    pgError.code = "55P03";
+    await expect(
+      withTransaction(pool, async (client) => {
+        await expect(
+          withValueLinkRelationAdmission(
+            client,
+            input,
+            async () => {},
+            async () => {
+              throw pgError;
+            },
+          ),
+        ).rejects.toMatchObject({ status: 409, code: "value_link_busy", message: "Value-link relation is busy" });
+      }),
+    ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
   });
 
   it("rethrows fn's error and discards the client when ROLLBACK fails", async () => {

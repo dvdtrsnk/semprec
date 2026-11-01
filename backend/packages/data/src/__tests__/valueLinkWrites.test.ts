@@ -647,6 +647,71 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
+    it.each(["0", "5s"])(
+      "restores the effective lock timeout %s after protected success and no-op",
+      async (setting) => {
+        const tenant = await createTestTenant(pool);
+        await withRuntimePool(async (runtime) => {
+          const cp = createChokePoint(runtime);
+          const fx = await runInTenant(tenant, () => setup(cp));
+          await withTenantTransaction(runtime, tenant, (client) =>
+            insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+          );
+          await runInTenant(tenant, () =>
+            withTransaction(runtime, async (client) => {
+              await client.query("SELECT set_config('lock_timeout', $1, true)", [setting]);
+              const read = async () =>
+                (await client.query<{ setting: string }>("SELECT current_setting('lock_timeout') AS setting")).rows[0]
+                  ?.setting;
+              const before = await read();
+              const edge = {
+                relationPropertyId: fx.projectsProperty.id,
+                callerItemId: fx.file.id,
+                targetItemId: fx.alpha.id,
+              };
+              await createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
+              expect(await read()).toBe(before);
+              await createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
+              expect(await read()).toBe(before);
+              await deleteRelationWithClient(client, { ...edge, targetItemId: fx.beta.id }, VALUE_LINKS, SYSTEM_WRITER);
+              expect(await read()).toBe(before);
+            }),
+          );
+        });
+      },
+    );
+
+    it("rejects an unmanaged client before prediction and protected hooks", async () => {
+      const tenant = await createTestTenant(pool);
+      await withRuntimePool(async (runtime) => {
+        const cp = createChokePoint(runtime);
+        const fx = await runInTenant(tenant, () => setup(cp));
+        const client = await runtime.connect();
+        const prediction = vi.spyOn(valueLinksStore, "lockOnValueLink");
+        try {
+          await client.query("SELECT set_config('app.tenant_id', $1, false)", [tenant]);
+          await expect(
+            runInTenant(tenant, () =>
+              createRelationWithClient(
+                client,
+                { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id },
+                VALUE_LINKS,
+                SYSTEM_WRITER,
+              ),
+            ),
+          ).rejects.toThrow("active managed transaction");
+          expect(prediction).not.toHaveBeenCalled();
+        } finally {
+          prediction.mockRestore();
+          try {
+            await client.query("SELECT set_config('app.tenant_id', '', false)");
+          } finally {
+            client.release();
+          }
+        }
+      });
+    });
+
     it("keeps a caught NOWAIT failure rollback-only after savepoint recovery", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (holderPool) =>
