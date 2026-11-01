@@ -647,6 +647,21 @@ describe("approvalRequestsStore (issue #130)", () => {
       ).rejects.toThrow("Invalid MCP failure metadata");
     });
 
+    it("rejects failure metadata on successful MCP outcomes at write and read boundaries", async () => {
+      const id = await createPendingRequest();
+      await decideApprovalRequest(pool, id, "approved", ownerId);
+      const failure = { failureKind: "auth" as const, mcpServerItemId: randomUUID() };
+      await expect(recordApprovalRequestOutcome(pool, id, { error: false, result: "ok", failure })).rejects.toThrow(
+        "Invalid MCP failure metadata",
+      );
+      expect((await getApprovalRequest(pool, id))?.executionStatus).toBe("queued");
+      await pool.query(
+        "UPDATE approval_requests SET execution_error = false, execution_result_jsonb = $2::jsonb WHERE id = $1",
+        [id, JSON.stringify({ text: "ok", failure })],
+      );
+      await expect(getApprovalRequest(pool, id)).rejects.toThrow("Invalid MCP failure metadata");
+    });
+
     it("preserves an existing generic-operation result with its own failure field", async () => {
       const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
       const snapshot = { kind: "item.delete", resourceId: randomUUID(), sha256: null };

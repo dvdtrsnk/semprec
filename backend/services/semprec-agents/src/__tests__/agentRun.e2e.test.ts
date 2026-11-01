@@ -5,14 +5,19 @@ import type { AddressInfo } from "node:net";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxProvider, type FauxProviderHandle } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall, type FauxProviderHandle } from "@earendil-works/pi-ai";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
-import { createApprovalGatedMcpInvokeTool, SempConversation } from "@semprec/agent-runtime";
+import {
+  createApprovalGatedMcpInvokeTool,
+  createReconstructConversationHistory,
+  SempConversation,
+} from "@semprec/agent-runtime";
 import { runInTenant } from "@semprec/shared";
 import { getTenantZeroId, getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
 import {
   CORE_AGENT_RUN_ACTION_ID,
   createAgentRun,
+  createChokePoint,
   createCoreTaskList,
   createUser,
   decideAndEnqueueApprovalRequest,
@@ -30,6 +35,7 @@ import type { ModuleRegistry } from "@semprec/module-registry";
 import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 import { createAgentRunTask, createRunAgentForHeartbeats } from "../agentRunTasks.js";
 import { createAgentSessionFactoryForRun } from "../agentSessionComposition.js";
+import { toPiMessages } from "../piConversationHistory.js";
 import { createGatewayModel, type GatewayModel } from "../modelComposition.js";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
 
@@ -185,9 +191,13 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     const projectItemId = await seededSemprecProjectItemId();
     const { rows } = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
     const thread = { kind: "chat" as const, threadId: rows[0]!.id };
-    const ref = { kind: "item" as const, itemId: randomUUID(), databaseId: randomUUID(), label: "At send" };
+    const ref = { kind: "item" as const, itemId: randomUUID(), databaseId: randomUUID(), label: "ref-label-sentinel" };
     const secondRef = { kind: "block" as const, itemId: randomUUID(), blockId: randomUUID(), label: "Block" };
-    faux.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two"), fauxAssistantMessage("three")]);
+    faux.setResponses([
+      fauxAssistantMessage("model-text-sentinel"),
+      fauxAssistantMessage("two"),
+      fauxAssistantMessage("three"),
+    ]);
     const conversation = new SempConversation(pool, {
       resolveProjectItemId: async () => projectItemId,
       createAgentSessionForRun: (run) => createAgentSessionFactoryForRun(pool, registry, fauxGateway, run),
@@ -217,13 +227,138 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
             },
           }),
         );
-      await send("first", [ref]);
+      await send("user-text-sentinel", [ref]);
       await send("second", [secondRef]);
       await send("third");
       expect(starts).toHaveLength(3);
       expect(requestHeaders).toHaveLength(3);
+      const reconstruct = createReconstructConversationHistory({
+        estimateContextTokens: (messages) => messages.length,
+        shouldCompact: () => false,
+        prepareCompaction: (entries) => entries,
+        compact: () => {
+          throw new Error("unexpected compaction");
+        },
+        contextWindow: 1_000_000,
+        settings: {},
+      });
+      const history = await runInTenant(getTenantZeroId(), () =>
+        reconstruct(pool, { threadId: thread.threadId, projectItemId }),
+      );
+      expect(history).not.toBeNull();
+      const messages = toPiMessages(history!.entries, fauxGateway.model);
+      expect(messages.map((message) => message.role)).toEqual([
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+      ]);
+      expect(messages[0]).toMatchObject({ role: "user", content: "user-text-sentinel" });
+      expect(messages[2]).toMatchObject({ role: "user", content: "second" });
+      expect(messages[4]).toMatchObject({ role: "user", content: "third" });
+      expect(messages[1]).toMatchObject({
+        role: "assistant",
+        content: [{ type: "text", text: "model-text-sentinel" }],
+      });
+      expect(messages[3]).toMatchObject({ role: "assistant", content: [{ type: "text", text: "two" }] });
+      expect(messages[5]).toMatchObject({ role: "assistant", content: [{ type: "text", text: "three" }] });
     } finally {
       conversation.clear();
+    }
+  });
+
+  it("closes the composed run without prompting when its first-event callback fails", async () => {
+    const projectItemId = await seededSemprecProjectItemId();
+    const { rows } = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
+    const thread = { kind: "chat" as const, threadId: rows[0]!.id };
+    const conversation = new SempConversation(pool, {
+      resolveProjectItemId: async () => projectItemId,
+      createAgentSessionForRun: (run) => createAgentSessionFactoryForRun(pool, registry, fauxGateway, run),
+    });
+    try {
+      await expect(
+        runInTenant(getTenantZeroId(), () =>
+          conversation.send("first", thread, {
+            onTurnStart: () => {
+              throw new Error("callback failed");
+            },
+          }),
+        ),
+      ).rejects.toThrow("callback failed");
+      expect(requestHeaders).toHaveLength(0);
+      const runs = await pool.query<{ status: string; error_code: string }>(
+        "SELECT status, error_code FROM agent_runs WHERE thread_id = $1",
+        [thread.threadId],
+      );
+      expect(runs.rows).toEqual([{ status: "error", error_code: "internal" }]);
+    } finally {
+      conversation.clear();
+    }
+  });
+
+  it("aborts a blocked composed prompt and drops the conversation", async () => {
+    let observed: (() => void) | undefined;
+    const arrived = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    const gatewayServer = createServer((req) => {
+      req.resume();
+      req.on("end", () => {
+        observed?.();
+      });
+    });
+    await new Promise<void>((resolve) => gatewayServer.listen(0, "127.0.0.1", resolve));
+    const { port } = gatewayServer.address() as AddressInfo;
+    const gateway = createGatewayModel({
+      AI_GATEWAY_BASE_URL: `http://127.0.0.1:${port}/internal/pi`,
+      AI_GATEWAY_INTERNAL_TOKEN: "test-token",
+      AGENT_MODEL: "test-model",
+    });
+    const projectItemId = await seededSemprecProjectItemId();
+    const { rows } = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
+    const thread = { kind: "chat" as const, threadId: rows[0]!.id };
+    const conversation = new SempConversation(pool, {
+      resolveProjectItemId: async () => projectItemId,
+      createAgentSessionForRun: (run) => createAgentSessionFactoryForRun(pool, registry, gateway, run),
+    });
+    const controller = new AbortController();
+    const turn = runInTenant(getTenantZeroId(), () =>
+      conversation.send("first", thread, { signal: controller.signal }),
+    );
+    const observedTurn = turn.then(
+      () => "resolved",
+      () => "rejected",
+    );
+    try {
+      await Promise.race([
+        arrived,
+        sleep(3000, undefined, { ref: false }).then(() => {
+          throw new Error("gateway request did not arrive");
+        }),
+      ]);
+      controller.abort();
+      expect(await observedTurn).toBe("rejected");
+      const runs = await pool.query<{ status: string; error_code: string }>(
+        "SELECT status, error_code FROM agent_runs WHERE thread_id = $1",
+        [thread.threadId],
+      );
+      expect(runs.rows).toEqual([{ status: "error", error_code: "cancelled" }]);
+      await expect(
+        runInTenant(getTenantZeroId(), () => conversation.send("next", thread, { signal: AbortSignal.abort() })),
+      ).rejects.toThrow();
+      const count = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM agent_runs WHERE thread_id = $1",
+        [thread.threadId],
+      );
+      expect(count.rows[0]?.count).toBe("2");
+    } finally {
+      controller.abort();
+      await observedTurn;
+      conversation.clear();
+      gatewayServer.closeAllConnections();
+      await new Promise<void>((resolve, reject) => gatewayServer.close((err) => (err ? reject(err) : resolve())));
     }
   });
 
@@ -287,6 +422,32 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     } finally {
       await server.stop();
     }
+  });
+
+  it("stores an agent's generic-operation reason outside the canonical input and snapshot", async () => {
+    const projectItemId = await seededSemprecProjectItemId();
+    const chokePoint = createChokePoint(pool);
+    const database = await chokePoint.createDatabase({ name: "Reason test" });
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: database.id, properties: {} }));
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "test" });
+    faux.setResponses([
+      fauxAssistantMessage(
+        [fauxToolCall("item_delete", { itemId: item.id, reason: "reason-sentinel" }, { id: "call-1" })],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("approval requested"),
+    ]);
+    const task = createAgentRunTask(pool, registry, fauxGateway, createInFlightAgentRuns());
+    await runInTenant(getTenantZeroId(), () => task({ agentRunId: run.id }, { job: { id: "1" } }));
+    const { rows } = await pool.query<{ id: string }>("SELECT id FROM approval_requests WHERE agent_run_id = $1", [
+      run.id,
+    ]);
+    expect(rows).toHaveLength(1);
+    const request = await getApprovalRequest(pool, rows[0]!.id);
+    expect(request?.reason).toBe("reason-sentinel");
+    expect(request?.payload).toMatchObject({ canonicalInput: { itemId: item.id } });
+    expect(JSON.stringify(request?.payload)).not.toContain("reason-sentinel");
+    expect(JSON.stringify(request?.resourceSnapshot)).not.toContain("reason-sentinel");
   });
 
   it("closes the row as error with one agent_run_error notification when the model call fails", async () => {
