@@ -1055,7 +1055,9 @@ describe("Gmail label folders (issue #1496)", () => {
         const cleanupFailure: unknown = outcome.reason.errors[1];
         expect(cleanupFailure).toBeInstanceOf(AggregateError);
         if (!(cleanupFailure instanceof AggregateError)) throw new Error("Expected rollback and release failures");
-        expect(cleanupFailure.errors).toEqual([rollbackFailure, releaseFailure]);
+        expect(cleanupFailure.errors).toHaveLength(2);
+        expect(cleanupFailure.errors[0]).toBe(rollbackFailure);
+        expect(cleanupFailure.errors[1]).toBe(releaseFailure);
         await expect(
           withOwnedFixture(
             async () => {
