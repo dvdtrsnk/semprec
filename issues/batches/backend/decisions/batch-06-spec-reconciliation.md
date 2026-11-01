@@ -140,3 +140,37 @@ than a sleep. Preserve production authorization, protocol and isolation; report
 any discovered production gap separately. No realtime source or client change
 is authorized here. Obsolete descriptive source Context is compressed, retaining
 its contracts, references and all Tasks/ACs.
+
+## Known server id on a direct unavailable result
+
+Gh-1444 already requires a known server id on unavailable results, while
+resolveGrantedMcpTool deliberately returns indistinguishable null for unknown,
+inactive and revoked tools. Do not weaken that resolver or add an unscoped lookup.
+The per-run composition already holds the authorized grant's registration/server
+pair. It may close over that validated UUID as optional factory metadata and
+attach it when current resolution rejects as unavailable. No snapshot means no
+id; a successful resolution uses its fresh target, never the fallback snapshot.
+
+The snapshot comes only from the existing server-derived per-run grant listing,
+bound to that tool's run/project/registration. It is not an agent argument,
+transport setting, per-call override, authorization grant or credential. Never
+infer a registration/server relationship from model-supplied ids. Current
+invoke-time authorization and approval decisions remain unchanged; a stale
+snapshot cannot permit an invocation or create an approval request. Preserve the
+same unavailable text, no extra lookup and no transport access on rejection.
+
+The existing runtime/server-composition Touches cover the optional factory seam
+and tests. Prove actual authorized composition followed by revoke/disable returns
+unavailable with its already-known id, does not invoke the server and creates no
+request. Prove a caller without a snapshot receives no id even if args contain a
+forged hint. Preserve unknown/foreign/revoked rejection and use the existing
+safe UUID convention for optional factory metadata. Do not change REST/MCP wire
+arguments or add public endpoints, exports or package dependencies.
+
+This applies the existing server-derived-context contract in mcpToolInvocation
+and the frozen known-id requirement to diagnostics; it grants no new authority
+and changes no claim/external-call/outcome state machine from
+2026-09-29-exactly-once-execution-of-deferred-mcp-tool-calls. Historical ADR bodies
+remain unchanged. No Task/AC/Touches or approval digest changes are required.
+The separate reviewer must inspect this metadata/auth separation with the rest
+of the complete batch.
