@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
+import { createRuntimeRolePool, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
@@ -1028,7 +1028,10 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
         tenantIt(
           `serializes ${competitor} and failed-send cleanup with ${order}`,
           async () => {
-            const controller = await pool.connect();
+            const ownerPool = pool;
+            const runtimePool = await createRuntimeRolePool(ownerPool, "semprec_data");
+            const controller = await ownerPool.connect();
+            pool = runtimePool;
             const { rows: controllerRows } = await controller.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
             const controllerPid = controllerRows[0]?.pid;
             if (controllerPid === undefined) throw new Error("Missing controller PID");
@@ -1067,7 +1070,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
             const waitBlocked = async (holder: number, queryText: string): Promise<number> => {
               const deadline = Date.now() + 5000;
               while (Date.now() < deadline) {
-                const { rows } = await pool.query<{ pid: number; blockers: number[]; query: string }>(
+                const { rows } = await ownerPool.query<{ pid: number; blockers: number[]; query: string }>(
                   "SELECT pid, pg_blocking_pids(pid) AS blockers, query FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()",
                 );
                 const blocked = rows.find((row) => row.blockers.includes(holder) && row.query.includes(queryText));
@@ -1077,6 +1080,10 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
               throw new Error(`No backend blocked by ${holder} during ${queryText}`);
             };
             try {
+              const runtimeRole = await runtimePool.query<{ name: string; bypass: boolean; superuser: boolean }>(
+                "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+              );
+              expect(runtimeRole.rows[0]).toEqual({ name: "semprec_data", bypass: false, superuser: false });
               if (competitor === "bridge") await ingestSynced("<bridge-anchor@example.com>");
               const failedDraft = await newDraft();
               const otherDraft = competitor === "send" ? await newDraft() : undefined;
@@ -1090,17 +1097,17 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
               await controller.query("SELECT pg_advisory_lock(712340002)");
               // Fixed test triggers pause a real production statement without changing its behavior.
               if (order === "competitor-first") {
-                await pool.query(
+                await ownerPool.query(
                   "CREATE FUNCTION test_mail_guard_gate() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(712340002); RETURN NEW; END $$",
                 );
-                await pool.query(
+                await ownerPool.query(
                   "CREATE TRIGGER test_mail_guard_gate AFTER INSERT ON mail_message_meta FOR EACH ROW WHEN (NEW.in_reply_to IS NOT NULL) EXECUTE FUNCTION test_mail_guard_gate()",
                 );
               } else {
-                await pool.query(
+                await ownerPool.query(
                   "CREATE FUNCTION test_mail_guard_gate() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(712340002); RETURN OLD; END $$",
                 );
-                await pool.query(
+                await ownerPool.query(
                   "CREATE TRIGGER test_mail_guard_gate BEFORE DELETE ON mail_threads FOR EACH ROW EXECUTE FUNCTION test_mail_guard_gate()",
                 );
               }
@@ -1175,13 +1182,15 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
               releaseSmtp();
               await controller.query("SELECT pg_advisory_unlock_all()");
               await Promise.allSettled([...(failedSend ? [failedSend] : []), ...(other ? [other] : [])]);
-              await pool.query(
+              await ownerPool.query(
                 order === "competitor-first"
                   ? "DROP TRIGGER IF EXISTS test_mail_guard_gate ON mail_message_meta"
                   : "DROP TRIGGER IF EXISTS test_mail_guard_gate ON mail_threads",
               );
-              await pool.query("DROP FUNCTION IF EXISTS test_mail_guard_gate()");
+              await ownerPool.query("DROP FUNCTION IF EXISTS test_mail_guard_gate()");
               controller.release();
+              pool = ownerPool;
+              await runtimePool.end();
             }
           },
           15000,
