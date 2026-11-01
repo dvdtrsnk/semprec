@@ -894,12 +894,12 @@
       "sequence": 9,
       "status": "proposed",
       "title": "[backend-delivery 09/74] Implement data/inbox, data/transcription, semprec-transcribe changes",
-      "bodyCharacters": 59781,
-      "specSha256": "9cf687bface7c0d18cfe9325401e0e70b668079302e88d0294287e955646dd83",
+      "bodyCharacters": 59709,
+      "specSha256": "38c626c995b90f5062ee5c5a579fe0bde48b27be355114060ac495787f7d38e7",
       "members": [
         {
           "id": "gh-1470",
-          "specSha256": "b1eb6205a7819310f31f799854158e33d758f7bfbe094edbb0ed1594612e6cf6",
+          "specSha256": "829f6f1acbaaf3dd9850c0b4227f48a9baf709c38db93eba0c254533bbc179f0",
           "parent": "gh-1337",
           "dependencies": [],
           "approval": "approved"
@@ -925,14 +925,14 @@
         },
         {
           "id": "gh-1386",
-          "specSha256": "6af88b19176b858df7d3df2f02d934d8ab085b15e35fabfef5713f93c0165d46",
+          "specSha256": "f320720519e171f609d2df5b99c6c59a9a70e5ced552f92833699893b797ef1c",
           "parent": "gh-1319",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1582",
-          "specSha256": "c8b991538978966636c472b97447efb4bc8d9818699f0d7e6e4d24d4910c2c59",
+          "specSha256": "8ebc9345b46d3d735df9d3ea0dd9ede8de0b47398a1f491137bc6178c6ac29bb",
           "parent": "gh-1319",
           "dependencies": [
             "gh-1386"
