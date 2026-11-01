@@ -14,6 +14,9 @@ import {
   seedSystem,
   createAgentRun,
   createPendingApprovalRequest,
+  createItemWithClient,
+  upsertMcpToolRegistration,
+  withTransaction,
   createChokePoint,
   createUser,
   hashPassword,
@@ -228,6 +231,76 @@ describe("createApprovalRequestsRequestListener", () => {
     expect(body.safeSummary.argKeys).toEqual(["query"]);
     // The fixture's server item and registration do not exist: still 200, with null names.
     expect(body.safeSummary).toMatchObject({ mcpServerName: null, mcpToolName: null });
+  });
+
+  it("returns names and a null deleted server name in actual approval responses", async () => {
+    const session = await authSession();
+    const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [
+      "mcpServers",
+    ]);
+    const databaseId = rows[0]?.id;
+    if (!databaseId) throw new Error("Missing MCP server database");
+    const serverItem = await withTransaction(pool, (client) =>
+      createItemWithClient(client, {
+        databaseId,
+        properties: { name: "Search server", active: true },
+      }),
+    );
+    const registration = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: serverItem.id,
+      toolName: "search_web",
+      toolSchema: {},
+    });
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: session.userId });
+    const request = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "search_web",
+      riskClass: "write",
+      payload: {
+        mcpToolRegistrationId: registration.id,
+        mcpServerItemId: serverItem.id,
+        args: { query: "private-argument" },
+      },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    const list = async (): Promise<unknown> => {
+      const response = await fetch(`${baseUrl}/api/approval-requests`, { headers: session.headers });
+      expect(response.status).toBe(200);
+      return response.json();
+    };
+    const before = await list();
+    expect(before).toMatchObject({
+      rows: [
+        expect.objectContaining({
+          id: request.id,
+          safeSummary: expect.objectContaining({
+            mcpServerName: "Search server",
+            mcpToolName: "search_web",
+            argKeys: ["query"],
+          }),
+        }),
+      ],
+    });
+    expect(JSON.stringify(before)).not.toContain("private-argument");
+    expect(await chokePoint.softDeleteItem(databaseId, serverItem.id, session.userId)).not.toBeNull();
+    const after = await list();
+    expect(after).toMatchObject({
+      rows: [
+        expect.objectContaining({
+          id: request.id,
+          safeSummary: expect.objectContaining({ mcpServerName: null, mcpToolName: "search_web", argKeys: ["query"] }),
+        }),
+      ],
+    });
+    const decision = await fetch(`${baseUrl}/api/approval-requests/${request.id}`, {
+      method: "PATCH",
+      headers: { ...session.headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ decision: "rejected" }),
+    });
+    expect(decision.status).toBe(200);
+    const result: unknown = await decision.json();
+    expect(result).toMatchObject({ safeSummary: { mcpServerName: null, mcpToolName: "search_web" } });
+    expect(JSON.stringify(result)).not.toContain("private-argument");
   });
 
   it.each([
