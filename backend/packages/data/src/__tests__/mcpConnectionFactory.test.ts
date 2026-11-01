@@ -155,6 +155,41 @@ describe("MCP connection factory (issue #231)", () => {
   }
 
   describe("stdio", () => {
+    it("records stdio invocation connection success and failed handshake in its tenant", async () => {
+      await makeSoleTenantAdmin();
+      const contract = startStdioContractServer();
+      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+        await runInTenant(getTenantZeroId(), async () => {
+          const result = await executeMcpInvocation(runtimePool, { serverItem: item, toolName: "search" }, {});
+          expect(result.error).toBe(false);
+          await contract.waitForChildExit();
+          const [connected] = await getMcpConnectionStates(runtimePool, [item.id]);
+          expect(connected?.lastConnectedAt).not.toBeNull();
+          expect(connected?.lastErrorReason).toBeNull();
+          const unavailable = {
+            ...item,
+            properties: {
+              ...item.properties,
+              connectionConfig: { transport: "stdio", command: "missing-mcp-test-command" },
+            },
+          };
+          const failed = await executeMcpInvocation(runtimePool, { serverItem: unavailable, toolName: "search" }, {});
+          expect(failed.error).toBe(true);
+          const [offline] = await getMcpConnectionStates(runtimePool, [item.id]);
+          expect(offline?.lastErrorReason).toBe("handshake_failed");
+          expect(offline?.lastConnectedAt).toEqual(connected?.lastConnectedAt);
+        });
+      } finally {
+        try {
+          await contract.stop();
+        } finally {
+          await runtimePool.end();
+        }
+      }
+    });
+
     it("connects, completes the handshake, and injects the credential into the child's env", async () => {
       await makeSoleTenantAdmin();
       const contract = startStdioContractServer();

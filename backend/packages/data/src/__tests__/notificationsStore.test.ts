@@ -1,7 +1,8 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import {
   createTestTenant,
+  createRuntimeRolePool,
   getTenantZeroId,
   getTestPool,
   resetDatabase,
@@ -277,6 +278,98 @@ describe("notificationsStore (issue #152)", () => {
       expect(replay!.outcome).toBe("unchanged");
       expect(await stateOf(request.id)).toEqual(before);
       expect(events).toHaveLength(0);
+    });
+
+    it("serializes competing resolutions of the same source and emits one event", async () => {
+      const userId = await createTestUser();
+      const request = await createApprovalWithNotification(userId);
+      const tenant = getTenantZeroId();
+      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const events: NotificationReadStateEvent[] = [];
+      setNotificationReadStateHook((event) => events.push(event));
+      let releaseHolder: () => void = () => {};
+      let holderReady: (pid: number) => void = () => {};
+      let competitorReady: (pid: number) => void = () => {};
+      const barrier = new Promise<void>((resolve) => {
+        releaseHolder = resolve;
+      });
+      const holderPid = new Promise<number>((resolve) => {
+        holderReady = resolve;
+      });
+      const competitorPid = new Promise<number>((resolve) => {
+        competitorReady = resolve;
+      });
+      async function bounded<T>(promise: Promise<T>): Promise<T> {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          return await Promise.race([
+            promise,
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error("Barrier timed out")), 5000);
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      }
+      const holder = withTenantTransaction(runtimePool, tenant, async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        if (pid === undefined) throw new Error("Missing holder PID");
+        const rows = await resolveNotificationsBySource(client, {
+          sourceTable: "approval_requests",
+          sourceId: request.id,
+        });
+        holderReady(pid);
+        await barrier;
+        return rows;
+      });
+      const holderSettled = Promise.allSettled([holder]);
+      let competitorSettled: Promise<PromiseSettledResult<unknown>[]> | undefined;
+      try {
+        const firstPid = await bounded(
+          Promise.race([
+            holderPid,
+            holder.then(() => {
+              throw new Error("Holder ended before barrier");
+            }),
+          ]),
+        );
+        const competitor = withTenantTransaction(runtimePool, tenant, async (client) => {
+          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          if (pid === undefined) throw new Error("Missing competitor PID");
+          competitorReady(pid);
+          return resolveNotificationsBySource(client, { sourceTable: "approval_requests", sourceId: request.id });
+        });
+        competitorSettled = Promise.allSettled([competitor]);
+        const secondPid = await bounded(
+          Promise.race([
+            competitorPid,
+            competitor.then(() => {
+              throw new Error("Competitor ended before blocking");
+            }),
+          ]),
+        );
+        await vi.waitFor(
+          async () => {
+            const { rows } = await pool.query<{ blocked: boolean }>(
+              "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+              [firstPid, secondPid],
+            );
+            expect(rows[0]?.blocked).toBe(true);
+          },
+          { timeout: 5000, interval: 20 },
+        );
+        releaseHolder();
+        expect(await holder).toHaveLength(1);
+        expect(await competitor).toHaveLength(0);
+        expect(events).toHaveLength(1);
+        expect(events[0]?.userId).toBe(userId);
+      } finally {
+        releaseHolder();
+        await holderSettled;
+        await competitorSettled;
+        await runtimePool.end();
+      }
     });
 
     it("leaves the notification unresolved when the decision transaction rolls back", async () => {
