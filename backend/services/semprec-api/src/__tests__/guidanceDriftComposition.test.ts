@@ -122,4 +122,31 @@ describe("guidance drift production composition", () => {
     expect(calls).toBe(0);
     expect(await snapshot()).toEqual(before);
   });
+
+  it("rolls back the finding and notification when the problem write fails", async () => {
+    const gateway: AiGatewayClientPort = {
+      async complete() {
+        return {
+          content: { contradictions: [finding("files.read", "first")] },
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+    // Fault injection: no production path deliberately fails between notification and problem writes.
+    await admin.query(`CREATE FUNCTION test_fail_guidance_problem() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'injected problem failure'; END $$`);
+    try {
+      await admin.query(`CREATE TRIGGER test_fail_guidance_problem BEFORE INSERT ON semp_problems
+        FOR EACH ROW EXECUTE FUNCTION test_fail_guidance_problem()`);
+      const before = await snapshot();
+      const action = createAgentGuidanceDriftActionForApi(pool, gateway);
+      await expect(runInTenant(tenant, () => action({ projectItemId: project }))).rejects.toThrow(
+        "injected problem failure",
+      );
+      expect(await snapshot()).toEqual(before);
+    } finally {
+      await admin.query("DROP TRIGGER IF EXISTS test_fail_guidance_problem ON semp_problems");
+      await admin.query("DROP FUNCTION IF EXISTS test_fail_guidance_problem()");
+    }
+  });
 });
