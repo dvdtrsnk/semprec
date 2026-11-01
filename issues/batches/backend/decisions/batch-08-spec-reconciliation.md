@@ -302,3 +302,34 @@ gh-1463 different-source case must use real two-tenant runtime-role rows with
 own-resolution positive, foreign state unchanged and no foreign read-state
 event. All six findings plus the preference correction need affected evidence
 and a new clean candidate before final gate; no exception or PASS is granted.
+
+## Explicit Web Push interruption-level omission evidence
+
+The complete execution-binding audit of `c0a415c9` identified a missing
+permanent gh-1443 Task 2 assertion after its full verification started.
+The production Web Push adapter explicitly serializes its own fields, but
+its existing tests never pass a populated `interruptionLevel`; fan-out tests
+inject a fake sender. Neither proves this named real adapter boundary.
+
+Add only
+`backend/packages/data/src/push/__tests__/webPushAdapter.unit.test.ts`
+to gh-1443 and aggregate Touches. Exercise actual `sendWebPushNotification`
+with a configured stub of `webpush.sendNotification`, supply the typed
+`time-sensitive` interruption level, and check the actual serialized JSON
+retains all applicable existing fields while omitting `interruptionLevel`.
+Keep the delivered/called positive control so a missing send cannot satisfy
+an absence assertion. Preserve existing body omission and other adapter tests.
+No production code, network call, dependency, provider credential or client
+implementation is authorized. Compact only redundant historical gh-1443
+Context to keep the aggregate within its body limit; Task/AC and decisions
+remain unchanged and exact source/aggregate approvals are renewed.
+
+The owned full verify was interrupted with exit 130 and is diagnostic only;
+its log and before/after identity evidence are retained. E2E was not run.
+Do not claim an overall PASS or candidate exception from completed stages.
+The interrupted window was released before this refreeze. Finish the entire
+Task/AC execution-binding audit and its grouped gaps before the next full
+pipeline. After this permanent test is implemented, run affected checks,
+review the exact delta and updated evidence binding, and freeze a new clean
+candidate for the complete gate. All earlier limits and unresolved external
+qualifications remain explicit; no completion or integration is granted here.
