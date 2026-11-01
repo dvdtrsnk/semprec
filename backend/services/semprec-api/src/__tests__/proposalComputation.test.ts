@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -36,6 +36,47 @@ import {
 } from "@semprec/data";
 import { createProposalComputation } from "../proposalComputation.js";
 import { createDispatcher } from "../app.js";
+
+const observedLogs = vi.hoisted(() => ({
+  chunks: [] as string[],
+  restores: [] as Array<() => void>,
+  streams: new WeakSet<object>(),
+  level: process.env.LOG_LEVEL,
+}));
+vi.mock("@semprec/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@semprec/shared")>();
+  process.env.LOG_LEVEL = "info";
+  return {
+    ...actual,
+    createLogger(name: string) {
+      const logger = actual.createLogger(name);
+      const symbol = Reflect.ownKeys(logger).find(
+        (key) => typeof key === "symbol" && key.description === "pino.stream",
+      );
+      if (typeof symbol !== "symbol") throw new Error("Pino logger destination is unavailable");
+      const stream: unknown = Reflect.get(logger, symbol);
+      if (typeof stream !== "object" || stream === null) throw new Error("Invalid Pino logger destination");
+      if (!observedLogs.streams.has(stream)) {
+        const original: unknown = Reflect.get(stream, "write");
+        if (typeof original !== "function") throw new Error("Invalid Pino destination writer");
+        const descriptor = Object.getOwnPropertyDescriptor(stream, "write");
+        if (
+          !Reflect.set(stream, "write", function (this: unknown, ...args: unknown[]) {
+            if (typeof args[0] === "string") observedLogs.chunks.push(args[0]);
+            return Reflect.apply(original, this, args);
+          })
+        )
+          throw new Error("Cannot observe Pino destination");
+        observedLogs.streams.add(stream);
+        observedLogs.restores.push(() => {
+          if (descriptor) Object.defineProperty(stream, "write", descriptor);
+          else Reflect.deleteProperty(stream, "write");
+        });
+      }
+      return logger;
+    },
+  };
+});
 
 let pool: Pool;
 
@@ -82,7 +123,7 @@ function recordingPool(inner: Pool, statements: string[]): Pool {
             const first = args[0];
             const parsed = z.object({ text: z.string() }).safeParse(first);
             statements.push(typeof first === "string" ? first : parsed.success ? parsed.data.text : "");
-            return Reflect.apply(target.query, target, args);
+            return Reflect.apply(target.query.bind(target), undefined, args);
           };
         }
         const value: unknown = Reflect.get(target, prop, receiver);
@@ -118,7 +159,13 @@ describe("createProposalComputation (issue #1434)", () => {
   });
 
   afterAll(async () => {
-    await pool?.end();
+    try {
+      await pool?.end();
+    } finally {
+      for (const restore of observedLogs.restores.reverse()) restore();
+      if (observedLogs.level === undefined) delete process.env.LOG_LEVEL;
+      else process.env.LOG_LEVEL = observedLogs.level;
+    }
   });
 
   async function createTaskItem(text: string, targetDatabase = "tasks"): Promise<string> {
@@ -243,11 +290,27 @@ describe("createProposalComputation (issue #1434)", () => {
       chokePoint.createItem({ databaseId: peopleId, properties: { name: "Person" } }),
     );
     const itemId = await createTaskItem("Task for First");
+    const foreignId = randomUUID();
+    const unknownKey = "PRIVATE_UNKNOWN_RELATION_SENTINEL";
     const gateway = stubGateway({
       properties: { name: "Task" },
-      relations: { project: [randomUUID(), person.id, first.id, first.id, second.id], unknown: [first.id] },
+      relations: { project: [foreignId, person.id, first.id, first.id, second.id], [unknownKey]: [first.id] },
     });
+    observedLogs.chunks.length = 0;
     await runTick(pool, gateway, itemId);
+    const output = observedLogs.chunks.join("");
+    const record = output
+      .split("\n")
+      .filter(Boolean)
+      .map((line) =>
+        z.object({ msg: z.string(), count: z.number().optional() }).passthrough().safeParse(JSON.parse(line)),
+      )
+      .find((parsed) => parsed.success && parsed.data.msg === "Dropped proposal relation targets");
+    expect(record?.success).toBe(true);
+    if (!record?.success) throw new Error("Missing relation-filter log");
+    expect(record.data.count).toBeGreaterThan(0);
+    expect(output).not.toContain(unknownKey);
+    expect(output).not.toContain(foreignId);
     const cards = await proposalCards();
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({
@@ -255,6 +318,9 @@ describe("createProposalComputation (issue #1434)", () => {
       proposal: { properties: { name: "Task" }, relations: { project: [first.id] } },
     });
     expect(JSON.stringify(gateway.calls[0]?.messages)).toContain(first.id);
+    expect(gateway.calls[0]?.system).toContain(
+      "Use existing IDs only from the provided workspace lists; never invent one and leave a relation empty when unsure.",
+    );
     expect(gateway.openTransactionsDuringCall).toEqual([0]);
   });
 
@@ -576,23 +642,49 @@ describe("createProposalComputation (issue #1434)", () => {
       expect(z.object({ operations: z.unknown().optional() }).parse(card.proposal).operations).toBeUndefined();
     });
 
+    it("does not borrow top-level relations when the sole create omits its own", async () => {
+      const companies = await databaseIdFor("companies");
+      const company = await inTenantZero(() =>
+        createChokePoint(pool).createItem({ databaseId: companies, properties: { name: "Brainz" } }),
+      );
+      const card = await storedProposal(
+        stubGateway({
+          properties: { name: "Ignored" },
+          relations: { companies: [company.id] },
+          operations: [{ op: "create", database: "people", properties: { name: "Eva" } }],
+        }),
+      );
+      expect(card.status).toBe("proposed");
+      const proposal = z.record(z.string(), z.unknown()).parse(card.proposal);
+      expect(proposal.properties).toEqual({ name: "Eva" });
+      expect(proposal.relations ?? {}).toEqual({});
+    });
+
     it.each([false, true])(
       "captures an update baseline and guards confirmation against a later edit (stale: %s)",
       async (stale) => {
         const projects = await databaseIdFor("projects");
         const cp = createChokePoint(pool);
         const project = await inTenantZero(() =>
-          cp.createItem({ databaseId: projects, properties: { name: "Before", status: "inProgress" } }),
+          cp.createItem({
+            databaseId: projects,
+            properties: { name: "Before", status: "inProgress", date: "1999-04-17" },
+          }),
         );
         const itemId = await createTaskItem("New person and project update", "people");
         const gateway = stubGateway({
           properties: { name: "Eva" },
           operations: [
             { op: "create", database: "people", properties: { name: "Eva" } },
-            { op: "update", itemId: project.id, properties: { name: "After" } },
+            { op: "update", itemId: project.id, properties: { name: "After", date: "2027-05-10" } },
           ],
         });
         await runTick(pool, gateway, itemId);
+        const request = JSON.stringify(gateway.calls[0]);
+        expect(request).toContain(project.id);
+        expect(request).toContain("Before");
+        expect(request).not.toContain("1999-04-17");
+        expect(request).not.toContain('"before"');
         const cards = await cp.listItems(config.processingProposalsDatabaseId);
         const card = cards.items[0];
         if (!card) throw new Error("Missing proposal");
@@ -603,9 +695,9 @@ describe("createProposalComputation (issue #1434)", () => {
             {
               op: "update",
               itemId: project.id,
-              properties: { name: "After" },
-              before: { properties: { name: "Before" } },
-              after: { properties: { name: "After" } },
+              properties: { name: "After", date: "2027-05-10" },
+              before: { properties: { name: "Before", date: "1999-04-17" } },
+              after: { properties: { name: "After", date: "2027-05-10" } },
             },
           ],
         });

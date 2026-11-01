@@ -201,7 +201,7 @@ export async function deleteInboxTypeWithClient(
     throw new NotFoundError(`Property '${sourceInboxProperty.id}' has no relation definition`);
 
   const typeEdges = await relationsStore.listRelationsForItem(client, typeRelationDefinition.id, input.typeItemId);
-  const inboxItemIds = typeEdges.map((edge) => relationsStore.otherSide(edge, input.typeItemId));
+  const inboxItemIds = typeEdges.map((edge) => relationsStore.otherSide(edge, input.typeItemId)).sort();
 
   // One query for every referencing Inbox item's proposal edges, instead of one query per
   // Inbox item — the same N+1 `proposalIdsByInboxItem` below then avoids.

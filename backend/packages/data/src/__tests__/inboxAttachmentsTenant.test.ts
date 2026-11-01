@@ -1,9 +1,13 @@
-import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
+import { runInTenant } from "@semprec/shared";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createRuntimeRolePool, createTestTenant, withTenantTransaction } from "../testSupport/tenantFixtures.js";
 import { createBlob } from "../blobs/blobsStore.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { createInboxItemWithClient } from "../inbox/inboxStore.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import {
   deleteInboxAttachment,
   getInboxAttachment,
@@ -30,7 +34,21 @@ describe("inbox_attachments tenant isolation", () => {
   it("shows tenant A's attachments to tenant A only, and refuses to attach a blob of another tenant", async () => {
     const tenantA = await createTestTenant(adminPool);
     const tenantB = await createTestTenant(adminPool);
-    const itemId = randomUUID();
+    const createItem = async (tenant: string) => {
+      await runInTenant(tenant, () => seedSystem(runtimePool));
+      return withTenantTransaction(runtimePool, tenant, async (client) => {
+        const inbox = await getDatabaseByModuleId(client, "inbox");
+        if (!inbox) throw new Error("Missing Inbox database");
+        return createInboxItemWithClient(client, {
+          inboxDatabaseId: inbox.id,
+          date: "2026-08-28",
+          time: "09:00",
+          text: "Tenant fixture",
+        });
+      });
+    };
+    const itemId = (await createItem(tenantA)).id;
+    const otherItemId = (await createItem(tenantB)).id;
     const blobA = await withTenantTransaction(runtimePool, tenantA, (client) =>
       createBlob(client, { mimeType: "image/png", byteSize: 1, storageKey: `${tenantA}/blobs/isolation` }),
     );
@@ -45,6 +63,20 @@ describe("inbox_attachments tenant isolation", () => {
       listInboxAttachments(client, [itemId]),
     );
     expect(foreign).toEqual([]);
+    await expect(
+      withTenantTransaction(runtimePool, tenantB, (client) =>
+        insertInboxAttachments(client, itemId, [{ blobId: blobA.id, source: "files" }]),
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    const missing = randomUUID();
+    await expect(
+      withTenantTransaction(runtimePool, tenantA, (client) =>
+        insertInboxAttachments(client, missing, [{ blobId: blobA.id, source: "files" }]),
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(
+      await withTenantTransaction(runtimePool, tenantA, (client) => listInboxAttachments(client, [missing])),
+    ).toEqual([]);
     expect(
       await withTenantTransaction(runtimePool, tenantB, (client) => getInboxAttachment(client, own[0]!.attachmentId)),
     ).toBeNull();
@@ -56,7 +88,7 @@ describe("inbox_attachments tenant isolation", () => {
 
     await expect(
       withTenantTransaction(runtimePool, tenantB, (client) =>
-        insertInboxAttachments(client, randomUUID(), [{ blobId: blobA.id, source: "files" }]),
+        insertInboxAttachments(client, otherItemId, [{ blobId: blobA.id, source: "files" }]),
       ),
     ).rejects.toMatchObject({ code: "23503" });
   });

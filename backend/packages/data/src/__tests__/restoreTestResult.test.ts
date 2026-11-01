@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { z } from "zod";
 import { runAsSystem } from "@semprec/shared";
 import {
   createRuntimeRolePool,
@@ -36,40 +37,42 @@ function record(result: Parameters<typeof recordRestoreTestResult>[1], taskPool:
   return runAsSystem("test", () => recordRestoreTestResult(taskPool, result));
 }
 
-interface CheckRow {
-  id: string;
-  status: "ok" | "alerting";
-  detail: Record<string, unknown>;
-}
+const checkRowSchema = z.object({
+  id: z.string(),
+  status: z.enum(["ok", "alerting"]),
+  detail: z.record(z.string(), z.unknown()),
+});
+type CheckRow = z.infer<typeof checkRowSchema>;
 
 async function getRestoreCheck(): Promise<CheckRow | undefined> {
-  const { rows } = await pool.query<CheckRow>(
+  const { rows } = await pool.query<Record<string, unknown>>(
     `SELECT id, status, detail FROM observability_checks WHERE check_key = $1`,
     [RESTORE_TEST_CHECK_KEY],
   );
-  return rows[0];
+  return rows[0] === undefined ? undefined : checkRowSchema.parse(rows[0]);
 }
 
-interface NotificationRow {
-  id: string;
-  user_id: string;
-  kind: string;
-  title: string;
-  source_table: string;
-  source_id: string;
-  payload: Record<string, unknown>;
-}
+const notificationRowSchema = z.object({
+  id: z.string(),
+  user_id: z.string(),
+  kind: z.string(),
+  title: z.string(),
+  source_table: z.string(),
+  source_id: z.string(),
+  payload: z.record(z.string(), z.unknown()),
+});
+type NotificationRow = z.infer<typeof notificationRowSchema>;
 
 /**
  * The `backup_restore_failed` notifications only. A failure also raises its Semp problem, which writes
  * a `semp_problem` notification per admin (issue #1466); that one is not what these tests assert.
  */
 async function listNotifications(): Promise<NotificationRow[]> {
-  const { rows } = await pool.query<NotificationRow>(
+  const { rows } = await pool.query<Record<string, unknown>>(
     `SELECT id, user_id, kind, title, source_table, source_id, payload FROM notifications
       WHERE kind = 'backup_restore_failed' ORDER BY created_at`,
   );
-  return rows;
+  return z.array(notificationRowSchema).parse(rows);
 }
 
 describe("recordRestoreTestResult (issue #178)", () => {
@@ -227,7 +230,7 @@ describe("recordRestoreTestResult (issue #178)", () => {
       await record({ status: "passed", runId: "run-1" });
       const after = Date.now();
 
-      const ranAt = new Date((await getRestoreCheck())!.detail.ranAt as string).getTime();
+      const ranAt = new Date(z.string().parse((await getRestoreCheck())?.detail.ranAt)).getTime();
       expect(ranAt).toBeGreaterThanOrEqual(before);
       expect(ranAt).toBeLessThanOrEqual(after);
     });
@@ -236,7 +239,7 @@ describe("recordRestoreTestResult (issue #178)", () => {
       const before = Date.now();
       await record({ status: "passed", runId: "20261301T031500Z-1" });
 
-      const ranAt = new Date((await getRestoreCheck())!.detail.ranAt as string).getTime();
+      const ranAt = new Date(z.string().parse((await getRestoreCheck())?.detail.ranAt)).getTime();
       expect(ranAt).toBeGreaterThanOrEqual(before);
     });
   });

@@ -320,6 +320,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "findDependenciesBySource",
   "findDependenciesBySourceDatabase",
   "findFileItemByBlobId",
+  "findIdempotentReplay",
   "findInvalidLinkRuleReferences",
   "findOrCreateBlob",
   "findOrphanedOwnerProcessIds",

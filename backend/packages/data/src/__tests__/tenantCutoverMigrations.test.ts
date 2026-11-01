@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createPool, withTransaction } from "../db/pool.js";
 import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
@@ -161,13 +162,18 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
       await runInTenant(tenantId, async () => {
         const { rows } = await dataPool.query<{ id: string; owner_module_id: string }>(
           "SELECT id, owner_module_id FROM databases WHERE owner_module_id = ANY($1::text[])",
-          [["transcripts", "events"]],
+          [["transcripts", "events", "people"]],
         );
         const transcripts = rows.find((row) => row.owner_module_id === "transcripts");
         const events = rows.find((row) => row.owner_module_id === "events");
-        if (!transcripts || !events) throw new Error("Missing transcript or event database");
+        const people = rows.find((row) => row.owner_module_id === "people");
+        if (!transcripts || !events || !people) throw new Error("Missing transcript, event or people database");
         const transcript = await chokePoint.createItem({ databaseId: transcripts.id, properties: {} });
         const event = await chokePoint.createItem({ databaseId: events.id, properties: {} });
+        const person = await chokePoint.createItem({ databaseId: people.id, properties: {} });
+        await withTransaction(dataPool, (client) =>
+          itemsStore.writeComputed(client, transcripts.id, transcript.id, "segments", [{ speaker: "SPEAKER_00" }]),
+        );
         const eventProperty = (await chokePoint.listProperties(events.id)).find(
           (property) => property.key === "transcript",
         );
@@ -176,6 +182,16 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
           relationPropertyId: eventProperty.id,
           callerItemId: event.id,
           targetItemId: transcript.id,
+        });
+        const speakerProperty = (await chokePoint.listProperties(transcripts.id)).find(
+          (property) => property.key === "speakers",
+        );
+        if (!speakerProperty) throw new Error("Missing speakers property");
+        await chokePoint.createRelation({
+          relationPropertyId: speakerProperty.id,
+          callerItemId: transcript.id,
+          targetItemId: person.id,
+          metadata: { speaker: "SPEAKER_00" },
         });
         // Recreate the pre-1470 catalog; normal APIs cannot remove locked system properties.
         const definitions = await dataPool.query<{ id: string }>(
@@ -188,14 +204,32 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
         await dataPool.query("DELETE FROM relation_definitions WHERE id = ANY($1::uuid[])", [ids]);
       });
     }
-    const before = await adminPool.query<{ id: string; item_a: string; item_b: string }>(
-      "SELECT id, item_a, item_b FROM item_relations ORDER BY id",
+    const before = await adminPool.query<{ id: string; item_a: string; item_b: string; metadata: string }>(
+      "SELECT id, item_a, item_b, metadata::text AS metadata FROM item_relations ORDER BY id",
     );
-    expect(before.rows).toHaveLength(2);
+    expect(before.rows).toHaveLength(4);
+    const speakerCatalogBefore = await adminPool.query<Record<string, unknown>>(
+      `SELECT to_jsonb(p)::text AS property, to_jsonb(r)::text AS definition FROM properties p
+       JOIN relation_definitions r ON r.id = (p.config->>'relationDefinitionId')::uuid
+       WHERE p.key = 'speakers' ORDER BY p.id`,
+    );
+    const catalogSchema = z.array(z.object({ property: z.string(), definition: z.string() }));
+    const speakerBefore = catalogSchema.parse(speakerCatalogBefore.rows);
+    expect(speakerBefore).toHaveLength(2);
     await runCutovers(dataPool);
+    const firstEdges = await adminPool.query<{ id: string; item_a: string; item_b: string; metadata: string }>(
+      "SELECT id, item_a, item_b, metadata::text AS metadata FROM item_relations ORDER BY id",
+    );
+    expect(firstEdges.rows).toEqual(before.rows);
+    const speakerCatalogAfter = await adminPool.query<Record<string, unknown>>(
+      `SELECT to_jsonb(p)::text AS property, to_jsonb(r)::text AS definition FROM properties p
+       JOIN relation_definitions r ON r.id = (p.config->>'relationDefinitionId')::uuid
+       WHERE p.key = 'speakers' ORDER BY p.id`,
+    );
+    expect(catalogSchema.parse(speakerCatalogAfter.rows)).toEqual(speakerBefore);
     await runCutovers(dataPool);
-    const after = await adminPool.query<{ id: string; item_a: string; item_b: string }>(
-      "SELECT id, item_a, item_b FROM item_relations ORDER BY id",
+    const after = await adminPool.query<{ id: string; item_a: string; item_b: string; metadata: string }>(
+      "SELECT id, item_a, item_b, metadata::text AS metadata FROM item_relations ORDER BY id",
     );
     expect(after.rows).toEqual(before.rows);
     for (const tenantId of [zero, b]) {

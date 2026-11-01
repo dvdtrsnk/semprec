@@ -142,6 +142,7 @@ function normalizeOperations(
     if (Object.values(only.relations ?? {}).some((values) => values.some((value) => typeof value !== "string"))) {
       return { ...rest, invalidProposal: "unrepresentableOperations" };
     }
+    const { relations: _topLevelRelations, ...singleCreate } = rest;
     const relations = only.relations
       ? Object.fromEntries(
           Object.entries(only.relations).map(([key, values]) => [
@@ -149,8 +150,8 @@ function normalizeOperations(
             values.filter((value): value is string => typeof value === "string"),
           ]),
         )
-      : rest.relations;
-    return { ...rest, properties: only.properties, ...(relations ? { relations } : {}) };
+      : undefined;
+    return { ...singleCreate, properties: only.properties, ...(relations ? { relations } : {}) };
   }
   return { ...rest, invalidProposal: "unrepresentableOperations" };
 }

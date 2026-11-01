@@ -69,7 +69,9 @@ import { assertValidMcpServerProposalProperties } from "../mcp/mcpServerProposal
 import { parseFileFromAttachmentProperties } from "./fileAttachmentStep.js";
 import { assertNoRefCycle, selectActiveSteps, stepError } from "./proposalStepGraph.js";
 import { appendHistoryEntry } from "./proposalHistory.js";
-import { isSerializationFailure, withTickTransaction } from "./tickTransaction.js";
+import { isSerializationFailure, isTickWriteTransaction } from "./tickTransaction.js";
+import { withTickTransaction, withTickWriteTransaction } from "./tickTransaction.js";
+import { tryLockInboxType } from "./inboxSourceGuard.js";
 import { CardinalityViolationError, ValidationError } from "../errors.js";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
@@ -126,11 +128,9 @@ async function findExistingProposal(
  * same `updatedAt`. Anything else — a confirm/reject or any other write that committed since
  * the snapshot — is logged with its reason and returns `null`, and the caller skips its write.
  *
- * Both of the tick's transactions run at `repeatable read`, where `FOR UPDATE` on a row another
- * transaction wrote after this one's snapshot fails with a serialization error rather than
- * returning the newer row. That is the same "a write committed since the snapshot" outcome, so
- * it is skipped as `changed` too; the savepoint keeps the rest of the transaction usable after
- * the failed statement. Any other error from the lock propagates.
+ * The initial repeatable-read phase skips a serialization conflict as changed. The post-model
+ * phase uses a nonblocking lock so a confirmation holding the card cannot wait on the source
+ * while this transaction waits on that card. The savepoint keeps either skip transaction usable.
  */
 async function lockUnlockedProposal(
   client: PoolClient,
@@ -140,13 +140,16 @@ async function lockUnlockedProposal(
   await client.query("SAVEPOINT lock_unlocked_proposal");
   let locked: ItemRow | null;
   try {
-    locked = await itemsStore.lockItemById(client, config.processingProposalsDatabaseId, snapshot.id);
+    locked = isTickWriteTransaction(client)
+      ? await itemsStore.lockItemByIdNowait(client, config.processingProposalsDatabaseId, snapshot.id)
+      : await itemsStore.lockItemById(client, config.processingProposalsDatabaseId, snapshot.id);
     await client.query("RELEASE SAVEPOINT lock_unlocked_proposal");
   } catch (err) {
-    if (!isSerializationFailure(err)) throw err;
+    const busy = typeof err === "object" && err !== null && "code" in err && err.code === "55P03";
+    if (!isSerializationFailure(err) && !busy) throw err;
     await client.query("ROLLBACK TO SAVEPOINT lock_unlocked_proposal");
     await client.query("RELEASE SAVEPOINT lock_unlocked_proposal");
-    logger.info({ proposalId: snapshot.id, reason: "changed" }, "Skipping proposal write");
+    logger.info({ proposalId: snapshot.id, reason: busy ? "busy" : "changed" }, "Skipping proposal write");
     return null;
   }
   let reason: "gone" | "deleted" | "locked" | "changed" | null = null;
@@ -863,16 +866,17 @@ async function currentSourceFingerprint(
   config: SemprecTickActionConfig,
   snapshot: TickSnapshot,
 ): Promise<{ item: ItemRow; fingerprint: string } | null> {
-  const item = await itemsStore.getItemById(client, config.inboxDatabaseId, snapshot.item.id);
+  const item = await itemsStore.lockItemById(client, config.inboxDatabaseId, snapshot.item.id);
   if (!item || item.deletedAt) {
     logger.info({ sourceItemId: snapshot.item.id, reason: "sourceDeleted" }, "Skipping stale tick write");
     return null;
   }
 
-  const recognized = await resolveRecognizedType(client, config, item);
   const definition = await getRelationDefinitionByKey(client, config.inboxDatabaseId, "type");
   const edges = definition ? await relationsStore.listRelationsForItem(client, definition.id, item.id) : [];
   const sourceTypeId = edges[0] ? relationsStore.otherSide(edges[0], item.id) : null;
+  if (sourceTypeId && !(await tryLockInboxType(client, config.inboxItemTypesDatabaseId, sourceTypeId))) return null;
+  const recognized = await resolveRecognizedType(client, config, item);
   if (sourceTypeId !== snapshot.sourceTypeId || (!snapshot.recognition && recognized?.type.id !== snapshot.type?.id))
     return null;
   // Both sides are version 2: the snapshot's fingerprint was computed by `readTickSnapshot` the same way.
@@ -890,10 +894,7 @@ async function currentSourceFingerprint(
  * The tick's write phase, run in its own transaction after the non-transactional
  * `computeProposal` call has returned. Re-validates every field `snapshot` was staked on before
  * writing anything: the source item must still exist, undeleted, with the same source type edge
- * and the same fingerprint. A mismatch means the edit that changed it has already enqueued a
- * newer tick (the heartbeat-fire job key's replace semantics), so this one logs why it is
- * skipping and writes nothing rather than persisting a result computed against a state that has
- * moved on.
+ * and the same fingerprint. A mismatch skips the stale result; dispatch ownership is unchanged.
  */
 async function writeTickResult(
   client: PoolClient,
@@ -974,8 +975,8 @@ async function writeTickResult(
 /**
  * The write phase of a failed `computeProposal` call (issue #1485), run in its own transaction
  * after the call has thrown an `AiGatewayFailedError`. It applies the same source re-checks as
- * `writeTickResult`, so an edit or deletion during the call writes nothing (the edit has already
- * enqueued a newer tick). It then stores the card as `computeFailed` with a cleared fingerprint, so
+ * `writeTickResult`, so an edit or deletion during the call writes nothing. It then stores the
+ * card as `computeFailed` with a cleared fingerprint, so
  * the next tick computes again instead of skipping on an unchanged fingerprint. An existing
  * `proposal` stays stored as it was; a locked card is never touched; a card is created only when
  * none exists, with the `sourceInbox` edge to the source item.
@@ -1091,11 +1092,11 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
       // queue retries the job.
       if (reason !== "budget_exceeded" && context.isFinalAttempt !== true) throw err;
       logger.warn({ sourceItemId, reason }, "Recording a failed proposal computation on the card");
-      await withTickTransaction(pool, (client) => writeComputeFailure(client, config, snapshot, reason));
+      await withTickWriteTransaction(pool, (client) => writeComputeFailure(client, config, snapshot, reason));
       return;
     }
     if (snapshot.recognition) {
-      await withTickTransaction(pool, async (client) => {
+      await withTickWriteTransaction(pool, async (client) => {
         if (!(await currentSourceFingerprint(client, config, snapshot))) return;
         const catalog = validRecognitionTypes(await listActiveInboxTypes(client, config.inboxItemTypesDatabaseId));
         const candidates = filterRecognitionCandidates(result.candidates, catalog);
@@ -1146,7 +1147,7 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
     }
     const envelope = buildProposalEnvelope(snapshot, result);
 
-    await withTickTransaction(pool, (client) =>
+    await withTickWriteTransaction(pool, (client) =>
       writeTickResult(
         client,
         config,

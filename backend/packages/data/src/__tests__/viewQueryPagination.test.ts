@@ -293,6 +293,59 @@ describe("select option-order sort (issue #1408)", () => {
     const { ids: paged } = await collectPages((cursor) => chokePoint.queryViewItems(view.id, { limit: 2, cursor }));
     expect(paged).toEqual(ascending());
   });
+
+  it.each(["asc", "desc"] as const)(
+    "pages %s numeric and boolean values that match valid keys among malformed options",
+    async (direction) => {
+      const db = await chokePoint.createDatabase({ name: "Legacy select" });
+      await chokePoint.createProperty({
+        databaseId: db.id,
+        key: "value",
+        name: "Value",
+        type: "select",
+        config: { options: [] },
+      });
+      const values = [true, 42, "done", "unknown", null];
+      const created: string[] = [];
+      for (const value of values) {
+        const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+        created.push(item.id);
+        await pool.query("UPDATE items SET properties = jsonb_build_object('value', $2::jsonb) WHERE id = $1", [
+          item.id,
+          JSON.stringify(value),
+        ]);
+      }
+      await pool.query("UPDATE properties SET config = $2::jsonb WHERE database_id = $1 AND key = 'value'", [
+        db.id,
+        JSON.stringify({ options: [null, {}, { key: 7 }, { key: "true" }, { key: "42" }, { key: "done" }] }),
+      ]);
+      const expected = direction === "asc" ? created.slice(0, 3) : created.slice(0, 3).reverse();
+      expected.push(...created.slice(3).sort());
+      const { ids: actual, pages } = await collectPages((cursor) =>
+        chokePoint.queryDatabaseItems(db.id, { sort: [{ property: "value", direction }], limit: 1, cursor }),
+      );
+      expect(actual).toEqual(expected);
+      expect(pages).toBe(5);
+    },
+  );
+
+  it.each(["missing", "non-array", "empty"] as const)(
+    "pages missing positions for %s select options in both directions",
+    async (kind) => {
+      const config = kind === "missing" ? {} : { options: kind === "non-array" ? "invalid" : [] };
+      await pool.query("UPDATE properties SET config = $2::jsonb WHERE database_id = $1 AND key = 'status'", [
+        databaseId,
+        JSON.stringify(config),
+      ]);
+      const expected = byId("inProgress", "inProgress2", "longTerm", "done", "archived", "none", "removed");
+      for (const direction of ["asc", "desc"] as const) {
+        const { ids: actual } = await collectPages((cursor) =>
+          chokePoint.queryDatabaseItems(databaseId, { sort: [{ property: "status", direction }], limit: 1, cursor }),
+        );
+        expect(actual).toEqual(expected);
+      }
+    },
+  );
   describe("groupDirection (issue #1532)", () => {
     const createGrouped = (groupDirection?: string) =>
       chokePoint.createView({

@@ -125,11 +125,47 @@ describe("bounded Inbox proposal workspace context", () => {
         });
         ids.push(item.id);
       }
+      await runtime.query("UPDATE items SET updated_at = '2026-08-01T00:00:00Z' WHERE id = ANY($1::uuid[])", [ids]);
+      await runtime.query("UPDATE items SET updated_at = '2026-08-02T00:00:00Z' WHERE id = $1", [ids[0]]);
       const context = await withTransaction(runtime, (client) => readProposalWorkspaceContext(client, "2026-08-28"));
       const people = context.find((group) => group.moduleId === "people");
       expect(people?.items).toHaveLength(20);
       expect(people?.items.every((item) => Object.keys(item).sort().join(",") === "id,name")).toBe(true);
       expect(people?.items.every((item) => item.name.length === 100 && ids.includes(item.id))).toBe(true);
+      expect(people?.items.map((item) => item.id)).toEqual([ids[0], ...ids.slice(1).sort().slice(0, 19)]);
+    });
+  });
+
+  it("orders equal-date events by ID within the original capture window", async () => {
+    const tenant = await createTestTenant(admin);
+    await runInTenant(tenant, async () => {
+      await seedSystem(runtime);
+      const db = await runtime.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'events'");
+      if (!db.rows[0]) throw new Error("Missing Events database");
+      const writer = createChokePoint(runtime);
+      const sameDate: string[] = [];
+      for (let n = 0; n < 22; n++) {
+        sameDate.push(
+          (
+            await writer.createItem({
+              databaseId: db.rows[0].id,
+              properties: { name: `Event ${n}`, date: "2026-08-29" },
+            })
+          ).id,
+        );
+      }
+      const first = await writer.createItem({
+        databaseId: db.rows[0].id,
+        properties: { name: "Earlier", date: "2026-08-28" },
+      });
+      const outside = await writer.createItem({
+        databaseId: db.rows[0].id,
+        properties: { name: "Outside", date: "2026-09-30" },
+      });
+      const context = await withTransaction(runtime, (client) => readProposalWorkspaceContext(client, "2026-08-28"));
+      const ids = context.find((group) => group.moduleId === "events")?.items.map((item) => item.id);
+      expect(ids).toEqual([first.id, ...sameDate.sort().slice(0, 19)]);
+      expect(ids).not.toContain(outside.id);
     });
   });
 });

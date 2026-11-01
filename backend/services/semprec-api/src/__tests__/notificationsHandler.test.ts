@@ -9,7 +9,7 @@ import { z } from "zod";
 import { getTenantZeroId, getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
 import { createViewTypeRegistry, seedSystem, createUser, hashPassword, login } from "@semprec/data";
 import { createNotificationsRequestListener } from "../notificationsHandler.js";
-import { runTranscriptionFixture, withFixtureStorage } from "./transcriptionHttpFixture.js";
+import { runFixtureGuardControl, runTranscriptionFixture, withFixtureStorage } from "./transcriptionHttpFixture.js";
 
 const PASSWORD = "s3cret-password";
 
@@ -93,6 +93,33 @@ describe("createNotificationsRequestListener", () => {
       ).toBe(`?page=transcript&id=${child.result.transcriptId}`);
     });
   });
+
+  it.each([
+    ["hang", "Transcription fixture timed out"],
+    ["overflow", "Transcription fixture output exceeds limit"],
+    ["malformed", "Invalid transcription fixture frame"],
+    ["duplicate", "Expected exactly one transcription fixture frame"],
+    ["resolver", "Unlisted workspace export: @semprec/data/private"],
+  ] as const)(
+    "closes and cleans the owned fixture after %s",
+    async (control, expected) => {
+      const storageRoot = await mkdtemp(join(tmpdir(), "semprec-fixture-guard-"));
+      await withFixtureStorage(storageRoot, async () => {
+        const result = await runFixtureGuardControl(
+          control,
+          { mode: "failure", tenantId: getTenantZeroId(), storageRoot },
+          pool,
+        );
+        expect(result.message).toContain(expected);
+        expect(result.pid).toEqual(expect.any(Number));
+        expect(result.pid).toBeGreaterThan(0);
+        expect(result.closed).toBe(true);
+        expect(result.temporaryRemoved).toBe(true);
+        expect(result.poolClosed).toBe(true);
+      });
+    },
+    15000,
+  );
 
   it("removes the owned temporary build when the transcription producer fails", async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), "semprec-http-transcription-"));

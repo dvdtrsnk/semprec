@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,9 @@ const taskOutput = join(backend, "services/semprec-transcribe/dist/transcription
 const mediaSource = join(backend, "services/semprec-transcribe/src/__tests__/fixtures/mediaFixtures.ts");
 const mediaOutput = join(backend, "services/semprec-transcribe/dist/__tests__/fixtures/mediaFixtures.js");
 const audioPath = join(backend, "services/semprec-transcribe/src/__tests__/fixtures/spoken-markers.wav");
+const resolver = join(backend, "services/semprec-transcribe/src/__tests__/fixtures/workspaceDistResolver.mjs");
+type GuardControl = "hang" | "overflow" | "malformed" | "duplicate" | "resolver";
+type GuardObservation = { pid: number | null; closed: boolean; temporaryRemoved: boolean; poolClosed: boolean };
 const resultSchema = z.strictObject({
   mode: z.enum(["failure", "stop", "consume"]),
   fileItemId: z.uuid(),
@@ -51,9 +54,19 @@ async function runProducer(
   stdin: string,
   blockEntry: string,
   runtimeUrl: string,
+  observation?: GuardObservation,
+  control?: GuardControl,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolveResult, reject) => {
-    const child = spawn(process.execPath, [producer], {
+    const scripts: Record<GuardControl, string> = {
+      hang: "setInterval(() => {}, 1000)",
+      overflow: "process.stdout.write('x'.repeat(700)); process.stderr.write('y'.repeat(700))",
+      malformed: "console.log('BATCH09_FRAME {bad-json')",
+      duplicate: "console.log('BATCH09_FRAME {}'); console.log('BATCH09_FRAME {}')",
+      resolver: `import { register } from 'node:module'; import { pathToFileURL } from 'node:url'; register(pathToFileURL(${JSON.stringify(resolver)})); await import('@semprec/data/private')`,
+    };
+    const args = control ? ["--input-type=module", "-e", scripts[control]] : [producer];
+    const child = spawn(process.execPath, args, {
       cwd: backend,
       env: {
         ...process.env,
@@ -64,6 +77,7 @@ async function runProducer(
       detached: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
+    if (observation) observation.pid = child.pid ?? null;
     let stdout = "";
     let stderr = "";
     let bytes = 0;
@@ -81,10 +95,11 @@ async function runProducer(
         }
       }
     }
-    const timer = setTimeout(() => stop(new Error("Transcription fixture timed out")), 25_000);
+    const timer = setTimeout(() => stop(new Error("Transcription fixture timed out")), control ? 1000 : 25_000);
     function collect(chunk: Buffer, stream: "stdout" | "stderr") {
       bytes += chunk.length;
-      if (bytes > 2_000_000) return stop(new Error("Transcription fixture output exceeds limit"));
+      if (bytes > (control === "overflow" ? 1024 : 2_000_000))
+        return stop(new Error("Transcription fixture output exceeds limit"));
       if (stream === "stdout") stdout += chunk.toString("utf8");
       else stderr += chunk.toString("utf8");
     }
@@ -94,6 +109,7 @@ async function runProducer(
     child.on("error", (error) => stop(error));
     child.on("close", (code, signal) => {
       clearTimeout(timer);
+      if (observation) observation.closed = true;
       if (failure) return reject(failure);
       if (code !== 0) return reject(new Error(`Transcription fixture failed: ${code ?? signal}\n${stdout}\n${stderr}`));
       resolveResult({ stdout, stderr });
@@ -102,15 +118,19 @@ async function runProducer(
   });
 }
 
-export async function runTranscriptionFixture(
-  input: {
-    mode: "failure" | "stop" | "consume";
-    tenantId: string;
-    storageRoot: string;
-    fileItemId?: string;
-    source?: "wav" | "ogg";
-  },
+type FixtureInput = {
+  mode: "failure" | "stop" | "consume";
+  tenantId: string;
+  storageRoot: string;
+  fileItemId?: string;
+  source?: "wav" | "ogg";
+};
+
+async function runFixture(
+  input: FixtureInput,
   adminPool: Pool,
+  control?: GuardControl,
+  observation?: GuardObservation,
 ) {
   const rolePool = await createRuntimeRolePool(adminPool, "semprec_data");
   let temporary: string | undefined;
@@ -155,10 +175,21 @@ export async function runTranscriptionFixture(
       throw new Error(
         `Temporary block-model build failed: ${build.error?.message ?? build.status}\n${build.stdout}\n${build.stderr}`,
       );
-    const child = await runProducer(JSON.stringify({ ...input, audioPath }), join(temporary, "index.js"), runtimeUrl);
+    const child = await runProducer(
+      JSON.stringify({ ...input, audioPath }),
+      join(temporary, "index.js"),
+      runtimeUrl,
+      observation,
+      control,
+    );
     const frames = child.stdout.split("\n").filter((line) => line.startsWith("BATCH09_FRAME "));
     if (frames.length !== 1) throw new Error("Expected exactly one transcription fixture frame");
-    const raw: unknown = JSON.parse(frames[0]!.slice("BATCH09_FRAME ".length));
+    let raw: unknown;
+    try {
+      raw = JSON.parse(frames[0]!.slice("BATCH09_FRAME ".length));
+    } catch (error) {
+      throw new Error("Invalid transcription fixture frame", { cause: error });
+    }
     const result = resultSchema.parse(raw);
     if (result.mode !== input.mode || (input.fileItemId !== undefined && result.fileItemId !== input.fileItemId))
       throw new Error("Transcription fixture returned a mismatched result");
@@ -169,6 +200,7 @@ export async function runTranscriptionFixture(
   }
   try {
     if (temporary) rmSync(temporary, { recursive: true, force: true });
+    if (observation) observation.temporaryRemoved = temporary !== undefined && !existsSync(temporary);
   } catch (error) {
     if (failed) {
       process.stderr.write(`Failed to remove transcription fixture temporary output: ${String(error)}\n`);
@@ -179,6 +211,13 @@ export async function runTranscriptionFixture(
   }
   try {
     await rolePool.end();
+    if (observation) {
+      try {
+        await rolePool.query("SELECT 1");
+      } catch (error) {
+        observation.poolClosed = error instanceof Error && error.message.includes("after calling end");
+      }
+    }
   } catch (error) {
     if (failed) process.stderr.write(`Failed to close fixture runtime pool: ${String(error)}\n`);
     else {
@@ -192,4 +231,20 @@ export async function runTranscriptionFixture(
   }
   if (!output) throw new Error("Transcription fixture returned no result");
   return output;
+}
+
+export function runTranscriptionFixture(input: FixtureInput, adminPool: Pool) {
+  return runFixture(input, adminPool);
+}
+
+/** Closed fault controls exercise the same runner, parser and ownership cleanup as the producer. */
+export async function runFixtureGuardControl(control: GuardControl, input: FixtureInput, adminPool: Pool) {
+  const observation: GuardObservation = { pid: null, closed: false, temporaryRemoved: false, poolClosed: false };
+  try {
+    await runFixture(input, adminPool, control, observation);
+    throw new Error("Guard control unexpectedly succeeded");
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    return { ...observation, message: error.message };
+  }
 }

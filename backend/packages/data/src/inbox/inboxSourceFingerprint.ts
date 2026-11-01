@@ -6,6 +6,7 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import type { PoolClient } from "pg";
 import type { ItemRow } from "../types.js";
 import type { InboxFingerprintV2Input } from "./fingerprint.js";
+import { z } from "zod";
 /**
  * The attachment hashes that version 2 of the fingerprint covers (issue #1606): one per attachment
  * reference of the item, the blob's `content_hash`. A blob without a content hash is covered by its id
@@ -30,11 +31,12 @@ export async function inboxFingerprintInput(
   item: ItemRow,
   type: ItemRow | null,
 ): Promise<InboxFingerprintV2Input> {
+  const properties = z.record(z.string(), z.unknown()).parse(item.properties);
   return {
     typeId: type?.id ?? "",
-    text: typeof item.properties.text === "string" ? item.properties.text : "",
-    date: typeof item.properties.date === "string" ? item.properties.date : "",
-    time: typeof item.properties.time === "string" ? item.properties.time : "",
+    text: typeof properties.text === "string" ? properties.text : "",
+    date: typeof properties.date === "string" ? properties.date : "",
+    time: typeof properties.time === "string" ? properties.time : "",
     attachmentHashes: await readAttachmentHashes(client, item.id),
     // Inbox audio attachments are not transcribed yet, so there is no transcript text to cover.
     transcribedText: "",
@@ -68,8 +70,9 @@ export async function resolveRecognizedType(
   const type = await itemsStore.getItemById(client, config.inboxItemTypesDatabaseId, typeItemId);
   if (!type || type.deletedAt) return null;
 
-  const processingMethod = type.properties.processingMethod;
-  if (!(PROCESSING_METHODS as readonly unknown[]).includes(processingMethod)) return null;
+  const properties = z.record(z.string(), z.unknown()).parse(type.properties);
+  const processingMethod = z.enum(PROCESSING_METHODS).safeParse(properties.processingMethod);
+  if (!processingMethod.success) return null;
 
-  return { type, processingMethod: processingMethod as ProcessingMethod };
+  return { type: { ...type, properties }, processingMethod: processingMethod.data };
 }

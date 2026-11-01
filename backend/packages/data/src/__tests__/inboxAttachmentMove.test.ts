@@ -1,15 +1,28 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { Readable } from "node:stream";
 import { runOnce, CORE_TASK_NAMES } from "@semprec/queue";
 import { runInTenant } from "@semprec/shared";
 import type { Pool } from "pg";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+  withTenantTransaction,
+} from "../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { createBlob, getBlob } from "../blobs/blobsStore.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { deleteItemDependents } from "../chokePoint/itemTrash.js";
+import { createChokePoint } from "../chokePoint/chokePoint.js";
+import { LocalFsBlobStorageWriter } from "../mail/blobStorage.js";
+import { purgeExpiredTrash } from "../trash/purgeExpiredTrash.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
@@ -41,6 +54,20 @@ let filesId: string;
 let tasksId: string;
 let projectsId: string;
 let taskType: ItemRow;
+
+async function bounded<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Concurrency barrier timed out")), 5000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 async function databaseIdFor(moduleId: string): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
@@ -587,6 +614,45 @@ describe("file from attachment on confirm (issue #1703)", () => {
     expect(await attachmentCount(otherInboxItemId)).toBe(1);
   });
 
+  it("keeps the original physical bytes through a move and later Files purge", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "semprec-move-bytes-"));
+    const storage = new LocalFsBlobStorageWriter(directory);
+    const bytes = Buffer.from("owned photo attachment bytes");
+    const storageKey = `blobs/${randomUUID()}`;
+    try {
+      await storage.writeStream(storageKey, Readable.from([bytes]));
+      const blob = await withTransaction(pool, (client) =>
+        createBlob(client, {
+          mimeType: "image/jpeg",
+          byteSize: bytes.length,
+          storageKey,
+        }),
+      );
+      const first = await inboxItemWithCard("Move photo");
+      const second = await plainInboxItem("Unconfirmed photo");
+      const attachment = await attach(first.inboxItemId, blob.id);
+      await attach(second, blob.id);
+      const before = await readdir(join(directory, "blobs"));
+      expect(before).toEqual([storageKey.split("/")[1]]);
+      await storeSteps(first.cardId, [taskPrimary(), fileStep(attachment)]);
+      await confirm(first.cardId);
+      expect(await readdir(join(directory, "blobs"))).toEqual(before);
+      expect(await readFile(join(directory, storageKey))).toEqual(bytes);
+      const files = await filesItemsFor(blob.id);
+      expect(files).toHaveLength(1);
+      const cp = createChokePoint(pool);
+      await cp.softDeleteItem(filesId, files[0]!.id);
+      await pool.query("UPDATE items SET deleted_at = now() - interval '31 days' WHERE id = $1", [files[0]!.id]);
+      expect(await runInTenant(getTenantZeroId(), () => purgeExpiredTrash(pool, storage))).toBe(1);
+      expect(await readdir(join(directory, "blobs"))).toEqual(before);
+      expect(await readFile(join(directory, storageKey))).toEqual(bytes);
+      expect(await attachmentCount(second)).toBe(1);
+      expect(await withTransaction(pool, (client) => getBlob(client, blob.id))).not.toBeNull();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("two confirms that file the same bytes make one Files item: the second waits for the blob lock and reuses the item", async () => {
     const first = await inboxItemWithCard("First scan");
     const second = await inboxItemWithCard("Second scan");
@@ -688,4 +754,200 @@ describe("file from attachment on confirm (issue #1703)", () => {
     expect(await filesItemsFor(blobId)).toHaveLength(1);
     expect(await attachmentCount(source)).toBe(0);
   });
+
+  it("lets the blocked competing confirm create the file when the holder rolls back", async () => {
+    const first = await inboxItemWithCard("First scan");
+    const second = await inboxItemWithCard("Second scan");
+    const blobId = await newBlob("image/jpeg");
+    const firstAttachment = await attach(first.inboxItemId, blobId);
+    const secondAttachment = await attach(second.inboxItemId, blobId);
+    await storeSteps(first.cardId, [taskPrimary("First task"), fileStep(firstAttachment)]);
+    await storeSteps(second.cardId, [taskPrimary("Second task"), fileStep(secondAttachment)]);
+    const holder = await pool.connect();
+    const competitor = await pool.connect();
+    let waiting: Promise<Outcome<ItemRow>> | undefined;
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SET LOCAL statement_timeout = '5s'");
+      await confirmProposalWithClient(holder, { processingProposalsDatabaseId: proposalsId }, first.cardId);
+      await competitor.query("BEGIN");
+      await competitor.query("SET LOCAL statement_timeout = '5s'");
+      const holderPid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+      const competitorPid = (await competitor.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+      if (!holderPid || !competitorPid) throw new Error("Missing backend PID");
+      waiting = settle(
+        (async () => {
+          try {
+            const result = await confirmProposalWithClient(
+              competitor,
+              { processingProposalsDatabaseId: proposalsId },
+              second.cardId,
+            );
+            await competitor.query("COMMIT");
+            return result;
+          } catch (error) {
+            await competitor.query("ROLLBACK");
+            throw error;
+          }
+        })(),
+      );
+      await waitForBlobLockWait(holderPid, competitorPid);
+      await holder.query("ROLLBACK");
+      const outcome = await waiting;
+      if (!("value" in outcome)) throw outcome.error;
+      expect(outcome.value.properties.status).toBe("confirmed");
+    } finally {
+      await holder.query("ROLLBACK");
+      await waiting;
+      holder.release();
+      competitor.release(true);
+    }
+    const files = await filesItemsFor(blobId);
+    expect(files).toHaveLength(1);
+    expect(await originRowsFor(files[0]!.id)).toEqual([
+      {
+        item_id: files[0]!.id,
+        proposal_id: second.cardId,
+        inbox_item_id: second.inboxItemId,
+        capture_channel: "inbox",
+      },
+    ]);
+    expect(await attachmentCount(first.inboxItemId)).toBe(1);
+    expect(await attachmentCount(second.inboxItemId)).toBe(0);
+    const firstCard = await withTransaction(pool, (client) =>
+      itemsStore.getItemById(client, proposalsId, first.cardId),
+    );
+    expect(firstCard?.properties.status).toBe("proposed");
+  });
+
+  it.each([false, true])(
+    "settles confirm and a shared-blob purge in both orders, purge first: %s",
+    async (purgeFirst) => {
+      const source = await inboxItemWithCard("Confirm shared photo");
+      const trashed = await plainInboxItem("Purge shared photo");
+      const blobId = await newBlob("image/jpeg");
+      const attachment = await attach(source.inboxItemId, blobId);
+      await attach(trashed, blobId);
+      await storeSteps(source.cardId, [taskPrimary(), fileStep(attachment)]);
+      await createChokePoint(pool).softDeleteItem(inboxId, trashed);
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      let purgePid: number | undefined;
+      let confirmPid: number | undefined;
+      let purgeReady = () => {};
+      let confirmReady = () => {};
+      let releasePurge = () => {};
+      let releaseConfirm = () => {};
+      const purgeAtBlob = new Promise<void>((resolve) => {
+        purgeReady = resolve;
+      });
+      const confirmAtBlob = new Promise<void>((resolve) => {
+        confirmReady = resolve;
+      });
+      const purgeGate = new Promise<void>((resolve) => {
+        releasePurge = resolve;
+      });
+      const confirmGate = new Promise<void>((resolve) => {
+        releaseConfirm = resolve;
+      });
+      const observed = new Proxy(runtime, {
+        get(target, key, receiver) {
+          if (key !== "connect") {
+            const value: unknown = Reflect.get(target, key, receiver);
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+          return async () => {
+            const client = await target.connect();
+            return new Proxy(client, {
+              get(connection, prop, innerReceiver) {
+                if (prop !== "query") {
+                  const value: unknown = Reflect.get(connection, prop, innerReceiver);
+                  return typeof value === "function" ? value.bind(connection) : value;
+                }
+                return async (...args: unknown[]) => {
+                  const sql = typeof args[0] === "string" ? args[0] : "";
+                  const match = sql.includes("FROM blobs WHERE") && sql.includes("FOR UPDATE");
+                  if (match) {
+                    purgePid = (await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                    if (!purgeFirst) purgeReady();
+                  }
+                  const result: unknown = await Reflect.apply(connection.query.bind(connection), undefined, args);
+                  if (sql.trim().toUpperCase() === "BEGIN")
+                    await connection.query("SET LOCAL statement_timeout = '5s'");
+                  if (match && purgeFirst) {
+                    purgeReady();
+                    await purgeGate;
+                  }
+                  return result;
+                };
+              },
+            });
+          };
+        },
+      });
+      const pending: {
+        purge?: Promise<{ purgedItemIds: string[]; blobStorageKeys: string[] }>;
+        confirm?: Promise<ItemRow>;
+      } = {};
+      const startPurge = () => {
+        pending.purge = runInTenant(getTenantZeroId(), () =>
+          createChokePoint(observed).purgeExpiredTrashSubtree(trashed, new Date(Date.now() + 60_000)),
+        );
+        pending.purge.catch(() => {});
+      };
+      const startConfirm = () => {
+        pending.confirm = withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+          await client.query("SET LOCAL statement_timeout = '5s'");
+          confirmPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          if (purgeFirst) confirmReady();
+          const result = await confirmProposalWithClient(
+            client,
+            { processingProposalsDatabaseId: proposalsId },
+            source.cardId,
+          );
+          if (!purgeFirst) {
+            confirmReady();
+            await confirmGate;
+          }
+          return result;
+        });
+        pending.confirm.catch(() => {});
+      };
+      try {
+        if (purgeFirst) {
+          startPurge();
+          await bounded(purgeAtBlob);
+          startConfirm();
+          await bounded(confirmAtBlob);
+        } else {
+          startConfirm();
+          await bounded(confirmAtBlob);
+          startPurge();
+          await bounded(purgeAtBlob);
+        }
+        if (!purgePid || !confirmPid) throw new Error("Missing competing backend PID");
+        await waitForBlobLockWait(purgeFirst ? purgePid : confirmPid, purgeFirst ? confirmPid : purgePid);
+        releasePurge();
+        releaseConfirm();
+        const purge = pending.purge;
+        const confirmRun = pending.confirm;
+        if (!purge || !confirmRun) throw new Error("Both operations must start");
+        const [purgeResult, confirmResult] = await bounded(Promise.all([purge, confirmRun]));
+        expect(purgeResult.purgedItemIds).toContain(trashed);
+        expect(purgeResult.blobStorageKeys).toEqual([]);
+        expect(confirmResult.properties.status).toBe("confirmed");
+        expect(await filesItemsFor(blobId)).toHaveLength(1);
+        expect(await attachmentCount(source.inboxItemId)).toBe(0);
+        expect(await withTransaction(pool, (client) => getBlob(client, blobId))).not.toBeNull();
+      } finally {
+        releasePurge();
+        releaseConfirm();
+        await Promise.allSettled([
+          ...(pending.purge ? [pending.purge] : []),
+          ...(pending.confirm ? [pending.confirm] : []),
+        ]);
+        await runtime.end();
+      }
+    },
+    20000,
+  );
 });

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
 import { ConflictError, NotFoundError } from "../errors.js";
 import type { ItemRow } from "../types.js";
@@ -51,6 +52,32 @@ export async function lockItemById(client: Queryable, databaseId: string, itemId
     [databaseId, itemId],
   );
   return rows[0] ? mapItemRow(rows[0]) : null;
+}
+
+/** Row-locking read that reports a contended row through PostgreSQL's lock-not-available error. */
+export async function lockItemByIdNowait(
+  client: Queryable,
+  databaseId: string,
+  itemId: string,
+): Promise<ItemRow | null> {
+  const { rows } = await client.query<Record<string, unknown>>(
+    `SELECT id, database_id, properties, computed, updated_at, deleted_at
+     FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE NOWAIT`,
+    [databaseId, itemId],
+  );
+  if (!rows[0]) return null;
+  return mapItemRow(
+    z
+      .object({
+        id: z.string(),
+        database_id: z.string(),
+        properties: z.record(z.string(), z.unknown()),
+        computed: z.record(z.string(), z.unknown()),
+        updated_at: z.date(),
+        deleted_at: z.date().nullable(),
+      })
+      .parse(rows[0]),
+  );
 }
 
 export interface InsertItemInput {

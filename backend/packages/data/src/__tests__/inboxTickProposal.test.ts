@@ -21,9 +21,17 @@ import { createInboxTypeWithClient, deleteInboxTypeWithClient } from "../inbox/i
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
-import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
+import {
+  assertRelationTargetLinkableWithClient,
+  createRelationWithClient,
+  deleteRelationWithClient,
+} from "../chokePoint/relationOps.js";
 import { createBlob } from "../blobs/blobsStore.js";
-import { deleteInboxAttachment, insertInboxAttachments, listInboxAttachments } from "../inbox/inboxAttachmentsStore.js";
+import {
+  deleteInboxAttachment as deleteWithClient,
+  insertInboxAttachments as insertWithClient,
+  listInboxAttachments,
+} from "../inbox/inboxAttachmentsStore.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { registerItemPreWriteTransform } from "../chokePoint/hooks.js";
@@ -42,6 +50,27 @@ import { confirmProposalWithClient } from "../inbox/proposalActions.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
+
+async function boundedBarrier<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Concurrency barrier timed out")), 5000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function insertInboxAttachments(owner: Pool, itemId: string, attachments: Parameters<typeof insertWithClient>[2]) {
+  return withTransaction(owner, (client) => insertWithClient(client, itemId, attachments));
+}
+function deleteInboxAttachment(owner: Pool, id: string) {
+  return withTransaction(owner, (client) => deleteWithClient(client, id));
+}
 
 async function databaseIdFor(moduleId: string): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
@@ -1196,6 +1225,37 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     return { type, item };
   }
 
+  it("validates an uncreated Inbox type edge without locking a placeholder source", async () => {
+    const { type } = await createTypedItem("Type validation fixture");
+    const property = await withTransaction(pool, (client) => propertiesStore.getPropertyByKey(client, inboxId, "type"));
+    if (!property) throw new Error("Missing Inbox type property");
+    const statements: string[] = [];
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      await withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+        const observed = new Proxy(client, {
+          get(target, key, receiver) {
+            if (key !== "query") {
+              const value: unknown = Reflect.get(target, key, receiver);
+              return typeof value === "function" ? value.bind(target) : value;
+            }
+            return (...args: unknown[]) => {
+              if (typeof args[0] === "string") statements.push(args[0]);
+              return Reflect.apply(target.query.bind(target), undefined, args);
+            };
+          },
+        });
+        await assertRelationTargetLinkableWithClient(observed, {
+          relationPropertyId: property.id,
+          targetItemId: type.id,
+        });
+      });
+    } finally {
+      await runtime.end();
+    }
+    expect(statements.some((sql) => sql.includes("FOR UPDATE OF i"))).toBe(false);
+  });
+
   it("a source whose type was deleted out from under it is marked needsClarification, the same path as no type at all", async () => {
     const { type, item } = await createTypedItem("Buy milk");
 
@@ -2149,6 +2209,628 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       properties: { name: "Buy milk and eggs" },
     });
   });
+
+  it("holds the source through the proposal commit before a competing edit", async () => {
+    const { item } = await createTypedItem("Before the race");
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let postModel = false;
+    let resume = () => {};
+    let reached = () => {};
+    const gate = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const atFingerprint = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let tickPid: number | undefined;
+    const observedPool = new Proxy(runtime, {
+      get(target, property, receiver) {
+        if (property !== "connect") {
+          const value: unknown = Reflect.get(target, property, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return async () => {
+          const client = await target.connect();
+          return new Proxy(client, {
+            get(connection, key, innerReceiver) {
+              if (key !== "query") {
+                const value: unknown = Reflect.get(connection, key, innerReceiver);
+                return typeof value === "function" ? value.bind(connection) : value;
+              }
+              return async (...args: unknown[]) => {
+                const result: unknown = await Reflect.apply(connection.query.bind(connection), undefined, args);
+                const sql = typeof args[0] === "string" ? args[0] : "";
+                if (postModel && sql.includes("COALESCE(b.content_hash")) {
+                  postModel = false;
+                  const pid = await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+                  tickPid = pid.rows[0]?.pid;
+                  reached();
+                  await gate;
+                }
+                return result;
+              };
+            },
+          });
+        };
+      },
+    });
+    const handler = createSemprecTickAction(observedPool, async () => {
+      postModel = true;
+      return { properties: { name: "Old proposal" } };
+    });
+    const tick = runInTenant(getTenantZeroId(), () =>
+      handler(
+        { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
+        { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
+      ),
+    );
+    tick.catch(() => {});
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let writer: Promise<void> | undefined;
+    let writerPid: number | undefined;
+    let writerStarted = () => {};
+    let writerUpdated = () => {};
+    let releaseWriter = () => {};
+    const started = new Promise<void>((resolve) => {
+      writerStarted = resolve;
+    });
+    const updated = new Promise<void>((resolve) => {
+      writerUpdated = resolve;
+    });
+    const writerGate = new Promise<void>((resolve) => {
+      releaseWriter = resolve;
+    });
+    try {
+      await Promise.race([
+        atFingerprint,
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error("Fingerprint barrier timed out")), 10000);
+        }),
+      ]);
+      expect(tickPid).toBeGreaterThan(0);
+      writer = withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+        writerPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        writerStarted();
+        await updateItemWithClient(client, {
+          databaseId: inboxId,
+          itemId: item.id,
+          propertiesPatch: { text: "After the race" },
+        });
+        writerUpdated();
+        await writerGate;
+      });
+      writer.catch(() => {});
+      await boundedBarrier(started);
+      expect(writerPid).toBeGreaterThan(0);
+      expect(writerPid).not.toBe(tickPid);
+      let blocked = false;
+      for (let n = 0; n < 100 && !blocked; n++) {
+        const result = await pool.query<{ blocked: boolean }>(
+          "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+          [tickPid, writerPid],
+        );
+        blocked = result.rows[0]?.blocked === true;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked).toBe(true);
+      resume();
+      await tick;
+      await boundedBarrier(updated);
+      const card = await findProposalForItem(pool, proposalsId, item.id);
+      expect(card?.properties.proposal).toMatchObject({ properties: { name: "Old proposal" } });
+      releaseWriter();
+      await writer;
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      resume();
+      releaseWriter();
+      await Promise.allSettled([tick, ...(writer ? [writer] : [])]);
+      await runtime.end();
+    }
+    const source = await withTransaction(pool, (client) => itemsStore.getItemById(client, inboxId, item.id));
+    expect(source?.properties.text).toBe("After the race");
+  }, 20000);
+
+  it.each([false, true])(
+    "rechecks fresh source data after a competing edit, rollback: %s",
+    async (rollback) => {
+      const { item } = await createTypedItem("Before the edit");
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      let releaseWriter = () => {};
+      let writerReady = () => {};
+      let tickWaiting = () => {};
+      const writerGate = new Promise<void>((resolve) => {
+        releaseWriter = resolve;
+      });
+      const ready = new Promise<void>((resolve) => {
+        writerReady = resolve;
+      });
+      const waiting = new Promise<void>((resolve) => {
+        tickWaiting = resolve;
+      });
+      let writerPid: number | undefined;
+      let tickPid: number | undefined;
+      let postModel = false;
+      const rollbackMarker = new Error("intentional edit rollback");
+      const observedPool = new Proxy(runtime, {
+        get(target, property, receiver) {
+          if (property !== "connect") {
+            const value: unknown = Reflect.get(target, property, receiver);
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+          return async () => {
+            const client = await target.connect();
+            return new Proxy(client, {
+              get(connection, key, innerReceiver) {
+                if (key !== "query") {
+                  const value: unknown = Reflect.get(connection, key, innerReceiver);
+                  return typeof value === "function" ? value.bind(connection) : value;
+                }
+                return async (...args: unknown[]) => {
+                  const sql = typeof args[0] === "string" ? args[0] : "";
+                  if (postModel && sql.includes("FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE")) {
+                    postModel = false;
+                    tickPid = (await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                    tickWaiting();
+                  }
+                  return Reflect.apply(connection.query.bind(connection), undefined, args);
+                };
+              },
+            });
+          };
+        },
+      });
+      const writer = withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+        writerPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        await updateItemWithClient(client, {
+          databaseId: inboxId,
+          itemId: item.id,
+          propertiesPatch: { text: "After the edit" },
+        });
+        writerReady();
+        await writerGate;
+        if (rollback) throw rollbackMarker;
+      });
+      const writerOutcome = writer.then(
+        () => null,
+        (error: unknown) => error,
+      );
+      let tick: Promise<void> | undefined;
+      try {
+        await boundedBarrier(ready);
+        const handler = createSemprecTickAction(observedPool, async () => {
+          postModel = true;
+          return { properties: { name: "Old proposal" } };
+        });
+        tick = runInTenant(getTenantZeroId(), () =>
+          handler(
+            { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
+            { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
+          ),
+        );
+        tick.catch(() => {});
+        await boundedBarrier(waiting);
+        let blocked = false;
+        for (let n = 0; n < 100 && !blocked; n++) {
+          const result = await pool.query<{ blocked: boolean }>(
+            "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+            [writerPid, tickPid],
+          );
+          blocked = result.rows[0]?.blocked === true;
+          if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(writerPid).not.toBe(tickPid);
+        expect(blocked).toBe(true);
+        releaseWriter();
+        expect(await writerOutcome).toBe(rollback ? rollbackMarker : null);
+        await tick;
+        const card = await findProposalForItem(pool, proposalsId, item.id);
+        if (rollback) expect(card?.properties.proposal).toMatchObject({ properties: { name: "Old proposal" } });
+        else expect(card).toBeNull();
+      } finally {
+        releaseWriter();
+        await Promise.allSettled([writerOutcome, ...(tick ? [tick] : [])]);
+        await runtime.end();
+      }
+    },
+    20000,
+  );
+
+  it.each(["insert attachment", "remove attachment", "change type"] as const)(
+    "serializes %s with tick in both acquisition orders",
+    async (mutation) => {
+      for (const writerFirst of [true, false]) {
+        const { item, type } = await createTypedItem(`Source ${mutation} ${writerFirst}`);
+        const blob = await createBlob(pool, { mimeType: "image/jpeg", byteSize: 3, storageKey: `t/${randomUUID()}` });
+        let attachmentId: string | undefined;
+        if (mutation === "remove attachment") {
+          await insertInboxAttachments(pool, item.id, [{ blobId: blob.id, source: "camera" }]);
+          attachmentId = (await listInboxAttachments(pool, [item.id]))[0]?.attachmentId;
+          if (!attachmentId) throw new Error("Missing attachment");
+        }
+        const alternate = await withTransaction(pool, (client) =>
+          createInboxTypeWithClient(client, {
+            inboxItemTypesDatabaseId: typesId,
+            name: `Alternate ${randomUUID()}`,
+            emoji: "🔵",
+            processingMethod: "database",
+            targetDatabase: "tasks",
+          }),
+        );
+        const property = await withTransaction(pool, (client) =>
+          propertiesStore.getPropertyByKey(client, inboxId, "type"),
+        );
+        if (!property) throw new Error("Missing Inbox type property");
+        const runtime = await createRuntimeRolePool(pool, "semprec_data");
+        let postModel = false;
+        let tickPid: number | undefined;
+        let writerPid: number | undefined;
+        let releaseTick = () => {};
+        let releaseWriter = () => {};
+        let tickReady = () => {};
+        let writerReady = () => {};
+        let writerDone = () => {};
+        let startMutation = () => {};
+        const tickGate = new Promise<void>((resolve) => {
+          releaseTick = resolve;
+        });
+        const writerGate = new Promise<void>((resolve) => {
+          releaseWriter = resolve;
+        });
+        const tickAtBoundary = new Promise<void>((resolve) => {
+          tickReady = resolve;
+        });
+        const writerAtBoundary = new Promise<void>((resolve) => {
+          writerReady = resolve;
+        });
+        const writerMutated = new Promise<void>((resolve) => {
+          writerDone = resolve;
+        });
+        const mutationGate = new Promise<void>((resolve) => {
+          startMutation = resolve;
+        });
+        const observed = new Proxy(runtime, {
+          get(target, propertyKey, receiver) {
+            if (propertyKey !== "connect") {
+              const value: unknown = Reflect.get(target, propertyKey, receiver);
+              return typeof value === "function" ? value.bind(target) : value;
+            }
+            return async () => {
+              const client = await target.connect();
+              return new Proxy(client, {
+                get(connection, key, innerReceiver) {
+                  if (key !== "query") {
+                    const value: unknown = Reflect.get(connection, key, innerReceiver);
+                    return typeof value === "function" ? value.bind(connection) : value;
+                  }
+                  return async (...args: unknown[]) => {
+                    const sql = typeof args[0] === "string" ? args[0] : "";
+                    if (
+                      postModel &&
+                      writerFirst &&
+                      sql.includes("FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE")
+                    ) {
+                      postModel = false;
+                      tickPid = (await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
+                        ?.pid;
+                      tickReady();
+                    }
+                    const result: unknown = await Reflect.apply(connection.query.bind(connection), undefined, args);
+                    if (postModel && !writerFirst && sql.includes("COALESCE(b.content_hash")) {
+                      postModel = false;
+                      tickPid = (await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
+                        ?.pid;
+                      tickReady();
+                      await tickGate;
+                    }
+                    return result;
+                  };
+                },
+              });
+            };
+          },
+        });
+        const mutate = (client: PoolClient) => {
+          if (mutation === "insert attachment")
+            return insertWithClient(client, item.id, [{ blobId: blob.id, source: "camera" }]);
+          if (mutation === "remove attachment") return deleteWithClient(client, z.uuid().parse(attachmentId));
+          return (async () => {
+            await deleteRelationWithClient(client, {
+              relationPropertyId: property.id,
+              callerItemId: item.id,
+              targetItemId: type.id,
+            });
+            await createRelationWithClient(client, {
+              relationPropertyId: property.id,
+              callerItemId: item.id,
+              targetItemId: alternate.id,
+            });
+          })();
+        };
+        const writer = withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+          await client.query("SET LOCAL statement_timeout = '5s'");
+          writerPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          if (!writerFirst) {
+            writerReady();
+            await mutationGate;
+          }
+          await mutate(client);
+          writerDone();
+          if (writerFirst) writerReady();
+          await writerGate;
+        });
+        writer.catch(() => {});
+        let tick: Promise<void> | undefined;
+        try {
+          if (writerFirst) await boundedBarrier(writerAtBoundary);
+          const handler = createSemprecTickAction(observed, async () => {
+            postModel = true;
+            return { properties: { name: "Old proposal" } };
+          });
+          tick = runInTenant(getTenantZeroId(), () =>
+            handler(
+              {
+                inboxDatabaseId: inboxId,
+                inboxItemTypesDatabaseId: typesId,
+                processingProposalsDatabaseId: proposalsId,
+              },
+              { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
+            ),
+          );
+          tick.catch(() => {});
+          await boundedBarrier(tickAtBoundary);
+          if (!writerFirst) {
+            await boundedBarrier(writerAtBoundary);
+            startMutation();
+          }
+          let blocked = false;
+          for (let n = 0; n < 100 && !blocked; n++) {
+            const holder = writerFirst ? writerPid : tickPid;
+            const competitor = writerFirst ? tickPid : writerPid;
+            const result = await pool.query<{ blocked: boolean }>(
+              "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+              [holder, competitor],
+            );
+            blocked = result.rows[0]?.blocked === true;
+            if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          expect(tickPid).toBeGreaterThan(0);
+          expect(writerPid).toBeGreaterThan(0);
+          expect(tickPid).not.toBe(writerPid);
+          expect(blocked).toBe(true);
+          if (writerFirst) {
+            releaseWriter();
+            await writer;
+            await tick;
+            expect(await findProposalForItem(pool, proposalsId, item.id)).toBeNull();
+          } else {
+            releaseTick();
+            await tick;
+            await boundedBarrier(writerMutated);
+            expect((await findProposalForItem(pool, proposalsId, item.id))?.properties.proposal).toMatchObject({
+              properties: { name: "Old proposal" },
+            });
+            releaseWriter();
+            await writer;
+          }
+        } finally {
+          releaseTick();
+          releaseWriter();
+          startMutation();
+          await Promise.allSettled([writer, ...(tick ? [tick] : [])]);
+          await runtime.end();
+        }
+      }
+    },
+    30000,
+  );
+
+  it("skips a busy proposal card without creating another card", async () => {
+    const { item } = await createTypedItem("Original");
+    const config = {
+      inboxDatabaseId: inboxId,
+      inboxItemTypesDatabaseId: typesId,
+      processingProposalsDatabaseId: proposalsId,
+    };
+    const context = { heartbeatId: "hb", projectItemId: "proj", itemId: item.id };
+    await createSemprecTickAction(pool, async () => ({ properties: { name: "Original" } }))(config, context);
+    const original = await findProposalForItem(pool, proposalsId, item.id);
+    if (!original) throw new Error("Missing proposal");
+    await withTransaction(pool, (client) =>
+      updateItemWithClient(client, {
+        databaseId: inboxId,
+        itemId: item.id,
+        propertiesPatch: { text: "Changed" },
+      }),
+    );
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let release = () => {};
+    let locked = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const holder = withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+      await itemsStore.lockItemById(client, proposalsId, original.id);
+      locked();
+      await gate;
+    });
+    holder.catch(() => {});
+    try {
+      await boundedBarrier(ready);
+      await boundedBarrier(
+        runInTenant(getTenantZeroId(), () =>
+          createSemprecTickAction(runtime, async () => ({ properties: { name: "Changed" } }))(config, context),
+        ),
+      );
+      const current = await findProposalForItem(pool, proposalsId, item.id);
+      expect(current?.id).toBe(original.id);
+      expect(current?.properties).toEqual(original.properties);
+      const count = await pool.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM items WHERE database_id = $1 AND deleted_at IS NULL",
+        [proposalsId],
+      );
+      expect(count.rows[0]?.count).toBe(1);
+    } finally {
+      release();
+      await Promise.allSettled([holder]);
+      await runtime.end();
+    }
+  }, 15000);
+
+  it.each(["delete", "restore"] as const)(
+    "skips a busy raw type during its %s transaction",
+    async (operation) => {
+      const { item, type } = await createTypedItem(`Type ${operation}`);
+      const setup = createChokePoint(pool);
+      if (operation === "restore") await setup.softDeleteItem(typesId, type.id);
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      let release = () => {};
+      let atCommit = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const ready = new Promise<void>((resolve) => {
+        atCommit = resolve;
+      });
+      const observed = new Proxy(runtime, {
+        get(target, key, receiver) {
+          if (key !== "connect") {
+            const value: unknown = Reflect.get(target, key, receiver);
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+          return async () => {
+            const client = await target.connect();
+            return new Proxy(client, {
+              get(connection, prop, innerReceiver) {
+                if (prop !== "query") {
+                  const value: unknown = Reflect.get(connection, prop, innerReceiver);
+                  return typeof value === "function" ? value.bind(connection) : value;
+                }
+                return async (...args: unknown[]) => {
+                  if (typeof args[0] === "string" && args[0].trim().toUpperCase() === "COMMIT") {
+                    atCommit();
+                    await gate;
+                  }
+                  return Reflect.apply(connection.query.bind(connection), undefined, args);
+                };
+              },
+            });
+          };
+        },
+      });
+      const writer = runInTenant(getTenantZeroId(), () => {
+        const cp = createChokePoint(observed);
+        return operation === "delete" ? cp.softDeleteItem(typesId, type.id) : cp.restoreItem(typesId, type.id);
+      });
+      writer.catch(() => {});
+      try {
+        await boundedBarrier(ready);
+        await boundedBarrier(
+          runInTenant(getTenantZeroId(), () =>
+            createSemprecTickAction(runtime, async () => ({ properties: { name: "Old" } }))(
+              {
+                inboxDatabaseId: inboxId,
+                inboxItemTypesDatabaseId: typesId,
+                processingProposalsDatabaseId: proposalsId,
+              },
+              { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
+            ),
+          ),
+        );
+        expect(await findProposalForItem(pool, proposalsId, item.id)).toBeNull();
+      } finally {
+        release();
+        await Promise.allSettled([writer]);
+        await runtime.end();
+      }
+    },
+    15000,
+  );
+
+  it("allows distinct sources sharing a type to form proposals concurrently", async () => {
+    const { item, type } = await createTypedItem("First source");
+    const other = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        date: "2026-08-28",
+        time: "09:00",
+        text: "Second source",
+        type: type.id,
+      }),
+    );
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let release = () => {};
+    let reached = () => {};
+    let postModel = false;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const observed = new Proxy(runtime, {
+      get(target, key, receiver) {
+        if (key !== "connect") {
+          const value: unknown = Reflect.get(target, key, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return async () => {
+          const client = await target.connect();
+          return new Proxy(client, {
+            get(connection, prop, innerReceiver) {
+              if (prop !== "query") {
+                const value: unknown = Reflect.get(connection, prop, innerReceiver);
+                return typeof value === "function" ? value.bind(connection) : value;
+              }
+              return async (...args: unknown[]) => {
+                const result: unknown = await Reflect.apply(connection.query.bind(connection), undefined, args);
+                if (postModel && typeof args[0] === "string" && args[0].includes("COALESCE(b.content_hash")) {
+                  postModel = false;
+                  reached();
+                  await gate;
+                }
+                return result;
+              };
+            },
+          });
+        };
+      },
+    });
+    const config = {
+      inboxDatabaseId: inboxId,
+      inboxItemTypesDatabaseId: typesId,
+      processingProposalsDatabaseId: proposalsId,
+    };
+    const first = runInTenant(getTenantZeroId(), () =>
+      createSemprecTickAction(observed, async () => {
+        postModel = true;
+        return { properties: { name: "First" } };
+      })(config, { heartbeatId: "hb-a", projectItemId: "proj", itemId: item.id }),
+    );
+    first.catch(() => {});
+    let second: Promise<void> | undefined;
+    try {
+      await boundedBarrier(ready);
+      second = runInTenant(getTenantZeroId(), () =>
+        createSemprecTickAction(runtime, async () => ({ properties: { name: "Second" } }))(config, {
+          heartbeatId: "hb-b",
+          projectItemId: "proj",
+          itemId: other.id,
+        }),
+      );
+      second.catch(() => {});
+      await boundedBarrier(second);
+      expect((await findProposalForItem(pool, proposalsId, other.id))?.properties.status).toBe("proposed");
+    } finally {
+      release();
+      await Promise.allSettled([first, ...(second ? [second] : [])]);
+      await runtime.end();
+    }
+    expect((await findProposalForItem(pool, proposalsId, item.id))?.properties.status).toBe("proposed");
+  }, 15000);
 
   it("a proposal created by a second tick while the first is still in computeProposal is revised, not duplicated (issue #792 review fix)", async () => {
     const { item } = await createTypedItem("Buy milk");

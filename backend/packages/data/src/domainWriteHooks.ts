@@ -21,6 +21,7 @@ import {
   registerItemPreWriteTransform,
   registerItemUpdateHook,
   registerRelationEdgeWriteHook,
+  registerRelationEdgeDeleteHook,
 } from "./chokePoint/hooks.js";
 import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "./mcp/mcpServerWriteHook.js";
 import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.js";
@@ -37,6 +38,7 @@ import {
 import { journalItemCreateHook } from "./journal/journalWriteHook.js";
 import { inboxItemCreateHook } from "./inbox/inboxCreateHook.js";
 import { inboxTypeItemCreateHook, inboxTypeItemUpdateHook } from "./inbox/inboxTypeWriteHook.js";
+import { inboxTypeEdgeDeleteHook, inboxTypeEdgeWriteHook } from "./inbox/inboxSourceWriteHook.js";
 import { blobReferenceItemCreateHook, blobReferenceItemUpdateHook } from "./blobs/blobReferenceWriteHook.js";
 
 registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform, async (context) => ({
@@ -60,6 +62,8 @@ registerRelationEdgeWriteHook(transcriptSpeakerEdgeWriteHook);
 registerItemCreateHook(libraryRatingItemCreateHook);
 registerItemUpdateHook(libraryRatingItemUpdateHook);
 registerRelationEdgeWriteHook(libraryWatchedWithEdgeWriteHook);
+registerRelationEdgeWriteHook(inboxTypeEdgeWriteHook);
+registerRelationEdgeDeleteHook(inboxTypeEdgeDeleteHook);
 registerItemCreateHook(journalItemCreateHook);
 registerItemCreateHook(inboxItemCreateHook);
 registerItemCreateHook(inboxTypeItemCreateHook);

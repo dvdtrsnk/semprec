@@ -11,6 +11,23 @@ export function isSerializationFailure(err: unknown): boolean {
 
 /** How many times a tick transaction is run before its serialization failure is rethrown. */
 const TICK_TRANSACTION_ATTEMPTS = 3;
+const writeTransactions = new WeakSet<PoolClient>();
+
+export function isTickWriteTransaction(client: PoolClient): boolean {
+  return writeTransactions.has(client);
+}
+
+/** Post-model writes use fresh statement snapshots after taking their source lock. */
+export function withTickWriteTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  return withTransaction(pool, async (client) => {
+    writeTransactions.add(client);
+    try {
+      return await fn(client);
+    } finally {
+      writeTransactions.delete(client);
+    }
+  });
+}
 
 /**
  * Runs one of the tick's `repeatable read` transactions and runs it again when Postgres aborts it with a

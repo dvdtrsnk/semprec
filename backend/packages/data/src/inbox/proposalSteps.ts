@@ -12,6 +12,7 @@ import { filesTypeForMimeType } from "../blobs/fileTypeDetection.js";
 import { FILES_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { parseFileFromAttachmentProperties } from "./fileAttachmentStep.js";
 import { deleteInboxAttachment, getInboxAttachment } from "./inboxAttachmentsStore.js";
+import { lockInboxSource } from "./inboxSourceGuard.js";
 import type { ProposalStep } from "./inboxTickAction.js";
 import { effectiveStepRelations, selectActiveSteps } from "./proposalStepGraph.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
@@ -306,12 +307,23 @@ async function executeFileFromAttachment(
   ctx: StepWriteContext,
 ): Promise<StepOutcome> {
   const { attachmentId, name, date } = parseFileFromAttachmentProperties(step.ref, step.properties ?? {});
-  const attachment = await getInboxAttachment(client, attachmentId);
-  if (!attachment || attachment.inboxItemId !== ctx.sourceInboxItemId) {
+  const initial = await client.query<{ inbox_item_id: string }>(
+    "SELECT inbox_item_id FROM inbox_attachments WHERE attachment_id = $1",
+    [attachmentId],
+  );
+  if (!initial.rows[0] || initial.rows[0].inbox_item_id !== ctx.sourceInboxItemId) {
     throw new ValidationError(
       `Proposal step '${step.ref}': attachment '${attachmentId}' is not an attachment of the proposal's source Inbox item`,
       { ref: step.ref, field: "attachmentId" },
     );
+  }
+  await lockInboxSource(client, initial.rows[0].inbox_item_id, true);
+  const attachment = await getInboxAttachment(client, attachmentId);
+  if (!attachment) {
+    throw new ConflictError(`Proposal step '${step.ref}': attachment '${attachmentId}' was already moved`, {
+      ref: step.ref,
+      field: "attachmentId",
+    });
   }
   const filesDatabase = await databasesStore.getDatabaseByModuleId(client, FILES_MODULE_ID);
   if (!filesDatabase) {
