@@ -182,6 +182,8 @@ export async function prepareUserItemPatch(
   if (!result)
     throw new ValidationError("The item's write transform cannot be safely prepared", { field: "properties" });
   assertTransformAddedKeysWritable(properties, Object.keys(values), result.patch, database.ownerModuleId);
+  assertColorValues(properties, result.patch);
+  assertTitlePresent(properties, result.patch, database.ownerModuleId, { writerKind: "user" }, "patch");
   for (const key of result.deferredKeys) {
     const property = properties.find((candidate) => candidate.key === key);
     if (!property || property.owner !== "user" || Object.hasOwn(values, key) || Object.hasOwn(result.patch, key)) {
@@ -364,6 +366,7 @@ export async function createItemWithClient(
           itemProperties[property.key] = value;
         }
       }
+      assertColorValues(properties, itemProperties);
       assertTitlePresent(properties, itemProperties, database.ownerModuleId, writer, "create");
       return itemProperties;
     },
@@ -478,6 +481,8 @@ export async function updateItemWithClient(
       { client, database, stored, patch: input.propertiesPatch, humanWriterUserId: options.humanWriterUserId, writer },
       properties,
     );
+    assertColorValues(properties, propertiesPatch);
+    assertTitlePresent(properties, propertiesPatch, database.ownerModuleId, writer, "patch");
   }
   // Every key this update writes, including any a transform added. Value links, rollup dependencies
   // and the timezone check treat these like any other written key; `patchKeys` (the caller's keys)

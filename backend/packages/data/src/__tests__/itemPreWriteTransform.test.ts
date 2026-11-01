@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { prepareUserItemPatch } from "../chokePoint/itemWrites.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import {
   clearHooksForTests,
@@ -12,7 +13,13 @@ import { ForbiddenError, ValidationError } from "../errors.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { EVENTS_MODULE_ID, TASKS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { taskPreWriteTransform } from "../tasks/taskPreWriteTransform.js";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
+import * as schedulerStore from "../scheduler/schedulerStore.js";
+import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
+import { runOnce } from "@semprec/queue";
+import { createActionRegistry } from "../scheduler/actions.js";
+import { createCoreTaskList } from "../worker.js";
+import { withTransaction } from "../db/pool.js";
 
 // A probe module id that owns the databases these tests create. Its transforms are registered per test.
 const PROBE_MODULE = "itemPreWriteProbe";
@@ -86,6 +93,203 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
     await pool?.end();
   });
 
+  describe("effective patch validation", () => {
+    async function fixture() {
+      const database = await chokePoint.createDatabase({ name: "Validation probe", ownerModuleId: PROBE_MODULE });
+      await chokePoint.createProperty({ databaseId: database.id, key: "title", name: "Title", type: "title" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "color", name: "Color", type: "color" });
+      return database;
+    }
+
+    function registerOutput(output: Record<string, unknown>) {
+      registerItemPreWriteTransform(
+        PROBE_MODULE,
+        async ({ patch }) => ({ ...patch, ...output }),
+        async ({ patch }) => ({ patch: { ...patch, ...output }, deferredKeys: [] }),
+      );
+    }
+
+    it.each([
+      ["color", { color: "not-a-color" }],
+      ["title", { title: "  " }],
+    ] as const)("rejects invalid transformed %s on create with no write or event", async (field, output) => {
+      const database = await fixture();
+      registerOutput(output);
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await expect(
+          chokePoint.createItem(
+            { databaseId: database.id, properties: { title: "Valid", color: "#123456" } },
+            undefined,
+            undefined,
+            { writerKind: "user" },
+          ),
+        ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field } });
+        expect(await countItems(database.id)).toBe(0);
+        expect(events).toEqual([]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
+    });
+
+    it("rejects an invalid color added by a transform on create", async () => {
+      const database = await fixture();
+      registerOutput({ color: "invalid" });
+      await expect(
+        chokePoint.createItem({ databaseId: database.id, properties: { title: "Valid" } }, undefined, undefined, {
+          writerKind: "user",
+        }),
+      ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field: "color" } });
+      expect(await countItems(database.id)).toBe(0);
+    });
+
+    it.each([
+      ["color", { color: "not-a-color" }],
+      ["title", { title: "  " }],
+    ] as const)("rejects invalid transformed %s on update and read-only preparation", async (field, output) => {
+      const database = await fixture();
+      const item = await chokePoint.createItem({
+        databaseId: database.id,
+        properties: { title: "Valid", color: "#123456" },
+      });
+      registerOutput(output);
+      const properties = await chokePoint.listProperties(database.id);
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        const patch = { title: "Updated", color: "#abcdef" };
+        await expect(prepareUserItemPatch(properties, patch, database, item)).rejects.toMatchObject({
+          status: 400,
+          code: "validation_failed",
+          details: { field },
+        });
+        await expect(
+          chokePoint.updateItem(
+            { databaseId: database.id, itemId: item.id, propertiesPatch: patch },
+            undefined,
+            undefined,
+            { writerKind: "user" },
+          ),
+        ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field } });
+        expect((await chokePoint.getItem(database.id, item.id))?.properties).toEqual(item.properties);
+        expect(events).toEqual([]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
+    });
+
+    it("accepts valid transformed color and title on create, update and read-only preparation", async () => {
+      const database = await fixture();
+      registerOutput({ title: "Prepared", color: "#abcdef" });
+      const created = await chokePoint.createItem(
+        { databaseId: database.id, properties: { title: "Valid", color: "#123456" } },
+        undefined,
+        undefined,
+        { writerKind: "user" },
+      );
+      const properties = await chokePoint.listProperties(database.id);
+      expect((await prepareUserItemPatch(properties, { title: "Updated" }, database, created)).patch).toMatchObject({
+        title: "Prepared",
+        color: "#abcdef",
+      });
+      const updated = await chokePoint.updateItem(
+        { databaseId: database.id, itemId: created.id, propertiesPatch: { title: "Updated" } },
+        undefined,
+        undefined,
+        { writerKind: "user" },
+      );
+      expect(updated.properties).toMatchObject({ title: "Prepared", color: "#abcdef" });
+    });
+
+    it("retains the system-writer title exemption after transformation", async () => {
+      const database = await fixture();
+      registerOutput({ title: "  ", color: "#abcdef" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: { title: "Valid" } });
+      expect(item.properties.title).toBe("  ");
+      const updated = await chokePoint.updateItem({
+        databaseId: database.id,
+        itemId: item.id,
+        propertiesPatch: { title: "Valid" },
+      });
+      expect(updated.properties.title).toBe("  ");
+    });
+
+    it.each([
+      ["color", { color: "invalid" }, { title: "Updated" }],
+      ["title", { title: "  " }, { color: "#123456" }],
+    ] as const)("rejects an invalid added %s on update and preparation", async (field, output, patch) => {
+      const database = await fixture();
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: { title: "Valid" } });
+      registerOutput(output);
+      const properties = await chokePoint.listProperties(database.id);
+      await expect(prepareUserItemPatch(properties, patch, database, item)).rejects.toMatchObject({
+        status: 400,
+        code: "validation_failed",
+        details: { field },
+      });
+      await expect(
+        chokePoint.updateItem(
+          { databaseId: database.id, itemId: item.id, propertiesPatch: patch },
+          undefined,
+          undefined,
+          { writerKind: "user" },
+        ),
+      ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field } });
+      expect((await chokePoint.getItem(database.id, item.id))?.properties).toEqual(item.properties);
+    });
+
+    it("accepts transformed null as a valid color", async () => {
+      const database = await fixture();
+      registerOutput({ color: null });
+      const item = await chokePoint.createItem(
+        { databaseId: database.id, properties: { title: "Valid" } },
+        undefined,
+        undefined,
+        { writerKind: "user" },
+      );
+      expect(item.properties.color).toBeNull();
+      const properties = await chokePoint.listProperties(database.id);
+      expect((await prepareUserItemPatch(properties, { title: "Updated" }, database, item)).patch.color).toBeNull();
+      const updated = await chokePoint.updateItem(
+        { databaseId: database.id, itemId: item.id, propertiesPatch: { title: "Updated" } },
+        undefined,
+        undefined,
+        { writerKind: "user" },
+      );
+      expect(updated.properties.color).toBeNull();
+    });
+
+    it("does not reject an unrelated patch solely because the stored title is blank", async () => {
+      const database = await fixture();
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: { title: "  " } });
+      registerOutput({ color: "#abcdef" });
+      const updated = await chokePoint.updateItem(
+        { databaseId: database.id, itemId: item.id, propertiesPatch: { color: "#123456" } },
+        undefined,
+        undefined,
+        { writerKind: "user" },
+      );
+      expect(updated.properties).toMatchObject({ title: "  ", color: "#abcdef" });
+    });
+
+    it("retains the Transcripts title exemption for a user after transformation", async () => {
+      const databaseId = await databaseIdFor(TRANSCRIPTS_MODULE_ID);
+      registerItemPreWriteTransform(TRANSCRIPTS_MODULE_ID, async ({ patch }) => ({ ...patch, name: "  " }));
+      const item = await chokePoint.createItem({ databaseId, properties: { name: "Valid" } }, undefined, undefined, {
+        writerKind: "user",
+      });
+      expect(item.properties.name).toBe("  ");
+      const updated = await chokePoint.updateItem(
+        { databaseId, itemId: item.id, propertiesPatch: { name: "Valid" } },
+        undefined,
+        undefined,
+        { writerKind: "user" },
+      );
+      expect(updated.properties.name).toBe("  ");
+    });
+  });
+
   it("stores the transformed patch once and hands it to the update hooks", async () => {
     const eventsId = await databaseIdFor(EVENTS_MODULE_ID);
     const transformInputs: unknown[] = [];
@@ -130,26 +334,64 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
     registerItemCreateHook(async () => {
       createHookCalls += 1;
     });
-
-    const first = await chokePoint.createItem({
-      databaseId,
-      properties: { title: "original" },
-      idempotencyKey: "same-key",
+    const projectDb = await databaseIdFor("projects");
+    const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [projectDb]);
+    const project = rows[0];
+    if (!project) throw new Error("Missing seeded project");
+    let heartbeatRuns = 0;
+    const actions = createActionRegistry();
+    actions.set("replayProbe", async () => {
+      heartbeatRuns += 1;
     });
-    const replay = await chokePoint.createItem({
-      databaseId,
-      properties: { title: "different" },
-      idempotencyKey: "same-key",
-    });
+    await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        schedulerStore.createHeartbeat(client, {
+          projectItemId: project.id,
+          name: "Replay probe",
+          rule: { kind: "onItemEvent", databaseId, event: "create" },
+          actionId: "replayProbe",
+        }),
+      ),
+    );
+    const events: InvalidationEvent[] = [];
+    const heartbeat = vi.spyOn(schedulerStore, "triggerOnItemEventHeartbeats");
+    setInvalidationHook((event) => events.push(event));
+    try {
+      const first = await inTenantZero(() =>
+        chokePoint.createItem({
+          databaseId,
+          properties: { title: "original" },
+          idempotencyKey: "same-key",
+        }),
+      );
+      const firstEvents = [...events];
+      await runOnce({ pgPool: pool, taskList: createCoreTaskList(pool, actions) });
+      expect(heartbeatRuns).toBe(1);
+      const replay = await inTenantZero(() =>
+        chokePoint.createItem({
+          databaseId,
+          properties: { title: "different" },
+          idempotencyKey: "same-key",
+        }),
+      );
+      await runOnce({ pgPool: pool, taskList: createCoreTaskList(pool, actions) });
+      expect(heartbeatRuns).toBe(1);
 
-    expect(first.properties.title).toBe("transformed 1");
-    expect(replay.id).toBe(first.id);
-    expect(replay.properties.title).toBe("transformed 1");
-    expect(await countItems(databaseId)).toBe(1);
-    expect(createHookCalls).toBe(1);
-    // The transforms run before insertItemWithReplay checks the key, so the replay invokes the transform
-    // once more and discards that result (see the choke-point ADR, consequences).
-    expect(transformCalls).toBe(2);
+      expect(first.properties.title).toBe("transformed 1");
+      expect(replay.id).toBe(first.id);
+      expect(replay.properties.title).toBe("transformed 1");
+      expect(await countItems(databaseId)).toBe(1);
+      expect(createHookCalls).toBe(1);
+      expect(heartbeat).toHaveBeenCalledTimes(1);
+      expect(firstEvents).toEqual([expect.objectContaining({ scope: "item", itemId: first.id, op: "create" })]);
+      expect(events).toEqual(firstEvents);
+      // The transforms run before insertItemWithReplay checks the key, so the replay invokes the transform
+      // once more and discards that result (see the choke-point ADR, consequences).
+      expect(transformCalls).toBe(2);
+    } finally {
+      heartbeat.mockRestore();
+      setInvalidationHook(() => {});
+    }
   });
 
   it("refuses a create whose transform adds an owner:system key of another process, and stores nothing", async () => {
