@@ -294,10 +294,11 @@ describe("semp_problem notifications raised by raiseProblem (issue #1466)", () =
     expect(await countInZero(`SELECT count(*) FROM push_deliveries`)).toBe(1);
   });
 
-  it("writes nothing new when the same problem is raised again at the same or a lower severity", async () => {
+  it("writes no new notification or push when the same problem is raised at the same or a lower severity", async () => {
     const sourceId = randomUUID();
     const dedupeKey = `mail:${sourceId}`;
     const outcomes: string[] = [];
+    const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
     for (const [attempt, severity] of [
       [1, "critical"],
       [2, "critical"],
@@ -307,10 +308,13 @@ describe("semp_problem notifications raised by raiseProblem (issue #1466)", () =
         raiseProblem(client, problemInput({ sourceId, dedupeKey, severity, occurrenceKey: `job-${attempt}` })),
       );
       outcomes.push(result.outcome);
+      await fanOutAll({ sendWebPush, sendApns: vi.fn() });
     }
 
     expect(outcomes).toEqual(["created", "merged", "merged"]);
     expect(await sempNotifications()).toHaveLength(1);
+    expect(sendWebPush).toHaveBeenCalledTimes(1);
+    expect(await countInZero("SELECT count(*) FROM push_deliveries")).toBe(1);
   });
 
   it("writes one new notification when a problem's severity rises from warning to critical", async () => {
