@@ -77,43 +77,45 @@ function classifyFailure(err: unknown, mcpServerItemId: string): McpInvokeFailur
 
 function formatContentBlock(block: unknown): string {
   if (typeof block !== "object" || block === null || !("type" in block)) return "[content omitted]";
-  const type = (block as { type?: unknown }).type;
+  const type = block.type;
   if (type === "text") {
-    const text = (block as { text?: unknown }).text;
+    const text = "text" in block ? block.text : undefined;
     return typeof text === "string" ? text : "[content omitted]";
   }
   if (type === "image" || type === "audio") {
-    const mimeType = (block as { mimeType?: unknown }).mimeType;
+    const mimeType = "mimeType" in block ? block.mimeType : undefined;
     return `[${type} content${typeof mimeType === "string" ? `, ${mimeType}` : ""} omitted]`;
   }
   if ("uri" in block) {
-    const uri = (block as { uri?: unknown }).uri;
+    const uri = block.uri;
     return `[resource${typeof uri === "string" ? ` ${uri}` : ""} omitted]`;
   }
   return "[content omitted]";
 }
 
-/** `handle.client.callTool`'s result shape — the MCP SDK doesn't export this as a standalone type usable without its zod schema, so this is the narrow subset actually read here. */
-interface CallToolResultLike {
-  content?: unknown[];
-  structuredContent?: Record<string, unknown>;
-  isError?: boolean;
-}
-
-function formatCallToolResult(result: CallToolResultLike, mcpServerItemId: string): McpInvokeResult {
+function formatCallToolResult(result: unknown, mcpServerItemId: string): McpInvokeResult {
   const formatted = formatCallToolContent(result);
   return formatted.error ? { ...formatted, failure: { failureKind: "toolError", mcpServerItemId } } : formatted;
 }
 
-function formatCallToolContent(result: CallToolResultLike): McpInvokeResult {
-  const content = Array.isArray(result.content) ? result.content : [];
+function formatCallToolContent(result: unknown): McpInvokeResult {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) {
+    throw new Error("Invalid MCP tool result");
+  }
+  const content = "content" in result && Array.isArray(result.content) ? result.content : [];
   const text = content
     .map(formatContentBlock)
     .filter((part) => part.length > 0)
     .join("\n");
   const formattedText =
-    text.length > 0 ? text : result.structuredContent !== undefined ? JSON.stringify(result.structuredContent) : "";
-  return result.isError === true ? { error: true, result: formattedText } : { error: false, result: formattedText };
+    text.length > 0
+      ? text
+      : "structuredContent" in result && result.structuredContent !== undefined
+        ? JSON.stringify(result.structuredContent)
+        : "";
+  return "isError" in result && result.isError === true
+    ? { error: true, result: formattedText }
+    : { error: false, result: formattedText };
 }
 
 /**
@@ -168,7 +170,7 @@ export async function executeMcpInvocation(
       undefined,
       { signal, timeout: MCP_TOOL_CALL_TIMEOUT_MS },
     );
-    return formatCallToolResult(callResult as CallToolResultLike, target.serverItem.id);
+    return formatCallToolResult(callResult, target.serverItem.id);
   } catch (err) {
     // `handle` is set only once the connect succeeded, so a `McpConnectionError` here is a failed connect.
     if (handle === undefined && err instanceof McpConnectionError) {

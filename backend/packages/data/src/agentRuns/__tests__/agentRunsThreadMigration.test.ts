@@ -3,7 +3,7 @@ import { copyFile, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { createPool } from "../../db/pool.js";
 import { runMigrations } from "../../db/migrate.js";
 
@@ -54,7 +54,65 @@ it.each([
         runIds.push(rows[0]!.id);
       }
       await copyFile(path.join(migrations, expand), path.join(dir, expand));
-      await runMigrations(database, dir);
+      if (multipleTenants) {
+        await runMigrations(database, dir);
+      } else {
+        const gate = await database.connect();
+        const reader = await database.connect();
+        const writer = await database.connect();
+        let migration: Promise<void> | undefined;
+        let read: Promise<unknown> | undefined;
+        let write: Promise<unknown> | undefined;
+        let gateOpen = false;
+        try {
+          await gate.query("BEGIN");
+          gateOpen = true;
+          await gate.query("LOCK TABLE schema_migrations IN SHARE MODE");
+          await reader.query("SET statement_timeout = '10s'");
+          await writer.query("SET statement_timeout = '10s'");
+          const readerPid = (await reader.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+          const writerPid = (await writer.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+          migration = runMigrations(database, dir);
+          let migrationPid = 0;
+          await vi.waitFor(
+            async () => {
+              const { rows } = await database!.query<{ pid: number }>(
+                `SELECT a.pid FROM pg_stat_activity a
+               JOIN pg_locks l ON l.pid = a.pid
+               WHERE a.datname = current_database() AND a.wait_event_type = 'Lock'
+                 AND a.query LIKE 'INSERT INTO schema_migrations%'
+                 AND l.relation = 'agent_runs'::regclass AND l.mode = 'AccessExclusiveLock' AND l.granted`,
+              );
+              expect(rows).toHaveLength(1);
+              migrationPid = rows[0]!.pid;
+            },
+            { timeout: 5000, interval: 20 },
+          );
+          read = reader.query("SELECT id FROM agent_runs WHERE id = $1", [runIds[0]]);
+          write = writer.query("UPDATE agent_runs SET task = task WHERE id = $1", [runIds[0]]);
+          await vi.waitFor(
+            async () => {
+              const { rows } = await database!.query<{ pid: number; blockers: number[] }>(
+                "SELECT pid, pg_blocking_pids(pid) AS blockers FROM pg_stat_activity WHERE pid = ANY($1::int[])",
+                [[readerPid, writerPid]],
+              );
+              expect(rows).toHaveLength(2);
+              expect(rows.every((row) => row.blockers.includes(migrationPid))).toBe(true);
+            },
+            { timeout: 5000, interval: 20 },
+          );
+          await gate.query("COMMIT");
+          gateOpen = false;
+          const outcomes = await Promise.allSettled([migration, read, write]);
+          expect(outcomes.map((outcome) => outcome.status)).toEqual(["fulfilled", "fulfilled", "fulfilled"]);
+        } finally {
+          if (gateOpen) await gate.query("ROLLBACK");
+          await Promise.allSettled([migration, read, write].filter((operation) => operation !== undefined));
+          gate.release();
+          reader.release();
+          writer.release();
+        }
+      }
       const before = await database.query<{ convalidated: boolean }>(
         "SELECT convalidated FROM pg_constraint WHERE conname = 'agent_runs_thread_id_fkey'",
       );

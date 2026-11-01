@@ -4,7 +4,8 @@
 --
 -- ON DELETE SET NULL (thread_id) is the column-list form (Postgres 16): deleting a thread clears
 -- only thread_id and never nulls the NOT NULL tenant_id. The key is NOT VALID so adding it takes
--- a brief lock without scanning agent_runs; 0097 validates it.
+-- no initial foreign-key scan; 0097 validates it. The ADD COLUMN lock persists through this
+-- file's index build until the migration transaction commits.
 ALTER TABLE agent_runs ADD COLUMN thread_id uuid NULL;
 
 ALTER TABLE agent_runs ADD CONSTRAINT agent_runs_thread_id_fkey

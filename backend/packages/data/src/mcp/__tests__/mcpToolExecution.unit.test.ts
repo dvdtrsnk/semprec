@@ -146,6 +146,17 @@ describe("executeMcpInvocation failure classification (issue #1444)", () => {
     mockHandle(vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] }), close);
     expect(await executeMcpInvocation(POOL, TARGET, {})).toEqual({ error: false, result: "ok" });
   });
+
+  it("handles the SDK compatibility result and rejects a malformed result without exposing it", async () => {
+    mockHandle(vi.fn().mockResolvedValue({ toolResult: "legacy" }), close);
+    expect(await executeMcpInvocation(POOL, TARGET, {})).toEqual({ error: false, result: "" });
+    mockHandle(vi.fn().mockResolvedValue(null), close);
+    expect(await executeMcpInvocation(POOL, TARGET, {})).toEqual({
+      error: true,
+      result: "MCP tool call failed for an unexpected reason",
+      failure: { failureKind: "toolError", mcpServerItemId: "server-1" },
+    });
+  });
 });
 
 describe("executeMcpInvocation connection recording (issue #1450)", () => {

@@ -407,6 +407,60 @@ describe("MCP connection factory (issue #231)", () => {
       }
     }, 75_000);
 
+    it("cancels a tools/call already blocked at the MCP server without classifying it as a failure", async () => {
+      let releaseCall: (() => void) | undefined;
+      let markCalled: (() => void) | undefined;
+      const called = new Promise<void>((resolve) => {
+        markCalled = resolve;
+      });
+      const blocked = new Promise<void>((resolve) => {
+        releaseCall = resolve;
+      });
+      let transport: SSEServerTransport | undefined;
+      const server = createServer((req, res) => {
+        void (async () => {
+          if (req.method === "GET" && req.url === "/sse") {
+            transport = new SSEServerTransport("/messages", res);
+            const mcp = new McpServer({ name: "blocked-call", version: "1" }, { capabilities: { tools: {} } });
+            mcp.setRequestHandler(CallToolRequestSchema, async () => {
+              markCalled?.();
+              await blocked;
+              return { content: [] };
+            });
+            await mcp.connect(transport);
+            return;
+          }
+          if (req.method === "POST" && transport) return transport.handlePostMessage(req, res);
+          res.writeHead(404).end();
+        })().catch(() => {
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const controller = new AbortController();
+      let call: ReturnType<typeof executeMcpInvocation> | undefined;
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("expected a TCP address");
+        const item = await createMcpServerItem({ transport: "sse", url: `http://127.0.0.1:${address.port}/sse` });
+        call = executeMcpInvocation(pool, { serverItem: item, toolName: "blocked" }, {}, {}, controller.signal);
+        await Promise.race([
+          called,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("tool call not received")), 5000)),
+        ]);
+        controller.abort();
+        expect(await call).toEqual({ error: true, result: "MCP tool call was cancelled before it completed" });
+      } finally {
+        controller.abort();
+        releaseCall?.();
+        await call?.catch(() => undefined);
+        await transport?.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      }
+    }, 15_000);
+
     it("leaves no child process running after a failed connect", async () => {
       await makeSoleTenantAdmin();
       const item = await createMcpServerItem({ transport: "stdio", command: "definitely-not-a-real-binary-xyz" });
