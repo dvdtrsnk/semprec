@@ -346,6 +346,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     ).rejects.toThrow("mcp grants unavailable");
 
     expect(await runRow(run.id)).toEqual({ status: "error", result: "mcp grants unavailable" });
+    expect((await getAgentRun(pool, run.id))?.errorCode).toBe("internal");
     expect(await errorNotificationCount(run.id)).toBe(1);
     const events = await runEvents(run.id);
     expect(events).toEqual([{ kind: "run_status", payload: { kind: "run_status", status: "error" } }]);
