@@ -33,3 +33,9 @@ Retain the recovered explicit empty blocks/ids no-write no-op; existing input va
 ## Remaining audit work
 
 The suspected value-link/item opposite lock order remains a static finding awaiting bounded production-path reproduction and a separate locking/ADR decision if confirmed. No new lock contract is authorized here. Invalid runtime block-type rejection before Yjs mutation and the explicit-null Tasks fix implement current scoped validation requirements; they require discriminating permanent tests and independent review. Development results, setup failures and host SysV capacity do not establish batch acceptance.
+
+## 7. Value-link handoff includes transformed user-owned keys
+
+For an existing-item update under systemOwnerProcess valueLinks, permission must cover both caller keys and every user-owned key emitted by the final pre-write transform, including explicit null and unchanged values. Active handoff for date does not authorize clearing timeFrom/timeTo. The derived system time field keeps the module-transform ownership rule and needs no value-link row when added by that transform. The new append-only handoff ADR narrows the earlier registry ADR's caller-only consequence for this process only; create, other writers and relation-side authorization are unchanged.
+
+Require real Tasks production composition negatives for missing/broken generated-key links and unchanged-null output, complete rollback/no-event assertions, and an all-active positive leaving links on without a derived system-time link. These assertions remain NOT RUN until database execution succeeds. This decision chooses permission scope, not a lock protocol; production handoff changes remain held pending the separate lock-order reproduction/design. No concurrency, global deadlock or acceptance result is inferred.
