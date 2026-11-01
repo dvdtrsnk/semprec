@@ -119,6 +119,31 @@ describe("correlated MCP HTTP failure observation", () => {
     operation.close();
   });
 
+  it("passes through a primitive error from a nonconforming transport", async () => {
+    const observer = createMcpHttpFailureObserver(false);
+    let received: unknown;
+    const transport: Transport = {
+      async start() {},
+      async close() {},
+      onerror: (error) => {
+        received = error;
+      },
+      send() {
+        // @ts-expect-error Exercise a dependency violating the SDK callback type.
+        transport.onerror?.("primitive failure");
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Exercise a nonconforming dependency.
+        return Promise.reject("primitive failure");
+      },
+    };
+    observer.install(transport);
+    const operation = observer.begin();
+    const failure: unknown = await operation.run(() => transport.send(call)).catch((value: unknown) => value);
+    expect(failure).toBe("primitive failure");
+    expect(received).toBe("primitive failure");
+    expect(operation.status(failure)).toBeUndefined();
+    operation.close();
+  });
+
   it("does not transfer a parent denial to a failed retry", async () => {
     let attempts = 0;
     const { observer, transport } = harness(

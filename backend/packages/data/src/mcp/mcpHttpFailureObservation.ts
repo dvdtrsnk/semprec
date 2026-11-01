@@ -66,7 +66,7 @@ export function createMcpHttpFailureObserver(hasAuthProvider: boolean) {
     const previousError = transport.onerror;
     transport.onerror = (error) => {
       const attempt = attempts.getStore();
-      if (attempt?.operation.active) attempt.emitted = new WeakRef(error);
+      if (attempt?.operation.active && error instanceof Error) attempt.emitted = new WeakRef(error);
       previousError?.(error);
     };
     const send = transport.send.bind(transport);
