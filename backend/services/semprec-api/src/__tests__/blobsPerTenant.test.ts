@@ -229,14 +229,21 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
         });
       }),
     );
-    // Tenant B has a Files item naming A's blob id. A must not see it.
+    // Historical invalid JSONB may name a foreign blob even though new writes are rejected.
     await runInTenant(tenantB, () =>
-      withTransaction(pool, (client) =>
-        createItemWithClient(client, {
+      withTransaction(pool, async (client) => {
+        const item = await createItemWithClient(client, {
           databaseId: bFilesDatabaseId,
-          properties: { name: "b-leaked.txt", file: { blobId: orphan.id } },
-        }),
-      ),
+          properties: { name: "b-leaked.txt" },
+        });
+        const updated = await client.query<{ id: string }>(
+          `UPDATE items SET properties = jsonb_set(properties, '{file}', jsonb_build_object('blobId', $3::text), true)
+           WHERE tenant_id = app_tenant_default() AND database_id = $1 AND id = $2 RETURNING id`,
+          [bFilesDatabaseId, item.id, orphan.id],
+        );
+        expect(updated.rowCount).toBe(1);
+        expect(updated.rows).toEqual([{ id: item.id }]);
+      }),
     );
 
     const aHeaders = await createUserIn(tenantA);

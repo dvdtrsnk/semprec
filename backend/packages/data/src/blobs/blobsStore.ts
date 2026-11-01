@@ -142,7 +142,7 @@ export async function deleteBlobIfUnreferenced(client: Queryable, id: string): P
   // references the blob would go unseen. The `databases` guard makes the DELETE a no-op in that
   // case: the blob is kept, as if still referenced, rather than deleted from under a reference.
   // A fresh statement after the lock sees references committed while lock acquisition waited.
-  const { rows } = await client.query<{ storage_key: string }>(
+  const result = await client.query<{ storage_key: string }>(
     `DELETE FROM blobs WHERE tenant_id = app_tenant_default() AND id = $1
        AND NOT EXISTS (SELECT 1 FROM databases WHERE tenant_id = app_tenant_default() AND NOT (id = ANY($3::uuid[])))
        AND NOT EXISTS (
@@ -164,7 +164,9 @@ export async function deleteBlobIfUnreferenced(client: Queryable, id: string): P
      RETURNING storage_key`,
     [id, id, await visibleDatabaseIds(client)],
   );
-  return rows[0]?.storage_key ?? null;
+  if (result.rowCount === 0) return null;
+  if (result.rowCount !== 1) throw new Error("Unexpected unreferenced blob deletion count");
+  return requireSingleRow(result.rows, "unreferenced blob deletion").storage_key;
 }
 
 /**
