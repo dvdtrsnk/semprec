@@ -825,7 +825,7 @@ describe("views", () => {
 
   describe("queryView: filter/sort/visibility push-down", () => {
     it("keeps a generic saved filter selecting the same items when stored option-label metadata changes", async () => {
-      const db = await chokePoint.createDatabase({ name: "Health records", key: "healthRecords" });
+      const db = await chokePoint.createDatabase({ name: "Filter label fixture" });
       const status = await chokePoint.createProperty({
         databaseId: db.id,
         key: "status",
