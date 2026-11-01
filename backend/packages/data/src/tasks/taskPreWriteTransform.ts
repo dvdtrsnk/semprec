@@ -70,8 +70,8 @@ function deriveTimeAndCheckSchedule(stored: ItemRow | null, patch: Record<string
     // A start or end time needs a date. A date switched off here clears the stored times in the same write.
     if (namedFrom) throw new ValidationError("Property 'timeFrom' requires a date", { field: "timeFrom" });
     if (namedTo) throw new ValidationError("Property 'timeTo' requires a date", { field: "timeTo" });
-    if (namedFrom === undefined && storedProperties.timeFrom != null) output.timeFrom = null;
-    if (namedTo === undefined && storedProperties.timeTo != null) output.timeTo = null;
+    output.timeFrom = null;
+    output.timeTo = null;
     output.time = null;
     return output;
   }

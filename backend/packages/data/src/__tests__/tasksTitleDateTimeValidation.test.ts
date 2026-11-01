@@ -51,6 +51,16 @@ describe("Tasks title, date and time rules (issue gh-1536)", () => {
       expect(task.properties).toMatchObject({ timeFrom: "09:00", time: "09:00" });
     });
 
+    it("stores all time fields as explicit nulls when created without a date", async () => {
+      const task = await chokePoint.createItem({ databaseId: tasksDatabaseId, properties: { name: "All day" } });
+      expect(task.properties).toMatchObject({ timeFrom: null, timeTo: null, time: null });
+      expect((await chokePoint.getItem(tasksDatabaseId, task.id))?.properties).toMatchObject({
+        timeFrom: null,
+        timeTo: null,
+        time: null,
+      });
+    });
+
     it("refuses a start time without a date and stores nothing", async () => {
       const before = await countTasks();
       await expect(
@@ -101,9 +111,27 @@ describe("Tasks title, date and time rules (issue gh-1536)", () => {
       expect(second.properties).toMatchObject({ timeFrom: "09:00", time: "09:00" });
       expect(await countTasks()).toBe(before + 1);
     });
+
+    it("replays an undated create with the same explicit null time fields", async () => {
+      const input = { databaseId: tasksDatabaseId, properties: { name: "Undated" }, idempotencyKey: "undated-replay" };
+      const first = await chokePoint.createItem(input);
+      const second = await chokePoint.createItem(input);
+      expect(second.id).toBe(first.id);
+      expect(second.properties).toMatchObject({ timeFrom: null, timeTo: null, time: null });
+    });
   });
 
   describe("on patch", () => {
+    it("writes explicit null time fields when the date is switched off", async () => {
+      const task = await chokePoint.createItem({ databaseId: tasksDatabaseId, properties: { name: "Plan" } });
+      const updated = await chokePoint.updateItem({
+        databaseId: tasksDatabaseId,
+        itemId: task.id,
+        propertiesPatch: { date: null },
+      });
+      expect(updated.properties).toMatchObject({ date: null, timeFrom: null, timeTo: null, time: null });
+    });
+
     it("normalizes a patched start time to HH:MM and derives time", async () => {
       const task = await chokePoint.createItem({
         databaseId: tasksDatabaseId,
