@@ -1091,12 +1091,12 @@
       "sequence": 11,
       "status": "proposed",
       "title": "[backend-delivery 11/74] Implement data/chokePoint, data/tasks changes",
-      "bodyCharacters": 59487,
-      "specSha256": "057411561e6be16ae0ecbc2badbf6f920efd3052316e1b99c28113ba8e9e9847",
+      "bodyCharacters": 59984,
+      "specSha256": "e023392c321d075fbadd52e17bcdcb86929d6b1b6ba3194bd25be3ef6576c730",
       "members": [
         {
           "id": "gh-1608",
-          "specSha256": "13f57a6807a37968dfb7b91dbfa4c9b6ee6b942cf4618b6a090fa5f94b7f46d3",
+          "specSha256": "9405cc615feb5af8b14666e9f2c38b5f010c99b4d5ed6b4d53cf2333d1d97988",
           "parent": "gh-1303",
           "dependencies": [
             "gh-1539"
@@ -1128,7 +1128,7 @@
         },
         {
           "id": "gh-1422",
-          "specSha256": "ae7fab621df418fb373e3dba50150977e97c75c00d71669e05fc77498fc16958",
+          "specSha256": "81f12095df049ed373de14144e096b9975ac89c2c3418ae7e3705878d472e0c2",
           "parent": "gh-1330",
           "dependencies": [
             "gh-1402",
