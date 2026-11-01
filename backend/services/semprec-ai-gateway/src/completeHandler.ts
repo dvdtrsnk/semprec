@@ -83,7 +83,14 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
-class PayloadTooLargeError extends Error {}
+class PayloadTooLargeError extends Error {
+  constructor(
+    message: string,
+    readonly streaming = false,
+  ) {
+    super(message);
+  }
+}
 
 /**
  * Reads up to the larger image-request cap; the caller applies the text-only cap with `bytes`
@@ -92,7 +99,7 @@ class PayloadTooLargeError extends Error {}
 async function readJsonBody(req: IncomingMessage): Promise<{ value: unknown; bytes: number }> {
   const chunks: Buffer[] = [];
   let size = 0;
-  for await (const chunk of req) {
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     const value: unknown = chunk;
     if (!(value instanceof Uint8Array) && typeof value !== "string") {
       throw new ValidationError("Request body contains invalid data");
@@ -100,7 +107,7 @@ async function readJsonBody(req: IncomingMessage): Promise<{ value: unknown; byt
     const buf = Buffer.from(value);
     size += buf.length;
     if (size > MAX_BODY_BYTES_WITH_IMAGES) {
-      throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
+      throw new PayloadTooLargeError("Request body exceeds the maximum allowed size", true);
     }
     chunks.push(buf);
   }
@@ -393,8 +400,47 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
         });
       });
     } catch (err) {
+      if (res.destroyed || res.writableEnded || req.aborted) return;
       if (err instanceof PayloadTooLargeError) {
+        if (err.streaming && !req.complete && !req.destroyed) {
+          let discarded = 0;
+          let disposed = false;
+          const dispose = (): void => {
+            if (disposed) return;
+            disposed = true;
+            clearTimeout(timer);
+            req.off("data", onData);
+            req.off("end", dispose);
+            req.off("close", dispose);
+            req.off("aborted", dispose);
+            req.off("error", dispose);
+          };
+          const onData = (chunk: unknown): void => {
+            if (!(chunk instanceof Uint8Array) && typeof chunk !== "string") {
+              dispose();
+              req.destroy();
+              return;
+            }
+            discarded += Buffer.byteLength(chunk);
+            if (discarded >= 2 * 1024 * 1024) {
+              dispose();
+              req.destroy();
+            }
+          };
+          const timer = setTimeout(() => {
+            dispose();
+            req.destroy();
+          }, 2000);
+          timer.unref();
+          req.on("data", onData);
+          req.once("end", dispose);
+          req.once("close", dispose);
+          req.once("aborted", dispose);
+          req.once("error", dispose);
+        }
+        if (err.streaming) res.setHeader("Connection", "close");
         sendJson(res, 413, { error: err.message });
+        if (err.streaming && !req.complete && !req.destroyed) req.resume();
         return;
       }
       if (err instanceof ChokePointError) {
