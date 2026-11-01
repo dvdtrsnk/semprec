@@ -1,8 +1,8 @@
 import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
-import { RISK_CLASSES, type RiskClass } from "@semprec/shared";
+import { GENERIC_OPERATION_NAMES, RISK_CLASSES, type RiskClass } from "@semprec/shared";
 import { assertKnownValue, assertShape } from "../dbRowValidation.js";
 import type { ApprovalOutcomeKind } from "./approvalConflictReason.js";
-import { parseMcpInvokeFailure, type McpInvokeFailure } from "./mcpFailure.js";
+import { isMcpItemId, parseMcpInvokeFailure, type McpInvokeFailure } from "./mcpFailure.js";
 
 /** Longest agent-supplied reason, in characters; mirrored by the `approval_requests_reason_length_check` constraint. */
 export const APPROVAL_REQUEST_REASON_MAX_LENGTH = 500;
@@ -186,11 +186,28 @@ function assertNullableString(value: unknown, column: string): string | null {
   return value as string | null;
 }
 
+function classifyOutcomePayload(value: unknown): "generic" | "mcp" {
+  if (!isRecord(value)) throw new Error("Invalid approval outcome payload");
+  if ("operationName" in value) {
+    if (
+      typeof value.operationName !== "string" ||
+      !GENERIC_OPERATION_NAMES.some((name) => name === value.operationName)
+    ) {
+      throw new Error("Invalid approval outcome payload");
+    }
+    return "generic";
+  }
+  if (!isMcpItemId(value.mcpToolRegistrationId) || !isMcpItemId(value.mcpServerItemId) || !isRecord(value.args)) {
+    throw new Error("Invalid approval outcome payload");
+  }
+  return "mcp";
+}
+
 function rowToApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
   if (
-    !isGenericOperationApprovalRequestPayload(row.payload) &&
     isRecord(row.execution_result_jsonb) &&
-    "failure" in row.execution_result_jsonb
+    "failure" in row.execution_result_jsonb &&
+    classifyOutcomePayload(row.payload) === "mcp"
   ) {
     parseMcpInvokeFailure(row.execution_result_jsonb.failure);
     if (row.execution_error !== true || typeof row.execution_result_jsonb.text !== "string") {

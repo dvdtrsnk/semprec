@@ -22,6 +22,12 @@ import { NotFoundError } from "../errors.js";
 
 let pool: Pool;
 
+function checkErrorCodeSignature(client: Pool): void {
+  // @ts-expect-error An error close requires a structured error code.
+  void finishAgentRun(client, "run", "error", "failed");
+}
+void checkErrorCodeSignature;
+
 describe("finishAgentRun", () => {
   beforeEach(async () => {
     pool ??= getTestPool();

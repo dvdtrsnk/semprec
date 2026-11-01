@@ -1,8 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
+import { randomUUID } from "node:crypto";
+import { runInTenant } from "@semprec/shared";
 import {
   createTenantZeroUser,
   createRuntimeRolePool,
+  createTestProjectItem,
   createTestTenant,
   getTenantZeroId,
   getTestPool,
@@ -10,6 +13,9 @@ import {
   withTenantTransaction,
 } from "../../testSupport/testDb.js";
 import { createAgentRun, getAgentRun } from "../agentRunsStore.js";
+import { createUser } from "../../auth/usersStore.js";
+import { withTransaction } from "../../db/pool.js";
+import { mintMcpRunCredential } from "../../mcp/mcpRunCredentialAction.js";
 
 let pool: Pool;
 
@@ -104,6 +110,35 @@ describe("agent_runs.thread_id (issue #1452)", () => {
           createAgentRun(client, { triggeredBy: "supervisor", task: "sub", parentRunId: parentA.id }),
         ).rejects.toThrow("does not exist");
       });
+    } finally {
+      await runtime.end();
+    }
+  });
+
+  it("mints real MCP runs with no thread in each runtime tenant", async () => {
+    const tenantA = getTenantZeroId();
+    const tenantB = await createTestTenant(pool);
+    const userB = await createUser(pool, {
+      email: `${randomUUID()}@example.test`,
+      passwordHash: "unused",
+      tenantId: tenantB,
+    });
+    const { rows } = await pool.query<{ id: string }>("SELECT id FROM users WHERE tenant_id = $1", [tenantA]);
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      for (const [tenantId, userId] of [
+        [tenantA, rows[0]!.id],
+        [tenantB, userB.id],
+      ] as const) {
+        await runInTenant(tenantId, async () => {
+          const projectItemId = await createTestProjectItem(runtime);
+          const minted = await withTransaction(runtime, (client) =>
+            mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.read"], userId }),
+          );
+          expect(minted.run.threadId).toBeNull();
+          expect((await getAgentRun(runtime, minted.run.id))?.threadId).toBeNull();
+        });
+      }
     } finally {
       await runtime.end();
     }

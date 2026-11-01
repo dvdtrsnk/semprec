@@ -72,6 +72,24 @@ it.each([
       expect(runs.rows).toHaveLength(tenantIds.length);
       expect(runs.rows.map((row) => row.tenant_id).sort()).toEqual(tenantIds.sort());
       expect(runs.rows.every((row) => row.thread_id === null)).toBe(true);
+      const errorCodeMigration = "0104_agent_run_error_code.sql";
+      for (const file of (await readdir(migrations))
+        .filter((f) => f.endsWith(".sql") && f > validate && f < errorCodeMigration)
+        .sort()) {
+        await copyFile(path.join(migrations, file), path.join(dir, file));
+      }
+      await runMigrations(database, dir);
+      await copyFile(path.join(migrations, errorCodeMigration), path.join(dir, errorCodeMigration));
+      await runMigrations(database, dir);
+      await database.query(
+        "UPDATE agent_runs SET status = 'error', result = 'legacy', finished_at = now() WHERE id = $1",
+        [runIds[0]],
+      );
+      const legacy = await database.query<{ status: string; result: string; error_code: string | null }>(
+        "SELECT status, result, error_code FROM agent_runs WHERE id = $1",
+        [runIds[0]],
+      );
+      expect(legacy.rows).toEqual([{ status: "error", result: "legacy", error_code: null }]);
     } catch (error) {
       failure = { error };
     }

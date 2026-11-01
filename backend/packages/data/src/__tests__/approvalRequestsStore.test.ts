@@ -669,5 +669,34 @@ describe("approvalRequestsStore (issue #130)", () => {
       ]);
       expect((await getApprovalRequest(pool, request.id))?.executionResult).toEqual(result);
     });
+
+    it("rejects malformed payload discriminators and MCP fields before reading failure metadata", async () => {
+      const id = await createPendingRequest();
+      const server = randomUUID();
+      const registration = randomUUID();
+      const outcome = { text: "failed", failure: { failureKind: "auth", mcpServerItemId: server } };
+      const malformed: unknown[] = [
+        null,
+        [],
+        "text",
+        { operationName: 4 },
+        { operationName: "unknown" },
+        { mcpToolRegistrationId: "bad", mcpServerItemId: server, args: {} },
+        { mcpToolRegistrationId: registration, mcpServerItemId: "bad", args: {} },
+        { mcpToolRegistrationId: registration, mcpServerItemId: server, args: [] },
+      ];
+      for (const payload of malformed) {
+        await pool.query(
+          "UPDATE approval_requests SET payload = $2::jsonb, execution_error = true, execution_result_jsonb = $3::jsonb WHERE id = $1",
+          [id, JSON.stringify(payload), JSON.stringify(outcome)],
+        );
+        await expect(getApprovalRequest(pool, id)).rejects.toThrow("Invalid approval outcome payload");
+      }
+      await pool.query("UPDATE approval_requests SET payload = $2::jsonb WHERE id = $1", [
+        id,
+        JSON.stringify({ mcpToolRegistrationId: registration, mcpServerItemId: server, args: {}, legacy: true }),
+      ]);
+      expect((await getApprovalRequest(pool, id))?.executionResult).toEqual(outcome);
+    });
   });
 });
