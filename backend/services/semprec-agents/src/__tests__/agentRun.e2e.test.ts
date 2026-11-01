@@ -6,19 +6,26 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import type { Pool } from "pg";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxProvider, type FauxProviderHandle } from "@earendil-works/pi-ai";
-import { AGENT_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import { SempConversation } from "@semprec/agent-runtime";
+import { AGENT_TASK_NAMES, CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
+import { createApprovalGatedMcpInvokeTool, SempConversation } from "@semprec/agent-runtime";
 import { runInTenant } from "@semprec/shared";
 import { getTenantZeroId, getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
 import {
   CORE_AGENT_RUN_ACTION_ID,
   createAgentRun,
+  createCoreTaskList,
   createUser,
+  decideAndEnqueueApprovalRequest,
   finishAgentRun,
   getAgentRun,
+  getApprovalRequest,
   loadFullModuleRegistry,
+  setProjectMcpGrantForAgentPage,
   seedSystem,
+  upsertMcpToolRegistration,
+  withTransaction,
 } from "@semprec/data";
+import { startStdioContractServer, type ContractServerTool } from "@semprec/data/testSupport/mcpContractServers";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 import { createAgentRunTask, createRunAgentForHeartbeats } from "../agentRunTasks.js";
@@ -217,6 +224,68 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
       expect(requestHeaders).toHaveLength(3);
     } finally {
       conversation.clear();
+    }
+  });
+
+  it("executes the actual approved MCP job without forwarding the agent reason", async () => {
+    const tool: ContractServerTool = {
+      name: "search_web",
+      inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+    };
+    const server = startStdioContractServer([tool]);
+    try {
+      await pool.query("UPDATE users SET role = 'admin' WHERE tenant_id = $1", [getTenantZeroId()]);
+      const databases = await pool.query<{ id: string }>(
+        "SELECT id FROM databases WHERE owner_module_id = 'mcpServers'",
+      );
+      const itemId = randomUUID();
+      await pool.query("INSERT INTO items (id, database_id, properties) VALUES ($1, $2, $3::jsonb)", [
+        itemId,
+        databases.rows[0]!.id,
+        JSON.stringify({ name: "Contract server", active: true, connectionConfig: server.connectionConfig }),
+      ]);
+      const registration = await upsertMcpToolRegistration(pool, {
+        mcpServerItemId: itemId,
+        toolName: tool.name,
+        toolSchema: tool.inputSchema,
+        description: null,
+      });
+      const projectItemId = randomUUID();
+      await withTransaction(pool, (client) =>
+        setProjectMcpGrantForAgentPage(client, {
+          projectItemId,
+          mcpToolRegistrationId: registration.id,
+          granted: true,
+        }),
+      );
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "test" });
+      const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
+      const result = await inTenantZero(() => invoke({ query: "semprec", semprecReason: "private reason" }));
+      expect(result.error).toBe(false);
+      const id = result.approvalRequestId!;
+      await inTenantZero(() =>
+        withTransaction(pool, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: id,
+            decision: "approved",
+            decidedByUserId: run.actorUserId,
+          }),
+        ),
+      );
+      const taskList = createCoreTaskList(pool, new Map());
+      await runOnce({ pgPool: pool, taskList });
+      expect(server.getLastToolCall()).toMatchObject({ name: "search_web", arguments: { query: "semprec" } });
+      expect(JSON.stringify(server.getLastToolCall())).not.toContain("semprecReason");
+      const settled = await getApprovalRequest(pool, id);
+      expect(settled?.reason).toBe("private reason");
+      expect(settled?.executionStatus).toBe("succeeded");
+      expect(server.getHandshakeCount()).toBe(1);
+      await inTenantZero(() => enqueueJob(pool, CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE, { approvalRequestId: id }));
+      await runOnce({ pgPool: pool, taskList });
+      expect(server.getHandshakeCount()).toBe(1);
+      expect((await getApprovalRequest(pool, id))?.executionResult).toEqual(settled?.executionResult);
+    } finally {
+      await server.stop();
     }
   });
 

@@ -2,6 +2,7 @@ import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/poo
 import { RISK_CLASSES, type RiskClass } from "@semprec/shared";
 import { assertKnownValue, assertShape } from "../dbRowValidation.js";
 import type { ApprovalOutcomeKind } from "./approvalConflictReason.js";
+import { parseMcpInvokeFailure, type McpInvokeFailure } from "./mcpFailure.js";
 
 /** Longest agent-supplied reason, in characters; mirrored by the `approval_requests_reason_length_check` constraint. */
 export const APPROVAL_REQUEST_REASON_MAX_LENGTH = 500;
@@ -186,6 +187,12 @@ function assertNullableString(value: unknown, column: string): string | null {
 }
 
 function rowToApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
+  if (isRecord(row.execution_result_jsonb) && "failure" in row.execution_result_jsonb) {
+    parseMcpInvokeFailure(row.execution_result_jsonb.failure);
+    if (row.execution_error !== true || typeof row.execution_result_jsonb.text !== "string") {
+      throw new Error("Invalid MCP failure metadata");
+    }
+  }
   return {
     id: row.id,
     agentRunId: row.agent_run_id,
@@ -380,6 +387,7 @@ export interface ApprovalRequestOutcome {
    * so `approvalConflictReason` can tell the causes apart; when absent it holds the plain text.
    */
   outcomeKind?: ApprovalOutcomeKind;
+  failure?: McpInvokeFailure;
 }
 
 /**
@@ -407,6 +415,8 @@ export async function recordApprovalRequestOutcome(
   id: string,
   outcome: ApprovalRequestOutcome,
 ): Promise<boolean> {
+  const failure = outcome.failure === undefined ? undefined : parseMcpInvokeFailure(outcome.failure);
+  if (failure && !outcome.error) throw new Error("Invalid MCP failure metadata");
   const result = await client.query(
     `UPDATE approval_requests
         SET execution_error = $2, execution_result_jsonb = $3::jsonb,
@@ -416,7 +426,15 @@ export async function recordApprovalRequestOutcome(
     [
       id,
       outcome.error,
-      JSON.stringify(outcome.outcomeKind ? { text: outcome.result, outcomeKind: outcome.outcomeKind } : outcome.result),
+      JSON.stringify(
+        outcome.outcomeKind || failure
+          ? {
+              text: outcome.result,
+              ...(outcome.outcomeKind ? { outcomeKind: outcome.outcomeKind } : {}),
+              ...(failure ? { failure } : {}),
+            }
+          : outcome.result,
+      ),
     ],
   );
   return result.rowCount === 1;

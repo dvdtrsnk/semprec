@@ -86,6 +86,14 @@ describe("finishAgentRun", () => {
     await expect(pool.query(`UPDATE agent_runs SET error_code = 'nope' WHERE id = $1`, [run.id])).rejects.toThrow();
   });
 
+  it("rejects a non-object error detail read from the database", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "bad detail" });
+    for (const value of [[], "text", 12, true]) {
+      await pool.query("UPDATE agent_runs SET error_detail = $2::jsonb WHERE id = $1", [run.id, JSON.stringify(value)]);
+      await expect(getAgentRun(pool, run.id)).rejects.toThrow(/error_detail/);
+    }
+  });
+
   it("throws NotFoundError for an unknown run id", async () => {
     await expect(finishAgentRun(pool, randomUUID(), "done", null)).rejects.toBeInstanceOf(NotFoundError);
   });

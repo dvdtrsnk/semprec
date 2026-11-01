@@ -67,7 +67,7 @@ type AgentRunDbRow = {
   status: string;
   result: string | null;
   error_code: string | null;
-  error_detail: Record<string, unknown> | null;
+  error_detail: unknown;
   started_at: Date;
   finished_at: Date | null;
   actor_user_id: string;
@@ -79,6 +79,12 @@ const AGENT_RUN_ROW_COLUMNS =
 function mapErrorCode(row: AgentRunDbRow): AgentRunErrorCode | null {
   if (row.error_code !== null) return assertKnownValue(AGENT_RUN_ERROR_CODES, row.error_code, "error_code");
   return row.status === "error" ? "internal" : null;
+}
+
+function parseErrorDetail(value: unknown): Record<string, unknown> | null {
+  if (value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("Malformed error_detail in database row");
+  return Object.fromEntries(Object.entries(value));
 }
 
 function mapRow(row: AgentRunDbRow): AgentRunRow {
@@ -97,7 +103,7 @@ function mapRow(row: AgentRunDbRow): AgentRunRow {
     status: assertKnownValue(AGENT_RUN_STATUSES, row.status, "status"),
     result: row.result,
     errorCode: mapErrorCode(row),
-    errorDetail: row.error_detail,
+    errorDetail: parseErrorDetail(row.error_detail),
     startedAt: row.started_at.toISOString(),
     finishedAt: row.finished_at ? row.finished_at.toISOString() : null,
     actorUserId: row.actor_user_id,
@@ -276,10 +282,11 @@ export async function finishAgentRun(
   errorCode?: AgentRunErrorCode,
   errorDetail?: Record<string, unknown>,
 ): Promise<boolean> {
+  const detail = parseErrorDetail(errorDetail ?? null);
   const updated = await client.query(
     `UPDATE agent_runs SET status = $2, result = $3, error_code = $4, error_detail = $5, finished_at = now()
      WHERE id = $1 AND status = 'running'`,
-    [agentRunId, status, result, status === "error" ? (errorCode ?? null) : null, errorDetail ?? null],
+    [agentRunId, status, result, status === "error" ? (errorCode ?? null) : null, detail],
   );
   if (updated.rowCount === 1) return true;
   const { rows } = await client.query<{ status: string }>(`SELECT status FROM agent_runs WHERE id = $1`, [agentRunId]);

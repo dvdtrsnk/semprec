@@ -1,10 +1,12 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { repairInterruptedRuns } from "@semprec/agent-runtime";
+import { createReconstructConversationHistory, repairInterruptedRuns } from "@semprec/agent-runtime";
+import { fauxProvider } from "@earendil-works/pi-ai";
 import { createAgentRun, createUser, hashPassword, insertAgentRunEvent } from "@semprec/data";
 import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
+import { toPiMessages } from "../piConversationHistory.js";
 
 let pool: Pool;
 let runtime: AgentsQueueRuntime | undefined;
@@ -62,5 +64,42 @@ describe("semprec-agents startup repair (issue #642)", () => {
       [mcpRun.id],
     );
     expect(mcpEvents.map((r) => r.kind)).toEqual(["turn_start"]);
+  });
+
+  it("converts the actually repaired stored history into pi messages", async () => {
+    const { rows } = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
+    const threadId = rows[0]!.id;
+    const run = await createAgentRun(pool, { triggeredBy: "user", unit: "session", task: "test", threadId });
+    await insertAgentRunEvent(pool, run.id, "tool_use", {
+      kind: "tool_use",
+      toolCallId: "call-1",
+      name: "search",
+      arguments: { query: "test" },
+    });
+    await repairInterruptedRuns(pool);
+    const reconstruct = createReconstructConversationHistory({
+      estimateContextTokens: (messages) => messages.length,
+      shouldCompact: () => false,
+      prepareCompaction: (entries) => entries,
+      compact: () => {
+        throw new Error("unexpected compaction");
+      },
+      contextWindow: 1_000_000,
+      settings: {},
+    });
+    const history = await reconstruct(pool, { threadId, projectItemId: "unused" });
+    expect(history).not.toBeNull();
+    const converted = toPiMessages(history!.entries, fauxProvider().getModel());
+    expect(converted).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "toolResult",
+          toolCallId: "call-1",
+          toolName: "search",
+          isError: true,
+          details: { error: true },
+        }),
+      ]),
+    );
   });
 });

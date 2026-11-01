@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runOnce } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
 import {
   createTenantZeroUser,
   getTenantZeroId,
@@ -398,7 +398,7 @@ describe("approval request decide+execute (issue #131)", () => {
   }
 
   it("records a conflict and calls no tool when the project's grant was revoked after approval", async () => {
-    const { contractServer, registration, projectItemId, request } = await approveAndSetUp();
+    const { contractServer, server, registration, projectItemId, request } = await approveAndSetUp();
 
     await withTransaction(pool, (client) =>
       setProjectMcpGrantForAgentPage(client, {
@@ -414,14 +414,24 @@ describe("approval request decide+execute (issue #131)", () => {
     const finished = await getApprovalRequest(pool, request.id);
     expect(finished!.executionStatus).toBe("conflict");
     expect(finished!.executionError).toBe(true);
-    expect(finished!.executionResult).toEqual({ text: NO_LONGER_AVAILABLE_MESSAGE, outcomeKind: "toolUnavailable" });
+    expect(finished!.executionResult).toEqual({
+      text: NO_LONGER_AVAILABLE_MESSAGE,
+      outcomeKind: "toolUnavailable",
+      failure: { failureKind: "unavailable", mcpServerItemId: server.id },
+    });
     expect(approvalConflictReason(finished!.executionStatus, finished!.executionResult)).toEqual({
       key: "approval.conflict.toolUnavailable",
     });
+    await inTenantZero(() =>
+      enqueueJob(pool, CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE, { approvalRequestId: request.id }),
+    );
+    await drainQueue();
+    expect(contractServer.getHandshakeCount()).toBe(0);
+    expect((await getApprovalRequest(pool, request.id))?.executionResult).toEqual(finished!.executionResult);
   });
 
   it("records a conflict and calls no tool when the tool registration was deactivated after approval", async () => {
-    const { contractServer, registration, request } = await approveAndSetUp();
+    const { contractServer, server, registration, request } = await approveAndSetUp();
 
     await pool.query(`UPDATE mcp_tool_registrations SET active = false WHERE id = $1`, [registration.id]);
 
@@ -431,7 +441,11 @@ describe("approval request decide+execute (issue #131)", () => {
     const finished = await getApprovalRequest(pool, request.id);
     expect(finished!.executionStatus).toBe("conflict");
     expect(finished!.executionError).toBe(true);
-    expect(finished!.executionResult).toEqual({ text: NO_LONGER_AVAILABLE_MESSAGE, outcomeKind: "toolUnavailable" });
+    expect(finished!.executionResult).toEqual({
+      text: NO_LONGER_AVAILABLE_MESSAGE,
+      outcomeKind: "toolUnavailable",
+      failure: { failureKind: "unavailable", mcpServerItemId: server.id },
+    });
     expect(approvalConflictReason(finished!.executionStatus, finished!.executionResult)).toEqual({
       key: "approval.conflict.toolUnavailable",
     });
@@ -450,7 +464,11 @@ describe("approval request decide+execute (issue #131)", () => {
     const finished = await getApprovalRequest(pool, request.id);
     expect(finished!.executionStatus).toBe("conflict");
     expect(finished!.executionError).toBe(true);
-    expect(finished!.executionResult).toEqual({ text: NO_LONGER_AVAILABLE_MESSAGE, outcomeKind: "toolUnavailable" });
+    expect(finished!.executionResult).toEqual({
+      text: NO_LONGER_AVAILABLE_MESSAGE,
+      outcomeKind: "toolUnavailable",
+      failure: { failureKind: "unavailable", mcpServerItemId: server.id },
+    });
     expect(approvalConflictReason(finished!.executionStatus, finished!.executionResult)).toEqual({
       key: "approval.conflict.toolUnavailable",
     });
@@ -473,13 +491,16 @@ describe("approval request decide+execute (issue #131)", () => {
   });
 
   it("records a callFailed outcome kind when the tool call itself errors", async () => {
-    const { request } = await approveAndSetUp({ query: "semprec", __forceError: true });
+    const { request, server } = await approveAndSetUp({ query: "semprec", __forceError: true });
 
     await drainQueue();
 
     const finished = await getApprovalRequest(pool, request.id);
     expect(finished!.executionStatus).toBe("conflict");
-    expect(finished!.executionResult).toMatchObject({ outcomeKind: "callFailed" });
+    expect(finished!.executionResult).toMatchObject({
+      outcomeKind: "callFailed",
+      failure: { failureKind: "toolError", mcpServerItemId: server.id },
+    });
     expect(approvalConflictReason(finished!.executionStatus, finished!.executionResult)).toEqual({
       key: "approval.outcome.failed",
     });

@@ -604,5 +604,39 @@ describe("approvalRequestsStore (issue #130)", () => {
       expect(stored!.executionResult).toBe("it broke");
       expect(stored!.executionStatus).toBe("conflict");
     });
+
+    it("round-trips classified MCP failures and refuses malformed metadata", async () => {
+      const id = await createPendingRequest();
+      await decideApprovalRequest(pool, id, "approved", ownerId);
+      await claimApprovalRequestExecution(pool, id);
+      const failure = { failureKind: "timeout" as const, mcpServerItemId: randomUUID(), timeoutMs: 60000 };
+      await recordApprovalRequestOutcome(pool, id, {
+        error: true,
+        result: "failed",
+        outcomeKind: "callFailed",
+        failure,
+      });
+      expect((await getApprovalRequest(pool, id))?.executionResult).toEqual({
+        text: "failed",
+        outcomeKind: "callFailed",
+        failure,
+      });
+      await pool.query("UPDATE approval_requests SET execution_result_jsonb = $2::jsonb WHERE id = $1", [
+        id,
+        JSON.stringify({
+          text: "failed",
+          failure: { failureKind: "timeout", mcpServerItemId: "x", timeoutMs: "secret" },
+        }),
+      ]);
+      await expect(getApprovalRequest(pool, id)).rejects.toThrow("Invalid MCP failure metadata");
+      await expect(
+        recordApprovalRequestOutcome(pool, id, {
+          error: true,
+          result: "failed",
+          // @ts-expect-error Exercise malformed data crossing the write boundary.
+          failure: { failureKind: "timeout", timeoutMs: "secret" },
+        }),
+      ).rejects.toThrow("Invalid MCP failure metadata");
+    });
   });
 });

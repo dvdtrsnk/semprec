@@ -179,6 +179,8 @@ export function createItemRoutes(
       path: "/api/items/:id",
       handler: async (ctx) => {
         const id = requireUuidParam(ctx.params, "id");
+        const body = ctx.body === undefined ? {} : requireJsonObjectBody(ctx.body);
+        if (Object.keys(body).length !== 0) throw new ValidationError("DELETE item body must be empty");
         const item = await dispatchGenericOperation(service, "item.delete", restActor(ctx.identity.user.id), {
           itemId: id,
         });

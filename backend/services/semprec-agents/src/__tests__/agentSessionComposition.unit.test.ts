@@ -413,6 +413,11 @@ describe("agent-only approval reason (issue #1420)", () => {
     expect(fixtures.calls).toEqual([["run-1", { itemId: "item-1" }, { toolCallId: "call" }]]);
   });
 
+  it("normalizes a null reason to absence in the provider-facing composition", async () => {
+    await runCalls({ itemId: "item-1", reason: null });
+    expect(fixtures.calls).toEqual([["run-1", { itemId: "item-1" }, { toolCallId: "call" }]]);
+  });
+
   it("writes approvalRequestId and changes into the generic tool result details", async () => {
     fixtures.structured = { approvalRequestId: "req-1", changes: [{ key: "due", before: "a", after: "b" }] };
     try {

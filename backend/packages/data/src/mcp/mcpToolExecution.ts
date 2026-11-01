@@ -7,26 +7,15 @@ import { SseError } from "@modelcontextprotocol/sdk/client/sse.js";
 import { McpConnectionError, MCP_DEFAULT_CONNECT_TIMEOUT_MS } from "./mcpConnectionError.js";
 import type { McpToolInvocationTarget } from "./mcpToolInvocation.js";
 import { recordMcpConnectionFailure, recordMcpConnectionSuccess } from "./mcpServerConnectionStateStore.js";
+import type { McpInvokeFailure } from "./mcpFailure.js";
+export { MCP_FAILURE_KINDS } from "./mcpFailure.js";
+export type { McpFailureKind, McpInvokeFailure } from "./mcpFailure.js";
 
 const logger = createLogger("mcp");
 
 /** Shaped like a pi-agent-core `tool_result` payload — see `delegateTool.ts`'s own comment for the same convention. */
-export interface McpInvokeResult {
-  error: boolean;
-  result: string;
-  /** Present only when `error` is true and the failure was not a cancellation by the run's signal. */
-  failure?: McpInvokeFailure;
-}
-
-export const MCP_FAILURE_KINDS = ["timeout", "unavailable", "connection", "auth", "toolError"] as const;
-
-export type McpFailureKind = (typeof MCP_FAILURE_KINDS)[number];
-
-/** Machine-readable reason for a failed MCP call; carries ids and numbers only, never an exception message. */
-export type McpInvokeFailure =
-  | { failureKind: "unavailable"; mcpServerItemId?: string }
-  | { failureKind: "timeout"; mcpServerItemId: string; timeoutMs: number }
-  | { failureKind: "connection" | "auth" | "toolError"; mcpServerItemId: string };
+export type McpInvokeResult =
+  { error: false; result: string; failure?: never } | { error: true; result: string; failure?: McpInvokeFailure };
 
 export type McpInvokeArgs = Record<string, unknown>;
 
@@ -122,11 +111,9 @@ function formatCallToolContent(result: CallToolResultLike): McpInvokeResult {
     .map(formatContentBlock)
     .filter((part) => part.length > 0)
     .join("\n");
-  if (text.length > 0) return { error: result.isError === true, result: text };
-  if (result.structuredContent !== undefined) {
-    return { error: result.isError === true, result: JSON.stringify(result.structuredContent) };
-  }
-  return { error: result.isError === true, result: "" };
+  const formattedText =
+    text.length > 0 ? text : result.structuredContent !== undefined ? JSON.stringify(result.structuredContent) : "";
+  return result.isError === true ? { error: true, result: formattedText } : { error: false, result: formattedText };
 }
 
 /**

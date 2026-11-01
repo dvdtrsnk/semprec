@@ -351,6 +351,20 @@ describe("MCP invoke adapter (issue #128)", () => {
       expect(rows[0].count).toBe(0);
     });
 
+    it("normalizes a null semprecReason to an absent reason", async () => {
+      const contractServer = startStdioContractServer([SEARCH_TOOL]);
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+      const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
+      const result = await invoke({ query: "semprec", semprecReason: null });
+      expect(result.error).toBe(false);
+      const request = await getApprovalRequest(pool, result.approvalRequestId!);
+      expect(request?.reason).toBeNull();
+      expect(request?.payload).toMatchObject({ args: { query: "semprec" } });
+      expect(JSON.stringify(request?.payload)).not.toContain("semprecReason");
+    });
+
     it("does not send semprecReason to the MCP server when the tool needs no approval (issue #1420)", async () => {
       const contractServer = startStdioContractServer([SEARCH_TOOL]);
       servers.push(contractServer);
