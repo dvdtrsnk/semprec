@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -222,6 +223,42 @@ describe("createNotificationsRequestListener", () => {
     } finally {
       kill.mockRestore();
       stderr.mockRestore();
+    }
+  }, 15000);
+
+  it("closes the runtime pool and preserves both errors when temporary cleanup fails", async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), "semprec-fixture-guard-"));
+    const originalRemove = fs.rmSync;
+    let ownedDirectory: string | undefined;
+    const remove = vi.spyOn(fs, "rmSync").mockImplementation((path, options) => {
+      if (typeof path === "string" && path.includes("/node_modules/.batch09-")) {
+        ownedDirectory = path;
+        throw new Error("temporary removal failed");
+      }
+      return originalRemove(path, options);
+    });
+    try {
+      await withFixtureStorage(storageRoot, async () => {
+        const result = await runFixtureGuardControl(
+          "overflow",
+          { mode: "failure", tenantId: getTenantZeroId(), storageRoot },
+          pool,
+        );
+        expect(result.error).toBeInstanceOf(AggregateError);
+        if (!(result.error instanceof AggregateError)) throw new Error("Expected both fixture errors");
+        expect(result.error.message).toBe("Transcription fixture output exceeds limit");
+        expect(result.error.errors.map((error: unknown) => (error instanceof Error ? error.message : ""))).toEqual([
+          "Transcription fixture output exceeds limit",
+          "temporary removal failed",
+        ]);
+        expect(result.closed).toBe(true);
+        expect(result.poolClosed).toBe(true);
+        expect(result.temporaryRemoved).toBe(false);
+        expect(ownedDirectory).toBeDefined();
+      });
+    } finally {
+      remove.mockRestore();
+      if (ownedDirectory) originalRemove(ownedDirectory, { recursive: true, force: true });
     }
   }, 15000);
 

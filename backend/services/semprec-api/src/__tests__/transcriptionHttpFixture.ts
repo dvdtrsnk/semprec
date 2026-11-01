@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import fs, { existsSync, mkdtempSync, statSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,7 +49,13 @@ export async function withFixtureStorage<T>(path: string, run: () => Promise<T>)
     await rm(path, { recursive: true, force: true });
   } catch (error) {
     if (outcome.ok) outcome = { ok: false, error };
-    else process.stderr.write(`Failed to remove fixture storage: ${String(error)}\n`);
+    else {
+      const message = outcome.error instanceof Error ? outcome.error.message : "Fixture scenario failed";
+      outcome = {
+        ok: false,
+        error: new AggregateError([outcome.error, error], message, { cause: outcome.error }),
+      };
+    }
   }
   if (!outcome.ok) {
     if (outcome.error instanceof Error) throw outcome.error;
@@ -248,6 +254,7 @@ async function runFixture(
   let temporary: string | undefined;
   let primary: unknown;
   let failed = false;
+  const cleanupFailures: unknown[] = [];
   let output: { result: z.infer<typeof resultSchema>; stdout: string; stderr: string } | undefined;
   try {
     for (const [source, output] of [
@@ -311,15 +318,10 @@ async function runFixture(
     failed = true;
   }
   try {
-    if (temporary) rmSync(temporary, { recursive: true, force: true });
+    if (temporary) fs.rmSync(temporary, { recursive: true, force: true });
     if (observation) observation.temporaryRemoved = temporary !== undefined && !existsSync(temporary);
   } catch (error) {
-    if (failed) {
-      process.stderr.write(`Failed to remove transcription fixture temporary output: ${String(error)}\n`);
-    } else {
-      primary = error;
-      failed = true;
-    }
+    cleanupFailures.push(error);
   }
   try {
     await rolePool.end();
@@ -331,16 +333,18 @@ async function runFixture(
       }
     }
   } catch (error) {
-    if (failed) process.stderr.write(`Failed to close fixture runtime pool: ${String(error)}\n`);
-    else {
-      primary = error;
-      failed = true;
-    }
+    cleanupFailures.push(error);
   }
   if (failed) {
-    if (primary instanceof Error) throw primary;
-    throw new Error("Transcription fixture failed with a non-error value", { cause: primary });
+    const original =
+      primary instanceof Error
+        ? primary
+        : new Error("Transcription fixture failed with a non-error value", { cause: primary });
+    if (cleanupFailures.length)
+      throw new AggregateError([original, ...cleanupFailures], original.message, { cause: original });
+    throw original;
   }
+  if (cleanupFailures.length) throw new AggregateError(cleanupFailures, "Transcription fixture cleanup failed");
   if (!output) throw new Error("Transcription fixture returned no result");
   return output;
 }
