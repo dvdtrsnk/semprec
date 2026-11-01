@@ -192,3 +192,29 @@ These decisions authorize fixes and evidence, not a merge, completion, failure
 waiver or next-batch dispatch. Compress only redundant historical Context prose
 where needed for the aggregate size bound; retain decisions and Task/AC text
 with the explicit additions above.
+
+## Full-run fixture compatibility after the blob guards
+
+The frozen `b455631b` integration run confirms two existing fixtures no longer
+reach the behavior they describe. Authorize these exact gh-1401 test paths:
+
+- `backend/services/semprec-api/src/__tests__/blobsPerTenant.test.ts`: create a
+  legitimate tenant B Files item, then inject only its deliberately historical
+  foreign blob reference through a typed, tenant-scoped fixture with checked
+  affected rows. Preserve the real successful tenant A download and blob-ID
+  filename fallback, without leaking tenant B's filename. The normal production
+  foreign-reference refusal stays.
+- `backend/packages/data/src/__tests__/remainingLookupPruning.test.ts`: supply an
+  existing tenant-owned blob to the actual lookup. Use the already referenced
+  tenant B blob for its partition case and create a scoped blob in the tenant
+  with no databases for the zero-partition case. The separate blob lock must
+  succeed so the real fresh reference-check DELETE is sent and EXPLAINed.
+  Preserve all partition, false-filter, RLS and reference assertions.
+
+No production guard bypass, mail rewrite, checker baseline change or broader
+fixture exception is authorized. The new reference/lock behavior invalidates
+these old setup assumptions; it does not authorize weakening their tests.
+The complete frozen run and manifests settled before this refreeze. Preserve
+its integration FAIL and E2E PASS separately; neither grants acceptance or a
+failure waiver. The rowCount fix, repaired fixtures and any new candidate still
+require affected checks, independent delta review and a complete frozen gate.
