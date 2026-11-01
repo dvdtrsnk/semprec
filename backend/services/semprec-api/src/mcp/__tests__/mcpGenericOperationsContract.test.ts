@@ -457,6 +457,21 @@ describe("generic operation MCP contract (issue #220)", () => {
     expect((await chokePoint.listDatabases()).some((database) => database.name === "MCP bare")).toBe(true);
   });
 
+  it.each(["relation.list", "page.restoreVersion"] as const)(
+    "rejects malformed %s item IDs at the MCP boundary",
+    async (operation) => {
+      const { server, baseUrl } = await startServer();
+      servers.push(server);
+      const args =
+        operation === "relation.list"
+          ? { itemId: "not-a-uuid" }
+          : { itemId: "not-a-uuid", at: new Date().toISOString() };
+      const response = await rpc(baseUrl, await authHeader(), `semprec.${operation}`, args);
+      expect(response.error?.code).toBe(-32602);
+      expect(response.error?.data).toMatchObject({ field: "itemId" });
+    },
+  );
+
   it("rejects an empty database patch at the MCP operation boundary", async () => {
     const database = await chokePoint.createDatabase({ name: "MCP patch fixture" });
     const { server, baseUrl } = await startServer();

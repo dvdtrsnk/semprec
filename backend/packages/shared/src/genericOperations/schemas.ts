@@ -38,6 +38,9 @@ const DATABASE_CREATE_PROPERTY_TYPES = ["text", "number", "select", "date", "che
 /** Key of the title property created together with `properties`. */
 export const DATABASE_CREATE_TITLE_PROPERTY_KEY = "name";
 const DATABASE_CREATE_MAX_PROPERTIES = 50;
+const canonicalUuid = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, "Expected a UUID");
 
 const DatabaseCreatePropertySchema = z.union([
   z
@@ -53,7 +56,7 @@ const DatabaseCreatePropertySchema = z.union([
       key: z.string().min(1),
       name: z.string().min(1),
       type: z.literal("relation"),
-      targetDatabaseId: z.string(),
+      targetDatabaseId: canonicalUuid,
       cardinality: z.enum(["one_to_one", "one_to_many", "many_to_many"]),
     })
     .strict(),
@@ -330,8 +333,8 @@ export type RelationDeleteInput = z.infer<typeof RelationDeleteInputSchema>;
 /** Every live edge of `itemId` (issue #1404), optionally narrowed to one of the item's own relation properties. */
 export const RelationListInputSchema = z
   .object({
-    itemId: z.string(),
-    relationPropertyId: z.string().optional(),
+    itemId: canonicalUuid,
+    relationPropertyId: canonicalUuid.optional(),
   })
   .strict();
 export type RelationListInput = z.infer<typeof RelationListInputSchema>;
@@ -339,7 +342,7 @@ export type RelationListInput = z.infer<typeof RelationListInputSchema>;
 /** Restores the page of `itemId` to its state at `at` (issue #1617); a future or unretained `at` is refused by the operation, not by this schema. */
 export const PageRestoreVersionInputSchema = z
   .object({
-    itemId: z.string(),
+    itemId: canonicalUuid,
     at: z.iso.datetime({ offset: true }),
   })
   .strict();

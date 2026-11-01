@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { LocalFsBlobStorageWriter } from "../../mail/blobStorage.js";
 import "../../domainWriteHooks.js";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { runInTenant } from "@semprec/shared";
@@ -539,4 +543,172 @@ describe("standalone blobs (issue #1401)", () => {
       expect(storage.deleteCalls).toEqual([`${tenantB}/blobs/foreign`]);
     });
   });
+  const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+  function gate() {
+    let release!: () => void;
+    const promise = new Promise<void>((r) => {
+      release = r;
+    });
+    return { promise, release };
+  }
+  async function setup() {
+    const dir = await mkdtemp(join(tmpdir(), "semprec-standalone-race-"));
+    const storage = new LocalFsBlobStorageWriter(dir);
+    const one = await createRuntimeRolePool(pool, "semprec_data");
+    const two = await createRuntimeRolePool(pool, "semprec_data");
+    const tenant = getTenantZeroId();
+    const upload = (pool: Pool) =>
+      runInTenant(tenant, () =>
+        ingestUploadedBlob(pool, { mimeType: "image/png", source: Readable.from([bytes]), maxBytes: 1024, storage }),
+      );
+    const old = await upload(one);
+    await pool.query("UPDATE blobs SET created_at=now()-interval '25 hours' WHERE id=$1", [old.blob.id]);
+    return { dir, storage, one, two, tenant, upload, old };
+  }
+  async function files(dir: string) {
+    return (await readdir(dir, { recursive: true, withFileTypes: true })).filter((x) => x.isFile()).length;
+  }
+  it("fails closed and cleans uploaded bytes when collection wins after dedup read", async () => {
+    const f = await setup();
+    const ready = gate(),
+      release = gate();
+    let intercepted = false;
+    const wrapped = new Map<PoolClient, PoolClient["query"]>();
+    const instrument = (client: PoolClient) => {
+      if (wrapped.has(client)) return;
+      // The proxy forwards the original receiver and the method is restored before releasing the pool.
+      /* eslint-disable @typescript-eslint/unbound-method */
+      wrapped.set(client, client.query);
+      client.query = new Proxy(client.query, {
+        apply(target, receiver, args: unknown[]) {
+          const result: unknown = Reflect.apply(target, receiver, args);
+          if (intercepted || typeof args[0] !== "string" || !args[0].includes("FROM blobs WHERE content_hash = $1"))
+            return result;
+          intercepted = true;
+          return Promise.resolve(result).then(async (value: unknown) => {
+            ready.release();
+            await release.promise;
+            return value;
+          });
+        },
+      });
+      /* eslint-enable @typescript-eslint/unbound-method */
+    };
+    f.one.on("acquire", instrument);
+    const upload = f.upload(f.one);
+    const settled = Promise.allSettled([upload]);
+    let sweep: Promise<number> | undefined;
+    try {
+      await bounded(
+        Promise.race([
+          ready.promise,
+          upload.then(() => {
+            throw new Error("upload ended before barrier");
+          }),
+        ]),
+      );
+      sweep = runInTenant(f.tenant, () => sweepUnreferencedBlobs(f.two, f.storage));
+      expect(await bounded(sweep)).toBe(1);
+      expect(await files(f.dir)).toBe(1);
+      release.release();
+      await expect(upload).rejects.toMatchObject({ name: "ValidationError", details: { field: "blobId" } });
+      expect(
+        (await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM blobs WHERE id=$1", [f.old.blob.id])).rows[0]
+          ?.n,
+      ).toBe(0);
+      await viWaitFiles(f.dir, 0);
+    } finally {
+      release.release();
+      await settled;
+      if (sweep) await Promise.allSettled([sweep]);
+      f.one.off("acquire", instrument);
+      for (const [client, query] of wrapped) client.query = query;
+      await f.one.end();
+      await f.two.end();
+      await rm(f.dir, { recursive: true, force: true });
+    }
+  }, 15000);
+  async function viWaitFiles(dir: string, count: number) {
+    for (let i = 0; i < 100; i++) {
+      if ((await files(dir)) === count) return;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(await files(dir)).toBe(count);
+  }
+  it("committed old dedup stays eligible for subsequent sweep", async () => {
+    const f = await setup();
+    try {
+      const before = (
+        await pool.query<{ created_at: Date }>("SELECT created_at FROM blobs WHERE id=$1", [f.old.blob.id])
+      ).rows[0]?.created_at;
+      const repeat = await f.upload(f.one);
+      expect(repeat.created).toBe(false);
+      expect(repeat.blob.id).toBe(f.old.blob.id);
+      expect(
+        (await pool.query<{ created_at: Date }>("SELECT created_at FROM blobs WHERE id=$1", [repeat.blob.id])).rows[0]
+          ?.created_at,
+      ).toEqual(before);
+      expect(await runInTenant(f.tenant, () => sweepUnreferencedBlobs(f.two, f.storage))).toBe(1);
+      await viWaitFiles(f.dir, 0);
+    } finally {
+      await f.one.end();
+      await f.two.end();
+      await rm(f.dir, { recursive: true, force: true });
+    }
+  }, 15000);
+  it("collector holds deletion before a concurrent repeated upload", async () => {
+    const f = await setup();
+    const ready = gate(),
+      release = gate();
+    let pid = 0;
+    const deleting = runInTenant(f.tenant, () =>
+      withTransaction(f.two, async (client) => {
+        pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid ?? 0;
+        expect(await deleteBlobIfUnreferenced(client, f.old.blob.id)).toBe(f.old.blob.storageKey);
+        ready.release();
+        await release.promise;
+      }),
+    );
+    const settled = Promise.allSettled([deleting]);
+    let upload: ReturnType<typeof f.upload> | undefined;
+    try {
+      await bounded(
+        Promise.race([
+          ready.promise,
+          deleting.then(() => {
+            throw new Error("deletion ended before barrier");
+          }),
+        ]),
+      );
+      upload = f.upload(f.one);
+      const uploadSettled = Promise.allSettled([upload]);
+      let blocked = false;
+      for (let i = 0; i < 100 && !blocked; i++) {
+        blocked =
+          (
+            await pool.query<{ b: boolean }>(
+              "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))) AS b",
+              [pid],
+            )
+          ).rows[0]?.b === true;
+        if (!blocked) await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(blocked).toBe(true);
+      release.release();
+      await deleting;
+      const [result] = await uploadSettled;
+      expect(result?.status).toBe("fulfilled");
+      if (result?.status === "fulfilled") {
+        expect(result.value.created).toBe(true);
+        expect(result.value.blob.id).not.toBe(f.old.blob.id);
+      }
+    } finally {
+      release.release();
+      await settled;
+      if (upload) await Promise.allSettled([upload]);
+      await f.one.end();
+      await f.two.end();
+      await rm(f.dir, { recursive: true, force: true });
+    }
+  }, 15000);
 });

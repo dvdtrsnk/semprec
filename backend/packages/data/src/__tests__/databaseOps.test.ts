@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -270,4 +270,132 @@ describe("choke-point databaseOps", () => {
       await runtime.end();
     }
   });
+  it.each(["creation-first", "purge-first"] as const)(
+    "coordinates atomic relation target lookup and partition removal: %s",
+    async (order) => {
+      const parent = await chokePoint.createDatabase({ name: "Parent" });
+      const owner = await chokePoint.createItem({ databaseId: parent.id, properties: {} });
+      const target = await chokePoint.createInlineDatabase({ name: "Inline", parentItemId: owner.id });
+      await chokePoint.softDeleteItem(parent.id, owner.id);
+      await pool.query("UPDATE items SET deleted_at=now()-interval '31 days' WHERE id=$1 AND database_id=$2", [
+        owner.id,
+        parent.id,
+      ]);
+      const tenant = getTenantZeroId(),
+        createPool = await createRuntimeRolePool(pool, "semprec_data"),
+        purgePool = await createRuntimeRolePool(pool, "semprec_data");
+      let release!: () => void, ready!: (pid: number) => void;
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      const started = new Promise<number>((r) => {
+        ready = r;
+      });
+      const wrapped = new Map<PoolClient, PoolClient["query"]>();
+      let held = false;
+      const instrument = (client: PoolClient) => {
+        if (wrapped.has(client)) return;
+        /* eslint-disable @typescript-eslint/unbound-method */ wrapped.set(client, client.query);
+        client.query = new Proxy(client.query, {
+          apply(fn, receiver, args: unknown[]) {
+            const value: unknown = Reflect.apply(fn, receiver, args);
+            if (held || typeof args[0] !== "string") return value;
+            const params = args[1];
+            if (!Array.isArray(params) || params[0] !== target.id) return value;
+            const match =
+              order === "creation-first"
+                ? args[0].includes("FROM databases WHERE id = $1")
+                : args[0].includes("SELECT drop_items_partition");
+            if (!match) return value;
+            held = true;
+            return Promise.resolve(value).then(async (result: unknown) => {
+              const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              if (pid === undefined) throw new Error("missing pid");
+              ready(pid);
+              await gate;
+              return result;
+            });
+          },
+        }); /* eslint-enable @typescript-eslint/unbound-method */
+      };
+      (order === "creation-first" ? createPool : purgePool).on("acquire", instrument);
+      const create = () =>
+        runInTenant(tenant, () =>
+          createChokePoint(createPool).createDatabaseWithProperties({ name: "Atomic target race" }, "Name", [
+            { key: "link", name: "Link", type: "relation", targetDatabaseId: target.id, cardinality: "many_to_many" },
+          ]),
+        );
+      const purge = () =>
+        runInTenant(tenant, () => createChokePoint(purgePool).purgeExpiredTrashSubtree(owner.id, new Date()));
+      const first = order === "creation-first" ? create() : purge();
+      const firstSettled = Promise.allSettled([first]);
+      let second: Promise<unknown> | undefined;
+      try {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const pid = await Promise.race([
+          started,
+          first.then(() => {
+            throw new Error("first exited before barrier");
+          }),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("barrier timed out")), 5000);
+          }),
+        ]).finally(() => {
+          if (timer) clearTimeout(timer);
+        });
+        second = order === "creation-first" ? purge() : create();
+        const secondSettled = Promise.allSettled([second]);
+        let blocked = false;
+        for (let i = 0; i < 200 && !blocked; i++) {
+          blocked =
+            (
+              await pool.query<{ b: boolean }>(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))) AS b",
+                [pid],
+              )
+            ).rows[0]?.b === true;
+          if (!blocked) await new Promise((r) => setTimeout(r, 10));
+        }
+        expect(blocked).toBe(true);
+        const locks = await pool.query<{ mode: string; granted: boolean }>(
+          "SELECT mode,granted FROM pg_locks WHERE relation='items'::regclass AND (pid=$1 OR pid IN (SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))))",
+          [pid],
+        );
+        expect(
+          locks.rows.some(
+            (x) =>
+              x.mode === (order === "creation-first" ? "ShareUpdateExclusiveLock" : "AccessExclusiveLock") && x.granted,
+          ),
+          JSON.stringify(locks.rows),
+        ).toBe(true);
+        expect(
+          locks.rows.some(
+            (x) => x.mode === (order === "creation-first" ? "AccessExclusiveLock" : "AccessShareLock") && !x.granted,
+          ),
+          JSON.stringify(locks.rows),
+        ).toBe(true);
+        release();
+        const [a] = await firstSettled,
+          [b] = await secondSettled;
+        expect(a?.status).toBe("fulfilled");
+        if (order === "creation-first") expect(b?.status).toBe("fulfilled");
+        else expect(b).toMatchObject({ status: "rejected", reason: { code: "validation_failed" } });
+        expect(await chokePoint.getDatabase(target.id)).toBeNull();
+        const names = await pool.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM databases WHERE name='Atomic target race'",
+        );
+        expect(names.rows[0]?.n).toBe(order === "creation-first" ? 1 : 0);
+      } finally {
+        release();
+        await firstSettled;
+        if (second) await Promise.allSettled([second]);
+        createPool.off("acquire", instrument);
+        purgePool.off("acquire", instrument);
+        for (const [client, query] of wrapped) client.query = query;
+        await createPool.end();
+        await purgePool.end();
+      }
+    },
+    20000,
+  );
 });

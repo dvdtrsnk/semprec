@@ -234,12 +234,12 @@ export function createCoreTaskList(
       );
     },
     [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: async () => {
-      await handleItemTrashPurgeSweepTask(pool, mailBlobStorage);
+      await handleItemTrashPurgeSweepTask(pool, mailBlobStorage, filesBlobStorage);
     },
     // Issue #221 declared `trashPurge` as a second daily crontab entry alongside
     // `itemTrashPurgeSweep`, distinct in name but not in effect — it runs the same purge sweep.
     [CORE_TASK_NAMES.TRASH_PURGE]: async () => {
-      await handleItemTrashPurgeSweepTask(pool, mailBlobStorage);
+      await handleItemTrashPurgeSweepTask(pool, mailBlobStorage, filesBlobStorage);
     },
     // Issue #1401: removes standalone upload blobs nothing references 24 hours after creation.
     [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: async () => {

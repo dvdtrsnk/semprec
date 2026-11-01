@@ -198,6 +198,9 @@ export async function ingestUploadedBlob(
         storageKey,
         contentHash,
       });
+      if (!(await lockBlobById(client, blob.id))) {
+        throw new ValidationError("Invalid blob reference", { field: "blobId" });
+      }
       if (blob.storageKey === storageKey) return { blob, created: true };
       // A dedup hit: the bytes just streamed duplicate the existing blob's; drop them once this commits.
       runAfterCommit(client, () => {

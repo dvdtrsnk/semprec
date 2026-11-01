@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
-import { readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -25,6 +25,11 @@ import { createDispatcher } from "../app.js";
 
 const PASSWORD = "s3cret-password";
 const MAX_FILE_SIZE_BYTES = 1024;
+// A complete 1×1 RGBA PNG, including its image data and chunk checksums.
+const PNG_IMAGE = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==",
+  "base64",
+);
 
 const noopMailer: PasswordResetMailer = {
   async sendPasswordResetEmail() {},
@@ -258,11 +263,17 @@ describe("files and blobs routes (issue #158)", () => {
     });
 
     it("stores an image as a blob, 201, without creating a Files item", async () => {
-      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const png = PNG_IMAGE;
       const res = await uploadBlob(png);
       expect(res.status).toBe(201);
       const body = (await res.json()) as { blobId: string; byteSize: number; mimeType: string };
       expect(body).toEqual({ blobId: expect.any(String), byteSize: png.length, mimeType: "image/png" });
+      const stored = await pool.query<{ storage_key: string }>("SELECT storage_key FROM blobs WHERE id = $1", [
+        body.blobId,
+      ]);
+      const key = stored.rows[0]?.storage_key;
+      if (!key) throw new Error("missing stored blob key");
+      expect(await readFile(join(tmpBlobDir, key))).toEqual(png);
       const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE properties ? 'file'");
       expect(rows[0].n).toBe(0);
       expect(await storedFileCount()).toBe(1);
@@ -481,7 +492,7 @@ describe("files and blobs routes (issue #158)", () => {
     });
 
     it("returns blob metadata for a Library cover on the real item route", async () => {
-      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const png = PNG_IMAGE;
       const upload = await fetch(`${baseUrl}/api/blobs`, {
         method: "POST",
         headers: { ...(await authHeader()), "Content-Type": "image/png" },

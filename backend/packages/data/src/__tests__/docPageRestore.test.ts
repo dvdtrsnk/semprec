@@ -2,8 +2,12 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import * as Y from "yjs";
+import { runInTenant } from "@semprec/shared";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createRuntimeRolePool, getTenantZeroId } from "../testSupport/tenantFixtures.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
+import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { createDocStore, type DocStore } from "../docs/docStore.js";
 import { CANVAS_ELEMENT_TYPES } from "../docs/canvas.js";
 import { loadDoc, mutateDoc, mutateDocWithClient } from "../docs/docPersistence.js";
@@ -240,16 +244,22 @@ describe("page.restoreVersion (issue #1617): restoring a page to an earlier vers
       writerReady(pid);
       await release;
     });
+    const writerSettled = Promise.allSettled([writer]);
     let restore: Promise<unknown> | undefined;
+    let restoreSettled: Promise<PromiseSettledResult<unknown>[]> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const pid = await Promise.race([
         ready,
         writer.then(() => {
           throw new Error("writer finished before the barrier");
         }),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("writer barrier timed out")), 5_000)),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("writer barrier timed out")), 5_000);
+        }),
       ]);
       restore = docStore.restoreVersion(page.itemId, page.at(-1.5));
+      restoreSettled = Promise.allSettled([restore]);
       let blocked = false;
       for (let attempt = 0; attempt < 100 && !blocked; attempt += 1) {
         const result = await pool.query<{ blocked: boolean }>(
@@ -262,11 +272,145 @@ describe("page.restoreVersion (issue #1617): restoring a page to an earlier vers
       expect(blocked).toBe(true);
     } finally {
       releaseWriter();
-      const settled = await Promise.allSettled([writer, ...(restore ? [restore] : [])]);
-      for (const result of settled) if (result.status === "rejected") throw result.reason;
+      if (timer) clearTimeout(timer);
+      await writerSettled;
+      if (restoreSettled !== undefined) await restoreSettled;
     }
+    const settled = [...(await writerSettled), ...(restoreSettled !== undefined ? await restoreSettled : [])];
+    for (const result of settled) if (result.status === "rejected") throw result.reason;
     expect(await blockContents(page.itemId)).toEqual({ b1: "first", b2: "second" });
   });
+
+  it("holds the live item while restore waits for the document, so deletion follows restore", async () => {
+    const page = await pageWithUserBlocks();
+    await agentEdit(page);
+    const restorePool = await createRuntimeRolePool(pool, "semprec_data");
+    const deletePool = await createRuntimeRolePool(pool, "semprec_data");
+    let release!: () => void;
+    let ready!: (pid: number) => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const acquired = new Promise<number>((resolve) => {
+      ready = resolve;
+    });
+    const holder = withTransaction(pool, async (client) => {
+      const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+      if (pid === undefined) throw new Error("missing document holder pid");
+      await client.query("SELECT doc_id FROM doc_snapshots WHERE doc_id = $1 FOR UPDATE", [page.docId]);
+      ready(pid);
+      await hold;
+    });
+    let restore: ReturnType<DocStore["restoreVersion"]> | undefined;
+    let deletion: ReturnType<ChokePoint["softDeleteItem"]> | undefined;
+    try {
+      const ownerPid = await Promise.race([
+        acquired,
+        holder.then(() => {
+          throw new Error("document holder ended before barrier");
+        }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("barrier timed out")), 5000)),
+      ]);
+      restore = runInTenant(getTenantZeroId(), () =>
+        createDocStore(restorePool).restoreVersion(page.itemId, page.at(-1.5)),
+      );
+      let restorePid: number | undefined;
+      for (let i = 0; i < 100 && restorePid === undefined; i++) {
+        restorePid = (
+          await pool.query<{ pid: number }>("SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))", [
+            ownerPid,
+          ])
+        ).rows[0]?.pid;
+        if (restorePid === undefined) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(restorePid).toBeDefined();
+      deletion = runInTenant(getTenantZeroId(), () =>
+        createChokePoint(deletePool).softDeleteItem(page.databaseId, page.itemId),
+      );
+      let blocked = false;
+      for (let i = 0; i < 100 && !blocked; i++) {
+        blocked =
+          (
+            await pool.query<{ blocked: boolean }>(
+              "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked",
+              [restorePid],
+            )
+          ).rows[0]?.blocked === true;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked).toBe(true);
+      release();
+      expect((await restore).blockIds).toEqual(["b1", "b2"]);
+      expect((await deletion)?.deletedAt).toBeTruthy();
+    } finally {
+      release();
+      await Promise.allSettled([holder, ...(restore ? [restore] : []), ...(deletion ? [deletion] : [])]);
+      await Promise.all([restorePool.end(), deletePool.end()]);
+    }
+  }, 15000);
+
+  it("refuses restore without appending when deletion commits first", async () => {
+    const page = await pageWithUserBlocks();
+    await agentEdit(page);
+    const before = await updateCount(page.docId);
+    const deletingPool = await createRuntimeRolePool(pool, "semprec_data");
+    const restoringPool = await createRuntimeRolePool(pool, "semprec_data");
+    let release!: () => void;
+    let ready!: (pid: number) => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const acquired = new Promise<number>((resolve) => {
+      ready = resolve;
+    });
+    const deletion = runInTenant(getTenantZeroId(), () =>
+      withTransaction(deletingPool, async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        if (pid === undefined) throw new Error("missing deletion pid");
+        expect(
+          await itemDeleteWithClient(client, page.databaseId, page.itemId, {
+            queueAffinity: createActionQueueAffinity(),
+          }),
+        ).not.toBeNull();
+        ready(pid);
+        await hold;
+      }),
+    );
+    let restore: ReturnType<DocStore["restoreVersion"]> | undefined;
+    try {
+      const pid = await Promise.race([
+        acquired,
+        deletion.then(() => {
+          throw new Error("deletion ended before barrier");
+        }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("barrier timed out")), 5000)),
+      ]);
+      restore = runInTenant(getTenantZeroId(), () =>
+        createDocStore(restoringPool).restoreVersion(page.itemId, page.at(-1.5)),
+      );
+      const outcome = Promise.allSettled([restore]);
+      let blocked = false;
+      for (let i = 0; i < 100 && !blocked; i++) {
+        blocked =
+          (
+            await pool.query<{ blocked: boolean }>(
+              "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked",
+              [pid],
+            )
+          ).rows[0]?.blocked === true;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked).toBe(true);
+      release();
+      await deletion;
+      expect((await outcome)[0]).toMatchObject({ status: "rejected", reason: expect.any(NotFoundError) });
+      expect(await updateCount(page.docId)).toBe(before);
+    } finally {
+      release();
+      await Promise.allSettled([deletion, ...(restore ? [restore] : [])]);
+      await Promise.all([deletingPool.end(), restoringPool.end()]);
+    }
+  }, 15000);
 
   it("refuses an instant outside the retention window with 410 and a future instant with 400, writing nothing", async () => {
     const page = await pageWithUserBlocks();

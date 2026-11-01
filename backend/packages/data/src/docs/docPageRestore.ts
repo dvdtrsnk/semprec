@@ -7,7 +7,7 @@ import * as Y from "yjs";
 import type { PoolClient } from "pg";
 import { getBlocksMap, getOrderArray, readPageBlocks } from "@semprec/block-model";
 import { canonicalizeJson, type PageRestoreOutput } from "@semprec/shared";
-import { getItemsByIds } from "../chokePoint/itemsStore.js";
+import { getItemsByIds, lockItemById } from "../chokePoint/itemsStore.js";
 import { buildResourceSnapshot, type DestructiveResourceProjection } from "../chokePoint/destructiveProjection.js";
 import { NotFoundError } from "../errors.js";
 import { resolveDocHistoryRetentionDays } from "./docHistoryConfig.js";
@@ -28,7 +28,8 @@ export interface PageRestoreCheck {
  */
 async function requirePageDoc(client: PoolClient, itemId: string): Promise<DocRow> {
   const [item] = await getItemsByIds(client, [itemId]);
-  const doc = item ? await docsStore.getDocByItemId(client, itemId) : null;
+  const locked = item ? await lockItemById(client, item.databaseId, itemId) : null;
+  const doc = locked && !locked.deletedAt ? await docsStore.getDocByItemId(client, itemId) : null;
   if (!doc || doc.kind !== "page") {
     throw new NotFoundError(`Page for item ${itemId} not found`, { resource: "page", itemId });
   }
@@ -36,8 +37,8 @@ async function requirePageDoc(client: PoolClient, itemId: string): Promise<DocRo
 }
 
 /**
- * The document lock every document write takes first (`loadDocWithClient`, `rebaselineDocHistory`):
- * the `doc_snapshots` row, held until the caller's transaction ends.
+ * The document lock shared by document writes (`loadDocWithClient`, `rebaselineDocHistory`):
+ * the `doc_snapshots` row, held until the caller's transaction ends. Restore locks the item first.
  */
 async function lockDocument(client: PoolClient, docId: string): Promise<void> {
   await client.query(`SELECT 1 FROM doc_snapshots WHERE doc_id = $1 FOR UPDATE`, [docId]);
@@ -57,20 +58,31 @@ export async function computePageRestoreProjection(
   await lockDocument(client, docId);
   const doc = await requirePageDoc(client, check.input.itemId);
   await assertDocVersionReadable(client, doc.id, new Date(check.input.at));
+  const version = await client.query<{ version: string }>(
+    `SELECT GREATEST(
+       COALESCE((SELECT max(id) FROM doc_updates WHERE doc_id = $1 AND tenant_id = app_tenant_default()), 0),
+       COALESCE((SELECT max(update_id) FROM doc_history_updates WHERE doc_id = $1 AND tenant_id = app_tenant_default()), 0),
+       COALESCE((SELECT max(through_update_id) FROM doc_snapshot_history WHERE doc_id = $1 AND tenant_id = app_tenant_default()), 0)
+     )::text AS version`,
+    [doc.id],
+  );
+  const updateVersion = version.rows[0]?.version;
+  if (updateVersion === undefined) throw new Error("Missing document update version");
   const projected = {
     docId: doc.id,
     itemId: doc.itemId,
     lastEditedAt: doc.lastEditedAt,
     lastEditedBy: doc.lastEditedBy,
+    updateVersion,
   };
   return { snapshot: buildResourceSnapshot("page_restore", doc.id, projected), currentResource: projected };
 }
 
 /**
  * Restores the page of `itemId` to its state at `at`, inside the caller's transaction (issue #1617).
- * The document lock is taken first, so the historical read and the difference computed against the
- * live document see the same document. The difference is applied as one update authored `user`; a
- * restore that changes nothing writes no update.
+ * The live item is locked before the document, so deletion cannot invalidate the restore while it
+ * waits. The historical read and the difference see the same document. The difference is applied
+ * as one update authored `user`; a restore that changes nothing writes no update.
  */
 export async function restorePageVersionWithClient(
   client: PoolClient,

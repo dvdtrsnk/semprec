@@ -2,6 +2,7 @@ import { visibleDatabaseIds } from "../chokePoint/itemsStore.js";
 import type { Queryable } from "../db/pool.js";
 import { requireSingleRow } from "../db/pool.js";
 import type { BlobRow } from "../types.js";
+import { ValidationError } from "../errors.js";
 
 /** The raw `blobs` row shape this module reads back from Postgres. */
 type BlobDbRow = {
@@ -114,7 +115,7 @@ export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput
   if (inserted.rows[0]) return mapBlobRow(inserted.rows[0]);
 
   const existing = await getBlobByContentHash(client, input.contentHash);
-  if (!existing) throw new Error(`blob with content_hash '${input.contentHash}' vanished after a no-op conflict`);
+  if (!existing) throw new ValidationError("Invalid blob reference", { field: "blobId" });
   return existing;
 }
 

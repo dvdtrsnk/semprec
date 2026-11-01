@@ -619,6 +619,18 @@ describe("database routes (issue #240)", () => {
       });
       expect(noCardinality.status).toBe(400);
       expect(JSON.stringify(await noCardinality.json())).toContain("cardinality");
+      const before = await footprint();
+      const malformed = await post(headers, {
+        name: "Malformed",
+        properties: [
+          { key: "link", name: "Link", type: "relation", targetDatabaseId: "not-a-uuid", cardinality: "one_to_one" },
+        ],
+      });
+      expect(malformed.status).toBe(400);
+      expect(await malformed.json()).toMatchObject({
+        error: { code: "validation_failed", details: { field: "properties.0.targetDatabaseId" } },
+      });
+      expect(await footprint()).toEqual(before);
       for (const type of ["rollup", "title", "multi_select"]) {
         const res = await post(headers, { name: "X", properties: [{ key: "k", name: "K", type }] });
         expect(res.status).toBe(400);

@@ -1,7 +1,7 @@
 import type { CollectionMetadataResolver } from "@semprec/data";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import {
   createRuntimeRolePool,
   createTenantZeroUser,
@@ -21,12 +21,16 @@ import {
   createAgentRun,
   createChokePoint,
   createCoreTaskList,
+  computePageRestoreProjection,
   createDocStore,
   createUser as createBoundUser,
   createViewTypeRegistry,
   decideAndEnqueueApprovalRequest,
   getApprovalRequest,
   getDatabaseByModuleId,
+  loadYDoc,
+  mutateYDoc,
+  rebaselineDocHistory,
   seedSystem,
   withTransaction,
   type ApprovalRequest,
@@ -35,6 +39,7 @@ import {
 } from "@semprec/data";
 import {
   CAPABILITY_IDS,
+  canonicalizeJson,
   GENERIC_OPERATION_NAMES,
   OPERATION_METADATA,
   runInTenant,
@@ -1097,6 +1102,297 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(finished!.executionStatus).toBe("conflict");
       expect(await blockIdsOf(page.itemId)).toEqual(["b1", "b2"]);
     });
+
+    it("rejects an approved restore after a same-author edit with the same timestamp", async () => {
+      const page = await pageWithFirstBlock();
+      const actor = await makeAgentActor();
+      const before = await pool.query<{ last_edited_at: Date; last_edited_by: string }>(
+        "SELECT last_edited_at, last_edited_by FROM docs WHERE id = $1",
+        [page.docId],
+      );
+      const previous = before.rows[0];
+      if (!previous) throw new Error("missing page fixture");
+      const requestId = await approveDestructive("page.restoreVersion", actor, {
+        itemId: page.itemId,
+        at: page.at.toISOString(),
+      });
+      await createDocStore(pool).putBlock(
+        page.itemId,
+        { id: "b2", flavour: "paragraph", fields: { content: "second" } },
+        "user",
+      );
+      // Reproduce a timestamp collision independently of wall-clock scheduling.
+      await pool.query("UPDATE docs SET last_edited_at = $2, last_edited_by = $3 WHERE id = $1", [
+        page.docId,
+        previous.last_edited_at,
+        previous.last_edited_by,
+      ]);
+      const { finished } = await replayRequest(requestId);
+      expect(finished?.executionStatus).toBe("conflict");
+      expect(await blockIdsOf(page.itemId)).toEqual(["b1", "b2"]);
+    });
+
+    it("keeps approval identity through real compaction and retention, then detects a later edit", async () => {
+      const page = await pageWithFirstBlock();
+      const actor = await makeAgentActor();
+      const oldBaseline = new Date(page.at.getTime() - 48 * 60 * 60 * 1000);
+      await pool.query("UPDATE docs SET history_available_from = $2 WHERE id = $1", [page.docId, oldBaseline]);
+      await pool.query(
+        "UPDATE doc_snapshot_history SET represented_at = $2 WHERE doc_id = $1 AND through_update_id = 0",
+        [page.docId, oldBaseline],
+      );
+      const input = { itemId: page.itemId, at: page.at.toISOString() };
+      const requestId = await approveDestructive("page.restoreVersion", actor, input);
+      await loadYDoc(pool, page.docId, 1, 1);
+      const pending = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM doc_updates WHERE doc_id = $1",
+        [page.docId],
+      );
+      expect(pending.rows[0]?.count).toBe("0");
+      expect(await rebaselineDocHistory(pool, page.docId, 1)).toBe(true);
+      const first = await replayRequest(requestId);
+      expect(first.finished?.executionStatus).toBe("succeeded");
+      expect(await blockIdsOf(page.itemId)).toEqual(["b1"]);
+      const secondRequest = await approveDestructive("page.restoreVersion", actor, input);
+      await createDocStore(pool).putBlock(
+        page.itemId,
+        { id: "b2", flavour: "paragraph", fields: { content: "later" } },
+        "user",
+      );
+      const second = await replayRequest(secondRequest);
+      expect(second.finished?.executionStatus).toBe("conflict");
+      expect(await blockIdsOf(page.itemId)).toEqual(["b1", "b2"]);
+    });
+
+    it("rejects an approval whose snapshot was created before update identity was added", async () => {
+      const page = await pageWithFirstBlock();
+      const actor = await makeAgentActor();
+      const input = { itemId: page.itemId, at: page.at.toISOString() };
+      const requestId = await approveDestructive("page.restoreVersion", actor, input);
+      const projection = await withTransaction(pool, (client) =>
+        computePageRestoreProjection(client, { operation: "page.restoreVersion", input }),
+      );
+      const current = projection.currentResource;
+      if (typeof current !== "object" || current === null || !("updateVersion" in current)) {
+        throw new Error("missing update version in current projection");
+      }
+      const legacy = Object.fromEntries(Object.entries(current).filter(([key]) => key !== "updateVersion"));
+      const sha256 = createHash("sha256").update(canonicalizeJson(legacy), "utf8").digest("hex");
+      const changed = await pool.query(
+        `UPDATE approval_requests SET resource_snapshot = jsonb_set(resource_snapshot, '{sha256}', to_jsonb($2::text)),
+         payload = jsonb_set(payload, '{resourceSnapshot,sha256}', to_jsonb($2::text)) WHERE id = $1`,
+        [requestId, sha256],
+      );
+      expect(changed.rowCount).toBe(1);
+      const { finished } = await replayRequest(requestId);
+      expect(finished?.executionStatus).toBe("conflict");
+      expect(await blockIdsOf(page.itemId)).toEqual(["b1"]);
+    });
+
+    it("rejects replay after an edit from an earlier-started transaction", async () => {
+      const page = await pageWithFirstBlock();
+      const actor = await makeAgentActor();
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      let release!: () => void;
+      let signal!: (at: Date) => void;
+      const hold = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<Date>((resolve) => {
+        signal = resolve;
+      });
+      const originals = new Map<PoolClient, PoolClient["query"]>();
+      const instrument = (client: PoolClient) => {
+        if (originals.has(client)) return;
+        // The proxy forwards the original receiver and the method is restored before the pool closes.
+        /* eslint-disable @typescript-eslint/unbound-method */
+        originals.set(client, client.query);
+        client.query = new Proxy(client.query, {
+          apply(target, receiver, args: unknown[]) {
+            const result: unknown = Reflect.apply(target, receiver, args);
+            if (args[0] !== "BEGIN") return result;
+            return Promise.resolve(result).then(async (value: unknown) => {
+              const at = (await client.query<{ at: Date }>("SELECT transaction_timestamp() AS at")).rows[0]?.at;
+              if (!at) throw new Error("missing transaction timestamp");
+              signal(at);
+              await hold;
+              return value;
+            });
+          },
+        });
+        /* eslint-enable @typescript-eslint/unbound-method */
+      };
+      runtime.on("acquire", instrument);
+      const writer = runInTenant(getTenantZeroId(), () =>
+        mutateYDoc(runtime, page.docId, "user", (doc) => {
+          doc.getMap("approval-test").set("edit", "later");
+        }),
+      );
+      const settled = Promise.allSettled([writer]);
+      try {
+        const at = await Promise.race([
+          started,
+          writer.then(() => {
+            throw new Error("writer ended before barrier");
+          }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("barrier timed out")), 5000)),
+        ]);
+        // Force the existing timestamp and author to collide with the transaction's real timestamp.
+        await pool.query("UPDATE docs SET last_edited_at = $2, last_edited_by = 'user' WHERE id = $1", [
+          page.docId,
+          at,
+        ]);
+        const requestId = await approveDestructive("page.restoreVersion", actor, {
+          itemId: page.itemId,
+          at: page.at.toISOString(),
+        });
+        release();
+        await writer;
+        const after = (
+          await pool.query<{ at: Date; author: string }>(
+            "SELECT last_edited_at AS at, last_edited_by AS author FROM docs WHERE id = $1",
+            [page.docId],
+          )
+        ).rows[0];
+        expect(after).toEqual({ at, author: "user" });
+        const { finished } = await replayRequest(requestId);
+        expect(finished?.executionStatus).toBe("conflict");
+      } finally {
+        release();
+        await settled;
+        runtime.off("acquire", instrument);
+        for (const [client, original] of originals) client.query = original;
+        await runtime.end();
+      }
+    }, 15000);
+
+    it.each(["replay-first", "delete-first"] as const)(
+      "coordinates actual approved replay and deletion with %s",
+      async (order) => {
+        const page = await pageWithFirstBlock();
+        const actor = await makeAgentActor();
+        const requestId = await approveDestructive("page.restoreVersion", actor, {
+          itemId: page.itemId,
+          at: page.at.toISOString(),
+        });
+        const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
+          payload: GenericOperationApprovalRequestPayload;
+        };
+        const databaseId = (
+          await pool.query<{ database_id: string }>("SELECT database_id FROM items WHERE id = $1", [page.itemId])
+        ).rows[0]?.database_id;
+        if (!databaseId) throw new Error("missing page database");
+        const replayPool = await createRuntimeRolePool(pool, "semprec_data");
+        const deletePool = await createRuntimeRolePool(pool, "semprec_data");
+        let release!: () => void;
+        let signal!: (pid: number) => void;
+        const hold = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const ready = new Promise<number>((resolve) => {
+          signal = resolve;
+        });
+        const originals = new Map<PoolClient, PoolClient["query"]>();
+        const instrument = (client: PoolClient) => {
+          if (originals.has(client)) return;
+          // The proxy forwards the receiver and is removed before the pool closes.
+          /* eslint-disable @typescript-eslint/unbound-method */
+          originals.set(client, client.query);
+          client.query = new Proxy(client.query, {
+            apply(target, receiver, args: unknown[]) {
+              const result: unknown = Reflect.apply(target, receiver, args);
+              if (typeof args[0] !== "string" || !args[0].startsWith("UPDATE items SET deleted_at = now()"))
+                return result;
+              return Promise.resolve(result).then(async (value: unknown) => {
+                const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                if (pid === undefined) throw new Error("missing deletion pid");
+                signal(pid);
+                await hold;
+                return value;
+              });
+            },
+          });
+          /* eslint-enable @typescript-eslint/unbound-method */
+        };
+        let holder: Promise<unknown> | undefined;
+        if (order === "replay-first") {
+          holder = withTransaction(pool, async (client) => {
+            const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            if (pid === undefined) throw new Error("missing document holder pid");
+            await client.query("SELECT doc_id FROM doc_snapshots WHERE doc_id = $1 FOR UPDATE", [page.docId]);
+            signal(pid);
+            await hold;
+          });
+        } else deletePool.on("acquire", instrument);
+        const settledHolder = holder ? Promise.allSettled([holder]) : undefined;
+        const doReplay = () =>
+          runInTenant(getTenantZeroId(), () => replayApprovedGenericOperation(replayPool, request));
+        const doDelete = () =>
+          runInTenant(getTenantZeroId(), () => createChokePoint(deletePool).softDeleteItem(databaseId, page.itemId));
+        let replay: ReturnType<typeof doReplay> | undefined;
+        let deletion: ReturnType<typeof doDelete> | undefined;
+        let replaySettled: Promise<PromiseSettledResult<Awaited<ReturnType<typeof doReplay>>>[]> | undefined;
+        let deleteSettled: Promise<PromiseSettledResult<Awaited<ReturnType<typeof doDelete>>>[]> | undefined;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          if (order === "delete-first") {
+            deletion = doDelete();
+            deleteSettled = Promise.allSettled([deletion]);
+          }
+          const ownerPid = await Promise.race([
+            ready,
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error("barrier timed out")), 5000);
+            }),
+          ]);
+          replay = doReplay();
+          replaySettled = Promise.allSettled([replay]);
+          let waitingPid: number | undefined;
+          for (let i = 0; i < 100 && waitingPid === undefined; i++) {
+            waitingPid = (
+              await pool.query<{ pid: number }>(
+                "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+                [ownerPid],
+              )
+            ).rows[0]?.pid;
+            if (waitingPid === undefined) await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          expect(waitingPid).toBeDefined();
+          if (order === "replay-first") {
+            deletion = doDelete();
+            deleteSettled = Promise.allSettled([deletion]);
+            let blocked = false;
+            for (let i = 0; i < 100 && !blocked; i++) {
+              blocked =
+                (
+                  await pool.query<{ blocked: boolean }>(
+                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked",
+                    [waitingPid],
+                  )
+                ).rows[0]?.blocked === true;
+              if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+            expect(blocked).toBe(true);
+          }
+          release();
+          await replay;
+          await deletion;
+          expect((await getApprovalRequest(pool, requestId))?.executionStatus).toBe(
+            order === "replay-first" ? "succeeded" : "conflict",
+          );
+        } finally {
+          release();
+          if (timer) clearTimeout(timer);
+          if (settledHolder !== undefined) await settledHolder;
+          if (replaySettled !== undefined) await replaySettled;
+          if (deleteSettled !== undefined) await deleteSettled;
+          deletePool.off("acquire", instrument);
+          for (const [client, original] of originals) client.query = original;
+          await Promise.all([replayPool.end(), deletePool.end()]);
+        }
+      },
+      15000,
+    );
 
     it("refuses a request for an unknown page without queuing an approval", async () => {
       const actor = await makeAgentActor();
