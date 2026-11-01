@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
@@ -257,6 +257,50 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       const { created } = await seedMcpRequest("user");
       const view = await toApprovalRequestDecisionView(pool, created);
       expect(view.safeSummary).toMatchObject({ mcpServerName: "Search server", mcpToolName: "search_web" });
+    });
+
+    it("resolves multiple distinct server and tool names in one query per batch", async () => {
+      const { database } = await seedMcpRequest("user");
+      const server = await withTransaction(pool, (client) =>
+        itemsStore.insertItem(client, { databaseId: database.id, properties: { name: "Second server" } }),
+      );
+      const registration = await upsertMcpToolRegistration(pool, {
+        mcpServerItemId: server.id,
+        toolName: "second_tool",
+        toolSchema: { type: "object" },
+      });
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+      await createPendingApprovalRequest(pool, {
+        agentRunId: run.id,
+        toolName: "second_tool",
+        riskClass: "write",
+        payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: {} },
+        resourceSnapshot,
+      });
+
+      await withTransaction(pool, async (client) => {
+        const query = vi.spyOn(client, "query");
+        try {
+          const rows = await listApprovalRequestsQueue(client, ownerId);
+          expect(rows.map((row) => row.safeSummary)).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ mcpServerName: "Search server", mcpToolName: "search_web" }),
+              expect.objectContaining({ mcpServerName: "Second server", mcpToolName: "second_tool" }),
+            ]),
+          );
+          expect(rows).toHaveLength(2);
+          const statements = query.mock.calls
+            .map(([sql]) => sql)
+            .filter((sql): sql is string => typeof sql === "string");
+          expect(statements).toHaveLength(5);
+          expect(statements.filter((sql) => sql.includes("FROM mcp_tool_registrations WHERE id = ANY"))).toHaveLength(
+            1,
+          );
+          expect(statements.filter((sql) => sql.includes("FROM items WHERE id = ANY"))).toHaveLength(1);
+        } finally {
+          query.mockRestore();
+        }
+      });
     });
 
     it("yields a null server name, with the tool name kept, once the server item is deleted", async () => {
