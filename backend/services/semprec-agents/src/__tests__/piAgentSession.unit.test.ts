@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import {
   Type,
   fauxAssistantMessage,
@@ -13,6 +13,7 @@ import type { AgentMessage, ToolEventMetadata } from "@semprec/agent-runtime";
 import { AiBudgetExceededError, agentRunErrorCodeOf } from "@semprec/data";
 import { toPiMessages } from "../piConversationHistory.js";
 import { createPiAgentSessionFactory } from "../piAgentSession.js";
+import { logger } from "../logger.js";
 
 function fauxModel() {
   const faux = fauxProvider();
@@ -41,6 +42,52 @@ async function collect(messages: AsyncIterable<AgentMessage>): Promise<AgentMess
 }
 
 describe("createPiAgentSessionFactory (issue #647)", () => {
+  it("does not log prompt error content when the consumer stops reading", async () => {
+    const { model, streamFn } = fauxModel();
+    let listener: ((event: AgentEvent, signal: AbortSignal) => Promise<void> | void) | undefined;
+    let rejectPrompt: ((error: Error) => void) | undefined;
+    let markAborted: (() => void) | undefined;
+    const aborted = new Promise<void>((resolve) => {
+      markAborted = resolve;
+    });
+    const logs = vi.spyOn(logger, "error").mockImplementation(() => {});
+    vi.spyOn(Agent.prototype, "subscribe").mockImplementation((callback) => {
+      listener = callback;
+      return () => {};
+    });
+    vi.spyOn(Agent.prototype, "prompt").mockImplementation(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPrompt = reject;
+        }),
+    );
+    vi.spyOn(Agent.prototype, "abort").mockImplementation(() => {
+      markAborted?.();
+    });
+    try {
+      const session = createPiAgentSessionFactory({
+        model,
+        streamFn,
+        tools: [],
+        toolEventMetadata: new Map(),
+        systemPrompt: "base",
+      })({ task: "message-sentinel" });
+      const iterator = session.messages()[Symbol.asyncIterator]();
+      expect((await iterator.next()).value).toMatchObject({ kind: "user_message" });
+      const next = iterator.next();
+      expect(listener).toBeDefined();
+      await listener?.({ type: "turn_start" }, new AbortController().signal);
+      expect((await next).value).toMatchObject({ kind: "turn_start" });
+      const stopped = iterator.return?.();
+      await aborted;
+      rejectPrompt?.(new Error("message-sentinel-ref-sentinel"));
+      await stopped;
+      expect(logs).toHaveBeenCalledOnce();
+      expect(logs).toHaveBeenCalledWith("pi agent prompt failed after its consumer stopped reading");
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
   it("maps a tool-calling reply onto paired tool_use/tool_result events inside ordered turns", async () => {
     const { faux, model, streamFn } = fauxModel();
     faux.setResponses([

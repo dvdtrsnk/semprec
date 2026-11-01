@@ -49,6 +49,7 @@ function toAgentMessage(
   event: AgentEvent,
   toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>,
   targets: Map<string, { targetDatabaseId?: string; targetItemId?: string }>,
+  isBudgetRefusal: ((message: AssistantMessage) => boolean) | undefined,
 ): AgentMessage | null {
   switch (event.type) {
     // The turn's assistant message and tool results are already their own `message`/`tool_result`
@@ -66,6 +67,16 @@ function toAgentMessage(
     case "message_end": {
       const message = event.message;
       if (!isAssistantMessage(message)) return null;
+      if (message.stopReason === "error" && isBudgetRefusal?.(message)) {
+        return {
+          kind: "message",
+          role: message.role,
+          text: "",
+          content: [],
+          stopReason: "error",
+          errorMessage: "AI budget exceeded",
+        };
+      }
       return {
         kind: "message",
         role: message.role,
@@ -164,7 +175,7 @@ async function* promptMessages(
 
   const targets = new Map<string, { targetDatabaseId?: string; targetItemId?: string }>();
   const unsubscribe = agent.subscribe((event) => {
-    const message = toAgentMessage(event, toolEventMetadata, targets);
+    const message = toAgentMessage(event, toolEventMetadata, targets, isBudgetRefusal);
     if (!message) return;
     queue.push(message);
     notify();
@@ -199,9 +210,9 @@ async function* promptMessages(
       agent.abort();
       try {
         await prompt;
-      } catch (err) {
+      } catch {
         // The consumer's own failure is what propagates; this one is only evidence.
-        logger.error({ err }, "pi agent prompt failed after its consumer stopped reading");
+        logger.error("pi agent prompt failed after its consumer stopped reading");
       }
     }
   }

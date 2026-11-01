@@ -227,6 +227,17 @@ describe("MCP invoke adapter (issue #128)", () => {
   });
 
   describe("createApprovalGatedMcpInvokeTool (issue #130)", () => {
+    it.each([true, 123])("rejects non-string MCP reason %s reaching the wrapper", async (reason) => {
+      const contractServer = startStdioContractServer([SEARCH_TOOL]);
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+      const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
+      expect((await invoke({ query: "test", semprecReason: reason })).error).toBe(true);
+      const { rows } = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests");
+      expect(rows[0]?.count).toBe("0");
+      expect(contractServer.getHandshakeCount()).toBe(0);
+    });
     it("stores 500 non-BMP reason characters and rejects 501 without another request", async () => {
       const contractServer = startStdioContractServer([SEARCH_TOOL]);
       servers.push(contractServer);

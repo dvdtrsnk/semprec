@@ -204,7 +204,12 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     });
     const starts: string[] = [];
     try {
-      for (const malformed of [null, "not-an-array", [{ ...ref, expanded: "expanded-secret-sentinel" }]]) {
+      for (const malformed of [
+        null,
+        "not-an-array",
+        [{ ...ref, expanded: "expanded-secret-sentinel" }],
+        [{ ...ref, label: 42 }],
+      ]) {
         await expect(
           runInTenant(getTenantZeroId(), () =>
             // @ts-expect-error Exercise invalid input crossing the conversation boundary.
@@ -228,6 +233,16 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
           }),
         );
       await send("user-text-sentinel", [ref]);
+      const afterWake = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM agent_run_events");
+      await expect(
+        runInTenant(getTenantZeroId(), () =>
+          // @ts-expect-error Exercise invalid follow-up context crossing the conversation boundary.
+          conversation.send("invalid-followup-sentinel", thread, { context: [{ ...ref, label: 42 }] }),
+        ),
+      ).rejects.toThrow("Invalid user turn context");
+      const afterInvalid = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM agent_run_events");
+      expect(afterInvalid.rows).toEqual(afterWake.rows);
+      expect(requestHeaders).toHaveLength(1);
       await send("second", [secondRef]);
       await send("third");
       expect(starts).toHaveLength(3);
@@ -264,6 +279,53 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
       });
       expect(messages[3]).toMatchObject({ role: "assistant", content: [{ type: "text", text: "two" }] });
       expect(messages[5]).toMatchObject({ role: "assistant", content: [{ type: "text", text: "three" }] });
+    } finally {
+      conversation.clear();
+    }
+  });
+
+  it("binds tools invoked on wake and continuation to the conversation run", async () => {
+    const projectItemId = await seededSemprecProjectItemId();
+    const chokePoint = createChokePoint(pool);
+    const database = await chokePoint.createDatabase({ name: "Conversation tool test" });
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: database.id, properties: {} }));
+    const threads = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
+    const thread = { kind: "chat" as const, threadId: threads.rows[0]!.id };
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("item_delete", { itemId: item.id }, { id: "first-call" })], {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("first done"),
+      fauxAssistantMessage([fauxToolCall("item_delete", { itemId: item.id }, { id: "second-call" })], {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("second done"),
+    ]);
+    const conversation = new SempConversation(pool, {
+      resolveProjectItemId: async () => projectItemId,
+      createAgentSessionForRun: (run) => createAgentSessionFactoryForRun(pool, registry, fauxGateway, run),
+    });
+    const started: string[] = [];
+    try {
+      for (const text of ["first", "second"]) {
+        await runInTenant(getTenantZeroId(), () =>
+          conversation.send(text, thread, {
+            onTurnStart: ({ agentRunId }) => {
+              started.push(agentRunId);
+            },
+          }),
+        );
+      }
+      expect(started).toHaveLength(2);
+      expect(started[1]).toBe(started[0]);
+      const requests = await pool.query<{ agent_run_id: string; tool_call_id: string }>(
+        "SELECT agent_run_id, tool_call_id FROM approval_requests WHERE agent_run_id = $1 ORDER BY tool_call_id",
+        [started[0]],
+      );
+      expect(requests.rows).toEqual([
+        { agent_run_id: started[0], tool_call_id: "first-call" },
+        { agent_run_id: started[0], tool_call_id: "second-call" },
+      ]);
     } finally {
       conversation.clear();
     }
@@ -435,6 +497,66 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     }
   });
 
+  it.each([true, 123])("stores SDK-normalized MCP reason %s after a composed tool call", async (rawReason) => {
+    const tool: ContractServerTool = {
+      name: "search_web",
+      inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+    };
+    const server = startStdioContractServer([tool]);
+    try {
+      await pool.query("UPDATE users SET role = 'admin' WHERE tenant_id = $1", [getTenantZeroId()]);
+      const databases = await pool.query<{ id: string }>(
+        "SELECT id FROM databases WHERE owner_module_id = 'mcpServers'",
+      );
+      const itemId = randomUUID();
+      await pool.query("INSERT INTO items (id, database_id, properties) VALUES ($1, $2, $3::jsonb)", [
+        itemId,
+        databases.rows[0]!.id,
+        JSON.stringify({ name: "Contract server", active: true, connectionConfig: server.connectionConfig }),
+      ]);
+      const registration = await upsertMcpToolRegistration(pool, {
+        mcpServerItemId: itemId,
+        toolName: tool.name,
+        toolSchema: tool.inputSchema,
+        description: null,
+      });
+      const projectItemId = await seededSemprecProjectItemId();
+      await withTransaction(pool, (client) =>
+        setProjectMcpGrantForAgentPage(client, {
+          projectItemId,
+          mcpToolRegistrationId: registration.id,
+          granted: true,
+        }),
+      );
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "test" });
+      faux.setResponses([
+        fauxAssistantMessage(
+          [
+            fauxToolCall(`mcp_search_web_${itemId.replace(/-/g, "").slice(0, 8)}`, {
+              query: "test",
+              semprecReason: rawReason,
+            }),
+          ],
+          { stopReason: "toolUse" },
+        ),
+        fauxAssistantMessage("done"),
+      ]);
+      const task = createAgentRunTask(pool, registry, fauxGateway, createInFlightAgentRuns());
+      await runInTenant(getTenantZeroId(), () => task({ agentRunId: run.id }, { job: { id: "1" } }));
+      const { rows } = await pool.query<{ id: string }>("SELECT id FROM approval_requests WHERE agent_run_id = $1", [
+        run.id,
+      ]);
+      expect(rows).toHaveLength(1);
+      const request = await getApprovalRequest(pool, rows[0]!.id);
+      expect(request?.reason).toBe(String(rawReason));
+      expect(request?.payload).toMatchObject({ args: { query: "test" } });
+      expect(JSON.stringify(request?.payload)).not.toContain("semprecReason");
+      expect(server.getHandshakeCount()).toBe(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("executes the actual approved MCP job without forwarding the agent reason", async () => {
     const tool: ContractServerTool = {
       name: "search_web",
@@ -521,6 +643,30 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     expect(request?.payload).toMatchObject({ canonicalInput: { itemId: item.id } });
     expect(JSON.stringify(request?.payload)).not.toContain("reason-sentinel");
     expect(JSON.stringify(request?.resourceSnapshot)).not.toContain("reason-sentinel");
+  });
+
+  it.each([true, 123])("stores SDK-normalized generic reason %s after a composed tool call", async (rawReason) => {
+    const projectItemId = await seededSemprecProjectItemId();
+    const chokePoint = createChokePoint(pool);
+    const database = await chokePoint.createDatabase({ name: "SDK reason test" });
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: database.id, properties: {} }));
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "test" });
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("item_delete", { itemId: item.id, reason: rawReason })], {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("done"),
+    ]);
+    const task = createAgentRunTask(pool, registry, fauxGateway, createInFlightAgentRuns());
+    await runInTenant(getTenantZeroId(), () => task({ agentRunId: run.id }, { job: { id: "1" } }));
+    const { rows } = await pool.query<{ id: string }>("SELECT id FROM approval_requests WHERE agent_run_id = $1", [
+      run.id,
+    ]);
+    expect(rows).toHaveLength(1);
+    const request = await getApprovalRequest(pool, rows[0]!.id);
+    expect(request?.reason).toBe(String(rawReason));
+    expect(request?.payload).toMatchObject({ canonicalInput: { itemId: item.id } });
+    expect(JSON.stringify(request?.payload)).not.toContain('"reason"');
   });
 
   it("enforces the generic approval reason limit in Unicode code points through the agent run", async () => {
@@ -621,6 +767,11 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
         errorCode: "budgetExceeded",
         result: "AI budget exceeded",
       });
+      const diagnostic = (await runEvents(run.id)).find((event) => event.kind === "message");
+      expect(diagnostic?.payload).toMatchObject({ errorMessage: "AI budget exceeded" });
+      expect(JSON.stringify(diagnostic?.payload)).not.toMatch(
+        /response-secret-sentinel|provider-exception-sentinel|credential-secret-sentinel|request-secret-sentinel/,
+      );
     } finally {
       await new Promise<void>((resolve, reject) => gatewayServer.close((err) => (err ? reject(err) : resolve())));
     }
@@ -672,6 +823,10 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
         result: "AI budget exceeded",
       });
       expect(await getAgentRun(pool, failed.id)).toMatchObject({ errorCode: "modelError" });
+      const refusedEvent = (await runEvents(refused.id)).find((event) => event.kind === "message");
+      const failedEvent = (await runEvents(failed.id)).find((event) => event.kind === "message");
+      expect(refusedEvent?.payload).toMatchObject({ errorMessage: "AI budget exceeded" });
+      expect(failedEvent?.payload.errorMessage).toEqual(expect.stringContaining("provider-response-sentinel"));
     } finally {
       await new Promise<void>((resolve, reject) => gatewayServer.close((err) => (err ? reject(err) : resolve())));
     }
@@ -706,10 +861,20 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
         const projectItemId = await seededSemprecProjectItemId();
         const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "test" });
         const task = createAgentRunTask(pool, registry, gateway, createInFlightAgentRuns());
-        await expect(
-          runInTenant(getTenantZeroId(), () => task({ agentRunId: run.id }, { job: { id: "1" } })),
-        ).rejects.toThrow();
-        expect(await getAgentRun(pool, run.id)).toMatchObject({ status: "error", errorCode: "modelError" });
+        const failure: unknown = await runInTenant(getTenantZeroId(), () =>
+          task({ agentRunId: run.id }, { job: { id: "1" } }),
+        ).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        expect(failure).toBeInstanceOf(Error);
+        if (!(failure instanceof Error)) throw new Error("expected model failure");
+        expect(failure.message).not.toBe("AI budget exceeded");
+        expect(await getAgentRun(pool, run.id)).toMatchObject({
+          status: "error",
+          errorCode: "modelError",
+          result: failure.message,
+        });
       } finally {
         await new Promise<void>((resolve, reject) => gatewayServer.close((err) => (err ? reject(err) : resolve())));
       }
