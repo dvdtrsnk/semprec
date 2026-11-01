@@ -989,11 +989,17 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       const original = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, "<orig@example.com>");
       expect(original?.threadId).toBeTruthy();
 
-      const result = await send(await newDraft(), recordingTransport(), { inReplyTo: "<orig@example.com>" });
+      const smtp = recordingTransport();
+      const result = await send(await newDraft(), smtp, { inReplyTo: "<orig@example.com>" });
 
       const sent = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, result.messageId);
       expect(sent?.threadId).toBe(original?.threadId);
       expect(await threadCount()).toBe(1);
+      expect(smtp.sent).toHaveLength(1);
+      const raw = smtp.sent[0]?.raw.toString("utf8");
+      expect(raw).toContain(`Message-ID: ${result.messageId}\r\n`);
+      expect(raw).toContain("In-Reply-To: <orig@example.com>\r\n");
+      expect(raw).toContain("References: <orig@example.com>\r\n");
     });
 
     it("a send without ancestors starts a new thread that a later reply joins", async () => {
@@ -1002,13 +1008,10 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       expect(firstMeta?.threadId).toBeTruthy();
       expect(await threadCount()).toBe(1);
 
-      await ingestSynced("<reply@example.com>");
-      await pool.query(`UPDATE mail_message_meta SET in_reply_to = $1 WHERE message_id = '<reply@example.com>'`, [
-        first.messageId,
-      ]); // raw SQL: ingest has no in-reply-to input here, and the point is the next send's lookup
       const second = await send(await newDraft(), recordingTransport(), { inReplyTo: first.messageId });
       const secondMeta = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, second.messageId);
       expect(secondMeta?.threadId).toBe(firstMeta?.threadId);
+      expect(await threadCount()).toBe(1);
     });
 
     it("a later Sent-folder sync of the same message id keeps the thread and creates no second one", async () => {
