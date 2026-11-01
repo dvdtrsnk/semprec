@@ -1,4 +1,5 @@
 import https from "node:https";
+import { createServer } from "node:http";
 import net from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
@@ -27,6 +28,9 @@ import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { connectMcpServer } from "../mcp/mcpConnectionFactory.js";
 import { McpConnectionError } from "../mcp/mcpConnectionError.js";
 import { executeMcpInvocation } from "../mcp/mcpToolExecution.js";
+import { Server as McpServer } from "@modelcontextprotocol/sdk/server/index.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { McpConnectionConfig } from "../mcp/mcpConnectionConfig.js";
 
 let pool: Pool;
@@ -350,6 +354,58 @@ describe("MCP connection factory (issue #231)", () => {
         failure: { failureKind: "timeout", mcpServerItemId: item.id, timeoutMs: 15000 },
       });
     }, 25_000);
+
+    it("classifies an actual tools/call timeout without cancelling the run", async () => {
+      let releaseCall: (() => void) | undefined;
+      let markCalled: (() => void) | undefined;
+      const called = new Promise<void>((resolve) => {
+        markCalled = resolve;
+      });
+      const blocked = new Promise<void>((resolve) => {
+        releaseCall = resolve;
+      });
+      let transport: SSEServerTransport | undefined;
+      const server = createServer((req, res) => {
+        void (async () => {
+          if (req.method === "GET" && req.url === "/sse") {
+            transport = new SSEServerTransport("/messages", res);
+            const mcp = new McpServer({ name: "blocked-call", version: "1" }, { capabilities: { tools: {} } });
+            mcp.setRequestHandler(CallToolRequestSchema, async () => {
+              markCalled?.();
+              await blocked;
+              return { content: [] };
+            });
+            await mcp.connect(transport);
+            return;
+          }
+          if (req.method === "POST" && transport) return transport.handlePostMessage(req, res);
+          res.writeHead(404).end();
+        })().catch(() => {
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("expected a TCP address");
+        const item = await createMcpServerItem({ transport: "sse", url: `http://127.0.0.1:${address.port}/sse` });
+        const call = executeMcpInvocation(pool, { serverItem: item, toolName: "blocked" }, {});
+        await Promise.race([
+          called,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("tool call not received")), 5000)),
+        ]);
+        expect(await call).toMatchObject({
+          error: true,
+          failure: { failureKind: "timeout", mcpServerItemId: item.id, timeoutMs: 60000 },
+        });
+      } finally {
+        releaseCall?.();
+        await transport?.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      }
+    }, 75_000);
 
     it("leaves no child process running after a failed connect", async () => {
       await makeSoleTenantAdmin();
