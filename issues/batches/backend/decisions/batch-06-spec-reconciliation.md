@@ -100,11 +100,18 @@ This tolerance applies to optional approval reasons only, not context refs or
 REST reason input. The failed null-rejection experiment remains diagnostic.
 Actual composition tests must exercise the provider-facing behavior honestly.
 
-The existing runtime MCP test can compose the gated tool, public data queue task
-list, real decision/enqueue and execution to a local contract server, proving the
-reserved reason never reaches the server. Manufactured payload-only evidence is
-insufficient. Additional package exports are not authorized by this decision;
-report a concrete composition gap if the existing public seams cannot do this.
+The runtime package has no queue dependency, so its MCP unit/integration fixture
+cannot import the queue executor without changing the package graph. Place the
+composed gated-tool -> decision/enqueue -> actual API core task -> local MCP
+server scenario in the existing service `agentRun.e2e.test.ts`, explicitly included
+in gh-1420 and gh-1444. That service already depends on runtime and queue. Use
+public `createCoreTaskList`, `decideAndEnqueueApprovalRequest` and queue `runOnce`;
+`createAgentTaskList` does not host approvalExecute. Prove the stripped reserved
+reason is absent from actual server arguments and preserve classified outcomes.
+Keep useful lower-package tests, but remove their provisional unresolved queue
+imports. No new production dependency/export, lockfile change or downward import
+of the service is authorized. The failed module-load run is diagnostic, not a
+functionality PASS; report the actual E2E tier/count after adding this scenario.
 
 ## Startup repair composition evidence
 
