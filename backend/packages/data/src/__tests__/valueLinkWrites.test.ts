@@ -23,6 +23,8 @@ import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js"
 import { SYSTEM_WRITER, type WriterIdentity } from "../chokePoint/writerKind.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
+import { clearHooksForTests, registerItemPreWriteTransform } from "../chokePoint/hooks.js";
+import * as valueLinksStore from "../chokePoint/valueLinksStore.js";
 
 /** Issue #1516: user and agent writes end value links; the valueLinks process needs an `on` link. */
 const USER: WriterIdentity = { writerKind: "user" };
@@ -640,14 +642,116 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
-    it.each(["user-first", "system-first"] as const)(
-      "serializes item and handoff writes with %s",
-      async (order) => {
+    it("checks a live scoped item before looking up any handoff link", async () => {
+      const tenantA = await createTestTenant(pool);
+      const tenantB = await createTestTenant(pool);
+      await withRuntimePool(async (runtime) => {
+        const cp = createChokePoint(runtime);
+        const own = await runInTenant(tenantA, () => setup(cp));
+        const foreign = await runInTenant(tenantB, () => setup(cp));
+        await runInTenant(tenantA, () => cp.softDeleteItem(own.files.id, own.file.id));
+        const spy = vi.spyOn(valueLinksStore, "lockOnValueLink");
+        const events: InvalidationEvent[] = [];
+        setInvalidationHook((event) => events.push(event));
+        try {
+          for (const itemId of [own.file.id, foreign.file.id, "00000000-0000-4000-8000-000000000001"]) {
+            await expect(
+              runInTenant(tenantA, () =>
+                withTransaction(runtime, (client) =>
+                  updateItemWithClient(
+                    client,
+                    { databaseId: own.files.id, itemId, propertiesPatch: { name: "blocked" } },
+                    { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
+                  ),
+                ),
+              ),
+            ).rejects.toMatchObject({ status: 404 });
+          }
+          expect(spy).not.toHaveBeenCalled();
+          expect(events).toEqual([]);
+          expect(
+            (await runInTenant(tenantB, () => cp.getItem(foreign.files.id, foreign.file.id)))?.properties.name,
+          ).toBe("a.pdf");
+        } finally {
+          spy.mockRestore();
+          setInvalidationHook(() => {});
+        }
+      });
+    });
+
+    it("retains version conflicts and normal equal-value update effects", async () => {
+      const tenant = await createTestTenant(pool);
+      await withRuntimePool(async (runtime) => {
+        const cp = createChokePoint(runtime);
+        const fx = await runInTenant(tenant, () => setup(cp));
+        await withTenantTransaction(runtime, tenant, (client) =>
+          insertValueLink(client, {
+            itemId: fx.file.id,
+            propertyKey: "name",
+            ruleKey: "test",
+            sources: [],
+          }),
+        );
+        const events: InvalidationEvent[] = [];
+        setInvalidationHook((event) => events.push(event));
+        try {
+          await expect(
+            runInTenant(tenant, () =>
+              withTransaction(runtime, (client) =>
+                updateItemWithClient(
+                  client,
+                  {
+                    databaseId: fx.files.id,
+                    itemId: fx.file.id,
+                    propertiesPatch: { name: "new" },
+                    ifVersion: "2000-01-01T00:00:00.000Z",
+                  },
+                  { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
+                ),
+              ),
+            ),
+          ).rejects.toMatchObject({ status: 409 });
+          expect(events).toEqual([]);
+          await runInTenant(tenant, () =>
+            cp.updateItem(
+              { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: "a.pdf" } },
+              undefined,
+              undefined,
+              USER,
+            ),
+          );
+          expect(events.filter((event) => event.scope === "item" && event.itemId === fx.file.id)).toHaveLength(1);
+          const links = await withTenantTransaction(runtime, tenant, (client) =>
+            listValueLinksByItemIds(client, [fx.file.id]),
+          );
+          expect(links[0]).toMatchObject({ state: "on" });
+          expect((await runInTenant(tenant, () => cp.getItem(fx.files.id, fx.file.id)))?.properties.name).toBe("a.pdf");
+        } finally {
+          setInvalidationHook(() => {});
+        }
+      });
+    });
+
+    it.each([
+      ["plain", "user-first"],
+      ["plain", "system-first"],
+      ["transformed", "user-first"],
+      ["transformed", "system-first"],
+    ] as const)(
+      "serializes %s item and handoff writes with %s",
+      async (kind, order) => {
         const tenant = await createTestTenant(pool);
         await withRuntimePool(async (userPool) =>
           withRuntimePool(async (systemPool) => {
             const cp = createChokePoint(userPool);
-            const fx = await runInTenant(tenant, () => setup(cp));
+            const fx = await runInTenant(tenant, async () => {
+              if (kind === "plain") return setup(cp);
+              const files = await cp.createDatabase({ name: "Transformed", ownerModuleId: "handoffProbe" });
+              await cp.createProperty({ databaseId: files.id, key: "name", name: "Name", type: "text" });
+              registerItemPreWriteTransform("handoffProbe", async ({ patch }) => patch);
+              const file = await cp.createItem({ databaseId: files.id, properties: { name: "initial" } });
+              return { files, file };
+            });
             await withTenantTransaction(userPool, tenant, (client) =>
               insertValueLink(client, {
                 itemId: fx.file.id,
@@ -731,6 +835,12 @@ describe("value link state on writes (issue #1516)", () => {
                 await bounded(systemStarted.promise);
                 if (!userPid || !systemPid) throw new Error("Missing participant PID");
                 await waitBlocked(userPid, systemPid);
+                console.info("Observed item handoff wait", {
+                  kind,
+                  order,
+                  holderPid: userPid,
+                  competitorPid: systemPid,
+                });
                 releaseUser.resolve();
                 releaseSystem.resolve();
               } else {
@@ -740,6 +850,12 @@ describe("value link state on writes (issue #1516)", () => {
                 await bounded(userStarted.promise);
                 if (!userPid || !systemPid) throw new Error("Missing participant PID");
                 await waitBlocked(systemPid, userPid);
+                console.info("Observed item handoff wait", {
+                  kind,
+                  order,
+                  holderPid: systemPid,
+                  competitorPid: userPid,
+                });
                 releaseSystem.resolve();
                 releaseUser.resolve();
               }
@@ -792,6 +908,7 @@ describe("value link state on writes (issue #1516)", () => {
               updateSpy.mockRestore();
               lockSpy.mockRestore();
               setInvalidationHook(() => {});
+              if (kind === "transformed") clearHooksForTests();
               if (cleanupErrors.length) {
                 failure = new AggregateError(
                   failure === undefined ? cleanupErrors : [failure, ...cleanupErrors],
