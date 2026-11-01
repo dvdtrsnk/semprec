@@ -4,6 +4,7 @@ import { runInTenant } from "@semprec/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
+  getTenantZeroId,
   getTestPool,
   resetDatabase,
   withTenantTransaction,
@@ -20,6 +21,7 @@ import { VALUE_LINKS_OWNER_PROCESS } from "../chokePoint/valueLinkWrites.js";
 import { insertValueLink, listValueLinksByItemIds, type ValueLinkRow } from "../chokePoint/valueLinksStore.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { SYSTEM_WRITER, type WriterIdentity } from "../chokePoint/writerKind.js";
+import { seedSystem } from "../seed/seedSystem.js";
 
 /** Issue #1516: user and agent writes end value links; the valueLinks process needs an `on` link. */
 const USER: WriterIdentity = { writerKind: "user" };
@@ -370,6 +372,156 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("valueLinks handoff", () => {
+    it.each(["missing", "broken"] as const)(
+      "rejects a date-off Tasks transform when an added user-key link is %s",
+      async (state) => {
+        await seedSystem(pool);
+        const tenant = getTenantZeroId();
+        const runtime = await createRuntimeRolePool(pool, "semprec_data");
+        try {
+          const cp = createChokePoint(runtime);
+          const task = await runInTenant(tenant, async () => {
+            const db = (await cp.listDatabases()).find((entry) => entry.key === "tasks");
+            if (!db) throw new Error("Missing Tasks database");
+            return cp.createItem({
+              databaseId: db.id,
+              properties: { name: "Timed", date: "2026-10-13", timeFrom: "10:00", timeTo: "11:00" },
+            });
+          });
+          await withTenantTransaction(runtime, tenant, async (client) => {
+            for (const propertyKey of ["date", "timeFrom"]) {
+              await insertValueLink(client, { itemId: task.id, propertyKey, ruleKey: "test", sources: [] });
+            }
+            if (state === "broken") {
+              await insertValueLink(client, {
+                itemId: task.id,
+                propertyKey: "timeTo",
+                ruleKey: "test",
+                state: "broken",
+                brokenBy: "user",
+                brokenAt: new Date("2026-01-01T00:00:00Z"),
+                sources: [],
+              });
+            }
+          });
+          const events: InvalidationEvent[] = [];
+          setInvalidationHook((event) => events.push(event));
+          try {
+            await expect(
+              runInTenant(tenant, () =>
+                withTransaction(runtime, (client) =>
+                  updateItemWithClient(
+                    client,
+                    { databaseId: task.databaseId, itemId: task.id, propertiesPatch: { date: null } },
+                    { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
+                  ),
+                ),
+              ),
+            ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+            expect(events).toEqual([]);
+          } finally {
+            setInvalidationHook(() => {});
+          }
+          expect((await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id)))?.properties).toEqual(
+            task.properties,
+          );
+          const links = await withTenantTransaction(runtime, tenant, (client) =>
+            listValueLinksByItemIds(client, [task.id]),
+          );
+          expect(links.map((entry) => [entry.propertyKey, entry.state])).toEqual(
+            state === "missing"
+              ? [
+                  ["date", "on"],
+                  ["timeFrom", "on"],
+                ]
+              : [
+                  ["date", "on"],
+                  ["timeFrom", "on"],
+                  ["timeTo", "broken"],
+                ],
+          );
+        } finally {
+          await runtime.end();
+        }
+      },
+    );
+
+    it("allows a date-off Tasks transform when every added user key has an on link", async () => {
+      await seedSystem(pool);
+      const tenant = getTenantZeroId();
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const cp = createChokePoint(runtime);
+        const task = await runInTenant(tenant, async () => {
+          const db = (await cp.listDatabases()).find((entry) => entry.key === "tasks");
+          if (!db) throw new Error("Missing Tasks database");
+          return cp.createItem({
+            databaseId: db.id,
+            properties: { name: "Timed", date: "2026-10-13", timeFrom: "10:00", timeTo: "11:00" },
+          });
+        });
+        await withTenantTransaction(runtime, tenant, async (client) => {
+          for (const propertyKey of ["date", "timeFrom", "timeTo"]) {
+            await insertValueLink(client, { itemId: task.id, propertyKey, ruleKey: "test", sources: [] });
+          }
+        });
+        const result = await runInTenant(tenant, () =>
+          withTransaction(runtime, (client) =>
+            updateItemWithClient(
+              client,
+              { databaseId: task.databaseId, itemId: task.id, propertiesPatch: { date: null } },
+              { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
+            ),
+          ),
+        );
+        expect(result.properties).toMatchObject({ date: null, timeFrom: null, timeTo: null, time: null });
+        const links = await withTenantTransaction(runtime, tenant, (client) =>
+          listValueLinksByItemIds(client, [task.id]),
+        );
+        expect(links.map((entry) => entry.state)).toEqual(["on", "on", "on"]);
+      } finally {
+        await runtime.end();
+      }
+    });
+
+    it("requires handoff even when a transform-added null equals the stored value", async () => {
+      await seedSystem(pool);
+      const tenant = getTenantZeroId();
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const cp = createChokePoint(runtime);
+        const task = await runInTenant(tenant, async () => {
+          const db = (await cp.listDatabases()).find((entry) => entry.key === "tasks");
+          if (!db) throw new Error("Missing Tasks database");
+          return cp.createItem({ databaseId: db.id, properties: { name: "Undated" } });
+        });
+        await withTenantTransaction(runtime, tenant, (client) =>
+          insertValueLink(client, {
+            itemId: task.id,
+            propertyKey: "date",
+            ruleKey: "test",
+            sources: [],
+          }),
+        );
+        await expect(
+          runInTenant(tenant, () =>
+            withTransaction(runtime, (client) =>
+              updateItemWithClient(
+                client,
+                { databaseId: task.databaseId, itemId: task.id, propertiesPatch: { date: null } },
+                { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
+              ),
+            ),
+          ),
+        ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+        expect((await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id)))?.properties).toEqual(
+          task.properties,
+        );
+      } finally {
+        await runtime.end();
+      }
+    });
+
     async function relationWrites(client: PoolClient, fx: Awaited<ReturnType<typeof setup>>) {
       const edge = { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id };
       return {
