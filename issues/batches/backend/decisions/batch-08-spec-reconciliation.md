@@ -38,3 +38,22 @@ internal/provider content substituted into that title. Use the existing scoped
 `sempProblemNotification.test.ts` production-path fixture and owned fake senders;
 no live provider call or client work is needed. Existing tests and source
 inspection alone have not yet established these acceptance results.
+
+## Recovered MCP grants integration test path
+
+Gh-1455 Touches names a new
+`backend/packages/data/src/mcp/__tests__/mcpAgentPageGrants.test.ts`.
+The recovered permanent suite instead exists at
+`backend/packages/data/src/__tests__/mcpAgentPageGrants.test.ts`; the named
+`mcp/__tests__` file does not exist. Inspection confirms the existing suite
+calls the production grants listing and counting function and contains the
+five-registration, inactive-server and failed-then-successful connection cases.
+The original gh-1455 handover also records this placement.
+
+Use the existing suite for the required permanent assertions. Correct only the
+source Touches path and its embedded and aggregate Touches entries, regenerate
+the affected specification hashes and reapprove those exact records. Do not
+move or duplicate the suite. All Tasks, acceptance criteria and required HTTP
+handler tests remain unchanged. This authorizes test maintenance at the actual
+path; neither its presence nor this inspection establishes a passing test or
+complete acceptance evidence.

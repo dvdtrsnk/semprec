@@ -794,8 +794,8 @@
       "sequence": 8,
       "status": "proposed",
       "title": "[backend-delivery 08/74] Implement data/mcp, data/notifications, data/push changes",
-      "bodyCharacters": 57699,
-      "specSha256": "a7bed2ac2b9c9b38bf91bfdbb64fbee35235eab268e4b65758166c435991d02d",
+      "bodyCharacters": 57777,
+      "specSha256": "15c63b054971da4a28832cabfe84ede3d572accab74c11222a55b02402503956",
       "members": [
         {
           "id": "gh-1437",
@@ -820,7 +820,7 @@
         },
         {
           "id": "gh-1455",
-          "specSha256": "f62a3e2010f4eca6579b55da884deafc0ddcf127fec33cf35b08be79cbdba967",
+          "specSha256": "a18e572ad32ad1e4a1f9c6e443fbdde839309027d25f60082e8aa0925799d726",
           "parent": "gh-1321",
           "dependencies": [
             "gh-1391",
