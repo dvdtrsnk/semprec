@@ -804,9 +804,15 @@ describe("value link state on writes (issue #1516)", () => {
           let failure: unknown;
           try {
             await bounded(held.promise);
+            const definition = await withTenantTransaction(contenderPool, tenant, (client) =>
+              relationsStore.getRelationDefinitionByPropertyId(client, fx.projectsProperty.id),
+            );
+            if (!definition) throw new Error("Missing relation definition");
             const lock = await pool.query<{ held: boolean }>(
-              "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 AND locktype = 'advisory' AND granted) AS held",
-              [holderPid],
+              `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 AND locktype = 'advisory' AND granted
+                 AND classid::bigint = ((hashtextextended($2::text, 0) >> 32) & 4294967295::bigint)
+                 AND objid::bigint = (hashtextextended($2::text, 0) & 4294967295::bigint) AND objsubid = 1) AS held`,
+              [holderPid, definition.id],
             );
             expect(lock.rows[0]?.held).toBe(true);
             await expect(
@@ -1461,6 +1467,7 @@ describe("value link state on writes (issue #1516)", () => {
             expect(events.filter((event) => event.scope === "item" && event.itemId === fx.alpha.id)).toHaveLength(
               outcomes[0]?.ok ? 1 : 0,
             );
+            expect(events.filter((event) => event.scope === "item" && event.itemId === fx.file.id)).toHaveLength(1);
             const afterJob = await pool.query<{ count: string }>(
               "SELECT count(*)::text AS count FROM graphile_worker._private_jobs WHERE key = $1",
               [jobKey],
@@ -1565,6 +1572,8 @@ describe("value link state on writes (issue #1516)", () => {
             let user: Promise<Outcome> | undefined;
             let system: Promise<Outcome> | undefined;
             let failure: unknown;
+            const events: InvalidationEvent[] = [];
+            setInvalidationHook((event) => events.push(event));
             try {
               if (order === "system-first") {
                 system = run("system");
@@ -1594,6 +1603,9 @@ describe("value link state on writes (issue #1516)", () => {
                 listValueLinksByItemIds(client, [fx.file.id]),
               );
               expect(links[0]).toMatchObject(outcomes[0]?.ok ? { state: "broken", brokenBy: "user" } : { state: "on" });
+              expect(events.filter((event) => event.scope === "item" && event.itemId === fx.file.id)).toHaveLength(1);
+              const edges = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
+              expect(edges).toHaveLength(order === "system-first" ? 2 : 1);
             } catch (error) {
               failure = error;
             } finally {
@@ -1607,6 +1619,7 @@ describe("value link state on writes (issue #1516)", () => {
               );
               edgeSpy.mockRestore();
               linkSpy.mockRestore();
+              setInvalidationHook(() => {});
               if (errors.length)
                 failure = new AggregateError(
                   failure === undefined ? errors : [failure, ...errors],
@@ -1720,6 +1733,8 @@ describe("value link state on writes (issue #1516)", () => {
             let user: Promise<Outcome> | undefined;
             let system: Promise<Outcome> | undefined;
             let failure: unknown;
+            const events: InvalidationEvent[] = [];
+            setInvalidationHook((event) => events.push(event));
             try {
               if (order === "system-first") {
                 system = run("system");
@@ -1749,6 +1764,11 @@ describe("value link state on writes (issue #1516)", () => {
                 listValueLinksByItemIds(client, [fixture.item.id]),
               );
               expect(links[0]).toMatchObject(outcomes[0]?.ok ? { state: "broken", brokenBy: "user" } : { state: "on" });
+              expect(events.filter((event) => event.scope === "item" && event.itemId === fixture.item.id)).toHaveLength(
+                1,
+              );
+              const edges = await runInTenant(tenant, () => cp.listItemRelations(fixture.item.id, property.id));
+              expect(edges).toHaveLength(order === "system-first" ? 2 : 1);
             } catch (error) {
               failure = error;
             } finally {
@@ -1762,6 +1782,7 @@ describe("value link state on writes (issue #1516)", () => {
               );
               sourceSpy.mockRestore();
               linkSpy.mockRestore();
+              setInvalidationHook(() => {});
               if (errors.length)
                 failure = new AggregateError(
                   failure === undefined ? errors : [failure, ...errors],
