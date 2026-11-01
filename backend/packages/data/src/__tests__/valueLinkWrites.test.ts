@@ -1117,6 +1117,7 @@ describe("value link state on writes (issue #1516)", () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (holderPool) =>
         withRuntimePool(async (contenderPool) => {
+          contenderPool.options.max = 1;
           const cp = createChokePoint(holderPool);
           const fx = await runInTenant(tenant, () => setup(cp));
           const unrelated = await runInTenant(tenant, () =>
@@ -1188,6 +1189,27 @@ describe("value link state on writes (issue #1516)", () => {
               "original",
             );
             expect(callback).not.toHaveBeenCalled();
+            await runInTenant(tenant, () =>
+              withTransaction(contenderPool, async (client) => {
+                const result = await client.query<{ pid: number; timeout: string }>(
+                  "SELECT pg_backend_pid() AS pid, current_setting('lock_timeout') AS timeout",
+                );
+                expect(result.rows[0]).toEqual({ pid: competitorPid, timeout: "0" });
+                await expect(
+                  updateRelationWithClient(
+                    client,
+                    {
+                      relationPropertyId: fx.projectsProperty.id,
+                      callerItemId: unrelated.id,
+                      targetItemId: fx.beta.id,
+                      metadata: {},
+                    },
+                    VALUE_LINKS,
+                    SYSTEM_WRITER,
+                  ),
+                ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+              }),
+            );
           } catch (error) {
             failure = error;
           } finally {
