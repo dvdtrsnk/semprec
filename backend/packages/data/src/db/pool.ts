@@ -34,6 +34,12 @@ export function markManagedTransactionRollbackOnly(client: PoolClient, error: un
   owner.failure ??= { error };
 }
 
+export function assertManagedTransactionCommittable(client: PoolClient): void {
+  requireManagedTransaction(client);
+  const owner = transactionOwner.getStore();
+  if (owner?.failure) throw owner.failure.error;
+}
+
 /** How long `pool.connect()` waits for a connection before rejecting. */
 export const CONNECTION_TIMEOUT_MS = 10_000;
 

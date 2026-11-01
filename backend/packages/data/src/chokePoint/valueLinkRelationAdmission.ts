@@ -1,5 +1,9 @@
 import { DatabaseError, type PoolClient } from "pg";
-import { markManagedTransactionRollbackOnly, requireManagedTransaction } from "../db/pool.js";
+import {
+  assertManagedTransactionCommittable,
+  markManagedTransactionRollbackOnly,
+  requireManagedTransaction,
+} from "../db/pool.js";
 import { ValueLinkBusyError } from "../errors.js";
 import * as relationsStore from "./relationsStore.js";
 import { assertValueLinkHandoff } from "./valueLinkWrites.js";
@@ -62,6 +66,7 @@ export async function withValueLinkRelationAdmission<T>(
       lockMode: "nowait",
     });
     result = await body();
+    assertManagedTransactionCommittable(client);
   } catch (error) {
     const failure = error instanceof DatabaseError && error.code === "55P03" ? new ValueLinkBusyError() : error;
     markManagedTransactionRollbackOnly(client, failure);

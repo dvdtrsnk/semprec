@@ -314,6 +314,46 @@ describe("withTransaction", () => {
     expect(writes).toEqual(["1ms", "1ms", "1ms", "5s"]);
   });
 
+  it("does not restore after a caught nested PostgreSQL failure and retains the first busy error", async () => {
+    const { pool, query } = fakeClient({});
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes("current_setting('lock_timeout')")) return { rows: [{ setting: "0" }], rowCount: 1 };
+      if (sql.includes("FROM value_links")) return { rows: [{ exists: 1 }], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    });
+    const input = { definitionId: "d", itemA: "a", itemB: "b", callerItemId: "a", propertyKey: "x", insert: false };
+    const pgError = new DatabaseError("lock", 0, "error");
+    pgError.code = "55P03";
+    let first: unknown;
+    const result = await withTransaction(pool, async (client) =>
+      withValueLinkRelationAdmission(
+        client,
+        input,
+        async () => {},
+        async () => {
+          try {
+            await withValueLinkRelationAdmission(
+              client,
+              input,
+              async () => {},
+              async () => {
+                throw pgError;
+              },
+            );
+          } catch (error) {
+            first = error;
+          }
+        },
+      ),
+    ).catch((error: unknown) => error);
+    expect(result).toBe(first);
+    expect(first).toMatchObject({ status: 409, code: "value_link_busy" });
+    expect(
+      sqlCalls(query).filter((sql) => typeof sql === "string" && sql.includes("set_config('lock_timeout'")),
+    ).toHaveLength(2);
+    expect(sqlCalls(query).at(-1)).toBe("ROLLBACK");
+  });
+
   it("rethrows fn's error and discards the client when ROLLBACK fails", async () => {
     const fnError = new Error("E1");
     const rollbackError = new Error("E2");
