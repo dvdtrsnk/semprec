@@ -1226,6 +1226,13 @@ describe("value link state on writes (issue #1516)", () => {
               )
             ).rows[0]?.count;
           expect(await jobCount()).toBe("0");
+          await runInTenant(tenant, () =>
+            cp.createRelation({
+              relationPropertyId: fx.projectsProperty.id,
+              callerItemId: fx.file.id,
+              targetItemId: fx.alpha.id,
+            }),
+          );
           await withTenantTransaction(holderPool, tenant, (client) =>
             insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
           );
@@ -1239,11 +1246,19 @@ describe("value link state on writes (issue #1516)", () => {
           const holder = runInTenant(tenant, () =>
             withTransaction(holderPool, async (client) => {
               holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-              await createRelationWithClient(
+              await executeProposalSteps(
                 client,
-                { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id },
-                undefined,
-                SYSTEM_WRITER,
+                [
+                  {
+                    ref: "same",
+                    op: "update",
+                    role: "primary",
+                    itemId: fx.file.id,
+                    before: { relations: { projects: [fx.alpha.id] } },
+                    after: { relations: { projects: [fx.alpha.id] } },
+                  },
+                ],
+                { writer: USER, sourceInboxItemId: null },
               );
               held.resolve();
               await bounded(release.promise);
