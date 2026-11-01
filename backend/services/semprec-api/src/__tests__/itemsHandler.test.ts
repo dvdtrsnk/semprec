@@ -163,6 +163,70 @@ describe("item routes (issue #241)", () => {
     }
   });
 
+  it("validates Tasks schedule patches and replays a create through HTTP", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const database = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) => getDatabaseByModuleId(client, "tasks")),
+    );
+    if (!database) throw new Error("Missing Tasks database");
+    const task = await runInTenant(getTenantZeroId(), () =>
+      chokePoint.createItem({ databaseId: database.id, properties: { name: "Plan" } }),
+    );
+    for (const [properties, field] of [
+      [{ timeFrom: "10:00" }, "timeFrom"],
+      [{ name: "  " }, "name"],
+      [{ date: "2026-02-30" }, "date"],
+      [{ date: "2026-10-13", timeTo: "15:00" }, "timeTo"],
+      [{ date: "2026-10-13", timeFrom: "10:00", timeTo: "09:30" }, "timeTo"],
+      [{ date: "2026-10-13", timeFrom: "23:55", timeTo: "23:55" }, "timeTo"],
+    ] as const) {
+      const response = await fetch(`${baseUrl}/api/items/${task.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties, ifVersion: task.updatedAt }),
+      });
+      expect(response.status).toBe(400);
+      const body: unknown = await response.json();
+      expect(body).toMatchObject({ error: { code: "validation_failed", details: { field } } });
+      const unchanged = await runInTenant(getTenantZeroId(), () => chokePoint.getItem(database.id, task.id));
+      expect(unchanged?.properties).toEqual(task.properties);
+      expect(unchanged?.updatedAt).toBe(task.updatedAt);
+    }
+    const patch = async (properties: Record<string, unknown>, ifVersion: string) => {
+      const response = await fetch(`${baseUrl}/api/items/${task.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties, ifVersion }),
+      });
+      expect(response.status).toBe(200);
+      const body: unknown = await response.json();
+      return z.object({ updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) }).parse(body);
+    };
+    const normalized = await patch({ date: "2026-10-13", timeFrom: "9:00" }, task.updatedAt);
+    expect(normalized.properties).toMatchObject({ timeFrom: "09:00", time: "09:00" });
+    const late = await patch({ timeFrom: "23:55", timeTo: "24:00" }, normalized.updatedAt);
+    expect(late.properties).toMatchObject({ timeFrom: "23:55", timeTo: "24:00", time: "23:55–24:00" });
+    const cleared = await patch({ date: null }, late.updatedAt);
+    expect(cleared.properties).toMatchObject({ date: null, timeFrom: null, timeTo: null, time: null });
+    const replayHeaders = { ...headers, "Idempotency-Key": randomUUID() };
+    const request = () =>
+      fetch(`${baseUrl}/api/databases/${database.id}/items`, {
+        method: "POST",
+        headers: replayHeaders,
+        body: JSON.stringify({ properties: { name: "Replay", date: "2026-10-13", timeFrom: "9:00" } }),
+      });
+    const first = await request();
+    const second = await request();
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    const itemSchema = z.object({ id: z.string(), properties: z.object({ timeFrom: z.string(), time: z.string() }) });
+    const one: unknown = await first.json();
+    const two: unknown = await second.json();
+    expect(itemSchema.parse(two)).toEqual(itemSchema.parse(one));
+    expect(itemSchema.parse(two).properties).toEqual({ timeFrom: "09:00", time: "09:00" });
+  });
+
   it("validates watchedWith ratings through the PUT HTTP response", async () => {
     await seedSystem(pool, createViewTypeRegistry());
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };
@@ -1415,6 +1479,33 @@ describe("item routes (issue #241)", () => {
       );
       return { tasksDb, filesDb, task, other, file, plain };
     }
+
+    it("breaks a linked plain value through a user REST patch", async () => {
+      const { filesDb, file } = await makeLinkedFile();
+      await chokePoint.createProperty({ databaseId: filesDb.id, key: "note", name: "Note", type: "text" });
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: file.id,
+          propertyKey: "note",
+          ruleKey: "test",
+          sources: [],
+        }),
+      );
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const response = await fetch(`${baseUrl}/api/items/${file.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties: { note: "changed" }, ifVersion: file.updatedAt }),
+      });
+      expect(response.status).toBe(200);
+      const read = await fetch(`${baseUrl}/api/items/${file.id}?include=links`, { headers });
+      expect(read.status).toBe(200);
+      const body: unknown = await read.json();
+      expect(body).toMatchObject({
+        properties: { note: "changed" },
+        links: { note: { valueKind: "inheritedBroken", brokenBy: "user" } },
+      });
+    });
 
     it("returns links.projects with the inherited kind and the source including its title", async () => {
       const { file, task } = await makeLinkedFile();

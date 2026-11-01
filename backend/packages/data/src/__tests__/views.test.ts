@@ -821,6 +821,43 @@ describe("views", () => {
   });
 
   describe("queryView: filter/sort/visibility push-down", () => {
+    it("keeps the saved monitoring filter selecting the same Health-record items when its label changes", async () => {
+      const db = await chokePoint.createDatabase({ name: "Health records", key: "healthRecords" });
+      const status = await chokePoint.createProperty({
+        databaseId: db.id,
+        key: "status",
+        name: "Status",
+        type: "select",
+        config: {
+          options: [
+            { key: "monitoring", label: "Sledování" },
+            { key: "resolved", label: "Resolved" },
+          ],
+        },
+      });
+      const selected = await chokePoint.createItem({ databaseId: db.id, properties: { status: "monitoring" } });
+      await chokePoint.createItem({ databaseId: db.id, properties: { status: "resolved" } });
+      const view = await chokePoint.createView({
+        databaseId: db.id,
+        type: "table",
+        name: "Monitoring",
+        config: { filter: { type: "in", property: "status", value: ["monitoring"] } },
+      });
+      const before = await chokePoint.queryView(view.id);
+      await chokePoint.updateProperty(status.id, {
+        config: {
+          options: [
+            { key: "monitoring", label: "Sleduje se" },
+            { key: "resolved", label: "Resolved" },
+          ],
+        },
+      });
+      const after = await chokePoint.queryView(view.id);
+      expect(before.items.map((item) => item.id)).toEqual([selected.id]);
+      expect(after.items).toEqual(before.items);
+      expect((await chokePoint.getItem(db.id, selected.id))?.properties.status).toBe("monitoring");
+    });
+
     async function seedTasks(db: { id: string }, chokePointRef: ChokePoint) {
       const done = await chokePointRef.createItem({
         databaseId: db.id,

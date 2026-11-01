@@ -12,11 +12,20 @@ import {
   getTestPool,
   resetDatabase,
 } from "@semprec/data/testSupport";
-import { createUser, hashPassword, login, mintMcpRunCredential, withTransaction } from "@semprec/data";
+import {
+  createChokePoint,
+  createUser,
+  hashPassword,
+  insertValueLink,
+  login,
+  mintMcpRunCredential,
+  withTransaction,
+} from "@semprec/data";
 import { createGenericOperationGateway } from "@semprec/application";
 import { CAPABILITY_IDS } from "@semprec/shared";
 import { createAgentRunRequestListener } from "../agentRunHandler.js";
 import { createMcpRequestListener } from "../mcp/mcpHandler.js";
+import { z } from "zod";
 
 const testMetadataResolver: CollectionMetadataResolver = {
   resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
@@ -156,5 +165,69 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
 
     expect(JSON.stringify(ownA.body)).toContain(a.projectItemId);
     expect(JSON.stringify(ownB.body)).toContain(b.projectItemId);
+  });
+
+  it("breaks a linked value through a minted agent-run MCP credential within its tenant", async () => {
+    const user = await createUserIn(tenantA);
+    const projectItemId = await runInTenant(tenantA, () => createTestProjectItem(pool));
+    const credential = await runInTenant(tenantA, () =>
+      withTransaction(pool, (client) =>
+        mintMcpRunCredential(client, {
+          projectItemId,
+          capabilities: ["core.item.write", "core.item.read"],
+          userId: user.id,
+        }),
+      ),
+    );
+    const cp = createChokePoint(pool);
+    const makeLinkedItem = (tenantId: string) =>
+      runInTenant(tenantId, async () => {
+        const db = await cp.createDatabase({ name: "Linked" });
+        await cp.createProperty({ databaseId: db.id, key: "note", name: "Note", type: "text" });
+        const item = await cp.createItem({ databaseId: db.id, properties: { note: "before" } });
+        await withTransaction(pool, (client) =>
+          insertValueLink(client, {
+            itemId: item.id,
+            propertyKey: "note",
+            ruleKey: "test",
+            sources: [],
+          }),
+        );
+        return item;
+      });
+    const own = await makeLinkedItem(tenantA);
+    const foreign = await makeLinkedItem(tenantB);
+    const patchOther = (itemId: string) =>
+      callTool(credential.token, "semprec.item.patch", {
+        itemId,
+        properties: { note: "forbidden" },
+        ifVersion: foreign.updatedAt,
+      });
+    const foreignAttempt = await patchOther(foreign.id);
+    const missingAttempt = await patchOther(randomUUID());
+    expect(foreignAttempt).toEqual(missingAttempt);
+    const patched = await callTool(credential.token, "semprec.item.patch", {
+      itemId: own.id,
+      properties: { note: "after" },
+      ifVersion: own.updatedAt,
+    });
+    expect(patched.status).toBe(200);
+    expect(patched.body).not.toHaveProperty("error");
+    const read = await callTool(credential.token, "semprec.item.get", { itemId: own.id, include: ["links"] });
+    const envelope = z
+      .object({ result: z.object({ content: z.array(z.object({ type: z.string(), text: z.string() })) }) })
+      .parse(read.body);
+    const text = envelope.result.content.find((part) => part.type === "text")?.text;
+    if (text === undefined) throw new Error("Missing MCP result content");
+    const result: unknown = JSON.parse(text);
+    expect(result).toMatchObject({
+      properties: { note: "after" },
+      links: { note: { valueKind: "inheritedBroken", brokenBy: "agent" } },
+    });
+    const foreignLinks = await runInTenant(tenantB, () => cp.getValueLinksForItems([foreign.id]));
+    expect(foreignLinks.get(foreign.id)?.note).toMatchObject({ valueKind: "inherited", brokenBy: null });
+    expect((await runInTenant(tenantB, () => cp.getItem(foreign.databaseId, foreign.id)))?.properties.note).toBe(
+      "before",
+    );
   });
 });

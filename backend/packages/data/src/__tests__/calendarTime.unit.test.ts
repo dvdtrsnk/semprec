@@ -113,6 +113,7 @@ describe("calendarTime", () => {
     } as unknown as Queryable;
     const clock = await getCalendarClock(client);
     const queries = calls;
+    expect(queries).toBe(2);
     expect(clock.zone).toBe("America/New_York");
     expect(clock.today(new Date("2026-10-17T02:00:00Z"))).toBe("2026-10-16");
     expect(clock.dayBounds("2026-10-17").start.zoneName).toBe("America/New_York");
