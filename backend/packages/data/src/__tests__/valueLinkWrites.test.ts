@@ -9,7 +9,7 @@ import {
   resetDatabase,
   withTenantTransaction,
 } from "../testSupport/testDb.js";
-import { withTransaction } from "../db/pool.js";
+import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import {
@@ -647,6 +647,193 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
+    it("keeps a caught NOWAIT failure rollback-only after savepoint recovery", async () => {
+      const tenant = await createTestTenant(pool);
+      await withRuntimePool(async (holderPool) =>
+        withRuntimePool(async (contenderPool) => {
+          const cp = createChokePoint(holderPool);
+          const fx = await runInTenant(tenant, () => setup(cp));
+          const unrelated = await runInTenant(tenant, () =>
+            cp.createItem({ databaseId: fx.files.id, properties: { name: "original" } }),
+          );
+          await withTenantTransaction(holderPool, tenant, (client) =>
+            insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+          );
+          const held = barrier();
+          const release = barrier();
+          const callback = vi.fn();
+          let holderPid: number | undefined;
+          let competitorPid: number | undefined;
+          const holder = runInTenant(tenant, () =>
+            withTransaction(holderPool, async (client) => {
+              holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              await createRelationWithClient(
+                client,
+                { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id },
+                undefined,
+                USER,
+              );
+              held.resolve();
+              await bounded(release.promise);
+            }),
+          ).then(
+            () => ({ ok: true as const }),
+            (error: unknown) => ({ ok: false as const, error }),
+          );
+          let failure: unknown;
+          try {
+            await bounded(held.promise);
+            await expect(
+              runInTenant(tenant, () =>
+                withTransaction(contenderPool, async (client) => {
+                  competitorPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                  await updateItemWithClient(
+                    client,
+                    { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "before" } },
+                    { writer: USER },
+                  );
+                  runAfterCommit(client, callback);
+                  await client.query("SAVEPOINT relation_busy");
+                  await expect(
+                    updateRelationWithClient(
+                      client,
+                      {
+                        relationPropertyId: fx.projectsProperty.id,
+                        callerItemId: fx.file.id,
+                        targetItemId: fx.beta.id,
+                        metadata: {},
+                      },
+                      VALUE_LINKS,
+                      SYSTEM_WRITER,
+                    ),
+                  ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
+                  await client.query("ROLLBACK TO SAVEPOINT relation_busy");
+                  await updateItemWithClient(
+                    client,
+                    { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "after" } },
+                    { writer: USER },
+                  );
+                }),
+              ),
+            ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
+            expect(holderPid).toBeTypeOf("number");
+            expect(competitorPid).toBeTypeOf("number");
+            expect((await runInTenant(tenant, () => cp.getItem(fx.files.id, unrelated.id)))?.properties.name).toBe(
+              "original",
+            );
+            expect(callback).not.toHaveBeenCalled();
+          } catch (error) {
+            failure = error;
+          } finally {
+            release.resolve();
+            try {
+              const result = await bounded(holder);
+              if (!result.ok) throw result.error;
+            } catch (error) {
+              failure =
+                failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
+            }
+          }
+          if (failure !== undefined) throw failure;
+        }),
+      );
+    }, 30000);
+
+    it("rolls back all earlier and later writes when caught advisory busy reaches the transaction owner", async () => {
+      const tenant = await createTestTenant(pool);
+      await withRuntimePool(async (holderPool) =>
+        withRuntimePool(async (contenderPool) => {
+          const cp = createChokePoint(holderPool);
+          const fx = await runInTenant(tenant, () => setup(cp));
+          const unrelated = await runInTenant(tenant, () =>
+            cp.createItem({ databaseId: fx.files.id, properties: { name: "original" } }),
+          );
+          await withTenantTransaction(holderPool, tenant, (client) =>
+            insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+          );
+          const held = barrier();
+          const release = barrier();
+          let holderPid: number | undefined;
+          let competitorPid: number | undefined;
+          const events: InvalidationEvent[] = [];
+          const callback = vi.fn();
+          setInvalidationHook((event) => events.push(event));
+          const holder = runInTenant(tenant, () =>
+            withTransaction(holderPool, async (client) => {
+              holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              await createRelationWithClient(
+                client,
+                { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id },
+                undefined,
+                SYSTEM_WRITER,
+              );
+              held.resolve();
+              await bounded(release.promise);
+            }),
+          );
+          const settledHolder = holder.then(
+            () => ({ ok: true as const }),
+            (error: unknown) => ({ ok: false as const, error }),
+          );
+          let failure: unknown;
+          try {
+            await bounded(held.promise);
+            await expect(
+              runInTenant(tenant, () =>
+                withTransaction(contenderPool, async (client) => {
+                  competitorPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                  await updateItemWithClient(
+                    client,
+                    { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "before" } },
+                    { writer: USER },
+                  );
+                  runAfterCommit(client, callback);
+                  await expect(
+                    createRelationWithClient(
+                      client,
+                      {
+                        relationPropertyId: fx.projectsProperty.id,
+                        callerItemId: fx.file.id,
+                        targetItemId: fx.beta.id,
+                      },
+                      VALUE_LINKS,
+                      SYSTEM_WRITER,
+                    ),
+                  ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
+                  await updateItemWithClient(
+                    client,
+                    { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "after" } },
+                    { writer: USER },
+                  );
+                }),
+              ),
+            ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
+            expect(holderPid).toBeTypeOf("number");
+            expect(competitorPid).toBeTypeOf("number");
+            expect((await runInTenant(tenant, () => cp.getItem(fx.files.id, unrelated.id)))?.properties.name).toBe(
+              "original",
+            );
+            expect(events.filter((event) => event.scope === "item" && event.itemId === unrelated.id)).toEqual([]);
+            expect(callback).not.toHaveBeenCalled();
+          } catch (error) {
+            failure = error;
+          } finally {
+            release.resolve();
+            try {
+              const result = await bounded(settledHolder);
+              if (!result.ok) throw result.error;
+            } catch (error) {
+              failure =
+                failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
+            } finally {
+              setInvalidationHook(() => {});
+            }
+          }
+          if (failure !== undefined) throw failure;
+        }),
+      );
+    }, 30000);
+
     it("diagnoses a populated rollup job and relation handoff cycle", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (userPool) =>

@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import { NotFoundError } from "../errors.js";
+import { runValueLinkAdmissionLock } from "../chokePoint/valueLinkRelationAdmission.js";
 
 /** Lock the tenant's Inbox source in the caller's transaction, optionally including Trash. */
 export async function lockInboxSource(
@@ -19,11 +20,13 @@ export async function lockInboxSourceIfPresent(
   allowDeleted = false,
   lockMode?: "nowait",
 ): Promise<boolean> {
-  const result = await client.query(
-    `SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id AND d.tenant_id = i.tenant_id
+  const query = () =>
+    client.query(
+      `SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id AND d.tenant_id = i.tenant_id
      WHERE i.id = $1 AND d.owner_module_id = 'inbox' AND ($2::boolean OR i.deleted_at IS NULL) FOR UPDATE OF i${lockMode === "nowait" ? " NOWAIT" : ""}`,
-    [itemId, allowDeleted],
-  );
+      [itemId, allowDeleted],
+    );
+  const result = lockMode === "nowait" ? await runValueLinkAdmissionLock(query) : await query();
   return result.rowCount === 1;
 }
 

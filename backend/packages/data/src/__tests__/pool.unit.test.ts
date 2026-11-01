@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { createPool, requireAffectedRows, runAfterCommit, withClient, withTransaction } from "../db/pool.js";
+import {
+  createPool,
+  markManagedTransactionRollbackOnly,
+  requireAffectedRows,
+  requireManagedTransaction,
+  runAfterCommit,
+  withClient,
+  withTransaction,
+} from "../db/pool.js";
 import { logger } from "../db/logger.js";
 
 describe("createPool", () => {
@@ -106,6 +114,41 @@ describe("withTransaction", () => {
   function sqlCalls(query: ReturnType<typeof vi.fn>): unknown[] {
     return query.mock.calls.map((call) => call[0]);
   }
+
+  it("refuses a caught rollback-only failure before COMMIT and retains the first error", async () => {
+    const { client, pool, query } = fakeClient({});
+    const first = new Error("first");
+    const callback = vi.fn();
+    await expect(
+      withTransaction(pool, async (owned) => {
+        requireManagedTransaction(owned);
+        markManagedTransactionRollbackOnly(owned, first);
+        markManagedTransactionRollbackOnly(owned, new Error("second"));
+        runAfterCommit(owned, callback);
+      }),
+    ).rejects.toBe(first);
+    expect(sqlCalls(query)).toEqual(["BEGIN", "ROLLBACK"]);
+    expect(callback).not.toHaveBeenCalled();
+    expect(() => requireManagedTransaction(client)).toThrow("active managed transaction");
+    await expect(
+      withTransaction(pool, async (owned) => {
+        requireManagedTransaction(owned);
+        return "clean";
+      }),
+    ).resolves.toBe("clean");
+  });
+
+  it("preserves the escaping error when a marked callback throws another error", async () => {
+    const { pool, query } = fakeClient({});
+    const outer = new Error("outer");
+    await expect(
+      withTransaction(pool, async (client) => {
+        markManagedTransactionRollbackOnly(client, new Error("busy"));
+        throw outer;
+      }),
+    ).rejects.toBe(outer);
+    expect(sqlCalls(query)).toEqual(["BEGIN", "ROLLBACK"]);
+  });
 
   it("rethrows fn's error and discards the client when ROLLBACK fails", async () => {
     const fnError = new Error("E1");

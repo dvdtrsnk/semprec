@@ -199,7 +199,8 @@ export async function tryLockRelationDefinition(client: PoolClient, definitionId
     "SELECT pg_try_advisory_xact_lock(hashtextextended($1::text, 0)) AS locked",
     [definitionId],
   );
-  return rows[0]?.locked === true;
+  if (typeof rows[0]?.locked !== "boolean") throw new Error("Missing relation admission result");
+  return rows[0].locked;
 }
 
 export async function lockExistingRelationNowait(

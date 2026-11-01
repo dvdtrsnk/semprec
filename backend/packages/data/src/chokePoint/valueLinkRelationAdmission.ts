@@ -4,6 +4,15 @@ import { ValueLinkBusyError } from "../errors.js";
 import * as relationsStore from "./relationsStore.js";
 import { assertValueLinkHandoff } from "./valueLinkWrites.js";
 
+export async function runValueLinkAdmissionLock<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof DatabaseError && error.code === "55P03") throw new ValueLinkBusyError();
+    throw error;
+  }
+}
+
 export async function withValueLinkRelationAdmission<T>(
   client: PoolClient,
   input: {
@@ -20,6 +29,11 @@ export async function withValueLinkRelationAdmission<T>(
   requireManagedTransaction(client);
   try {
     await hooks();
+  } catch (error) {
+    if (error instanceof ValueLinkBusyError) markManagedTransactionRollbackOnly(client, error);
+    throw error;
+  }
+  try {
     if (input.insert && !(await relationsStore.tryLockRelationDefinition(client, input.definitionId))) {
       throw new ValueLinkBusyError();
     }
