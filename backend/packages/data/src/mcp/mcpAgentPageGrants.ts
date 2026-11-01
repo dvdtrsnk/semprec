@@ -11,7 +11,11 @@ import {
 } from "./mcpGrantsAdminStore.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import type { McpConnectionErrorReason } from "./mcpConnectionError.js";
-import type { McpToolDisplayLabel, McpToolRegistration } from "./mcpToolRegistrationsStore.js";
+import {
+  parseStoredMcpToolDisplayLabel,
+  type McpToolDisplayLabel,
+  type McpToolRegistration,
+} from "./mcpToolRegistrationsStore.js";
 import type { ProjectMcpGrant } from "./mcpProjectGrantsStore.js";
 
 /**
@@ -60,7 +64,7 @@ interface McpToolGrantForProjectRow {
   registration_id: string;
   tool_name: string;
   description: string | null;
-  display_label: McpToolDisplayLabel | null;
+  display_label: unknown;
   requires_approval: boolean;
   risk_class: string;
   server_item_id: string;
@@ -108,24 +112,27 @@ export async function listMcpToolGrantsForProject(
     [mcpServersDatabase.id, projectItemId],
   );
 
-  return rows.map((row) => ({
-    mcpToolRegistrationId: row.registration_id,
-    toolName: row.tool_name,
-    description: row.description,
-    displayLabel: row.display_label?.[preferred] ?? row.display_label?.[other] ?? row.tool_name,
-    requiresApproval: row.requires_approval,
-    riskClass: row.risk_class,
-    mcpServerItemId: row.server_item_id,
-    mcpServerName: row.server_name ?? "",
-    mcpServerOnline: row.server_online,
-    granted: row.granted,
-    effective: row.granted && row.server_online,
-    server: {
-      state: row.server_online && row.last_error_reason === null ? "connected" : "offline",
-      lastConnectedAt: row.last_connected_at,
-      lastErrorReason: row.last_error_reason,
-    },
-  }));
+  return rows.map((row) => {
+    const label = parseStoredMcpToolDisplayLabel(row.display_label);
+    return {
+      mcpToolRegistrationId: row.registration_id,
+      toolName: row.tool_name,
+      description: row.description,
+      displayLabel: label?.[preferred] ?? label?.[other] ?? row.tool_name,
+      requiresApproval: row.requires_approval,
+      riskClass: row.risk_class,
+      mcpServerItemId: row.server_item_id,
+      mcpServerName: row.server_name ?? "",
+      mcpServerOnline: row.server_online,
+      granted: row.granted,
+      effective: row.granted && row.server_online,
+      server: {
+        state: row.server_online && row.last_error_reason === null ? "connected" : "offline",
+        lastConnectedAt: row.last_connected_at,
+        lastErrorReason: row.last_error_reason,
+      },
+    };
+  });
 }
 
 /**

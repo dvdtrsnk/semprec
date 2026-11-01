@@ -86,7 +86,7 @@ function validateDisplayLabel(label: unknown): McpToolDisplayLabel {
 export async function setMcpToolDisplayLabel(
   client: Queryable,
   id: string,
-  label: McpToolDisplayLabel | null,
+  label: unknown,
 ): Promise<McpToolRegistration> {
   const stored = label === null ? null : JSON.stringify(validateDisplayLabel(label));
   const result = await client.query<McpToolRegistrationRow>(

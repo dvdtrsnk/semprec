@@ -86,7 +86,7 @@ describe("mcp_tool_registrations.display_label (issue #1391)", () => {
     ["string", "x"],
   ])("rejects %s and changes nothing", async (_name, label) => {
     await setMcpToolDisplayLabel(pool, registrationId, { cs: "Původní" });
-    await expect(setMcpToolDisplayLabel(pool, registrationId, label as never)).rejects.toBeInstanceOf(ValidationError);
+    await expect(setMcpToolDisplayLabel(pool, registrationId, label)).rejects.toBeInstanceOf(ValidationError);
     expect(await storedLabel()).toEqual({ cs: "Původní" });
   });
 
@@ -124,5 +124,15 @@ describe("mcp_tool_registrations.display_label (issue #1391)", () => {
     await expect(
       pool.query(`UPDATE mcp_tool_registrations SET display_label = '"x"'::jsonb WHERE id = $1`, [registrationId]),
     ).rejects.toThrow(/display_label_object/);
+  });
+
+  it("rejects malformed stored label objects at both registration and listing reads", async () => {
+    // The database CHECK accepts objects; simulate historical malformed JSONB that the writer refuses.
+    await pool.query("UPDATE mcp_tool_registrations SET display_label = $2::jsonb WHERE id = $1", [
+      registrationId,
+      JSON.stringify({ en: 42 }),
+    ]);
+    await expect(storedLabel()).rejects.toThrow("Invalid stored MCP tool display label");
+    await expect(listLabel("en")).rejects.toThrow("Invalid stored MCP tool display label");
   });
 });

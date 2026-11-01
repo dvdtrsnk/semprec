@@ -49,9 +49,22 @@ export interface McpToolRegistrationRow {
   active: boolean;
   requires_approval: boolean;
   risk_class: string;
-  display_label: McpToolDisplayLabel | null;
+  display_label: unknown;
   created_at: string;
   updated_at: string;
+}
+
+export function parseStoredMcpToolDisplayLabel(value: unknown): McpToolDisplayLabel | null {
+  if (value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid stored MCP tool display label");
+  const result: McpToolDisplayLabel = {};
+  for (const [key, label] of Object.entries(value)) {
+    if ((key !== "cs" && key !== "en") || typeof label !== "string" || !label.trim() || label.length > 120) {
+      throw new Error("Invalid stored MCP tool display label");
+    }
+    result[key] = label;
+  }
+  return result;
 }
 
 /** Exported for `mcpGrantsAdminStore.ts` only — not part of this package's public `index.ts` surface. */
@@ -65,7 +78,7 @@ export function rowToRegistration(row: McpToolRegistrationRow): McpToolRegistrat
     active: row.active,
     requiresApproval: row.requires_approval,
     riskClass: row.risk_class,
-    displayLabel: row.display_label,
+    displayLabel: parseStoredMcpToolDisplayLabel(row.display_label),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
