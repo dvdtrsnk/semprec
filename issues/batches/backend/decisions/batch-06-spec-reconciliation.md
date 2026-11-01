@@ -188,3 +188,38 @@ review brief and final evidence. Do not claim that all failures universally clos
 runs. A regression caused or worsened by the current batch remains in scope and
 must be distinguished from this preexisting path. This deferral neither fixes the
 risk nor accepts a failed in-scope criterion.
+
+## Historical migration lock clause
+
+Gh-1452 Task 1 explicitly requests an ordinary CREATE INDEX. Its former AC's
+no-full-table-lock wording conflicts with that SQL and the actual migration
+runner. PostgreSQL documents [ordinary index SHARE locks and lock lifetime](https://www.postgresql.org/docs/16/explicit-locking.html)
+and the [default ALTER TABLE ACCESS EXCLUSIVE mode](https://www.postgresql.org/docs/16/sql-altertable.html).
+The local runner executes each entire file between BEGIN and COMMIT. Therefore
+0096's ADD COLUMN ACCESS EXCLUSIVE lock persists through the index build until
+commit, blocking reads as well as writes. NOT VALID skips the initial foreign-key
+validation scan; it does not release the earlier stronger lock. The proposed
+interpretation that only a separate index SHARE lock matters is rejected.
+
+Preserve historical executable 0096/0097 SQL, ordinals and the per-file runner.
+No CONCURRENTLY command inside its transaction, runner redesign or global
+migration-policy exception is authorized. Correct only 0096's misleading comment
+that calls the lock brief; do not replay or renumber that migration. The separate
+0097 VALIDATE phase and populated data preservation remain required.
+
+Replace the impossible AC with truthful local evidence: real populated runner
+upgrade, initially unvalidated then validated constraint, and a bounded lock
+scenario observing 0096's actual granted lock while its transaction is held,
+concurrent read/write waits and successful settlement after commit. A test-owned
+barrier after the real file work and before commit is sufficient; do not replace
+the production DDL with a manually acquired table lock or change production runner
+code. Release gates, settle all operations and close owned pools on failure.
+Existing migration-test scope covers this scenario.
+
+This accepts neither measured lock duration nor concurrent availability or a
+production rollout. Production scheduling, dataset size and online-index design
+are not established here. It retains the frozen Task's existing SQL and records
+its actual limits for local delivery; general expand/contract guidance remains
+unchanged. Include the corrected source AC, decision and observed versus inferred
+facts in the review ledger and acceptance evidence, without marking the old
+no-lock claim PASS.
