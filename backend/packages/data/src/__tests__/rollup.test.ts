@@ -1,12 +1,12 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
-import { bindToTenantZero, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
+import { bindToTenantZero, getTenantZeroId, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 import { ValidationError } from "../errors.js";
-import { recomputeRollupCell, rollupRecomputeFullJobKey } from "../rollup/recompute.js";
+import { recomputeRollupCell, rollupRecomputeFullJobKey, rollupRecomputeJobKey } from "../rollup/recompute.js";
 import { withTransaction } from "../db/pool.js";
 import { databaseArchiveWithClient } from "../chokePoint/databaseOps.js";
 
@@ -212,6 +212,53 @@ describe("rollup engine", () => {
 
     const item = await chokePoint.getItem(projects.id, project.id);
     expect(item?.computed[sumProp.key]).toBe(10);
+  });
+
+  it("enqueues and applies a rollup for a source key added by a registered transform", async () => {
+    const projects = await chokePoint.createDatabase({ name: "Rollup parent" });
+    const tasks = await chokePoint.createDatabase({ name: "Rollup child", ownerModuleId: "rollupProbe" });
+    await chokePoint.createProperty({ databaseId: tasks.id, key: "trigger", name: "Trigger", type: "text" });
+    await chokePoint.createProperty({ databaseId: tasks.id, key: "hours", name: "Hours", type: "number" });
+    const { property } = await chokePoint.createRelationProperty({
+      sourceDatabaseId: projects.id,
+      targetDatabaseId: tasks.id,
+      key: "tasks",
+      name: "Tasks",
+    });
+    const total = await chokePoint.createProperty({
+      databaseId: projects.id,
+      key: "total",
+      name: "Total",
+      type: "rollup",
+      config: { relationPropertyKey: "tasks", aggregation: "sum", targetPropertyKey: "hours" },
+    });
+    const parent = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
+    const child = await chokePoint.createItem({ databaseId: tasks.id, properties: { hours: 3 } });
+    await chokePoint.createRelation({
+      relationPropertyId: property.id,
+      callerItemId: parent.id,
+      targetItemId: child.id,
+    });
+    await drainQueue();
+    vi.resetModules();
+    const hooks = await import("../chokePoint/hooks.js");
+    const isolated = await import("../chokePoint/chokePoint.js");
+    const isolatedShared = await import("@semprec/shared");
+    try {
+      hooks.registerItemPreWriteTransform("rollupProbe", async ({ patch }) => ({ ...patch, hours: 10 }));
+      const cp = isolated.createChokePoint(pool);
+      await isolatedShared.runInTenant(getTenantZeroId(), () =>
+        cp.updateItem({ databaseId: tasks.id, itemId: child.id, propertiesPatch: { trigger: "go" } }),
+      );
+      const key = rollupRecomputeJobKey(total.id, parent.id);
+      const jobs = await pool.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [key]);
+      expect(jobs.rows).toEqual([{ key }]);
+      await drainQueue();
+      expect((await chokePoint.getItem(projects.id, parent.id))?.computed.total).toBe(10);
+    } finally {
+      hooks.clearHooksForTests();
+      vi.resetModules();
+    }
   });
 
   describe("archived source databases", () => {

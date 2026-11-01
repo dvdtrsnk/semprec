@@ -14,7 +14,8 @@ import { withTransaction } from "../../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../../chokePoint/relationOps.js";
-import { insertValueLink } from "../../chokePoint/valueLinksStore.js";
+import { insertValueLink, listValueLinksByItemIds } from "../../chokePoint/valueLinksStore.js";
+import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
 import { runInTenant } from "@semprec/shared";
 import { writeComputed } from "../../chokePoint/itemsStore.js";
 import { NotFoundError, ValidationError } from "../../errors.js";
@@ -173,6 +174,7 @@ describe("Transcript speaker mappings (issue #185)", () => {
     it("validates protected speaker metadata before refusing a busy transcript lock", async () => {
       const transcriptId = await createTranscript();
       const personId = await createPerson("Alice");
+      const otherPersonId = await createPerson("Bob");
       const tenant = getTenantZeroId();
       const runtime = await createRuntimeRolePool(pool, "semprec_data");
       let release!: () => void;
@@ -188,6 +190,15 @@ describe("Transcript speaker mappings (issue #185)", () => {
       await withTenantTransaction(runtime, tenant, (client) =>
         insertValueLink(client, { itemId: transcriptId, propertyKey: "speakers", ruleKey: "test", sources: [] }),
       );
+      const beforeJobs = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM graphile_worker.jobs",
+      );
+      const beforeLinks = await withTenantTransaction(runtime, tenant, (client) =>
+        listValueLinksByItemIds(client, [transcriptId]),
+      );
+      const beforeSpeakers = await speakers(transcriptId);
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
       let holderSettled = false;
       const holder = runInTenant(tenant, () =>
         withTransaction(runtime, async (client) => {
@@ -211,7 +222,13 @@ describe("Transcript speaker mappings (issue #185)", () => {
       let failure: unknown;
       try {
         await bounded(ready);
-        const attempt = (metadata: Record<string, unknown>) =>
+        const lock = await pool.query<{ held: boolean }>(
+          `SELECT EXISTS (SELECT 1 FROM items i JOIN pg_locks l ON l.transactionid::text = i.xmax::text
+             WHERE i.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.granted) AS held`,
+          [transcriptId, holderPid],
+        );
+        expect(lock.rows[0]?.held).toBe(true);
+        const attempt = (metadata: Record<string, unknown>, target = personId) =>
           runInTenant(tenant, () =>
             withTransaction(runtime, async (client) => {
               contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
@@ -220,7 +237,7 @@ describe("Transcript speaker mappings (issue #185)", () => {
                 {
                   relationPropertyId: speakersPropertyId,
                   callerItemId: transcriptId,
-                  targetItemId: personId,
+                  targetItemId: target,
                   metadata,
                 },
                 { ownerProcess: "valueLinks" },
@@ -234,10 +251,44 @@ describe("Transcript speaker mappings (issue #185)", () => {
         });
         expect(holderPid).toBeTypeOf("number");
         expect(contenderPid).toBeTypeOf("number");
+        expect(await speakers(transcriptId)).toEqual(beforeSpeakers);
+        expect(
+          await withTenantTransaction(runtime, tenant, (client) => listValueLinksByItemIds(client, [transcriptId])),
+        ).toEqual(beforeLinks);
+        expect(
+          (await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
+        ).toEqual(beforeJobs.rows);
+        expect(events).toEqual([]);
+        release();
+        requireSuccessful(await bounded(holder));
+        events.length = 0;
+        const edge = await attempt({ speaker: "SPEAKER_01" });
+        expect(edge.metadata).toEqual({ speaker: "SPEAKER_01" });
+        expect((await speakers(transcriptId))[0]?.person?.id).toBe(personId);
+        expect(
+          await withTenantTransaction(runtime, tenant, (client) => listValueLinksByItemIds(client, [transcriptId])),
+        ).toEqual(beforeLinks);
+        expect(events).toEqual([]);
+        await expect(attempt({ speaker: "SPEAKER_99" }, otherPersonId)).rejects.toMatchObject({
+          status: 400,
+          code: "validation_failed",
+          details: { reason: "unknownSpeaker" },
+        });
+        await expect(attempt({ speaker: "SPEAKER_01" }, otherPersonId)).rejects.toMatchObject({
+          status: 400,
+          code: "validation_failed",
+          details: { reason: "speakerAlreadyMapped" },
+        });
+        expect((await speakers(transcriptId))[0]?.person?.id).toBe(personId);
+        expect(
+          (await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
+        ).toEqual(beforeJobs.rows);
+        expect(events).toEqual([]);
       } catch (error) {
         failure = error;
       } finally {
         release();
+        setInvalidationHook(() => {});
         try {
           const outcome = await bounded(holder);
           requireSuccessful(outcome);

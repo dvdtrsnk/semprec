@@ -817,6 +817,18 @@ describe("value link state on writes (issue #1516)", () => {
             callerItemId: fixture.item.id,
             targetItemId: fixture.type.id,
           };
+          const events: InvalidationEvent[] = [];
+          setInvalidationHook((event) => events.push(event));
+          const beforeJobs = await pool.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM graphile_worker.jobs",
+          );
+          const definition = await withTenantTransaction(holderPool, tenant, (client) =>
+            relationsStore.getRelationDefinitionByPropertyId(client, property.id),
+          );
+          if (!definition) throw new Error("Missing Inbox relation definition");
+          const beforeEdges = await withTenantTransaction(holderPool, tenant, (client) =>
+            relationsStore.listRelationsForItem(client, definition.id, fixture.item.id),
+          );
           const held = barrier();
           const release = barrier();
           let holderPid: number | undefined;
@@ -850,6 +862,15 @@ describe("value link state on writes (issue #1516)", () => {
             ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
             expect(holderPid).toBeTypeOf("number");
             expect(contenderPid).toBeTypeOf("number");
+            expect(events).toEqual([]);
+            expect(
+              await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs"),
+            ).toMatchObject({ rows: beforeJobs.rows });
+            expect(
+              await withTenantTransaction(contenderPool, tenant, (client) =>
+                relationsStore.listRelationsForItem(client, definition.id, fixture.item.id),
+              ),
+            ).toEqual(beforeEdges);
           } catch (error) {
             failure = error;
           } finally {
@@ -859,6 +880,8 @@ describe("value link state on writes (issue #1516)", () => {
             } catch (error) {
               failure =
                 failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
+            } finally {
+              setInvalidationHook(() => {});
             }
           }
           if (failure !== undefined) throwFailure(failure);
@@ -1331,6 +1354,11 @@ describe("value link state on writes (issue #1516)", () => {
           await withTenantTransaction(holderPool, tenant, (client) =>
             insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
           );
+          const events: InvalidationEvent[] = [];
+          setInvalidationHook((event) => events.push(event));
+          const beforeJobs = await pool.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM graphile_worker.jobs",
+          );
           const held = barrier();
           const release = barrier();
           let holderPid: number | undefined;
@@ -1366,6 +1394,9 @@ describe("value link state on writes (issue #1516)", () => {
               relationsStore.getRelationDefinitionByPropertyId(client, fx.projectsProperty.id),
             );
             if (!definition) throw new Error("Missing relation definition");
+            const beforeEdges = await withTenantTransaction(contenderPool, tenant, (client) =>
+              relationsStore.listRelationsForItem(client, definition.id, fx.file.id),
+            );
             const lock = await pool.query<{ held: boolean }>(
               `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 AND locktype = 'advisory' AND granted
                  AND classid::bigint = ((hashtextextended($2::text, 0) >> 32) & 4294967295::bigint)
@@ -1388,6 +1419,15 @@ describe("value link state on writes (issue #1516)", () => {
             ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
             expect(holderPid).toBeTypeOf("number");
             expect(contenderPid).toBeTypeOf("number");
+            expect(events).toEqual([]);
+            expect(
+              await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs"),
+            ).toMatchObject({ rows: beforeJobs.rows });
+            expect(
+              await withTenantTransaction(contenderPool, tenant, (client) =>
+                relationsStore.listRelationsForItem(client, definition.id, fx.file.id),
+              ),
+            ).toEqual(beforeEdges);
           } catch (error) {
             failure = error;
           } finally {
@@ -1400,6 +1440,8 @@ describe("value link state on writes (issue #1516)", () => {
                 failure === undefined
                   ? error
                   : new AggregateError([failure, error], "Test and proposal cleanup failed");
+            } finally {
+              setInvalidationHook(() => {});
             }
           }
           if (failure !== undefined) throwFailure(failure);
@@ -1540,7 +1582,7 @@ describe("value link state on writes (issue #1516)", () => {
             const events: InvalidationEvent[] = [];
             setInvalidationHook((event) => events.push(event));
             const jobsBefore = (
-              await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker._private_jobs")
+              await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")
             ).rows[0]?.count;
             const holder = runInTenant(tenant, () =>
               withTransaction(holderPool, async (client) => {
@@ -1590,11 +1632,8 @@ describe("value link state on writes (issue #1516)", () => {
               expect(contenderPid).toBeTypeOf("number");
               expect(events).toEqual([]);
               expect(
-                (
-                  await pool.query<{ count: string }>(
-                    "SELECT count(*)::text AS count FROM graphile_worker._private_jobs",
-                  )
-                ).rows[0]?.count,
+                (await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs"))
+                  .rows[0]?.count,
               ).toBe(jobsBefore);
             } catch (error) {
               failure = error;
@@ -1770,7 +1809,7 @@ describe("value link state on writes (issue #1516)", () => {
           const jobCount = async () =>
             (
               await pool.query<{ count: string }>(
-                "SELECT count(*)::text AS count FROM graphile_worker._private_jobs WHERE key = $1",
+                "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE key = $1",
                 [jobKey],
               )
             ).rows[0]?.count;
@@ -1820,6 +1859,11 @@ describe("value link state on writes (issue #1516)", () => {
                     { writer: USER },
                   );
                   await enqueueRollupRecompute(client, rollup.id, unrelated.id);
+                  const queued = await client.query<{ key: string }>(
+                    "SELECT key FROM graphile_worker.jobs WHERE key = $1",
+                    [jobKey],
+                  );
+                  expect(queued.rows).toEqual([{ key: jobKey }]);
                   runAfterCommit(client, callback);
                   await client.query("SAVEPOINT relation_busy");
                   await expect(
@@ -1913,7 +1957,7 @@ describe("value link state on writes (issue #1516)", () => {
           const jobCount = async () =>
             (
               await pool.query<{ count: string }>(
-                "SELECT count(*)::text AS count FROM graphile_worker._private_jobs WHERE key = $1",
+                "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE key = $1",
                 [jobKey],
               )
             ).rows[0]?.count;
@@ -1973,6 +2017,11 @@ describe("value link state on writes (issue #1516)", () => {
                     { writer: USER },
                   );
                   await enqueueRollupRecompute(client, rollup.id, unrelated.id);
+                  const queued = await client.query<{ key: string }>(
+                    "SELECT key FROM graphile_worker.jobs WHERE key = $1",
+                    [jobKey],
+                  );
+                  expect(queued.rows).toEqual([{ key: jobKey }]);
                   runAfterCommit(client, callback);
                   await expect(
                     createRelationWithClient(
@@ -2058,7 +2107,7 @@ describe("value link state on writes (issue #1516)", () => {
           if (!rollup) throw new Error("Missing rollup property");
           const jobKey = rollupRecomputeJobKey(rollup.id, fx.file.id);
           const beforeJob = await pool.query<{ count: string }>(
-            "SELECT count(*)::text AS count FROM graphile_worker._private_jobs WHERE key = $1",
+            "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE key = $1",
             [jobKey],
           );
           expect(beforeJob.rows[0]?.count).toBe("1");
@@ -2129,6 +2178,8 @@ describe("value link state on writes (issue #1516)", () => {
           try {
             user = run("user");
             await bounded(jobHeld.promise);
+            // Graphile Worker 0.17.3's public jobs view does not expose the tuple xmax
+            // needed to connect this exact queued row to its transaction lock holder.
             const queueLock = await pool.query<{ held: boolean }>(
               `SELECT EXISTS (SELECT 1 FROM graphile_worker._private_jobs j JOIN pg_locks l
                  ON l.transactionid::text = j.xmax::text
@@ -2162,7 +2213,7 @@ describe("value link state on writes (issue #1516)", () => {
             );
             expect(events.filter((event) => event.scope === "item" && event.itemId === fx.file.id)).toHaveLength(1);
             const afterJob = await pool.query<{ count: string }>(
-              "SELECT count(*)::text AS count FROM graphile_worker._private_jobs WHERE key = $1",
+              "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE key = $1",
               [jobKey],
             );
             expect(afterJob.rows[0]?.count).toBe("1");

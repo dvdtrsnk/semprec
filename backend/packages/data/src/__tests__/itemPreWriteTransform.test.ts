@@ -351,9 +351,9 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
       transformCalls += 1;
       return { ...patch, title: `transformed ${transformCalls}` };
     });
-    let createHookCalls = 0;
-    registerItemCreateHook(async () => {
-      createHookCalls += 1;
+    const createHookProperties: Record<string, unknown>[] = [];
+    registerItemCreateHook(async ({ properties }) => {
+      createHookProperties.push(properties);
     });
     const projectDb = await databaseIdFor("projects");
     const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [projectDb]);
@@ -388,6 +388,7 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
       const firstEvents = [...events];
       await runOnce({ pgPool: pool, taskList: createCoreTaskList(pool, actions) });
       expect(heartbeatRuns).toBe(1);
+      expect(createHookProperties).toEqual([{ title: "transformed 1" }]);
       const replay = await inTenantZero(() =>
         chokePoint.createItem({
           databaseId,
@@ -402,7 +403,7 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
       expect(replay.id).toBe(first.id);
       expect(replay.properties.title).toBe("transformed 1");
       expect(await countItems(databaseId)).toBe(1);
-      expect(createHookCalls).toBe(1);
+      expect(createHookProperties).toEqual([{ title: "transformed 1" }]);
       expect(heartbeat).toHaveBeenCalledTimes(1);
       expect(firstEvents).toEqual([expect.objectContaining({ scope: "item", itemId: first.id, op: "create" })]);
       expect(events).toEqual(firstEvents);
