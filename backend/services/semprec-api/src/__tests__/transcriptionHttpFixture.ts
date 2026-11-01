@@ -94,16 +94,34 @@ async function runProducer(
     let stderr = "";
     let bytes = 0;
     let failure: Error | undefined;
+    let emergencyTimer: ReturnType<typeof setTimeout> | undefined;
+    let groupSignalSucceeded = false;
     function stop(reason: Error) {
       if (failure) return;
       failure = reason;
       if (child.pid !== undefined) {
         try {
           process.kill(-child.pid, "SIGKILL");
+          groupSignalSucceeded = true;
         } catch (error) {
-          if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) {
-            failure = new AggregateError([reason, error], "Could not stop fixture process group");
+          if (observation) observation.emergencyCleanupError = `Group kill failed: ${String(error)}`;
+          for (const ownedPid of [child.pid, observation?.descendantPid]) {
+            if (!ownedPid) continue;
+            try {
+              process.kill(ownedPid, "SIGKILL");
+            } catch (cleanupError) {
+              if (!(cleanupError instanceof Error && "code" in cleanupError && cleanupError.code === "ESRCH")) {
+                if (observation) observation.emergencyCleanupError += `; fallback: ${String(cleanupError)}`;
+              }
+            }
           }
+          emergencyTimer = setTimeout(() => {
+            child.stdin.destroy();
+            child.stdout.destroy();
+            child.stderr.destroy();
+            child.unref();
+            reject(reason);
+          }, 3000);
         }
       }
     }
@@ -133,6 +151,7 @@ async function runProducer(
     child.on("error", (error) => stop(error));
     child.on("close", (code, signal) => {
       clearTimeout(timer);
+      if (emergencyTimer) clearTimeout(emergencyTimer);
       if (observation) observation.closed = true;
       void (async () => {
         if (control === "hang" && observation?.descendantPid) {
@@ -152,7 +171,8 @@ async function runProducer(
               }
               await new Promise((resolveWait) => setTimeout(resolveWait, 50));
             } while (Date.now() < deadline);
-            observation.descendantGoneAfterGroupKill = gone && failure?.message === "Transcription fixture timed out";
+            observation.descendantGoneAfterGroupKill =
+              gone && groupSignalSucceeded && failure?.message === "Transcription fixture timed out";
             if (!gone) process.kill(descendantPid, "SIGKILL");
           } catch (error) {
             observation.emergencyCleanupError = String(error);

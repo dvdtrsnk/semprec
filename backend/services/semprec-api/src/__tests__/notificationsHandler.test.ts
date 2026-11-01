@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { getTenantZeroId, getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
@@ -141,6 +141,37 @@ describe("createNotificationsRequestListener", () => {
     },
     15000,
   );
+
+  it("settles the owned child when its group signal fails without masking the primary failure", async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), "semprec-fixture-guard-"));
+    const originalKill = process.kill.bind(process);
+    const signaled: number[] = [];
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      signaled.push(pid);
+      if (pid < 0 && signal === "SIGKILL") throw Object.assign(new Error("group signal refused"), { code: "EPERM" });
+      return originalKill(pid, signal);
+    });
+    try {
+      await withFixtureStorage(storageRoot, async () => {
+        const result = await runFixtureGuardControl(
+          "overflow",
+          { mode: "failure", tenantId: getTenantZeroId(), storageRoot },
+          pool,
+        );
+        expect(result.message).toBe("Transcription fixture output exceeds limit");
+        expect(result.pid).toEqual(expect.any(Number));
+        if (result.pid === null) throw new Error("Missing fixture child PID");
+        expect(signaled).toContain(-result.pid);
+        expect(signaled).toContain(result.pid);
+        expect(result.emergencyCleanupError).toContain("group signal refused");
+        expect(result.closed).toBe(true);
+        expect(result.temporaryRemoved).toBe(true);
+        expect(result.poolClosed).toBe(true);
+      });
+    } finally {
+      kill.mockRestore();
+    }
+  }, 15000);
 
   it("removes the owned temporary build when the transcription producer fails", async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), "semprec-http-transcription-"));
