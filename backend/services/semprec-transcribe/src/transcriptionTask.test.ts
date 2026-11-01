@@ -1878,6 +1878,45 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
         });
       }
 
+      for (const [label, sql] of [
+        ["transcript", deleteTranscriptSql],
+        ["source file", deleteSourceSql],
+      ] as const) {
+        it(`settles the actual queued job successfully when the ${label} is deleted during diarization`, async () => {
+          const { file } = await createSourceFile();
+          await createUser();
+          const deleting = new DeletingGateway(sql);
+          deleting.fileItemId = file.id;
+          const key = `transcription-job:${file.id}`;
+          const taskList = {
+            [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+              CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+              createTranscriptionTask(pool, blobStorage, deleting, summaryClient),
+            ),
+          };
+          await inTenantZero(() =>
+            enqueueJob(
+              pool,
+              CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+              { fileItemId: file.id },
+              { jobKey: key, maxAttempts: 3 },
+            ),
+          );
+          await runOnce({ pgPool: pool, taskList });
+          const transcript = await readTranscript(file.id);
+          expect(deleting.diarizeCalls).toHaveLength(1);
+          expect(deleting.transcribeCalls).toEqual([]);
+          expect(summaryClient.calls).toEqual([]);
+          expect(await readStoppedState(transcript.id)).toEqual({ status: "error", error_code: "deleted" });
+          expect(await readNotifications(transcript.id)).toEqual([]);
+          const jobs = await pool.query<Record<string, unknown>>(
+            "SELECT attempts, last_error FROM graphile_worker._private_jobs WHERE key = $1",
+            [key],
+          );
+          expect(jobs.rows).toEqual([]);
+        });
+      }
+
       it("falls back to the deleted stop instead of rolling back when the last attempt fails on a trashed transcript", async () => {
         const { file } = await createSourceFile();
         await createUser();

@@ -22,6 +22,8 @@ import {
 } from "@semprec/shared";
 import {
   createChokePoint,
+  createItemWithClient,
+  writeComputed,
   createSemprecTickAction,
   getItemById,
   seedSystem,
@@ -312,6 +314,32 @@ describe("createProposalComputation (issue #1434)", () => {
           const cp = createChokePoint(runtime);
           const projects = await idFor("projects");
           const project = await cp.createItem({ databaseId: projects, properties: { name, status: "inProgress" } });
+          const archived = await cp.createItem({
+            databaseId: projects,
+            properties: { name: "SECRET_ARCHIVED_RECORD", status: "archived" },
+          });
+          const deleted = await cp.createItem({
+            databaseId: projects,
+            properties: { name: "SECRET_DELETED_RECORD", status: "inProgress" },
+          });
+          await cp.softDeleteItem(projects, deleted.id);
+          const health = await cp.createItem({
+            databaseId: await idFor("healthRecords"),
+            properties: { name: "SECRET_HEALTH_RECORD" },
+          });
+          const customDb = await cp.createDatabase({ name: "Private custom database" });
+          await cp.createProperty({ databaseId: customDb.id, key: "notes", name: "Notes", type: "text" });
+          const custom = await cp.createItem({ databaseId: customDb.id, properties: { notes: "SECRET_CUSTOM_VALUE" } });
+          const emails = await idFor("emails");
+          const email = await withTransaction(runtime, async (client) => {
+            const item = await createItemWithClient(
+              client,
+              { databaseId: emails, properties: { name: "SECRET_MAIL_NAME", body: "SECRET_MAIL_BODY" } },
+              { allowedSystemKeys: ["name", "body"] },
+            );
+            await writeComputed(client, projects, project.id, "testCache", "SECRET_COMPUTED_VALUE");
+            return item;
+          });
           const ids = {
             inboxDatabaseId: await idFor("inbox"),
             inboxItemTypesDatabaseId: await idFor("inboxItemTypes"),
@@ -334,7 +362,7 @@ describe("createProposalComputation (issue #1434)", () => {
             callerItemId: item.id,
             targetItemId: type.id,
           });
-          return { project, ids, item };
+          return { project, archived, deleted, health, custom, email, ids, item };
         });
       const local = await setup(tenantA, "Local project");
       const foreign = await setup(tenantB, "Foreign project");
@@ -355,6 +383,19 @@ describe("createProposalComputation (issue #1434)", () => {
       expect(JSON.stringify(gateway.calls[0]?.messages)).not.toContain(foreign.project.id);
       expect(JSON.stringify(gateway.calls[0]?.messages)).not.toContain("Foreign project");
       expect(JSON.stringify(gateway.calls[0]?.messages)).toContain(local.project.id);
+      for (const hidden of [local.archived, local.deleted, local.health, local.custom, local.email]) {
+        expect(JSON.stringify(gateway.calls[0]?.messages)).not.toContain(hidden.id);
+      }
+      for (const secret of [
+        "SECRET_ARCHIVED_RECORD",
+        "SECRET_DELETED_RECORD",
+        "SECRET_HEALTH_RECORD",
+        "SECRET_CUSTOM_VALUE",
+        "SECRET_MAIL_NAME",
+        "SECRET_MAIL_BODY",
+        "SECRET_COMPUTED_VALUE",
+      ])
+        expect(JSON.stringify(gateway.calls[0]?.messages)).not.toContain(secret);
     } finally {
       await runtime.end();
     }
