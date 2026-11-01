@@ -5,7 +5,7 @@ import { runInTenant } from "@semprec/shared";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createRuntimeRolePool, createTestTenant, getTenantZeroId } from "../../testSupport/tenantFixtures.js";
 import { withTransaction } from "../../db/pool.js";
-import { MCP_CONNECTION_ERROR_REASONS, type McpConnectionErrorReason } from "../mcpConnectionError.js";
+import { MCP_CONNECTION_ERROR_REASONS } from "../mcpConnectionError.js";
 import {
   getMcpConnectionStates,
   recordMcpConnectionFailure,
@@ -67,9 +67,15 @@ describe("mcp_server_connection_state (issue #1450)", () => {
       await inZero(() => recordMcpConnectionFailure(dataPool, serverId, reason));
       expect((await stateOf(serverId))?.lastErrorReason).toBe(reason);
     }
-    // An off-list reason cannot be typed; the cast proves the CHECK constraint refuses it.
-    const bogus = "secret https://x" as McpConnectionErrorReason;
-    await expect(inZero(() => recordMcpConnectionFailure(dataPool, serverId, bogus))).rejects.toThrow();
+    // The production writer cannot construct an off-list reason; exercise the database constraint directly.
+    await expect(
+      inZero(() =>
+        dataPool.query("UPDATE mcp_server_connection_state SET last_error_reason = $1 WHERE mcp_server_item_id = $2", [
+          "secret https://x",
+          serverId,
+        ]),
+      ),
+    ).rejects.toThrow();
   });
 
   it("a recorded failure survives the rollback of a caller transaction", async () => {

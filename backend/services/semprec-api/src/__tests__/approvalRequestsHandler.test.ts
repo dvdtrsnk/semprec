@@ -148,9 +148,8 @@ describe("createApprovalRequestsRequestListener", () => {
       body: JSON.stringify({ decision: "approved" }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { status: string; decidedBy: string };
-    expect(body.status).toBe("approved");
-    expect(body.decidedBy).toBe(session.userId);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ status: "approved", decidedBy: session.userId });
     expect(await countExecuteJobs(id)).toBe(1);
   });
 
@@ -164,8 +163,8 @@ describe("createApprovalRequestsRequestListener", () => {
       body: JSON.stringify({ decision: "rejected", decidedByUserId: session.userId }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { status: string };
-    expect(body.status).toBe("rejected");
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ status: "rejected" });
   });
 
   it("returns 400 for an invalid decision value", async () => {
@@ -190,8 +189,8 @@ describe("createApprovalRequestsRequestListener", () => {
       body: JSON.stringify({ decision: "approved" }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { decidedBy: string };
-    expect(body.decidedBy).toBe(session.userId);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ decidedBy: session.userId });
     const { rows } = await pool.query<{ decided_by: string }>(
       `SELECT decided_by FROM approval_requests WHERE id = $1`,
       [id],
@@ -210,9 +209,9 @@ describe("createApprovalRequestsRequestListener", () => {
       body: JSON.stringify({ decision: "approved", decidedByUserId: claimedDecider }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { decidedBy: string };
-    expect(body.decidedBy).toBe(session.userId);
-    expect(body.decidedBy).not.toBe(claimedDecider);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ decidedBy: session.userId });
+    expect(body).not.toMatchObject({ decidedBy: claimedDecider });
   });
 
   it("returns the decision without the payload's argument values", async () => {
@@ -225,12 +224,11 @@ describe("createApprovalRequestsRequestListener", () => {
       body: JSON.stringify({ decision: "approved" }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as Record<string, unknown> & { safeSummary: { argKeys: string[] } };
+    const body: unknown = await res.json();
     expect(body).not.toHaveProperty("payload");
     expect(JSON.stringify(body)).not.toContain('"hi"');
-    expect(body.safeSummary.argKeys).toEqual(["query"]);
     // The fixture's server item and registration do not exist: still 200, with null names.
-    expect(body.safeSummary).toMatchObject({ mcpServerName: null, mcpToolName: null });
+    expect(body).toMatchObject({ safeSummary: { argKeys: ["query"], mcpServerName: null, mcpToolName: null } });
   });
 
   it("returns names and a null deleted server name in actual approval responses", async () => {
@@ -380,9 +378,8 @@ describe("createApprovalRequestsRequestListener", () => {
       body: JSON.stringify({ decision: "rejected" }),
     });
     expect(second.status).toBe(200);
-    const body = (await second.json()) as { status: string; decidedBy: string };
-    expect(body.status).toBe("approved");
-    expect(body.decidedBy).toBe(session.userId);
+    const body: unknown = await second.json();
+    expect(body).toMatchObject({ status: "approved", decidedBy: session.userId });
     expect(await countExecuteJobs(id)).toBe(1);
   });
 
@@ -443,9 +440,8 @@ describe("createApprovalRequestsRequestListener", () => {
       body: JSON.stringify({ decision: "approved" }),
     });
     expect(res.status).toBe(400);
-    const body = (await res.json()) as { code: string; details?: unknown };
-    expect(body.code).toBe("validation_failed");
-    expect(body.details).toEqual({ field: "id" });
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ code: "validation_failed", details: { field: "id" } });
   });
 
   it("rejects a PATCH with a malformed JSON body", async () => {
@@ -504,21 +500,24 @@ describe("createApprovalRequestsRequestListener", () => {
         headers: session.headers,
       });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { rows: Array<Record<string, unknown>> };
-      expect(body.rows).toHaveLength(1);
-      expect(body.rows[0]).toMatchObject({
-        toolName: "send_email",
-        riskClass: "write",
-        agentRunId: run.id,
-        projectItemId: projectItem.id,
-        projectName: "Kitchen",
-        safeSummary: {
-          mcpToolRegistrationId: payload.mcpToolRegistrationId,
-          mcpServerItemId: payload.mcpServerItemId,
-          mcpServerName: null,
-          mcpToolName: null,
-          argKeys: ["to"],
-        },
+      const body: unknown = await res.json();
+      expect(body).toMatchObject({
+        rows: [
+          {
+            toolName: "send_email",
+            riskClass: "write",
+            agentRunId: run.id,
+            projectItemId: projectItem.id,
+            projectName: "Kitchen",
+            safeSummary: {
+              mcpToolRegistrationId: payload.mcpToolRegistrationId,
+              mcpServerItemId: payload.mcpServerItemId,
+              mcpServerName: null,
+              mcpToolName: null,
+              argKeys: ["to"],
+            },
+          },
+        ],
       });
       expect(JSON.stringify(body)).not.toContain("a@b.com");
     });
@@ -561,8 +560,8 @@ describe("createApprovalRequestsRequestListener", () => {
 
       const res = await fetch(`${baseUrl}/api/approval-requests`, { headers: owner.headers });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { rows: Array<{ id: string }> };
-      expect(body.rows.map((row) => row.id)).toEqual([ownId]);
+      const body: unknown = await res.json();
+      expect(body).toMatchObject({ rows: [{ id: ownId }] });
     });
   });
 });
