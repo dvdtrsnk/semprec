@@ -42,9 +42,9 @@ export async function breakValueLinks(client: PoolClient, input: BreakValueLinks
 /** Rejects a `valueLinks` write to a user-owned property that has no `on` link row for this item. */
 export async function assertValueLinkHandoff(
   client: PoolClient,
-  input: { itemId: string; propertyKey: string },
+  input: { itemId: string; propertyKey: string; lockMode?: "nowait" | "none" },
 ): Promise<void> {
-  if (await lockOnValueLink(client, input.itemId, input.propertyKey)) return;
+  if (await lockOnValueLink(client, input.itemId, input.propertyKey, input.lockMode)) return;
   throw new ForbiddenError(
     `Property '${input.propertyKey}' is user-owned and has no active value link on this item`,
     { field: input.propertyKey },

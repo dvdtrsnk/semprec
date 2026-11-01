@@ -43,6 +43,7 @@ export interface SpeakerEdgeWriteInput {
   transcriptId: string;
   personId: string;
   metadata: Record<string, unknown> | undefined;
+  lockMode?: "nowait";
 }
 
 /**
@@ -63,7 +64,11 @@ export async function assertSpeakerEdgeWritable(client: PoolClient, input: Speak
   }
   const { speaker } = parsed.data;
 
-  const transcript = await itemsStore.lockItemById(client, input.transcriptsDatabaseId, input.transcriptId);
+  const transcript = await (input.lockMode === "nowait" ? itemsStore.lockItemByIdNowait : itemsStore.lockItemById)(
+    client,
+    input.transcriptsDatabaseId,
+    input.transcriptId,
+  );
   if (!transcript || transcript.deletedAt) {
     throw new NotFoundError(`Transcripts item '${input.transcriptId}' not found`, {
       resource: "item",
@@ -105,6 +110,7 @@ export const transcriptSpeakerEdgeWriteHook: RelationEdgeWriteHook = async ({
   callerItemId,
   targetItemId,
   metadata,
+  lockMode,
 }) => {
   if (!(await isTranscriptSpeakersProperty(client, edgeContext.property))) return;
   await assertSpeakerEdgeWritable(client, {
@@ -113,6 +119,7 @@ export const transcriptSpeakerEdgeWriteHook: RelationEdgeWriteHook = async ({
     transcriptId: callerItemId,
     personId: targetItemId,
     metadata,
+    lockMode,
   });
 };
 

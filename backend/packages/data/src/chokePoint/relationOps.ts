@@ -11,7 +11,7 @@
 // - docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
 // - docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
 import type { PoolClient } from "pg";
-import { withTransaction } from "../db/pool.js";
+import { requireManagedTransaction, withTransaction } from "../db/pool.js";
 import { CardinalityViolationError, NotFoundError, ValidationError } from "../errors.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import * as databasesStore from "./databasesStore.js";
@@ -32,7 +32,8 @@ import {
 import { runRelationEdgeDeleteHooks, runRelationEdgeWriteHooks } from "./hooks.js";
 import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
 
-import { breakValueLinksForRelationEdge } from "./valueLinkWrites.js";
+import { breakValueLinksForRelationEdge, VALUE_LINKS_OWNER_PROCESS } from "./valueLinkWrites.js";
+import { withValueLinkRelationAdmission } from "./valueLinkRelationAdmission.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -96,11 +97,54 @@ async function loadCreatableRelationEdgeContext(
   client: PoolClient,
   input: CreateRelationInput,
   context: SystemRelationWriteContext | undefined,
+  mutation = false,
 ): Promise<RelationEdgeContext> {
   const edgeContext = await loadWritableRelationEdgeContext(client, input.relationPropertyId, context);
+  if (mutation && isProtectedRelation(edgeContext, context)) requireManagedTransaction(client);
   await assertRelationValueLinkHandoff(client, edgeContext.property, context, input.callerItemId);
   await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
   return edgeContext;
+}
+
+function isProtectedRelation(
+  edgeContext: RelationEdgeContext,
+  context: SystemRelationWriteContext | undefined,
+): boolean {
+  return edgeContext.property.owner === "user" && context?.ownerProcess === VALUE_LINKS_OWNER_PROCESS;
+}
+
+async function runRelationMutation<T>(
+  client: PoolClient,
+  edgeContext: RelationEdgeContext,
+  context: SystemRelationWriteContext | undefined,
+  input: CreateRelationInput,
+  insert: boolean,
+  hooks: (lockMode?: "nowait") => Promise<void>,
+  body: () => Promise<T>,
+): Promise<T> {
+  if (!isProtectedRelation(edgeContext, context)) {
+    await hooks();
+    return body();
+  }
+  const { itemA, itemB } = normalizeRelationSides(
+    edgeContext.reldef,
+    input.relationPropertyId,
+    input.callerItemId,
+    input.targetItemId,
+  );
+  return withValueLinkRelationAdmission(
+    client,
+    {
+      definitionId: edgeContext.reldef.id,
+      itemA,
+      itemB,
+      callerItemId: input.callerItemId,
+      propertyKey: edgeContext.property.key,
+      insert,
+    },
+    () => hooks("nowait"),
+    body,
+  );
 }
 
 /** Stands in for the caller of an edge whose item is only proposed and has no id yet; the nil UUID matches no item. */
@@ -228,15 +272,17 @@ export async function createRelationWithClient(
   context?: SystemRelationWriteContext,
   writer: WriterIdentity = SYSTEM_WRITER,
 ): Promise<RelationEdge> {
-  const edgeContext = await loadCreatableRelationEdgeContext(client, input, context);
-  await runRelationEdgeWriteHooks({
-    client,
-    edgeContext,
-    callerItemId: input.callerItemId,
-    targetItemId: input.targetItemId,
-    metadata: input.metadata,
-    writer,
-  });
+  const edgeContext = await loadCreatableRelationEdgeContext(client, input, context, true);
+  const hooks = (lockMode?: "nowait") =>
+    runRelationEdgeWriteHooks({
+      client,
+      edgeContext,
+      callerItemId: input.callerItemId,
+      targetItemId: input.targetItemId,
+      metadata: input.metadata,
+      writer,
+      lockMode,
+    });
 
   const { itemA, itemB } = normalizeRelationSides(
     edgeContext.reldef,
@@ -244,22 +290,24 @@ export async function createRelationWithClient(
     input.callerItemId,
     input.targetItemId,
   );
-  const { edge, inserted } = await relationsStore.createItemRelationReportingInsert(client, {
-    relationDefinitionId: edgeContext.reldef.id,
-    itemA,
-    itemB,
-    metadata: input.metadata,
-  });
-  if (inserted) {
-    await breakValueLinksForRelationEdge(client, {
-      reldef: edgeContext.reldef,
+  return runRelationMutation(client, edgeContext, context, input, true, hooks, async () => {
+    const { edge, inserted } = await relationsStore.createItemRelationReportingInsert(client, {
+      relationDefinitionId: edgeContext.reldef.id,
       itemA,
       itemB,
-      writerKind: writer.writerKind,
+      metadata: input.metadata,
     });
-  }
-  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
-  return edge;
+    if (inserted) {
+      await breakValueLinksForRelationEdge(client, {
+        reldef: edgeContext.reldef,
+        itemA,
+        itemB,
+        writerKind: writer.writerKind,
+      });
+    }
+    await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
+    return edge;
+  });
 }
 
 /** The metadata-replacement counterpart to `createRelationWithClient`: requires an existing normalized edge (endpoints are immutable — moving one is delete plus create), and rejects a missing edge with a `404 not_found`. Same `context` contract as `createRelationWithClient`. */
@@ -272,16 +320,19 @@ export async function updateRelationWithClient(
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
   await assertRelationDatabasesNotArchived(client, edgeContext);
   assertRelationPropertyWritable(edgeContext.property, context);
+  if (isProtectedRelation(edgeContext, context)) requireManagedTransaction(client);
   await assertRelationValueLinkHandoff(client, edgeContext.property, context, input.callerItemId);
   await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
-  await runRelationEdgeWriteHooks({
-    client,
-    edgeContext,
-    callerItemId: input.callerItemId,
-    targetItemId: input.targetItemId,
-    metadata: input.metadata,
-    writer,
-  });
+  const hooks = (lockMode?: "nowait") =>
+    runRelationEdgeWriteHooks({
+      client,
+      edgeContext,
+      callerItemId: input.callerItemId,
+      targetItemId: input.targetItemId,
+      metadata: input.metadata,
+      writer,
+      lockMode,
+    });
 
   const { itemA, itemB } = normalizeRelationSides(
     edgeContext.reldef,
@@ -289,23 +340,25 @@ export async function updateRelationWithClient(
     input.callerItemId,
     input.targetItemId,
   );
-  const edge = await relationsStore.updateItemRelationMetadata(
-    client,
-    edgeContext.reldef.id,
-    itemA,
-    itemB,
-    input.metadata,
-  );
-  if (!edge) {
-    throw new NotFoundError(`Relation edge not found`, {
-      resource: "relationEdge",
-      relationPropertyId: input.relationPropertyId,
-      callerItemId: input.callerItemId,
-      targetItemId: input.targetItemId,
-    });
-  }
-  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
-  return edge;
+  return runRelationMutation(client, edgeContext, context, input, false, hooks, async () => {
+    const edge = await relationsStore.updateItemRelationMetadata(
+      client,
+      edgeContext.reldef.id,
+      itemA,
+      itemB,
+      input.metadata,
+    );
+    if (!edge) {
+      throw new NotFoundError(`Relation edge not found`, {
+        resource: "relationEdge",
+        relationPropertyId: input.relationPropertyId,
+        callerItemId: input.callerItemId,
+        targetItemId: input.targetItemId,
+      });
+    }
+    await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
+    return edge;
+  });
 }
 
 export type DeleteRelationInput = Omit<CreateRelationInput, "metadata">;
@@ -331,6 +384,7 @@ export async function deleteRelationWithClient(
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
   await assertRelationDatabasesNotArchived(client, edgeContext);
   assertRelationPropertyWritable(edgeContext.property, context);
+  if (isProtectedRelation(edgeContext, context)) requireManagedTransaction(client);
   await assertRelationValueLinkHandoff(client, edgeContext.property, context, input.callerItemId);
   const { itemA, itemB } = normalizeRelationSides(
     edgeContext.reldef,
@@ -339,24 +393,28 @@ export async function deleteRelationWithClient(
     input.targetItemId,
   );
   // Edge-delete hooks, not the write hooks: those validate metadata and must not run on a removal.
-  await runRelationEdgeDeleteHooks({
-    client,
-    edgeContext,
-    callerItemId: input.callerItemId,
-    targetItemId: input.targetItemId,
-    writer,
-  });
-  const edge = await relationsStore.deleteItemRelation(client, edgeContext.reldef.id, itemA, itemB);
-  if (edge) {
-    await breakValueLinksForRelationEdge(client, {
-      reldef: edgeContext.reldef,
-      itemA,
-      itemB,
-      writerKind: writer.writerKind,
+  const hooks = (lockMode?: "nowait") =>
+    runRelationEdgeDeleteHooks({
+      client,
+      edgeContext,
+      callerItemId: input.callerItemId,
+      targetItemId: input.targetItemId,
+      writer,
+      lockMode,
     });
-  }
-  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
-  return edge;
+  return runRelationMutation(client, edgeContext, context, input, false, hooks, async () => {
+    const edge = await relationsStore.deleteItemRelation(client, edgeContext.reldef.id, itemA, itemB);
+    if (edge) {
+      await breakValueLinksForRelationEdge(client, {
+        reldef: edgeContext.reldef,
+        itemA,
+        itemB,
+        writerKind: writer.writerKind,
+      });
+    }
+    await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
+    return edge;
+  });
 }
 
 export function createRelationOps(deps: Pick<ChokePointDeps, "pool">) {

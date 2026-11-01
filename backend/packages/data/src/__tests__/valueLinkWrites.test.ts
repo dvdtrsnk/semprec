@@ -700,14 +700,16 @@ describe("value link state on writes (issue #1516)", () => {
           let userPid: number | undefined;
           let systemPid: number | undefined;
           const originalLink = valueLinksStore.lockOnValueLink;
-          const linkSpy = vi.spyOn(valueLinksStore, "lockOnValueLink").mockImplementation(async (client, id, key) => {
-            const result = await originalLink(client, id, key);
-            if (client === systemClient && result) {
-              linkHeld.resolve();
-              await bounded(releaseLink.promise);
-            }
-            return result;
-          });
+          const linkSpy = vi
+            .spyOn(valueLinksStore, "lockOnValueLink")
+            .mockImplementation(async (client, id, key, mode) => {
+              const result = await originalLink(client, id, key, mode);
+              if (client === systemClient && result && mode === "nowait") {
+                linkHeld.resolve();
+                await bounded(releaseLink.promise);
+              }
+              return result;
+            });
           type Outcome = { ok: true } | { ok: false; error: unknown };
           const run = (kind: "user" | "system"): Promise<Outcome> =>
             runInTenant(tenant, () =>
@@ -757,12 +759,13 @@ describe("value link state on writes (issue #1516)", () => {
             await bounded(linkHeld.promise);
             if (!userPid || !systemPid || !userClient) throw new Error("Missing queue participant PID");
             releaseLink.resolve();
-            await waitBlocked(userPid, systemPid);
+            const systemOutcome = await bounded(system);
+            expect(systemOutcome).toMatchObject({ ok: false, error: { status: 409, code: "value_link_busy" } });
             releaseJob.resolve();
             const outcomes = await bounded(Promise.all([user, system]));
             console.info("Observed populated rollup cycle", { userPid, systemPid, jobKey, outcomes });
             expect(outcomes.filter((result) => result.ok)).toHaveLength(1);
-            expect(outcomes.filter((result) => !result.ok)).toMatchObject([{ error: { code: "40P01" } }]);
+            expect(outcomes.filter((result) => !result.ok)).toMatchObject([{ error: { code: "value_link_busy" } }]);
             const links = await withTenantTransaction(userPool, tenant, (client) =>
               listValueLinksByItemIds(client, [fx.file.id]),
             );
@@ -831,6 +834,7 @@ describe("value link state on writes (issue #1516)", () => {
               insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
             );
             const edgeHeld = barrier();
+            const userStarted = barrier();
             const linkHeld = barrier();
             const releaseEdge = barrier();
             const releaseLink = barrier();
@@ -850,14 +854,16 @@ describe("value link state on writes (issue #1516)", () => {
                 }
                 return result;
               });
-            const linkSpy = vi.spyOn(valueLinksStore, "lockOnValueLink").mockImplementation(async (client, id, key) => {
-              const result = await originalLink(client, id, key);
-              if (client === systemClient && result) {
-                linkHeld.resolve();
-                await bounded(releaseLink.promise);
-              }
-              return result;
-            });
+            const linkSpy = vi
+              .spyOn(valueLinksStore, "lockOnValueLink")
+              .mockImplementation(async (client, id, key, mode) => {
+                const result = await originalLink(client, id, key, mode);
+                if (client === systemClient && result && mode === "nowait") {
+                  linkHeld.resolve();
+                  await bounded(releaseLink.promise);
+                }
+                return result;
+              });
             type Outcome = { ok: true } | { ok: false; error: unknown };
             const run = (kind: "user" | "system"): Promise<Outcome> =>
               runInTenant(tenant, () =>
@@ -868,6 +874,7 @@ describe("value link state on writes (issue #1516)", () => {
                   if (kind === "user") {
                     userClient = client;
                     userPid = pid;
+                    userStarted.resolve();
                   } else {
                     systemClient = client;
                     systemPid = pid;
@@ -895,27 +902,26 @@ describe("value link state on writes (issue #1516)", () => {
                 system = run("system");
                 await bounded(linkHeld.promise);
                 user = run("user");
-                await bounded(edgeHeld.promise);
+                await bounded(userStarted.promise);
+                if (!userPid || !systemPid) throw new Error("Missing relation participant PID");
+                await waitBlocked(systemPid, userPid);
+                releaseLink.resolve();
+                releaseEdge.resolve();
               } else {
                 user = run("user");
                 await bounded(edgeHeld.promise);
                 system = run("system");
-                await bounded(linkHeld.promise);
-              }
-              if (!userPid || !systemPid) throw new Error("Missing relation participant PID");
-              if (order === "system-first") {
-                releaseLink.resolve();
-                await waitBlocked(userPid, systemPid);
+                expect(await bounded(system)).toMatchObject({
+                  ok: false,
+                  error: { code: "value_link_busy", status: 409 },
+                });
                 releaseEdge.resolve();
-              } else {
-                releaseEdge.resolve();
-                await waitBlocked(systemPid, userPid);
-                releaseLink.resolve();
               }
               const outcomes = await bounded(Promise.all([user, system]));
-              console.info("Observed relation advisory cycle", { order, userPid, systemPid, outcomes });
-              expect(outcomes.filter((result) => result.ok)).toHaveLength(1);
-              expect(outcomes.filter((result) => !result.ok)).toMatchObject([{ error: { code: "40P01" } }]);
+              console.info("Relation advisory admission", { order, userPid, systemPid });
+              expect(outcomes[0]).toEqual({ ok: true });
+              if (order === "system-first") expect(outcomes[1]).toEqual({ ok: true });
+              else expect(outcomes[1]).toMatchObject({ ok: false, error: { code: "value_link_busy" } });
               const links = await withTenantTransaction(userPool, tenant, (client) =>
                 listValueLinksByItemIds(client, [fx.file.id]),
               );
@@ -998,6 +1004,7 @@ describe("value link state on writes (issue #1516)", () => {
               return { item, type, other };
             });
             const sourceHeld = barrier();
+            const userStarted = barrier();
             const linkHeld = barrier();
             const releaseSource = barrier();
             const releaseLink = barrier();
@@ -1009,21 +1016,23 @@ describe("value link state on writes (issue #1516)", () => {
             const originalLink = valueLinksStore.lockOnValueLink;
             const sourceSpy = vi
               .spyOn(inboxSourceGuard, "lockInboxSource")
-              .mockImplementation(async (client, id, allowDeleted) => {
-                await originalSource(client, id, allowDeleted);
+              .mockImplementation(async (client, id, allowDeleted, mode) => {
+                await originalSource(client, id, allowDeleted, mode);
                 if (client === userClient) {
                   sourceHeld.resolve();
                   await bounded(releaseSource.promise);
                 }
               });
-            const linkSpy = vi.spyOn(valueLinksStore, "lockOnValueLink").mockImplementation(async (client, id, key) => {
-              const found = await originalLink(client, id, key);
-              if (client === systemClient && found) {
-                linkHeld.resolve();
-                await bounded(releaseLink.promise);
-              }
-              return found;
-            });
+            const linkSpy = vi
+              .spyOn(valueLinksStore, "lockOnValueLink")
+              .mockImplementation(async (client, id, key, mode) => {
+                const found = await originalLink(client, id, key, mode);
+                if (client === systemClient && found && mode === "nowait") {
+                  linkHeld.resolve();
+                  await bounded(releaseLink.promise);
+                }
+                return found;
+              });
             type Outcome = { ok: true } | { ok: false; error: unknown };
             const run = (kind: "user" | "system"): Promise<Outcome> =>
               runInTenant(tenant, () =>
@@ -1034,6 +1043,7 @@ describe("value link state on writes (issue #1516)", () => {
                   if (kind === "user") {
                     userClient = client;
                     userPid = pid;
+                    userStarted.resolve();
                   } else {
                     systemClient = client;
                     systemPid = pid;
@@ -1061,27 +1071,26 @@ describe("value link state on writes (issue #1516)", () => {
                 system = run("system");
                 await bounded(linkHeld.promise);
                 user = run("user");
-                await bounded(sourceHeld.promise);
+                await bounded(userStarted.promise);
+                if (!userPid || !systemPid) throw new Error("Missing relation participant PID");
+                await waitBlocked(systemPid, userPid);
+                releaseLink.resolve();
+                releaseSource.resolve();
               } else {
                 user = run("user");
                 await bounded(sourceHeld.promise);
                 system = run("system");
-                await bounded(linkHeld.promise);
-              }
-              if (!userPid || !systemPid) throw new Error("Missing relation participant PID");
-              if (order === "system-first") {
-                releaseSource.resolve();
-                await waitBlocked(systemPid, userPid);
-                releaseLink.resolve();
-              } else {
-                releaseLink.resolve();
-                await waitBlocked(userPid, systemPid);
+                expect(await bounded(system)).toMatchObject({
+                  ok: false,
+                  error: { code: "value_link_busy", status: 409 },
+                });
                 releaseSource.resolve();
               }
               const outcomes = await bounded(Promise.all([user, system]));
-              console.info("Observed Inbox relation cycle", { order, userPid, systemPid, outcomes });
-              expect(outcomes.filter((result) => result.ok)).toHaveLength(1);
-              expect(outcomes.filter((result) => !result.ok)).toMatchObject([{ error: { code: "40P01" } }]);
+              console.info("Inbox relation admission", { order, userPid, systemPid });
+              expect(outcomes[0]).toEqual({ ok: true });
+              if (order === "system-first") expect(outcomes[1]).toEqual({ ok: true });
+              else expect(outcomes[1]).toMatchObject({ ok: false, error: { code: "value_link_busy" } });
               const links = await withTenantTransaction(userPool, tenant, (client) =>
                 listValueLinksByItemIds(client, [fixture.item.id]),
               );

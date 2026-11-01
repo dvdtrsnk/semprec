@@ -6,9 +6,33 @@ import {
   type TransactionIsolationLevel,
 } from "@semprec/shared";
 import { logger } from "./logger.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 /** Anything a query can run against: a pool, or a client already inside a transaction. */
 export type Queryable = Pool | PoolClient;
+
+interface TransactionOwner {
+  client: PoolClient;
+  active: boolean;
+  failure?: { error: unknown };
+}
+
+const transactionOwner = new AsyncLocalStorage<TransactionOwner>();
+
+/** Internal ownership check for protected operations on supplied clients. */
+export function requireManagedTransaction(client: PoolClient): void {
+  const owner = transactionOwner.getStore();
+  if (!owner?.active || owner.client !== client)
+    throw new Error("Protected relation requires an active managed transaction");
+}
+
+/** Internal rollback-only state belongs to the invocation, not a PostgreSQL savepoint. */
+export function markManagedTransactionRollbackOnly(client: PoolClient, error: unknown): void {
+  requireManagedTransaction(client);
+  const owner = transactionOwner.getStore();
+  if (!owner) throw new Error("Protected relation requires an active managed transaction");
+  owner.failure ??= { error };
+}
 
 /** How long `pool.connect()` waits for a connection before rejecting. */
 export const CONNECTION_TIMEOUT_MS = 10_000;
@@ -265,7 +289,14 @@ export async function withTransaction<T>(
     }
     try {
       if (scope) await client.query(SET_TENANT_SQL, [scopeGucValue(scope), true]);
-      const result = await fn(client);
+      const owner: TransactionOwner = { client, active: true };
+      let result: T;
+      try {
+        result = await transactionOwner.run(owner, () => fn(client));
+        if (owner.failure) throw owner.failure.error;
+      } finally {
+        owner.active = false;
+      }
       await client.query("COMMIT");
       const callbacks = afterCommitCallbacks.get(client);
       afterCommitCallbacks.delete(client);

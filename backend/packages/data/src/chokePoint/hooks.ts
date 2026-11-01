@@ -51,6 +51,7 @@ export interface RelationEdgeWriteHookContext {
   metadata?: Record<string, unknown>;
   /** Who made the write; `system` when the caller supplied nothing. */
   writer: WriterIdentity;
+  lockMode?: "nowait";
 }
 
 export type RelationEdgeWriteHook = (context: RelationEdgeWriteHookContext) => Promise<void>;
@@ -67,6 +68,7 @@ export interface RelationEdgeDeleteHookContext {
   targetItemId: string;
   /** Who removed the edge; `system` when the caller supplied nothing. */
   writer: WriterIdentity;
+  lockMode?: "nowait";
 }
 
 export type RelationEdgeDeleteHook = (context: RelationEdgeDeleteHookContext) => Promise<void>;

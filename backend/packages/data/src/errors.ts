@@ -34,6 +34,13 @@ export class ConflictError extends ChokePointError {
   }
 }
 
+export class ValueLinkBusyError extends ChokePointError {
+  constructor() {
+    super(409, "value_link_busy", "Value-link relation is busy");
+    this.name = "ValueLinkBusyError";
+  }
+}
+
 /** Raised when an edge write would violate its relation definition's declared cardinality (see item_relations' `enforce_relation_cardinality` trigger). */
 export class CardinalityViolationError extends ChokePointError {
   constructor(message: string, details?: unknown) {

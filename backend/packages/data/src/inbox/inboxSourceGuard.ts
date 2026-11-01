@@ -2,8 +2,13 @@ import type { PoolClient } from "pg";
 import { NotFoundError } from "../errors.js";
 
 /** Lock the tenant's Inbox source in the caller's transaction, optionally including Trash. */
-export async function lockInboxSource(client: PoolClient, itemId: string, allowDeleted = false): Promise<void> {
-  if (!(await lockInboxSourceIfPresent(client, itemId, allowDeleted)))
+export async function lockInboxSource(
+  client: PoolClient,
+  itemId: string,
+  allowDeleted = false,
+  lockMode?: "nowait",
+): Promise<void> {
+  if (!(await lockInboxSourceIfPresent(client, itemId, allowDeleted, lockMode)))
     throw new NotFoundError("Inbox source not found", { resource: "item", itemId });
 }
 
@@ -12,10 +17,11 @@ export async function lockInboxSourceIfPresent(
   client: PoolClient,
   itemId: string,
   allowDeleted = false,
+  lockMode?: "nowait",
 ): Promise<boolean> {
   const result = await client.query(
     `SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id AND d.tenant_id = i.tenant_id
-     WHERE i.id = $1 AND d.owner_module_id = 'inbox' AND ($2::boolean OR i.deleted_at IS NULL) FOR UPDATE OF i`,
+     WHERE i.id = $1 AND d.owner_module_id = 'inbox' AND ($2::boolean OR i.deleted_at IS NULL) FOR UPDATE OF i${lockMode === "nowait" ? " NOWAIT" : ""}`,
     [itemId, allowDeleted],
   );
   return result.rowCount === 1;

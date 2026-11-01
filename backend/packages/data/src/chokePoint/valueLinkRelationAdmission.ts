@@ -1,0 +1,63 @@
+import { DatabaseError, type PoolClient } from "pg";
+import { markManagedTransactionRollbackOnly, requireManagedTransaction } from "../db/pool.js";
+import { ValueLinkBusyError } from "../errors.js";
+import * as relationsStore from "./relationsStore.js";
+import { assertValueLinkHandoff } from "./valueLinkWrites.js";
+
+export async function withValueLinkRelationAdmission<T>(
+  client: PoolClient,
+  input: {
+    definitionId: string;
+    itemA: string;
+    itemB: string;
+    callerItemId: string;
+    propertyKey: string;
+    insert: boolean;
+  },
+  hooks: () => Promise<void>,
+  body: () => Promise<T>,
+): Promise<T> {
+  requireManagedTransaction(client);
+  try {
+    await hooks();
+    if (input.insert && !(await relationsStore.tryLockRelationDefinition(client, input.definitionId))) {
+      throw new ValueLinkBusyError();
+    }
+    await relationsStore.lockExistingRelationNowait(client, input.definitionId, input.itemA, input.itemB);
+  } catch (error) {
+    const result = error instanceof DatabaseError && error.code === "55P03" ? new ValueLinkBusyError() : error;
+    if (result instanceof ValueLinkBusyError) markManagedTransactionRollbackOnly(client, result);
+    throw result;
+  }
+
+  let previous: string;
+  try {
+    const { rows } = await client.query<{ setting: string }>("SELECT current_setting('lock_timeout') AS setting");
+    if (typeof rows[0]?.setting !== "string") throw new Error("Missing lock timeout setting");
+    previous = rows[0].setting;
+    await client.query("SELECT set_config('lock_timeout', $1, true)", ["1ms"]);
+  } catch (error) {
+    markManagedTransactionRollbackOnly(client, error);
+    throw error;
+  }
+  let result: T;
+  try {
+    await assertValueLinkHandoff(client, {
+      itemId: input.callerItemId,
+      propertyKey: input.propertyKey,
+      lockMode: "nowait",
+    });
+    result = await body();
+  } catch (error) {
+    const failure = error instanceof DatabaseError && error.code === "55P03" ? new ValueLinkBusyError() : error;
+    markManagedTransactionRollbackOnly(client, failure);
+    throw failure;
+  }
+  try {
+    await client.query("SELECT set_config('lock_timeout', $1, true)", [previous]);
+  } catch (error) {
+    markManagedTransactionRollbackOnly(client, error);
+    throw error;
+  }
+  return result;
+}

@@ -194,6 +194,26 @@ export async function getItemRelationByTuple(
   return rows[0] ? mapItemRelationRow(rows[0]) : null;
 }
 
+export async function tryLockRelationDefinition(client: PoolClient, definitionId: string): Promise<boolean> {
+  const { rows } = await client.query<{ locked: boolean }>(
+    "SELECT pg_try_advisory_xact_lock(hashtextextended($1::text, 0)) AS locked",
+    [definitionId],
+  );
+  return rows[0]?.locked === true;
+}
+
+export async function lockExistingRelationNowait(
+  client: PoolClient,
+  definitionId: string,
+  itemA: string,
+  itemB: string,
+): Promise<void> {
+  await client.query(
+    "SELECT id FROM item_relations WHERE relation_definition_id = $1 AND item_a = $2 AND item_b = $3 FOR UPDATE NOWAIT",
+    [definitionId, itemA, itemB],
+  );
+}
+
 export async function deleteItemRelation(
   client: PoolClient,
   relationDefinitionId: string,
