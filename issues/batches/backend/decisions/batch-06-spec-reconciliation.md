@@ -60,3 +60,61 @@ member decisions and Tasks are preserved with the explicit clarifications above.
 The corrected gh-1560 retention chronology tests are independent in-scope evidence
 work, not a changed retention contract. None of this proves acceptance: complete
 Task/AC audit, independent review and frozen final verification remain required.
+
+## Persisted MCP approval failures
+
+Gh-1444's unavailable approval outcome and actual classified invocation results
+were discarded by the store's text/outcomeKind-only serializer. Preserve an
+optional nested `failure` in the existing MCP outcome JSONB envelope
+`{text,outcomeKind?,failure?}`. Reuse the closed invocation failure contract;
+validate new structured metadata on write and when reading it from unknown JSON.
+Malformed new metadata fails closed without logging its values. Legacy strings
+and objects without failure remain readable; success and cancellation acquire no
+failure. A small internal `mcpFailure.ts` type/validator may prevent a runtime
+import cycle, while existing type/constant exports stay compatible.
+
+Unavailable approval execution uses the known snapshotted server id; actual
+invocation failures survive persistence and later reads. Keep text, legacy
+outcomeKind, execution status, tenant scope and claim/redelivery behavior. No
+DDL, backfill, reply projection, generic-operation result rewrite or additional
+public raw-outcome exposure is authorized. Tests cover real queued execution,
+legacy/new reads, malformed metadata and redelivery without duplicate invocation
+or replacement of settled evidence. The store and exact execution/store tests
+are now in scope.
+
+## Approval reasons and strict REST DELETE
+
+Gh-1420 already requires REST item.delete to reject reason. The actual item
+DELETE adapter ignored its body and could perform that deletion. Its sole route
+scope exception is now explicit: require an empty object after existing parsing
+(which maps a bodyless request to `{}`), rejecting extra fields including reason
+and non-objects with the existing 400 validation response before dispatch. Prove
+no mutation under authenticated HTTP, plus bodyless/empty-object success. Do not
+change other routes, strict operation schemas, `/mcp` or global body parsing.
+
+For agent-only optional reason fields, preserve null-as-absence consistently in
+both generic and MCP wrappers. Strip the reserved field and store null; other
+non-string and over-500 values remain invalid. Keep the optional-string tool
+schemas and existing provider normalization; do not add a raw-model interceptor.
+This tolerance applies to optional approval reasons only, not context refs or
+REST reason input. The failed null-rejection experiment remains diagnostic.
+Actual composition tests must exercise the provider-facing behavior honestly.
+
+The existing runtime MCP test can compose the gated tool, public data queue task
+list, real decision/enqueue and execution to a local contract server, proving the
+reserved reason never reaches the server. Manufactured payload-only evidence is
+insufficient. Additional package exports are not authorized by this decision;
+report a concrete composition gap if the existing public seams cannot do this.
+
+## Startup repair composition evidence
+
+Gh-1374's existing service startupRepairComposition test may run actual repair,
+read the stored history, reconstruct it and call production toPiMessages. This
+avoids a forbidden runtime-to-service import and proves the complete requested
+chain rather than converting a separately manufactured object. Historical-row
+rewrites and unrelated repair behavior remain excluded.
+
+The additional Touches apply only to these existing requirements. Preserve every
+member decision and behavioral clause; compress obsolete descriptive Context and
+redundant aggregate instructions only to respect the existing size bound. This
+refreeze is not implementation acceptance or a verification exception.
