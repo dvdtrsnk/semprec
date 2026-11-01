@@ -1,3 +1,4 @@
+import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import type { PoolClient } from "pg";
 import { currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
 import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
@@ -117,6 +118,7 @@ export async function reconcileGmailAccount(
   gmail: GmailMailClient,
   params: ReconcileGmailAccountParams,
 ): Promise<void> {
+  await lockMailThreadMutation(dbClient);
   await lockGmailFolderState(dbClient, params.mailboxItemId);
   const relationDefinition = await getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId);
   if (!relationDefinition)

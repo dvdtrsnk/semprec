@@ -53,6 +53,10 @@ const ESTIMATED_TOKENS_PER_IMAGE = 1600;
 
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 export interface CompleteHandlerOptions {
   /** Compared against the caller's `Authorization: Bearer <token>` header. */
   internalToken: string;
@@ -79,7 +83,14 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
-class PayloadTooLargeError extends Error {}
+class PayloadTooLargeError extends Error {
+  constructor(
+    message: string,
+    readonly streaming = false,
+  ) {
+    super(message);
+  }
+}
 
 /**
  * Reads up to the larger image-request cap; the caller applies the text-only cap with `bytes`
@@ -88,11 +99,15 @@ class PayloadTooLargeError extends Error {}
 async function readJsonBody(req: IncomingMessage): Promise<{ value: unknown; bytes: number }> {
   const chunks: Buffer[] = [];
   let size = 0;
-  for await (const chunk of req) {
-    const buf = chunk as Buffer;
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+    const value: unknown = chunk;
+    if (!(value instanceof Uint8Array) && typeof value !== "string") {
+      throw new ValidationError("Request body contains invalid data");
+    }
+    const buf = Buffer.from(value);
     size += buf.length;
     if (size > MAX_BODY_BYTES_WITH_IMAGES) {
-      throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
+      throw new PayloadTooLargeError("Request body exceeds the maximum allowed size", true);
     }
     chunks.push(buf);
   }
@@ -122,10 +137,9 @@ function isValidImageBlock(block: { mimeType?: unknown; data?: unknown }): boole
 }
 
 function isContentBlock(value: unknown): boolean {
-  if (typeof value !== "object" || value === null) return false;
-  const block = value as { type?: unknown; text?: unknown; mimeType?: unknown; data?: unknown };
-  if (block.type === "text") return typeof block.text === "string";
-  if (block.type === "image") return isValidImageBlock(block);
+  if (!isObject(value)) return false;
+  if (value.type === "text") return typeof value.text === "string";
+  if (value.type === "image") return isValidImageBlock({ mimeType: value.mimeType, data: value.data });
   return false;
 }
 
@@ -141,18 +155,12 @@ function contentTextLength(content: StructuredCompletionMessage["content"]): num
 
 /** Whether an unvalidated body holds an image block in `messages`, so the larger size cap can apply to it. */
 function rawBodyHasImage(raw: unknown): boolean {
-  if (typeof raw !== "object" || raw === null) return false;
-  const messages = (raw as { messages?: unknown }).messages;
+  if (!isObject(raw)) return false;
+  const messages = raw.messages;
   if (!Array.isArray(messages)) return false;
   return messages.some((message: unknown) => {
-    const content = typeof message === "object" && message !== null ? (message as { content?: unknown }).content : null;
-    return (
-      Array.isArray(content) &&
-      content.some(
-        (block: unknown) =>
-          typeof block === "object" && block !== null && (block as { type?: unknown }).type === "image",
-      )
-    );
+    const content = isObject(message) ? message.content : null;
+    return Array.isArray(content) && content.some((block: unknown) => isObject(block) && block.type === "image");
   });
 }
 
@@ -181,22 +189,16 @@ function extractTraceId(req: IncomingMessage): string | undefined {
 }
 
 function isStructuredCompletionMessage(value: unknown): value is StructuredCompletionMessage {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    ((value as { role?: unknown }).role === "user" || (value as { role?: unknown }).role === "assistant") &&
-    (typeof (value as { content?: unknown }).content === "string" ||
-      (Array.isArray((value as { content?: unknown }).content) &&
-        (value as { content: unknown[] }).content.length > 0 &&
-        (value as { content: unknown[] }).content.every(isContentBlock)))
-  );
+  if (!isObject(value) || (value.role !== "user" && value.role !== "assistant")) return false;
+  const content = value.content;
+  return typeof content === "string" || (Array.isArray(content) && content.length > 0 && content.every(isContentBlock));
 }
 
 function validateBody(raw: unknown): CompleteRequestBody {
-  if (typeof raw !== "object" || raw === null) {
+  if (!isObject(raw)) {
     throw new ValidationError("Request body must be a JSON object");
   }
-  const body = raw as Record<string, unknown>;
+  const body = raw;
 
   const requiresProjectItem =
     typeof body.operation === "string" ? OPERATION_REQUIRES_PROJECT_ITEM.get(body.operation) : undefined;
@@ -398,8 +400,47 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
         });
       });
     } catch (err) {
+      if (res.destroyed || res.writableEnded || req.aborted) return;
       if (err instanceof PayloadTooLargeError) {
+        if (err.streaming && !req.complete && !req.destroyed) {
+          let discarded = 0;
+          let disposed = false;
+          const dispose = (): void => {
+            if (disposed) return;
+            disposed = true;
+            clearTimeout(timer);
+            req.off("data", onData);
+            req.off("end", dispose);
+            req.off("close", dispose);
+            req.off("aborted", dispose);
+            req.off("error", dispose);
+          };
+          const onData = (chunk: unknown): void => {
+            if (!(chunk instanceof Uint8Array) && typeof chunk !== "string") {
+              dispose();
+              req.destroy();
+              return;
+            }
+            discarded += Buffer.byteLength(chunk);
+            if (discarded >= 2 * 1024 * 1024) {
+              dispose();
+              req.destroy();
+            }
+          };
+          const timer = setTimeout(() => {
+            dispose();
+            req.destroy();
+          }, 2000);
+          timer.unref();
+          req.on("data", onData);
+          req.once("end", dispose);
+          req.once("close", dispose);
+          req.once("aborted", dispose);
+          req.once("error", dispose);
+        }
+        if (err.streaming) res.setHeader("Connection", "close");
         sendJson(res, 413, { error: err.message });
+        if (err.streaming && !req.complete && !req.destroyed) req.resume();
         return;
       }
       if (err instanceof ChokePointError) {

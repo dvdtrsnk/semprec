@@ -89,7 +89,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isIndent(value: unknown): value is number {
-  return Number.isInteger(value) && (value as number) >= MIN_INDENT && (value as number) <= MAX_INDENT;
+  return typeof value === "number" && Number.isInteger(value) && value >= MIN_INDENT && value <= MAX_INDENT;
 }
 
 function validateRunAttributes(attributes: unknown, path: string, issues: BlockIssue[]): void {
@@ -193,15 +193,19 @@ function readRuns(value: unknown): TextRun[] {
     return [];
   }
   const runs: TextRun[] = [];
-  for (const op of value.toDelta() as Array<{ insert?: unknown; attributes?: Record<string, unknown> }>) {
-    if (typeof op.insert !== "string" || op.insert === "") {
+  const delta: unknown = value.toDelta();
+  if (!Array.isArray(delta)) return runs;
+  const operations: unknown[] = delta;
+  for (const op of operations) {
+    if (!isRecord(op) || typeof op.insert !== "string" || op.insert === "") {
       continue;
     }
+    const sourceAttributes = isRecord(op.attributes) ? op.attributes : {};
     const attributes: InlineAttributes = {};
-    if (op.attributes?.bold === true) attributes.bold = true;
-    if (op.attributes?.italic === true) attributes.italic = true;
-    if (op.attributes?.code === true) attributes.code = true;
-    const link = op.attributes?.link;
+    if (sourceAttributes.bold === true) attributes.bold = true;
+    if (sourceAttributes.italic === true) attributes.italic = true;
+    if (sourceAttributes.code === true) attributes.code = true;
+    const link = sourceAttributes.link;
     if (isRecord(link) && typeof link.href === "string" && link.href !== "") {
       attributes.link = { href: link.href };
     }
@@ -219,7 +223,8 @@ function normalizeBlock(id: string, block: Y.Map<unknown>): PageBlock {
   return {
     id,
     type,
-    indent: Number.isInteger(indent) ? Math.min(MAX_INDENT, Math.max(MIN_INDENT, indent as number)) : 0,
+    indent:
+      typeof indent === "number" && Number.isInteger(indent) ? Math.min(MAX_INDENT, Math.max(MIN_INDENT, indent)) : 0,
     done: rule.hasDone && block.get("done") === true,
     text: rule.hasText ? readRuns(block.get("text")) : [],
     pageId: rule.hasPageId && typeof pageId === "string" && pageId !== "" ? pageId : null,

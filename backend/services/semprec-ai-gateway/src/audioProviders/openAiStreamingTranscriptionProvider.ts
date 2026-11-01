@@ -15,6 +15,7 @@ const OPEN_TIMEOUT_MS = 10_000;
 const END_TIMEOUT_MS = 10_000;
 /** Provider events are small JSON objects; anything bigger is a protocol violation. */
 const MAX_PROVIDER_MESSAGE_BYTES = 1024 * 1024;
+const MAX_OUTBOUND_BUFFER_BYTES = 256 * 1024;
 
 /**
  * Resamples a continuous 16 kHz mono PCM stream to the 24 kHz the realtime transcription input
@@ -76,13 +77,18 @@ export function createOpenAiStreamingTranscriptionProvider(apiKey: string): Stre
           if (stopped) return;
           stopped = true;
           if (endTimer !== undefined) clearTimeout(endTimer);
-          request.signal?.removeEventListener("abort", stop);
+          request.signal?.removeEventListener("abort", abort);
           ws.removeAllListeners("message");
           ws.removeAllListeners("close");
           // Errors after teardown must not become unhandled; terminate() needs no handshake.
           ws.removeAllListeners("error");
           ws.on("error", () => undefined);
           ws.terminate();
+        };
+        const abort = (): void => {
+          const pending = !opened && !stopped;
+          stop();
+          if (pending) reject(new AudioProviderCallError("OpenAI session aborted before it opened"));
         };
         const fail = (message: string): void => {
           if (stopped) return;
@@ -96,8 +102,22 @@ export function createOpenAiStreamingTranscriptionProvider(apiKey: string): Stre
           stop();
           events.onDone();
         };
-        const sendEvent = (event: Record<string, unknown>): void => {
-          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(event));
+        const sendEvent = (event: Record<string, unknown>): boolean => {
+          const encoded = JSON.stringify(event);
+          if (
+            ws.readyState !== WebSocket.OPEN ||
+            ws.bufferedAmount + Buffer.byteLength(encoded, "utf8") > MAX_OUTBOUND_BUFFER_BYTES
+          ) {
+            fail("Speech provider outbound buffer unavailable");
+            return false;
+          }
+          try {
+            ws.send(encoded);
+            return true;
+          } catch {
+            fail("Speech provider outbound buffer unavailable");
+            return false;
+          }
         };
 
         const session: StreamingTranscriptionSession = {
@@ -127,20 +147,23 @@ export function createOpenAiStreamingTranscriptionProvider(apiKey: string): Stre
           reject(new AudioProviderCallError("OpenAI session aborted before it opened"));
           return;
         }
-        request.signal?.addEventListener("abort", stop, { once: true });
+        request.signal?.addEventListener("abort", abort, { once: true });
 
         ws.on("open", () => {
-          opened = true;
           const transcription: Record<string, unknown> = { model: OPENAI_STT_MODEL };
           if (request.language !== undefined) transcription.language = request.language;
-          sendEvent({
-            type: "transcription_session.update",
-            session: {
-              input_audio_format: "pcm16",
-              input_audio_transcription: transcription,
-              turn_detection: { type: "server_vad" },
-            },
-          });
+          if (
+            !sendEvent({
+              type: "transcription_session.update",
+              session: {
+                input_audio_format: "pcm16",
+                input_audio_transcription: transcription,
+                turn_detection: { type: "server_vad" },
+              },
+            })
+          )
+            return;
+          opened = true;
           resolve(session);
         });
         ws.on("error", (err) => fail(`OpenAI connection failed: ${err.name}`));
@@ -149,7 +172,8 @@ export function createOpenAiStreamingTranscriptionProvider(apiKey: string): Stre
           if (isBinary) return fail("OpenAI sent an unexpected binary message");
           let event: unknown;
           try {
-            event = JSON.parse((data as Buffer).toString("utf8"));
+            const bytes = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data);
+            event = JSON.parse(bytes.toString("utf8"));
           } catch {
             return fail("OpenAI sent a message that is not JSON");
           }

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import { getTestPool, inTenantZero, resetDatabase } from "../../testSupport/testDb.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
 import { resolveThreadId } from "../threading.js";
@@ -11,17 +11,19 @@ import { ingestEmailMessage } from "../ingest.js";
 import type { BlobStorageWriter } from "../blobStorage.js";
 
 let pool: Pool;
+const tenantIt = (name: string, fn: () => Promise<void>) => it(name, () => inTenantZero(fn));
 
 async function ingest(mailboxItemId: string, messageId: string, refs: string[] = []): Promise<string> {
-  const threadId = await withTransaction(pool, (client) =>
-    resolveThreadId(client, { messageId, inReplyTo: refs.at(-1) ?? null, references: refs }),
-  );
-  await pool.query(
-    `INSERT INTO mail_message_meta (item_id, mailbox_item_id, message_id, in_reply_to, "references", thread_id, envelope)
+  return withTransaction(pool, async (client) => {
+    const threadId = await resolveThreadId(client, { messageId, inReplyTo: refs.at(-1) ?? null, references: refs });
+    // Historical threading fixture uses mailbox ids without provisioning mailbox items.
+    await client.query(
+      `INSERT INTO mail_message_meta (item_id, mailbox_item_id, message_id, in_reply_to, "references", thread_id, envelope)
      VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, '{}')`,
-    [mailboxItemId, messageId, refs.at(-1) ?? null, refs, threadId],
-  );
-  return threadId;
+      [mailboxItemId, messageId, refs.at(-1) ?? null, refs, threadId],
+    );
+    return threadId;
+  });
 }
 
 describe("cross-mailbox threading of one message", () => {
@@ -34,7 +36,7 @@ describe("cross-mailbox threading of one message", () => {
     await seedSystem(pool);
   });
 
-  it("joins the thread of the same message in another mailbox", async () => {
+  tenantIt("joins the thread of the same message in another mailbox", async () => {
     const a = await ingest(mailboxA, "<news@x>");
     const b = await ingest(mailboxB, "<news@x>");
     expect(b).toBe(a);
@@ -42,14 +44,14 @@ describe("cross-mailbox threading of one message", () => {
     expect(rows).toHaveLength(1);
   });
 
-  it("ends in the ancestor's thread when the other mailbox's copy is in one", async () => {
+  tenantIt("ends in the ancestor's thread when the other mailbox's copy is in one", async () => {
     await ingest(mailboxA, "<root@x>");
     const a = await ingest(mailboxA, "<child@x>", ["<root@x>"]);
     const b = await ingest(mailboxB, "<child@x>");
     expect(b).toBe(a);
   });
 
-  it("merges bridged threads and deletes the emptied mail_threads row", async () => {
+  tenantIt("merges bridged threads and deletes the emptied mail_threads row", async () => {
     const t1 = await ingest(mailboxA, "<dup@x>");
     const t2 = await ingest(mailboxB, "<other@x>");
     expect(t2).not.toBe(t1);
@@ -62,15 +64,15 @@ describe("cross-mailbox threading of one message", () => {
     expect(metas).toHaveLength(1);
   });
 
-  it("keeps messages with different ids in separate threads", async () => {
+  tenantIt("keeps messages with different ids in separate threads", async () => {
     const a = await ingest(mailboxA, "<one@x>");
     const b = await ingest(mailboxB, "<two@x>");
     expect(b).not.toBe(a);
   });
 
-  it("chooses the lowest thread id when existing copies disagree, regardless of insertion order", async () => {
-    const first = await createMailThread(pool);
-    const second = await createMailThread(pool);
+  tenantIt("chooses the lowest thread id when existing copies disagree, regardless of insertion order", async () => {
+    const first = await withTransaction(pool, (client) => createMailThread(client));
+    const second = await withTransaction(pool, (client) => createMailThread(client));
     const [low, high] = [first.id, second.id].sort();
     if (!low || !high) throw new Error("Expected two threads");
     await pool.query(
@@ -92,7 +94,7 @@ describe("cross-mailbox threading of one message", () => {
 });
 
 describe("cross-mailbox threading through message ingest", () => {
-  it("joins two newsletter copies and merges an ancestor thread through the ingest entry point", async () => {
+  tenantIt("joins two newsletter copies and merges an ancestor thread through the ingest entry point", async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
     await seedSystem(pool);

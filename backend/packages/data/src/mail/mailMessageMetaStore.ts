@@ -1,4 +1,6 @@
+import { Pool, type PoolClient } from "pg";
 import type { Queryable } from "../db/pool.js";
+import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import { requireSingleRow } from "../db/pool.js";
 
 export interface MailEnvelopeAddress {
@@ -120,10 +122,22 @@ export interface UpsertMailMessageMetaInput {
  * instead of creating a duplicate. `item_id` is the caller's freshly-created (or existing)
  * Email item id either way.
  */
+export function upsertMailMessageMeta(
+  client: Pool,
+  input: UpsertMailMessageMetaInput & { threadId?: null },
+): Promise<MailMessageMetaRow>;
+export function upsertMailMessageMeta(
+  client: PoolClient,
+  input: UpsertMailMessageMetaInput,
+): Promise<MailMessageMetaRow>;
 export async function upsertMailMessageMeta(
   client: Queryable,
   input: UpsertMailMessageMetaInput,
 ): Promise<MailMessageMetaRow> {
+  if (input.threadId != null) {
+    if (client instanceof Pool) throw new Error("Mail thread mutation requires a READ COMMITTED tenant transaction");
+    await lockMailThreadMutation(client);
+  }
   const { rows } = await client.query<MailMessageMetaDbRow>(
     `INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope,
                                      delivered_to_address, message_kind, dsn_original_message_id, migration_status, mailbox_item_id, preview_text, ingested_at, is_bulk)
@@ -233,7 +247,8 @@ export function isProviderMessageIdConflict(err: unknown): boolean {
  * "already sent" forever with no message actually delivered, and a genuine retry could never
  * re-claim it.
  */
-export async function deleteMailMessageMetaByItemId(client: Queryable, itemId: string): Promise<void> {
+export async function deleteMailMessageMetaByItemId(client: PoolClient, itemId: string): Promise<void> {
+  await lockMailThreadMutation(client);
   const { rows } = await client.query<{ thread_id: string | null }>(
     `DELETE FROM mail_message_meta WHERE item_id = $1 RETURNING thread_id`,
     [itemId],
@@ -253,7 +268,8 @@ export interface MailThreadRow {
   subjectHint: string | null;
 }
 
-export async function createMailThread(client: Queryable, subjectHint?: string): Promise<MailThreadRow> {
+export async function createMailThread(client: PoolClient, subjectHint?: string): Promise<MailThreadRow> {
+  await lockMailThreadMutation(client);
   const { rows } = await client.query<{ id: string; subject_hint: string | null }>(
     `INSERT INTO mail_threads (subject_hint) VALUES ($1) RETURNING id, subject_hint`,
     [subjectHint ?? null],
@@ -269,7 +285,8 @@ export async function createMailThread(client: Queryable, subjectHint?: string):
  * so after these statements `fromThreadId` has no remaining referencer; leaving it would accumulate an orphaned row on
  * every dummy-container merge (threading.ts's self-heal path). Merging a thread with itself does nothing.
  */
-export async function reassignThread(client: Queryable, fromThreadId: string, toThreadId: string): Promise<void> {
+export async function reassignThread(client: PoolClient, fromThreadId: string, toThreadId: string): Promise<void> {
+  await lockMailThreadMutation(client);
   if (fromThreadId === toThreadId) return;
   await client.query(`UPDATE mail_message_meta SET thread_id = $2 WHERE thread_id = $1`, [fromThreadId, toThreadId]);
   await client.query(
@@ -315,10 +332,11 @@ export interface UnthreadedMailMessage {
  * just without a subject hint.
  */
 export async function listUnthreadedMailMessagePage(
-  client: Queryable,
+  client: PoolClient,
   afterItemId: string | null,
   limit: number,
 ): Promise<UnthreadedMailMessage[]> {
+  await lockMailThreadMutation(client);
   const { rows } = await client.query<{
     item_id: string;
     message_id: string;
@@ -350,10 +368,11 @@ export async function listUnthreadedMailMessagePage(
  * `lockMailMessageThreads` and decides on that locked read, not on this one.
  */
 export async function listSplitMailMessageIdPage(
-  client: Queryable,
+  client: PoolClient,
   afterMessageId: string | null,
   limit: number,
 ): Promise<string[]> {
+  await lockMailThreadMutation(client);
   const { rows } = await client.query<{ message_id: string }>(
     `SELECT message_id
        FROM mail_message_meta
@@ -372,7 +391,8 @@ export async function listSplitMailMessageIdPage(
  * ids, lowest first, the order `resolveThreadId` uses to pick a merge target. An empty or one-element result means
  * there is nothing left to merge.
  */
-export async function lockMailMessageThreads(client: Queryable, messageId: string): Promise<string[]> {
+export async function lockMailMessageThreads(client: PoolClient, messageId: string): Promise<string[]> {
+  await lockMailThreadMutation(client);
   const { rows } = await client.query<{ thread_id: string | null }>(
     `SELECT thread_id FROM mail_message_meta WHERE message_id = $1 ORDER BY thread_id FOR UPDATE`,
     [messageId],

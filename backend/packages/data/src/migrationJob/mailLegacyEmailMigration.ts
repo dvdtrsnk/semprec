@@ -1,3 +1,4 @@
+import { lockMailThreadMutation } from "../mail/mailThreadMutationGuard.js";
 import type { Pool, PoolClient } from "pg";
 import { simpleParser, type AddressObject, type StructuredHeader } from "mailparser";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
@@ -82,6 +83,7 @@ interface LegacyItemRow {
  * reconstructed row carries the maximum information legacy storage ever held.
  */
 async function migrateLegacyItem(client: PoolClient, item: LegacyItemRow, rawMime: Buffer | null): Promise<void> {
+  await lockMailThreadMutation(client);
   if (rawMime) {
     const parsed = await simpleParser(rawMime);
     const references = Array.isArray(parsed.references)

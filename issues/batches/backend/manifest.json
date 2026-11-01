@@ -998,8 +998,8 @@
       "sequence": 10,
       "status": "proposed",
       "title": "[backend-delivery 10/74] Implement ai-gateway-client, semprec-ai-gateway, shared changes",
-      "bodyCharacters": 58390,
-      "specSha256": "395181ee21a1c435c502d29425975828befdb1a077b225224989ec369a97b000",
+      "bodyCharacters": 59877,
+      "specSha256": "0466e7e709bcbf0ee26b20c381f1a9963dc7076703bb4151349ad05fab3f00b0",
       "members": [
         {
           "id": "gh-1369",
@@ -1017,14 +1017,14 @@
         },
         {
           "id": "gh-1381",
-          "specSha256": "ec9fb0e63ede4a6ed1605745d81e3fb68f07ae2d3d058a5dff483a46afc9e3df",
+          "specSha256": "d3949931ac4a36f5571ed52e1219fb6d140418717ed119a99e96a351e8e468c0",
           "parent": "gh-1314",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1396",
-          "specSha256": "4b35ade82fb3bbbc20f6632b9979a4e805197499d23fef6b4227fa6f34b4a9d0",
+          "specSha256": "533e5b20115c0291035983aa6098c1563d7d8d76410d1b843098785d1261881d",
           "parent": "gh-1307",
           "dependencies": [
             "gh-1371"
@@ -1079,7 +1079,7 @@
         },
         {
           "id": "gh-1474",
-          "specSha256": "94ebd371e58542e978ac15b904649c362a4e4109205037c83d82f18560659f13",
+          "specSha256": "6c1d3c34ea3270084137ff2ea3d7e4c6e38e424760b6a2059b8991f8820354ca",
           "parent": "gh-1317",
           "dependencies": [],
           "approval": "approved"

@@ -1,3 +1,4 @@
+import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import type { Pool } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { requireAffectedRows, withTransaction } from "../db/pool.js";
@@ -29,6 +30,7 @@ async function threadUnthreadedMessages(pool: Pool): Promise<void> {
   let afterItemId: string | null = null;
   for (;;) {
     const lastItemId: string | null = await withTransaction(pool, async (client) => {
+      await lockMailThreadMutation(client);
       const rows = await listUnthreadedMailMessagePage(client, afterItemId, PAGE_SIZE);
       for (const row of rows) {
         const threadId = await resolveThreadId(client, {
@@ -59,6 +61,7 @@ async function mergeSplitMessageCopies(pool: Pool): Promise<void> {
   let afterMessageId: string | null = null;
   for (;;) {
     const lastMessageId: string | null = await withTransaction(pool, async (client) => {
+      await lockMailThreadMutation(client);
       const messageIds = await listSplitMailMessageIdPage(client, afterMessageId, PAGE_SIZE);
       for (const messageId of messageIds) {
         const [target, ...others] = await lockMailMessageThreads(client, messageId);

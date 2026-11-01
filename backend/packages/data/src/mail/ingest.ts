@@ -1,3 +1,4 @@
+import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import type { PoolClient } from "pg";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
@@ -93,6 +94,7 @@ export async function ingestEmailMessage(
   client: PoolClient,
   input: IngestEmailMessageInput,
 ): Promise<IngestEmailMessageResult> {
+  await lockMailThreadMutation(client);
   const existing = await getMailMessageMetaByMailboxAndMessageId(client, input.mailboxItemId, input.messageId);
   let itemId: string;
   let created = false;

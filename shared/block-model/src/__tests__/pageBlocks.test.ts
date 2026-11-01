@@ -90,6 +90,17 @@ describe("readPageBlocks", () => {
     expect(readPageBlocks(doc).map((block) => block.done)).toEqual([true, false]);
   });
 
+  it("ignores embedded objects and malformed attributes from a remote Yjs update without writing", () => {
+    const doc = new Y.Doc();
+    const text = new Y.Text();
+    rawBlock(doc, "a", { "sys:flavour": "text", text });
+    text.insert(0, "safe", { bold: true, link: { href: 4 }, unknown: true });
+    text.insertEmbed(4, { secret: "not text" });
+    const before = Y.encodeStateAsUpdate(doc);
+    expect(readPageBlocks(doc)[0]?.text).toEqual([{ insert: "safe", attributes: { bold: true } }]);
+    expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
+  });
+
   it("reads an empty doc as one synthetic empty text block and writes nothing", () => {
     const doc = new Y.Doc();
     const before = Y.encodeStateAsUpdate(doc);
@@ -157,7 +168,7 @@ describe("writeBlock", () => {
   it("refuses invalid input and leaves the doc untouched", () => {
     const doc = new Y.Doc();
     const before = Y.encodeStateAsUpdate(doc);
-    expect(() => writeBlock(doc, { id: "x", type: "nope" } as never)).toThrow(BlockInputError);
+    expect(() => Reflect.apply(writeBlock, undefined, [doc, { id: "x", type: "nope" }])).toThrow(BlockInputError);
     expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
   });
 });

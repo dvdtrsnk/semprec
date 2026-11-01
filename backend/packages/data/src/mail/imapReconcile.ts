@@ -1,3 +1,4 @@
+import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import type { PoolClient } from "pg";
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
@@ -178,6 +179,7 @@ export async function reconcileImapFolder(
   imap: ImapMailClient,
   params: ReconcileImapFolderParams,
 ): Promise<void> {
+  await lockMailThreadMutation(dbClient);
   const relationDefinition = await getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId);
   if (!relationDefinition)
     throw new ValidationError(`Folder relation property ${params.folderRelationPropertyId} has no relation definition`);
@@ -313,6 +315,7 @@ export async function reconcileImapAccount(
   imap: ImapMailClient,
   params: ReconcileImapAccountParams,
 ): Promise<void> {
+  await lockMailThreadMutation(dbClient);
   await ensureMailAccountSyncState(dbClient, { itemId: params.mailboxItemId, syncMode: "imap" });
   const allFolders = await imap.listFolders();
   const folders = params.folderPaths ? allFolders.filter((f) => params.folderPaths!.includes(f.path)) : allFolders;

@@ -1,3 +1,4 @@
+import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import type { PoolClient } from "pg";
 import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
@@ -91,6 +92,7 @@ export async function reconcileGraphAccount(
   graph: GraphMailClient,
   params: ReconcileGraphAccountParams,
 ): Promise<void> {
+  await lockMailThreadMutation(dbClient);
   const relationDefinition = await getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId);
   if (!relationDefinition)
     throw new ValidationError(`Folder relation property ${params.folderRelationPropertyId} has no relation definition`);

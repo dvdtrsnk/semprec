@@ -94,6 +94,10 @@ export function createSttStreamUpgradeHandler(pool: Pool, options: SttStreamHand
   const limit = createAudioConcurrencyLimit(options.maxConcurrentStreams);
   const open = new Set<{ drop(): Promise<void> }>();
   const chunkCostUsd = (options.chunkSeconds / 3600) * options.pricePerAudioHour;
+  const chunkCapacityBytes = Math.floor((options.chunkSeconds * STREAM_AUDIO_BYTES_PER_SECOND) / 2) * 2;
+  if (!Number.isSafeInteger(chunkCapacityBytes) || chunkCapacityBytes < 2) {
+    throw new Error("Speech-to-text chunk duration must accommodate at least one PCM sample");
+  }
   let closing = false;
 
   function runStream(ws: WebSocket, tenantId: string, language: string | undefined): void {
@@ -163,9 +167,13 @@ export function createSttStreamUpgradeHandler(pool: Pool, options: SttStreamHand
           setTimeout(() => ws.terminate(), CLOSE_GRACE_MS).unref();
         }
       }
-      cleanup = closeChunk()
+      cleanup = queue
+        .then(() => closeChunk())
         .catch((err: unknown) => {
-          logger.error({ err }, "Failed to account for the open speech-to-text stream chunk");
+          logger.error(
+            { err: { name: err instanceof Error ? err.name : "unknown" } },
+            "Failed to account for the open speech-to-text stream chunk",
+          );
         })
         .finally(() => {
           open.delete(handle);
@@ -191,8 +199,9 @@ export function createSttStreamUpgradeHandler(pool: Pool, options: SttStreamHand
 
     /** Reserves the next chunk when there is none or the current one is full; false when the stream ended. */
     async function ensureChunk(): Promise<boolean> {
-      if (chunk !== null && chunkBytesUsed < options.chunkSeconds * STREAM_AUDIO_BYTES_PER_SECOND) return true;
+      if (chunk !== null && chunkBytesUsed < chunkCapacityBytes) return true;
       await closeChunk();
+      if (done) return false;
       let reserved: AudioStreamChunk;
       try {
         reserved = await inTenant(() =>
@@ -263,16 +272,24 @@ export function createSttStreamUpgradeHandler(pool: Pool, options: SttStreamHand
     }
 
     async function handleAudio(frame: Buffer): Promise<void> {
+      if (done) return;
       if (ended || frame.length === 0 || frame.length % 2 !== 0) {
         finish(1008, "invalid_frame");
         return;
       }
-      if (!(await ensureChunk()) || !(await openSession())) return;
-      session?.write(frame);
-      chunkBytesUsed += frame.length;
+      let offset = 0;
+      while (offset < frame.length && !done) {
+        if (!(await ensureChunk()) || !(await openSession())) return;
+        const bytes = Math.min(frame.length - offset, chunkCapacityBytes - chunkBytesUsed);
+        session?.write(frame.subarray(offset, offset + bytes));
+        if (done) return;
+        chunkBytesUsed += bytes;
+        offset += bytes;
+      }
     }
 
     async function handleText(raw: Buffer): Promise<void> {
+      if (done) return;
       let value: unknown;
       try {
         value = JSON.parse(raw.toString("utf8"));

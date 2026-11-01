@@ -39,6 +39,7 @@ describe("CORE_TASK_AFFINITY", () => {
   it("declares sempProblemsPrune in the exhaustive API set", () => {
     expect(CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE).toBe("sempProblemsPrune");
     expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]).toBe("api");
+    expect(TASK_TENANCY[CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]).toBe("system");
   });
 
   it("declares queueFailedJobsPrune in the exhaustive API set", () => {

@@ -1,4 +1,5 @@
-import type { Queryable } from "../db/pool.js";
+import type { PoolClient } from "pg";
+import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import { createMailThread, reassignThread } from "./mailMessageMetaStore.js";
 
 /**
@@ -26,7 +27,8 @@ export interface ThreadResolutionInput {
   subjectHint?: string;
 }
 
-export async function resolveThreadId(client: Queryable, input: ThreadResolutionInput): Promise<string> {
+export async function resolveThreadId(client: PoolClient, input: ThreadResolutionInput): Promise<string> {
+  await lockMailThreadMutation(client);
   const ancestorIds = [
     ...new Set([input.inReplyTo ?? undefined, ...(input.references ?? [])].filter((v): v is string => Boolean(v))),
   ];
