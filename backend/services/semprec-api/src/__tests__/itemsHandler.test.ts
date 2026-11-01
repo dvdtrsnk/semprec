@@ -194,6 +194,41 @@ describe("item routes (issue #241)", () => {
     }
   });
 
+  it("leaves the same rating keys on another module unaffected over HTTP", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const source = await chokePoint.createDatabase({ name: "Other" });
+      const target = await chokePoint.createDatabase({ name: "People" });
+      await chokePoint.createProperty({ databaseId: source.id, key: "rating", name: "Rating", type: "number" });
+      await chokePoint.createRelationProperty({
+        sourceDatabaseId: source.id,
+        key: "watchedWith",
+        name: "Watched with",
+        targetDatabaseId: target.id,
+      });
+      return {
+        item: await chokePoint.createItem({ databaseId: source.id, properties: {} }),
+        person: await chokePoint.createItem({ databaseId: target.id, properties: {} }),
+      };
+    });
+    const patch = await fetch(`${baseUrl}/api/items/${fixture.item.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ properties: { rating: 7 }, ifVersion: fixture.item.updatedAt }),
+    });
+    expect(patch.status).toBe(200);
+    const patchBody: unknown = await patch.json();
+    expect(z.object({ properties: z.object({ rating: z.number() }) }).parse(patchBody).properties.rating).toBe(7);
+    const edge = await fetch(`${baseUrl}/api/items/${fixture.item.id}/relations/watchedWith/${fixture.person.id}`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ metadata: { rating: 9 } }),
+    });
+    expect(edge.status).toBe(200);
+    const edgeBody: unknown = await edge.json();
+    expect(z.object({ metadata: z.object({ rating: z.number() }) }).parse(edgeBody).metadata.rating).toBe(9);
+  });
+
   it("projects confirmed Inbox origin through item, database and view HTTP reads", async () => {
     await seedSystem(pool, createViewTypeRegistry());
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };
