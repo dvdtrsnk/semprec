@@ -1269,6 +1269,19 @@ describe("createSyncServer doc sync tenancy (issue #1026)", () => {
   it("opens and persists an update for a socket's own-tenant doc under that tenant", async () => {
     const docA = await createDocIn(tenantA);
     const rowsBefore = await updateRowsOf(docA);
+    const editMetadata = () =>
+      runInTenant(tenantA, async () => {
+        const { rows } = await runtimePool.query<{ edited_at: Date; edited_by: string; update_at: Date }>(
+          `SELECT d.last_edited_at AS edited_at, d.last_edited_by AS edited_by, u.created_at AS update_at
+             FROM docs d JOIN LATERAL (
+               SELECT created_at FROM doc_updates WHERE doc_id = d.id ORDER BY id DESC LIMIT 1
+             ) u ON true WHERE d.id = $1`,
+          [docA],
+        );
+        if (!rows[0]) throw new Error("Document edit metadata is missing");
+        return rows[0];
+      });
+    const before = await editMetadata();
     const wsA = await connectAs("a", tenantA);
     try {
       const clientA = new TestDocClient(wsA, docA);
@@ -1284,6 +1297,10 @@ describe("createSyncServer doc sync tenancy (issue #1026)", () => {
 
       expect(rows).toHaveLength(rowsBefore.length + 1);
       expect(rows.every((row) => row.tenant_id === tenantA)).toBe(true);
+      const after = await editMetadata();
+      expect(after.edited_at.getTime()).toBeGreaterThan(before.edited_at.getTime());
+      expect(after.edited_at).toEqual(after.update_at);
+      expect(after.edited_by).toBe("user");
     } finally {
       wsA.close();
     }
