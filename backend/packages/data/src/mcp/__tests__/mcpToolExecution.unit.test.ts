@@ -93,6 +93,20 @@ describe("executeMcpInvocation failure classification (issue #1444)", () => {
     expect(JSON.stringify(result.failure)).not.toContain("secret detail");
   });
 
+  it("keeps server exception and close exception details out of failure metadata and logs", async () => {
+    warn.mockClear();
+    const callTool = vi.fn().mockRejectedValue(new McpError(ErrorCode.RequestTimeout, "server-message-sentinel"));
+    const closeWithError = vi.fn().mockRejectedValue(new Error("close-message-sentinel"));
+    mockHandle(callTool, closeWithError);
+    const result = await executeMcpInvocation(POOL, TARGET, {});
+    expect(result.failure).toEqual({ failureKind: "timeout", mcpServerItemId: "server-1", timeoutMs: 60000 });
+    expect(closeWithError).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalled();
+    expect(JSON.stringify({ failure: result.failure, logs: warn.mock.calls })).not.toMatch(
+      /server-message-sentinel|close-message-sentinel/,
+    );
+  });
+
   it("carries no failure when the run's signal aborted the call", async () => {
     const controller = new AbortController();
     controller.abort();

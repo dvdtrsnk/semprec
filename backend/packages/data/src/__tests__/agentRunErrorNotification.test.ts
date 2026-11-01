@@ -96,6 +96,10 @@ describe("finishAgentRunWithErrorNotification (issue #149)", () => {
 
     const finished = await getAgentRun(pool, run.id);
     expect(finished!.status).toBe("error");
+    const stored = await pool.query<{ error_code: string | null }>("SELECT error_code FROM agent_runs WHERE id = $1", [
+      run.id,
+    ]);
+    expect(stored.rows).toEqual([{ error_code: "internal" }]);
     const { rows } = await pool.query(`SELECT user_id, kind FROM notifications WHERE source_id = $1`, [run.id]);
     expect(rows).toMatchObject([{ user_id: user.id, kind: "agent_run_error" }]);
   });
