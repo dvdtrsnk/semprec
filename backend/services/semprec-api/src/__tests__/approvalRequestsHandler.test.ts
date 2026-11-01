@@ -230,6 +230,65 @@ describe("createApprovalRequestsRequestListener", () => {
     expect(body.safeSummary).toMatchObject({ mcpServerName: null, mcpToolName: null });
   });
 
+  it.each([
+    [
+      { error: { code: "version_conflict", details: { currentResource: "private-marker" } } },
+      "approval.conflict.changed",
+    ],
+    [{ error: { code: "version_conflict", details: { reason: "not_found" } } }, "approval.conflict.deleted"],
+    [
+      { error: { code: "version_conflict", details: { reason: "owner_violation" } } },
+      "approval.conflict.provenanceChanged",
+    ],
+    [{ error: { code: "version_conflict", details: { reason: "database_archived" } } }, "approval.conflict.archived"],
+    [{ error: { code: "version_conflict", details: { reason: "unknown" } } }, "approval.conflict.other"],
+    [{ text: "private-marker", outcomeKind: "toolUnavailable" }, "approval.conflict.toolUnavailable"],
+    [{ text: "private-marker", outcomeKind: "callFailed" }, "approval.outcome.failed"],
+    ["private-marker", "approval.conflict.other"],
+  ])("returns a safe conflict reason through PATCH", async (executionResult, key) => {
+    const session = await authSession();
+    const generic = typeof executionResult === "object" && executionResult !== null && "error" in executionResult;
+    let id: string;
+    if (generic) {
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: session.userId });
+      const resourceSnapshot = { kind: "test", resourceId: "test", sha256: null };
+      const request = await createPendingApprovalRequest(pool, {
+        agentRunId: run.id,
+        toolName: "item.delete",
+        riskClass: "destructive",
+        payload: {
+          operationName: "item.delete",
+          canonicalInput: { itemId: "private-marker" },
+          actor: { runId: run.id, agentProjectItemId: randomUUID(), userId: session.userId },
+          resourceSnapshot,
+        },
+        resourceSnapshot,
+      });
+      id = request.id;
+    } else {
+      id = await createPendingRequest(session.userId);
+    }
+    const decide = () =>
+      fetch(`${baseUrl}/api/approval-requests/${id}`, {
+        method: "PATCH",
+        headers: { ...session.headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: "approved" }),
+      });
+    expect((await decide()).status).toBe(200);
+    // Recreate persisted historical execution outcomes for the response boundary.
+    await pool.query(
+      "UPDATE approval_requests SET execution_status = 'conflict', execution_result_jsonb = $2::jsonb WHERE id = $1",
+      [id, JSON.stringify(executionResult)],
+    );
+    const response = await decide();
+    expect(response.status).toBe(200);
+    const body: unknown = await response.json();
+    expect(body).toMatchObject({ executionStatus: "conflict", conflictReason: { key } });
+    expect(body).not.toHaveProperty("executionResult");
+    expect(JSON.stringify(body)).not.toContain("private-marker");
+    expect(JSON.stringify(body)).not.toContain('"hi"');
+  });
+
   it("treats a repeated decision by the owner as a deterministic no-op, returning the current state with 200", async () => {
     const session = await authSession();
     const id = await createPendingRequest(session.userId);
