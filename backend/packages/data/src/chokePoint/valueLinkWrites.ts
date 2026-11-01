@@ -66,7 +66,7 @@ export async function breakValueLinksForRelationEdge(
   if (input.writerKind === "system") return [];
   const sides = [{ propertyId: input.reldef.propertyIdA, itemId: input.itemA }];
   if (input.reldef.propertyIdB) sides.push({ propertyId: input.reldef.propertyIdB, itemId: input.itemB });
-  const announced: { itemId: string; databaseId: string; updatedAt: string }[] = [];
+  const announced = new Map<string, { itemId: string; databaseId: string; updatedAt: string }>();
   for (const side of sides) {
     const property = await propertiesStore.getProperty(client, side.propertyId);
     if (!property) continue;
@@ -77,15 +77,15 @@ export async function breakValueLinksForRelationEdge(
     });
     for (const itemId of changed) {
       const item = await itemsStore.getItemById(client, property.databaseId, itemId);
-      if (item) announced.push({ itemId, databaseId: property.databaseId, updatedAt: item.updatedAt });
+      if (item) announced.set(itemId, { itemId, databaseId: property.databaseId, updatedAt: item.updatedAt });
     }
   }
-  if (announced.length > 0) {
+  if (announced.size > 0) {
     runAfterCommit(client, () => {
-      for (const { itemId, databaseId, updatedAt } of announced) {
+      for (const { itemId, databaseId, updatedAt } of announced.values()) {
         notifyInvalidation({ scope: "item", databaseId, itemId, op: "update", updatedAt });
       }
     });
   }
-  return announced.map((entry) => entry.itemId);
+  return [...announced.keys()];
 }

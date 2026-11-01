@@ -72,6 +72,28 @@ async function setup(cp: ChokePoint = chokePoint) {
   return { files, file, alpha, beta, projectsProperty, filesProperty: filesProperty! };
 }
 
+async function readStoredLinks(runtime: Pool, tenant: string, itemId: string) {
+  return withTenantTransaction(runtime, tenant, async (client) => {
+    const result = await client.query<{
+      id: string;
+      tenant_id: string;
+      item_id: string;
+      property_key: string;
+      rule_key: string;
+      state: string;
+      broken_by: string | null;
+      broken_at: string | null;
+      updated_at: string;
+    }>(
+      `SELECT id, tenant_id, item_id, property_key, rule_key, state, broken_by,
+                      broken_at::text, updated_at::text
+               FROM value_links WHERE tenant_id = $1 AND item_id = $2 ORDER BY id`,
+      [tenant, itemId],
+    );
+    return result.rows;
+  });
+}
+
 async function link(itemId: string, propertyKey: string, state?: "broken"): Promise<void> {
   await withTransaction(pool, (client) =>
     insertValueLink(client, {
@@ -697,6 +719,39 @@ describe("value link state on writes (issue #1516)", () => {
       }
     });
 
+    it("breaks both sides of a self-edge and announces the item once after commit", async () => {
+      const database = await chokePoint.createDatabase({ name: "Self relations" });
+      const { property } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: database.id,
+        targetDatabaseId: database.id,
+        key: "outgoing",
+        name: "Outgoing",
+        cardinality: "many_to_many",
+        inverse: { key: "incoming", name: "Incoming" },
+      });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      await link(item.id, "outgoing");
+      await link(item.id, "incoming");
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await withTransaction(pool, async (client) => {
+          await createRelationWithClient(
+            client,
+            { relationPropertyId: property.id, callerItemId: item.id, targetItemId: item.id },
+            undefined,
+            USER,
+          );
+          expect(events).toEqual([]);
+        });
+        expect(await linkOf(item.id, "outgoing")).toMatchObject({ state: "broken", brokenBy: "user" });
+        expect(await linkOf(item.id, "incoming")).toMatchObject({ state: "broken", brokenBy: "user" });
+        expect(events.filter((event) => event.scope === "item" && event.itemId === item.id)).toHaveLength(1);
+      } finally {
+        setInvalidationHook(() => {});
+      }
+    });
+
     it("putting a second project edge breaks the file's projects link", async () => {
       const { file, alpha, beta, projectsProperty } = await setup();
       await link(file.id, "projects");
@@ -859,6 +914,8 @@ describe("value link state on writes (issue #1516)", () => {
             });
           }
         });
+        const beforeItem = await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id));
+        const beforeLinks = await readStoredLinks(runtime, tenant, task.id);
         const events: InvalidationEvent[] = [];
         setInvalidationHook((event) => events.push(event));
         try {
@@ -877,9 +934,8 @@ describe("value link state on writes (issue #1516)", () => {
         } finally {
           setInvalidationHook(() => {});
         }
-        expect((await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id)))?.properties).toEqual(
-          task.properties,
-        );
+        expect(await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id))).toEqual(beforeItem);
+        expect(await readStoredLinks(runtime, tenant, task.id)).toEqual(beforeLinks);
         const links = await withTenantTransaction(runtime, tenant, (client) =>
           listValueLinksByItemIds(client, [task.id]),
         );
@@ -943,9 +999,8 @@ describe("value link state on writes (issue #1516)", () => {
               await insertValueLink(client, { itemId: task.id, propertyKey, ruleKey: "test", sources: [] });
             }
           });
-          const beforeLinks = await withTenantTransaction(runtime, tenant, (client) =>
-            listValueLinksByItemIds(client, [task.id]),
-          );
+          const beforeItem = await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id));
+          const beforeLinks = await readStoredLinks(runtime, tenant, task.id);
           const events: InvalidationEvent[] = [];
           setInvalidationHook((event) => events.push(event));
           try {
@@ -960,12 +1015,8 @@ describe("value link state on writes (issue #1516)", () => {
                 ),
               ),
             ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-            expect((await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id)))?.properties).toEqual(
-              task.properties,
-            );
-            expect(
-              await withTenantTransaction(runtime, tenant, (client) => listValueLinksByItemIds(client, [task.id])),
-            ).toEqual(beforeLinks);
+            expect(await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id))).toEqual(beforeItem);
+            expect(await readStoredLinks(runtime, tenant, task.id)).toEqual(beforeLinks);
             expect(events).toEqual([]);
           } finally {
             setInvalidationHook(() => {});
@@ -3278,34 +3329,14 @@ describe("value link state on writes (issue #1516)", () => {
             ),
           );
         const readItem = () => runInTenant(tenant, () => cp.getItem(fx.files.id, fx.file.id));
-        const readStoredLinks = () =>
-          withTenantTransaction(runtime, tenant, async (client) => {
-            const result = await client.query<{
-              id: string;
-              tenant_id: string;
-              item_id: string;
-              property_key: string;
-              rule_key: string;
-              state: string;
-              broken_by: string | null;
-              broken_at: string | null;
-              updated_at: string;
-            }>(
-              `SELECT id, tenant_id, item_id, property_key, rule_key, state, broken_by,
-                      broken_at::text, updated_at::text
-               FROM value_links WHERE tenant_id = $1 AND item_id = $2 ORDER BY id`,
-              [tenant, fx.file.id],
-            );
-            return result.rows;
-          });
         const events: InvalidationEvent[] = [];
         const expectRefusedWithoutEffects = async (value: string) => {
           const beforeItem = await readItem();
-          const beforeLinks = await readStoredLinks();
+          const beforeLinks = await readStoredLinks(runtime, tenant, fx.file.id);
           events.length = 0;
           await expect(write(value)).rejects.toMatchObject({ status: 403, code: "owner_violation" });
           expect(await readItem()).toEqual(beforeItem);
-          expect(await readStoredLinks()).toEqual(beforeLinks);
+          expect(await readStoredLinks(runtime, tenant, fx.file.id)).toEqual(beforeLinks);
           expect(events).toEqual([]);
         };
         setInvalidationHook((event) => events.push(event));

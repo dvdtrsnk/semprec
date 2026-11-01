@@ -139,12 +139,22 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
     it("rejects an invalid color added by a transform on create", async () => {
       const database = await fixture();
       registerOutput({ color: "invalid" });
-      await expect(
-        chokePoint.createItem({ databaseId: database.id, properties: { title: "Valid" } }, undefined, undefined, {
-          writerKind: "user",
-        }),
-      ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field: "color" } });
-      expect(await countItems(database.id)).toBe(0);
+      const events: InvalidationEvent[] = [];
+      const heartbeat = vi.spyOn(schedulerStore, "triggerOnItemEventHeartbeats");
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await expect(
+          chokePoint.createItem({ databaseId: database.id, properties: { title: "Valid" } }, undefined, undefined, {
+            writerKind: "user",
+          }),
+        ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field: "color" } });
+        expect(await countItems(database.id)).toBe(0);
+        expect(events).toEqual([]);
+        expect(heartbeat).not.toHaveBeenCalled();
+      } finally {
+        heartbeat.mockRestore();
+        setInvalidationHook(() => {});
+      }
     });
 
     it.each([
@@ -229,20 +239,34 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
       const item = await chokePoint.createItem({ databaseId: database.id, properties: { title: "Valid" } });
       registerOutput(output);
       const properties = await chokePoint.listProperties(database.id);
-      await expect(prepareUserItemPatch(properties, patch, database, item)).rejects.toMatchObject({
-        status: 400,
-        code: "validation_failed",
-        details: { field },
-      });
-      await expect(
-        chokePoint.updateItem(
-          { databaseId: database.id, itemId: item.id, propertiesPatch: patch },
-          undefined,
-          undefined,
-          { writerKind: "user" },
-        ),
-      ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field } });
-      expect((await chokePoint.getItem(database.id, item.id))?.properties).toEqual(item.properties);
+      const before = await chokePoint.getItem(database.id, item.id);
+      const events: InvalidationEvent[] = [];
+      const heartbeat = vi.spyOn(schedulerStore, "triggerOnItemEventHeartbeats");
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await expect(prepareUserItemPatch(properties, patch, database, item)).rejects.toMatchObject({
+          status: 400,
+          code: "validation_failed",
+          details: { field },
+        });
+        expect(await chokePoint.getItem(database.id, item.id)).toEqual(before);
+        expect(events).toEqual([]);
+        expect(heartbeat).not.toHaveBeenCalled();
+        await expect(
+          chokePoint.updateItem(
+            { databaseId: database.id, itemId: item.id, propertiesPatch: patch },
+            undefined,
+            undefined,
+            { writerKind: "user" },
+          ),
+        ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field } });
+        expect(await chokePoint.getItem(database.id, item.id)).toEqual(before);
+        expect(events).toEqual([]);
+        expect(heartbeat).not.toHaveBeenCalled();
+      } finally {
+        heartbeat.mockRestore();
+        setInvalidationHook(() => {});
+      }
     });
 
     it("accepts transformed null as a valid color", async () => {
