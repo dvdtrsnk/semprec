@@ -1175,7 +1175,8 @@ describe("createGenericOperationGateway (issue #220)", () => {
         const firstRequest = await getApprovalRequest(pool, requestId);
         if (!firstRequest || !isGenericOperationApprovalRequestPayload(firstRequest.payload))
           throw new Error("missing generic approval");
-        await runInTenant(getTenantZeroId(), () => replayApprovedGenericOperation(runtime, firstRequest));
+        const firstReplay = { ...firstRequest, payload: firstRequest.payload };
+        await runInTenant(getTenantZeroId(), () => replayApprovedGenericOperation(runtime, firstReplay));
         expect((await getApprovalRequest(pool, requestId))?.executionStatus).toBe("succeeded");
         expect(await blockIdsOf(page.itemId)).toEqual(["b1"]);
         const secondRequest = await approveDestructive("page.restoreVersion", actor, input);
@@ -1187,7 +1188,8 @@ describe("createGenericOperationGateway (issue #220)", () => {
         const secondApproval = await getApprovalRequest(pool, secondRequest);
         if (!secondApproval || !isGenericOperationApprovalRequestPayload(secondApproval.payload))
           throw new Error("missing generic approval");
-        await runInTenant(getTenantZeroId(), () => replayApprovedGenericOperation(runtime, secondApproval));
+        const secondReplay = { ...secondApproval, payload: secondApproval.payload };
+        await runInTenant(getTenantZeroId(), () => replayApprovedGenericOperation(runtime, secondReplay));
         expect((await getApprovalRequest(pool, secondRequest))?.executionStatus).toBe("conflict");
         expect(await blockIdsOf(page.itemId)).toEqual(["b1", "b2"]);
       } finally {
