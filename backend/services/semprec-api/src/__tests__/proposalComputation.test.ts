@@ -78,18 +78,19 @@ function recordingPool(inner: Pool, statements: string[]): Pool {
         if (prop === "query") {
           return (...args: unknown[]) => {
             const first = args[0];
-            statements.push(typeof first === "string" ? first : String((first as { text?: string }).text ?? ""));
-            return (target.query as (...a: unknown[]) => unknown)(...args);
+            const parsed = z.object({ text: z.string() }).safeParse(first);
+            statements.push(typeof first === "string" ? first : parsed.success ? parsed.data.text : "");
+            return Reflect.apply(target.query, target, args);
           };
         }
-        const value = Reflect.get(target, prop, receiver) as unknown;
+        const value: unknown = Reflect.get(target, prop, receiver);
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
   return new Proxy(inner, {
     get(target, prop, receiver) {
       if (prop === "connect") return async () => record(await target.connect());
-      const value = Reflect.get(target, prop, receiver) as unknown;
+      const value: unknown = Reflect.get(target, prop, receiver);
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
@@ -190,7 +191,7 @@ describe("createProposalComputation (issue #1434)", () => {
     const call = gateway.calls[0]!;
     expect(call.operation).toBe("inbox_proposal");
     expect(call.projectItemId).toBe(semprecProjectId);
-    const message = call.messages[0]!.content as string;
+    const message = z.string().parse(call.messages[0]!.content);
     expect(message).toMatch(/<<<INBOX_ITEM_TEXT\nBuy milk\nINBOX_ITEM_TEXT>>>/);
     expect(message).toContain("Task");
     expect(message).toContain("2026-08-28");
@@ -215,13 +216,11 @@ describe("createProposalComputation (issue #1434)", () => {
 
     await runTick(pool, gateway, itemId);
 
-    const message = gateway.calls[0]!.messages[0]!.content as string;
+    const message = z.string().parse(gateway.calls[0]!.messages[0]!.content);
     const catalogLine = message.split("\n").find((line) => line.startsWith("Target property catalog (JSON): "));
-    const catalog = JSON.parse(catalogLine!.slice("Target property catalog (JSON): ".length)) as Array<{
-      key: string;
-      type: string;
-      options?: string[];
-    }>;
+    const catalog = z
+      .array(z.object({ key: z.string(), type: z.string(), options: z.array(z.string()).optional() }))
+      .parse(JSON.parse(catalogLine!.slice("Target property catalog (JSON): ".length)));
     expect(catalog.find((p) => p.key === "name")).toMatchObject({ type: "title" });
     expect(catalog.some((p) => p.type === "relation" || p.type === "rollup")).toBe(false);
     const select = catalog.find((p) => p.type === "select");
@@ -367,7 +366,7 @@ describe("createProposalComputation (issue #1434)", () => {
 
     await runTick(pool, gateway, itemId);
 
-    const message = gateway.calls[0]!.messages[0]!.content as string;
+    const message = z.string().parse(gateway.calls[0]!.messages[0]!.content);
     expect(message.match(/INBOX_ITEM_TEXT>>>/g)).toHaveLength(1);
   });
 
@@ -471,11 +470,17 @@ describe("createProposalComputation (issue #1434)", () => {
 
       const card = await storedProposal(gateway);
 
-      const message = gateway.calls[0]!.messages[0]!.content as string;
+      const message = z.string().parse(gateway.calls[0]!.messages[0]!.content);
       expect(message).toContain("Writable target catalog (JSON): ");
       expect(message).toContain('"module":"companies"');
       expect(card.status).toBe("proposed");
-      const proposal = card.proposal as { target: string; properties: unknown; operations: Array<{ ref: string }> };
+      const proposal = z
+        .object({
+          target: z.string(),
+          properties: z.unknown(),
+          operations: z.array(z.object({ ref: z.string() }).passthrough()),
+        })
+        .parse(card.proposal);
       expect(proposal.target).toBe(await databaseIdFor("people"));
       expect(proposal.properties).toEqual({ name: "Eva Malá" });
       expect(proposal.operations).toEqual([
@@ -500,7 +505,7 @@ describe("createProposalComputation (issue #1434)", () => {
       );
 
       expect(card.status).toBe("proposed");
-      const proposal = card.proposal as Record<string, unknown>;
+      const proposal = z.record(z.string(), z.unknown()).parse(card.proposal);
       expect(proposal.operations).toBeUndefined();
       expect(proposal.properties).toEqual({ name: "Eva" });
     });
@@ -921,7 +926,7 @@ describe("createProposalComputation (issue #1434)", () => {
 
       const card = await storedProposal(stubGateway({ properties: { name: "Eva Malá" }, operations }));
 
-      const stored = (card.proposal as { operations: Array<{ ref: string }> }).operations;
+      const stored = z.object({ operations: z.array(z.object({ ref: z.string() })) }).parse(card.proposal).operations;
       expect(stored).toHaveLength(6);
       expect(stored.map((step) => step.ref)).toEqual(["op1", "op2", "op3", "op4", "op5", "brainz"]);
     });
@@ -934,7 +939,9 @@ describe("createProposalComputation (issue #1434)", () => {
         }),
       );
 
-      const stored = (card.proposal as { operations: Array<{ databaseKey: string }> }).operations;
+      const stored = z
+        .object({ operations: z.array(z.object({ databaseKey: z.string() })) })
+        .parse(card.proposal).operations;
       expect(stored.map((step) => step.databaseKey)).toEqual(["people", "companies"]);
     });
 
@@ -946,7 +953,7 @@ describe("createProposalComputation (issue #1434)", () => {
         }),
       );
 
-      const stored = (card.proposal as { operations: unknown[] }).operations;
+      const stored = z.object({ operations: z.array(z.unknown()) }).parse(card.proposal).operations;
       expect(stored).toHaveLength(2);
     });
 

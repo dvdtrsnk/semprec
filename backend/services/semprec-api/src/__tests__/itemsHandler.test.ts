@@ -178,11 +178,11 @@ describe("item routes (issue #241)", () => {
     ).toMatchObject({ error: { code: "validation_failed", details: { field: "metadata.rating" } } });
     const edgeCount = await runInTenant(getTenantZeroId(), () =>
       withTransaction(pool, async (client) => {
-        const result = await client.query<{ count: number }>(
+        const result = await client.query<Record<string, unknown>>(
           "SELECT count(*)::int AS count FROM item_relations WHERE (item_a = $1 AND item_b = $2) OR (item_a = $2 AND item_b = $1)",
           [fixture.movie.id, fixture.person.id],
         );
-        return result.rows[0]?.count;
+        return z.object({ count: z.number() }).parse(result.rows[0]).count;
       }),
     );
     expect(edgeCount).toBe(0);
