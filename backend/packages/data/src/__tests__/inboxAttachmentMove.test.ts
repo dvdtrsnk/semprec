@@ -227,7 +227,7 @@ async function jobExists(key: string): Promise<boolean> {
   return rows.length > 0;
 }
 
-/** Polls until a confirm is blocked on the blob row lock (`SELECT ... FROM blobs ... FOR UPDATE`); fails after two seconds. */
+/** Polls until the specified competitor is blocked by the specified holder. */
 async function waitForBlockingPid(holderPid: number, competitorPid: number, queryPool: Pool = pool): Promise<void> {
   const deadline = Date.now() + 2000;
   while (Date.now() < deadline) {
@@ -268,6 +268,7 @@ function observeResourceAttempt(client: PoolClient, resource: WaitResource, reco
 }
 
 async function assertResourceHeld(resource: WaitResource, holderPid: number, observer: Pool): Promise<void> {
+  // The interpolated identifier is chosen exclusively from these two fixed table names.
   const table = resource.kind === "blob" ? "blobs" : "items";
   const result = await withTenantTransaction(observer, getTenantZeroId(), (client) =>
     client.query<{ held: boolean }>(

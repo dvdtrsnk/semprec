@@ -84,6 +84,16 @@ function deriveTimeAndCheckSchedule(stored: ItemRow | null, patch: Record<string
     namedTo !== undefined
       ? namedTo
       : normalizeWallClockTime(storedProperties.timeTo ?? null, { field: "timeTo", allow2400: true });
+  if (
+    namedFrom === undefined &&
+    Object.hasOwn(storedProperties, "timeFrom") &&
+    storedProperties.timeFrom !== timeFrom
+  ) {
+    output.timeFrom = timeFrom;
+  }
+  if (namedTo === undefined && Object.hasOwn(storedProperties, "timeTo") && storedProperties.timeTo !== timeTo) {
+    output.timeTo = timeTo;
+  }
   if (timeTo !== null && timeFrom === null) {
     throw new ValidationError("Property 'timeTo' requires a 'timeFrom'", { field: "timeTo" });
   }

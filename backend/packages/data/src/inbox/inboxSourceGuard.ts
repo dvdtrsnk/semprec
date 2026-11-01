@@ -20,6 +20,7 @@ export async function lockInboxSourceIfPresent(
   allowDeleted = false,
   lockMode?: "nowait",
 ): Promise<boolean> {
+  // The interpolated suffix is either the fixed NOWAIT keyword or an empty string.
   const query = () =>
     client.query(
       `SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id AND d.tenant_id = i.tenant_id

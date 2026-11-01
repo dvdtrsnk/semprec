@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
+import { prepareUserItemPatch } from "../chokePoint/itemWrites.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
@@ -399,6 +400,49 @@ describe("Tasks title, date and time rules (issue gh-1536)", () => {
         }),
       ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field: "timeTo" } });
     });
+
+    it.each([
+      [{ date: "2026-10-14" }, "09:00–10:00"],
+      [{ timeTo: "11:00" }, "09:00–11:00"],
+    ] as const)(
+      "persists a retained legacy start when schedule patch %j normalizes it",
+      async (patch, expectedTime) => {
+        // Historical noncanonical value: the current API normalizes it before insertion.
+        const legacy = await itemsStore.insertItem(pool, {
+          databaseId: tasksDatabaseId,
+          properties: { name: "Old", date: "2026-10-13", timeFrom: "9:00", timeTo: "10:00", time: "9:00–10:00" },
+        });
+        const unrelated = await chokePoint.updateItem({
+          databaseId: tasksDatabaseId,
+          itemId: legacy.id,
+          propertiesPatch: { status: "done" },
+        });
+        expect(unrelated.properties.timeFrom).toBe("9:00");
+        const database = (await chokePoint.listDatabases()).find((entry) => entry.id === tasksDatabaseId);
+        if (!database) throw new Error("Missing Tasks database");
+        const before = await chokePoint.getItem(tasksDatabaseId, legacy.id);
+        if (!before) throw new Error("Missing legacy task");
+        const prepared = await prepareUserItemPatch(
+          await chokePoint.listProperties(tasksDatabaseId),
+          patch,
+          database,
+          before,
+        );
+        expect(prepared.patch).toMatchObject({ ...patch, timeFrom: "09:00", time: expectedTime });
+        expect(await chokePoint.getItem(tasksDatabaseId, legacy.id)).toEqual(before);
+        const updated = await chokePoint.updateItem({
+          databaseId: tasksDatabaseId,
+          itemId: legacy.id,
+          propertiesPatch: patch,
+        });
+        expect(updated.properties).toMatchObject({ timeFrom: "09:00", time: expectedTime });
+        const raw = await pool.query<{ from: string; time: string }>(
+          "SELECT properties->>'timeFrom' AS from, properties->>'time' AS time FROM items WHERE database_id = $1 AND id = $2",
+          [tasksDatabaseId, legacy.id],
+        );
+        expect(raw.rows).toEqual([{ from: "09:00", time: expectedTime }]);
+      },
+    );
 
     it("leaves an unrelated patch alone on a stored row that predates these rules", async () => {
       // A row with a start time and no date cannot come from the API any more: it is the stored state that

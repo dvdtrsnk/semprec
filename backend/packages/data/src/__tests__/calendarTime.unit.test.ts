@@ -92,6 +92,10 @@ describe("calendarTime", () => {
     expect(taskEffectiveEnd({ ...task, timeTo: "10:00" }, PRAGUE).toFormat("HH:mm")).toBe("10:00");
   });
 
+  it("ends an all-day task at the end of its tenant-local day", () => {
+    expect(taskEffectiveEnd({ date: "2026-10-25" }, PRAGUE).toISO()).toBe("2026-10-25T23:59:59.999+01:00");
+  });
+
   it("does not apply the task rule to events", () => {
     expect(eventEnd({ date: "2026-10-17" }, PRAGUE).toFormat("HH:mm")).toBe("23:59");
   });
