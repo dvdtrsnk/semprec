@@ -132,6 +132,19 @@ describe("standalone blobs (issue #1401)", () => {
       const { rows } = await pool.query("SELECT id FROM blobs");
       expect(rows).toHaveLength(0);
     });
+
+    it("removes uploaded bytes if reading the detection head fails", async () => {
+      class FailingReadStorage extends FakeStorage {
+        override readStream(): Readable {
+          throw new Error("head read failed");
+        }
+      }
+      const storage = new FailingReadStorage();
+      await expect(upload(storage, "stored bytes")).rejects.toThrow("head read failed");
+      expect(storage.bytesByKey.size).toBe(0);
+      expect(storage.deleteCalls).toHaveLength(1);
+      expect((await pool.query("SELECT id FROM blobs")).rows).toHaveLength(0);
+    });
   });
 
   describe("deleteBlobIfUnreferenced with image properties", () => {

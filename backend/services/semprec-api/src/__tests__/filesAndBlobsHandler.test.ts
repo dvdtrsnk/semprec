@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createUser,
+  createChokePoint,
   createViewTypeRegistry,
   hashPassword,
   loadFullModuleRegistry,
@@ -450,6 +451,50 @@ describe("files and blobs routes (issue #158)", () => {
       const body = (await created.json()) as BlobsItemBody;
       expect(body).not.toHaveProperty("blobs");
       expect(body.properties).toMatchObject({ name: "no file here" });
+    });
+
+    it("fetches blobs once for an actual 50-item database query response", async () => {
+      const headers = await authHeader();
+      const uploaded = (await (await uploadFile("query-count-bytes")).json()) as BlobsItemBody;
+      const file = uploaded.properties.file;
+      const chokePoint = createChokePoint(pool);
+      for (let i = 0; i < 49; i += 1) {
+        await chokePoint.createItem({ databaseId: uploaded.databaseId, properties: { name: `File ${i}`, file } });
+      }
+
+      let blobQueries = 0;
+      const wrapped = new Map<PoolClient, PoolClient["query"]>();
+      const instrument = (client: PoolClient) => {
+        if (wrapped.has(client)) return;
+        wrapped.set(client, client.query);
+        client.query = new Proxy(client.query, {
+          apply(target, thisArg, args: unknown[]) {
+            if (typeof args[0] === "string" && /FROM blobs\b/i.test(args[0])) blobQueries += 1;
+            return Reflect.apply(target, thisArg, args);
+          },
+        });
+      };
+      pool.on("acquire", instrument);
+      try {
+        const response = await fetch(`${baseUrl}/api/databases/${uploaded.databaseId}/query`, {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ limit: 50 }),
+        });
+        expect(response.status).toBe(200);
+        const body: unknown = await response.json();
+        if (typeof body !== "object" || body === null || !("items" in body) || !Array.isArray(body.items)) {
+          throw new Error("expected query items");
+        }
+        expect(body.items).toHaveLength(50);
+        for (const item of body.items) {
+          expect(item).toHaveProperty("blobs.file.blobId", uploaded.blobs?.file?.blobId);
+        }
+        expect(blobQueries).toBe(1);
+      } finally {
+        pool.off("acquire", instrument);
+        for (const [client, query] of wrapped) client.query = query;
+      }
     });
   });
 });
