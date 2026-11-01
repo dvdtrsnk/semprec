@@ -1,6 +1,7 @@
 import { createServer, request, type ClientRequest, type IncomingMessage, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { createModels } from "@earendil-works/pi-ai";
 import { seedSystem } from "@semprec/data";
 import { getTestPool, resetDatabase, getTenantZeroId, setTenantAiBudget } from "@semprec/data/testSupport";
 import { createDispatcher } from "../app.js";
@@ -105,7 +106,7 @@ async function startServer(provider: SpeechSynthesisProvider, maxConcurrentStrea
         deepInfraPricePerAudioHour: 1,
         globalCaps: GENEROUS_GLOBAL_CAPS,
       },
-      { internalToken: TOKEN, models: {} as never, apiKey: "x", globalCaps: GENEROUS_GLOBAL_CAPS, streamFn: unused },
+      { internalToken: TOKEN, models: createModels(), apiKey: "x", globalCaps: GENEROUS_GLOBAL_CAPS, streamFn: unused },
       tts,
     ),
   );

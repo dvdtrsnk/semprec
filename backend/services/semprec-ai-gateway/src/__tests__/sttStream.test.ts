@@ -2,8 +2,10 @@ import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { WebSocket } from "ws";
+import { createModels } from "@earendil-works/pi-ai";
 import { getTestPool, resetDatabase, getTenantZeroId, setTenantAiBudget } from "@semprec/data/testSupport";
 import { createDispatcher, createUpgradeDispatcher } from "../app.js";
+import { logger } from "../logger.js";
 import {
   createSttStreamUpgradeHandler,
   type SttStreamHandlerOptions,
@@ -43,8 +45,8 @@ class FakeSession implements StreamingTranscriptionSession {
   abort(): void {
     this.aborted = true;
   }
-  fail(): void {
-    this.events.onError(new AudioProviderCallError("boom"));
+  fail(message = "boom"): void {
+    this.events.onError(new AudioProviderCallError(message));
   }
 }
 
@@ -108,7 +110,7 @@ async function start(overrides: Partial<SttStreamHandlerOptions> = {}): Promise<
     },
     {
       internalToken: TOKEN,
-      models: {} as never,
+      models: createModels(),
       apiKey: "unused",
       globalCaps: GENEROUS_GLOBAL_CAPS,
       streamFn: () => {
@@ -136,9 +138,23 @@ async function connect(
 ): Promise<Client> {
   const ws = new WebSocket(`ws://127.0.0.1:${port}/internal/stt/stream${query}`, { headers });
   const messages: Client["messages"] = [];
-  ws.on("message", (data) =>
-    messages.push(JSON.parse((data as Buffer).toString("utf8")) as Client["messages"][number]),
-  );
+  ws.on("message", (data) => {
+    const bytes = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data);
+    const value: unknown = JSON.parse(bytes.toString("utf8"));
+    if (typeof value !== "object" || value === null || !("type" in value) || typeof value.type !== "string") {
+      throw new Error("Invalid stream message");
+    }
+    const text = "text" in value ? value.text : undefined;
+    const code = "code" in value ? value.code : undefined;
+    if ((text !== undefined && typeof text !== "string") || (code !== undefined && typeof code !== "string")) {
+      throw new Error("Invalid stream message fields");
+    }
+    messages.push({
+      type: value.type,
+      ...(text === undefined ? {} : { text }),
+      ...(code === undefined ? {} : { code }),
+    });
+  });
   const closed = new Promise<number>((resolve) => ws.on("close", (code) => resolve(code)));
   await new Promise<void>((resolve, reject) => {
     ws.once("open", () => resolve());
@@ -168,7 +184,7 @@ async function waitFor(condition: () => boolean | Promise<boolean>): Promise<voi
 }
 
 async function rows(): Promise<Array<Record<string, unknown>>> {
-  const { rows: found } = await pool.query("SELECT * FROM ai_gateway_calls ORDER BY id");
+  const { rows: found } = await pool.query<Record<string, unknown>>("SELECT * FROM ai_gateway_calls ORDER BY id");
   return found;
 }
 
@@ -335,6 +351,41 @@ describe("WebSocket /internal/stt/stream", () => {
     expect(await client.closed).toBe(1011);
     expect(client.messages.at(-1)).toEqual({ type: "error", code: "provider_error" });
     await waitFor(async () => (await rows()).every((row) => row.status !== "reserved"));
+  });
+
+  it("omits streamed audio from serialized logs when the provider fails", async () => {
+    const symbol = Reflect.ownKeys(logger).find((key) => typeof key === "symbol" && key.description === "pino.stream");
+    if (typeof symbol !== "symbol") throw new Error("Pino logger destination is unavailable");
+    const stream: unknown = Reflect.get(logger, symbol);
+    if (typeof stream !== "object" || stream === null) throw new Error("Invalid Pino logger destination");
+    const original: unknown = Reflect.get(stream, "write");
+    if (typeof original !== "function") throw new Error("Invalid Pino destination writer");
+    const descriptor = Object.getOwnPropertyDescriptor(stream, "write");
+    const chunks: string[] = [];
+    if (
+      !Reflect.set(stream, "write", function (this: unknown, ...args: unknown[]) {
+        if (typeof args[0] === "string") chunks.push(args[0]);
+        return Reflect.apply(original, this, args);
+      })
+    )
+      throw new Error("Cannot observe Pino destination");
+    try {
+      await start();
+      const client = await connect();
+      const audio = Buffer.from("private-audio-42");
+      client.ws.send(audio);
+      await waitFor(() => client.messages.length >= 1);
+      provider.sessions[0]?.fail(audio.toString("utf8"));
+      expect(await client.closed).toBe(1011);
+      const output = chunks.join("\n");
+      expect(output).toContain("Speech-to-text provider failed");
+      expect(output).not.toContain(audio.toString("utf8"));
+      expect(output).not.toContain(audio.toString("base64"));
+      expect(output).not.toContain(audio.toString("hex"));
+    } finally {
+      if (descriptor) Object.defineProperty(stream, "write", descriptor);
+      else Reflect.deleteProperty(stream, "write");
+    }
   });
 
   it("refuses a stream over the concurrency limit without opening a provider session", async () => {
