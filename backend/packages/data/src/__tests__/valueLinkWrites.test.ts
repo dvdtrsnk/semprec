@@ -600,6 +600,59 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
+    it("enforces handoff and preserves unchanged links on scoped runtime connections without overlap", async () => {
+      const tenant = await createTestTenant(pool);
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const cp = createChokePoint(runtime);
+        const fx = await runInTenant(tenant, () => setup(cp));
+        const write = (value: string) =>
+          runInTenant(tenant, () =>
+            withTransaction(runtime, (client) =>
+              updateItemWithClient(
+                client,
+                { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: value } },
+                { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
+              ),
+            ),
+          );
+        await expect(write("blocked")).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+        await withTenantTransaction(runtime, tenant, (client) =>
+          insertValueLink(client, {
+            itemId: fx.file.id,
+            propertyKey: "name",
+            ruleKey: "test",
+            sources: [],
+          }),
+        );
+        await expect(write("system")).resolves.toMatchObject({ properties: { name: "system" } });
+        await runInTenant(tenant, () =>
+          cp.updateItem(
+            { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: "system" } },
+            undefined,
+            undefined,
+            USER,
+          ),
+        );
+        const read = () =>
+          withTenantTransaction(runtime, tenant, (client) => listValueLinksByItemIds(client, [fx.file.id]));
+        expect((await read())[0]).toMatchObject({ state: "on" });
+        await runInTenant(tenant, () =>
+          cp.updateItem(
+            { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: "user" } },
+            undefined,
+            undefined,
+            USER,
+          ),
+        );
+        expect((await read())[0]).toMatchObject({ state: "broken", brokenBy: "user" });
+        await expect(write("blocked again")).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+        expect((await runInTenant(tenant, () => cp.getItem(fx.files.id, fx.file.id)))?.properties.name).toBe("user");
+      } finally {
+        await runtime.end();
+      }
+    });
+
     it("never touches the links of another tenant", async () => {
       await resetDatabase(pool);
       const tenantA = await createTestTenant(pool);
