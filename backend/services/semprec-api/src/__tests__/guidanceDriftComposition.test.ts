@@ -123,6 +123,30 @@ describe("guidance drift production composition", () => {
     expect(await snapshot()).toEqual(before);
   });
 
+  it("merges two activation notifications for one finding into one problem", async () => {
+    let content: unknown = { contradictions: [finding("files.read", "first")] };
+    const gateway: AiGatewayClientPort = {
+      async complete() {
+        return { content, usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const action = createAgentGuidanceDriftActionForApi(pool, gateway);
+    await runInTenant(tenant, () => action({ projectItemId: project }));
+    const first = await snapshot();
+    content = { contradictions: [] };
+    await runInTenant(tenant, () => action({ projectItemId: project }));
+    content = { contradictions: [finding("files.read", "again")] };
+    await runInTenant(tenant, () => action({ projectItemId: project }));
+    const final = await snapshot();
+    expect(final.findings).toHaveLength(1);
+    expect(final.findings[0]?.id).toBe(first.findings[0]?.id);
+    expect(final.findings[0]?.status).toBe("active");
+    expect(final.problems).toHaveLength(1);
+    expect(final.problems[0]).toMatchObject({ source_id: final.findings[0]?.id, occurrence_count: 2 });
+    expect(final.notifications.filter((row) => row.kind === "agent_guidance_drift")).toHaveLength(2);
+    expect(final.notifications.filter((row) => row.kind === "semp_problem")).toHaveLength(1);
+  });
+
   it("rolls back the finding and notification when the problem write fails", async () => {
     const gateway: AiGatewayClientPort = {
       async complete() {
