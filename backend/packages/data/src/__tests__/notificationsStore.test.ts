@@ -1,7 +1,8 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import {
   createTestTenant,
+  createRuntimeRolePool,
   getTenantZeroId,
   getTestPool,
   resetDatabase,
@@ -21,6 +22,7 @@ import {
   visitNotification,
   markAllNotificationsRead,
   resolveNotificationsBySource,
+  getNotificationById,
 } from "../notifications/notificationsStore.js";
 import { setNotificationReadStateHook, type NotificationReadStateEvent } from "../realtimeHook.js";
 
@@ -70,6 +72,16 @@ describe("notificationsStore (issue #152)", () => {
   }
 
   describe("listUnreadNotificationsForUser", () => {
+    it.each([[null], [[]], ["invalid"], [1]])("refuses a malformed stored payload %j", async (payload) => {
+      const userId = await createTestUser();
+      await writeTestNotification(userId, "payload-test");
+      const [row] = await listUnreadNotificationsForUser(pool, userId);
+      if (!row) throw new Error("Missing notification fixture");
+      // JSONB historically permits non-object values, which production writers do not create.
+      await pool.query("UPDATE notifications SET payload = $2::jsonb WHERE id = $1", [row.id, JSON.stringify(payload)]);
+      await expect(getNotificationById(pool, row.id)).rejects.toThrow("Invalid notification payload");
+      await expect(listUnreadNotificationsForUser(pool, userId)).rejects.toThrow("Invalid notification payload");
+    });
     it("returns only the caller's unread rows, ordered by creation then id", async () => {
       const userId = await createTestUser();
       const otherUserId = await createTestUser();
@@ -268,6 +280,98 @@ describe("notificationsStore (issue #152)", () => {
       expect(events).toHaveLength(0);
     });
 
+    it("serializes competing resolutions of the same source and emits one event", async () => {
+      const userId = await createTestUser();
+      const request = await createApprovalWithNotification(userId);
+      const tenant = getTenantZeroId();
+      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const events: NotificationReadStateEvent[] = [];
+      setNotificationReadStateHook((event) => events.push(event));
+      let releaseHolder: () => void = () => {};
+      let holderReady: (pid: number) => void = () => {};
+      let competitorReady: (pid: number) => void = () => {};
+      const barrier = new Promise<void>((resolve) => {
+        releaseHolder = resolve;
+      });
+      const holderPid = new Promise<number>((resolve) => {
+        holderReady = resolve;
+      });
+      const competitorPid = new Promise<number>((resolve) => {
+        competitorReady = resolve;
+      });
+      async function bounded<T>(promise: Promise<T>): Promise<T> {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          return await Promise.race([
+            promise,
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error("Barrier timed out")), 5000);
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      }
+      const holder = withTenantTransaction(runtimePool, tenant, async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        if (pid === undefined) throw new Error("Missing holder PID");
+        const rows = await resolveNotificationsBySource(client, {
+          sourceTable: "approval_requests",
+          sourceId: request.id,
+        });
+        holderReady(pid);
+        await barrier;
+        return rows;
+      });
+      const holderSettled = Promise.allSettled([holder]);
+      let competitorSettled: Promise<PromiseSettledResult<unknown>[]> | undefined;
+      try {
+        const firstPid = await bounded(
+          Promise.race([
+            holderPid,
+            holder.then(() => {
+              throw new Error("Holder ended before barrier");
+            }),
+          ]),
+        );
+        const competitor = withTenantTransaction(runtimePool, tenant, async (client) => {
+          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          if (pid === undefined) throw new Error("Missing competitor PID");
+          competitorReady(pid);
+          return resolveNotificationsBySource(client, { sourceTable: "approval_requests", sourceId: request.id });
+        });
+        competitorSettled = Promise.allSettled([competitor]);
+        const secondPid = await bounded(
+          Promise.race([
+            competitorPid,
+            competitor.then(() => {
+              throw new Error("Competitor ended before blocking");
+            }),
+          ]),
+        );
+        await vi.waitFor(
+          async () => {
+            const { rows } = await pool.query<{ blocked: boolean }>(
+              "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+              [firstPid, secondPid],
+            );
+            expect(rows[0]?.blocked).toBe(true);
+          },
+          { timeout: 5000, interval: 20 },
+        );
+        releaseHolder();
+        expect(await holder).toHaveLength(1);
+        expect(await competitor).toHaveLength(0);
+        expect(events).toHaveLength(1);
+        expect(events[0]?.userId).toBe(userId);
+      } finally {
+        releaseHolder();
+        await holderSettled;
+        await competitorSettled;
+        await runtimePool.end();
+      }
+    });
+
     it("leaves the notification unresolved when the decision transaction rolls back", async () => {
       const userId = await createTestUser();
       const request = await createApprovalWithNotification(userId);
@@ -302,6 +406,65 @@ describe("notificationsStore (issue #152)", () => {
       expect(await stateOf("hb-2")).toEqual([{ read_at: null, resolved_at: null }]);
       expect(events).toHaveLength(1);
       expect(events[0]!.userId).toBe(otherUserId);
+    });
+
+    it.each([
+      ["different", "source-b"],
+      ["same", "source-a"],
+    ])("resolves a tenant's source without changing another tenant's %s source", async (_label, foreignSource) => {
+      const userA = await createTestUser();
+      const userB = await createTestUser();
+      const tenantA = tenantOfUser.get(userA);
+      const tenantB = tenantOfUser.get(userB);
+      if (!tenantA || !tenantB) throw new Error("Missing tenant fixture");
+      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const write = (tenant: string, userId: string, sourceId: string) =>
+          withTenantTransaction(runtimePool, tenant, (client) =>
+            writeNotification(client, {
+              userId,
+              kind: "heartbeat_error",
+              titleParams: { name: sourceId },
+              linkHref: null,
+              sourceTable: "project_heartbeats",
+              sourceId,
+              transitionInstance: "job-1",
+            }),
+          );
+        const a = await write(tenantA, userA, "source-a");
+        const b = await write(tenantB, userB, foreignSource);
+        const events: NotificationReadStateEvent[] = [];
+        setNotificationReadStateHook((event) => events.push(event));
+        const resolved = await withTenantTransaction(runtimePool, tenantA, (client) =>
+          resolveNotificationsBySource(client, { sourceTable: "project_heartbeats", sourceId: "source-a" }),
+        );
+        expect(resolved).toHaveLength(1);
+        const own = await withTenantTransaction(runtimePool, tenantA, (client) => getNotificationById(client, a));
+        const foreign = await withTenantTransaction(runtimePool, tenantB, (client) => getNotificationById(client, b));
+        expect(own).toMatchObject({ id: a, readAt: expect.any(String), resolvedAt: expect.any(String) });
+        expect(foreign).toMatchObject({ id: b, readAt: null, resolvedAt: null });
+        expect(events).toEqual([expect.objectContaining({ userId: userA, notificationIds: [a] })]);
+        const second = await withTenantTransaction(runtimePool, tenantB, (client) =>
+          resolveNotificationsBySource(client, { sourceTable: "project_heartbeats", sourceId: foreignSource }),
+        );
+        expect(second).toHaveLength(1);
+        expect(
+          await withTenantTransaction(runtimePool, tenantB, (client) => getNotificationById(client, b)),
+        ).toMatchObject({
+          id: b,
+          readAt: expect.any(String),
+          resolvedAt: expect.any(String),
+        });
+        expect(await withTenantTransaction(runtimePool, tenantA, (client) => getNotificationById(client, a))).toEqual(
+          own,
+        );
+        expect(events).toEqual([
+          expect.objectContaining({ userId: userA, notificationIds: [a] }),
+          expect.objectContaining({ userId: userB, notificationIds: [b] }),
+        ]);
+      } finally {
+        await runtimePool.end();
+      }
     });
   });
 });

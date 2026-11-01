@@ -56,7 +56,6 @@ export async function setMcpToolRequiresApproval(
   return rowToRegistration(row);
 }
 
-const DISPLAY_LABEL_LOCALES = ["cs", "en"] as const;
 const MAX_DISPLAY_LABEL_LENGTH = 120;
 
 /** Returns the label with trimmed values, or throws `ValidationError`. */
@@ -68,8 +67,8 @@ function validateDisplayLabel(label: unknown): McpToolDisplayLabel {
   if (entries.length === 0) throw new ValidationError("'displayLabel' needs at least one of 'cs' or 'en'");
   const validated: McpToolDisplayLabel = {};
   for (const [key, value] of entries) {
-    if (!(DISPLAY_LABEL_LOCALES as readonly string[]).includes(key)) {
-      throw new ValidationError(`'displayLabel' has unknown key '${key}'; allowed keys are 'cs' and 'en'`);
+    if (key !== "cs" && key !== "en") {
+      throw new ValidationError("'displayLabel' has an unknown key; allowed keys are 'cs' and 'en'");
     }
     if (typeof value !== "string") throw new ValidationError(`'displayLabel.${key}' must be a string`);
     const trimmed = value.trim();
@@ -77,7 +76,7 @@ function validateDisplayLabel(label: unknown): McpToolDisplayLabel {
     if (trimmed.length > MAX_DISPLAY_LABEL_LENGTH) {
       throw new ValidationError(`'displayLabel.${key}' must be at most ${MAX_DISPLAY_LABEL_LENGTH} characters`);
     }
-    validated[key as keyof McpToolDisplayLabel] = trimmed;
+    validated[key] = trimmed;
   }
   return validated;
 }
@@ -86,7 +85,7 @@ function validateDisplayLabel(label: unknown): McpToolDisplayLabel {
 export async function setMcpToolDisplayLabel(
   client: Queryable,
   id: string,
-  label: McpToolDisplayLabel | null,
+  label: unknown,
 ): Promise<McpToolRegistration> {
   const stored = label === null ? null : JSON.stringify(validateDisplayLabel(label));
   const result = await client.query<McpToolRegistrationRow>(

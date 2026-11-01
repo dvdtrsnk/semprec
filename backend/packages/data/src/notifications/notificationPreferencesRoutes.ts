@@ -42,7 +42,7 @@ function isProblemsLevel(value: unknown): value is (typeof NOTIFICATION_PROBLEMS
 
 /**
  * Parses a PATCH body into the fields it sets. Anything but a JSON object, an unknown key, a
- * non-boolean boolean field or a `problemsLevel` outside the closed set is a 400 naming the field;
+ * non-boolean boolean field or a `problemsLevel` outside the closed set is a 400; known fields are named;
  * the request writes nothing in that case, because parsing happens before the store is called.
  */
 export function parseNotificationPreferencesPatch(body: unknown): NotificationPreferencesPatch {
@@ -65,7 +65,7 @@ export function parseNotificationPreferencesPatch(body: unknown): NotificationPr
       }
       patch.problemsLevel = value;
     } else {
-      throw new ValidationError(`Unknown field '${field}'`, { field });
+      throw new ValidationError("Unknown field in request body", { field: "body" });
     }
   }
   return patch;

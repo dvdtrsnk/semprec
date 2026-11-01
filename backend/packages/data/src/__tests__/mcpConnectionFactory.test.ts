@@ -29,6 +29,7 @@ import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { connectMcpServer } from "../mcp/mcpConnectionFactory.js";
 import { McpConnectionError } from "../mcp/mcpConnectionError.js";
 import { executeMcpInvocation } from "../mcp/mcpToolExecution.js";
+import { getMcpConnectionStates } from "../mcp/mcpServerConnectionStateStore.js";
 import { Server as McpServer } from "@modelcontextprotocol/sdk/server/index.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -154,6 +155,41 @@ describe("MCP connection factory (issue #231)", () => {
   }
 
   describe("stdio", () => {
+    it("records stdio invocation connection success and failed handshake in its tenant", async () => {
+      await makeSoleTenantAdmin();
+      const contract = startStdioContractServer();
+      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+        await runInTenant(getTenantZeroId(), async () => {
+          const result = await executeMcpInvocation(runtimePool, { serverItem: item, toolName: "search" }, {});
+          expect(result.error).toBe(false);
+          await contract.waitForChildExit();
+          const [connected] = await getMcpConnectionStates(runtimePool, [item.id]);
+          expect(connected?.lastConnectedAt).not.toBeNull();
+          expect(connected?.lastErrorReason).toBeNull();
+          const unavailable = {
+            ...item,
+            properties: {
+              ...item.properties,
+              connectionConfig: { transport: "stdio", command: "missing-mcp-test-command" },
+            },
+          };
+          const failed = await executeMcpInvocation(runtimePool, { serverItem: unavailable, toolName: "search" }, {});
+          expect(failed.error).toBe(true);
+          const [offline] = await getMcpConnectionStates(runtimePool, [item.id]);
+          expect(offline?.lastErrorReason).toBe("handshake_failed");
+          expect(offline?.lastConnectedAt).toEqual(connected?.lastConnectedAt);
+        });
+      } finally {
+        try {
+          await contract.stop();
+        } finally {
+          await runtimePool.end();
+        }
+      }
+    });
+
     it("connects, completes the handshake, and injects the credential into the child's env", async () => {
       await makeSoleTenantAdmin();
       const contract = startStdioContractServer();
@@ -850,6 +886,102 @@ describe("MCP connection factory (issue #231)", () => {
     expect(result.error).toBe(true);
     expect(result.failure).toEqual({ failureKind: "connection", mcpServerItemId: item.id });
     expect(result.result).not.toContain("ECONNREFUSED");
+  });
+
+  it.each([
+    ["sse", startSseContractServer],
+    ["http", startHttpContractServer],
+  ])("records actual %s invocation connection outcomes in the tenant", async (_transport, startServer) => {
+    const tenantId = getTenantZeroId();
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    let first: Awaited<ReturnType<typeof startServer>> | undefined;
+    let firstStopped = false;
+    try {
+      first = await startServer();
+      const activeFirst = first;
+      const item = await createMcpServerItem(activeFirst.connectionConfig, "mcp-secret-marker");
+      await runInTenant(tenantId, async () => {
+        const initial = await executeMcpInvocation(runtimePool, { serverItem: item, toolName: "search" }, {});
+        expect(initial.error).toBe(false);
+        const [connected] = await getMcpConnectionStates(runtimePool, [item.id]);
+        expect(connected?.lastConnectedAt).not.toBeNull();
+        expect(connected?.lastErrorReason).toBeNull();
+
+        await activeFirst.stop();
+        firstStopped = true;
+        const failed = await executeMcpInvocation(runtimePool, { serverItem: item, toolName: "search" }, {});
+        expect(failed.error).toBe(true);
+        const [offline] = await getMcpConnectionStates(runtimePool, [item.id]);
+        expect(offline?.lastErrorReason).toBe("handshake_failed");
+        expect(offline?.lastConnectedAt).toEqual(connected?.lastConnectedAt);
+        expect(JSON.stringify(offline)).not.toContain("127.0.0.1");
+        expect(JSON.stringify(offline)).not.toContain("mcp-secret-marker");
+
+        const second = await startServer();
+        try {
+          const newTarget = { ...item, properties: { ...item.properties, connectionConfig: second.connectionConfig } };
+          const before = (await runtimePool.query<{ at: Date }>("SELECT clock_timestamp() AS at")).rows[0]?.at;
+          if (!before) throw new Error("Missing start timestamp");
+          const toolFailure = await executeMcpInvocation(
+            runtimePool,
+            { serverItem: newTarget, toolName: "search" },
+            {
+              __forceError: true,
+            },
+          );
+          expect(toolFailure.error).toBe(true);
+          expect(second.getLastToolCall()?.arguments).toEqual({ __forceError: true });
+          const [reconnected] = await getMcpConnectionStates(runtimePool, [item.id]);
+          expect(reconnected?.lastErrorReason).toBeNull();
+          expect(reconnected?.lastConnectedAt).not.toBeNull();
+          const { rows: freshness } = await runtimePool.query<{ current: boolean }>(
+            "SELECT last_connected_at >= $2 AND last_connected_at <= clock_timestamp() AS current FROM mcp_server_connection_state WHERE mcp_server_item_id = $1",
+            [item.id, before],
+          );
+          expect(freshness).toEqual([{ current: true }]);
+        } finally {
+          await second.stop();
+        }
+      });
+      const tenantB = await createTestTenant(pool);
+      expect(await runInTenant(tenantB, () => getMcpConnectionStates(runtimePool, [item.id]))).toEqual([]);
+    } finally {
+      try {
+        if (first && !firstStopped) await first.stop();
+      } finally {
+        await runtimePool.end();
+      }
+    }
+  });
+
+  it("keeps a real failed invocation's connection state after the caller rolls back", async () => {
+    const tenantId = getTenantZeroId();
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const contract = await startHttpContractServer();
+      const item = await (async () => {
+        try {
+          return await createMcpServerItem(contract.connectionConfig);
+        } finally {
+          await contract.stop();
+        }
+      })();
+      await expect(
+        runInTenant(tenantId, () =>
+          withTransaction(runtimePool, async () => {
+            const outcome = await executeMcpInvocation(runtimePool, { serverItem: item, toolName: "search" }, {});
+            expect(outcome.error).toBe(true);
+            throw new Error("intentional caller rollback");
+          }),
+        ),
+      ).rejects.toThrow("intentional caller rollback");
+      const states = await runInTenant(tenantId, () => getMcpConnectionStates(runtimePool, [item.id]));
+      expect(states).toMatchObject([
+        { mcpServerItemId: item.id, lastErrorReason: "handshake_failed", lastConnectedAt: null },
+      ]);
+    } finally {
+      await runtimePool.end();
+    }
   });
 
   describe("sse", () => {

@@ -2,7 +2,8 @@ import { createServer, type Server } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { logger } from "../logger.js";
 import type { Pool, PoolClient } from "pg";
 import {
   CAPABILITY_IDS,
@@ -2052,6 +2053,45 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     ]);
     const notifications = await sendOk(a.member, { method: "GET", path: "/api/notifications/unread" });
     expect(readIdArray(notifications, "notifications")).toEqual([a.notificationId]);
+  });
+
+  it("validates notification preferences over HTTP without changing stored values", async () => {
+    const path = "/api/notification-preferences";
+    const beforeText = await sendOk(a.member, { method: "GET", path });
+    const before: unknown = JSON.parse(beforeText);
+    if (!isRecord(before) || typeof before.approvals !== "boolean") throw new Error("Invalid preferences response");
+    try {
+      const changed: unknown = JSON.parse(
+        await sendOk(a.member, { method: "PATCH", path, body: { approvals: false } }),
+      );
+      expect(changed).toMatchObject({ approvals: false });
+      const persisted = await sendOk(a.member, { method: "GET", path });
+      expect(JSON.parse(persisted)).toEqual(changed);
+      for (const [body, field] of [
+        [{ problemsLevel: "invalid" }, "problemsLevel"],
+        [{ approvals: true, "private-key-sentinel": "private-value-sentinel" }, "body"],
+      ] as const) {
+        const errorLog = vi.spyOn(logger, "error");
+        const warnLog = vi.spyOn(logger, "warn");
+        let answer: Awaited<ReturnType<typeof send>>;
+        try {
+          answer = await send(a.member, { method: "PATCH", path, body });
+          expect(errorLog).not.toHaveBeenCalled();
+          expect(warnLog).not.toHaveBeenCalled();
+        } finally {
+          errorLog.mockRestore();
+          warnLog.mockRestore();
+        }
+        expect(answer.status).toBe(400);
+        const response: unknown = JSON.parse(answer.text);
+        expect(response).toMatchObject({ error: { code: "validation_failed", details: { field } } });
+        expect(answer.text).not.toContain("private-key-sentinel");
+        expect(answer.text).not.toContain("private-value-sentinel");
+        expect(await sendOk(a.member, { method: "GET", path })).toBe(persisted);
+      }
+    } finally {
+      await sendOk(a.member, { method: "PATCH", path, body: { approvals: before.approvals } });
+    }
   });
 
   it("omits a historical foreign blob from an authenticated item envelope", async () => {

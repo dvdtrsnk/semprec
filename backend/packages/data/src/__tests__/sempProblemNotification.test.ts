@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
@@ -16,6 +17,11 @@ import { patchNotificationPreferences } from "../notifications/notificationPrefe
 import { upsertWebPushSubscription } from "../push/pushSubscriptionsStore.js";
 import type { PushSenders } from "../push/pushSenders.js";
 import { raiseProblem, type RaiseProblemInput } from "../semp/sempProblemsStore.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
+import { handleSyncMailAccountTask } from "../mail/mailSyncJob.js";
+import type { BlobStorageWriter } from "../mail/blobStorage.js";
 
 class RollbackSentinel extends Error {}
 
@@ -62,7 +68,7 @@ interface SempNotificationRow {
   source_id: string;
   transition_instance: string;
   link_href: string | null;
-  payload: { severity?: string };
+  payload: unknown;
 }
 
 /** Every `semp_problem` notification of tenant zero, oldest first. */
@@ -144,6 +150,35 @@ describe("semp_problem notifications raised by raiseProblem (issue #1466)", () =
     });
   });
 
+  it.each(["cs", "en"] as const)("stores and pushes the generic problem title in %s", async (locale) => {
+    const catalog: unknown = JSON.parse(
+      await readFile(new URL(`../notifications/i18n/${locale}.json`, import.meta.url), "utf8"),
+    );
+    if (catalog === null || typeof catalog !== "object" || !("notification.semp_problem.title" in catalog)) {
+      throw new Error(`Missing problem title in ${locale} catalog`);
+    }
+    const expectedTitle: unknown = catalog["notification.semp_problem.title"];
+    if (typeof expectedTitle !== "string") throw new Error(`Invalid problem title in ${locale} catalog`);
+
+    // The user fixture has no locale argument and there is no locale mutation API in this store.
+    await pool.query("UPDATE users SET locale = $1 WHERE id = $2", [locale, userId]);
+    const marker = "internal-provider-secret";
+    const result = await inZero((client) => raiseProblem(client, problemInput({ kind: marker, dedupeKey: marker })));
+    expect(result.outcome).toBe("created");
+    const notifications = await sempNotifications();
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.title).toBe(expectedTitle);
+    expect(expectedTitle).not.toMatch(/\{[^}]*\}|internal-provider-secret/);
+
+    const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+    await fanOutAll({ sendWebPush, sendApns: vi.fn() });
+    expect(sendWebPush).toHaveBeenCalledTimes(1);
+    expect(sendWebPush).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ notificationId: notifications[0]?.id, title: expectedTitle }),
+    );
+  });
+
   /**
    * Four failed syncs of one mailbox, as `mailSyncJob` reports them: each stores its own
    * `mail_sync_error` notification and raises the mailbox's one problem at `severity`.
@@ -192,6 +227,59 @@ describe("semp_problem notifications raised by raiseProblem (issue #1466)", () =
     expect(await countInZero(`SELECT count(*) FROM push_deliveries`)).toBe(1);
   });
 
+  it("sends one push after four actual mailbox sync job failures", async () => {
+    await runInTenant(tenantZero, () => seedSystem(pool));
+    async function databaseId(moduleId: string): Promise<string> {
+      const { rows } = await inZero((client) =>
+        client.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]),
+      );
+      if (!rows[0]) throw new Error(`Missing seeded database: ${moduleId}`);
+      return rows[0].id;
+    }
+    const moduleIds = {
+      emailsDatabaseId: await databaseId("emails"),
+      filesDatabaseId: await databaseId("files"),
+      foldersDatabaseId: await databaseId("folders"),
+      mailboxesDatabaseId: await databaseId("mailboxes"),
+    };
+    const mailbox = await inZero((client) =>
+      createItemWithClient(client, { databaseId: moduleIds.mailboxesDatabaseId, properties: { name: "Mailbox" } }),
+    );
+    await inZero((client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
+    await inZero((client) => patchNotificationPreferences(client, userId, { problemsLevel: "all" }));
+    const storage: BlobStorageWriter = {
+      async writeStream() {
+        throw new Error("Unexpected blob write");
+      },
+      async delete() {
+        throw new Error("Unexpected blob delete");
+      },
+      readStream() {
+        throw new Error("Unexpected blob read");
+      },
+    };
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      await expect(
+        runInTenant(tenantZero, () =>
+          handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, {}, moduleIds, storage, {
+            job: { id: `job-${attempt}` },
+          }),
+        ),
+      ).rejects.toThrow("has no stored credential");
+    }
+    expect(await countInZero("SELECT count(*) FROM semp_problems WHERE source_id = $1", [mailbox.id])).toBe(1);
+    expect(
+      await countInZero("SELECT count(*) FROM notifications WHERE kind = 'mail_sync_error' AND source_id = $1", [
+        mailbox.id,
+      ]),
+    ).toBe(4);
+    expect(await sempNotifications()).toHaveLength(1);
+    const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
+    await fanOutAll({ sendWebPush, sendApns: vi.fn() });
+    expect(sendWebPush).toHaveBeenCalledTimes(1);
+    expect(await countInZero("SELECT count(*) FROM push_deliveries")).toBe(1);
+  });
+
   it("sends one push for four warning sync failures only when the problems level includes warnings", async () => {
     await reportFourSyncFailures("warning");
 
@@ -206,10 +294,11 @@ describe("semp_problem notifications raised by raiseProblem (issue #1466)", () =
     expect(await countInZero(`SELECT count(*) FROM push_deliveries`)).toBe(1);
   });
 
-  it("writes nothing new when the same problem is raised again at the same or a lower severity", async () => {
+  it("writes no new notification or push when the same problem is raised at the same or a lower severity", async () => {
     const sourceId = randomUUID();
     const dedupeKey = `mail:${sourceId}`;
     const outcomes: string[] = [];
+    const sendWebPush = vi.fn().mockResolvedValue({ outcome: "delivered" });
     for (const [attempt, severity] of [
       [1, "critical"],
       [2, "critical"],
@@ -219,10 +308,13 @@ describe("semp_problem notifications raised by raiseProblem (issue #1466)", () =
         raiseProblem(client, problemInput({ sourceId, dedupeKey, severity, occurrenceKey: `job-${attempt}` })),
       );
       outcomes.push(result.outcome);
+      await fanOutAll({ sendWebPush, sendApns: vi.fn() });
     }
 
     expect(outcomes).toEqual(["created", "merged", "merged"]);
     expect(await sempNotifications()).toHaveLength(1);
+    expect(sendWebPush).toHaveBeenCalledTimes(1);
+    expect(await countInZero("SELECT count(*) FROM push_deliveries")).toBe(1);
   });
 
   it("writes one new notification when a problem's severity rises from warning to critical", async () => {
@@ -238,9 +330,9 @@ describe("semp_problem notifications raised by raiseProblem (issue #1466)", () =
     expect(first.outcome).toBe("created");
     expect(second).toEqual({ problemId: first.problemId, outcome: "escalated" });
     const notifications = await sempNotifications();
-    expect(notifications.map((row) => [row.transition_instance, row.payload.severity])).toEqual([
-      [`${first.problemId}:warning`, "warning"],
-      [`${first.problemId}:critical`, "critical"],
+    expect(notifications.map((row) => [row.transition_instance, row.payload])).toEqual([
+      [`${first.problemId}:warning`, { severity: "warning" }],
+      [`${first.problemId}:critical`, { severity: "critical" }],
     ]);
 
     // The default preferences push a critical problem only: the warning is stored and not sent.

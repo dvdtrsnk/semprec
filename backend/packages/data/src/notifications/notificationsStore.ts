@@ -31,13 +31,17 @@ interface NotificationDbRow {
   source_table: string;
   source_id: string;
   transition_instance: string;
-  payload: Record<string, unknown>;
+  payload: unknown;
   created_at: Date;
   read_at: Date | null;
   resolved_at: Date | null;
 }
 
 function mapRow(row: NotificationDbRow): NotificationRow {
+  if (row.payload === null || typeof row.payload !== "object" || Array.isArray(row.payload)) {
+    throw new Error("Invalid notification payload");
+  }
+  const payload: Record<string, unknown> = Object.fromEntries(Object.entries(row.payload));
   return {
     id: row.id,
     userId: row.user_id,
@@ -48,7 +52,7 @@ function mapRow(row: NotificationDbRow): NotificationRow {
     sourceTable: row.source_table,
     sourceId: row.source_id,
     transitionInstance: row.transition_instance,
-    payload: row.payload,
+    payload,
     createdAt: row.created_at.toISOString(),
     readAt: row.read_at ? row.read_at.toISOString() : null,
     resolvedAt: row.resolved_at ? row.resolved_at.toISOString() : null,
