@@ -1,4 +1,6 @@
 import type { Queryable } from "../db/pool.js";
+import type { PoolClient } from "pg";
+import { lockInboxSource, lockInboxSourceIfPresent } from "./inboxSourceGuard.js";
 
 // Owns the `inbox_attachments` table: the files an Inbox item carries (issue #1564). Moving them into
 // Files on confirm is issue #1703, and is not done here. Each row names one `blobs` row, and
@@ -52,16 +54,15 @@ function mapAttachmentRow(row: InboxAttachmentDbRow): InboxAttachmentRow {
 
 /**
  * Appends `attachments` to an Inbox item in the order given, after the item's highest position (the
- * first one takes 0). The positions are computed in the same statement that writes them, and no lock
- * is taken on the item: two inserts for one item that run at the same time compute the same positions,
- * and the second one fails on `inbox_attachments_item_position_uq` instead of taking a duplicate
- * position. A blob of another tenant is refused by the composite foreign key to `blobs`.
+ * first one takes 0). The source lock serializes appenders and the position is read afterward.
+ * A blob of another tenant is refused by the composite foreign key to `blobs`.
  */
 export async function insertInboxAttachments(
-  client: Queryable,
+  client: PoolClient,
   inboxItemId: string,
   attachments: NewInboxAttachment[],
 ): Promise<void> {
+  await lockInboxSource(client, inboxItemId);
   await client.query(
     `INSERT INTO inbox_attachments (inbox_item_id, blob_id, position, source)
      SELECT $1::uuid, input.blob_id, (base.next_position + input.ordinal - 1)::integer, input.source
@@ -99,7 +100,13 @@ export async function getInboxAttachment(client: Queryable, attachmentId: string
  * Removes one attachment row and reports whether it existed. The blob it named is left alone: a caller
  * that drops the last reference to a blob releases its bytes through `deleteBlobIfUnreferenced`.
  */
-export async function deleteInboxAttachment(client: Queryable, attachmentId: string): Promise<boolean> {
+export async function deleteInboxAttachment(client: PoolClient, attachmentId: string): Promise<boolean> {
+  const found = await client.query<{ inbox_item_id: string }>(
+    "SELECT inbox_item_id FROM inbox_attachments WHERE attachment_id = $1",
+    [attachmentId],
+  );
+  if (!found.rows[0]) return false;
+  await lockInboxSource(client, found.rows[0].inbox_item_id, true);
   const result = await client.query("DELETE FROM inbox_attachments WHERE attachment_id = $1", [attachmentId]);
   return (result.rowCount ?? 0) > 0;
 }
@@ -109,7 +116,8 @@ export async function deleteInboxAttachment(client: Queryable, attachmentId: str
  * named. `deleteItemDependents` runs it before releasing those blobs, because a row still present would
  * keep its blob referenced.
  */
-export async function deleteInboxAttachmentsForItem(client: Queryable, inboxItemId: string): Promise<string[]> {
+export async function deleteInboxAttachmentsForItem(client: PoolClient, inboxItemId: string): Promise<string[]> {
+  await lockInboxSourceIfPresent(client, inboxItemId, true);
   const { rows } = await client.query<{ blob_id: string }>(
     "DELETE FROM inbox_attachments WHERE inbox_item_id = $1 RETURNING blob_id",
     [inboxItemId],

@@ -22,6 +22,7 @@ import {
   getBlob,
   enqueueTranscriptionJob,
   ensureItemAutomation,
+  findIdempotentReplay,
   getTenantUserId,
   getItemById,
   getDatabaseByModuleId,
@@ -174,9 +175,15 @@ function throwIfShutdownRequested(context: TranscriptionStepContext, where: stri
  */
 type TranscriptionStep = (context: TranscriptionStepContext) => Promise<void>;
 
+async function lockTranscriptionItem(client: PoolClient, databaseId: string, itemId: string): Promise<ItemRow | null> {
+  const item = await lockItemById(client, databaseId, itemId);
+  if (!item) return null;
+  const jsonObject = z.record(z.string(), z.unknown());
+  return { ...item, properties: jsonObject.parse(item.properties), computed: jsonObject.parse(item.computed) };
+}
+
 function requireSource(source: ItemRow | null, fileItemId: string): ItemRow {
-  if (!source)
-    throw new NotFoundError(`Files item '${fileItemId}' not found`, { resource: "item", itemId: fileItemId });
+  if (!source) throw new TranscriptionStoppedError("Files item", fileItemId);
   return source;
 }
 
@@ -242,12 +249,11 @@ function withRepeatableReadTransaction<T>(pool: Pool, fn: (client: PoolClient) =
 }
 
 /**
- * Row-locks the Transcriptions row's `item_automation` inside the caller's transaction and throws
+ * Locks the Files source, transcript and automation in that order in the caller's transaction and throws
  * `TranscriptionLockedError` when a user locked it. Held until that transaction ends, so a user's
  * lock cannot land between this check and the writes after it — it waits for them to commit.
- * Every transaction of steps 1–8 calls it first, including the read transaction ahead of a paid
- * call, so a lock set while a step runs stops the pipeline before its next write or paid call.
- * Taken before any `items` row lock, the same order `recordTranscriptionFailure` takes them in.
+ * Each step checks at entry, and again before a checkpoint write or the next chunk's paid call,
+ * so a lock set while a step runs stops the pipeline before its next write or paid call.
  * Then throws `TranscriptionStoppedError` when the transcript or the source Files item is in
  * Trash or gone, so no step writes to or pays for deleted data.
  */
@@ -255,30 +261,38 @@ async function requireTranscriptionUnlocked(
   client: PoolClient,
   { filesDatabaseId, fileItemId, transcriptId }: TranscriptionStepContextIds,
 ): Promise<void> {
+  const source = await lockTranscriptionItem(client, filesDatabaseId, fileItemId);
+  const transcript = await lockTranscriptionItem(client, await requireTranscriptsDatabaseId(client), transcriptId);
   const automation = await lockItemAutomation(client, transcriptId);
-  if (!automation)
+  if (!source || source.deletedAt) throw new TranscriptionStoppedError("Files item", fileItemId);
+  if (!transcript || transcript.deletedAt) throw new TranscriptionStoppedError("Transcriptions item", transcriptId);
+  if (!automation) {
     throw new NotFoundError(`item_automation row for item '${transcriptId}' not found`, {
       resource: "item",
       itemId: transcriptId,
     });
+  }
   if (automation.status === "locked") throw new TranscriptionLockedError(transcriptId);
-  const transcript = await getItemById(client, await requireTranscriptsDatabaseId(client), transcriptId);
-  if (!transcript || transcript.deletedAt) throw new TranscriptionStoppedError("Transcriptions item", transcriptId);
-  const source = await getItemById(client, filesDatabaseId, fileItemId);
-  if (!source || source.deletedAt) throw new TranscriptionStoppedError("Files item", fileItemId);
 }
 
 type TranscriptionStepContextIds = Pick<TranscriptionStepContext, "filesDatabaseId" | "fileItemId" | "transcriptId">;
 
 /** Step 0: database-only, so one transaction covers the checkpoint check, the Transcripts row and the checkpoint. */
-async function runCreateStep({ pool, filesDatabaseId, fileItemId }: TranscriptionSourceContext): Promise<void> {
-  await withTransaction(pool, async (client) => {
-    const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
-    if (Object.hasOwn(source.computed, TRANSCRIPTION_CREATE_COMPUTED_KEY)) return;
-    if (source.deletedAt) throw new TranscriptionStoppedError("Files item", fileItemId);
-
+async function runCreateStep({
+  pool,
+  filesDatabaseId,
+  fileItemId,
+}: TranscriptionSourceContext): Promise<string | null> {
+  return withTransaction(pool, async (client) => {
+    const source = await lockTranscriptionItem(client, filesDatabaseId, fileItemId);
+    if (source && Object.hasOwn(source.computed, TRANSCRIPTION_CREATE_COMPUTED_KEY))
+      return requireTranscriptId(source, fileItemId);
     const transcripts = await getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
     if (!transcripts) throw new NotFoundError("Transcripts database not found");
+    if (!source || source.deletedAt) {
+      const prior = await findIdempotentReplay(client, transcripts.id, `transcription:${fileItemId}`);
+      return prior?.id ?? null;
+    }
     const transcript = await createItemWithClient(
       client,
       {
@@ -292,8 +306,11 @@ async function runCreateStep({ pool, filesDatabaseId, fileItemId }: Transcriptio
       },
       { allowedSystemKeys: ["status", "link"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
     );
+    const lockedTranscript = await lockTranscriptionItem(client, transcripts.id, transcript.id);
+    if (!lockedTranscript || lockedTranscript.deletedAt) return transcript.id;
     await ensureItemAutomation(client, transcript.id);
     await writeComputed(client, filesDatabaseId, fileItemId, TRANSCRIPTION_CREATE_COMPUTED_KEY, transcript.id);
+    return transcript.id;
   });
 }
 
@@ -354,10 +371,9 @@ async function runPrepareStep(
   // worse than leaving an unreferenced file behind.
   let referenced = false;
   try {
-    // The source container can carry no duration at all (e.g. a streamed WebM/Matroska recording);
-    // the normalized Ogg Opus output always does.
-    const durationSeconds =
-      probe.durationSeconds ?? (await probeNormalizedDuration(blobStorage, normalized.storageKey));
+    // Segment times refer to normalized audio, whose duration can differ from its source container
+    // when an audio track starts late or a video continues after the audio ends.
+    const durationSeconds = await probeNormalizedDuration(blobStorage, normalized.storageKey);
 
     await withRepeatableReadTransaction(pool, async (client) => {
       await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
@@ -474,6 +490,7 @@ async function runAsrStep(
 ): Promise<void> {
   const { pool, filesDatabaseId, fileItemId, transcriptId } = context;
   const prepare = await withTransaction(pool, async (client) => {
+    await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
     const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
     return requirePrepareCheckpoint(source, fileItemId);
   });
@@ -798,19 +815,32 @@ function createTranscriptionSteps(
 /**
  * Opens this attempt on the Transcriptions row step 0 created: counts it in the cumulative
  * `item_automation.attempts` and moves the row back to `pending`. Returns the row's id, or `null`
- * when a user locked it — the pipeline then does nothing more to it.
+ * when a target is deleted or a user locked the automation.
  */
-async function startTranscriptionAttempt({
-  pool,
-  filesDatabaseId,
-  fileItemId,
-}: TranscriptionSourceContext): Promise<string | null> {
+async function startTranscriptionAttempt(
+  { pool, filesDatabaseId, fileItemId }: TranscriptionSourceContext,
+  transcriptId: string,
+): Promise<string | null> {
   return withTransaction(pool, async (client) => {
-    const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
-    const transcriptId = requireTranscriptId(source, fileItemId);
+    const source = await lockTranscriptionItem(client, filesDatabaseId, fileItemId);
+    const transcript = await lockTranscriptionItem(client, await requireTranscriptsDatabaseId(client), transcriptId);
+    const automation = await lockItemAutomation(client, transcriptId);
+    if (!source || source.deletedAt || !transcript || transcript.deletedAt) {
+      if (automation && automation.status !== "locked")
+        await recordItemAutomationFailure(
+          client,
+          transcriptId,
+          "Transcript or source file deleted",
+          "error",
+          "deleted",
+        );
+      return null;
+    }
+    if (requireTranscriptId(source, fileItemId) !== transcriptId)
+      throw new Error("Transcription checkpoint changed before the attempt started");
     await ensureItemAutomation(client, transcriptId);
-    const automation = await startItemAutomationAttempt(client, transcriptId);
-    return automation ? transcriptId : null;
+    const started = await startItemAutomationAttempt(client, transcriptId);
+    return started ? transcriptId : null;
   });
 }
 
@@ -839,20 +869,32 @@ function isBudgetRejection(err: unknown): boolean {
  * permanent failure also sets `item_automation.status = 'error'` and `status = error`, and writes
  * one `automation_error` notification keyed by the cumulative attempt count, so replaying the same
  * attempt's failure never adds a second one while every later permanent failure gets its own.
- * A permanent failure on a transcript in Trash writes no `status` update and no notification (the
- * update would throw `NotFound` and roll everything back); it marks `error`/`deleted` instead.
- * Returns `"locked"`, writing nothing, when a user locked the row in the meantime, `"deleted"` for
- * that stop, otherwise `"recorded"`.
+ * Missing or trashed targets stop without an item update or notification; an existing unlocked
+ * automation is marked `error`/`deleted`. A locked automation remains unchanged.
+ * Returns `"locked"` for a live target with a user lock, `"deleted"` for the stop, otherwise `"recorded"`.
  */
 async function recordTranscriptionFailure(
   client: PoolClient,
-  transcriptId: string,
+  { filesDatabaseId, fileItemId, transcriptId }: TranscriptionStepContextIds,
   message: string,
   errorCode: ItemAutomationErrorCode,
   permanent: boolean,
 ): Promise<"recorded" | "locked" | "deleted"> {
+  const source = await lockTranscriptionItem(client, filesDatabaseId, fileItemId);
+  const transcriptsDatabaseId = await requireTranscriptsDatabaseId(client);
+  const transcript = await lockTranscriptionItem(client, transcriptsDatabaseId, transcriptId);
   const automation = await lockItemAutomation(client, transcriptId);
-  if (!automation || automation.status === "locked") return "locked";
+  if (!source || source.deletedAt || !transcript || transcript.deletedAt) {
+    if (automation && automation.status !== "locked")
+      await recordItemAutomationFailure(client, transcriptId, message, "error", "deleted");
+    return "deleted";
+  }
+  if (!automation)
+    throw new NotFoundError(`item_automation row for item '${transcriptId}' not found`, {
+      resource: "item",
+      itemId: transcriptId,
+    });
+  if (automation.status === "locked") return "locked";
   const written = await recordItemAutomationFailure(
     client,
     transcriptId,
@@ -863,16 +905,10 @@ async function recordTranscriptionFailure(
   if (!written) throw new Error(`item_automation row for item ${transcriptId} was not updated while locked`);
   if (!permanent) return "recorded";
 
-  const transcript = await getItemById(client, await requireTranscriptsDatabaseId(client), transcriptId);
-  if (!transcript || transcript.deletedAt) {
-    // In Trash the `status` update would throw NotFound and roll back everything above: stop cleanly instead.
-    await recordItemAutomationFailure(client, transcriptId, message, "error", "deleted");
-    return "deleted";
-  }
   await updateItemWithClient(
     client,
     {
-      databaseId: await requireTranscriptsDatabaseId(client),
+      databaseId: transcriptsDatabaseId,
       itemId: transcriptId,
       propertiesPatch: { status: "error" },
     },
@@ -907,17 +943,27 @@ function requireGatewayInternalToken(): string {
   return token;
 }
 
+class TranscriptionQueueError extends Error {
+  readonly code: ItemAutomationErrorCode;
+
+  constructor(code: ItemAutomationErrorCode) {
+    super("Transcription task failed");
+    this.name = "TranscriptionQueueError";
+    this.code = code;
+  }
+}
+
 /**
  * Runs each declared transcription step in order; each skips itself once its checkpoint exists,
  * so a retried attempt (`transcriptionJob` is enqueued with `max_attempts: 3` and graphile-worker's
  * built-in exponential backoff) resumes from the last checkpoint without repeating a paid call.
  * Every attempt is counted on the Transcriptions row's `item_automation`, and a row a user locked
- * is left alone — checked inside every step transaction (`requireTranscriptionUnlocked`), so a lock
- * set mid-run keeps the running step's pending write from landing and stops the pipeline. A failure
- * is recorded by `recordTranscriptionFailure` and rethrown for graphile-worker to retry, except a
+ * is left alone — checked at step entry and before checkpoint writes (`requireTranscriptionUnlocked`),
+ * so a lock set mid-run keeps the running step's pending write from landing. A failure
+ * is recorded by `recordTranscriptionFailure` and a safe error reaches graphile-worker for retry, except a
  * budget rejection: that is permanent at once, so once recorded the job completes instead of
  * spending its remaining attempts on calls the gateway will reject. A failure in step 0 happens
- * before there is a Transcriptions row to record it on and is only rethrown. When
+ * before there is a Transcriptions row to record it on and is returned as a safe error. When
  * `helpers.abortSignal` fires (graphile-worker's `Runner.stop()`, given the systemd unit's
  * `TimeoutStopSec` to let the in-flight chunk finish and checkpoint), the next
  * `throwIfShutdownRequested` check — before a step or an ASR chunk — throws
@@ -958,21 +1004,15 @@ export function createTranscriptionTask(
       token: requireGatewayInternalToken(),
     });
 
-  return async (payload: unknown, helpers: TranscriptionJobHelpers): Promise<void> => {
+  const run = async (payload: unknown, helpers: TranscriptionJobHelpers): Promise<void> => {
     const { fileItemId } = transcriptionJobPayloadSchema.parse(payload);
     const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, FILES_MODULE_ID));
     if (!files) throw new NotFoundError("Files database not found");
     const sourceContext: TranscriptionSourceContext = { pool, filesDatabaseId: files.id, fileItemId };
 
-    try {
-      await runCreateStep(sourceContext);
-    } catch (err) {
-      if (!(err instanceof TranscriptionStoppedError)) throw err;
-      // No transcript exists yet, so there is no `item_automation` row to mark.
-      logger.info({ fileItemId }, "Source file deleted before transcription started; nothing to do");
-      return;
-    }
-    const transcriptId = await startTranscriptionAttempt(sourceContext);
+    const createdTranscriptId = await runCreateStep(sourceContext);
+    if (!createdTranscriptId) return;
+    const transcriptId = await startTranscriptionAttempt(sourceContext, createdTranscriptId);
     if (!transcriptId) return;
     const context: TranscriptionStepContext = {
       ...sourceContext,
@@ -1017,11 +1057,11 @@ export function createTranscriptionTask(
       let outcome: Awaited<ReturnType<typeof recordTranscriptionFailure>>;
       try {
         outcome = await withTransaction(pool, (client) =>
-          recordTranscriptionFailure(client, transcriptId, message, errorCode, permanent),
+          recordTranscriptionFailure(client, context, message, errorCode, permanent),
         );
-      } catch (recordErr) {
+      } catch {
         // The attempt's own failure is what the caller must see; this one is only logged.
-        logger.error({ err: recordErr, transcriptId }, "Failed to record a transcription failure");
+        logger.error({ transcriptId }, "Failed to record a transcription failure");
         throw err;
       }
       if (outcome === "deleted") {
@@ -1033,6 +1073,13 @@ export function createTranscriptionTask(
         return;
       }
       throw err;
+    }
+  };
+  return async (payload: unknown, helpers: TranscriptionJobHelpers): Promise<void> => {
+    try {
+      await run(payload, helpers);
+    } catch (error) {
+      throw new TranscriptionQueueError(classifyTranscriptionFailure(error));
     }
   };
 }

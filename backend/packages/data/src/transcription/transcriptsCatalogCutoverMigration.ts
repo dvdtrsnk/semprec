@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { z } from "zod";
 import { requireAffectedRows, requireSingleRow, withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import {
@@ -86,11 +87,21 @@ export async function runTranscriptsCatalogCutoverMigration(pool: Pool): Promise
       [transcripts.id, TRANSCRIPTION_OWNER_PROCESS, ["status", "date", "link"]],
     );
 
-    const { rows: statusRows } = await client.query<{
-      id: string;
-      config: { options?: { key: string }[] };
-    }>(`SELECT id, config FROM properties WHERE database_id = $1 AND key = 'status'`, [transcripts.id]);
-    const statusProperty = statusRows[0];
+    const { rows: statusRows } = await client.query<Record<string, unknown>>(
+      `SELECT id, config FROM properties WHERE database_id = $1 AND key = 'status'`,
+      [transcripts.id],
+    );
+    const rawStatus = statusRows[0];
+    const statusProperty = rawStatus
+      ? z
+          .object({
+            id: z.string(),
+            config: z
+              .object({ options: z.array(z.object({ key: z.string() }).passthrough()).optional() })
+              .passthrough(),
+          })
+          .parse(rawStatus)
+      : undefined;
     if (statusProperty) {
       const options = statusProperty.config.options ?? [];
       if (!options.some((option) => option.key === "error")) {

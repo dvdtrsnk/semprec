@@ -88,7 +88,7 @@ function selectOptionKeys(property: Pick<PropertyRow, "type" | "config">): strin
   const options: unknown = property.config.options;
   if (!Array.isArray(options)) return [];
   return options.flatMap((option: unknown) => {
-    const key = typeof option === "object" && option !== null ? (option as { key?: unknown }).key : undefined;
+    const key = typeof option === "object" && option !== null && "key" in option ? option.key : undefined;
     return typeof key === "string" ? [key] : [];
   });
 }

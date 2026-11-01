@@ -5,6 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { Pool } from "pg";
+import { z } from "zod";
 import { runMigrations } from "../db/migrate.js";
 
 /**
@@ -15,6 +16,86 @@ import { runMigrations } from "../db/migrate.js";
 
 const EXAMPLES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "db", "migrationExamples");
 const LONG_TITLE = "a title longer than ten characters";
+
+it("upgrades populated item automation through migration 0092 and retains legacy reads and writes", async () => {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("Missing test database URL");
+  const name = `automation_upgrade_${randomUUID().replaceAll("-", "")}`;
+  const admin = new Pool({ connectionString: url });
+  const dir = await mkdtemp(path.join(tmpdir(), "semprec-automation-upgrade-"));
+  const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+  const migration = "0092_item_automation_error_code.sql";
+  let scratch: Pool | undefined;
+  let created = false;
+  let failure: { error: unknown } | undefined;
+  try {
+    await admin.query(`CREATE DATABASE "${name}"`);
+    created = true;
+    const scratchUrl = new URL(url);
+    scratchUrl.pathname = `/${name}`;
+    scratch = new Pool({ connectionString: scratchUrl.toString() });
+    for (const file of (await readdir(migrations))
+      .filter((entry) => entry.endsWith(".sql") && entry < migration)
+      .sort())
+      await copyFile(path.join(migrations, file), path.join(dir, file));
+    await runMigrations(scratch, dir);
+    const tenantRows = await scratch.query<Record<string, unknown>>("SELECT id FROM tenants LIMIT 1");
+    const tenantId = z.object({ id: z.uuid() }).parse(tenantRows.rows[0]).id;
+    const oldId = randomUUID();
+    await scratch.query(
+      "INSERT INTO item_automation (item_id, tenant_id, status, error, attempts) VALUES ($1, $2, 'error', 'legacy diagnostic', 2)",
+      [oldId, tenantId],
+    );
+    await copyFile(path.join(migrations, migration), path.join(dir, migration));
+    await runMigrations(scratch, dir);
+    const previous = await scratch.query<Record<string, unknown>>(
+      "SELECT item_id, status, error, attempts, error_code FROM item_automation WHERE item_id = $1",
+      [oldId],
+    );
+    expect(
+      z
+        .object({
+          item_id: z.uuid(),
+          status: z.string(),
+          error: z.string(),
+          attempts: z.number(),
+          error_code: z.null(),
+        })
+        .parse(previous.rows[0]),
+    ).toEqual({ item_id: oldId, status: "error", error: "legacy diagnostic", attempts: 2, error_code: null });
+    const newId = randomUUID();
+    await scratch.query(
+      "INSERT INTO item_automation (item_id, tenant_id, status, error, attempts) VALUES ($1, $2, 'error', 'old writer', 1)",
+      [newId, tenantId],
+    );
+    const legacy = await scratch.query<Record<string, unknown>>(
+      "SELECT status, error, attempts FROM item_automation WHERE item_id = $1",
+      [newId],
+    );
+    expect(z.object({ status: z.string(), error: z.string(), attempts: z.number() }).parse(legacy.rows[0])).toEqual({
+      status: "error",
+      error: "old writer",
+      attempts: 1,
+    });
+  } catch (error) {
+    failure = { error };
+  }
+  for (const cleanup of [
+    async () => scratch?.end(),
+    async () => {
+      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+    },
+    async () => admin.end(),
+    async () => rm(dir, { recursive: true, force: true }),
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      failure ??= { error };
+    }
+  }
+  if (failure) throw failure.error;
+}, 120_000);
 
 /** The previous release's data access: it names only `id` and `title`. */
 async function previousReleaseWritesAndReadsANote(pool: Pool): Promise<void> {

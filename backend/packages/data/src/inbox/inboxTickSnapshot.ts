@@ -31,6 +31,8 @@ export interface ProposalComputationResult {
   /** The target page id, for `entityKind: 'pageContent'` — ignored otherwise, since a `'database'` target is always the type's resolved `targetDatabase` id. */
   target?: string;
   properties: Record<string, unknown>;
+  relations?: Record<string, string[]>;
+  invalidProposal?: "workspaceReference" | "unrepresentableOperations";
   /**
    * Present only when the answer has more than one operation (at most `MAX_PROPOSAL_OPERATIONS`); then
    * `buildProposalEnvelope` stores a multi-step envelope. A single operation is returned as `properties`.
@@ -84,7 +86,12 @@ export function buildProposalEnvelope(snapshot: TickSnapshot, result: ProposalCo
         operations: steps,
       };
     }
-    return { entityKind: "database", target: snapshot.targetDatabaseId, properties: result.properties };
+    return {
+      entityKind: "database",
+      target: snapshot.targetDatabaseId,
+      properties: result.properties,
+      ...(result.relations ? { relations: result.relations } : {}),
+    };
   }
   if (!result.target)
     throw new Error(

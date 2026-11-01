@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { inspect } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readdir, rm } from "node:fs/promises";
@@ -12,6 +13,7 @@ import {
   createItemWithClient,
   createRerunTranscriptionRouteHandler,
   createUser as dataCreateUser,
+  findIdempotentReplay,
   createTranscriptionRequeueSweepAction,
   createViewTypeRegistry,
   ForbiddenError,
@@ -40,17 +42,14 @@ import {
   inTenantZero,
   getTestPool,
   resetDatabase,
+  withTenantTransaction,
 } from "@semprec/data/testSupport";
 import { runInTenant } from "@semprec/shared";
 import { wireRealtimeHooks } from "@semprec/realtime";
 import type { AiGatewayClientPort, AiGatewayCompletionInput, AiGatewayCompletionResult } from "@semprec/shared";
 import { CORE_TASK_NAMES, enqueueJob, registerTask, runOnce } from "@semprec/queue";
 import { AiGatewayFailedError } from "@semprec/shared";
-import {
-  classifyTranscriptionFailure,
-  createTranscriptionTask,
-  TranscriptionSourceChangedError,
-} from "./transcriptionTask.js";
+import { classifyTranscriptionFailure, createTranscriptionTask } from "./transcriptionTask.js";
 import { AudioGatewayBudgetExceededError, AudioGatewayCallError } from "./audioGatewayClient.js";
 import { MediaToolError, probeMedia } from "./mediaNormalization.js";
 import type {
@@ -69,6 +68,52 @@ import {
   probeAudioStream,
   probeNormalizedAudio,
 } from "./__tests__/fixtures/mediaFixtures.js";
+
+const observedLogs = vi.hoisted(() => ({
+  chunks: [] as string[],
+  restores: [] as Array<() => void>,
+  streams: new WeakSet<object>(),
+  level: process.env.LOG_LEVEL,
+}));
+vi.mock("@semprec/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@semprec/shared")>();
+  process.env.LOG_LEVEL = "info";
+  return {
+    ...actual,
+    createLogger(name: string) {
+      const logger = actual.createLogger(name);
+      const symbol = Reflect.ownKeys(logger).find(
+        (key) => typeof key === "symbol" && key.description === "pino.stream",
+      );
+      if (typeof symbol !== "symbol") throw new Error("Pino logger destination is unavailable");
+      const stream: unknown = Reflect.get(logger, symbol);
+      if (typeof stream !== "object" || stream === null) throw new Error("Invalid Pino logger destination");
+      if (!observedLogs.streams.has(stream)) {
+        const original: unknown = Reflect.get(stream, "write");
+        if (typeof original !== "function") throw new Error("Invalid Pino destination writer");
+        const descriptor = Object.getOwnPropertyDescriptor(stream, "write");
+        if (
+          !Reflect.set(stream, "write", function (this: unknown, ...args: unknown[]) {
+            if (typeof args[0] === "string") observedLogs.chunks.push(args[0]);
+            return Reflect.apply(original, this, args);
+          })
+        )
+          throw new Error("Cannot observe Pino destination");
+        observedLogs.streams.add(stream);
+        observedLogs.restores.push(() => {
+          if (descriptor) Object.defineProperty(stream, "write", descriptor);
+          else Reflect.deleteProperty(stream, "write");
+        });
+      }
+      return logger;
+    },
+  };
+});
+afterAll(() => {
+  for (const restore of observedLogs.restores.reverse()) restore();
+  if (observedLogs.level === undefined) delete process.env.LOG_LEVEL;
+  else process.env.LOG_LEVEL = observedLogs.level;
+});
 
 let pool: Pool;
 
@@ -180,16 +225,22 @@ describe("transcription step 0", () => {
       segments: [{ start: 0, end: 0.5, text: "Hello." }],
     });
 
-    await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toBe(summaryClient.failure);
+    await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toMatchObject({
+      name: "TranscriptionQueueError",
+      message: "Transcription task failed",
+    });
     await pool.query("UPDATE items SET properties = '{}'::jsonb WHERE id = $1", [file.id]);
-    await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toBe(summaryClient.failure);
+    await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toMatchObject({
+      name: "TranscriptionQueueError",
+      message: "Transcription task failed",
+    });
 
     const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
     if (!transcripts) throw new Error("Transcripts database was not seeded");
-    const { rows } = await pool.query<{ id: string; properties: Record<string, unknown> }>(
-      "SELECT id, properties FROM items WHERE database_id = $1",
-      [transcripts.id],
-    );
+    const raw = await pool.query<Record<string, unknown>>("SELECT id, properties FROM items WHERE database_id = $1", [
+      transcripts.id,
+    ]);
+    const rows = z.array(z.object({ id: z.uuid(), properties: z.record(z.string(), z.unknown()) })).parse(raw.rows);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.properties).toMatchObject({
       name: "recording.mp3",
@@ -225,7 +276,8 @@ describe("transcription step 0", () => {
       await promise;
       expect.unreachable("expected an owner_violation ForbiddenError");
     } catch (err) {
-      expect((err as ForbiddenError).code).toBe("owner_violation");
+      if (!(err instanceof ForbiddenError)) throw err;
+      expect(err.code).toBe("owner_violation");
     }
   });
 });
@@ -295,11 +347,12 @@ describe("transcription step 1 (prepare)", () => {
   }
 
   async function readTranscriptDate(source: ItemRow | null): Promise<unknown> {
-    const { rows } = await pool.query<{ properties: Record<string, unknown> }>(
-      "SELECT properties FROM items WHERE id = $1",
-      [z.string().parse(source?.computed.create)],
-    );
-    return rows[0]?.properties.date;
+    const { rows } = await pool.query<Record<string, unknown>>("SELECT properties FROM items WHERE id = $1", [
+      z.string().parse(source?.computed.create),
+    ]);
+    return rows[0]
+      ? z.object({ properties: z.record(z.string(), z.unknown()) }).parse(rows[0]).properties.date
+      : undefined;
   }
 
   /** The normalized audio left behind — neither a `blobs` row nor bytes in storage when step 1 discarded it. */
@@ -427,21 +480,22 @@ describe("transcription step 1 (prepare)", () => {
   it("opens its read and write transactions with the isolation level on BEGIN and issues no SET TRANSACTION", async () => {
     const { files, file } = await createSourceFile("audio/mp4", audioFixture);
     const statements: string[] = [];
-    // Pooled clients are reused across `connect()` calls: wrap each client's `query` once.
-    const wrappedClients = new WeakSet<PoolClient>();
     async function connectAndRecord(): Promise<PoolClient> {
       const client = await pool.connect();
-      if (!wrappedClients.has(client)) {
-        wrappedClients.add(client);
-        const originalQuery = client.query.bind(client) as (...args: unknown[]) => unknown;
-        (client as unknown as { query: unknown }).query = (...queryArgs: unknown[]) => {
-          const first = queryArgs[0];
-          const text = typeof first === "string" ? first : (first as { text?: string } | undefined)?.text;
-          if (text !== undefined) statements.push(text);
-          return originalQuery(...queryArgs);
-        };
-      }
-      return client;
+      return new Proxy(client, {
+        get(target, property, receiver) {
+          if (property === "query")
+            return (...args: unknown[]) => {
+              const first = args[0];
+              const parsed = z.object({ text: z.string() }).safeParse(first);
+              const sql = typeof first === "string" ? first : parsed.success ? parsed.data.text : undefined;
+              if (sql !== undefined) statements.push(sql);
+              return Reflect.apply(target.query.bind(target), undefined, args);
+            };
+          const value: unknown = Reflect.get(target, property, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
     }
     const recordingPool = new Proxy(pool, {
       get(target, prop, receiver) {
@@ -481,7 +535,7 @@ describe("transcription step 1 (prepare)", () => {
 
     await expect(
       createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
-    ).rejects.toBeInstanceOf(TranscriptionSourceChangedError);
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError", code: "unknown" });
 
     const source = await readSource(files.id, file.id);
     expect(source?.computed).not.toHaveProperty("prepare");
@@ -585,6 +639,7 @@ describe("transcription step 1 (prepare)", () => {
     const path = join(tmpBlobDir, rows[0]!.storage_key);
     expect(await probeAudioStream(path)).toMatchObject({ codecName: "aac", channels: 1 });
     const { durationSeconds } = await probeMedia(path);
+    expect(Math.abs((durationSeconds ?? NaN) - prepare.durationSeconds)).toBeLessThan(0.1);
     if (audioSeconds !== null) expect(Math.abs((durationSeconds ?? NaN) - audioSeconds)).toBeLessThan(0.1);
     else expect(durationSeconds).toBeGreaterThan(0);
   });
@@ -602,7 +657,7 @@ describe("transcription step 1 (prepare)", () => {
 
     await expect(
       createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
-    ).rejects.toThrow("disk full");
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
 
     expect(await readNormalizedLeftovers()).toEqual({ blobRows: 0, storedFiles: [] });
   });
@@ -777,7 +832,7 @@ describe("transcription steps 2 and 3 (diarize, ASR)", () => {
 
     await expect(
       createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
-    ).rejects.toThrow("simulated crash");
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
 
     const midSource = await readSource(files.id, file.id);
     expect(Object.keys(asrCheckpointSchema.parse(midSource?.computed.asr).chunks)).toEqual(["0"]);
@@ -918,11 +973,13 @@ describe("transcription steps 2 and 3 (diarize, ASR)", () => {
     expect(automation.error).toBeNull();
     const source = await readSource(files.id, file.id);
     expect(source?.computed.asr).toBeDefined();
-    const { rows: transcriptRows } = await pool.query<{ computed: { segments?: unknown } }>(
+    const { rows: transcriptRows } = await pool.query<Record<string, unknown>>(
       "SELECT computed FROM items WHERE id = $1",
       [transcript.id],
     );
-    expect(transcriptRows[0]?.computed.segments).toBeUndefined();
+    expect(
+      z.object({ computed: z.record(z.string(), z.unknown()) }).parse(transcriptRows[0]).computed.segments,
+    ).toBeUndefined();
   });
 });
 
@@ -1055,7 +1112,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     };
     await expect(
       createTranscriptionTask(pool, blobStorage, failingGateway, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
-    ).rejects.toBe(diarizeFailure);
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
     // 25 minutes: chunk 0 = [0, 1200], chunk 1 = [1170, 1500], cut at 1185.
     await pool.query(
       `UPDATE items SET computed = jsonb_set(computed, '{prepare,durationSeconds}', to_jsonb(1500::float8)) WHERE id = $1`,
@@ -1143,7 +1200,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
 
     await expect(
       createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
-    ).rejects.toBe(summaryFailure);
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
 
     const failed = await readTranscript(file.id);
     expect(failed.computed.segments).toHaveLength(2);
@@ -1351,7 +1408,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
 
     await expect(
       createTranscriptionTask(pool, blobStorage, gatewayClient, failing)({ fileItemId: file.id }, FIRST_ATTEMPT),
-    ).rejects.toThrow("gateway refused");
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
     expect((await readTranscript(file.id)).properties.status).toBe("processing");
     expect(await readSpeakerCards()).toEqual([]);
 
@@ -1438,7 +1495,10 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       summaryClient.failure = failure;
       const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
 
-      await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toBe(failure);
+      await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toMatchObject({
+        name: "TranscriptionQueueError",
+        message: "Transcription task failed",
+      });
 
       const failed = await readTranscript(file.id);
       expect(failed.properties.status).toBe("processing");
@@ -1465,7 +1525,10 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
 
       for (const attempts of [1, 2, 3]) {
-        await expect(task({ fileItemId: file.id }, { job: { attempts, max_attempts: 3 } })).rejects.toBe(failure);
+        await expect(task({ fileItemId: file.id }, { job: { attempts, max_attempts: 3 } })).rejects.toMatchObject({
+          name: "TranscriptionQueueError",
+          message: "Transcription task failed",
+        });
       }
 
       const transcript = await readTranscript(file.id);
@@ -1484,6 +1547,60 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       expect(gatewayClient.transcribeCalls).toHaveLength(1);
     });
 
+    it("deduplicates a replayed failure transition and emits a later distinct transition", async () => {
+      const { file } = await createSourceFile();
+      await createUser();
+      summaryClient.failure = new Error("Replay fixture failure");
+      const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+      const events: string[] = [];
+      setNotificationCreatedHook((event) => {
+        events.push(event.notificationId);
+      });
+      try {
+        await expect(task({ fileItemId: file.id }, FINAL_ATTEMPT)).rejects.toMatchObject({
+          name: "TranscriptionQueueError",
+        });
+        const transcript = await readTranscript(file.id);
+        const rows = await pool.query<{ id: string; transition_instance: string }>(
+          "SELECT id, transition_instance FROM notifications WHERE source_id = $1 AND kind = 'automation_error' ORDER BY transition_instance",
+          [transcript.id],
+        );
+        expect(rows.rows).toHaveLength(1);
+        const first = rows.rows[0]!;
+        const job = await pool.query("SELECT id FROM graphile_worker.jobs WHERE key = $1", [
+          `notification-fanout:${first.id}`,
+        ]);
+        expect(job.rows).toHaveLength(1);
+        expect(events).toEqual([first.id]);
+        // Restore the pre-attempt counter to replay this exact transition identity through the task.
+        await pool.query("UPDATE item_automation SET attempts = 0 WHERE item_id = $1", [transcript.id]);
+        await expect(task({ fileItemId: file.id }, FINAL_ATTEMPT)).rejects.toMatchObject({
+          name: "TranscriptionQueueError",
+        });
+        expect(
+          (
+            await pool.query(
+              "SELECT id, transition_instance FROM notifications WHERE source_id = $1 AND kind = 'automation_error'",
+              [transcript.id],
+            )
+          ).rows,
+        ).toEqual([first]);
+        expect(
+          (await pool.query("SELECT id FROM graphile_worker.jobs WHERE key = $1", [`notification-fanout:${first.id}`]))
+            .rows,
+        ).toEqual(job.rows);
+        expect(events).toEqual([first.id]);
+        await expect(task({ fileItemId: file.id }, FINAL_ATTEMPT)).rejects.toMatchObject({
+          name: "TranscriptionQueueError",
+        });
+        expect(await readNotifications(transcript.id)).toHaveLength(2);
+        expect(events).toHaveLength(2);
+        expect(events[1]).not.toBe(first.id);
+      } finally {
+        setNotificationCreatedHook(() => {});
+      }
+    });
+
     it.each([
       ["a budget rejection", () => new AiGatewayFailedError("budget_exceeded"), "budgetExceeded"],
       ["an audio gateway budget rejection", () => new AudioGatewayBudgetExceededError(), "budgetExceeded"],
@@ -1499,13 +1616,14 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       ],
       ["a completion gateway failure", () => new AiGatewayFailedError("http"), "providerFailed"],
       ["any other error", () => new Error("secret transcript text"), "unknown"],
-      ["a thrown non-error", () => "secret transcript text" as unknown as Error, "unknown"],
+      ["a thrown non-error", () => "secret transcript text", "unknown"],
     ])("stores the code for %s and keeps its message out of the notification", async (_label, makeFailure, code) => {
       const { file } = await createSourceFile();
       await createUser();
       const failure = makeFailure();
       expect(classifyTranscriptionFailure(failure)).toBe(code);
-      summaryClient.failure = failure;
+      if (failure instanceof Error) summaryClient.failure = failure;
+      else vi.spyOn(summaryClient, "complete").mockRejectedValue(failure);
       const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
 
       await task({ fileItemId: file.id }, FINAL_ATTEMPT).catch(() => undefined);
@@ -1528,7 +1646,10 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       await createUser();
       summaryClient.failure = new AiGatewayFailedError("http");
       const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
-      await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toBe(summaryClient.failure);
+      await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toMatchObject({
+        name: "TranscriptionQueueError",
+        message: "Transcription task failed",
+      });
       const transcript = await readTranscript(file.id);
       const readCode = async () =>
         (
@@ -1580,7 +1701,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
         for (const attempts of [1, 2, 3]) {
           await expect(
             runInTenant(tenantB, () => task({ fileItemId: fileId }, { job: { attempts, max_attempts: 3 } })),
-          ).rejects.toBe(failure);
+          ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
         }
 
         const { rows } = await pool.query<{ user_id: string; kind: string; tenant_id: string }>(
@@ -1632,7 +1753,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       }
     });
 
-    it("commits none of a permanent failure's writes when its transaction rolls back, and rethrows the original failure", async () => {
+    it("commits none of a permanent failure's writes when its transaction rolls back, and returns a safe failure", async () => {
       const { file } = await createSourceFile();
       await createUser();
       const failure = new Error("simulated summary outage");
@@ -1649,7 +1770,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
             gatewayClient,
             summaryClient,
           )({ fileItemId: file.id }, FINAL_ATTEMPT),
-        ).rejects.toBe(failure);
+        ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
       } finally {
         await pool.query("DROP TRIGGER test_reject_notification ON notifications");
         await pool.query("DROP FUNCTION test_reject_notification()");
@@ -1672,7 +1793,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
           gatewayClient,
           summaryClient,
         )({ fileItemId: file.id }, FINAL_ATTEMPT),
-      ).rejects.toBe(summaryClient.failure);
+      ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
 
       const transcript = await readTranscript(file.id);
       expect(transcript.properties.status).toBe("error");
@@ -1710,7 +1831,10 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       const { file } = await createSourceFile();
       summaryClient.failure = new Error("simulated summary outage");
       const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
-      await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toBe(summaryClient.failure);
+      await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toMatchObject({
+        name: "TranscriptionQueueError",
+        message: "Transcription task failed",
+      });
       const transcript = await readTranscript(file.id);
       await pool.query("UPDATE item_automation SET status = 'locked' WHERE item_id = $1", [transcript.id]);
 
@@ -1775,12 +1899,10 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
         summaryClient,
       )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
-      const { rows } = await pool.query<{ computed: Record<string, unknown> }>(
-        "SELECT computed FROM items WHERE id = $1",
-        [file.id],
-      );
-      expect(rows[0]?.computed).toHaveProperty("prepare");
-      expect(rows[0]?.computed).not.toHaveProperty("diarize");
+      const { rows } = await pool.query<Record<string, unknown>>("SELECT computed FROM items WHERE id = $1", [file.id]);
+      const computed = z.object({ computed: z.record(z.string(), z.unknown()) }).parse(rows[0]).computed;
+      expect(computed).toHaveProperty("prepare");
+      expect(computed).not.toHaveProperty("diarize");
       expect(lockingGateway.diarizeCalls).toHaveLength(1);
       expect(lockingGateway.transcribeCalls).toEqual([]);
       expect(summaryClient.calls).toEqual([]);
@@ -1801,7 +1923,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
           gatewayClient,
           lockingSummary,
         )({ fileItemId: file.id }, FINAL_ATTEMPT),
-      ).rejects.toBe(lockingSummary.failure);
+      ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
 
       const transcript = await readTranscript(file.id);
       expect(transcript.properties.status).toBe("processing");
@@ -1810,6 +1932,52 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     });
 
     describe("deleted transcript or source file (issue #1582)", () => {
+      it("resolves only the canonical tenant and database idempotency reservation, including Trash", async () => {
+        const key = `transcription:${randomUUID()}`;
+        const runtime = await createRuntimeRolePool(pool, "semprec_data");
+        const otherTenant = await createTestTenant(pool);
+        try {
+          const original = await withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+            const transcripts = await getDatabaseByModuleId(client, "transcripts");
+            const files = await getDatabaseByModuleId(client, "files");
+            if (!transcripts || !files) throw new Error("Missing built-in databases");
+            const item = await createItemWithClient(client, {
+              databaseId: transcripts.id,
+              idempotencyKey: key,
+              properties: {},
+            });
+            expect((await findIdempotentReplay(client, transcripts.id, key))?.id).toBe(item.id);
+            expect(await findIdempotentReplay(client, files.id, key)).toBeNull();
+            expect(await findIdempotentReplay(client, transcripts.id, `transcription:${randomUUID()}`)).toBeNull();
+            return { item, transcripts };
+          });
+          await runInTenant(getTenantZeroId(), () =>
+            createChokePoint(runtime).softDeleteItem(original.transcripts.id, original.item.id),
+          );
+          await withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+            const trashed = await findIdempotentReplay(client, original.transcripts.id, key);
+            expect(trashed?.id).toBe(original.item.id);
+            expect(trashed?.deletedAt).not.toBeNull();
+            expect(await findIdempotentReplay(client, original.transcripts.id, key, { requireLive: true })).toBeNull();
+          });
+          await runInTenant(otherTenant, () => seedSystem(runtime, createViewTypeRegistry()));
+          await withTenantTransaction(runtime, otherTenant, async (client) => {
+            const transcripts = await getDatabaseByModuleId(client, "transcripts");
+            if (!transcripts) throw new Error("Missing foreign Transcripts database");
+            expect(await findIdempotentReplay(client, transcripts.id, key)).toBeNull();
+            const item = await createItemWithClient(client, {
+              databaseId: transcripts.id,
+              idempotencyKey: key,
+              properties: {},
+            });
+            expect(item.id).not.toBe(original.item.id);
+            expect((await findIdempotentReplay(client, transcripts.id, key))?.id).toBe(item.id);
+          });
+        } finally {
+          await runtime.end();
+        }
+      });
+
       async function readStoppedState(transcriptId: string) {
         const { rows } = await pool.query<{ status: string; error_code: string | null }>(
           "SELECT status, error_code FROM item_automation WHERE item_id = $1",
@@ -1862,6 +2030,811 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
         });
       }
 
+      for (const [label, sql] of [
+        ["transcript", deleteTranscriptSql],
+        ["source file", deleteSourceSql],
+      ] as const) {
+        it(`settles the actual queued job successfully when the ${label} is deleted during diarization`, async () => {
+          const { file } = await createSourceFile();
+          await createUser();
+          const deleting = new DeletingGateway(sql);
+          deleting.fileItemId = file.id;
+          const key = `transcription-job:${file.id}`;
+          const taskList = {
+            [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+              CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+              createTranscriptionTask(pool, blobStorage, deleting, summaryClient),
+            ),
+          };
+          await inTenantZero(() =>
+            enqueueJob(
+              pool,
+              CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+              { fileItemId: file.id },
+              { jobKey: key, maxAttempts: 3 },
+            ),
+          );
+          await runOnce({ pgPool: pool, taskList });
+          const transcript = await readTranscript(file.id);
+          expect(deleting.diarizeCalls).toHaveLength(1);
+          expect(deleting.transcribeCalls).toEqual([]);
+          expect(summaryClient.calls).toEqual([]);
+          expect(await readStoppedState(transcript.id)).toEqual({ status: "error", error_code: "deleted" });
+          expect(await readNotifications(transcript.id)).toEqual([]);
+          const jobs = await pool.query<Record<string, unknown>>(
+            "SELECT attempts, last_error FROM graphile_worker._private_jobs WHERE key = $1",
+            [key],
+          );
+          expect(jobs.rows).toEqual([]);
+        });
+      }
+
+      it("settles the queued job when its source was purged before the attempt starts", async () => {
+        const { files, file } = await createSourceFile();
+        await createUser();
+        const key = `transcription-job:${file.id}`;
+        const taskList = {
+          [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+            CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+            createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient),
+          ),
+        };
+        await inTenantZero(async () => {
+          await enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey: key });
+          const cp = createChokePoint(pool);
+          await cp.softDeleteItem(files.id, file.id);
+          expect((await cp.purgeExpiredTrashSubtree(file.id, new Date(Date.now() + 60_000))).purgedItemIds).toContain(
+            file.id,
+          );
+        });
+        await runOnce({ pgPool: pool, taskList });
+        const jobs = await pool.query("SELECT id FROM graphile_worker._private_jobs WHERE key = $1", [key]);
+        expect(jobs.rows).toEqual([]);
+        expect(gatewayClient.diarizeCalls).toEqual([]);
+        expect(gatewayClient.transcribeCalls).toEqual([]);
+        expect(summaryClient.calls).toEqual([]);
+        expect((await pool.query("SELECT item_id FROM item_automation")).rows).toEqual([]);
+        expect((await pool.query("SELECT id FROM notifications WHERE kind = 'automation_error'")).rows).toEqual([]);
+      });
+
+      it.each([
+        ["purged", false],
+        ["trashed", false],
+        ["purged", true],
+        ["trashed", true],
+      ] as const)(
+        "settles the earlier transcript after source %s before retry, locked: %s",
+        async (sourceState, locked) => {
+          const { files, file } = await createSourceFile();
+          await createUser();
+          summaryClient.failure = new Error("transient fixture failure");
+          const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+          await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toMatchObject({
+            name: "TranscriptionQueueError",
+          });
+          const transcript = await readTranscript(file.id);
+          expect((await readAutomation(transcript.id))?.status).toBe("pending");
+          expect(await readNotifications(transcript.id)).toEqual([]);
+          if (locked)
+            await pool.query("UPDATE item_automation SET status = 'locked' WHERE item_id = $1", [transcript.id]);
+          const previousState = await readStoppedState(transcript.id);
+          await inTenantZero(async () => {
+            const cp = createChokePoint(pool);
+            await cp.softDeleteItem(files.id, file.id);
+            if (sourceState === "purged")
+              expect(
+                (await cp.purgeExpiredTrashSubtree(file.id, new Date(Date.now() + 60_000))).purgedItemIds,
+              ).toContain(file.id);
+          });
+          const key = `transcription-job:${file.id}`;
+          await inTenantZero(() =>
+            enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey: key }),
+          );
+          await runOnce({
+            pgPool: pool,
+            taskList: {
+              [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(CORE_TASK_NAMES.TRANSCRIPTION_JOB, task),
+            },
+          });
+          expect((await pool.query("SELECT id FROM graphile_worker.jobs WHERE key = $1", [key])).rows).toEqual([]);
+          expect(await readStoppedState(transcript.id)).toEqual(
+            locked ? previousState : { status: "error", error_code: "deleted" },
+          );
+          expect(await readNotifications(transcript.id)).toEqual([]);
+          const reservations = await pool.query<{ item_id: string }>(
+            "SELECT item_id FROM idempotency_keys WHERE key = $1",
+            [`transcription:${file.id}`],
+          );
+          expect(reservations.rows).toEqual([{ item_id: transcript.id }]);
+        },
+      );
+
+      it("settles the queued job when its transcript is purged during diarization", async () => {
+        const { file } = await createSourceFile();
+        await createUser();
+        let transcriptId: string | undefined;
+        const purgingGateway = new (class extends FakeAudioGatewayClient {
+          override async diarize(request: DiarizeRequest): Promise<DiarizationTurn[]> {
+            const transcript = await readTranscript(file.id);
+            transcriptId = transcript.id;
+            await inTenantZero(async () => {
+              const cp = createChokePoint(pool);
+              const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
+              if (!transcripts) throw new Error("Missing Transcripts database");
+              await cp.softDeleteItem(transcripts.id, transcript.id);
+              expect(
+                (await cp.purgeExpiredTrashSubtree(transcript.id, new Date(Date.now() + 60_000))).purgedItemIds,
+              ).toContain(transcript.id);
+            });
+            return super.diarize(request);
+          }
+        })();
+        const key = `transcription-job:${file.id}`;
+        const taskList = {
+          [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+            CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+            createTranscriptionTask(pool, blobStorage, purgingGateway, summaryClient),
+          ),
+        };
+        await inTenantZero(() =>
+          enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey: key }),
+        );
+        await runOnce({ pgPool: pool, taskList });
+        expect(transcriptId).toBeDefined();
+        const jobs = await pool.query("SELECT id FROM graphile_worker._private_jobs WHERE key = $1", [key]);
+        expect(jobs.rows).toEqual([]);
+        expect(purgingGateway.transcribeCalls).toEqual([]);
+        expect(summaryClient.calls).toEqual([]);
+        const automation = await pool.query("SELECT item_id FROM item_automation WHERE item_id = $1", [transcriptId]);
+        expect(automation.rows).toEqual([]);
+        expect(await readNotifications(z.uuid().parse(transcriptId))).toEqual([]);
+      });
+
+      it.each([
+        ["source", 1],
+        ["source", 3],
+        ["transcript", 1],
+        ["transcript", 3],
+      ] as const)(
+        "settles without notification when the %s is purged and in-flight diarization fails, max attempts %s",
+        async (targetKind, maxAttempts) => {
+          const { files, file } = await createSourceFile();
+          await createUser();
+          let transcriptId: string | undefined;
+          const purgingGateway = new (class extends FakeAudioGatewayClient {
+            override async diarize(_request: DiarizeRequest): Promise<DiarizationTurn[]> {
+              const transcript = await readTranscript(file.id);
+              transcriptId = transcript.id;
+              await inTenantZero(async () => {
+                const transcripts = await withTransaction(pool, (client) =>
+                  getDatabaseByModuleId(client, "transcripts"),
+                );
+                if (!transcripts) throw new Error("Missing Transcripts database");
+                const cp = createChokePoint(pool);
+                const id = targetKind === "source" ? file.id : transcript.id;
+                await cp.softDeleteItem(targetKind === "source" ? files.id : transcripts.id, id);
+                expect((await cp.purgeExpiredTrashSubtree(id, new Date(Date.now() + 60_000))).purgedItemIds).toContain(
+                  id,
+                );
+              });
+              throw new Error("PRIVATE_PURGED_GATEWAY_FAILURE_1582");
+            }
+          })();
+          const key = `transcription-job:${file.id}`;
+          const seenAttempts: Array<{ attempts: number; max_attempts: number }> = [];
+          const task = createTranscriptionTask(pool, blobStorage, purgingGateway, summaryClient);
+          const taskList = {
+            [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+              CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+              async (payload, helpers) => {
+                const job = z.object({ attempts: z.number().int(), max_attempts: z.number().int() }).parse(helpers.job);
+                seenAttempts.push(job);
+                expect(job).toEqual({ attempts: 1, max_attempts: maxAttempts });
+                await task(payload, helpers);
+              },
+            ),
+          };
+          await inTenantZero(() =>
+            enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey: key, maxAttempts }),
+          );
+          await runOnce({ pgPool: pool, taskList });
+          expect(seenAttempts).toEqual([{ attempts: 1, max_attempts: maxAttempts }]);
+          const id = z.uuid().parse(transcriptId);
+          expect((await pool.query("SELECT id FROM graphile_worker.jobs WHERE key = $1", [key])).rows).toEqual([]);
+          expect(await readNotifications(id)).toEqual([]);
+          expect(purgingGateway.transcribeCalls).toEqual([]);
+          if (targetKind === "source")
+            expect(await readStoppedState(id)).toEqual({ status: "error", error_code: "deleted" });
+          else
+            expect((await pool.query("SELECT item_id FROM item_automation WHERE item_id = $1", [id])).rows).toEqual([]);
+        },
+      );
+
+      it("settles a deleted source after a gateway failure without changing a locked automation", async () => {
+        const { files, file } = await createSourceFile();
+        await createUser();
+        let transcriptId: string | undefined;
+        const gateway = new (class extends FakeAudioGatewayClient {
+          override async diarize(_request: DiarizeRequest): Promise<DiarizationTurn[]> {
+            const transcript = await readTranscript(file.id);
+            transcriptId = transcript.id;
+            await pool.query("UPDATE item_automation SET status = 'locked' WHERE item_id = $1", [transcript.id]);
+            await inTenantZero(async () => {
+              const cp = createChokePoint(pool);
+              await cp.softDeleteItem(files.id, file.id);
+              expect(
+                (await cp.purgeExpiredTrashSubtree(file.id, new Date(Date.now() + 60_000))).purgedItemIds,
+              ).toContain(file.id);
+            });
+            throw new Error("PRIVATE_LOCKED_DELETED_GATEWAY_1582");
+          }
+        })();
+        const key = `transcription-job:${file.id}`;
+        await inTenantZero(() =>
+          enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey: key, maxAttempts: 1 }),
+        );
+        await runOnce({
+          pgPool: pool,
+          taskList: {
+            [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+              CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+              createTranscriptionTask(pool, blobStorage, gateway, summaryClient),
+            ),
+          },
+        });
+        const id = z.uuid().parse(transcriptId);
+        expect((await pool.query("SELECT id FROM graphile_worker.jobs WHERE key = $1", [key])).rows).toEqual([]);
+        expect(await readStoppedState(id)).toEqual({ status: "locked", error_code: null });
+        expect(await readNotifications(id)).toEqual([]);
+        expect(gateway.transcribeCalls).toEqual([]);
+      });
+
+      it("keeps a missing automation on live targets as a failure rather than a deleted stop", async () => {
+        const { file } = await createSourceFile();
+        await createUser();
+        let transcriptId: string | undefined;
+        const gateway = new (class extends FakeAudioGatewayClient {
+          override async diarize(_request: DiarizeRequest): Promise<DiarizationTurn[]> {
+            transcriptId = (await readTranscript(file.id)).id;
+            await pool.query("DELETE FROM item_automation WHERE item_id = $1", [transcriptId]);
+            throw new Error("PRIVATE_LIVE_AUTOMATION_FAILURE_1582");
+          }
+        })();
+        const key = `transcription-job:${file.id}`;
+        await inTenantZero(() =>
+          enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey: key, maxAttempts: 1 }),
+        );
+        await runOnce({
+          pgPool: pool,
+          taskList: {
+            [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+              CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+              createTranscriptionTask(pool, blobStorage, gateway, summaryClient),
+            ),
+          },
+        });
+        const id = z.uuid().parse(transcriptId);
+        const jobs = await pool.query<{ last_error: string | null }>(
+          "SELECT last_error FROM graphile_worker.jobs WHERE key = $1",
+          [key],
+        );
+        expect(jobs.rows).toHaveLength(1);
+        expect(jobs.rows[0]?.last_error).toContain("Transcription task failed");
+        expect(jobs.rows[0]?.last_error).not.toContain("PRIVATE_LIVE_AUTOMATION_FAILURE_1582");
+        expect(await readNotifications(id)).toEqual([]);
+        const transcript = await readTranscript(file.id);
+        expect(transcript.id).toBe(id);
+        expect((await pool.query("SELECT item_id FROM item_automation WHERE item_id = $1", [id])).rows).toEqual([]);
+      });
+
+      it.each([
+        ["source", "deletion-first"],
+        ["source", "deletion-rollback"],
+        ["source", "failure-first"],
+        ["transcript", "deletion-first"],
+        ["transcript", "deletion-rollback"],
+        ["transcript", "failure-first"],
+      ] as const)(
+        "settles the owned failure and %s deletion overlap: %s",
+        async (targetKind, ordering) => {
+          const { files, file } = await createSourceFile();
+          await createUser();
+          const runtime = await createRuntimeRolePool(pool, "semprec_data");
+          let transcriptId: string | undefined;
+          let failureStarted = false;
+          let failurePid: number | undefined;
+          let deletionPid: number | undefined;
+          let failureReady = () => {};
+          let deletionReady = () => {};
+          let deletionCommitReady = () => {};
+          let releaseFailure = () => {};
+          let releaseDeletion = () => {};
+          const failureBoundary = new Promise<void>((resolve) => {
+            failureReady = resolve;
+          });
+          const deletionBoundary = new Promise<void>((resolve) => {
+            deletionReady = resolve;
+          });
+          const deletionCommit = new Promise<void>((resolve) => {
+            deletionCommitReady = resolve;
+          });
+          const failureGate = new Promise<void>((resolve) => {
+            releaseFailure = resolve;
+          });
+          const deletionGate = new Promise<void>((resolve) => {
+            releaseDeletion = resolve;
+          });
+          const marker = new Error("intentional deletion rollback");
+          async function bounded<T>(promise: Promise<T>): Promise<T> {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            try {
+              return await Promise.race([
+                promise,
+                new Promise<never>((_, reject) => {
+                  timer = setTimeout(() => reject(new Error("Transcription overlap barrier timed out")), 5000);
+                }),
+              ]);
+            } finally {
+              if (timer) clearTimeout(timer);
+            }
+          }
+          const observe = (kind: "failure" | "deletion") =>
+            new Proxy(runtime, {
+              get(target, key, receiver) {
+                if (key !== "connect") {
+                  const value: unknown = Reflect.get(target, key, receiver);
+                  return typeof value === "function" ? value.bind(target) : value;
+                }
+                return async () => {
+                  const client = await target.connect();
+                  return new Proxy(client, {
+                    get(connection, property, innerReceiver) {
+                      if (property !== "query") {
+                        const value: unknown = Reflect.get(connection, property, innerReceiver);
+                        return typeof value === "function" ? value.bind(connection) : value;
+                      }
+                      return async (...args: unknown[]) => {
+                        const sql = typeof args[0] === "string" ? args[0] : "";
+                        const itemLock = sql.includes("FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE");
+                        const automationLock = sql.includes("FROM item_automation") && sql.includes("FOR UPDATE");
+                        if (kind === "deletion" && itemLock && deletionPid === undefined) {
+                          deletionPid = (await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid"))
+                            .rows[0]?.pid;
+                          if (ordering === "failure-first") deletionReady();
+                        }
+                        if (
+                          kind === "failure" &&
+                          failureStarted &&
+                          itemLock &&
+                          ordering !== "failure-first" &&
+                          failurePid === undefined
+                        ) {
+                          failurePid = (await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid"))
+                            .rows[0]?.pid;
+                          failureReady();
+                        }
+                        if (kind === "deletion" && sql.trim().toUpperCase() === "COMMIT") {
+                          if (ordering !== "failure-first") deletionReady();
+                          else deletionCommitReady();
+                          await deletionGate;
+                          if (ordering === "deletion-rollback") throw marker;
+                        }
+                        const result: unknown = await Reflect.apply(connection.query.bind(connection), undefined, args);
+                        if (sql.trim().toUpperCase() === "BEGIN")
+                          await connection.query("SET LOCAL statement_timeout = '5s'");
+                        if (kind === "failure" && failureStarted && automationLock && ordering === "failure-first") {
+                          failurePid = (await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid"))
+                            .rows[0]?.pid;
+                          failureReady();
+                          await failureGate;
+                        }
+                        return result;
+                      };
+                    },
+                  });
+                };
+              },
+            });
+          const workerPool = observe("failure");
+          const deletionPool = observe("deletion");
+          const deletionState: { current?: Promise<ItemRow | null> } = {};
+          const startDeletion = () => {
+            deletionState.current = runInTenant(getTenantZeroId(), async () => {
+              const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
+              if (!transcripts) throw new Error("Missing Transcripts database");
+              return createChokePoint(deletionPool).softDeleteItem(
+                targetKind === "source" ? files.id : transcripts.id,
+                targetKind === "source" ? file.id : z.uuid().parse(transcriptId),
+              );
+            });
+            deletionState.current.catch(() => {});
+          };
+          const gateway = new (class extends FakeAudioGatewayClient {
+            override async diarize(_request: DiarizeRequest): Promise<DiarizationTurn[]> {
+              transcriptId = (await readTranscript(file.id)).id;
+              if (ordering !== "failure-first") {
+                startDeletion();
+                await bounded(deletionBoundary);
+              }
+              failureStarted = true;
+              throw new Error("PRIVATE_ORDERED_FAILURE_1582");
+            }
+          })();
+          const key = `transcription-job:${file.id}`;
+          let worker: Promise<void> | undefined;
+          try {
+            await inTenantZero(() =>
+              enqueueJob(
+                pool,
+                CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+                { fileItemId: file.id },
+                { jobKey: key, maxAttempts: 1 },
+              ),
+            );
+            worker = runOnce({
+              pgPool: pool,
+              taskList: {
+                [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+                  CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+                  createTranscriptionTask(workerPool, blobStorage, gateway, summaryClient),
+                ),
+              },
+            });
+            worker.catch(() => {});
+            await bounded(failureBoundary);
+            if (ordering === "failure-first") {
+              startDeletion();
+              await bounded(deletionBoundary);
+            }
+            if (!failurePid || !deletionPid) throw new Error("Missing competing backend PID");
+            const holder = ordering === "failure-first" ? failurePid : deletionPid;
+            const competitor = ordering === "failure-first" ? deletionPid : failurePid;
+            let blocked = false;
+            for (let n = 0; n < 100 && !blocked; n++) {
+              const result = await pool.query<{ blocked: boolean }>(
+                "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+                [holder, competitor],
+              );
+              blocked = result.rows[0]?.blocked === true;
+              if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+            expect(blocked).toBe(true);
+            const deletion = deletionState.current;
+            if (!deletion) throw new Error("Deletion did not start");
+            if (ordering === "failure-first") {
+              releaseFailure();
+              await bounded(worker);
+              await bounded(deletionCommit);
+              const id = z.uuid().parse(transcriptId);
+              expect(await readNotifications(id)).toHaveLength(1);
+              releaseDeletion();
+              await bounded(deletion);
+            } else {
+              releaseDeletion();
+              const outcome = await deletion.then(
+                () => null,
+                (error: unknown) => error,
+              );
+              expect(outcome).toBe(ordering === "deletion-rollback" ? marker : null);
+              await bounded(worker);
+              const id = z.uuid().parse(transcriptId);
+              if (ordering === "deletion-first") {
+                expect(await readStoppedState(id)).toEqual({ status: "error", error_code: "deleted" });
+                expect(await readNotifications(id)).toEqual([]);
+              } else {
+                expect(await readNotifications(id)).toHaveLength(1);
+              }
+            }
+          } finally {
+            releaseFailure();
+            releaseDeletion();
+            await Promise.allSettled([
+              ...(worker ? [worker] : []),
+              ...(deletionState.current ? [deletionState.current] : []),
+            ]);
+            await runtime.end();
+          }
+        },
+        20000,
+      );
+
+      it("settles a queued worker overlapping the real rerun transaction", async () => {
+        const { file } = await createSourceFile();
+        const runtime = await createRuntimeRolePool(pool, "semprec_data");
+        let transcriptId: string | undefined;
+        let workerPid: number | undefined;
+        let rerunPid: number | undefined;
+        let gatewayReached = () => {};
+        let releaseGateway = () => {};
+        let rerunReady = () => {};
+        let releaseRerun = () => {};
+        let workerWaiting = () => {};
+        let afterGateway = false;
+        const gatewayAtBoundary = new Promise<void>((resolve) => {
+          gatewayReached = resolve;
+        });
+        const gatewayGate = new Promise<void>((resolve) => {
+          releaseGateway = resolve;
+        });
+        const rerunAtCommit = new Promise<void>((resolve) => {
+          rerunReady = resolve;
+        });
+        const rerunGate = new Promise<void>((resolve) => {
+          releaseRerun = resolve;
+        });
+        const workerAtLock = new Promise<void>((resolve) => {
+          workerWaiting = resolve;
+        });
+        async function bounded<T>(promise: Promise<T>): Promise<T> {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            return await Promise.race([
+              promise,
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(() => reject(new Error("Rerun overlap barrier timed out")), 5000);
+              }),
+            ]);
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
+        }
+        const observe = (kind: "worker" | "rerun") =>
+          new Proxy(runtime, {
+            get(target, key, receiver) {
+              if (key !== "connect") {
+                const value: unknown = Reflect.get(target, key, receiver);
+                return typeof value === "function" ? value.bind(target) : value;
+              }
+              return async () => {
+                const client = await target.connect();
+                return new Proxy(client, {
+                  get(connection, prop, innerReceiver) {
+                    if (prop !== "query") {
+                      const value: unknown = Reflect.get(connection, prop, innerReceiver);
+                      return typeof value === "function" ? value.bind(connection) : value;
+                    }
+                    return async (...args: unknown[]) => {
+                      const sql = typeof args[0] === "string" ? args[0] : "";
+                      const automationLock = sql.includes("FROM item_automation") && sql.includes("FOR UPDATE");
+                      if (kind === "worker" && afterGateway && automationLock && workerPid === undefined) {
+                        workerPid = (await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
+                          ?.pid;
+                        workerWaiting();
+                      }
+                      if (kind === "rerun" && sql.trim().toUpperCase() === "COMMIT") {
+                        rerunPid = (await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
+                          ?.pid;
+                        rerunReady();
+                        await rerunGate;
+                      }
+                      const result: unknown = await Reflect.apply(connection.query.bind(connection), undefined, args);
+                      if (sql.trim().toUpperCase() === "BEGIN")
+                        await connection.query("SET LOCAL statement_timeout = '5s'");
+                      return result;
+                    };
+                  },
+                });
+              };
+            },
+          });
+        let first = true;
+        const gateway = new (class extends FakeAudioGatewayClient {
+          override async diarize(request: DiarizeRequest): Promise<DiarizationTurn[]> {
+            if (first) {
+              first = false;
+              transcriptId = (await readTranscript(file.id)).id;
+              gatewayReached();
+              await gatewayGate;
+              afterGateway = true;
+            }
+            return super.diarize(request);
+          }
+        })();
+        const key = `transcription-job:${file.id}`;
+        let worker: Promise<void> | undefined;
+        let rerun: ReturnType<ReturnType<typeof createRerunTranscriptionRouteHandler>> | undefined;
+        try {
+          await inTenantZero(() =>
+            enqueueJob(
+              pool,
+              CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+              { fileItemId: file.id },
+              { jobKey: key, maxAttempts: 3 },
+            ),
+          );
+          worker = runOnce({
+            pgPool: pool,
+            taskList: {
+              [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+                CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+                createTranscriptionTask(observe("worker"), blobStorage, gateway, summaryClient),
+              ),
+            },
+          });
+          worker.catch(() => {});
+          await bounded(gatewayAtBoundary);
+          const id = z.uuid().parse(transcriptId);
+          rerun = inTenantZero(() =>
+            createRerunTranscriptionRouteHandler(observe("rerun"))({ params: { id }, body: undefined }),
+          );
+          rerun.catch(() => {});
+          await bounded(rerunAtCommit);
+          releaseGateway();
+          await bounded(workerAtLock);
+          if (!rerunPid || !workerPid) throw new Error("Missing competing backend PID");
+          let blocked = false;
+          for (let n = 0; n < 100 && !blocked; n++) {
+            const result = await pool.query<{ blocked: boolean }>(
+              "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+              [rerunPid, workerPid],
+            );
+            blocked = result.rows[0]?.blocked === true;
+            if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          expect(blocked).toBe(true);
+          releaseRerun();
+          expect((await bounded(rerun)).status).toBe(202);
+          await bounded(worker);
+          expect((await readAutomation(id))?.status).toBe("done");
+        } finally {
+          releaseGateway();
+          releaseRerun();
+          await Promise.allSettled([...(worker ? [worker] : []), ...(rerun ? [rerun] : [])]);
+          await runtime.end();
+        }
+      }, 20000);
+
+      it.each(["source", "transcript"] as const)(
+        "settles the queued job when the %s is purged between creation and attempt start",
+        async (targetKind) => {
+          const { files, file } = await createSourceFile();
+          await createUser();
+          let checkpointWritten = false;
+          let purged = false;
+          let transcriptId: string | undefined;
+          const observedPool = new Proxy(pool, {
+            get(target, property, receiver) {
+              if (property !== "connect") {
+                const value: unknown = Reflect.get(target, property, receiver);
+                return typeof value === "function" ? value.bind(target) : value;
+              }
+              return async () => {
+                const client = await target.connect();
+                return new Proxy(client, {
+                  get(connection, key, innerReceiver) {
+                    if (key !== "query") {
+                      const value: unknown = Reflect.get(connection, key, innerReceiver);
+                      return typeof value === "function" ? value.bind(connection) : value;
+                    }
+                    return async (...args: unknown[]) => {
+                      const result: unknown = await Reflect.apply(connection.query.bind(connection), undefined, args);
+                      const sql = typeof args[0] === "string" ? args[0] : "";
+                      const parameters = z.array(z.unknown()).safeParse(args[1]);
+                      if (
+                        sql.includes("UPDATE items SET computed") &&
+                        parameters.success &&
+                        parameters.data[2] === "create"
+                      )
+                        checkpointWritten = true;
+                      if (checkpointWritten && !purged && sql.trim().toUpperCase() === "COMMIT") {
+                        purged = true;
+                        await inTenantZero(async () => {
+                          const transcript = await readTranscript(file.id);
+                          transcriptId = transcript.id;
+                          const cp = createChokePoint(pool);
+                          const id = targetKind === "source" ? file.id : transcript.id;
+                          const transcripts = await withTransaction(pool, (inner) =>
+                            getDatabaseByModuleId(inner, "transcripts"),
+                          );
+                          if (!transcripts) throw new Error("Missing Transcripts database");
+                          const databaseId = targetKind === "source" ? files.id : transcripts.id;
+                          await cp.softDeleteItem(databaseId, id);
+                          expect(
+                            (await cp.purgeExpiredTrashSubtree(id, new Date(Date.now() + 60_000))).purgedItemIds,
+                          ).toContain(id);
+                        });
+                      }
+                      return result;
+                    };
+                  },
+                });
+              };
+            },
+          });
+          const key = `transcription-job:${file.id}`;
+          const taskList = {
+            [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+              CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+              createTranscriptionTask(observedPool, blobStorage, gatewayClient, summaryClient),
+            ),
+          };
+          await inTenantZero(() =>
+            enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey: key }),
+          );
+          await runOnce({ pgPool: pool, taskList });
+          expect(purged).toBe(true);
+          expect((await pool.query("SELECT id FROM graphile_worker._private_jobs WHERE key = $1", [key])).rows).toEqual(
+            [],
+          );
+          expect(gatewayClient.diarizeCalls).toEqual([]);
+          expect(gatewayClient.transcribeCalls).toEqual([]);
+          expect(summaryClient.calls).toEqual([]);
+          expect(await readNotifications(z.uuid().parse(transcriptId))).toEqual([]);
+          if (targetKind === "source") {
+            expect(await readStoppedState(z.uuid().parse(transcriptId))).toEqual({
+              status: "error",
+              error_code: "deleted",
+            });
+          } else {
+            expect(
+              (await pool.query("SELECT item_id FROM item_automation WHERE item_id = $1", [transcriptId])).rows,
+            ).toEqual([]);
+          }
+        },
+      );
+
+      it("stops cleanly when the source is purged after diarization commits and before ASR starts", async () => {
+        const { files, file } = await createSourceFile();
+        await createUser();
+        let checkpointWritten = false;
+        let purged = false;
+        let transcriptId: string | undefined;
+        const observedPool = new Proxy(pool, {
+          get(target, property, receiver) {
+            if (property !== "connect") {
+              const value: unknown = Reflect.get(target, property, receiver);
+              return typeof value === "function" ? value.bind(target) : value;
+            }
+            return async () => {
+              const client = await target.connect();
+              return new Proxy(client, {
+                get(connection, key, receiver) {
+                  if (key !== "query") {
+                    const value: unknown = Reflect.get(connection, key, receiver);
+                    return typeof value === "function" ? value.bind(connection) : value;
+                  }
+                  return async (...args: unknown[]) => {
+                    const result: unknown = await Reflect.apply(connection.query.bind(connection), undefined, args);
+                    const sql = typeof args[0] === "string" ? args[0] : "";
+                    const parameters = z.array(z.unknown()).safeParse(args[1]);
+                    if (
+                      sql.includes("UPDATE items SET computed") &&
+                      parameters.success &&
+                      parameters.data[2] === "diarize"
+                    )
+                      checkpointWritten = true;
+                    if (checkpointWritten && !purged && sql.trim().toUpperCase() === "COMMIT") {
+                      purged = true;
+                      await inTenantZero(async () => {
+                        const source = await withTransaction(pool, (inner) => getItemById(inner, files.id, file.id));
+                        transcriptId = z.uuid().parse(source?.computed.create);
+                        const cp = createChokePoint(pool);
+                        await cp.softDeleteItem(files.id, file.id);
+                        const removed = await cp.purgeExpiredTrashSubtree(file.id, new Date(Date.now() + 60_000));
+                        expect(removed.purgedItemIds).toContain(file.id);
+                      });
+                    }
+                    return result;
+                  };
+                },
+              });
+            };
+          },
+        });
+        await createTranscriptionTask(
+          observedPool,
+          blobStorage,
+          gatewayClient,
+          summaryClient,
+        )({ fileItemId: file.id }, FINAL_ATTEMPT);
+        expect(purged).toBe(true);
+        expect(gatewayClient.diarizeCalls).toHaveLength(1);
+        expect(gatewayClient.transcribeCalls).toEqual([]);
+        if (!transcriptId) throw new Error("Missing transcript ID");
+        expect(await readStoppedState(transcriptId)).toEqual({ status: "error", error_code: "deleted" });
+        expect(await readNotifications(transcriptId)).toEqual([]);
+      });
+
       it("falls back to the deleted stop instead of rolling back when the last attempt fails on a trashed transcript", async () => {
         const { file } = await createSourceFile();
         await createUser();
@@ -1895,17 +2868,28 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
           summaryClient,
         )({ fileItemId: file.id }, FIRST_ATTEMPT);
         const transcript = await readTranscript(file.id);
-        await pool.query("UPDATE items SET deleted_at = NULL WHERE id = $1", [transcript.id]);
+        const transcripts = await inTenantZero(() =>
+          withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts")),
+        );
+        if (!transcripts) throw new Error("Missing Transcripts database");
+        await inTenantZero(() => createChokePoint(pool).restoreItem(transcripts.id, transcript.id));
         gateway.deleteWhere = () => "SELECT 1";
 
-        await createTranscriptionTask(
-          pool,
-          blobStorage,
-          gateway,
-          summaryClient,
-        )({ fileItemId: file.id }, FIRST_ATTEMPT);
+        const requested = await inTenantZero(() =>
+          createRerunTranscriptionRouteHandler(pool)({ params: { id: transcript.id }, body: undefined }),
+        );
+        expect(requested).toEqual({ status: 202, body: { id: transcript.id, fileItemId: file.id } });
+        const taskList = {
+          [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+            CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+            createTranscriptionTask(pool, blobStorage, gateway, summaryClient),
+          ),
+        };
+        await runOnce({ pgPool: pool, taskList });
 
         expect(await readStoppedState(transcript.id)).toEqual({ status: "done", error_code: null });
+        expect(gateway.diarizeCalls).toHaveLength(2);
+        expect(gateway.transcribeCalls).toHaveLength(1);
       });
     });
 
@@ -1955,6 +2939,305 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       expect(await readAutomation(transcript.id)).toEqual({ status: "error", error: failure.message, attempts: 3 });
       expect(await readNotifications(transcript.id)).toHaveLength(1);
     });
+
+    it("keeps the diagnostic sentinel out of actual worker failure logs and queue state", async () => {
+      const { file } = await createSourceFile();
+      await createUser();
+      const sentinel = "PRIVATE_PROVIDER_SENTINEL_1386";
+      summaryClient.failure = new Error(sentinel);
+      const jobKey = `transcription-job:${file.id}`;
+      const taskList = {
+        [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+          CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+          createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient),
+        ),
+      };
+      const logger = vi.spyOn(console, "error");
+      let lines: string;
+      observedLogs.chunks.length = 0;
+      try {
+        await inTenantZero(() =>
+          enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey, maxAttempts: 1 }),
+        );
+        await runOnce({ pgPool: pool, taskList });
+        lines = inspect(logger.mock.calls, { depth: 8 });
+      } finally {
+        logger.mockRestore();
+      }
+      const job = await pool.query<{ last_error: string | null }>(
+        "SELECT last_error FROM graphile_worker.jobs WHERE key = $1",
+        [jobKey],
+      );
+      expect(job.rows[0]?.last_error).toContain("Transcription task failed");
+      expect(job.rows[0]?.last_error).not.toContain(sentinel);
+      expect(lines).toContain("Transcription task failed");
+      expect(lines).not.toContain(sentinel);
+      expect(observedLogs.chunks.join("")).not.toContain(sentinel);
+      const transcript = await readTranscript(file.id);
+      expect((await readAutomation(transcript.id))?.error).toBe(sentinel);
+    });
+
+    it("keeps transient retry diagnostics out of actual worker and application output", async () => {
+      const { file } = await createSourceFile();
+      await createUser();
+      const sentinel = "PRIVATE_RETRY_SENTINEL_1386";
+      summaryClient.failure = new Error(sentinel);
+      const key = `transcription-job:${file.id}`;
+      const taskList = {
+        [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+          CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+          createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient),
+        ),
+      };
+      observedLogs.chunks.length = 0;
+      const graphile = vi.spyOn(console, "error");
+      try {
+        await inTenantZero(() =>
+          enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey: key, maxAttempts: 3 }),
+        );
+        await runOnce({ pgPool: pool, taskList });
+        const workerOutput = inspect(graphile.mock.calls, { depth: 8 });
+        expect(workerOutput).toContain("Transcription task failed");
+        expect(workerOutput).not.toContain(sentinel);
+        expect(observedLogs.chunks.join("")).not.toContain(sentinel);
+        const jobs = await pool.query<{ attempts: number }>(
+          "SELECT attempts FROM graphile_worker.jobs WHERE key = $1",
+          [key],
+        );
+        expect(jobs.rows[0]?.attempts).toBe(1);
+        const transcript = await readTranscript(file.id);
+        expect((await readAutomation(transcript.id))?.status).toBe("pending");
+        expect(await readNotifications(transcript.id)).toEqual([]);
+      } finally {
+        graphile.mockRestore();
+      }
+    });
+
+    it("passes a safe failure to the real queue wrapper when the running task is superseded", async () => {
+      const { file } = await createSourceFile();
+      const sentinel = "PRIVATE_SUPERSEDED_SENTINEL_1386";
+      let release = () => {};
+      let started = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const reached = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      let first = true;
+      const gateway: AiGatewayClientPort = {
+        async complete(input) {
+          if (first) {
+            first = false;
+            started();
+            await gate;
+            throw new Error(sentinel);
+          }
+          return summaryClient.complete(input);
+        },
+      };
+      const key = `transcription-job:${file.id}`;
+      const task = createTranscriptionTask(pool, blobStorage, gatewayClient, gateway);
+      let outward: unknown;
+      const taskList = {
+        [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+          CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+          async (payload, helpers) => {
+            try {
+              await task(payload, helpers);
+            } catch (error) {
+              outward = error;
+              throw error;
+            }
+          },
+        ),
+      };
+      let worker: Promise<void> | undefined;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      observedLogs.chunks.length = 0;
+      try {
+        await inTenantZero(() =>
+          enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey: key, maxAttempts: 3 }),
+        );
+        worker = runOnce({ pgPool: pool, taskList });
+        await Promise.race([
+          reached,
+          new Promise<never>((_, reject) => {
+            timeout = setTimeout(() => reject(new Error("Timed out waiting for transcription")), 10000);
+          }),
+        ]);
+        await inTenantZero(() =>
+          enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey: key, maxAttempts: 3 }),
+        );
+        release();
+        await worker;
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        release();
+        await worker;
+      }
+      expect(outward).toMatchObject({
+        name: "TranscriptionQueueError",
+        message: "Transcription task failed",
+        code: "unknown",
+      });
+      expect(outward).not.toHaveProperty("cause");
+      expect(inspect(outward)).not.toContain(sentinel);
+      expect(observedLogs.chunks.join("")).toContain("Job was superseded by a re-enqueue");
+      expect(observedLogs.chunks.join("")).not.toContain(sentinel);
+      const queueRecords = observedLogs.chunks
+        .flatMap((chunk) => chunk.split("\n").filter(Boolean))
+        .map((line) => {
+          const value: unknown = JSON.parse(line);
+          return z
+            .object({ msg: z.string(), err: z.record(z.string(), z.unknown()).optional() })
+            .passthrough()
+            .parse(value);
+        });
+      const superseded = queueRecords.find((record) => record.msg.startsWith("Job was superseded by a re-enqueue"));
+      expect(superseded?.err).toBeDefined();
+      expect(superseded?.err).not.toHaveProperty("cause");
+      expect(summaryClient.calls.length).toBeGreaterThan(0);
+    });
+
+    it("preserves a safe worker failure when diagnostic recording itself fails", async () => {
+      const { file } = await createSourceFile();
+      await createUser();
+      summaryClient.failure = new Error("PRIVATE_ORIGINAL_RECORD_FAILURE_1386");
+      const key = `transcription-job:${file.id}`;
+      const taskList = {
+        [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+          CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+          createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient),
+        ),
+      };
+      // The trigger injects an otherwise unavailable notification persistence failure.
+      await pool.query(`CREATE FUNCTION test_failure_1386() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'PRIVATE_RECORDING_FAILURE_1386'; END $$`);
+      await pool.query(`CREATE TRIGGER test_failure_1386 BEFORE INSERT ON notifications
+        FOR EACH ROW EXECUTE FUNCTION test_failure_1386()`);
+      observedLogs.chunks.length = 0;
+      const graphile = vi.spyOn(console, "error");
+      try {
+        await inTenantZero(() =>
+          enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey: key, maxAttempts: 1 }),
+        );
+        await runOnce({ pgPool: pool, taskList });
+        const job = await pool.query<{ last_error: string | null }>(
+          "SELECT last_error FROM graphile_worker.jobs WHERE key = $1",
+          [key],
+        );
+        expect(job.rows[0]?.last_error).toContain("Transcription task failed");
+        expect(job.rows[0]?.last_error).not.toContain("PRIVATE_ORIGINAL_RECORD_FAILURE_1386");
+        expect(job.rows[0]?.last_error).not.toContain("PRIVATE_RECORDING_FAILURE_1386");
+        const appOutput = observedLogs.chunks.join("");
+        const workerOutput = inspect(graphile.mock.calls, { depth: 8 });
+        expect(appOutput).toContain("Failed to record a transcription failure");
+        expect(workerOutput).toContain("Transcription task failed");
+        for (const sentinel of ["PRIVATE_ORIGINAL_RECORD_FAILURE_1386", "PRIVATE_RECORDING_FAILURE_1386"]) {
+          expect(appOutput).not.toContain(sentinel);
+          expect(workerOutput).not.toContain(sentinel);
+        }
+        const transcript = await readTranscript(file.id);
+        expect((await readAutomation(transcript.id))?.status).toBe("pending");
+        expect(await readNotifications(transcript.id)).toEqual([]);
+      } finally {
+        graphile.mockRestore();
+        await pool.query("DROP TRIGGER test_failure_1386 ON notifications");
+        await pool.query("DROP FUNCTION test_failure_1386()");
+      }
+    });
+
+    it("reports a safe worker failure after storage and cleanup failures", async () => {
+      const { file } = await createSourceFile();
+      const storage: BlobStorageWriter = {
+        async writeStream(_key, stream) {
+          for await (const _chunk of stream) {
+            /* drain ffmpeg before the injected failure */
+          }
+          throw new Error("PRIVATE_STORAGE_FAILURE_1386");
+        },
+        async delete() {
+          throw new Error("PRIVATE_CLEANUP_FAILURE_1386");
+        },
+        readStream: (key, range) => blobStorage.readStream(key, range),
+      };
+      const key = `transcription-job:${file.id}`;
+      const taskList = {
+        [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+          CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+          createTranscriptionTask(pool, storage, gatewayClient, summaryClient),
+        ),
+      };
+      observedLogs.chunks.length = 0;
+      const graphile = vi.spyOn(console, "error");
+      try {
+        await inTenantZero(() =>
+          enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey: key, maxAttempts: 1 }),
+        );
+        await runOnce({ pgPool: pool, taskList });
+        const job = await pool.query<{ last_error: string | null }>(
+          "SELECT last_error FROM graphile_worker.jobs WHERE key = $1",
+          [key],
+        );
+        expect(job.rows[0]?.last_error).toContain("Transcription task failed");
+        const appOutput = observedLogs.chunks.join("");
+        const workerOutput = inspect(graphile.mock.calls, { depth: 8 });
+        expect(appOutput).toContain("Failed to delete normalized audio that no blob references");
+        expect(workerOutput).toContain("Transcription task failed");
+        for (const sentinel of ["PRIVATE_STORAGE_FAILURE_1386", "PRIVATE_CLEANUP_FAILURE_1386"]) {
+          expect(job.rows[0]?.last_error).not.toContain(sentinel);
+          expect(appOutput).not.toContain(sentinel);
+          expect(workerOutput).not.toContain(sentinel);
+        }
+      } finally {
+        graphile.mockRestore();
+      }
+    });
+
+    it.each(["files", "transcripts"] as const)(
+      "reports a safe worker failure when the %s catalog is unavailable before a transcript exists",
+      async (moduleId) => {
+        const { file } = await createSourceFile();
+        // Simulate a missing built-in catalog entry, which normal APIs cannot remove.
+        await pool.query("UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = $1", [moduleId]);
+        const key = `transcription-job:${file.id}`;
+        const taskList = {
+          [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+            CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+            createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient),
+          ),
+        };
+        observedLogs.chunks.length = 0;
+        const graphile = vi.spyOn(console, "error");
+        try {
+          await inTenantZero(() =>
+            enqueueJob(
+              pool,
+              CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+              { fileItemId: file.id },
+              { jobKey: key, maxAttempts: 1 },
+            ),
+          );
+          await runOnce({ pgPool: pool, taskList });
+          const job = await pool.query<{ last_error: string | null }>(
+            "SELECT last_error FROM graphile_worker.jobs WHERE key = $1",
+            [key],
+          );
+          const workerOutput = inspect(graphile.mock.calls, { depth: 8 });
+          const original = moduleId === "files" ? "Files database not found" : "Transcripts database not found";
+          expect(job.rows[0]?.last_error).toContain("Transcription task failed");
+          expect(workerOutput).toContain("Transcription task failed");
+          expect(workerOutput).not.toContain(original);
+          expect(observedLogs.chunks.join("")).not.toContain(original);
+          expect(job.rows[0]?.last_error).not.toContain(original);
+          const automations = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM item_automation");
+          expect(automations.rows[0]?.count).toBe(0);
+        } finally {
+          graphile.mockRestore();
+        }
+      },
+    );
 
     describe("daily requeue and manual rerun (issue #186)", () => {
       function createTaskList() {

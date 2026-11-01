@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { z } from "zod";
 import { runOnce } from "@semprec/queue";
 import { runInTenant } from "@semprec/shared";
 import { runLibraryBooksYearIsbnCutoverMigration } from "../library/libraryBooksYearIsbnCutoverMigration.js";
@@ -59,8 +60,10 @@ async function drainQueue(registry = libraryRegistry(), fetcher?: LibraryMetadat
 }
 
 async function getDatabaseIdByModule(moduleId: string): Promise<string> {
-  const { rows } = await pool.query("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
-  return rows[0].id;
+  const { rows } = await pool.query<Record<string, unknown>>("SELECT id FROM databases WHERE owner_module_id = $1", [
+    moduleId,
+  ]);
+  return z.object({ id: z.string() }).parse(rows[0]).id;
 }
 
 describe("library rating validation", () => {
@@ -145,6 +148,18 @@ describe("library rating validation", () => {
     );
     await chokePoint.updateItem({ databaseId: database.id, itemId: item.id, propertiesPatch: { rating: 2.5 } });
     expect((await chokePoint.getItem(database.id, item.id))?.properties.rating).toBe(2.5);
+  });
+
+  it("rejects an unknown stored automation error code while accepting a known code and legacy null", async () => {
+    const databaseId = await getDatabaseIdByModule("books");
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Book" } }));
+    await inTenantZero(() => withTransaction(pool, (client) => ensureItemAutomation(client, item.id)));
+    const read = () => inTenantZero(() => withTransaction(pool, (client) => getItemAutomation(client, item.id)));
+    expect((await read())?.errorCode).toBeNull();
+    await pool.query("UPDATE item_automation SET error_code = 'deleted' WHERE item_id = $1", [item.id]);
+    expect((await read())?.errorCode).toBe("deleted");
+    await pool.query("UPDATE item_automation SET error_code = 'unexpected' WHERE item_id = $1", [item.id]);
+    await expect(read()).rejects.toThrow("Unknown item automation error code");
   });
 });
 
@@ -441,12 +456,12 @@ describe("library module (issue #25)", () => {
       metadata: { rating: 4 },
     });
 
-    const { rows } = await pool.query<{ metadata: Record<string, unknown> }>(
+    const { rows } = await pool.query<Record<string, unknown>>(
       `SELECT metadata FROM item_relations WHERE item_a = $1 OR item_b = $1`,
       [movie.id],
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.metadata).toEqual({ rating: 4 });
+    expect(z.object({ metadata: z.record(z.string(), z.unknown()) }).parse(rows[0]).metadata).toEqual({ rating: 4 });
 
     // Not a property on either side.
     expect((await chokePoint.getItem(moviesId, movie.id))?.properties.rating).toBeUndefined();

@@ -17,7 +17,7 @@ import type { BlobStorageWriter } from "../../mail/blobStorage.js";
 import { purgeExpiredTrash } from "../../trash/purgeExpiredTrash.js";
 import type { ItemRow } from "../../types.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
-import { insertInboxAttachments, listInboxAttachments } from "../inboxAttachmentsStore.js";
+import { insertInboxAttachments as insertWithClient, listInboxAttachments } from "../inboxAttachmentsStore.js";
 import { LocalFsBlobStorageWriter } from "../../mail/blobStorage.js";
 import { ingestUploadedBlob } from "../../blobs/fileUploadStore.js";
 import { createApiCoreTaskList } from "../../worker.js";
@@ -25,6 +25,10 @@ import { createActionRegistry } from "../../scheduler/actions.js";
 import { resolveMailModuleIds } from "../../mail/mailModuleIds.js";
 import { ingestEmailMessage } from "../../mail/ingest.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
+
+function insertInboxAttachments(owner: Pool, itemId: string, attachments: Parameters<typeof insertWithClient>[2]) {
+  return withTransaction(owner, (client) => insertWithClient(client, itemId, attachments));
+}
 
 // Issue #1564: an attachment keeps its blob's bytes while it exists, and the trash purge of its Inbox
 // item releases the blob only when nothing else names it.

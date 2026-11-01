@@ -23,6 +23,8 @@ import { createBlob, deleteBlobIfUnreferenced } from "../blobsStore.js";
 import { ingestUploadedBlob } from "../fileUploadStore.js";
 import { handleBlobsUnreferencedSweepTask, sweepUnreferencedBlobs } from "../unreferencedBlobSweep.js";
 import { insertInboxAttachments } from "../../inbox/inboxAttachmentsStore.js";
+import { createInboxItemWithClient } from "../../inbox/inboxStore.js";
+import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { withTransaction } from "../../db/pool.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { registerItemPreWriteTransform } from "../../chokePoint/hooks.js";
@@ -682,8 +684,17 @@ describe("standalone blobs (issue #1401)", () => {
       const storage = new FakeStorage();
       const attached = (await upload(storage, "attached")).blob;
       const stale = (await upload(storage, "stale again")).blob;
-      // The attachment table has no foreign key to items, so an id naming no row is enough here.
-      await insertInboxAttachments(pool, randomUUID(), [{ blobId: attached.id, source: "camera" }]);
+      await withTransaction(pool, async (client) => {
+        const inbox = await getDatabaseByModuleId(client, "inbox");
+        if (!inbox) throw new Error("Missing Inbox database");
+        const item = await createInboxItemWithClient(client, {
+          inboxDatabaseId: inbox.id,
+          date: "2026-08-28",
+          time: "09:00",
+          text: "Attached blob",
+        });
+        await insertInboxAttachments(client, item.id, [{ blobId: attached.id, source: "camera" }]);
+      });
       await ageBlob(attached.id, 25);
       await ageBlob(stale.id, 25);
 

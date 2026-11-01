@@ -6,10 +6,13 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool, type PoolClient } from "pg";
+import { z } from "zod";
+import { runOnce } from "@semprec/queue";
 import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createUser,
   createChokePoint,
+  createApiCoreTaskList,
   createItemWithClient,
   getDatabaseByModuleId,
   createViewTypeRegistry,
@@ -22,6 +25,8 @@ import {
   type PasswordResetMailer,
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
+import { createApiActionRegistry } from "../actionRegistryComposition.js";
+import { runTranscriptionFixture, withFixtureStorage } from "./transcriptionHttpFixture.js";
 
 const PASSWORD = "s3cret-password";
 const MAX_FILE_SIZE_BYTES = 1024;
@@ -105,6 +110,78 @@ describe("files and blobs routes (issue #158)", () => {
     return fetch(`${baseUrl}/api/files`, { method: "POST", headers, body, duplex: "half" });
   }
 
+  it("restores a deleted-stop transcript and runs its queued HTTP rerun from committed checkpoints", async () => {
+    const headers = await authHeader();
+    await withFixtureStorage(tmpBlobDir, async () => {
+      const first = await runTranscriptionFixture(
+        {
+          mode: "stop",
+          tenantId: getTenantZeroId(),
+          storageRoot: tmpBlobDir,
+        },
+        pool,
+      );
+      expect(first.result.diarizeCalls).toBe(1);
+      expect(first.result.transcribeCalls).toBe(0);
+      const stopped = await pool.query<Record<string, unknown>>(
+        "SELECT ia.status, ia.error_code, i.deleted_at IS NOT NULL AS deleted FROM item_automation ia JOIN items i ON i.id = ia.item_id WHERE ia.item_id = $1",
+        [first.result.transcriptId],
+      );
+      expect(
+        z.object({ status: z.string(), error_code: z.string(), deleted: z.boolean() }).parse(stopped.rows[0]),
+      ).toEqual({ status: "error", error_code: "deleted", deleted: true });
+      const notifications = await pool.query("SELECT id FROM notifications WHERE source_id = $1", [
+        first.result.transcriptId,
+      ]);
+      expect(notifications.rows).toEqual([]);
+      const restore = await fetch(`${baseUrl}/api/items/${first.result.transcriptId}/restore`, {
+        method: "POST",
+        headers,
+      });
+      expect(restore.status).toBe(200);
+      const rerun = await fetch(`${baseUrl}/api/transcriptions/${first.result.transcriptId}/rerun`, {
+        method: "POST",
+        headers,
+      });
+      expect(rerun.status).toBe(202);
+      const rerunBody: unknown = await rerun.json();
+      expect(z.object({ id: z.uuid(), fileItemId: z.uuid() }).parse(rerunBody)).toEqual({
+        id: first.result.transcriptId,
+        fileItemId: first.result.fileItemId,
+      });
+      const queued = await pool.query<Record<string, unknown>>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [
+        `transcription-job:${first.result.fileItemId}`,
+      ]);
+      expect(z.array(z.object({ key: z.string() })).parse(queued.rows)).toHaveLength(1);
+      const resumed = await runTranscriptionFixture(
+        {
+          mode: "consume",
+          tenantId: getTenantZeroId(),
+          storageRoot: tmpBlobDir,
+          fileItemId: first.result.fileItemId,
+        },
+        pool,
+      );
+      expect(resumed.result.transcriptId).toBe(first.result.transcriptId);
+      expect(resumed.result.normalizedBlobId).toBe(first.result.normalizedBlobId);
+      expect(resumed.result.diarizeCalls).toBe(1);
+      expect(resumed.result.transcribeCalls).toBe(1);
+      expect(resumed.result.summaryCalls).toBeGreaterThan(0);
+      const completed = await pool.query<Record<string, unknown>>(
+        "SELECT status, error_code FROM item_automation WHERE item_id = $1",
+        [first.result.transcriptId],
+      );
+      expect(z.object({ status: z.string(), error_code: z.string().nullable() }).parse(completed.rows[0])).toEqual({
+        status: "done",
+        error_code: null,
+      });
+      const remaining = await pool.query("SELECT key FROM graphile_worker.jobs WHERE key = $1", [
+        `transcription-job:${first.result.fileItemId}`,
+      ]);
+      expect(remaining.rows).toEqual([]);
+    });
+  });
+
   describe("POST /api/files", () => {
     function ftyp(brand: string): Buffer {
       const bytes = Buffer.alloc(16);
@@ -120,6 +197,31 @@ describe("files and blobs routes (issue #158)", () => {
       header.writeUInt16LE(name.length, 26);
       return Buffer.concat([header, Buffer.from(name, "latin1")]);
     }
+
+    it("enqueues transcription through the heartbeat after an audio upload", async () => {
+      vi.stubEnv("AI_GATEWAY_INTERNAL_TOKEN", "local-test-token");
+      try {
+        const response = await uploadFile(ftyp("M4A "), { filename: "recording.m4a", contentType: "audio/mp4" });
+        expect(response.status).toBe(201);
+        const body: unknown = await response.json();
+        const { id } = z.object({ id: z.uuid() }).parse(body);
+        const key = `transcription-job:${id}`;
+        const before = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE key = $1",
+          [key],
+        );
+        expect(before.rows[0]?.count).toBe(0);
+        const registry = createApiActionRegistry(pool, moduleRegistry);
+        await runOnce({ pgPool: pool, taskList: createApiCoreTaskList(pool, registry) });
+        const after = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE key = $1",
+          [key],
+        );
+        expect(after.rows[0]?.count).toBe(1);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
 
     it.each([
       [Buffer.from("%PDF-1.7"), "pdf", "application/pdf"],
