@@ -1,6 +1,7 @@
 import webpush from "web-push";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sendWebPushNotification } from "../webPushAdapter.js";
+import type { NotificationPushPayload } from "../pushSenders.js";
 
 const ENV_KEYS = ["VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT"] as const;
 const originalEnv: Record<string, string | undefined> = {};
@@ -34,12 +35,7 @@ describe("sendWebPushNotification body (issue #1773)", () => {
   const config = { publicKey: "public-key", privateKey: "private-key", subject: "mailto:ops@example.test" };
 
   /** Sends through a stubbed `webpush.sendNotification` and returns the JSON payload the adapter handed to it. */
-  async function sendAndReadPayload(payload: {
-    notificationId: string;
-    title: string;
-    body: string | null;
-    linkHref: string | null;
-  }): Promise<unknown> {
+  async function sendAndReadPayload(payload: NotificationPushPayload): Promise<unknown> {
     const sendNotificationSpy = vi
       .spyOn(webpush, "sendNotification")
       .mockResolvedValue({ statusCode: 201, body: "", headers: {} });
@@ -78,5 +74,23 @@ describe("sendWebPushNotification body (issue #1773)", () => {
 
     expect(sent).toEqual({ title: "Title", linkHref: null, notificationId: "notif-6" });
     expect(sent).not.toHaveProperty("body");
+  });
+
+  it("omits APNs interruption level from the delivered Web Push payload", async () => {
+    const sent = await sendAndReadPayload({
+      notificationId: "notif-7",
+      title: "Title",
+      body: "Body",
+      linkHref: "?page=approvals",
+      interruptionLevel: "time-sensitive",
+    });
+
+    expect(sent).toEqual({
+      title: "Title",
+      body: "Body",
+      linkHref: "?page=approvals",
+      notificationId: "notif-7",
+    });
+    expect(sent).not.toHaveProperty("interruptionLevel");
   });
 });
