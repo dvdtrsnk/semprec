@@ -143,6 +143,44 @@ describe("repairInterruptedRuns", () => {
     expect(rows.map((r: { kind: string }) => r.kind)).toEqual(["tool_use", "tool_result"]);
   });
 
+  it("repairs an earlier unmatched call but not matched or absent calls followed by ordinary events", async () => {
+    const unmatched = await createAgentRun(pool, { triggeredBy: "user", task: "unmatched" });
+    const matched = await createAgentRun(pool, { triggeredBy: "user", task: "matched" });
+    const absent = await createAgentRun(pool, { triggeredBy: "user", task: "absent" });
+    await insertAgentRunEvent(pool, unmatched.id, "tool_use", {
+      kind: "tool_use",
+      toolCallId: "pending",
+      name: "search",
+    });
+    await insertAgentRunEvent(pool, unmatched.id, "message", { kind: "message", text: "later" });
+    await insertAgentRunEvent(pool, matched.id, "tool_use", { kind: "tool_use", toolCallId: "done", name: "search" });
+    await insertAgentRunEvent(pool, matched.id, "tool_result", {
+      kind: "tool_result",
+      toolCallId: "done",
+      name: "search",
+    });
+    await insertAgentRunEvent(pool, matched.id, "message", { kind: "message", text: "later" });
+    await insertAgentRunEvent(pool, absent.id, "message", { kind: "message", text: "later" });
+
+    await repairInterruptedRuns(pool);
+
+    const { rows } = await pool.query<{ agent_run_id: string; kind: string; payload: unknown }>(
+      `SELECT agent_run_id, kind, payload FROM agent_run_events
+       WHERE agent_run_id = ANY($1::uuid[]) AND kind <> 'run_status' ORDER BY id`,
+      [[unmatched.id, matched.id, absent.id]],
+    );
+    const eventsFor = (id: string) => rows.filter((row) => row.agent_run_id === id);
+    expect(eventsFor(unmatched.id).map((row) => row.kind)).toEqual(["tool_use", "message", "tool_result"]);
+    expect(eventsFor(unmatched.id)[2]?.payload).toMatchObject({
+      kind: "tool_result",
+      toolCallId: "pending",
+      name: "search",
+      isError: true,
+    });
+    expect(eventsFor(matched.id).map((row) => row.kind)).toEqual(["tool_use", "tool_result", "message"]);
+    expect(eventsFor(absent.id).map((row) => row.kind)).toEqual(["message"]);
+  });
+
   it("falls back to a bare synthetic tool_result when the trailing tool_use payload is not a plain object", async () => {
     const run = await createAgentRun(pool, { triggeredBy: "heartbeat", task: "malformed payload" });
     await pool.query(`INSERT INTO agent_run_events (agent_run_id, kind, payload) VALUES ($1, 'tool_use', $2::jsonb)`, [

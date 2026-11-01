@@ -227,6 +227,23 @@ describe("MCP invoke adapter (issue #128)", () => {
   });
 
   describe("createApprovalGatedMcpInvokeTool (issue #130)", () => {
+    it("stores 500 non-BMP reason characters and rejects 501 without another request", async () => {
+      const contractServer = startStdioContractServer([SEARCH_TOOL]);
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+      const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
+      const reason = "😀".repeat(500);
+      const accepted = await invoke({ query: "test", semprecReason: reason });
+      expect(accepted.error).toBe(false);
+      expect(accepted.approvalRequestId).toBeDefined();
+      expect((await getApprovalRequest(pool, accepted.approvalRequestId!))?.reason).toBe(reason);
+      const rejected = await invoke({ query: "test", semprecReason: "😀".repeat(501) });
+      expect(rejected.error).toBe(true);
+      const { rows } = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests");
+      expect(rows[0]?.count).toBe("1");
+      expect(contractServer.getHandshakeCount()).toBe(0);
+    });
     it("does not trust an argument hint when no server snapshot exists", async () => {
       const contractServer = startStdioContractServer([SEARCH_TOOL]);
       servers.push(contractServer);

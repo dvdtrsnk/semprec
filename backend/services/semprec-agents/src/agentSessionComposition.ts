@@ -84,7 +84,7 @@ function splitGenericOperationReason(operation: GenericOperationName, params: un
   if (!(GENERIC_OPERATION_REASON_KEY in params)) return { ok: true, args: params };
   const { [GENERIC_OPERATION_REASON_KEY]: raw, ...args } = params;
   if (raw === undefined || raw === null) return { ok: true, args };
-  if (typeof raw !== "string" || raw.length > APPROVAL_REQUEST_REASON_MAX_LENGTH) {
+  if (typeof raw !== "string" || Array.from(raw).length > APPROVAL_REQUEST_REASON_MAX_LENGTH) {
     return {
       ok: false,
       error: `Invalid argument 'reason': it must be a string of at most ${APPROVAL_REQUEST_REASON_MAX_LENGTH} characters.`,

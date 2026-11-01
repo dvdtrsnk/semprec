@@ -444,6 +444,15 @@ describe("agent-only approval reason (issue #1420)", () => {
     expect(fixtures.calls).toEqual([]);
     expect(results.join()).toMatch(/reason/);
   });
+
+  it("accepts 500 non-BMP characters and rejects 501", async () => {
+    const reason = "😀".repeat(500);
+    await runCalls({ itemId: "item-1", reason });
+    expect(fixtures.calls).toEqual([["run-1", { itemId: "item-1" }, { reason, toolCallId: "call" }]]);
+    const { results } = await runCalls({ itemId: "item-1", reason: "😀".repeat(501) });
+    expect(fixtures.calls).toEqual([]);
+    expect(results.join()).toMatch(/reason/i);
+  });
 });
 
 describe("agent language instruction (issue #1388)", () => {

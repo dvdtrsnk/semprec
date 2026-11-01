@@ -190,7 +190,7 @@ function extractReason(args: McpInvokeArgs): ReasonExtraction {
   if (!(MCP_APPROVAL_REASON_KEY in args)) return { ok: true, args, reason: null };
   const { [MCP_APPROVAL_REASON_KEY]: raw, ...rest } = args;
   if (raw === undefined || raw === null) return { ok: true, args: rest, reason: null };
-  if (typeof raw !== "string" || raw.length > APPROVAL_REQUEST_REASON_MAX_LENGTH) {
+  if (typeof raw !== "string" || Array.from(raw).length > APPROVAL_REQUEST_REASON_MAX_LENGTH) {
     return {
       ok: false,
       error: `Invalid argument '${MCP_APPROVAL_REASON_KEY}': it must be a string of at most ${APPROVAL_REQUEST_REASON_MAX_LENGTH} characters.`,

@@ -523,6 +523,37 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     expect(JSON.stringify(request?.resourceSnapshot)).not.toContain("reason-sentinel");
   });
 
+  it("enforces the generic approval reason limit in Unicode code points through the agent run", async () => {
+    const projectItemId = await seededSemprecProjectItemId();
+    const chokePoint = createChokePoint(pool);
+    const database = await chokePoint.createDatabase({ name: "Unicode reason test" });
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: database.id, properties: {} }));
+    const task = createAgentRunTask(pool, registry, fauxGateway, createInFlightAgentRuns());
+    for (const count of [500, 501]) {
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "test" });
+      const reason = "😀".repeat(count);
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("item_delete", { itemId: item.id, reason }, { id: `call-${count}` })], {
+          stopReason: "toolUse",
+        }),
+        fauxAssistantMessage("done"),
+      ]);
+      await runInTenant(getTenantZeroId(), () => task({ agentRunId: run.id }, { job: { id: `${count}` } }));
+      const { rows } = await pool.query<{ id: string }>("SELECT id FROM approval_requests WHERE agent_run_id = $1", [
+        run.id,
+      ]);
+      if (count === 500) {
+        expect(rows).toHaveLength(1);
+        expect((await getApprovalRequest(pool, rows[0]!.id))?.reason).toBe(reason);
+      } else {
+        expect(rows).toHaveLength(0);
+        expect((await runEvents(run.id)).find((event) => event.kind === "tool_result")?.payload).toMatchObject({
+          isError: true,
+        });
+      }
+    }
+  });
+
   it("returns a validation error to the model without creating an approval for an oversized reason", async () => {
     const projectItemId = await seededSemprecProjectItemId();
     const chokePoint = createChokePoint(pool);
@@ -714,6 +745,11 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
 
     expect(await runRow(run.id)).toEqual({ status: "error", result: "mcp grants unavailable" });
     expect((await getAgentRun(pool, run.id))?.errorCode).toBe("internal");
+    const storedCode = await pool.query<{ error_code: string | null }>(
+      "SELECT error_code FROM agent_runs WHERE id = $1",
+      [run.id],
+    );
+    expect(storedCode.rows).toEqual([{ error_code: "internal" }]);
     expect(await errorNotificationCount(run.id)).toBe(1);
     const events = await runEvents(run.id);
     expect(events).toEqual([{ kind: "run_status", payload: { kind: "run_status", status: "error" } }]);
