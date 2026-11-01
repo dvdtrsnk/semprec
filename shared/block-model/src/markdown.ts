@@ -14,7 +14,6 @@ const PAGE_LINK_PREFIX = "semprec://page/";
 const ITEM_LINK_PREFIX = "semprec://items/";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const COMMENT_PATTERN = /^<!-- semprec:block (.*) -->$/;
-const TYPE_KEY_PATTERN = /^[\w.:-]+$/;
 const LIST_TYPES: ReadonlySet<string> = new Set(["bullet", "number", "todo"]);
 const WORD_CHAR = /[\p{L}\p{N}]/u;
 const PUNCTUATION = /[!-/:-@[-`{-~]/;
@@ -213,7 +212,7 @@ function encodePageId(pageId: string): string {
   return encoded;
 }
 
-function decodePageId(encoded: string): string {
+function decodeUtf16Escapes(encoded: string): string {
   return encoded.replace(/\\u([0-9A-F]{4})/g, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
 }
 
@@ -311,8 +310,15 @@ function withMarker(marker: string, content: string): string {
   return content === "" ? marker : `${marker} ${content}`;
 }
 
-function sanitizeKey(value: string): string {
-  return value.replace(/[^\w.:-]/g, "_");
+function encodeCommentField(value: string): string {
+  let encoded = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charAt(index);
+    encoded += /^[A-Za-z0-9._:~-]$/.test(unit)
+      ? unit
+      : `\\u${value.charCodeAt(index).toString(16).toUpperCase().padStart(4, "0")}`;
+  }
+  return encoded;
 }
 
 /** Canonical Markdown for `blocks`. Never mutates its input. */
@@ -371,8 +377,8 @@ export function serializeBlocks(blocks: readonly SerializableBlock[], options: S
       options.withIds === true || type === "unknown" || (!isList && indent !== 0) || (line === "" && type !== "page");
     const entry: string[] = [];
     if (needsComment) {
-      const typeKey = type === "unknown" ? sanitizeKey(block.type) : type;
-      entry.push(`<!-- semprec:block id=${sanitizeKey(block.id)} type=${typeKey} indent=${indent} -->`);
+      const typeKey = type === "unknown" ? (block.type === "" ? '""' : encodeCommentField(block.type)) : type;
+      entry.push(`<!-- semprec:block id=${encodeCommentField(block.id)} type=${typeKey} indent=${indent} -->`);
     }
     if (line !== "") {
       entry.push(line);
@@ -675,8 +681,10 @@ function parseComment(body: string): CommentAttributes {
   const attributes: CommentAttributes = {};
   for (const match of body.matchAll(/(\w+)=(\S+)/g)) {
     const [, key, value] = match as unknown as [string, string, string];
-    if (key === "id") attributes.id = value;
-    if (key === "type" && TYPE_KEY_PATTERN.test(value)) attributes.type = value;
+    if (key === "id") attributes.id = decodeUtf16Escapes(value);
+    if (key === "type" && (value === '""' || /^(?:[A-Za-z0-9._:~-]|\\u[0-9A-F]{4})+$/.test(value))) {
+      attributes.type = value === '""' ? "" : decodeUtf16Escapes(value);
+    }
     if (key === "indent" && /^\d+$/.test(value)) attributes.indent = clampIndent(Number(value));
   }
   return attributes;
@@ -696,7 +704,7 @@ function parseLine(raw: string): ParsedLine {
   const line = raw.trim();
   const page = /^\[(?:\\.|[^\]\\])*\]\(semprec:\/\/page\/([^)\s]+)\)$/.exec(line);
   if (page) {
-    return { type: "page", lineIndent: null, pageId: decodePageId(page[1] as string) };
+    return { type: "page", lineIndent: null, pageId: decodeUtf16Escapes(page[1] as string) };
   }
   const heading = /^(#{1,3})(?: +([\s\S]*))?$/.exec(line);
   if (heading) {

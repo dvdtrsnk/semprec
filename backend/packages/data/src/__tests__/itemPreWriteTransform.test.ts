@@ -136,6 +136,42 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
       }
     });
 
+    it.each([
+      ["  ", false],
+      ["Added title", true],
+    ] as const)("validates transform-added create title %j", async (title, allowed) => {
+      const database = await fixture();
+      const transform = vi.fn(async ({ patch }: { patch: Record<string, unknown> }) => ({ ...patch, title }));
+      registerItemPreWriteTransform(PROBE_MODULE, transform);
+      const events: InvalidationEvent[] = [];
+      const heartbeat = vi.spyOn(schedulerStore, "triggerOnItemEventHeartbeats");
+      setInvalidationHook((event) => events.push(event));
+      try {
+        const create = () =>
+          chokePoint.createItem({ databaseId: database.id, properties: {} }, undefined, undefined, {
+            writerKind: "user",
+          });
+        if (allowed) {
+          const item = await create();
+          expect(item.properties.title).toBe(title);
+          expect(await countItems(database.id)).toBe(1);
+        } else {
+          await expect(create()).rejects.toMatchObject({
+            status: 400,
+            code: "validation_failed",
+            details: { field: "title" },
+          });
+          expect(await countItems(database.id)).toBe(0);
+          expect(events).toEqual([]);
+          expect(heartbeat).not.toHaveBeenCalled();
+        }
+        expect(transform).toHaveBeenCalledOnce();
+      } finally {
+        heartbeat.mockRestore();
+        setInvalidationHook(() => {});
+      }
+    });
+
     it("rejects an invalid color added by a transform on create", async () => {
       const database = await fixture();
       registerOutput({ color: "invalid" });

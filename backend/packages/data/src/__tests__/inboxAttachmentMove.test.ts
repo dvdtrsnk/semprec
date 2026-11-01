@@ -252,6 +252,73 @@ function settle<T>(run: Promise<T>): Promise<Outcome<T>> {
   );
 }
 
+async function runHeldBlobOverlap<T>(
+  first: (client: PoolClient) => Promise<unknown>,
+  second: (client: PoolClient) => Promise<T>,
+  rollbackFirst = false,
+): Promise<Outcome<T>> {
+  const runtime = await createRuntimeRolePool(pool, "semprec_data");
+  let release = () => {};
+  let firstReady = (_pid: number) => {};
+  let secondReady = (_pid: number) => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const firstStarted = new Promise<number>((resolve) => {
+    firstReady = resolve;
+  });
+  const secondStarted = new Promise<number>((resolve) => {
+    secondReady = resolve;
+  });
+  const owned = ownOverlap(runtime, release);
+  const rollback = new Error("forced holder rollback");
+  let failure: { error: unknown } | undefined;
+  let result: Outcome<T> | undefined;
+  try {
+    const holder = owned.run(() =>
+      withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        if (pid === undefined) throw new Error("Missing holder PID");
+        await first(client);
+        firstReady(pid);
+        await gate;
+        if (rollbackFirst) throw rollback;
+      }),
+    );
+    const holderPid = await owned.wait(firstStarted, holder);
+    const competitor = owned.run(() =>
+      withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        if (pid === undefined) throw new Error("Missing competitor PID");
+        secondReady(pid);
+        return second(client);
+      }),
+    );
+    const competitorPid = await owned.wait(secondStarted, holder, competitor);
+    await owned.wait(
+      owned.run(() => waitForBlobLockWait(holderPid, competitorPid, runtime)),
+      holder,
+      competitor,
+    );
+    release();
+    const holderResult = await settle(holder);
+    if (rollbackFirst) expect(holderResult).toEqual({ error: rollback });
+    else if ("error" in holderResult) throw holderResult.error;
+    result = await settle(competitor);
+  } catch (error) {
+    failure = { error };
+  } finally {
+    try {
+      await owned.finish(failure !== undefined);
+    } catch (error) {
+      failure = combineOverlapFailure(failure, error);
+    }
+  }
+  if (failure) rethrowOverlap(failure.error);
+  if (!result) throw new Error("Missing overlap result");
+  return result;
+}
+
 async function newBlob(mimeType: string): Promise<string> {
   return withTransaction(pool, async (client) => {
     const blob = await createBlob(client, { mimeType, byteSize: 2048, storageKey: `blobs/${randomUUID()}` });
@@ -811,45 +878,12 @@ describe("file from attachment on confirm (issue #1703)", () => {
     await storeSteps(first.cardId, [taskPrimary("First task"), fileStep(firstAttachment)]);
     await storeSteps(second.cardId, [taskPrimary("Second task"), fileStep(secondAttachment)]);
 
-    const holder = await pool.connect();
-    const competitor = await pool.connect();
-    let waiting: Promise<Outcome<ItemRow>> | undefined;
-    try {
-      await holder.query("BEGIN");
-      await confirmProposalWithClient(holder, { processingProposalsDatabaseId: proposalsId }, first.cardId);
-      await competitor.query("BEGIN");
-      const holderPid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-      const competitorPid = (await competitor.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-      if (!holderPid || !competitorPid) throw new Error("Missing backend PID");
-      waiting = settle(
-        (async () => {
-          try {
-            const result = await confirmProposalWithClient(
-              competitor,
-              { processingProposalsDatabaseId: proposalsId },
-              second.cardId,
-            );
-            await competitor.query("COMMIT");
-            return result;
-          } catch (error) {
-            await competitor.query("ROLLBACK");
-            throw error;
-          }
-        })(),
-      );
-      await waitForBlobLockWait(holderPid, competitorPid);
-      await holder.query("COMMIT");
-      const outcome = await waiting;
-      if (!("value" in outcome)) throw outcome.error;
-      expect(outcome.value.properties.status).toBe("confirmed");
-    } catch (error) {
-      await holder.query("ROLLBACK");
-      await waiting;
-      throw error;
-    } finally {
-      holder.release();
-      competitor.release(true);
-    }
+    const outcome = await runHeldBlobOverlap(
+      (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, first.cardId),
+      (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, second.cardId),
+    );
+    if (!("value" in outcome)) throw outcome.error;
+    expect(outcome.value.properties.status).toBe("confirmed");
 
     const [fileItem] = await filesItemsFor(blobId);
     expect(await filesItemsFor(blobId)).toHaveLength(1);
@@ -865,40 +899,11 @@ describe("file from attachment on confirm (issue #1703)", () => {
     const steps = [taskPrimary(), fileStep(attachmentId)];
     const options = { writer: { writerKind: "user" as const }, sourceInboxItemId: source };
 
-    const holder = await pool.connect();
-    const competitor = await pool.connect();
-    let waiting: Promise<Outcome<unknown>> | undefined;
-    try {
-      await holder.query("BEGIN");
-      await executeProposalSteps(holder, steps, options);
-      await competitor.query("BEGIN");
-      const holderPid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-      const competitorPid = (await competitor.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-      if (!holderPid || !competitorPid) throw new Error("Missing backend PID");
-      waiting = settle(
-        (async () => {
-          try {
-            const result = await executeProposalSteps(competitor, steps, options);
-            await competitor.query("COMMIT");
-            return result;
-          } catch (error) {
-            await competitor.query("ROLLBACK");
-            throw error;
-          }
-        })(),
-      );
-      await waitForBlobLockWait(holderPid, competitorPid);
-      await holder.query("COMMIT");
-      const outcome = await waiting;
-      expect(outcome).toMatchObject({ error: { status: 409, code: "version_conflict" } });
-    } catch (error) {
-      await holder.query("ROLLBACK");
-      await waiting;
-      throw error;
-    } finally {
-      holder.release();
-      competitor.release(true);
-    }
+    const outcome = await runHeldBlobOverlap(
+      (client) => executeProposalSteps(client, steps, options),
+      (client) => executeProposalSteps(client, steps, options),
+    );
+    expect(outcome).toMatchObject({ error: { status: 409, code: "version_conflict" } });
 
     expect(await filesItemsFor(blobId)).toHaveLength(1);
     expect(await attachmentCount(source)).toBe(0);
@@ -912,45 +917,13 @@ describe("file from attachment on confirm (issue #1703)", () => {
     const secondAttachment = await attach(second.inboxItemId, blobId);
     await storeSteps(first.cardId, [taskPrimary("First task"), fileStep(firstAttachment)]);
     await storeSteps(second.cardId, [taskPrimary("Second task"), fileStep(secondAttachment)]);
-    const holder = await pool.connect();
-    const competitor = await pool.connect();
-    let waiting: Promise<Outcome<ItemRow>> | undefined;
-    try {
-      await holder.query("BEGIN");
-      await holder.query("SET LOCAL statement_timeout = '5s'");
-      await confirmProposalWithClient(holder, { processingProposalsDatabaseId: proposalsId }, first.cardId);
-      await competitor.query("BEGIN");
-      await competitor.query("SET LOCAL statement_timeout = '5s'");
-      const holderPid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-      const competitorPid = (await competitor.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-      if (!holderPid || !competitorPid) throw new Error("Missing backend PID");
-      waiting = settle(
-        (async () => {
-          try {
-            const result = await confirmProposalWithClient(
-              competitor,
-              { processingProposalsDatabaseId: proposalsId },
-              second.cardId,
-            );
-            await competitor.query("COMMIT");
-            return result;
-          } catch (error) {
-            await competitor.query("ROLLBACK");
-            throw error;
-          }
-        })(),
-      );
-      await waitForBlobLockWait(holderPid, competitorPid);
-      await holder.query("ROLLBACK");
-      const outcome = await waiting;
-      if (!("value" in outcome)) throw outcome.error;
-      expect(outcome.value.properties.status).toBe("confirmed");
-    } finally {
-      await holder.query("ROLLBACK");
-      await waiting;
-      holder.release();
-      competitor.release(true);
-    }
+    const outcome = await runHeldBlobOverlap(
+      (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, first.cardId),
+      (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, second.cardId),
+      true,
+    );
+    if (!("value" in outcome)) throw outcome.error;
+    expect(outcome.value.properties.status).toBe("confirmed");
     const files = await filesItemsFor(blobId);
     expect(files).toHaveLength(1);
     expect(await originRowsFor(files[0]!.id)).toEqual([

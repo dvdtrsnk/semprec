@@ -94,6 +94,26 @@ async function readStoredLinks(runtime: Pool, tenant: string, itemId: string) {
   });
 }
 
+async function readStoredItem(runtime: Pool, tenant: string, databaseId: string, itemId: string) {
+  return withTenantTransaction(runtime, tenant, async (client) => {
+    const result = await client.query<{
+      id: string;
+      tenant_id: string;
+      database_id: string;
+      properties: string;
+      computed: string;
+      updated_at: string;
+      deleted_at: string | null;
+    }>(
+      `SELECT id, tenant_id, database_id, properties::text, computed::text, updated_at::text, deleted_at::text
+       FROM items WHERE tenant_id = $1 AND database_id = $2 AND id = $3`,
+      [tenant, databaseId, itemId],
+    );
+    if (result.rows.length !== 1) throw new Error("Expected one scoped item");
+    return result.rows[0];
+  });
+}
+
 async function link(itemId: string, propertyKey: string, state?: "broken"): Promise<void> {
   await withTransaction(pool, (client) =>
     insertValueLink(client, {
@@ -928,6 +948,7 @@ describe("value link state on writes (issue #1516)", () => {
           }
         });
         const beforeItem = await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id));
+        const beforeStoredItem = await readStoredItem(runtime, tenant, task.databaseId, task.id);
         const beforeLinks = await readStoredLinks(runtime, tenant, task.id);
         const events: InvalidationEvent[] = [];
         setInvalidationHook((event) => events.push(event));
@@ -948,6 +969,7 @@ describe("value link state on writes (issue #1516)", () => {
           setInvalidationHook(() => {});
         }
         expect(await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id))).toEqual(beforeItem);
+        expect(await readStoredItem(runtime, tenant, task.databaseId, task.id)).toEqual(beforeStoredItem);
         expect(await readStoredLinks(runtime, tenant, task.id)).toEqual(beforeLinks);
         const links = await withTenantTransaction(runtime, tenant, (client) =>
           listValueLinksByItemIds(client, [task.id]),
@@ -1013,6 +1035,7 @@ describe("value link state on writes (issue #1516)", () => {
             }
           });
           const beforeItem = await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id));
+          const beforeStoredItem = await readStoredItem(runtime, tenant, task.databaseId, task.id);
           const beforeLinks = await readStoredLinks(runtime, tenant, task.id);
           const events: InvalidationEvent[] = [];
           setInvalidationHook((event) => events.push(event));
@@ -1029,6 +1052,7 @@ describe("value link state on writes (issue #1516)", () => {
               ),
             ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
             expect(await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id))).toEqual(beforeItem);
+            expect(await readStoredItem(runtime, tenant, task.databaseId, task.id)).toEqual(beforeStoredItem);
             expect(await readStoredLinks(runtime, tenant, task.id)).toEqual(beforeLinks);
             expect(events).toEqual([]);
           } finally {
@@ -3345,10 +3369,12 @@ describe("value link state on writes (issue #1516)", () => {
         const events: InvalidationEvent[] = [];
         const expectRefusedWithoutEffects = async (value: string) => {
           const beforeItem = await readItem();
+          const beforeStoredItem = await readStoredItem(runtime, tenant, fx.files.id, fx.file.id);
           const beforeLinks = await readStoredLinks(runtime, tenant, fx.file.id);
           events.length = 0;
           await expect(write(value)).rejects.toMatchObject({ status: 403, code: "owner_violation" });
           expect(await readItem()).toEqual(beforeItem);
+          expect(await readStoredItem(runtime, tenant, fx.files.id, fx.file.id)).toEqual(beforeStoredItem);
           expect(await readStoredLinks(runtime, tenant, fx.file.id)).toEqual(beforeLinks);
           expect(events).toEqual([]);
         };

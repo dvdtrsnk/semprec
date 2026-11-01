@@ -3019,19 +3019,23 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     const ready = new Promise<void>((resolve) => {
       locked = resolve;
     });
-    const holder = withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-      await itemsStore.lockItemById(client, proposalsId, original.id);
-      locked();
-      await gate;
-    });
-    holder.catch(() => {});
+    const owned = ownOverlap(runtime, release);
+    const holder = owned.run(() =>
+      withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+        await itemsStore.lockItemById(client, proposalsId, original.id);
+        locked();
+        await gate;
+      }),
+    );
+    let failure: { error: unknown } | undefined;
     try {
-      await boundedBarrier(ready);
-      await boundedBarrier(
+      await owned.wait(ready, holder);
+      const tick = owned.run(() =>
         runInTenant(getTenantZeroId(), () =>
           createSemprecTickAction(runtime, async () => ({ properties: { name: "Changed" } }))(config, context),
         ),
       );
+      await owned.wait(tick, holder);
       const current = await findProposalForItem(pool, proposalsId, item.id);
       expect(current?.id).toBe(original.id);
       expect(current?.properties).toEqual(original.properties);
@@ -3040,12 +3044,18 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         [proposalsId],
       );
       expect(count.rows[0]?.count).toBe(1);
+    } catch (error) {
+      failure = { error };
     } finally {
       release();
-      await Promise.allSettled([holder]);
-      await runtime.end();
+      try {
+        await owned.finish(failure !== undefined);
+      } catch (error) {
+        failure = combineOverlapFailure(failure, error);
+      }
     }
-  }, 15000);
+    if (failure) rethrowOverlap(failure.error);
+  }, 20000);
 
   it.each(["delete", "restore"] as const)(
     "skips a busy raw type during its %s transaction",
@@ -3088,14 +3098,17 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
           };
         },
       });
-      const writer = runInTenant(getTenantZeroId(), () => {
-        const cp = createChokePoint(observed);
-        return operation === "delete" ? cp.softDeleteItem(typesId, type.id) : cp.restoreItem(typesId, type.id);
-      });
-      writer.catch(() => {});
+      const owned = ownOverlap(runtime, release);
+      const writer = owned.run(() =>
+        runInTenant(getTenantZeroId(), () => {
+          const cp = createChokePoint(observed);
+          return operation === "delete" ? cp.softDeleteItem(typesId, type.id) : cp.restoreItem(typesId, type.id);
+        }),
+      );
+      let failure: { error: unknown } | undefined;
       try {
-        await boundedBarrier(ready);
-        await boundedBarrier(
+        await owned.wait(ready, writer);
+        const tick = owned.run(() =>
           runInTenant(getTenantZeroId(), () =>
             createSemprecTickAction(runtime, async () => ({ properties: { name: "Old" } }))(
               {
@@ -3107,14 +3120,21 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
             ),
           ),
         );
+        await owned.wait(tick, writer);
         expect(await findProposalForItem(pool, proposalsId, item.id)).toBeNull();
+      } catch (error) {
+        failure = { error };
       } finally {
         release();
-        await Promise.allSettled([writer]);
-        await runtime.end();
+        try {
+          await owned.finish(failure !== undefined);
+        } catch (error) {
+          failure = combineOverlapFailure(failure, error);
+        }
       }
+      if (failure) rethrowOverlap(failure.error);
     },
-    15000,
+    20000,
   );
 
   it("allows distinct sources sharing a type to form proposals concurrently", async () => {
@@ -3171,33 +3191,42 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       inboxItemTypesDatabaseId: typesId,
       processingProposalsDatabaseId: proposalsId,
     };
-    const first = runInTenant(getTenantZeroId(), () =>
-      createSemprecTickAction(observed, async () => {
-        postModel = true;
-        return { properties: { name: "First" } };
-      })(config, { heartbeatId: "hb-a", projectItemId: "proj", itemId: item.id }),
+    const owned = ownOverlap(runtime, release);
+    const first = owned.run(() =>
+      runInTenant(getTenantZeroId(), () =>
+        createSemprecTickAction(observed, async () => {
+          postModel = true;
+          return { properties: { name: "First" } };
+        })(config, { heartbeatId: "hb-a", projectItemId: "proj", itemId: item.id }),
+      ),
     );
-    first.catch(() => {});
-    let second: Promise<void> | undefined;
+    let failure: { error: unknown } | undefined;
     try {
-      await boundedBarrier(ready);
-      second = runInTenant(getTenantZeroId(), () =>
-        createSemprecTickAction(runtime, async () => ({ properties: { name: "Second" } }))(config, {
-          heartbeatId: "hb-b",
-          projectItemId: "proj",
-          itemId: other.id,
-        }),
+      await owned.wait(ready, first);
+      const second = owned.run(() =>
+        runInTenant(getTenantZeroId(), () =>
+          createSemprecTickAction(runtime, async () => ({ properties: { name: "Second" } }))(config, {
+            heartbeatId: "hb-b",
+            projectItemId: "proj",
+            itemId: other.id,
+          }),
+        ),
       );
-      second.catch(() => {});
-      await boundedBarrier(second);
+      await owned.wait(second, first);
       expect((await findProposalForItem(pool, proposalsId, other.id))?.properties.status).toBe("proposed");
+    } catch (error) {
+      failure = { error };
     } finally {
       release();
-      await Promise.allSettled([first, ...(second ? [second] : [])]);
-      await runtime.end();
+      try {
+        await owned.finish(failure !== undefined);
+      } catch (error) {
+        failure = combineOverlapFailure(failure, error);
+      }
     }
+    if (failure) rethrowOverlap(failure.error);
     expect((await findProposalForItem(pool, proposalsId, item.id))?.properties.status).toBe("proposed");
-  }, 15000);
+  }, 20000);
 
   it("a proposal created by a second tick while the first is still in computeProposal is revised, not duplicated (issue #792 review fix)", async () => {
     const { item } = await createTypedItem("Buy milk");

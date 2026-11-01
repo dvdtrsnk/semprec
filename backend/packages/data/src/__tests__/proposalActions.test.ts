@@ -5,7 +5,7 @@ import { copyFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { getSystemTimezone } from "../systemSettings.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
@@ -44,21 +44,268 @@ let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
 let docStore: DocStore;
 
-async function waitForStart(ready: Promise<void>, operation: Promise<unknown>): Promise<void> {
+/** Owns only this overlap's runtime clients, gates and operations. */
+function ownOverlap(runtime: Pool, cancel: () => void) {
+  runtime.options.connectionTimeoutMillis = 2500;
+  runtime.options.statement_timeout = 5000;
+  runtime.options.query_timeout = 7000;
+  const active = new Map<PoolClient, object>();
+  const tasks = new Set<Promise<void>>();
+  const errors: unknown[] = [];
+  let closing = false;
+  let expired = false;
+  let closingPromise: Promise<void> | undefined;
+  const onClientError = (error: Error) => errors.push(error);
+  const destroy = (client: PoolClient, token: object) => {
+    if (active.get(client) !== token) return;
+    try {
+      client.release(true);
+    } catch (error) {
+      errors.push(error);
+    }
+  };
+  const onAcquire = (client: PoolClient) => {
+    const token = {};
+    active.set(client, token);
+    client.on("error", onClientError);
+    // pg-pool 3.14 assigns release after the acquire event.
+    if (closing) queueMicrotask(() => destroy(client, token));
+  };
+  const onRelease = (_error: Error | undefined, client: PoolClient) => {
+    active.delete(client);
+    client.removeListener("error", onClientError);
+  };
+  runtime.on("acquire", onAcquire);
+  runtime.on("release", onRelease);
+  const run = <T>(start: () => Promise<T>): Promise<T> => {
+    const operation = Promise.resolve().then(() => {
+      if (closing) throw new Error("Overlap is closing");
+      return start();
+    });
+    const settled = operation.then(
+      () => {},
+      () => {},
+    );
+    tasks.add(settled);
+    void settled.then(() => tasks.delete(settled));
+    return operation;
+  };
+  const wait = <T>(signal: Promise<T>, ...actors: Promise<unknown>[]): Promise<T> =>
+    overlapBounded(
+      Promise.race([
+        signal,
+        ...actors.map((actor) =>
+          actor.then(
+            () => {
+              throw new Error("Overlap participant completed before its barrier");
+            },
+            (error: unknown) => {
+              throw error;
+            },
+          ),
+        ),
+      ]),
+      5000,
+    );
+  const finish = (bodyFailed = false): Promise<void> => {
+    if (closingPromise) return closingPromise;
+    closing = true;
+    clearTimeout(timer);
+    const detach = () => {
+      runtime.removeListener("acquire", onAcquire);
+      runtime.removeListener("release", onRelease);
+    };
+    closingPromise = (async () => {
+      if (!bodyFailed) {
+        try {
+          const deadline = Date.now() + 3000;
+          while (tasks.size > 0 || active.size > 0 || runtime.waitingCount > 0) {
+            if (Date.now() >= deadline) throw new Error("Overlap returned with owned work pending");
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      try {
+        cancel();
+      } catch (error) {
+        errors.push(error);
+      }
+      for (const [client, token] of active) destroy(client, token);
+      const end = runtime.end();
+      const joined = (async () => {
+        const results = await Promise.allSettled([end, ...tasks]);
+        for (const result of results) if (result.status === "rejected") errors.push(result.reason);
+        while (tasks.size > 0) await Promise.all([...tasks]);
+        const deadline = Date.now() + 3000;
+        while (runtime.waitingCount > 0) {
+          if (Date.now() >= deadline) throw new Error("Overlap pool waiters did not settle");
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      })();
+      try {
+        await overlapBounded(joined, 8000);
+        detach();
+      } catch (error) {
+        errors.push(error);
+        // Only an unestablished driver/host stall reaches this failure fallback.
+        void joined.then(detach, detach);
+      }
+      if (expired) errors.unshift(new Error("Overlap timed out"));
+      if (errors.length) throw new AggregateError(errors, "Overlap cleanup failed", { cause: errors[0] });
+    })();
+    return closingPromise;
+  };
+  const timer = setTimeout(() => {
+    expired = true;
+    void finish(true).catch(() => {});
+  }, 8000);
+  return { run, wait, finish };
+}
+
+async function overlapBounded<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await Promise.race([
-      ready,
-      operation.then(() => {
-        throw new Error("Transaction finished before the start signal");
-      }),
+    return await Promise.race([
+      promise,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("Timed out waiting for transaction")), 5000);
+        timer = setTimeout(() => reject(new Error("Overlap cleanup timed out")), milliseconds);
       }),
     ]);
   } finally {
-    if (timer !== undefined) clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
+}
+
+function combineOverlapFailure(body: { error: unknown } | undefined, cleanup: unknown): { error: unknown } {
+  return {
+    error:
+      body === undefined
+        ? cleanup
+        : new AggregateError([body.error, cleanup], "Overlap and cleanup failed", { cause: body.error }),
+  };
+}
+
+function rethrowOverlap(error: unknown): never {
+  // Preserve even non-Error thrown identities from the tested operation.
+  throw error;
+}
+
+async function assertItemHeld(itemId: string, pid: number, observer: Pool): Promise<void> {
+  const result = await observer.query<{ held: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM items i JOIN pg_locks l ON l.transactionid::text = i.xmax::text
+       WHERE i.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.granted) AS held`,
+    [itemId, pid],
+  );
+  expect(result.rows[0]?.held).toBe(true);
+}
+
+async function assertDefinitionHeld(definitionId: string, pid: number, observer: Pool): Promise<void> {
+  const result = await observer.query<{ held: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 AND locktype = 'advisory' AND granted
+       AND classid::bigint = ((hashtextextended($2::text, 0) >> 32) & 4294967295::bigint)
+       AND objid::bigint = (hashtextextended($2::text, 0) & 4294967295::bigint) AND objsubid = 1) AS held`,
+    [pid, definitionId],
+  );
+  expect(result.rows[0]?.held).toBe(true);
+}
+
+async function assertEdgeHeld(
+  definitionId: string,
+  itemA: string,
+  itemB: string,
+  pid: number,
+  observer: Pool,
+): Promise<void> {
+  const result = await observer.query<{ held: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM item_relations e JOIN pg_locks l ON l.transactionid::text = e.xmax::text
+       WHERE e.relation_definition_id = $1 AND ((e.item_a = $2 AND e.item_b = $3) OR (e.item_a = $3 AND e.item_b = $2))
+       AND l.pid = $4 AND l.locktype = 'transactionid' AND l.granted) AS held`,
+    [definitionId, itemA, itemB, pid],
+  );
+  expect(result.rows[0]?.held).toBe(true);
+}
+
+async function runPreconditionOverlap<A, B>(
+  holderOperation: (client: PoolClient) => Promise<A>,
+  contenderOperation: (client: PoolClient) => Promise<B>,
+  assertHeld: (pid: number, observer: Pool) => Promise<void>,
+): Promise<[PromiseSettledResult<A>, PromiseSettledResult<B>]> {
+  const runtime = getTestPool({ max: 3 });
+  let release = () => {};
+  let holderReady = (_pid: number) => {};
+  let contenderReady = (_pid: number) => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const held = new Promise<number>((resolve) => {
+    holderReady = resolve;
+  });
+  const competing = new Promise<number>((resolve) => {
+    contenderReady = resolve;
+  });
+  const owned = ownOverlap(runtime, release);
+  let failure: { error: unknown } | undefined;
+  let result: [PromiseSettledResult<A>, PromiseSettledResult<B>] | undefined;
+  try {
+    const holder = owned.run(() =>
+      withTransaction(runtime, async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        if (pid === undefined) throw new Error("Missing holder PID");
+        const value = await holderOperation(client);
+        holderReady(pid);
+        await gate;
+        return value;
+      }),
+    );
+    const holderPid = await owned.wait(held, holder);
+    await owned.wait(
+      owned.run(() => assertHeld(holderPid, runtime)),
+      holder,
+    );
+    const contender = owned.run(() =>
+      withTransaction(runtime, async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        if (pid === undefined) throw new Error("Missing contender PID");
+        contenderReady(pid);
+        return contenderOperation(client);
+      }),
+    );
+    const contenderPid = await owned.wait(competing, holder, contender);
+    await owned.wait(
+      owned.run(() =>
+        expect
+          .poll(
+            async () => {
+              const rows = await runtime.query<{ blocked: boolean }>(
+                "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+                [holderPid, contenderPid],
+              );
+              return rows.rows[0]?.blocked;
+            },
+            { timeout: 5000 },
+          )
+          .toBe(true),
+      ),
+      holder,
+      contender,
+    );
+    release();
+    result = await Promise.allSettled([holder, contender]);
+  } catch (error) {
+    failure = { error };
+  } finally {
+    release();
+    try {
+      await owned.finish(failure !== undefined);
+    } catch (error) {
+      failure = combineOverlapFailure(failure, error);
+    }
+  }
+  if (failure) rethrowOverlap(failure.error);
+  if (!result) throw new Error("Missing overlap outcomes");
+  return result;
 }
 
 async function databaseIdFor(moduleId: string): Promise<string> {
@@ -84,6 +331,107 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     proposalsId = await databaseIdFor("processingProposals");
     tasksId = await databaseIdFor("tasks");
   });
+
+  it("preserves an early checkout failure together with cleanup failure", async () => {
+    const runtime = getTestPool({ max: 3 });
+    const actorError = new Error("pre-verify checkout failure");
+    const cleanupError = new Error("cleanup failure");
+    let release = () => {};
+    const signal = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    runtime.options.verify = (_client, done) => done(actorError);
+    const owned = ownOverlap(runtime, () => {
+      release();
+      throw cleanupError;
+    });
+    let failure: { error: unknown } | undefined;
+    try {
+      const actor = owned.run(() => withTransaction(runtime, async () => {}));
+      await owned.wait(signal, actor);
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await owned.finish(failure !== undefined);
+      } catch (error) {
+        failure = combineOverlapFailure(failure, error);
+      }
+    }
+    const observed = failure?.error;
+    expect(observed).toBeInstanceOf(AggregateError);
+    if (!(observed instanceof AggregateError)) throw new Error("Expected combined error");
+    expect(observed.cause).toBe(actorError);
+    expect(observed.errors[0]).toBe(actorError);
+    expect(observed.errors[1]).toBeInstanceOf(AggregateError);
+    expect(observed.errors[1] instanceof AggregateError && observed.errors[1].errors).toContain(cleanupError);
+    expect(runtime.ended).toBe(true);
+    expect(runtime.totalCount).toBe(0);
+    expect(runtime.waitingCount).toBe(0);
+    expect(runtime.listenerCount("acquire")).toBe(0);
+    expect(runtime.listenerCount("release")).toBe(0);
+  }, 20000);
+
+  it("settles late overlap checkout and preserves a simultaneous cleanup failure", async () => {
+    const runtime = getTestPool({ max: 3 });
+    let deliver = () => {};
+    let ready = () => {};
+    const verifying = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const bodyError = new Error("body failure");
+    const cleanupError = new Error("cleanup failure");
+    let ran = false;
+    let settled = false;
+    runtime.options.verify = (_client, done) => {
+      deliver = () => queueMicrotask(() => done());
+      ready();
+    };
+    const owned = ownOverlap(runtime, () => {
+      deliver();
+      throw cleanupError;
+    });
+    const operation = owned.run(() =>
+      withTransaction(runtime, async () => {
+        ran = true;
+      }),
+    );
+    void operation.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    let failure: { error: unknown } | undefined;
+    try {
+      await owned.wait(verifying, operation);
+      failure = { error: bodyError };
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await owned.finish(true);
+      } catch (error) {
+        failure = combineOverlapFailure(failure, error);
+      }
+    }
+    const observed = failure?.error;
+    expect(observed).toBeInstanceOf(AggregateError);
+    if (!(observed instanceof AggregateError)) throw new Error("Expected combined failure");
+    expect(observed.cause).toBe(bodyError);
+    expect(observed.errors[0]).toBe(bodyError);
+    expect(observed.errors[1]).toBeInstanceOf(AggregateError);
+    expect(observed.errors[1] instanceof AggregateError && observed.errors[1].errors).toContain(cleanupError);
+    expect(ran).toBe(false);
+    expect(settled).toBe(true);
+    expect(runtime.ended).toBe(true);
+    expect(runtime.totalCount).toBe(0);
+    expect(runtime.waitingCount).toBe(0);
+    expect(runtime.listenerCount("acquire")).toBe(0);
+    expect(runtime.listenerCount("release")).toBe(0);
+  }, 20000);
 
   async function findProposalForItem(itemId: string) {
     return withTransaction(pool, async (client) => {
@@ -1086,6 +1434,120 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(byId.get(card)).toEqual(cardBefore);
     });
 
+    it("settles a blocked precondition contender after an owner failure", async () => {
+      const task = await createIn("tasks", { name: "Before" });
+      const tasksDb = await databaseIdFor("tasks");
+      const [before] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
+      const runtime = getTestPool({ max: 3 });
+      let release = () => {};
+      let holderReady = (_pid: number) => {};
+      let contenderReady = (_pid: number) => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const held = new Promise<number>((resolve) => {
+        holderReady = resolve;
+      });
+      const competing = new Promise<number>((resolve) => {
+        contenderReady = resolve;
+      });
+      const owned = ownOverlap(runtime, release);
+      const bodyError = new Error("forced precondition overlap failure");
+      let failure: { error: unknown } | undefined;
+      let holderSettled = false;
+      let contenderSettled = false;
+      let contenderFailed = false;
+      try {
+        const holder = owned.run(() =>
+          withTransaction(runtime, async (client) => {
+            const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            if (pid === undefined) throw new Error("Missing holder PID");
+            await updateItemWithClient(client, {
+              databaseId: tasksDb,
+              itemId: task,
+              propertiesPatch: { name: "Held" },
+            });
+            holderReady(pid);
+            await gate;
+          }),
+        );
+        void holder.then(
+          () => {
+            holderSettled = true;
+          },
+          () => {
+            holderSettled = true;
+          },
+        );
+        const holderPid = await owned.wait(held, holder);
+        await owned.wait(
+          owned.run(() => assertItemHeld(task, holderPid, runtime)),
+          holder,
+        );
+        const contender = owned.run(() =>
+          withTransaction(runtime, async (client) => {
+            const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            if (pid === undefined) throw new Error("Missing contender PID");
+            contenderReady(pid);
+            await updateItemWithClient(client, {
+              databaseId: tasksDb,
+              itemId: task,
+              propertiesPatch: { name: "Contender" },
+            });
+          }),
+        );
+        void contender.then(
+          () => {
+            contenderSettled = true;
+          },
+          () => {
+            contenderSettled = true;
+            contenderFailed = true;
+          },
+        );
+        const contenderPid = await owned.wait(competing, holder, contender);
+        await owned.wait(
+          owned.run(() =>
+            expect
+              .poll(
+                async () => {
+                  const result = await runtime.query<{ blocked: boolean }>(
+                    "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+                    [holderPid, contenderPid],
+                  );
+                  return result.rows[0]?.blocked;
+                },
+                { timeout: 5000 },
+              )
+              .toBe(true),
+          ),
+          holder,
+          contender,
+        );
+        throw bodyError;
+      } catch (error) {
+        failure = { error };
+      } finally {
+        release();
+        try {
+          await owned.finish(failure !== undefined);
+        } catch (error) {
+          failure = combineOverlapFailure(failure, error);
+        }
+      }
+      expect(failure?.error).toBe(bodyError);
+      expect(holderSettled).toBe(true);
+      expect(contenderSettled).toBe(true);
+      expect(contenderFailed).toBe(true);
+      expect(runtime.ended).toBe(true);
+      expect(runtime.totalCount).toBe(0);
+      expect(runtime.waitingCount).toBe(0);
+      expect(runtime.listenerCount("acquire")).toBe(0);
+      expect(runtime.listenerCount("release")).toBe(0);
+      const [after] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
+      expect(after).toEqual(before);
+    }, 25000);
+
     it("waits for an overlapping task time change and rejects the stale implicit clear", async () => {
       const task = await createIn("tasks", { name: "Task", date: "2026-11-01", timeFrom: "09:00", timeTo: "10:00" });
       const card = await cardWithSteps("tasks", [
@@ -1099,65 +1561,29 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           after: { properties: { date: null, timeFrom: null, timeTo: null } },
         },
       ]);
+      const [cardBefore] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [card]));
       const tasksDb = await databaseIdFor("tasks");
-      const writerPool = getTestPool({ max: 1 });
-      const contenderPool = getTestPool({ max: 1 });
-      let release = () => {};
-      let started = () => {};
-      const gate = new Promise<void>((resolve) => {
-        release = resolve;
+      const [writer, contender] = await runPreconditionOverlap(
+        (client) =>
+          updateItemWithClient(client, {
+            databaseId: tasksDb,
+            itemId: task,
+            propertiesPatch: { timeFrom: "09:30" },
+          }),
+        (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card),
+        (pid, observer) => assertItemHeld(task, pid, observer),
+      );
+      if (writer.status === "rejected") throw writer.reason;
+      expect(contender).toMatchObject({
+        status: "rejected",
+        reason: { status: 400, details: { ref: "task", field: "timeFrom" } },
       });
-      const ready = new Promise<void>((resolve) => {
-        started = resolve;
-      });
-      const writer = withTransaction(writerPool, async (client) => {
-        await client.query("SET LOCAL statement_timeout = '10s'");
-        await updateItemWithClient(client, {
-          databaseId: tasksDb,
-          itemId: task,
-          propertiesPatch: { timeFrom: "09:30" },
-        });
-        started();
-        await gate;
-      });
-      const writerOutcome = Promise.allSettled([writer]);
-      let contenderOutcome: Promise<PromiseSettledResult<unknown>[]> | undefined;
-      try {
-        await waitForStart(ready, writer);
-        const { rows } = await contenderPool.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-        const pid = rows[0]?.pid;
-        if (pid === undefined) throw new Error("Missing contender pid");
-        const contender = withTransaction(contenderPool, async (client) => {
-          await client.query("SET LOCAL statement_timeout = '10s'");
-          return confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card);
-        });
-        contenderOutcome = Promise.allSettled([contender]);
-        await expect
-          .poll(
-            async () => {
-              const result = await pool.query<{ blocked: boolean }>(
-                "SELECT cardinality(pg_blocking_pids($1)) > 0 AS blocked",
-                [pid],
-              );
-              return result.rows[0]?.blocked;
-            },
-            { timeout: 5000 },
-          )
-          .toBe(true);
-        release();
-        await writer;
-        await expect(contender).rejects.toMatchObject({ status: 400, details: { ref: "task", field: "timeFrom" } });
-        expect(await cardStatus(card)).toBe("proposed");
-        const [current] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
-        expect(current?.properties).toMatchObject({ date: "2026-11-01", timeFrom: "09:30", timeTo: "10:00" });
-      } finally {
-        release();
-        await writerOutcome;
-        if (contenderOutcome) await contenderOutcome;
-        await writerPool.end();
-        await contenderPool.end();
-      }
-    });
+      expect(await cardStatus(card)).toBe("proposed");
+      const [cardAfter] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [card]));
+      expect(cardAfter).toEqual(cardBefore);
+      const [current] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
+      expect(current?.properties).toMatchObject({ date: "2026-11-01", timeFrom: "09:30", timeTo: "10:00" });
+    }, 25000);
 
     it("rolls back an earlier created item when a later update has stale before values", async () => {
       const task = await createIn("tasks", { name: "Actual" });
@@ -1342,74 +1768,46 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
             after: { properties: { name: "After" }, ...(extraOnly ? {} : { relations: { area: beforeTargets } }) },
           },
         ]);
-        const writerPool = getTestPool({ max: 1 });
-        const contenderPool = getTestPool({ max: 1 });
-        let release = () => {};
-        let started = () => {};
-        const gate = new Promise<void>((resolve) => {
-          release = resolve;
+        const [cardBefore] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [card]));
+        const definition = await withTransaction(pool, (client) =>
+          relationsStore.getRelationDefinitionByPropertyId(client, property.id),
+        );
+        if (!definition) throw new Error("Missing relation definition");
+        const [writer, contender] = await runPreconditionOverlap(
+          async (client) => {
+            if (change === "property") {
+              await updateItemWithClient(client, {
+                databaseId: projectsDb,
+                itemId: project,
+                propertiesPatch: { name: "Changed" },
+              });
+            } else if (change === "insert" || change === "insert-extra") {
+              await createRelationWithClient(client, edge);
+            } else {
+              await deleteRelationWithClient(client, edge);
+            }
+          },
+          (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card),
+          (pid, observer) =>
+            change === "property"
+              ? assertItemHeld(project, pid, observer)
+              : change === "insert" || change === "insert-extra"
+                ? assertDefinitionHeld(definition.id, pid, observer)
+                : assertEdgeHeld(definition.id, project, area, pid, observer),
+        );
+        if (writer.status === "rejected") throw writer.reason;
+        expect(contender).toMatchObject({
+          status: "rejected",
+          reason: { status: 400, details: { ref: "project", field: change === "property" ? "name" : "area" } },
         });
-        const ready = new Promise<void>((resolve) => {
-          started = resolve;
-        });
-        const writer = withTransaction(writerPool, async (client) => {
-          await client.query("SET LOCAL statement_timeout = '10s'");
-          if (change === "property") {
-            await updateItemWithClient(client, {
-              databaseId: projectsDb,
-              itemId: project,
-              propertiesPatch: { name: "Changed" },
-            });
-          } else if (change === "insert" || change === "insert-extra") {
-            await createRelationWithClient(client, edge);
-          } else {
-            await deleteRelationWithClient(client, edge);
-          }
-          started();
-          await gate;
-        });
-        const writerOutcome = Promise.allSettled([writer]);
-        let contenderOutcome: Promise<PromiseSettledResult<unknown>[]> | undefined;
-        try {
-          await waitForStart(ready, writer);
-          const pidResult = await contenderPool.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-          const pid = pidResult.rows[0]?.pid;
-          if (pid === undefined) throw new Error("Missing contender pid");
-          const contender = withTransaction(contenderPool, async (client) => {
-            await client.query("SET LOCAL statement_timeout = '10s'");
-            return confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card);
-          });
-          contenderOutcome = Promise.allSettled([contender]);
-          await expect
-            .poll(
-              async () => {
-                const { rows } = await pool.query<{ blocked: boolean }>(
-                  "SELECT cardinality(pg_blocking_pids($1)) > 0 AS blocked",
-                  [pid],
-                );
-                return rows[0]?.blocked;
-              },
-              { timeout: 5000 },
-            )
-            .toBe(true);
-          release();
-          await writer;
-          await expect(contender).rejects.toMatchObject({
-            status: 400,
-            details: { ref: "project", field: change === "property" ? "name" : "area" },
-          });
-          expect(await cardStatus(card)).toBe("proposed");
-          const [current] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
-          expect(current?.properties.name).toBe(change === "property" ? "Changed" : "Before");
-          expect(await edgeExists(project, area)).toBe(change === "insert" || change === "insert-extra");
-        } finally {
-          release();
-          await writerOutcome;
-          if (contenderOutcome) await contenderOutcome;
-          await writerPool.end();
-          await contenderPool.end();
-        }
+        expect(await cardStatus(card)).toBe("proposed");
+        const [cardAfter] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [card]));
+        expect(cardAfter).toEqual(cardBefore);
+        const [current] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
+        expect(current?.properties.name).toBe(change === "property" ? "Changed" : "Before");
+        expect(await edgeExists(project, area)).toBe(change === "insert" || change === "insert-extra");
       },
+      25000,
     );
 
     it.each(["property", "insert", "delete", "insert-extra", "delete-extra"] as const)(
@@ -1439,32 +1837,13 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
             after: { properties: { name: "After" }, ...(extraOnly ? {} : { relations: { area: beforeTargets } }) },
           },
         ]);
-        const confirmPool = getTestPool({ max: 1 });
-        const writerPool = getTestPool({ max: 1 });
-        let release = () => {};
-        let started = () => {};
-        const gate = new Promise<void>((resolve) => {
-          release = resolve;
-        });
-        const ready = new Promise<void>((resolve) => {
-          started = resolve;
-        });
-        const confirmation = withTransaction(confirmPool, async (client) => {
-          await client.query("SET LOCAL statement_timeout = '10s'");
-          const result = await confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card);
-          started();
-          await gate;
-          return result;
-        });
-        const confirmationOutcome = Promise.allSettled([confirmation]);
-        let writerOutcome: Promise<PromiseSettledResult<unknown>[]> | undefined;
-        try {
-          await waitForStart(ready, confirmation);
-          const pidResult = await writerPool.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-          const pid = pidResult.rows[0]?.pid;
-          if (pid === undefined) throw new Error("Missing writer pid");
-          const writer = withTransaction(writerPool, async (client) => {
-            await client.query("SET LOCAL statement_timeout = '10s'");
+        const definition = await withTransaction(pool, (client) =>
+          relationsStore.getRelationDefinitionByPropertyId(client, property.id),
+        );
+        if (!definition) throw new Error("Missing relation definition");
+        const [confirmation, writer] = await runPreconditionOverlap(
+          (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card),
+          async (client) => {
             if (change === "property") {
               await updateItemWithClient(client, {
                 databaseId: projectsDb,
@@ -1476,35 +1855,22 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
             } else {
               await deleteRelationWithClient(client, edge);
             }
-          });
-          writerOutcome = Promise.allSettled([writer]);
-          await expect
-            .poll(
-              async () => {
-                const { rows } = await pool.query<{ blocked: boolean }>(
-                  "SELECT cardinality(pg_blocking_pids($1)) > 0 AS blocked",
-                  [pid],
-                );
-                return rows[0]?.blocked;
-              },
-              { timeout: 5000 },
-            )
-            .toBe(true);
-          release();
-          await confirmation;
-          await writer;
-          expect(await cardStatus(card)).toBe("confirmed");
-          const [current] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
-          expect(current?.properties.name).toBe(change === "property" ? "Later" : "After");
-          expect(await edgeExists(project, area)).toBe(change === "insert" || change === "insert-extra");
-        } finally {
-          release();
-          await confirmationOutcome;
-          if (writerOutcome) await writerOutcome;
-          await confirmPool.end();
-          await writerPool.end();
-        }
+          },
+          async (pid, observer) => {
+            await assertItemHeld(project, pid, observer);
+            await assertDefinitionHeld(definition.id, pid, observer);
+            if (change === "delete" || change === "delete-extra")
+              await assertEdgeHeld(definition.id, project, area, pid, observer);
+          },
+        );
+        if (confirmation.status === "rejected") throw confirmation.reason;
+        if (writer.status === "rejected") throw writer.reason;
+        expect(await cardStatus(card)).toBe("confirmed");
+        const [current] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
+        expect(current?.properties.name).toBe(change === "property" ? "Later" : "After");
+        expect(await edgeExists(project, area)).toBe(change === "insert" || change === "insert-extra");
       },
+      25000,
     );
 
     it("a repeated confirm returns the confirmed card and creates nothing twice", async () => {

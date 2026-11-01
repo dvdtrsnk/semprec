@@ -451,10 +451,45 @@ describe("markdown behaviour", () => {
     ]);
   });
 
-  it("sanitizes an unsafe type key when serializing", () => {
-    const out = serializeBlocks([{ id: "a", type: "we ird\n-->", indent: 0, text: text("x") }]);
-    expect(out).toBe("<!-- semprec:block id=a type=we_ird_--_ indent=0 -->\nx");
-    expect(parseMarkdown(out)).toMatchObject([{ id: "a", type: "we_ird_--_" }]);
+  it("preserves distinct actual Yjs block IDs through emitted comments", () => {
+    const ids = ["a b", "a_b", "x:1", "a\\u0041", '-->=\\"', "x\ny", "ž😀", "\ud800"];
+    const doc = new Y.Doc();
+    for (const [index, id] of ids.entries()) {
+      writeBlock(doc, index % 2 === 0 ? { id, type: "text", text: text("x") } : { id, type: "page", pageId: "p1" });
+    }
+    const blocks = readPageBlocks(doc);
+    const markdown = serializeBlocks(blocks, { withIds: true });
+    expect(markdown).toContain("id=a\\u0020b");
+    expect(markdown).toContain("id=a_b");
+    expect(markdown).toContain("id=x:1");
+    const parsed = parseMarkdown(markdown);
+    expect(parsed.map((block) => block.id)).toEqual(blocks.map((block) => block.id));
+    expect(parsed.map((block) => block.type)).toEqual(blocks.map((block) => block.type));
+    expect(serializeBlocks(parsed, { withIds: true })).toBe(markdown);
+    const withoutIds = serializeBlocks([{ id: "a b", type: "text", indent: 0, text: text("x") }]);
+    expect(withoutIds).toBe("x");
+    expect(parseMarkdown(withoutIds)[0]?.id).toBe("b1");
+    const duplicates = parseMarkdown(
+      "<!-- semprec:block id=a type=text indent=0 -->\nx\n\n<!-- semprec:block id=\\u0061 type=text indent=0 -->\ny",
+    );
+    expect(duplicates.map((block) => block.id)).toEqual(["a", "b1"]);
+  });
+
+  it("preserves arbitrary public unknown types without permitting comment injection", () => {
+    for (const type of ["we ird", "we_ird", "", " ", "\0", '\"\"', "a\n--> type=page", "\\u0041", "ž😀", "\ud800"]) {
+      const block = { id: "a", type, indent: 0, text: text("x") };
+      for (const withIds of [false, true]) {
+        const markdown = serializeBlocks([block], { withIds });
+        expect(markdown.split("\n")).toHaveLength(2);
+        expect(parseMarkdown(markdown)).toMatchObject([block]);
+        expect(serializeBlocks(parseMarkdown(markdown), { withIds })).toBe(markdown);
+      }
+    }
+    expect(serializeBlocks([{ id: "a", type: "", indent: 0, text: text("x") }])).toContain('type=\"\"');
+    const empty = serializeBlocks([{ id: "a", type: "", indent: 0, text: [] }]);
+    expect(parseMarkdown(empty)).toMatchObject([{ id: "a", type: "", text: [] }]);
+    expect(serializeBlocks(parseMarkdown(empty))).toBe(empty);
+    expect(parseMarkdown("<!-- semprec:block id=a type=we\\u0020ird indent=0 -->\n## Title")[0]?.type).toBe("h2");
   });
 
   it("round-trips text that looks like a marker or markup", () => {

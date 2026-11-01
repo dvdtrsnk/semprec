@@ -325,6 +325,21 @@
       }
     },
     {
+      "name": "comment preserves unsafe id and unknown type",
+      "markdown": "<!-- semprec:block id=a\\u0020b type=we\\u0020ird indent=0 -->\nx",
+      "blocks": [
+        {
+          "id": "a b",
+          "type": "we ird",
+          "text": [
+            {
+              "insert": "x"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "synthetic empty document writes nothing",
       "direction": "serialize",
       "markdown": "",
