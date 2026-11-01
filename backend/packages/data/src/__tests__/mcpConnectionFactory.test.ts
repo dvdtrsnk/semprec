@@ -837,6 +837,21 @@ describe("MCP connection factory (issue #231)", () => {
     });
   });
 
+  it.each([
+    ["sse", startSseContractServer],
+    ["http", startHttpContractServer],
+  ])("classifies an actual refused %s connection through invocation", async (_transport, startServer) => {
+    const contract = await startServer();
+    const config = contract.connectionConfig;
+    await contract.stop();
+
+    const item = await createMcpServerItem(config);
+    const result = await executeMcpInvocation(pool, { serverItem: item, toolName: "search" }, {});
+    expect(result.error).toBe(true);
+    expect(result.failure).toEqual({ failureKind: "connection", mcpServerItemId: item.id });
+    expect(result.result).not.toContain("ECONNREFUSED");
+  });
+
   describe("sse", () => {
     it("connects, completes the handshake, and injects the credential as a bearer token", async () => {
       const contract = await startSseContractServer();
