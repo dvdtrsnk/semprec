@@ -57,3 +57,27 @@ move or duplicate the suite. All Tasks, acceptance criteria and required HTTP
 handler tests remain unchanged. This authorizes test maintenance at the actual
 path; neither its presence nor this inspection establishes a passing test or
 complete acceptance evidence.
+
+## Real MCP invocation connection-state evidence
+
+Gh-1450's scoped unit suite mocks connection creation and the state store; its
+store integration suite separately proves database behavior. The existing
+`backend/packages/data/src/__tests__/mcpConnectionFactory.test.ts` already calls
+real `executeMcpInvocation`, owns local stdio/SSE/HTTP contract servers and uses
+runtime-role tenant fixtures. Reuse that harness for composed evidence rather
+than duplicating transport setup in a parallel test suite.
+
+Add exactly that integration test path to gh-1450 and batch 08 Touches. Permit
+focused permanent tests of the real invocation-to-connection-state path using
+runtime roles and explicit tenant scopes. Verify the requested connection
+success/failure transitions and that a tool-call failure after a successful
+connection still records connection success. Preserve the existing independent
+rollback and recording-failure evidence; a test-specific setup must exercise
+its stated production boundary rather than pass through a different guard.
+
+This adds a test path, not a transport or persistence contract. Do not alter
+stdio environment inheritance, its allowlist, contract assertions or the known
+inherited-name test to obtain a passing pipeline. Preserve the previously
+accepted transport classification and safe logging behavior. No live provider
+probe, new connection mechanism or package dependency is authorized. Existing
+Task/AC obligations remain unchanged; no test result or exception is granted.
