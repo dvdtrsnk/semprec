@@ -652,8 +652,8 @@ describe("value link state on writes (issue #1516)", () => {
         withRuntimePool(async (systemPool) => {
           const cp = createChokePoint(userPool);
           const databases = await runInTenant(tenant, () => cp.listDatabases());
-          const inbox = databases.find((db) => db.key === "inbox");
-          const types = databases.find((db) => db.key === "inboxItemTypes");
+          const inbox = databases.find((db) => db.ownerModuleId === "inbox");
+          const types = databases.find((db) => db.ownerModuleId === "inboxItemTypes");
           if (!inbox || !types) throw new Error("Missing seeded Inbox databases");
           const property = await runInTenant(tenant, () => cp.getPropertyByKey(inbox.id, "type"));
           if (!property) throw new Error("Missing Inbox type relation");
