@@ -29,6 +29,45 @@ import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 // Issue #1564: an attachment keeps its blob's bytes while it exists, and the trash purge of its Inbox
 // item releases the blob only when nothing else names it.
 
+/** Captures the backend on the very client that issues the matched production statement. */
+function observeStatementPid(runtime: Pool, statement: RegExp) {
+  let resolvePid!: (pid: number) => void;
+  const pid = new Promise<number>((resolve) => {
+    resolvePid = resolve;
+  });
+  const wrapped = new Map<PoolClient, PoolClient["query"]>();
+  let captured = false;
+  const instrument = (client: PoolClient) => {
+    if (wrapped.has(client)) return;
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    wrapped.set(client, client.query);
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    client.query = new Proxy(client.query, {
+      apply(target, receiver, args: unknown[]) {
+        if (captured || typeof args[0] !== "string" || !statement.test(args[0])) {
+          return Reflect.apply(target, receiver, args);
+        }
+        captured = true;
+        return (async () => {
+          const result = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          const actual = result.rows[0]?.pid;
+          if (actual === undefined) throw new Error("missing competing backend pid");
+          resolvePid(actual);
+          return Reflect.apply(target, receiver, args);
+        })();
+      },
+    });
+  };
+  runtime.on("acquire", instrument);
+  return {
+    pid,
+    restore() {
+      runtime.off("acquire", instrument);
+      for (const [client, query] of wrapped) client.query = query;
+    },
+  };
+}
+
 let pool: Pool;
 let chokePoint: ChokePoint;
 
@@ -440,6 +479,7 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
       const one = await createRuntimeRolePool(pool, "semprec_data");
       const two = await createRuntimeRolePool(pool, "semprec_data");
       const three = await createRuntimeRolePool(pool, "semprec_data");
+      const competing = observeStatementPid(two, /pg_advisory_xact_lock/i);
       let release!: () => void;
       const hold = new Promise<void>((resolve) => {
         release = resolve;
@@ -487,14 +527,15 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
         );
         y = runInTenant(getTenantZeroId(), () => createChokePoint(two).purgeExpiredTrashSubtree(rootY.id, new Date()));
         ySettled = Promise.allSettled([y]);
+        const competitorPid = await bounded(competing.pid);
         let blocked = false;
         for (let i = 0; i < 100 && !blocked; i++) {
           blocked =
             (
-              await pool.query<{ blocked: boolean }>(
-                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked",
-                [ownerPid],
-              )
+              await pool.query<{ blocked: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked", [
+                ownerPid,
+                competitorPid,
+              ])
             ).rows[0]?.blocked === true;
           if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
         }
@@ -515,6 +556,7 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
         release();
         await xSettled;
         if (ySettled !== undefined) await ySettled;
+        competing.restore();
         one.off("acquire", instrument);
         for (const [client, original] of originals) client.query = original;
         await Promise.all([one.end(), two.end(), three.end()]);

@@ -75,6 +75,45 @@ async function bounded<T>(promise: Promise<T>): Promise<T> {
   }
 }
 
+/** Captures the backend on the very client that issues the matched production statement. */
+function observeStatementPid(runtime: Pool, statement: RegExp) {
+  let resolvePid!: (pid: number) => void;
+  const pid = new Promise<number>((resolve) => {
+    resolvePid = resolve;
+  });
+  const wrapped = new Map<PoolClient, PoolClient["query"]>();
+  let captured = false;
+  const instrument = (client: PoolClient) => {
+    if (wrapped.has(client)) return;
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    wrapped.set(client, client.query);
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    client.query = new Proxy(client.query, {
+      apply(target, receiver, args: unknown[]) {
+        if (captured || typeof args[0] !== "string" || !statement.test(args[0])) {
+          return Reflect.apply(target, receiver, args);
+        }
+        captured = true;
+        return (async () => {
+          const result = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          const actual = result.rows[0]?.pid;
+          if (actual === undefined) throw new Error("missing competing backend pid");
+          resolvePid(actual);
+          return Reflect.apply(target, receiver, args);
+        })();
+      },
+    });
+  };
+  runtime.on("acquire", instrument);
+  return {
+    pid,
+    restore() {
+      runtime.off("acquire", instrument);
+      for (const [client, query] of wrapped) client.query = query;
+    },
+  };
+}
+
 let pool: Pool;
 
 describe("ingestUploadedFile (issue #670)", () => {
@@ -241,6 +280,7 @@ describe("ingestUploadedFile (issue #670)", () => {
       const first = uploadBytes(storage, filesId, bytes, "image/png", firstName);
       const firstSettled = Promise.allSettled([first]);
       let second: ReturnType<typeof uploadBytes> | undefined;
+      let competing: ReturnType<typeof observeStatementPid> | undefined;
       try {
         const pid = await bounded(
           Promise.race([
@@ -250,14 +290,16 @@ describe("ingestUploadedFile (issue #670)", () => {
             }),
           ]),
         );
+        competing = observeStatementPid(pool, /FROM blobs\b[\s\S]*FOR UPDATE/i);
         second = uploadBytes(storage, filesId, bytes, "image/png", secondName);
         const secondSettled = Promise.allSettled([second]);
+        const competitorPid = await bounded(competing.pid);
         await expect
           .poll(
             async () => {
               const result = await pool.query<{ blocked: boolean }>(
-                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked",
-                [pid],
+                "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+                [pid, competitorPid],
               );
               return result.rows[0]?.blocked;
             },
@@ -301,6 +343,7 @@ describe("ingestUploadedFile (issue #670)", () => {
         release();
         await firstSettled;
         if (second) await Promise.allSettled([second]);
+        competing?.restore();
         pool.off("acquire", instrument);
         for (const [client, query] of wrapped) client.query = query;
       }

@@ -80,6 +80,45 @@ async function bounded<T>(promise: Promise<T>): Promise<T> {
   }
 }
 
+/** Captures the backend on the very client that issues the matched production statement. */
+function observeStatementPid(runtime: Pool, statement: RegExp) {
+  let resolvePid!: (pid: number) => void;
+  const pid = new Promise<number>((resolve) => {
+    resolvePid = resolve;
+  });
+  const wrapped = new Map<PoolClient, PoolClient["query"]>();
+  let captured = false;
+  const instrument = (client: PoolClient) => {
+    if (wrapped.has(client)) return;
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    wrapped.set(client, client.query);
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    client.query = new Proxy(client.query, {
+      apply(target, receiver, args: unknown[]) {
+        if (captured || typeof args[0] !== "string" || !statement.test(args[0])) {
+          return Reflect.apply(target, receiver, args);
+        }
+        captured = true;
+        return (async () => {
+          const result = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          const actual = result.rows[0]?.pid;
+          if (actual === undefined) throw new Error("missing competing backend pid");
+          resolvePid(actual);
+          return Reflect.apply(target, receiver, args);
+        })();
+      },
+    });
+  };
+  runtime.on("acquire", instrument);
+  return {
+    pid,
+    restore() {
+      runtime.off("acquire", instrument);
+      for (const [client, query] of wrapped) client.query = query;
+    },
+  };
+}
+
 async function countBlobs(blobId: string): Promise<number> {
   const { rows } = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM blobs WHERE id = $1", [
     blobId,
@@ -320,6 +359,7 @@ describe("standalone blobs (issue #1401)", () => {
       await ageBlob(blob.id, 25);
       const writerPool = await createRuntimeRolePool(pool, "semprec_data");
       const sweepPool = await createRuntimeRolePool(pool, "semprec_data");
+      const competing = observeStatementPid(sweepPool, /FROM blobs\b[\s\S]*FOR UPDATE/i);
       let release!: () => void;
       let ready!: (pid: number) => void;
       const gate = new Promise<void>((resolve) => {
@@ -342,6 +382,7 @@ describe("standalone blobs (issue #1401)", () => {
       );
       const writerOutcome = Promise.allSettled([writer]);
       let sweep: Promise<number> | undefined;
+      let sweepOutcome: Promise<PromiseSettledResult<number>[]> | undefined;
       try {
         const pid = await bounded(
           Promise.race([
@@ -352,12 +393,14 @@ describe("standalone blobs (issue #1401)", () => {
           ]),
         );
         sweep = runInTenant(getTenantZeroId(), () => sweepUnreferencedBlobs(sweepPool, storage));
+        sweepOutcome = Promise.allSettled([sweep]);
+        const competitorPid = await bounded(competing.pid);
         await expect
           .poll(
             async () => {
               const result = await pool.query<{ blocked: boolean }>(
-                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked",
-                [pid],
+                "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+                [pid, competitorPid],
               );
               return result.rows[0]?.blocked;
             },
@@ -367,7 +410,8 @@ describe("standalone blobs (issue #1401)", () => {
       } finally {
         release();
         await writerOutcome;
-        if (sweep) await Promise.allSettled([sweep]);
+        if (sweepOutcome) await sweepOutcome;
+        competing.restore();
         await writerPool.end();
         await sweepPool.end();
       }
@@ -383,6 +427,7 @@ describe("standalone blobs (issue #1401)", () => {
       const blob = (await upload(storage, "deleted image")).blob;
       const deletePool = await createRuntimeRolePool(pool, "semprec_data");
       const writerPool = await createRuntimeRolePool(pool, "semprec_data");
+      const competing = observeStatementPid(writerPool, /FROM blobs\b[\s\S]*FOR KEY SHARE/i);
       let release!: () => void;
       let ready!: (pid: number) => void;
       const gate = new Promise<void>((resolve) => {
@@ -402,6 +447,7 @@ describe("standalone blobs (issue #1401)", () => {
       );
       const deletionOutcome = Promise.allSettled([deleting]);
       let writing: Promise<unknown> | undefined;
+      let writingOutcome: Promise<PromiseSettledResult<unknown>[]> | undefined;
       try {
         const pid = await bounded(
           Promise.race([
@@ -417,13 +463,14 @@ describe("standalone blobs (issue #1401)", () => {
             properties: { photo: { blobId: blob.id } },
           }),
         );
-        void writing.catch(() => {});
+        writingOutcome = Promise.allSettled([writing]);
+        const competitorPid = await bounded(competing.pid);
         await expect
           .poll(
             async () => {
               const result = await pool.query<{ blocked: boolean }>(
-                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked",
-                [pid],
+                "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+                [pid, competitorPid],
               );
               return result.rows[0]?.blocked;
             },
@@ -433,7 +480,8 @@ describe("standalone blobs (issue #1401)", () => {
       } finally {
         release();
         await deletionOutcome;
-        if (writing) await Promise.allSettled([writing]);
+        if (writingOutcome) await writingOutcome;
+        competing.restore();
         await deletePool.end();
         await writerPool.end();
       }
@@ -458,6 +506,7 @@ describe("standalone blobs (issue #1401)", () => {
       await ageBlob(blob.id, 25);
       const writerPool = await createRuntimeRolePool(pool, "semprec_data");
       const sweepPool = await createRuntimeRolePool(pool, "semprec_data");
+      const competing = observeStatementPid(sweepPool, /FROM blobs\b[\s\S]*FOR UPDATE/i);
       let release!: () => void;
       let ready!: (pid: number) => void;
       const gate = new Promise<void>((resolve) => {
@@ -481,6 +530,7 @@ describe("standalone blobs (issue #1401)", () => {
       );
       const writerOutcome = Promise.allSettled([writer]);
       let sweep: Promise<number> | undefined;
+      let sweepOutcome: Promise<PromiseSettledResult<number>[]> | undefined;
       try {
         const pid = await bounded(
           Promise.race([
@@ -491,12 +541,14 @@ describe("standalone blobs (issue #1401)", () => {
           ]),
         );
         sweep = runInTenant(getTenantZeroId(), () => sweepUnreferencedBlobs(sweepPool, storage));
+        sweepOutcome = Promise.allSettled([sweep]);
+        const competitorPid = await bounded(competing.pid);
         await expect
           .poll(
             async () => {
               const result = await pool.query<{ blocked: boolean }>(
-                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked",
-                [pid],
+                "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+                [pid, competitorPid],
               );
               return result.rows[0]?.blocked;
             },
@@ -506,7 +558,8 @@ describe("standalone blobs (issue #1401)", () => {
       } finally {
         release();
         await writerOutcome;
-        if (sweep) await Promise.allSettled([sweep]);
+        if (sweepOutcome) await sweepOutcome;
+        competing.restore();
         await writerPool.end();
         await sweepPool.end();
       }
@@ -530,6 +583,7 @@ describe("standalone blobs (issue #1401)", () => {
       const blob = (await upload(storage, "deleted image")).blob;
       const deletePool = await createRuntimeRolePool(pool, "semprec_data");
       const writerPool = await createRuntimeRolePool(pool, "semprec_data");
+      const competing = observeStatementPid(writerPool, /FROM blobs\b[\s\S]*FOR KEY SHARE/i);
       let release!: () => void;
       let ready!: (pid: number) => void;
       const gate = new Promise<void>((resolve) => {
@@ -549,6 +603,7 @@ describe("standalone blobs (issue #1401)", () => {
       );
       const deletionOutcome = Promise.allSettled([deleting]);
       let writing: Promise<unknown> | undefined;
+      let writingOutcome: Promise<PromiseSettledResult<unknown>[]> | undefined;
       try {
         const pid = await bounded(
           Promise.race([
@@ -565,13 +620,14 @@ describe("standalone blobs (issue #1401)", () => {
             propertiesPatch: { photo: { blobId: blob.id } },
           }),
         );
-        void writing.catch(() => {});
+        writingOutcome = Promise.allSettled([writing]);
+        const competitorPid = await bounded(competing.pid);
         await expect
           .poll(
             async () => {
               const result = await pool.query<{ blocked: boolean }>(
-                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked",
-                [pid],
+                "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+                [pid, competitorPid],
               );
               return result.rows[0]?.blocked;
             },
@@ -581,7 +637,8 @@ describe("standalone blobs (issue #1401)", () => {
       } finally {
         release();
         await deletionOutcome;
-        if (writing) await Promise.allSettled([writing]);
+        if (writingOutcome) await writingOutcome;
+        competing.restore();
         await deletePool.end();
         await writerPool.end();
       }
@@ -809,6 +866,7 @@ describe("standalone blobs (issue #1401)", () => {
   }, 15000);
   it("collector holds deletion before a concurrent repeated upload", async () => {
     const f = await setup();
+    const competing = observeStatementPid(f.one, /INSERT INTO blobs\b/i);
     const ready = gate(),
       release = gate();
     let pid = 0;
@@ -833,14 +891,15 @@ describe("standalone blobs (issue #1401)", () => {
       );
       upload = f.upload(f.one);
       const uploadSettled = Promise.allSettled([upload]);
+      const competitorPid = await bounded(competing.pid);
       let blocked = false;
       for (let i = 0; i < 100 && !blocked; i++) {
         blocked =
           (
-            await pool.query<{ b: boolean }>(
-              "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))) AS b",
-              [pid],
-            )
+            await pool.query<{ b: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS b", [
+              pid,
+              competitorPid,
+            ])
           ).rows[0]?.b === true;
         if (!blocked) await new Promise((r) => setTimeout(r, 20));
       }
@@ -857,6 +916,7 @@ describe("standalone blobs (issue #1401)", () => {
       release.release();
       await settled;
       if (upload) await Promise.allSettled([upload]);
+      competing.restore();
       await f.one.end();
       await f.two.end();
       await rm(f.dir, { recursive: true, force: true });

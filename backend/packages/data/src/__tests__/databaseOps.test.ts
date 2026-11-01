@@ -16,6 +16,59 @@ import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js"
 import { withTransaction } from "../db/pool.js";
 import { listPropertiesByDatabases, setInitialPosition } from "../chokePoint/propertiesStore.js";
 
+async function bounded<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("operation barrier timed out")), 5000);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/** Captures the backend on the very client that issues the matched production statement. */
+function observeStatementPid(runtime: Pool, statement: RegExp) {
+  let resolvePid!: (pid: number) => void;
+  const pid = new Promise<number>((resolve) => {
+    resolvePid = resolve;
+  });
+  const wrapped = new Map<PoolClient, PoolClient["query"]>();
+  let captured = false;
+  const instrument = (client: PoolClient) => {
+    if (wrapped.has(client)) return;
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    wrapped.set(client, client.query);
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    client.query = new Proxy(client.query, {
+      apply(target, receiver, args: unknown[]) {
+        if (captured || typeof args[0] !== "string" || !statement.test(args[0])) {
+          return Reflect.apply(target, receiver, args);
+        }
+        captured = true;
+        return (async () => {
+          const result = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          const actual = result.rows[0]?.pid;
+          if (actual === undefined) throw new Error("missing competing backend pid");
+          resolvePid(actual);
+          return Reflect.apply(target, receiver, args);
+        })();
+      },
+    });
+  };
+  runtime.on("acquire", instrument);
+  return {
+    pid,
+    restore() {
+      runtime.off("acquire", instrument);
+      for (const [client, query] of wrapped) client.query = query;
+    },
+  };
+}
+
 let pool: Pool;
 let chokePoint: ChokePoint;
 
@@ -319,6 +372,10 @@ describe("choke-point databaseOps", () => {
         }); /* eslint-enable @typescript-eslint/unbound-method */
       };
       (order === "creation-first" ? createPool : purgePool).on("acquire", instrument);
+      const competing = observeStatementPid(
+        order === "creation-first" ? purgePool : createPool,
+        order === "creation-first" ? /SELECT drop_items_partition/i : /INSERT INTO databases/i,
+      );
       const create = () =>
         runInTenant(tenant, () =>
           createChokePoint(createPool).createDatabaseWithProperties({ name: "Atomic target race" }, "Name", [
@@ -345,32 +402,38 @@ describe("choke-point databaseOps", () => {
         });
         second = order === "creation-first" ? purge() : create();
         const secondSettled = Promise.allSettled([second]);
+        const competitorPid = await bounded(competing.pid);
         let blocked = false;
         for (let i = 0; i < 200 && !blocked; i++) {
           blocked =
             (
-              await pool.query<{ b: boolean }>(
-                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))) AS b",
-                [pid],
-              )
+              await pool.query<{ b: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS b", [
+                pid,
+                competitorPid,
+              ])
             ).rows[0]?.b === true;
           if (!blocked) await new Promise((r) => setTimeout(r, 10));
         }
         expect(blocked).toBe(true);
-        const locks = await pool.query<{ mode: string; granted: boolean }>(
-          "SELECT mode,granted FROM pg_locks WHERE relation='items'::regclass AND (pid=$1 OR pid IN (SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))))",
-          [pid],
+        const locks = await pool.query<{ pid: number; mode: string; granted: boolean }>(
+          "SELECT pid,mode,granted FROM pg_locks WHERE relation='items'::regclass AND pid = ANY($1::int[])",
+          [[pid, competitorPid]],
         );
         expect(
           locks.rows.some(
             (x) =>
-              x.mode === (order === "creation-first" ? "ShareUpdateExclusiveLock" : "AccessExclusiveLock") && x.granted,
+              x.pid === pid &&
+              x.mode === (order === "creation-first" ? "ShareUpdateExclusiveLock" : "AccessExclusiveLock") &&
+              x.granted,
           ),
           JSON.stringify(locks.rows),
         ).toBe(true);
         expect(
           locks.rows.some(
-            (x) => x.mode === (order === "creation-first" ? "AccessExclusiveLock" : "AccessShareLock") && !x.granted,
+            (x) =>
+              x.pid === competitorPid &&
+              x.mode === (order === "creation-first" ? "AccessExclusiveLock" : "AccessShareLock") &&
+              !x.granted,
           ),
           JSON.stringify(locks.rows),
         ).toBe(true);
@@ -389,6 +452,7 @@ describe("choke-point databaseOps", () => {
         release();
         await firstSettled;
         if (second) await Promise.allSettled([second]);
+        competing.restore();
         createPool.off("acquire", instrument);
         purgePool.off("acquire", instrument);
         for (const [client, query] of wrapped) client.query = query;
