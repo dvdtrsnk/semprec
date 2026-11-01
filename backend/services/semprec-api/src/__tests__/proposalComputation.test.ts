@@ -829,7 +829,7 @@ describe("createProposalComputation (issue #1434)", () => {
       );
     });
 
-    it.each(["deleted", "repeated"] as const)(
+    it.each(["deleted", "repeated", "unpreparable"] as const)(
       "requires clarification for a %s computed update target",
       async (kind) => {
         const projects = await databaseIdFor("projects");
@@ -841,7 +841,7 @@ describe("createProposalComputation (issue #1434)", () => {
         const itemId = await createTaskItem("Update", "people");
         const operations = [
           { op: "create", database: "people", properties: { name: "Eva" } },
-          { op: "update", itemId: project.id, properties: { name: "Edited" } },
+          { op: "update", itemId: project.id, properties: { name: kind === "unpreparable" ? "" : "Edited" } },
           ...(kind === "repeated" ? [{ op: "link", itemId: project.id }] : []),
         ];
         const delegate = stubGateway({ properties: { name: "Eva" }, operations });
@@ -856,7 +856,7 @@ describe("createProposalComputation (issue #1434)", () => {
         const card = (await cp.listItems(config.processingProposalsDatabaseId)).items[0];
         expect(card?.properties).toMatchObject({ status: "needsClarification", proposal: null });
         expect((await cp.listItems(people)).items.map((item) => item.id)).toEqual(before.items.map((item) => item.id));
-        if (kind === "repeated") expect((await cp.getItem(projects, project.id))?.properties.name).toBe("Project");
+        if (kind !== "deleted") expect((await cp.getItem(projects, project.id))?.properties.name).toBe("Project");
       },
     );
 
