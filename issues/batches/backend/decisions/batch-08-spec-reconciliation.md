@@ -130,3 +130,27 @@ can interpret newly introduced `semp_problem` rows. Report the actual legacy
 read/write coverage and any such limitation precisely. All existing migration
 and functional acceptance obligations remain; these scope additions establish
 where to prove them, not a passing result.
+
+## Categories without a current notification kind
+
+The current closed `NOTIFICATION_KINDS` and database kind CHECK have no
+invitation or reminder kind. Gh-1440 already assigns future policy entries to
+the issues introducing those kinds; this batch does not introduce them.
+`pushInterruptionLevelFor` implements both preference branches, and the actual
+fan-out job calls it before loading registrations or claiming delivery rows.
+The scoped permanent fan-out suite contains on/off tests with typed synthetic
+policies for these two categories.
+
+Clarify gh-1443 Task 3's evidence requirement: execute both switch branches
+through that production decision helper and statically verify its actual
+pre-claim job call. Record those evidence levels separately. Real-job
+integration for invites/reminders is NOT RUN/unreachable under the current
+closed catalog and remains for the issues introducing their kinds. Do not
+invent kinds, loosen the database constraint, relabel a current production kind
+or present a mocked policy catalog as genuine current-kind integration.
+
+This limited clarification satisfies the current branch-test requirement when
+those tests actually pass and the wiring is verified. It grants no test PASS
+in advance, no general helper-only acceptance exception, and no waiver of job,
+queue, storage or transport evidence for existing notification kinds. Reapprove
+the exact source and propagated aggregate with updated specification hashes.
