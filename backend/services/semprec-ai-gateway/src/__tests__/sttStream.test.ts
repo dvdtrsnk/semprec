@@ -29,6 +29,7 @@ import {
 import { AudioProviderCallError } from "../audioProviders/types.js";
 import { GENEROUS_GLOBAL_CAPS } from "./globalCaps.js";
 import { createOpenAiStreamingTranscriptionProvider } from "../audioProviders/openAiStreamingTranscriptionProvider.js";
+import { createGracefulShutdown } from "../shutdown.js";
 
 const outboundFixture = vi.hoisted(() => ({
   sockets: [] as Array<{ sent: string[]; terminated: boolean }>,
@@ -339,7 +340,7 @@ describe("WebSocket /internal/stt/stream", () => {
   });
 
   it("does not reserve or forward another chunk after disconnect during settlement", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "semprec_side");
     const participants: Array<Promise<number>> = [];
     runtime.on("acquire", (client: PoolClient) => {
       participants.push(
@@ -367,7 +368,7 @@ describe("WebSocket /internal/stt/stream", () => {
     try {
       await bounded(holder.query("SET statement_timeout = '3s'"));
       await bounded(holder.query("SET lock_timeout = '2s'"));
-      await start({}, runtime);
+      await start({ maxConcurrentStreams: 1 }, runtime);
       const client = await connect();
       for (let i = 0; i < 10; i += 1) client.ws.send(frame());
       await waitFor(() => provider.sessions[0]?.writes.length === 10);
@@ -393,11 +394,20 @@ describe("WebSocket /internal/stt/stream", () => {
       console.info("STT_SETTLEMENT_OVERLAP", { holderPid, waiterPid });
       client.ws.terminate();
       await bounded(client.closed);
+      const refused = await connect();
+      expect(await bounded(refused.closed)).toBe(1013);
+      expect(provider.sessions).toHaveLength(1);
       await bounded(holder.query("COMMIT"));
       transactionOpen = false;
       await waitFor(async () => (await rows())[0]?.status === "settled");
       expect(await rows()).toHaveLength(1);
       expect(provider.sessions[0]?.writes).toHaveLength(10);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const next = await connect();
+      next.ws.send(frame());
+      await waitFor(() => provider.sessions.length === 2);
+      next.ws.send(JSON.stringify({ type: "end" }));
+      expect(await bounded(next.closed)).toBe(1000);
     } finally {
       try {
         if (transactionOpen) await bounded(holder.query("ROLLBACK"));
@@ -407,6 +417,177 @@ describe("WebSocket /internal/stt/stream", () => {
         await bounded(runtime.end());
       }
     }
+  });
+
+  it.each(["reservation", "reservation failure", "settlement", "settlement retry", "settlement failure"] as const)(
+    "waits for an in-flight %s before shutdown closes the production-role pool",
+    async (phase) => {
+      const runtime = await createRuntimeRolePool(pool, "semprec_side");
+      const participants: Array<Promise<number>> = [];
+      runtime.on("acquire", (client: PoolClient) => {
+        participants.push(
+          client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid").then(({ rows: found }) => {
+            if (!found[0]) throw new Error("Missing participant PID");
+            return found[0].pid;
+          }),
+        );
+      });
+      const holder = await pool.connect();
+      let transactionOpen = false;
+      let retryFixture = false;
+      let shutdownPromise: Promise<void> | undefined;
+      const endPool = vi.spyOn(runtime, "end");
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      async function bounded<T>(promise: Promise<T>): Promise<T> {
+        try {
+          return await Promise.race([
+            promise,
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error("Shutdown overlap timed out")), 5000);
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+          timer = undefined;
+        }
+      }
+      try {
+        const isReservation = phase === "reservation" || phase === "reservation failure";
+        await bounded(holder.query("SET statement_timeout = '3s'"));
+        await bounded(holder.query("SET lock_timeout = '2s'"));
+        await start({}, runtime);
+        const client = await connect();
+        if (!isReservation) {
+          for (let i = 0; i < 10; i += 1) client.ws.send(frame());
+          await waitFor(() => provider.sessions[0]?.writes.length === 10);
+        }
+        if (phase === "settlement retry" || phase === "settlement failure" || phase === "reservation failure") {
+          await bounded(pool.query("CREATE SEQUENCE test_stt_settle_attempts"));
+          retryFixture = true;
+          const failures = phase === "settlement retry" ? 2 : 3;
+          await bounded(
+            pool.query(
+              `CREATE FUNCTION test_stt_settle_retry() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF nextval('test_stt_settle_attempts') <= ${failures} THEN RAISE EXCEPTION 'owned settlement failure'; END IF; RETURN NEW; END $$`,
+            ),
+          );
+          await bounded(
+            pool.query(
+              "CREATE TRIGGER test_stt_settle_retry BEFORE UPDATE ON ai_gateway_calls FOR EACH ROW EXECUTE FUNCTION test_stt_settle_retry()",
+            ),
+          );
+        }
+        await bounded(holder.query("BEGIN"));
+        transactionOpen = true;
+        const holderResult = await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+        const holderPid = holderResult.rows[0]?.pid;
+        if (holderPid === undefined) throw new Error("Missing holder PID");
+        if (isReservation) {
+          await bounded(holder.query("SELECT pg_advisory_xact_lock(hashtext('ai_gateway_budget'))"));
+        } else {
+          const call = (await rows())[0];
+          if (typeof call?.id !== "string") throw new Error("Missing reserved call ID");
+          await bounded(holder.query("SELECT id FROM ai_gateway_calls WHERE id = $1 FOR UPDATE", [call.id]));
+        }
+        client.ws.send(frame());
+        let waiterPid: number | undefined;
+        await waitFor(async () => {
+          const owned = await Promise.all(participants);
+          const active = await pool.query<{ pid: number; blocked: boolean }>(
+            "SELECT pid, $1::int = ANY(pg_blocking_pids(pid)) AS blocked FROM pg_stat_activity WHERE pid = ANY($2::int[])",
+            [holderPid, owned],
+          );
+          waiterPid = active.rows.find((row) => row.blocked)?.pid;
+          return waiterPid !== undefined;
+        });
+        let streamsClosed = false;
+        const shutdown = createGracefulShutdown({
+          server,
+          pool: runtime,
+          heartbeat: { stop() {} },
+          logger,
+          drainTimeoutMs: 1000,
+          closeStreams: () =>
+            stt.closeAll().then(() => {
+              streamsClosed = true;
+            }),
+        });
+        shutdownPromise = shutdown("test");
+        let repeatedCloseFinished = false;
+        const repeatedClose = stt.closeAll().then(() => {
+          repeatedCloseFinished = true;
+        });
+        await bounded(client.closed);
+        const stillBlocked = await pool.query<{ blocked: boolean }>(
+          "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+          [holderPid, waiterPid],
+        );
+        expect(stillBlocked.rows[0]?.blocked).toBe(true);
+        expect(streamsClosed).toBe(false);
+        expect(repeatedCloseFinished).toBe(false);
+        expect(endPool).not.toHaveBeenCalled();
+        console.info("STT_SHUTDOWN_OVERLAP", { phase, holderPid, waiterPid });
+        await bounded(holder.query("COMMIT"));
+        transactionOpen = false;
+        await bounded(shutdownPromise);
+        await bounded(repeatedClose);
+        expect(streamsClosed).toBe(true);
+        expect(repeatedCloseFinished).toBe(true);
+        expect(endPool).toHaveBeenCalledOnce();
+        const calls = await rows();
+        expect(calls).toHaveLength(1);
+        const expectedStatus = phase === "reservation" ? "failed" : phase.endsWith("failure") ? "reserved" : "settled";
+        expect(calls[0]?.status).toBe(expectedStatus);
+        expect(provider.sessions).toHaveLength(isReservation ? 0 : 1);
+        if (phase === "settlement retry" || phase.endsWith("failure")) {
+          const attempts = await pool.query<{ attempts: string }>(
+            "SELECT last_value::text AS attempts FROM test_stt_settle_attempts",
+          );
+          expect(Number(attempts.rows[0]?.attempts)).toBe(phase === "reservation failure" ? 1 : 3);
+        }
+        if (phase.endsWith("failure")) expect(Number(calls[0]?.cost_usd)).toBeCloseTo(0.01, 8);
+      } finally {
+        try {
+          if (transactionOpen) await bounded(holder.query("ROLLBACK"));
+          if (shutdownPromise) await bounded(shutdownPromise);
+          else {
+            await bounded(stt.closeAll());
+            await bounded(runtime.end());
+          }
+        } finally {
+          holder.release(true);
+          endPool.mockRestore();
+          if (retryFixture) {
+            await bounded(pool.query("DROP TRIGGER IF EXISTS test_stt_settle_retry ON ai_gateway_calls"));
+            await bounded(pool.query("DROP FUNCTION IF EXISTS test_stt_settle_retry()"));
+            await bounded(pool.query("DROP SEQUENCE IF EXISTS test_stt_settle_attempts"));
+          }
+        }
+      }
+    },
+    15000,
+  );
+
+  it("settles once when the provider finishes synchronously inside the frame queue", async () => {
+    await start();
+    const client = await connect();
+    client.ws.send(frame());
+    client.ws.send(JSON.stringify({ type: "end" }));
+    expect(await client.closed).toBe(1000);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        stt.closeAll(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("Queue-internal finish timed out")), 5000);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    const calls = await rows();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.status).toBe("settled");
+    expect(provider.sessions[0]?.ended).toBe(true);
   });
 
   it("ends at an exact chunk boundary without a phantom reservation", async () => {
@@ -450,14 +631,14 @@ describe("WebSocket /internal/stt/stream", () => {
   it("isolates real websocket accounting between tenants under the runtime role", async () => {
     const tenantB = await createTestTenant(pool);
     await setTenantAiBudget(pool, tenantB);
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "semprec_side");
     try {
       const role = await runInTenant(tenantZero, () =>
         runtime.query<{ name: string; bypass: boolean; superuser: boolean }>(
           "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
         ),
       );
-      expect(role.rows[0]).toEqual({ name: "semprec_data", bypass: false, superuser: false });
+      expect(role.rows[0]).toEqual({ name: "semprec_side", bypass: false, superuser: false });
       await start({}, runtime);
       const a = await connect();
       const b = await connect({ authorization: `Bearer ${TOKEN}`, "x-semprec-tenant-id": tenantB });

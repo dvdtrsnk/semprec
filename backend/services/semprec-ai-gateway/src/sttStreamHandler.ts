@@ -167,9 +167,13 @@ export function createSttStreamUpgradeHandler(pool: Pool, options: SttStreamHand
           setTimeout(() => ws.terminate(), CLOSE_GRACE_MS).unref();
         }
       }
-      cleanup = closeChunk()
+      cleanup = queue
+        .then(() => closeChunk())
         .catch((err: unknown) => {
-          logger.error({ err }, "Failed to account for the open speech-to-text stream chunk");
+          logger.error(
+            { err: { name: err instanceof Error ? err.name : "unknown" } },
+            "Failed to account for the open speech-to-text stream chunk",
+          );
         })
         .finally(() => {
           open.delete(handle);
