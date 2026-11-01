@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { WebSocket } from "ws";
 import { createModels } from "@earendil-works/pi-ai";
@@ -409,6 +409,50 @@ describe("WebSocket /internal/stt/stream", () => {
       third.ws.terminate();
       return provider.opens.length === 2;
     });
+  });
+
+  it("closes an idle stream at the 60-second limit", async () => {
+    await start();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let client: Client | undefined;
+    try {
+      client = await connect();
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(client.ws.readyState).toBe(WebSocket.OPEN);
+      await vi.advanceTimersByTimeAsync(1);
+      vi.useRealTimers();
+      expect(await client.closed).toBe(1008);
+      expect(client.messages.at(-1)).toEqual({ type: "error", code: "idle_timeout" });
+      expect(provider.opens).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+      client?.ws.terminate();
+    }
+  });
+
+  it("closes an active stream at the 30-minute session limit", async () => {
+    await start();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let client: Client | undefined;
+    try {
+      client = await connect();
+      for (let index = 0; index < 30; index += 1) {
+        await vi.advanceTimersByTimeAsync(59_000);
+        const received = new Promise<void>((resolve) => client?.ws.once("message", () => resolve()));
+        client.ws.send(frame());
+        await received;
+      }
+      expect(client.ws.readyState).toBe(WebSocket.OPEN);
+      await vi.advanceTimersByTimeAsync(30_000);
+      vi.useRealTimers();
+      expect(await client.closed).toBe(1008);
+      expect(client.messages.at(-1)).toEqual({ type: "error", code: "session_limit" });
+      expect(provider.sessions[0]?.aborted).toBe(true);
+      await waitFor(async () => (await rows()).every((row) => row.status !== "reserved"));
+    } finally {
+      vi.useRealTimers();
+      client?.ws.terminate();
+    }
   });
 
   it("closes a stream that sends an odd-sized audio frame, an unknown JSON message or an oversized frame", async () => {
