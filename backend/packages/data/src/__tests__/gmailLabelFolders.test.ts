@@ -31,6 +31,87 @@ let admin: Pool;
 let pool: Pool;
 let tenantId: string;
 
+async function bounded<T>(promise: Promise<T>, timeoutMs = 5000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Gmail overlap timed out")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+interface OwnedBackend {
+  client: PoolClient;
+  pid: number;
+  errors: Error[];
+  onError: (error: unknown) => void;
+}
+
+function capturePoolPids(
+  pool: Pool,
+  backends: OwnedBackend[],
+): { detach: () => void; onAcquire: (client: PoolClient) => void } {
+  const onAcquire = (client: PoolClient): void => {
+    if (backends.some((backend) => backend.client === client)) return;
+    const pid: unknown = Reflect.get(client, "processID");
+    if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) throw new Error("Missing owned backend PID");
+    const errors: Error[] = [];
+    const onError = (error: unknown): void => {
+      errors.push(error instanceof Error ? error : new Error("Unknown owned client error", { cause: error }));
+    };
+    client.on("error", onError);
+    backends.push({
+      client,
+      errors,
+      onError,
+      pid,
+    });
+  };
+  pool.on("acquire", onAcquire);
+  return {
+    onAcquire,
+    detach: () => {
+      pool.off("acquire", onAcquire);
+    },
+  };
+}
+
+async function settleOwnedPools(
+  control: PoolClient,
+  pools: Pool[],
+  operations: Array<Promise<unknown>>,
+  capturedBackends: OwnedBackend[][],
+  timeoutMs = 5000,
+): Promise<void> {
+  const settled = Promise.allSettled(operations);
+  let timedOut: unknown;
+  try {
+    await bounded(settled, timeoutMs);
+  } catch (error) {
+    timedOut = error;
+  }
+  const closing = Promise.allSettled(pools.map((ownedPool) => ownedPool.end()));
+  if (timedOut !== undefined) {
+    const pids = capturedBackends.flat().map((backend) => backend.pid);
+    for (const pid of new Set(pids)) {
+      await bounded(control.query("SELECT pg_terminate_backend($1)", [pid]));
+    }
+    await bounded(settled);
+  }
+  const closed = await bounded(closing);
+  for (const backend of capturedBackends.flat()) backend.client.off("error", backend.onError);
+  if (closed.some((result) => result.status === "rejected"))
+    throw new Error("Failed to close an owned Gmail test pool");
+  if (timedOut !== undefined) {
+    throw timedOut instanceof Error ? timedOut : new Error("Gmail cleanup failed", { cause: timedOut });
+  }
+}
+
 const storage: BlobStorageWriter = {
   async writeStream() {
     return { byteSize: 0, contentHash: "0" };
@@ -539,31 +620,19 @@ describe("Gmail label folders (issue #1496)", () => {
     const syncPool = await createRuntimeRolePool(admin, "semprec_data");
     const sameTenantPool = await createRuntimeRolePool(admin, "semprec_data");
     const otherTenantPool = await createRuntimeRolePool(admin, "semprec_data");
-    const cleanupPids: Array<Promise<number>> = [];
-    cleanupPool.on("acquire", (client: PoolClient) => {
-      cleanupPids.push(
-        client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid").then(({ rows }) => {
-          if (!rows[0]) throw new Error("Missing cleanup backend PID");
-          return rows[0].pid;
-        }),
-      );
-    });
+    const cleanupBackends: OwnedBackend[] = [];
+    const syncBackends: OwnedBackend[] = [];
+    const sameTenantBackends: OwnedBackend[] = [];
+    const otherTenantBackends: OwnedBackend[] = [];
+    const captures = [
+      { pool: cleanupPool, ...capturePoolPids(cleanupPool, cleanupBackends) },
+      { pool: syncPool, ...capturePoolPids(syncPool, syncBackends) },
+      { pool: sameTenantPool, ...capturePoolPids(sameTenantPool, sameTenantBackends) },
+      { pool: otherTenantPool, ...capturePoolPids(otherTenantPool, otherTenantBackends) },
+    ];
     const control = await admin.connect();
     await control.query("SET statement_timeout = '3s'");
     await control.query("SET lock_timeout = '2s'");
-    async function bounded<T>(promise: Promise<T>): Promise<T> {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        return await Promise.race([
-          promise,
-          new Promise<never>((_resolve, reject) => {
-            timer = setTimeout(() => reject(new Error("Gmail overlap timed out")), 5000);
-          }),
-        ]);
-      } finally {
-        if (timer) clearTimeout(timer);
-      }
-    }
     let release: () => void = () => undefined;
     const mayContinue = new Promise<void>((resolve) => {
       release = resolve;
@@ -658,7 +727,7 @@ describe("Gmail label folders (issue #1496)", () => {
       );
       const deadline = Date.now() + 3000;
       while (Date.now() < deadline) {
-        const owned = await bounded(Promise.all(cleanupPids));
+        const owned = cleanupBackends.map((backend) => backend.pid);
         const { rows } = await control.query<{ pid: number; blocked: boolean }>(
           "SELECT pid, $1::int = ANY(pg_blocking_pids(pid)) AS blocked FROM pg_stat_activity WHERE pid = ANY($2::int[])",
           [holderPid, owned],
@@ -670,6 +739,9 @@ describe("Gmail label folders (issue #1496)", () => {
       expect(cleanupPid).toBeDefined();
       expect(otherPid).toBeDefined();
       expect(new Set([holderPid, samePid, otherPid, cleanupPid]).size).toBe(4);
+      expect(syncBackends.map((backend) => backend.pid)).toContain(holderPid);
+      expect(sameTenantBackends.map((backend) => backend.pid)).toContain(samePid);
+      expect(otherTenantBackends.map((backend) => backend.pid)).toContain(otherPid);
       console.info("GMAIL_GUARD_OVERLAP", { holderPid, samePid, otherPid, cleanupPid });
       release();
       expect(await bounded(syncSettled)).toEqual({ ok: true });
@@ -679,28 +751,116 @@ describe("Gmail label folders (issue #1496)", () => {
       expect(await foldersOf(params, "overlap")).toEqual(["INBOX"]);
     } finally {
       release();
-      const operations = Promise.allSettled([
+      const operations = [
         syncing,
         ...(sameTenant ? [sameTenant] : []),
         ...(otherTenantWork ? [otherTenantWork] : []),
         ...(cleanup ? [cleanup] : []),
-      ]);
+      ];
       try {
-        await bounded(operations).catch(async (error: unknown) => {
-          const holderPid = await bounded(paused);
-          const pids = [
-            holderPid,
-            ...(samePid === undefined ? [] : [samePid]),
-            ...(otherPid === undefined ? [] : [otherPid]),
-            ...(await bounded(Promise.all(cleanupPids))),
-          ];
-          for (const pid of new Set(pids)) await bounded(control.query("SELECT pg_terminate_backend($1)", [pid]));
-          await bounded(operations);
-          throw error;
-        });
+        await settleOwnedPools(control, [syncPool, sameTenantPool, otherTenantPool, cleanupPool], operations, [
+          syncBackends,
+          sameTenantBackends,
+          otherTenantBackends,
+          cleanupBackends,
+        ]);
+        for (const backend of [...syncBackends, ...sameTenantBackends, ...otherTenantBackends, ...cleanupBackends]) {
+          expect(backend.errors).toEqual([]);
+          expect(backend.client.listeners("error")).not.toContain(backend.onError);
+        }
       } finally {
+        for (const capture of captures) {
+          capture.detach();
+          expect(capture.pool.listeners("acquire")).not.toContain(capture.onAcquire);
+        }
         control.release(true);
-        await bounded(Promise.all([syncPool.end(), sameTenantPool.end(), otherTenantPool.end(), cleanupPool.end()]));
+      }
+    }
+  }, 30_000);
+
+  it("settles and closes an owned reconcile that times out before the provider barrier", async () => {
+    const params = await setup();
+    const operationPool = await createRuntimeRolePool(admin, "semprec_data");
+    const capturedBackends: OwnedBackend[] = [];
+    const capture = capturePoolPids(operationPool, capturedBackends);
+    const holder = await admin.connect();
+    const control = await admin.connect();
+    let guardHeld = false;
+    let cleanupStarted = false;
+    let barrierReached = false;
+    let operation: Promise<void> | undefined;
+    try {
+      await bounded(control.query("SET statement_timeout = '3s'"));
+      await bounded(holder.query("SET statement_timeout = '3s'"));
+      await bounded(holder.query("BEGIN"));
+      guardHeld = true;
+      const holderRows = await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+      const holderPid = holderRows.rows[0]?.pid;
+      if (holderPid === undefined) throw new Error("Missing holder PID");
+      await bounded(
+        holder.query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", [
+          `mail-thread-mutation:v1:${tenantId.toLowerCase()}`,
+        ]),
+      );
+      const gmail = gmailClient({});
+      gmail.listLabels = async () => {
+        barrierReached = true;
+        return LABELS;
+      };
+      operation = runInTenant(tenantId, () =>
+        withTransaction(operationPool, (client) => reconcileGmailAccount(client, gmail, params)),
+      );
+      const operationSettled = Promise.allSettled([operation]);
+      let participantPid: number | undefined;
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline) {
+        const pids = capturedBackends.map((backend) => backend.pid);
+        if (pids[0] !== undefined) {
+          participantPid = pids[0];
+          const result = await bounded(
+            control.query<{ blocked: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked", [
+              holderPid,
+              participantPid,
+            ]),
+          );
+          if (result.rows[0]?.blocked) break;
+          participantPid = undefined;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      if (participantPid === undefined) throw new Error("Owned reconcile did not block before its provider barrier");
+      expect(barrierReached).toBe(false);
+      cleanupStarted = true;
+      await expect(settleOwnedPools(control, [operationPool], [operation], [capturedBackends], 100)).rejects.toThrow(
+        "Gmail overlap timed out",
+      );
+      const result = await bounded(operationSettled);
+      expect(result[0]?.status).toBe("rejected");
+      const remaining = await control.query<{ present: boolean }>(
+        "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1) AS present",
+        [participantPid],
+      );
+      expect(remaining.rows[0]?.present).toBe(false);
+      expect(barrierReached).toBe(false);
+      const participant = capturedBackends.find((backend) => backend.pid === participantPid);
+      if (!participant) throw new Error("Missing captured reconcile backend");
+      expect(participant.errors.length).toBeGreaterThan(0);
+      expect(participant.errors.every((error) => error.message === "Connection terminated unexpectedly")).toBe(true);
+      expect(participant.client.listeners("error")).not.toContain(participant.onError);
+      expect(
+        capturedBackends.filter((backend) => backend.pid !== participantPid).flatMap((backend) => backend.errors),
+      ).toEqual([]);
+      console.info("GMAIL_PRE_BARRIER_CLEANUP", { holderPid, participantPid });
+    } finally {
+      try {
+        if (guardHeld) await bounded(holder.query("ROLLBACK"));
+        if (!cleanupStarted)
+          await settleOwnedPools(control, [operationPool], operation ? [operation] : [], [capturedBackends]);
+      } finally {
+        capture.detach();
+        expect(operationPool.listeners("acquire")).not.toContain(capture.onAcquire);
+        holder.release(true);
+        control.release(true);
       }
     }
   }, 30_000);
