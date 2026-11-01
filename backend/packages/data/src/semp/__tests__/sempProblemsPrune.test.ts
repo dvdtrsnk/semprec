@@ -11,6 +11,7 @@ import {
   resetDatabase,
 } from "../../testSupport/testDb.js";
 import { CORE_CRONTAB, createCoreTaskList } from "../../worker.js";
+import { createActionRegistry } from "../../scheduler/actions.js";
 import { SEMP_PROBLEMS_RETENTION_DAYS, handleSempProblemsPruneTask } from "../sempProblemsPrune.js";
 
 let adminPool: Pool;
@@ -115,7 +116,7 @@ describe("handleSempProblemsPruneTask (issue #1558)", () => {
   it("is scheduled once per day and present in the core task list", () => {
     const lines = CORE_CRONTAB.split("\n").filter((line) => line.endsWith(CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE));
     expect(lines).toEqual([`30 4 * * * ${CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE}`]);
-    const tasks = createCoreTaskList(pool, {} as never);
+    const tasks = createCoreTaskList(pool, createActionRegistry());
     expect(Object.keys(tasks)).toContain(CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE);
   });
 });
