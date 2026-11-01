@@ -1,9 +1,17 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { WebSocket } from "ws";
 import { createModels } from "@earendil-works/pi-ai";
-import { getTestPool, resetDatabase, getTenantZeroId, setTenantAiBudget } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+  getTenantZeroId,
+  setTenantAiBudget,
+} from "@semprec/data/testSupport";
+import { runInTenant } from "@semprec/shared";
 import { createDispatcher, createUpgradeDispatcher } from "../app.js";
 import { logger } from "../logger.js";
 import {
@@ -62,11 +70,13 @@ const FRAME_BYTES = STREAM_AUDIO_BYTES_PER_SECOND / 10;
 
 class FakeSession implements StreamingTranscriptionSession {
   writes: number[] = [];
+  audio: Buffer[] = [];
   aborted = false;
   ended = false;
   constructor(private readonly events: StreamingTranscriptionEvents) {}
   write(audio: Uint8Array): void {
     this.writes.push(audio.byteLength);
+    this.audio.push(Buffer.from(audio));
     this.events.onPartial(`partial ${this.writes.length}`);
   }
   end(): void {
@@ -115,8 +125,8 @@ const NOOP_REQUEST_OPTIONS = {
   globalCaps: GENEROUS_GLOBAL_CAPS,
 };
 
-async function start(overrides: Partial<SttStreamHandlerOptions> = {}): Promise<void> {
-  stt = createSttStreamUpgradeHandler(pool, {
+async function start(overrides: Partial<SttStreamHandlerOptions> = {}, dataPool: Pool = pool): Promise<void> {
+  stt = createSttStreamUpgradeHandler(dataPool, {
     internalToken: TOKEN,
     provider,
     pricePerAudioHour: PRICE_PER_HOUR,
@@ -126,7 +136,7 @@ async function start(overrides: Partial<SttStreamHandlerOptions> = {}): Promise<
     ...overrides,
   });
   const dispatch = createDispatcher(
-    pool,
+    dataPool,
     NOOP_REQUEST_OPTIONS,
     {
       internalToken: TOKEN,
@@ -289,6 +299,197 @@ describe("WebSocket /internal/stt/stream", () => {
     });
     const found = await rows();
     expect(found.map((row) => Number(row.audio_seconds))).toEqual([expect.closeTo(1.0, 6), expect.closeTo(0.2, 6)]);
+  });
+
+  it("splits a frame crossing the chunk boundary and settles each reserved portion", async () => {
+    await start();
+    const client = await connect();
+    for (let i = 0; i < 9; i += 1) client.ws.send(frame());
+    client.ws.send(Buffer.alloc(FRAME_BYTES * 2, 1));
+    client.ws.send(JSON.stringify({ type: "end" }));
+    expect(await client.closed).toBe(1000);
+    expect(provider.sessions[0]?.writes).toEqual(Array.from({ length: 11 }, () => FRAME_BYTES));
+    expect(Buffer.concat(provider.sessions[0]?.audio ?? [])).toEqual(Buffer.alloc(FRAME_BYTES * 11, 1));
+    await waitFor(async () => {
+      const found = await rows();
+      return found.length === 2 && found.every((row) => row.status === "settled");
+    });
+    expect((await rows()).map((row) => Number(row.audio_seconds))).toEqual([
+      expect.closeTo(1, 6),
+      expect.closeTo(0.1, 6),
+    ]);
+  });
+
+  it("does not forward the remainder of a crossing frame when the next reservation is refused", async () => {
+    await setTenantAiBudget(pool, tenantZero, { dailyCapUsd: 0.01 });
+    await start();
+    const client = await connect();
+    for (let i = 0; i < 9; i += 1) client.ws.send(frame());
+    client.ws.send(Buffer.alloc(FRAME_BYTES * 2, 1));
+    client.ws.send(JSON.stringify({ type: "end" }));
+    expect(await client.closed).toBe(1008);
+    expect(client.messages.at(-1)).toEqual({ type: "error", code: "budget_exceeded" });
+    expect(provider.sessions[0]?.writes).toEqual(Array.from({ length: 10 }, () => FRAME_BYTES));
+    expect(Buffer.concat(provider.sessions[0]?.audio ?? [])).toEqual(Buffer.alloc(FRAME_BYTES * 10, 1));
+    await waitFor(async () => (await rows()).every((row) => row.status !== "reserved"));
+    const calls = await rows();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.status).toBe("settled");
+    expect(Number(calls[0]?.audio_seconds)).toBeCloseTo(1, 6);
+  });
+
+  it("does not reserve or forward another chunk after disconnect during settlement", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const participants: Array<Promise<number>> = [];
+    runtime.on("acquire", (client: PoolClient) => {
+      participants.push(
+        client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid").then(({ rows: found }) => {
+          if (found[0] === undefined) throw new Error("Missing participant PID");
+          return found[0].pid;
+        }),
+      );
+    });
+    const holder = await pool.connect();
+    let transactionOpen = false;
+    async function bounded<T>(promise: Promise<T>): Promise<T> {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error("Settlement overlap timed out")), 5000);
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+    try {
+      await bounded(holder.query("SET statement_timeout = '3s'"));
+      await bounded(holder.query("SET lock_timeout = '2s'"));
+      await start({}, runtime);
+      const client = await connect();
+      for (let i = 0; i < 10; i += 1) client.ws.send(frame());
+      await waitFor(() => provider.sessions[0]?.writes.length === 10);
+      const call = (await rows())[0];
+      if (typeof call?.id !== "string") throw new Error("Missing reserved call ID");
+      await bounded(holder.query("BEGIN"));
+      transactionOpen = true;
+      const holderRow = await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+      const holderPid = holderRow.rows[0]?.pid;
+      if (holderPid === undefined) throw new Error("Missing holder PID");
+      await bounded(holder.query("SELECT id FROM ai_gateway_calls WHERE id = $1 FOR UPDATE", [call.id]));
+      client.ws.send(frame());
+      let waiterPid: number | undefined;
+      await waitFor(async () => {
+        const owned = await Promise.all(participants);
+        const active = await pool.query<{ pid: number; blocked: boolean }>(
+          "SELECT pid, $1::int = ANY(pg_blocking_pids(pid)) AS blocked FROM pg_stat_activity WHERE pid = ANY($2::int[])",
+          [holderPid, owned],
+        );
+        waiterPid = active.rows.find((row) => row.blocked)?.pid;
+        return waiterPid !== undefined;
+      });
+      console.info("STT_SETTLEMENT_OVERLAP", { holderPid, waiterPid });
+      client.ws.terminate();
+      await bounded(client.closed);
+      await bounded(holder.query("COMMIT"));
+      transactionOpen = false;
+      await waitFor(async () => (await rows())[0]?.status === "settled");
+      expect(await rows()).toHaveLength(1);
+      expect(provider.sessions[0]?.writes).toHaveLength(10);
+    } finally {
+      try {
+        if (transactionOpen) await bounded(holder.query("ROLLBACK"));
+      } finally {
+        holder.release(true);
+        await bounded(stt.closeAll());
+        await bounded(runtime.end());
+      }
+    }
+  });
+
+  it("ends at an exact chunk boundary without a phantom reservation", async () => {
+    await start();
+    const client = await connect();
+    for (let i = 0; i < 10; i += 1) client.ws.send(frame());
+    client.ws.send(JSON.stringify({ type: "end" }));
+    expect(await client.closed).toBe(1000);
+    await waitFor(async () => (await rows()).every((row) => row.status !== "reserved"));
+    const calls = await rows();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.status).toBe("settled");
+    expect(Number(calls[0]?.audio_seconds)).toBeCloseTo(1, 6);
+  });
+
+  it("keeps PCM samples intact when a configured chunk duration is not sample-aligned", async () => {
+    await start({ chunkSeconds: 1 / 3 });
+    const client = await connect();
+    const audio = Buffer.alloc(FRAME_BYTES * 4, 1);
+    client.ws.send(audio);
+    client.ws.send(JSON.stringify({ type: "end" }));
+    expect(await client.closed).toBe(1000);
+    expect(provider.sessions[0]?.writes).toEqual([10_666, 2134]);
+    expect(Buffer.concat(provider.sessions[0]?.audio ?? [])).toEqual(audio);
+    await waitFor(async () => {
+      const found = await rows();
+      return found.length === 2 && found.every((row) => row.status === "settled");
+    });
+    const calls = await rows();
+    expect(Number(calls[0]?.audio_seconds)).toBeLessThanOrEqual(1 / 3);
+    expect(calls.reduce((sum, row) => sum + Number(row.audio_seconds), 0)).toBeCloseTo(0.4, 6);
+  });
+
+  it("rejects a configured chunk too short for a single PCM sample", async () => {
+    await start();
+    await expect(start({ chunkSeconds: 0.000001 })).rejects.toThrow(
+      "Speech-to-text chunk duration must accommodate at least one PCM sample",
+    );
+  });
+
+  it("isolates real websocket accounting between tenants under the runtime role", async () => {
+    const tenantB = await createTestTenant(pool);
+    await setTenantAiBudget(pool, tenantB);
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const role = await runInTenant(tenantZero, () =>
+        runtime.query<{ name: string; bypass: boolean; superuser: boolean }>(
+          "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows[0]).toEqual({ name: "semprec_data", bypass: false, superuser: false });
+      await start({}, runtime);
+      const a = await connect();
+      const b = await connect({ authorization: `Bearer ${TOKEN}`, "x-semprec-tenant-id": tenantB });
+      a.ws.send(frame());
+      b.ws.send(Buffer.alloc(FRAME_BYTES * 2, 1));
+      a.ws.send(JSON.stringify({ type: "end" }));
+      b.ws.send(JSON.stringify({ type: "end" }));
+      expect(await a.closed).toBe(1000);
+      expect(await b.closed).toBe(1000);
+      await waitFor(async () => {
+        const found = await rows();
+        return found.length === 2 && found.every((row) => row.status === "settled");
+      });
+      const visible = (tenant: string) =>
+        runInTenant(tenant, () =>
+          runtime.query<{ id: string; tenant_id: string; status: string; audio_seconds: string }>(
+            "SELECT id, tenant_id, status, audio_seconds FROM ai_gateway_calls",
+          ),
+        );
+      const aRows = (await visible(tenantZero)).rows;
+      const bRows = (await visible(tenantB)).rows;
+      expect(aRows).toHaveLength(1);
+      expect(bRows).toHaveLength(1);
+      expect(aRows[0]).toMatchObject({ tenant_id: tenantZero, status: "settled" });
+      expect(bRows[0]).toMatchObject({ tenant_id: tenantB, status: "settled" });
+      expect(aRows[0]?.id).not.toBe(bRows[0]?.id);
+      expect(Number(aRows[0]?.audio_seconds)).toBeCloseTo(0.1, 6);
+      expect(Number(bRows[0]?.audio_seconds)).toBeCloseTo(0.2, 6);
+    } finally {
+      await stt.closeAll();
+      await runtime.end();
+    }
   });
 
   it("sends budget_exceeded and closes when the next chunk cannot be reserved", async () => {
