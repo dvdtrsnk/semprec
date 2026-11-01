@@ -94,16 +94,18 @@ describe("createMcpAgentPageRequestListener", () => {
       headers: await authHeader(),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { rows: unknown[]; counts: unknown };
-    expect(body.rows).toEqual([
-      expect.objectContaining({
-        mcpToolRegistrationId: registration.id,
-        granted: false,
-        effective: false,
-        server: { state: "connected", lastConnectedAt: null, lastErrorReason: null },
-      }),
-    ]);
-    expect(body.counts).toEqual({ effective: 0, total: 1 });
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({
+      rows: [
+        expect.objectContaining({
+          mcpToolRegistrationId: registration.id,
+          granted: false,
+          effective: false,
+          server: { state: "connected", lastConnectedAt: null, lastErrorReason: null },
+        }),
+      ],
+      counts: { effective: 0, total: 1 },
+    });
   });
 
   it("round-trips a grant toggle through PATCH", async () => {
@@ -121,19 +123,14 @@ describe("createMcpAgentPageRequestListener", () => {
       body: JSON.stringify({ granted: true }),
     });
     expect(patchRes.status).toBe(200);
-    const grant = (await patchRes.json()) as { granted: boolean };
-    expect(grant.granted).toBe(true);
+    const grant: unknown = await patchRes.json();
+    expect(grant).toMatchObject({ granted: true });
 
     const getRes = await fetch(`${baseUrl}/api/projects/${projectItemId}/mcp-grants`, {
       headers: await authHeader(),
     });
-    const body = (await getRes.json()) as {
-      rows: Array<{ granted: boolean; effective: boolean }>;
-      counts: unknown;
-    };
-    expect(body.rows[0]!.granted).toBe(true);
-    expect(body.rows[0]!.effective).toBe(true);
-    expect(body.counts).toEqual({ effective: 1, total: 1 });
+    const body: unknown = await getRes.json();
+    expect(body).toMatchObject({ rows: [{ granted: true, effective: true }], counts: { effective: 1, total: 1 } });
   });
 
   it("rejects a grant PATCH with a non-boolean 'granted'", async () => {
@@ -186,9 +183,8 @@ describe("createMcpAgentPageRequestListener", () => {
       body: JSON.stringify({ riskClass: "destructive", requiresApproval: true }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { riskClass: string; requiresApproval: boolean };
-    expect(body.riskClass).toBe("destructive");
-    expect(body.requiresApproval).toBe(true);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ riskClass: "destructive", requiresApproval: true });
   });
 
   it("maps a validation error (neither field set) to a 400 response", async () => {
@@ -230,7 +226,15 @@ describe("createMcpAgentPageRequestListener", () => {
 
     async function listedLabel(headers: Record<string, string>): Promise<string> {
       const res = await fetch(`${baseUrl}/api/projects/${randomUUID()}/mcp-grants`, { headers });
-      return ((await res.json()) as { rows: { displayLabel: string }[] }).rows[0]!.displayLabel;
+      const body: unknown = await res.json();
+      if (body === null || typeof body !== "object" || !("rows" in body) || !Array.isArray(body.rows)) {
+        throw new Error("Invalid grants response");
+      }
+      const row: unknown = body.rows[0];
+      if (row === null || typeof row !== "object" || !("displayLabel" in row) || typeof row.displayLabel !== "string") {
+        throw new Error("Invalid grant label");
+      }
+      return row.displayLabel;
     }
 
     it("sets a label, lists it in the user's locale, and clears it with null", async () => {
@@ -263,16 +267,16 @@ describe("createMcpAgentPageRequestListener", () => {
     it("names the field in the 400 for a wrong type", async () => {
       const id = await registerTool();
       const res = await patchLabel(await authHeader(), id, "text");
-      expect(((await res.json()) as { error: string }).error).toContain("displayLabel");
+      const body: unknown = await res.json();
+      expect(body).toMatchObject({ error: expect.stringContaining("displayLabel") });
     });
   });
 
   describe("non-UUID path ids", () => {
     async function expectFieldError(res: Response, field: string): Promise<void> {
       expect(res.status).toBe(400);
-      const body = (await res.json()) as { code: string; details?: unknown };
-      expect(body.code).toBe("validation_failed");
-      expect(body.details).toEqual({ field });
+      const body: unknown = await res.json();
+      expect(body).toMatchObject({ code: "validation_failed", details: { field } });
     }
 
     it("answers 400 validation_failed naming 'id' for a non-UUID project id", async () => {

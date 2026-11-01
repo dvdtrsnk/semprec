@@ -2054,6 +2054,33 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     expect(readIdArray(notifications, "notifications")).toEqual([a.notificationId]);
   });
 
+  it("validates notification preferences over HTTP without changing stored values", async () => {
+    const path = "/api/notification-preferences";
+    const beforeText = await sendOk(a.member, { method: "GET", path });
+    const before: unknown = JSON.parse(beforeText);
+    if (!isRecord(before) || typeof before.approvals !== "boolean") throw new Error("Invalid preferences response");
+    try {
+      const changed: unknown = JSON.parse(
+        await sendOk(a.member, { method: "PATCH", path, body: { approvals: false } }),
+      );
+      expect(changed).toMatchObject({ approvals: false });
+      const persisted = await sendOk(a.member, { method: "GET", path });
+      expect(JSON.parse(persisted)).toEqual(changed);
+      for (const [body, field] of [
+        [{ problemsLevel: "invalid" }, "problemsLevel"],
+        [{ approvals: true, unknownField: true }, "unknownField"],
+      ] as const) {
+        const answer = await send(a.member, { method: "PATCH", path, body });
+        expect(answer.status).toBe(400);
+        const response: unknown = JSON.parse(answer.text);
+        expect(response).toMatchObject({ error: { code: "validation_failed", details: { field } } });
+        expect(await sendOk(a.member, { method: "GET", path })).toBe(persisted);
+      }
+    } finally {
+      await sendOk(a.member, { method: "PATCH", path, body: { approvals: before.approvals } });
+    }
+  });
+
   it("omits a historical foreign blob from an authenticated item envelope", async () => {
     const path = `/api/items/${a.fileItemId}`;
     const ownText = await sendOk(a.member, { method: "GET", path });
