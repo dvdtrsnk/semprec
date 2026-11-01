@@ -1,14 +1,21 @@
 import { randomUUID } from "node:crypto";
+import { runInTenant } from "@semprec/shared";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import { allowLoopbackOutboundForTests, startHttpContractServer } from "../../testSupport/mcpContractServers.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
 import * as itemsStore from "../../chokePoint/itemsStore.js";
 import * as databasesStore from "../../chokePoint/databasesStore.js";
 import { NotFoundError, ValidationError } from "../../errors.js";
-import { getMcpToolRegistration, upsertMcpToolRegistration } from "../mcpToolRegistrationsStore.js";
+import {
+  getMcpToolRegistration,
+  listMcpToolRegistrationsForServer,
+  upsertMcpToolRegistration,
+} from "../mcpToolRegistrationsStore.js";
+import { syncMcpServerTools } from "../mcpSync.js";
 import { listMcpToolGrantsForProject, reclassifyMcpTool } from "../mcpAgentPageGrants.js";
 import { setMcpToolDisplayLabel } from "../mcpGrantsAdminStore.js";
 
@@ -118,6 +125,42 @@ describe("mcp_tool_registrations.display_label (issue #1391)", () => {
       description: "changed",
     });
     expect(await storedLabel()).toEqual({ cs: "Číst", en: "Read" });
+  });
+
+  it("preserves the label across actual MCP discovery syncs", async () => {
+    const restorePolicy = allowLoopbackOutboundForTests();
+    try {
+      const contract = await startHttpContractServer();
+      try {
+        const database = await withTransaction(pool, (client) =>
+          databasesStore.getDatabaseByModuleId(client, "mcpServers"),
+        );
+        if (!database) throw new Error("Missing MCP server database");
+        const server = await withTransaction(pool, (client) =>
+          itemsStore.insertItem(client, {
+            databaseId: database.id,
+            properties: { name: "Sync server", connectionConfig: contract.connectionConfig },
+          }),
+        );
+        const sync = () => runInTenant(getTenantZeroId(), () => syncMcpServerTools(pool, server.id));
+        expect((await sync()).toolCount).toBe(1);
+        const [first] = await listMcpToolRegistrationsForServer(pool, server.id);
+        if (!first) throw new Error("Missing discovered registration");
+        await setMcpToolDisplayLabel(pool, first.id, { en: "User label" });
+        contract.setTools([{ name: "search_web", description: "Updated discovery", inputSchema: { type: "object" } }]);
+        expect((await sync()).toolCount).toBe(1);
+        const [after] = await listMcpToolRegistrationsForServer(pool, server.id);
+        expect(after).toMatchObject({
+          id: first.id,
+          description: "Updated discovery",
+          displayLabel: { en: "User label" },
+        });
+      } finally {
+        await contract.stop();
+      }
+    } finally {
+      restorePolicy();
+    }
   });
 
   it("rejects a non-object label at the database", async () => {
