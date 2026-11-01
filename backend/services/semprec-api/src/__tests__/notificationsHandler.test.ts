@@ -244,7 +244,7 @@ describe("createNotificationsRequestListener", () => {
         expect(caught).toBeInstanceOf(AggregateError);
         if (!(caught instanceof AggregateError)) throw new Error("Expected the original and reporting errors");
         expect(caught.message).toBe("Transcription fixture output exceeds limit");
-        expect(caught.cause).toBeInstanceOf(Error);
+        expect(caught.cause).toBe(caught.errors[0]);
         expect(caught.errors.map((error: unknown) => (error instanceof Error ? error.message : ""))).toEqual([
           "Transcription fixture output exceeds limit",
           "fixture diagnostic output failed",
@@ -277,6 +277,7 @@ describe("createNotificationsRequestListener", () => {
         expect(result.error).toBeInstanceOf(AggregateError);
         if (!(result.error instanceof AggregateError)) throw new Error("Expected both fixture errors");
         expect(result.error.message).toBe("Transcription fixture output exceeds limit");
+        expect(result.error.cause).toBe(result.error.errors[0]);
         expect(result.error.errors.map((error: unknown) => (error instanceof Error ? error.message : ""))).toEqual([
           "Transcription fixture output exceeds limit",
           "temporary removal failed",
@@ -325,7 +326,7 @@ describe("createNotificationsRequestListener", () => {
               ? ["Transcription fixture output exceeds limit", "fixture pool close diagnostic"]
               : ["fixture pool close diagnostic"],
           );
-          if (primaryFailure) expect(caught.cause).toBeInstanceOf(Error);
+          if (primaryFailure) expect(caught.cause).toBe(caught.errors[0]);
           expect(poolFault.closed).toHaveLength(1);
         });
       } finally {
@@ -338,6 +339,7 @@ describe("createNotificationsRequestListener", () => {
 
   it.each([true, false])("preserves storage removal failure with scenario failure: %s", async (scenarioFailure) => {
     const storageRoot = await mkdtemp(join(tmpdir(), "semprec-fixture-storage-"));
+    const scenarioError = new Error("fixture scenario failed");
     const originalRemove = fsPromises.rm.bind(fsPromises);
     const remove = vi.spyOn(fsPromises, "rm").mockImplementation(async (path, options) => {
       if (path === storageRoot) throw new Error("fixture storage removal failed");
@@ -347,7 +349,7 @@ describe("createNotificationsRequestListener", () => {
       let caught: unknown;
       try {
         await withFixtureStorage(storageRoot, async () => {
-          if (scenarioFailure) throw new Error("fixture scenario failed");
+          if (scenarioFailure) throw scenarioError;
         });
       } catch (error) {
         caught = error;
@@ -356,7 +358,8 @@ describe("createNotificationsRequestListener", () => {
         expect(caught).toBeInstanceOf(AggregateError);
         if (!(caught instanceof AggregateError)) throw new Error("Expected both storage errors");
         expect(caught.message).toBe("fixture scenario failed");
-        expect(caught.cause).toBeInstanceOf(Error);
+        expect(caught.cause).toBe(scenarioError);
+        expect(caught.errors[0]).toBe(scenarioError);
         expect(caught.errors.map((error: unknown) => (error instanceof Error ? error.message : ""))).toEqual([
           "fixture scenario failed",
           "fixture storage removal failed",
