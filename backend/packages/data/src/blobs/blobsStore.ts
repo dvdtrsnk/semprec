@@ -126,31 +126,37 @@ export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput
  * blob is still referenced or already absent.
  */
 export async function deleteBlobIfUnreferenced(client: Queryable, id: string): Promise<string | null> {
-  // `@>` rather than `->> =` so the lookup can use `items_props_gin` (jsonb_path_ops). The
-  // `database_id` bind prunes the reference lookup to the visible partitions; it does not change
+  const locked = await client.query<{ id: string }>(
+    "SELECT id FROM blobs WHERE tenant_id = app_tenant_default() AND id = $1::uuid FOR UPDATE",
+    [id],
+  );
+  if (locked.rows.length === 0) return null;
+  // The `database_id` bind prunes the reference lookup to the visible partitions; it does not change
   // which rows count as references, since every item in those databases is still considered.
   // The ids are read by an earlier statement, so under READ COMMITTED a database committed in
   // between would be visible to this DELETE but missing from the list, and an item in it that
   // references the blob would go unseen. The `databases` guard makes the DELETE a no-op in that
   // case: the blob is kept, as if still referenced, rather than deleted from under a reference.
+  // A fresh statement after the lock sees references committed while lock acquisition waited.
   const { rows } = await client.query<{ storage_key: string }>(
-    `DELETE FROM blobs WHERE id = $1
-       AND NOT EXISTS (SELECT 1 FROM databases WHERE NOT (id = ANY($3::uuid[])))
+    `DELETE FROM blobs WHERE tenant_id = app_tenant_default() AND id = $1
+       AND NOT EXISTS (SELECT 1 FROM databases WHERE tenant_id = app_tenant_default() AND NOT (id = ANY($3::uuid[])))
        AND NOT EXISTS (
          SELECT 1 FROM items
-         WHERE database_id = ANY($3::uuid[])
-           AND properties @> jsonb_build_object('file', jsonb_build_object('blobId', $2::text))
+         WHERE tenant_id = app_tenant_default() AND database_id = ANY($3::uuid[])
+           AND lower(properties #>> '{file,blobId}') = lower($2::text)
        )
        AND NOT EXISTS (
          SELECT 1 FROM properties p
          JOIN items i ON i.database_id = p.database_id
-         WHERE p.type = 'image'
+         WHERE p.tenant_id = app_tenant_default() AND i.tenant_id = app_tenant_default()
+           AND p.type IN ('file', 'image')
            AND p.database_id = ANY($3::uuid[])
            AND i.database_id = ANY($3::uuid[])
-           AND i.properties @> jsonb_build_object(p.key, jsonb_build_object('blobId', $2::text))
+           AND lower(i.properties -> p.key ->> 'blobId') = lower($2::text)
        )
-       AND NOT EXISTS (SELECT 1 FROM mail_attachments WHERE blob_id = $1)
-       AND NOT EXISTS (SELECT 1 FROM inbox_attachments WHERE blob_id = $1)
+       AND NOT EXISTS (SELECT 1 FROM mail_attachments WHERE tenant_id = app_tenant_default() AND blob_id = $1)
+       AND NOT EXISTS (SELECT 1 FROM inbox_attachments WHERE tenant_id = app_tenant_default() AND blob_id = $1)
      RETURNING storage_key`,
     [id, id, await visibleDatabaseIds(client)],
   );

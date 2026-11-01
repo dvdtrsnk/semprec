@@ -87,6 +87,15 @@ describe("choke-point listItemRelations (issue #1404)", () => {
         metadata: { role: "owner" },
       },
     ]);
+    expect(await chokePoint.listItemRelations(task.id.toUpperCase(), assignedTo.id.toUpperCase())).toEqual([
+      {
+        relationPropertyId: assignedTo.id,
+        propertyKey: "assignedTo",
+        targetItemId: person.id,
+        targetDatabaseId: people.id,
+        metadata: { role: "owner" },
+      },
+    ]);
     expect(await chokePoint.listItemRelations(person.id)).toEqual([
       {
         relationPropertyId: assignedTasks.id,

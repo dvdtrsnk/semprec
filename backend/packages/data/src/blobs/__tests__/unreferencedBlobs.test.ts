@@ -2,9 +2,15 @@ import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import "../../domainWriteHooks.js";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { runInTenant } from "@semprec/shared";
-import { createRuntimeRolePool, createTestTenant, getTenantZeroId } from "../../testSupport/tenantFixtures.js";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  withTenantTransaction,
+} from "../../testSupport/tenantFixtures.js";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { MaxBytesExceededError } from "../../mail/blobStorage.js";
 import type { BlobStorageWriter } from "../../mail/blobStorage.js";
@@ -14,6 +20,8 @@ import { ingestUploadedBlob } from "../fileUploadStore.js";
 import { handleBlobsUnreferencedSweepTask, sweepUnreferencedBlobs } from "../unreferencedBlobSweep.js";
 import { insertInboxAttachments } from "../../inbox/inboxAttachmentsStore.js";
 import { withTransaction } from "../../db/pool.js";
+import { createItemWithClient } from "../../chokePoint/itemWrites.js";
+import { registerItemPreWriteTransform } from "../../chokePoint/hooks.js";
 
 /** In-memory storage that enforces `maxBytes` like the real writer and records deletes. */
 class FakeStorage implements BlobStorageWriter {
@@ -53,6 +61,20 @@ class FakeStorage implements BlobStorageWriter {
 
 let pool: Pool;
 let chokePoint: ChokePoint;
+
+async function bounded<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("barrier timed out")), 5000);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 async function countBlobs(blobId: string): Promise<number> {
   const { rows } = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM blobs WHERE id = $1", [
@@ -159,6 +181,18 @@ describe("standalone blobs (issue #1401)", () => {
       }
     });
 
+    it("keeps a mixed-case blob reference in a schema-declared file property", async () => {
+      const database = await chokePoint.createDatabase({ name: "Files" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "document", name: "Document", type: "file" });
+      const blob = await createBlob(pool, { mimeType: "application/pdf", byteSize: 1, storageKey: "t/blobs/file" });
+      await chokePoint.createItem({
+        databaseId: database.id,
+        properties: { document: { blobId: blob.id.toUpperCase() } },
+      });
+      expect(await withTransaction(pool, (client) => deleteBlobIfUnreferenced(client, blob.id))).toBeNull();
+      expect(await countBlobs(blob.id)).toBe(1);
+    });
+
     it("does not count a non-image property that happens to hold the blob id", async () => {
       const database = await chokePoint.createDatabase({ name: "Notes" });
       await chokePoint.createProperty({ databaseId: database.id, key: "note", name: "Note", type: "text" });
@@ -166,6 +200,230 @@ describe("standalone blobs (issue #1401)", () => {
       await chokePoint.createItem({ databaseId: database.id, properties: { note: { blobId: blob.id } } });
 
       expect(await withTransaction(pool, (client) => deleteBlobIfUnreferenced(client, blob.id))).toBe("t/blobs/text");
+    });
+  });
+
+  describe("reference writes racing collection", () => {
+    it("checks blob references supplied by defaults and pre-write transforms", async () => {
+      const missing = randomUUID();
+      const database = await chokePoint.createDatabase({ name: "Default image" });
+      const property = await chokePoint.createProperty({
+        databaseId: database.id,
+        key: "photo",
+        name: "Photo",
+        type: "image",
+      });
+      // A legacy configuration fixture: current schema validation does not allow image defaults.
+      await pool.query(
+        "UPDATE properties SET config = jsonb_build_object('default', jsonb_build_object('blobId', $2::text)) WHERE id = $1",
+        [property.id, missing],
+      );
+      await expect(chokePoint.createItem({ databaseId: database.id, properties: {} })).rejects.toMatchObject({
+        code: "validation_failed",
+        details: { field: "photo" },
+      });
+      const moduleId = `blobProbe${randomUUID()}`;
+      const transformed = await chokePoint.createDatabase({ name: "Transform image", ownerModuleId: moduleId });
+      await chokePoint.createProperty({ databaseId: transformed.id, key: "photo", name: "Photo", type: "image" });
+      await chokePoint.createProperty({ databaseId: transformed.id, key: "note", name: "Note", type: "text" });
+      const existing = await chokePoint.createItem({ databaseId: transformed.id, properties: { note: "before" } });
+      registerItemPreWriteTransform(moduleId, async ({ patch }) => ({ ...patch, photo: { blobId: missing } }));
+      await expect(chokePoint.createItem({ databaseId: transformed.id, properties: {} })).rejects.toMatchObject({
+        code: "validation_failed",
+        details: { field: "photo" },
+      });
+      await expect(
+        chokePoint.updateItem({ databaseId: transformed.id, itemId: existing.id, propertiesPatch: { note: "after" } }),
+      ).rejects.toMatchObject({ code: "validation_failed", details: { field: "photo" } });
+      expect((await chokePoint.getItem(transformed.id, existing.id))?.properties).toEqual({ note: "before" });
+      const count = await pool.query<{ n: number }>(
+        "SELECT count(*)::int AS n FROM items WHERE database_id = ANY($1::uuid[])",
+        [[database.id, transformed.id]],
+      );
+      expect(count.rows[0]?.n).toBe(1);
+    });
+
+    it("rejects malformed, missing and foreign references and preserves unrelated legacy fields", async () => {
+      const database = await recipesDatabaseWithImageProperty();
+      await chokePoint.createProperty({ databaseId: database.id, key: "note", name: "Note", type: "text" });
+      const foreignTenant = await createTestTenant(pool);
+      const foreign = await withTenantTransaction(pool, foreignTenant, (client) =>
+        createBlob(client, { mimeType: "image/png", byteSize: 1, storageKey: `${foreignTenant}/blobs/foreign` }),
+      );
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const cp = createChokePoint(runtime);
+        const invalid = ["not-a-uuid", randomUUID(), foreign.id];
+        for (const id of invalid) {
+          await expect(
+            runInTenant(getTenantZeroId(), () =>
+              cp.createItem({ databaseId: database.id, properties: { photo: { blobId: id } } }),
+            ),
+          ).rejects.toMatchObject({ code: "validation_failed", details: { field: "photo" } });
+        }
+        const item = await runInTenant(getTenantZeroId(), () =>
+          cp.createItem({ databaseId: database.id, properties: { photo: { url: "https://example.com/image" } } }),
+        );
+        await pool.query("UPDATE items SET properties = jsonb_set(properties, '{photo}', $2::jsonb) WHERE id = $1", [
+          item.id,
+          JSON.stringify({ blobId: randomUUID() }),
+        ]);
+        await runInTenant(getTenantZeroId(), () =>
+          cp.updateItem({ databaseId: database.id, itemId: item.id, propertiesPatch: { note: "safe" } }),
+        );
+        await expect(
+          runInTenant(getTenantZeroId(), () =>
+            cp.updateItem({
+              databaseId: database.id,
+              itemId: item.id,
+              propertiesPatch: { photo: { blobId: foreign.id } },
+            }),
+          ),
+        ).rejects.toMatchObject({ code: "validation_failed", details: { field: "photo" } });
+        const saved = await runInTenant(getTenantZeroId(), () => cp.getItem(database.id, item.id));
+        expect(saved?.properties.note).toBe("safe");
+        expect(saved?.properties.photo).not.toEqual({ blobId: foreign.id });
+        const count = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+          database.id,
+        ]);
+        expect(count.rows[0]?.n).toBe(1);
+      } finally {
+        await runtime.end();
+      }
+    });
+
+    it("waits for a committed image reference before rechecking and keeps its bytes", async () => {
+      const database = await recipesDatabaseWithImageProperty();
+      const storage = new FakeStorage();
+      const blob = (await upload(storage, "concurrent image")).blob;
+      await ageBlob(blob.id, 25);
+      const writerPool = await createRuntimeRolePool(pool, "semprec_data");
+      const sweepPool = await createRuntimeRolePool(pool, "semprec_data");
+      let release!: () => void;
+      let ready!: (pid: number) => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<number>((resolve) => {
+        ready = resolve;
+      });
+      const writer = runInTenant(getTenantZeroId(), () =>
+        withTransaction(writerPool, async (client) => {
+          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          if (pid === undefined) throw new Error("missing writer pid");
+          await createItemWithClient(client, {
+            databaseId: database.id,
+            properties: { photo: { blobId: blob.id.toUpperCase() } },
+          });
+          ready(pid);
+          await gate;
+        }),
+      );
+      const writerOutcome = Promise.allSettled([writer]);
+      let sweep: Promise<number> | undefined;
+      try {
+        const pid = await bounded(
+          Promise.race([
+            started,
+            writer.then(() => {
+              throw new Error("writer exited before barrier");
+            }),
+          ]),
+        );
+        sweep = runInTenant(getTenantZeroId(), () => sweepUnreferencedBlobs(sweepPool, storage));
+        await expect
+          .poll(
+            async () => {
+              const result = await pool.query<{ blocked: boolean }>(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked",
+                [pid],
+              );
+              return result.rows[0]?.blocked;
+            },
+            { timeout: 5000 },
+          )
+          .toBe(true);
+      } finally {
+        release();
+        await writerOutcome;
+        if (sweep) await Promise.allSettled([sweep]);
+        await writerPool.end();
+        await sweepPool.end();
+      }
+      await writer;
+      expect(await sweep).toBe(0);
+      expect(await countBlobs(blob.id)).toBe(1);
+      expect(storage.bytesByKey.has(blob.storageKey)).toBe(true);
+    });
+
+    it("rolls back an image write that waits for a deletion to commit", async () => {
+      const database = await recipesDatabaseWithImageProperty();
+      const storage = new FakeStorage();
+      const blob = (await upload(storage, "deleted image")).blob;
+      const deletePool = await createRuntimeRolePool(pool, "semprec_data");
+      const writerPool = await createRuntimeRolePool(pool, "semprec_data");
+      let release!: () => void;
+      let ready!: (pid: number) => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<number>((resolve) => {
+        ready = resolve;
+      });
+      const deleting = runInTenant(getTenantZeroId(), () =>
+        withTransaction(deletePool, async (client) => {
+          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          if (pid === undefined) throw new Error("missing deletion pid");
+          expect(await deleteBlobIfUnreferenced(client, blob.id)).toBe(blob.storageKey);
+          ready(pid);
+          await gate;
+        }),
+      );
+      const deletionOutcome = Promise.allSettled([deleting]);
+      let writing: Promise<unknown> | undefined;
+      try {
+        const pid = await bounded(
+          Promise.race([
+            started,
+            deleting.then(() => {
+              throw new Error("delete exited before barrier");
+            }),
+          ]),
+        );
+        writing = runInTenant(getTenantZeroId(), () =>
+          createChokePoint(writerPool).createItem({
+            databaseId: database.id,
+            properties: { photo: { blobId: blob.id } },
+          }),
+        );
+        void writing.catch(() => {});
+        await expect
+          .poll(
+            async () => {
+              const result = await pool.query<{ blocked: boolean }>(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked",
+                [pid],
+              );
+              return result.rows[0]?.blocked;
+            },
+            { timeout: 5000 },
+          )
+          .toBe(true);
+      } finally {
+        release();
+        await deletionOutcome;
+        if (writing) await Promise.allSettled([writing]);
+        await deletePool.end();
+        await writerPool.end();
+      }
+      await deleting;
+      await expect(writing).rejects.toMatchObject({ code: "validation_failed", details: { field: "photo" } });
+      const rows = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+        database.id,
+      ]);
+      expect(rows.rows[0]?.n).toBe(0);
+      expect(await countBlobs(blob.id)).toBe(0);
+      expect(storage.deleteCalls).toEqual([]);
     });
   });
 

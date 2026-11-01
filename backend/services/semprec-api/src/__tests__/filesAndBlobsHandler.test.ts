@@ -98,6 +98,44 @@ describe("files and blobs routes (issue #158)", () => {
   }
 
   describe("POST /api/files", () => {
+    function ftyp(brand: string): Buffer {
+      const bytes = Buffer.alloc(16);
+      bytes.writeUInt32BE(16, 0);
+      bytes.write("ftyp", 4, "latin1");
+      bytes.write(brand, 8, "latin1");
+      return bytes;
+    }
+
+    function zipEntry(name: string): Buffer {
+      const header = Buffer.alloc(30);
+      header.write("PK\x03\x04", 0, "latin1");
+      header.writeUInt16LE(name.length, 26);
+      return Buffer.concat([header, Buffer.from(name, "latin1")]);
+    }
+
+    it.each([
+      [Buffer.from("%PDF-1.7"), "pdf", "application/pdf"],
+      [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), "png", "image/png"],
+      [ftyp("heic"), "heic", "image/heic"],
+      [ftyp("M4A "), "audio", "audio/mp4"],
+      [Buffer.from("ID3audio"), "audio", "audio/mpeg"],
+      [zipEntry("xl/workbook.xml"), "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+      [
+        zipEntry("word/document.xml"),
+        "docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ],
+      [zipEntry("other.txt"), undefined, "application/octet-stream"],
+    ])("detects uploaded content through the Files route", async (bytes, type, mimeType) => {
+      const response = await uploadFile(bytes, { contentType: "image/jpeg" });
+      expect(response.status).toBe(201);
+      const body: unknown = await response.json();
+      expect(body).toMatchObject({
+        properties: type === undefined ? expect.not.objectContaining({ type: expect.anything() }) : { type },
+        blobs: { file: { mimeType } },
+      });
+    });
+
     it("rejects an unauthenticated request", async () => {
       const res = await fetch(`${baseUrl}/api/files`, {
         method: "POST",
@@ -466,7 +504,10 @@ describe("files and blobs routes (issue #158)", () => {
       const wrapped = new Map<PoolClient, PoolClient["query"]>();
       const instrument = (client: PoolClient) => {
         if (wrapped.has(client)) return;
+        // The proxy forwards the original receiver through Reflect.apply.
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         wrapped.set(client, client.query);
+        // eslint-disable-next-line @typescript-eslint/unbound-method
         client.query = new Proxy(client.query, {
           apply(target, thisArg, args: unknown[]) {
             if (typeof args[0] === "string" && /FROM blobs\b/i.test(args[0])) blobQueries += 1;
