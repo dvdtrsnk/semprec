@@ -998,8 +998,8 @@
       "sequence": 10,
       "status": "proposed",
       "title": "[backend-delivery 10/74] Implement ai-gateway-client, semprec-ai-gateway, shared changes",
-      "bodyCharacters": 57462,
-      "specSha256": "b20b4c0a617f3706c001ee2d31413ab7046b09e2618df84a0f23ef12ff177609",
+      "bodyCharacters": 58288,
+      "specSha256": "4aa68531353e9e552623a06a39e1f2021c5943418cf42f48df99cdfcce86fbcd",
       "members": [
         {
           "id": "gh-1369",
@@ -1017,7 +1017,7 @@
         },
         {
           "id": "gh-1381",
-          "specSha256": "ec9fb0e63ede4a6ed1605745d81e3fb68f07ae2d3d058a5dff483a46afc9e3df",
+          "specSha256": "9adc8dbcb2e0550bc18c8e87c8da5ae67de0fa65bcb5f8c7cc65d19b276f9b4d",
           "parent": "gh-1314",
           "dependencies": [],
           "approval": "approved"

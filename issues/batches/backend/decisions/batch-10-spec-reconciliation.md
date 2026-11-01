@@ -50,3 +50,16 @@ implementation and exact refreeze; they do not accept a candidate.
    incoming gateway queue and realtime-invalidations refetch policy do not prove
    or define this audio buffer. Existing provider/test Touches remain and the new
    exact ADR path is added. This accepts no code or test result.
+
+4. Gh-1381 uses the route-specific new ADR
+   `2026-11-01-completion-body-rejection-uses-bounded-discard` for the streaming
+   8 MiB cap refusal: preserve non-destroying iteration, fixed JSON413 with
+   Connection:close before resume, discard without accumulation for at most
+   2097152 additional bytes/2000ms, then destroy and remove owned timer/listeners
+   idempotently. Preserve no-provider/no-reservation behavior. Require actual
+   9 MiB HTTP413 and bounded oversized/slow/abort controls, not catch-any-error
+   acceptance. Prior EPIPE is an observed transport limitation, not proof every
+   client receives413. No other handler, generic drain infrastructure or client
+   change is authorized. Exact existing handler/test paths remain; add only the
+   new ADR path to source Touches. Current prototype and development pass are
+   unaccepted until review and final-candidate execution.
