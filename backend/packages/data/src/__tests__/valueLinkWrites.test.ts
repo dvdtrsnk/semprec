@@ -195,23 +195,53 @@ describe("value link state on writes (issue #1516)", () => {
     it("rolls the link state back together with a failed write", async () => {
       const { files, file } = await setup();
       await link(file.id, "name");
-
-      await expect(
-        withTransaction(pool, async (client) => {
-          await updateItemWithClient(
-            client,
-            { databaseId: files.id, itemId: file.id, propertiesPatch: { name: "b.pdf" } },
-            { writer: USER },
-          );
-          throw new Error("abort");
-        }),
-      ).rejects.toThrow("abort");
-
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await expect(
+          withTransaction(pool, async (client) => {
+            await updateItemWithClient(
+              client,
+              { databaseId: files.id, itemId: file.id, propertiesPatch: { name: "b.pdf" } },
+              { writer: USER },
+            );
+            expect(events).toEqual([]);
+            throw new Error("abort");
+          }),
+        ).rejects.toThrow("abort");
+        expect(events).toEqual([]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
       expect(await linkOf(file.id, "name")).toMatchObject({ state: "on" });
+      expect((await chokePoint.getItem(files.id, file.id))?.properties.name).toBe("a.pdf");
     });
   });
 
   describe("relation edges", () => {
+    it("breaks and announces linked values on both definition sides", async () => {
+      const { file, alpha, projectsProperty } = await setup();
+      await link(file.id, "projects");
+      await link(alpha.id, "files");
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await chokePoint.createRelation(
+          { relationPropertyId: projectsProperty.id, callerItemId: file.id, targetItemId: alpha.id },
+          USER,
+        );
+      } finally {
+        setInvalidationHook(() => {});
+      }
+      expect(await linkOf(file.id, "projects")).toMatchObject({ state: "broken", brokenBy: "user" });
+      expect(await linkOf(alpha.id, "files")).toMatchObject({ state: "broken", brokenBy: "user" });
+      for (const itemId of [file.id, alpha.id]) {
+        expect(
+          events.filter((event) => event.scope === "item" && event.itemId === itemId && event.op === "update"),
+        ).toHaveLength(1);
+      }
+    });
+
     it("putting a second project edge breaks the file's projects link", async () => {
       const { file, alpha, beta, projectsProperty } = await setup();
       await link(file.id, "projects");
@@ -294,10 +324,15 @@ describe("value link state on writes (issue #1516)", () => {
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
       try {
-        await chokePoint.createRelation(
-          { relationPropertyId: projectsProperty.id, callerItemId: file.id, targetItemId: alpha.id },
-          USER,
-        );
+        await withTransaction(pool, async (client) => {
+          await createRelationWithClient(
+            client,
+            { relationPropertyId: projectsProperty.id, callerItemId: file.id, targetItemId: alpha.id },
+            undefined,
+            USER,
+          );
+          expect(events).toEqual([]);
+        });
       } finally {
         setInvalidationHook(() => {});
       }
@@ -305,6 +340,32 @@ describe("value link state on writes (issue #1516)", () => {
       expect(events).toContainEqual(
         expect.objectContaining({ scope: "item", databaseId: files.id, itemId: file.id, op: "update" }),
       );
+    });
+
+    it("rolls back the edge and link without publishing an item invalidation", async () => {
+      const { file, alpha, projectsProperty } = await setup();
+      await link(file.id, "projects");
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await expect(
+          withTransaction(pool, async (client) => {
+            await createRelationWithClient(
+              client,
+              { relationPropertyId: projectsProperty.id, callerItemId: file.id, targetItemId: alpha.id },
+              undefined,
+              USER,
+            );
+            expect(events).toEqual([]);
+            throw new Error("abort relation");
+          }),
+        ).rejects.toThrow("abort relation");
+        expect(events).toEqual([]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
+      expect(await linkOf(file.id, "projects")).toMatchObject({ state: "on" });
+      expect(await chokePoint.listItemRelations(file.id, projectsProperty.id)).toEqual([]);
     });
   });
 
