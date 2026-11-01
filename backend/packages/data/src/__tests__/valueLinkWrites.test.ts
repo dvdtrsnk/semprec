@@ -1041,72 +1041,91 @@ describe("value link state on writes (issue #1516)", () => {
       );
     }, 30000);
 
-    it("refuses a protected update while the exact existing edge is held", async () => {
-      const tenant = await createTestTenant(pool);
-      await withRuntimePool(async (holderPool) =>
-        withRuntimePool(async (contenderPool) => {
-          const cp = createChokePoint(holderPool);
-          const fx = await runInTenant(tenant, () => setup(cp));
-          const edge = {
-            relationPropertyId: fx.projectsProperty.id,
-            callerItemId: fx.file.id,
-            targetItemId: fx.alpha.id,
-          };
-          await runInTenant(tenant, () => cp.createRelation(edge));
-          await withTenantTransaction(holderPool, tenant, (client) =>
-            insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
-          );
-          const held = barrier();
-          const release = barrier();
-          let holderPid: number | undefined;
-          let contenderPid: number | undefined;
-          const holder = runInTenant(tenant, () =>
-            withTransaction(holderPool, async (client) => {
-              holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-              await updateRelationWithClient(client, { ...edge, metadata: { holder: true } });
-              held.resolve();
-              await bounded(release.promise);
-            }),
-          ).then(
-            () => ({ ok: true as const }),
-            (error: unknown) => ({ ok: false as const, error }),
-          );
-          let failure: unknown;
-          try {
-            await bounded(held.promise);
-            await expect(
-              runInTenant(tenant, () =>
-                withTransaction(contenderPool, async (client) => {
-                  contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                  return updateRelationWithClient(
-                    client,
-                    { ...edge, metadata: { contender: true } },
-                    VALUE_LINKS,
-                    SYSTEM_WRITER,
-                  );
-                }),
-              ),
-            ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
-            expect(holderPid).toBeTypeOf("number");
-            expect(contenderPid).toBeTypeOf("number");
-          } catch (error) {
-            failure = error;
-          } finally {
-            release.resolve();
+    it.each(["create", "update", "delete"] as const)(
+      "refuses protected %s while the exact existing edge is held",
+      async (operation) => {
+        const tenant = await createTestTenant(pool);
+        await withRuntimePool(async (holderPool) =>
+          withRuntimePool(async (contenderPool) => {
+            const cp = createChokePoint(holderPool);
+            const fx = await runInTenant(tenant, () => setup(cp));
+            const edge = {
+              relationPropertyId: fx.projectsProperty.id,
+              callerItemId: fx.file.id,
+              targetItemId: fx.alpha.id,
+            };
+            await runInTenant(tenant, () => cp.createRelation(edge));
+            await withTenantTransaction(holderPool, tenant, (client) =>
+              insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+            );
+            const held = barrier();
+            const release = barrier();
+            let holderPid: number | undefined;
+            let contenderPid: number | undefined;
+            const holder = runInTenant(tenant, () =>
+              withTransaction(holderPool, async (client) => {
+                holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                await updateRelationWithClient(client, { ...edge, metadata: { holder: true } });
+                held.resolve();
+                await bounded(release.promise);
+              }),
+            ).then(
+              () => ({ ok: true as const }),
+              (error: unknown) => ({ ok: false as const, error }),
+            );
+            let failure: unknown;
             try {
-              const outcome = await settleOwned(holder, () => holderPid);
-              requireSuccessful(outcome);
+              await bounded(held.promise);
+              await expect(
+                runInTenant(tenant, () =>
+                  withTransaction(contenderPool, async (client) => {
+                    contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                    if (operation === "create")
+                      return createRelationWithClient(
+                        client,
+                        { ...edge, metadata: { contender: true } },
+                        VALUE_LINKS,
+                        SYSTEM_WRITER,
+                      );
+                    if (operation === "update")
+                      return updateRelationWithClient(
+                        client,
+                        { ...edge, metadata: { contender: true } },
+                        VALUE_LINKS,
+                        SYSTEM_WRITER,
+                      );
+                    return deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
+                  }),
+                ),
+              ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
+              expect(holderPid).toBeTypeOf("number");
+              expect(contenderPid).toBeTypeOf("number");
             } catch (error) {
-              failure =
-                failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
+              failure = error;
+            } finally {
+              release.resolve();
+              try {
+                const outcome = await settleOwned(holder, () => holderPid);
+                requireSuccessful(outcome);
+              } catch (error) {
+                failure =
+                  failure === undefined
+                    ? error
+                    : new AggregateError([failure, error], "Test and holder cleanup failed");
+              }
             }
-          }
-          if (failure !== undefined) throwFailure(failure);
-          const edges = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
-          expect(edges?.[0]?.metadata).toEqual({ holder: true });
-        }),
-      );
-    }, 30000);
+            if (failure !== undefined) throwFailure(failure);
+            const edges = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
+            expect(edges?.[0]?.metadata).toEqual({ holder: true });
+            const links = await withTenantTransaction(holderPool, tenant, (client) =>
+              listValueLinksByItemIds(client, [fx.file.id]),
+            );
+            expect(links[0]).toMatchObject({ state: "on" });
+          }),
+        );
+      },
+      30000,
+    );
 
     it.each(["A", "B"] as const)(
       "admits protected create, replay, update and delete from definition side %s",
@@ -1459,7 +1478,7 @@ describe("value link state on writes (issue #1516)", () => {
       );
     }, 30000);
 
-    it("diagnoses a populated rollup job and relation handoff cycle", async () => {
+    it("refuses a protected relation waiting on a populated rollup job", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (userPool) =>
         withRuntimePool(async (systemPool) => {
@@ -1575,7 +1594,7 @@ describe("value link state on writes (issue #1516)", () => {
             expect(systemOutcome).toMatchObject({ ok: false, error: { status: 409, code: "value_link_busy" } });
             releaseJob.resolve();
             const outcomes = await bounded(Promise.all([user, system]));
-            console.info("Observed populated rollup cycle", { userPid, systemPid, jobKey, outcomes });
+            console.info("Populated rollup contention refusal", { userPid, systemPid, jobKey, outcomes });
             expect(outcomes.filter((result) => result.ok)).toHaveLength(1);
             expect(outcomes.filter((result) => !result.ok)).toMatchObject([{ error: { code: "value_link_busy" } }]);
             const links = await withTenantTransaction(userPool, tenant, (client) =>
@@ -1621,9 +1640,13 @@ describe("value link state on writes (issue #1516)", () => {
       );
     }, 30000);
 
-    it.each(["system-first", "user-first"] as const)(
-      "diagnoses relation definition advisory and handoff with %s",
-      async (order) => {
+    it.each([
+      ["system-first", false],
+      ["user-first", false],
+      ["user-first", true],
+    ] as const)(
+      "serializes relation advisory with %s (same target: %s)",
+      async (order, sameTarget) => {
         const tenant = await createTestTenant(pool);
         await withRuntimePool(async (userPool) =>
           withRuntimePool(async (systemPool) => {
@@ -1683,7 +1706,7 @@ describe("value link state on writes (issue #1516)", () => {
                     {
                       relationPropertyId: fx.projectsProperty.id,
                       callerItemId: fx.file.id,
-                      targetItemId: kind === "user" ? fx.alpha.id : fx.beta.id,
+                      targetItemId: kind === "user" || sameTarget ? fx.alpha.id : fx.beta.id,
                     },
                     kind === "system" ? VALUE_LINKS : undefined,
                     kind === "user" ? USER : SYSTEM_WRITER,
@@ -1758,7 +1781,7 @@ describe("value link state on writes (issue #1516)", () => {
     );
 
     it.each(["system-first", "user-first"] as const)(
-      "diagnoses the supported Inbox source and relation handoff with %s",
+      "serializes the Inbox source and relation handoff with %s",
       async (order) => {
         await seedSystem(pool);
         const tenant = getTenantZeroId();
