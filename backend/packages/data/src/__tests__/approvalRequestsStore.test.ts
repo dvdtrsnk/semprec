@@ -629,6 +629,14 @@ describe("approvalRequestsStore (issue #130)", () => {
         }),
       ]);
       await expect(getApprovalRequest(pool, id)).rejects.toThrow("Invalid MCP failure metadata");
+      await pool.query("UPDATE approval_requests SET execution_result_jsonb = $2::jsonb WHERE id = $1", [
+        id,
+        JSON.stringify({
+          text: "failed",
+          failure: { failureKind: "timeout", mcpServerItemId: "not-a-uuid", timeoutMs: 60000 },
+        }),
+      ]);
+      await expect(getApprovalRequest(pool, id)).rejects.toThrow("Invalid MCP failure metadata");
       await expect(
         recordApprovalRequestOutcome(pool, id, {
           error: true,
@@ -637,6 +645,29 @@ describe("approvalRequestsStore (issue #130)", () => {
           failure: { failureKind: "timeout", timeoutMs: "secret" },
         }),
       ).rejects.toThrow("Invalid MCP failure metadata");
+    });
+
+    it("preserves an existing generic-operation result with its own failure field", async () => {
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+      const snapshot = { kind: "item.delete", resourceId: randomUUID(), sha256: null };
+      const request = await createPendingApprovalRequest(pool, {
+        agentRunId: run.id,
+        toolName: "item.delete",
+        riskClass: "destructive",
+        payload: {
+          operationName: "item.delete",
+          canonicalInput: {},
+          actor: { runId: run.id, agentProjectItemId: randomUUID(), userId: ownerId },
+          resourceSnapshot: snapshot,
+        },
+        resourceSnapshot: snapshot,
+      });
+      const result = { failure: { legacy: "domain data" } };
+      await pool.query("UPDATE approval_requests SET execution_result_jsonb = $2::jsonb WHERE id = $1", [
+        request.id,
+        JSON.stringify(result),
+      ]);
+      expect((await getApprovalRequest(pool, request.id))?.executionResult).toEqual(result);
     });
   });
 });

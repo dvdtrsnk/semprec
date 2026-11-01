@@ -26,6 +26,7 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { connectMcpServer } from "../mcp/mcpConnectionFactory.js";
 import { McpConnectionError } from "../mcp/mcpConnectionError.js";
+import { executeMcpInvocation } from "../mcp/mcpToolExecution.js";
 import type { McpConnectionConfig } from "../mcp/mcpConnectionConfig.js";
 
 let pool: Pool;
@@ -339,6 +340,16 @@ describe("MCP connection factory (issue #231)", () => {
       expect(thrown).toBeInstanceOf(McpConnectionError);
       expect((thrown as McpConnectionError).reason).toBe("connect_timeout");
     });
+
+    it("classifies the real invocation's handshake timeout with the effective timeout", async () => {
+      await makeSoleTenantAdmin();
+      const item = await createMcpServerItem({ transport: "stdio", command: "sleep", args: ["30"] });
+      const outcome = await executeMcpInvocation(pool, { serverItem: item, toolName: "search" }, {});
+      expect(outcome).toMatchObject({
+        error: true,
+        failure: { failureKind: "timeout", mcpServerItemId: item.id, timeoutMs: 15000 },
+      });
+    }, 25_000);
 
     it("leaves no child process running after a failed connect", async () => {
       await makeSoleTenantAdmin();

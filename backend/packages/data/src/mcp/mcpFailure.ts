@@ -5,6 +5,8 @@ export type McpInvokeFailure =
   | { failureKind: "timeout"; mcpServerItemId: string; timeoutMs: number }
   | { failureKind: "connection" | "auth" | "toolError"; mcpServerItemId: string };
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Validates persisted and incoming failure metadata without including its contents in errors. */
 export function parseMcpInvokeFailure(value: unknown): McpInvokeFailure {
   if (typeof value !== "object" || value === null || Array.isArray(value))
@@ -12,7 +14,7 @@ export function parseMcpInvokeFailure(value: unknown): McpInvokeFailure {
   if (!("failureKind" in value)) throw new Error("Invalid MCP failure metadata");
   const keys = Object.keys(value);
   const server = "mcpServerItemId" in value ? value.mcpServerItemId : undefined;
-  const validServer = typeof server === "string" && server.length > 0;
+  const validServer = typeof server === "string" && UUID_PATTERN.test(server);
   if (value.failureKind === "unavailable" && keys.every((key) => key === "failureKind" || key === "mcpServerItemId")) {
     if (server === undefined) return { failureKind: "unavailable" };
     if (validServer) return { failureKind: "unavailable", mcpServerItemId: server };

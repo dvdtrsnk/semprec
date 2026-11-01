@@ -187,7 +187,11 @@ function assertNullableString(value: unknown, column: string): string | null {
 }
 
 function rowToApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
-  if (isRecord(row.execution_result_jsonb) && "failure" in row.execution_result_jsonb) {
+  if (
+    !isGenericOperationApprovalRequestPayload(row.payload) &&
+    isRecord(row.execution_result_jsonb) &&
+    "failure" in row.execution_result_jsonb
+  ) {
     parseMcpInvokeFailure(row.execution_result_jsonb.failure);
     if (row.execution_error !== true || typeof row.execution_result_jsonb.text !== "string") {
       throw new Error("Invalid MCP failure metadata");
