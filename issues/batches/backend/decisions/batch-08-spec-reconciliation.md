@@ -240,3 +240,65 @@ harness wording changes; MCP unit-file scope is already approved. All functional
 Tasks/AC and production contracts remain intact. Refreeze exact source and
 aggregate hashes, and require affected tests, build and independent review on
 the resulting candidate. No test result or completed gate is inferred here.
+
+## Completed review findings and safe preference errors
+
+The independent review of clean `efe1c92d` completed all 44 Task rows, 47 AC
+rows and six aggregate gates with NOT CLEAR: label-key reflection, incorrect
+connection timestamp types, overbroad connection-writer parameters, masking
+APNs test cleanup, racing realtime absence evidence and incomplete
+other-user/different-source isolation evidence. These findings block
+acceptance; earlier targeted logs are historical, not final-candidate PASS.
+
+Gh-1441 Task 4's unknown-field wording conflicts with the sensitive-content
+error rule when an arbitrary key becomes an error message or `details.field`.
+For unknown keys require a fixed message and `details.field = "body"`, with no
+rejected names or values reflected in errors, details or logs. Invalid known
+fields retain only their canonical field names. Preserve HTTP 400, no-write
+refusal including mixed valid/invalid bodies, defaults and empty PATCH. Correct
+the source Task and AC and propagate its exact snapshot/approval. Existing
+preference and authenticated tenant-route suites cover this work; no new test
+path, error code or general response-contract rewrite is authorized.
+
+The label-reflection finding similarly requires fixed safe diagnostics and
+real HTTP/store omission and unchanged-state regressions within gh-1391 scope.
+The connection getter must return actual ISO strings/null matching its public
+type, with checked DB timestamp/reason mapping and real runtime-role evidence.
+Do not change the separately formatted gh-1455 listing or global pg parsers.
+Both independent writers require `Pool`; the getter may remain `Queryable`.
+The new `2026-11-01-mcp-connection-observations-commit-independently` ADR records
+the exact observation-state UPSERT exception to the old append-only pattern.
+Add that ADR to gh-1450 Task/Touches and aggregate; keep historical ADR bodies
+and migrations unchanged. Compact redundant gh-1450/gh-1441 Context without removing
+its table, recording rules, ownership decisions, Task/AC or classification.
+
+## Realtime absence requires a causal publication/delivery boundary
+
+A later schema sentinel alone is insufficient for asynchronous read-state
+publication and notification-row forwarding. The earlier test-scope decision
+does not waive this. Current `withTransaction` invokes after-commit callbacks
+synchronously before returning; the wired read-state hook invokes the real
+publisher, which calls the same runtime pool's `query` before suspending.
+A call-through spy on that exact pool can observe validated matching
+`pg_notify` attempts without suppressing or replacing their execution.
+
+The real committed decision must observe the matching read-state publication
+and both intended owner socket frames. Receipt follows `sendToTenant`'s
+synchronous socket traversal, so only then may a foreign-tenant sentinel be
+used to exclude a frame from that completed delivery. For replay/rollback,
+await the actual HTTP/transaction boundary and assert no matching publication
+was invoked; a racing schema sentinel is not proof of that absence. Validate
+unknown query payloads, prove the positive observation uses the actually wired
+pool and retain discriminating controls and foreign-row assertions. If the
+implementation defers the callback or uses another pool, this reasoning does
+not apply and the test design must change.
+
+Keep the actual decision, hooks, NOTIFY, row read and sockets; add no production
+drain API or delivery mechanism. This test-only refinement stays in the
+already scoped realtime suite and needs focused independent re-review. The
+APNs helper must protect owned setup and all cleanup, preserve the original
+failure and separately report cleanup failure with bounded settlement. The
+gh-1463 different-source case must use real two-tenant runtime-role rows with
+own-resolution positive, foreign state unchanged and no foreign read-state
+event. All six findings plus the preference correction need affected evidence
+and a new clean candidate before final gate; no exception or PASS is granted.
