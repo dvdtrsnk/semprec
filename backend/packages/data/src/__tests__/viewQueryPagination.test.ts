@@ -264,6 +264,25 @@ describe("select option-order sort (issue #1408)", () => {
     },
   );
 
+  it.each(["asc", "desc"] as const)(
+    "continues a %s keyset after both an unknown and an empty select value",
+    async (direction) => {
+      ids.none2 = (await chokePoint.createItem({ databaseId, properties: {} })).id;
+      ids.removed2 = (await chokePoint.createItem({ databaseId, properties: { status: "removedOption" } })).id;
+      const sort = [{ property: "status", direction }];
+      const { ids: paged, pages } = await collectPages((cursor) =>
+        chokePoint.queryDatabaseItems(databaseId, { sort, limit: 1, cursor }),
+      );
+      const expected = [
+        ...(direction === "asc" ? ascending() : descending()).slice(0, -2),
+        ...byId("none", "none2", "removed", "removed2"),
+      ];
+      expect(paged).toEqual(expected);
+      expect(pages).toBe(9);
+      expect(paged.slice(-4)).toEqual(byId("none", "none2", "removed", "removed2"));
+    },
+  );
+
   it("orders the groups of a grouped view by option order, through every page", async () => {
     const view = await chokePoint.createView({
       databaseId,

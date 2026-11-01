@@ -125,6 +125,75 @@ describe("item routes (issue #241)", () => {
     await pool?.end();
   });
 
+  it("validates Books ratings through the PATCH HTTP response", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const database = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) => getDatabaseByModuleId(client, "books")),
+    );
+    if (!database) throw new Error("Missing Books database");
+    for (const rating of [7, 2.5, 0, 1, 5]) {
+      const item = await runInTenant(getTenantZeroId(), () =>
+        chokePoint.createItem({ databaseId: database.id, properties: { name: "Book" } }),
+      );
+      const response = await fetch(`${baseUrl}/api/items/${item.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties: { rating }, ifVersion: item.updatedAt }),
+      });
+      if (rating === 7 || rating === 2.5) {
+        expect(response.status).toBe(400);
+        const body: unknown = await response.json();
+        expect(
+          z.object({ error: z.object({ code: z.string(), details: z.object({ field: z.string() }) }) }).parse(body),
+        ).toMatchObject({ error: { code: "validation_failed", details: { field: "rating" } } });
+        const unchanged = await runInTenant(getTenantZeroId(), () => chokePoint.getItem(database.id, item.id));
+        expect(unchanged?.properties.rating).toBeUndefined();
+      } else {
+        expect(response.status).toBe(200);
+        const body: unknown = await response.json();
+        expect(z.object({ properties: z.object({ rating: z.number() }) }).parse(body).properties.rating).toBe(rating);
+      }
+    }
+  });
+
+  it("validates watchedWith ratings through the PUT HTTP response", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const movies = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "movies"));
+      const people = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "people"));
+      if (!movies || !people) throw new Error("Missing Movies or People database");
+      return {
+        movie: await chokePoint.createItem({ databaseId: movies.id, properties: { name: "Film" } }),
+        person: await chokePoint.createItem({ databaseId: people.id, properties: { name: "Person" } }),
+      };
+    });
+    const url = `${baseUrl}/api/items/${fixture.movie.id}/relations/watchedWith/${fixture.person.id}`;
+    const invalid = await fetch(url, { method: "PUT", headers, body: JSON.stringify({ metadata: { rating: 9 } }) });
+    expect(invalid.status).toBe(400);
+    const error: unknown = await invalid.json();
+    expect(
+      z.object({ error: z.object({ code: z.string(), details: z.object({ field: z.string() }) }) }).parse(error),
+    ).toMatchObject({ error: { code: "validation_failed", details: { field: "metadata.rating" } } });
+    const edgeCount = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, async (client) => {
+        const result = await client.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM item_relations WHERE (item_a = $1 AND item_b = $2) OR (item_a = $2 AND item_b = $1)",
+          [fixture.movie.id, fixture.person.id],
+        );
+        return result.rows[0]?.count;
+      }),
+    );
+    expect(edgeCount).toBe(0);
+    for (const metadata of [{ rating: 4 }, {}]) {
+      const response = await fetch(url, { method: "PUT", headers, body: JSON.stringify({ metadata }) });
+      expect(response.status).toBe(200);
+      const body: unknown = await response.json();
+      expect(z.object({ metadata: z.record(z.string(), z.unknown()) }).parse(body).metadata).toEqual(metadata);
+    }
+  });
+
   it("projects confirmed Inbox origin through item, database and view HTTP reads", async () => {
     await seedSystem(pool, createViewTypeRegistry());
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };

@@ -6,10 +6,13 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool, type PoolClient } from "pg";
+import { z } from "zod";
+import { runOnce } from "@semprec/queue";
 import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createUser,
   createChokePoint,
+  createApiCoreTaskList,
   createItemWithClient,
   getDatabaseByModuleId,
   createViewTypeRegistry,
@@ -22,6 +25,7 @@ import {
   type PasswordResetMailer,
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
+import { createApiActionRegistry } from "../actionRegistryComposition.js";
 
 const PASSWORD = "s3cret-password";
 const MAX_FILE_SIZE_BYTES = 1024;
@@ -120,6 +124,31 @@ describe("files and blobs routes (issue #158)", () => {
       header.writeUInt16LE(name.length, 26);
       return Buffer.concat([header, Buffer.from(name, "latin1")]);
     }
+
+    it("enqueues transcription through the heartbeat after an audio upload", async () => {
+      vi.stubEnv("AI_GATEWAY_INTERNAL_TOKEN", "local-test-token");
+      try {
+        const response = await uploadFile(ftyp("M4A "), { filename: "recording.m4a", contentType: "audio/mp4" });
+        expect(response.status).toBe(201);
+        const body: unknown = await response.json();
+        const { id } = z.object({ id: z.uuid() }).parse(body);
+        const key = `transcription-job:${id}`;
+        const before = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE key = $1",
+          [key],
+        );
+        expect(before.rows[0]?.count).toBe(0);
+        const registry = createApiActionRegistry(pool, moduleRegistry);
+        await runOnce({ pgPool: pool, taskList: createApiCoreTaskList(pool, registry) });
+        const after = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE key = $1",
+          [key],
+        );
+        expect(after.rows[0]?.count).toBe(1);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
 
     it.each([
       [Buffer.from("%PDF-1.7"), "pdf", "application/pdf"],

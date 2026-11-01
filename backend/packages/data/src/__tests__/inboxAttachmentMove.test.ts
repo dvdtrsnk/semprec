@@ -1,7 +1,9 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
+import { runOnce, CORE_TASK_NAMES } from "@semprec/queue";
+import { runInTenant } from "@semprec/shared";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
@@ -17,7 +19,12 @@ import { insertInboxAttachments, listInboxAttachments } from "../inbox/inboxAtta
 import { createSemprecTickAction, type ComputeSemprecProposalFn, type ProposalStep } from "../inbox/inboxTickAction.js";
 import { confirmProposalWithClient } from "../inbox/proposalActions.js";
 import { executeProposalSteps } from "../inbox/proposalSteps.js";
-import { createFilesTranscriptionTriggerAction } from "../transcription/transcriptionActions.js";
+import {
+  createFilesTranscriptionTriggerAction,
+  FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
+} from "../transcription/transcriptionActions.js";
+import { createActionRegistry } from "../scheduler/actions.js";
+import { createCoreTaskList } from "../worker.js";
 import { transcriptionJobKey } from "../transcription/transcriptionJob.js";
 import type { ItemRow } from "../types.js";
 
@@ -507,6 +514,38 @@ describe("file from attachment on confirm (issue #1703)", () => {
     const recording = await createIn(filesId, { name: "Recording", file: { blobId: recordingBlobId } });
     await handler(config, { heartbeatId: "hb", projectItemId: "proj", itemId: recording });
     expect(await jobExists(transcriptionJobKey(recording))).toBe(true);
+  });
+
+  it("the queued Files heartbeat skips an audio attachment after confirm", async () => {
+    const { fileItemId, fireKey } = await runInTenant(getTenantZeroId(), async () => {
+      const { inboxItemId, cardId } = await inboxItemWithCard("Voice note");
+      const blobId = await newBlob("audio/mpeg");
+      const attachmentId = await attach(inboxItemId, blobId);
+      await storeSteps(cardId, [taskPrimary(), fileStep(attachmentId)]);
+      await confirm(cardId);
+      const [fileItem] = await filesItemsFor(blobId);
+      if (!fileItem) throw new Error("Expected a filed audio item");
+      const heartbeat = await pool.query<{ id: string }>("SELECT id FROM project_heartbeats WHERE action_id = $1", [
+        FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
+      ]);
+      if (heartbeat.rows.length !== 1 || !heartbeat.rows[0]) throw new Error("Expected a Files heartbeat");
+      const fireKey = `heartbeat-fire:${heartbeat.rows[0].id}:${fileItem.id}`;
+      expect(await jobExists(fireKey)).toBe(true);
+      return { fileItemId: fileItem.id, fireKey };
+    });
+    const registry = createActionRegistry();
+    registry.set(FILES_TRANSCRIPTION_TRIGGER_ACTION_ID, createFilesTranscriptionTriggerAction(pool));
+    const heartbeatTask = createCoreTaskList(pool, registry)[CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE];
+    if (!heartbeatTask) throw new Error("Missing core heartbeat task");
+    await runOnce({ pgPool: pool, taskList: { [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: heartbeatTask } });
+    expect(await jobExists(fireKey)).toBe(false);
+    expect(await jobExists(transcriptionJobKey(fileItemId))).toBe(false);
+    const { rows } = await pool.query<{ last_error: string | null }>(
+      "SELECT last_error FROM project_heartbeats WHERE action_id = $1",
+      [FILES_TRANSCRIPTION_TRIGGER_ACTION_ID],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.last_error).toBeNull();
   });
 
   it("deleting the Files item of a move keeps the bytes an unconfirmed attachment still names", async () => {

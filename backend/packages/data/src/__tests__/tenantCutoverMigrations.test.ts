@@ -154,6 +154,62 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
     expect((await readState(zero)).transcriptsId).not.toBe((await readState(b)).transcriptsId);
   });
 
+  it("upgrades populated transcript relations through the tenant runner without changing existing edges", async () => {
+    for (const tenantId of [zero, b]) {
+      await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
+      const chokePoint = createChokePoint(dataPool);
+      await runInTenant(tenantId, async () => {
+        const { rows } = await dataPool.query<{ id: string; owner_module_id: string }>(
+          "SELECT id, owner_module_id FROM databases WHERE owner_module_id = ANY($1::text[])",
+          [["transcripts", "events"]],
+        );
+        const transcripts = rows.find((row) => row.owner_module_id === "transcripts");
+        const events = rows.find((row) => row.owner_module_id === "events");
+        if (!transcripts || !events) throw new Error("Missing transcript or event database");
+        const transcript = await chokePoint.createItem({ databaseId: transcripts.id, properties: {} });
+        const event = await chokePoint.createItem({ databaseId: events.id, properties: {} });
+        const eventProperty = (await chokePoint.listProperties(events.id)).find(
+          (property) => property.key === "transcript",
+        );
+        if (!eventProperty) throw new Error("Missing event transcript property");
+        await chokePoint.createRelation({
+          relationPropertyId: eventProperty.id,
+          callerItemId: event.id,
+          targetItemId: transcript.id,
+        });
+        // Recreate the pre-1470 catalog; normal APIs cannot remove locked system properties.
+        const definitions = await dataPool.query<{ id: string }>(
+          "SELECT config->>'relationDefinitionId' AS id FROM properties WHERE database_id = $1 AND key = ANY($2::text[])",
+          [transcripts.id, ["project", "company", "people"]],
+        );
+        expect(definitions.rows).toHaveLength(3);
+        const ids = definitions.rows.map((row) => row.id);
+        await dataPool.query("DELETE FROM properties WHERE config->>'relationDefinitionId' = ANY($1::text[])", [ids]);
+        await dataPool.query("DELETE FROM relation_definitions WHERE id = ANY($1::uuid[])", [ids]);
+      });
+    }
+    const before = await adminPool.query<{ id: string; item_a: string; item_b: string }>(
+      "SELECT id, item_a, item_b FROM item_relations ORDER BY id",
+    );
+    expect(before.rows).toHaveLength(2);
+    await runCutovers(dataPool);
+    await runCutovers(dataPool);
+    const after = await adminPool.query<{ id: string; item_a: string; item_b: string }>(
+      "SELECT id, item_a, item_b FROM item_relations ORDER BY id",
+    );
+    expect(after.rows).toEqual(before.rows);
+    for (const tenantId of [zero, b]) {
+      const state = await readState(tenantId);
+      const properties = await runInTenant(tenantId, () =>
+        dataPool.query<{ key: string }>("SELECT key FROM properties WHERE database_id = $1 AND key = ANY($2::text[])", [
+          state.transcriptsId,
+          ["project", "company", "people"],
+        ]),
+      );
+      expect(properties.rows.map((row) => row.key).sort()).toEqual(["company", "people", "project"]);
+    }
+  });
+
   it("repairs legacy mail database keys through the tenant cutover runner", async () => {
     await seedOldShape(zero);
     await seedOldShape(b);
