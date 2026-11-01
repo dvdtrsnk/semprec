@@ -275,6 +275,9 @@ describe("scheduler", () => {
     const before = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id)))?.nextFireAt;
     vi.resetModules();
     const hooks = await import("../chokePoint/hooks.js");
+    const search = await import("../search/itemSearchIndexer.js");
+    const searchUpdate = vi.spyOn(search, "itemSearchUpdateHook");
+    await import("../domainWriteHooks.js");
     const isolated = await import("../chokePoint/chokePoint.js");
     const isolatedRealtime = await import("../realtimeHook.js");
     try {
@@ -286,21 +289,33 @@ describe("scheduler", () => {
       const events: InvalidationEvent[] = [];
       isolatedRealtime.setInvalidationHook((event) => events.push(event));
       await cp.updateItem({ databaseId, itemId: settingsId, propertiesPatch: { name: "valid" } });
+      expect(searchUpdate).toHaveBeenCalledOnce();
       expect(events).toMatchObject([{ scope: "item", itemId: settingsId, op: "update" }]);
       events.length = 0;
       const after = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id)))?.nextFireAt;
       expect(after).not.toBe(before);
       const persisted = await cp.getItem(databaseId, settingsId);
       expect(persisted?.properties).toMatchObject({ name: "valid", timezone: "Pacific/Kiritimati" });
+      const readSearchIndex = () =>
+        pool.query<{ item_id: string; updated_at: Date; body: string | null; search_vector: string }>(
+          "SELECT item_id, updated_at, body, search_vector::text FROM item_search_index WHERE item_id = $1",
+          [settingsId],
+        );
+      const searchBefore = await readSearchIndex();
+      expect(searchBefore.rowCount).toBe(1);
       await expect(
         cp.updateItem({ databaseId, itemId: settingsId, propertiesPatch: { name: "invalid" } }),
       ).rejects.toMatchObject({ status: 400, code: "validation_failed" });
       expect((await cp.getItem(databaseId, settingsId))?.properties).toEqual(persisted?.properties);
       expect((await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id)))?.nextFireAt).toBe(after);
       expect(events).toEqual([]);
+      expect(searchUpdate).toHaveBeenCalledTimes(2);
+      const searchAfter = await readSearchIndex();
+      expect(searchAfter.rows).toEqual(searchBefore.rows);
     } finally {
       isolatedRealtime.setInvalidationHook(() => {});
       hooks.clearHooksForTests();
+      searchUpdate.mockRestore();
       vi.resetModules();
     }
   });

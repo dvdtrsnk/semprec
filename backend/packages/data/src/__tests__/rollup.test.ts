@@ -242,6 +242,9 @@ describe("rollup engine", () => {
     await drainQueue();
     vi.resetModules();
     const hooks = await import("../chokePoint/hooks.js");
+    const search = await import("../search/itemSearchIndexer.js");
+    const searchUpdate = vi.spyOn(search, "itemSearchUpdateHook");
+    await import("../domainWriteHooks.js");
     const isolated = await import("../chokePoint/chokePoint.js");
     const isolatedShared = await import("@semprec/shared");
     try {
@@ -250,6 +253,7 @@ describe("rollup engine", () => {
       await isolatedShared.runInTenant(getTenantZeroId(), () =>
         cp.updateItem({ databaseId: tasks.id, itemId: child.id, propertiesPatch: { trigger: "go" } }),
       );
+      expect(searchUpdate).toHaveBeenCalledOnce();
       const key = rollupRecomputeJobKey(total.id, parent.id);
       const jobs = await pool.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [key]);
       expect(jobs.rows).toEqual([{ key }]);
@@ -257,6 +261,7 @@ describe("rollup engine", () => {
       expect((await chokePoint.getItem(projects.id, parent.id))?.computed.total).toBe(10);
     } finally {
       hooks.clearHooksForTests();
+      searchUpdate.mockRestore();
       vi.resetModules();
     }
   });

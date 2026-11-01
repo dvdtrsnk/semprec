@@ -3277,38 +3277,56 @@ describe("value link state on writes (issue #1516)", () => {
               ),
             ),
           );
-        await expect(write("blocked")).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-        await withTenantTransaction(runtime, tenant, (client) =>
-          insertValueLink(client, {
-            itemId: fx.file.id,
-            propertyKey: "name",
-            ruleKey: "test",
-            sources: [],
-          }),
-        );
-        await expect(write("system")).resolves.toMatchObject({ properties: { name: "system" } });
-        await runInTenant(tenant, () =>
-          cp.updateItem(
-            { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: "system" } },
-            undefined,
-            undefined,
-            USER,
-          ),
-        );
-        const read = () =>
+        const readItem = () => runInTenant(tenant, () => cp.getItem(fx.files.id, fx.file.id));
+        const readLinks = () =>
           withTenantTransaction(runtime, tenant, (client) => listValueLinksByItemIds(client, [fx.file.id]));
-        expect((await read())[0]).toMatchObject({ state: "on" });
-        await runInTenant(tenant, () =>
-          cp.updateItem(
-            { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: "user" } },
-            undefined,
-            undefined,
-            USER,
-          ),
-        );
-        expect((await read())[0]).toMatchObject({ state: "broken", brokenBy: "user" });
-        await expect(write("blocked again")).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-        expect((await runInTenant(tenant, () => cp.getItem(fx.files.id, fx.file.id)))?.properties.name).toBe("user");
+        const events: InvalidationEvent[] = [];
+        const expectRefusedWithoutEffects = async (value: string) => {
+          const beforeItem = await readItem();
+          const beforeLinks = await readLinks();
+          events.length = 0;
+          await expect(write(value)).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+          expect(await readItem()).toEqual(beforeItem);
+          expect(await readLinks()).toEqual(beforeLinks);
+          expect(events).toEqual([]);
+        };
+        setInvalidationHook((event) => events.push(event));
+        try {
+          await expectRefusedWithoutEffects("blocked");
+          await withTenantTransaction(runtime, tenant, (client) =>
+            insertValueLink(client, {
+              itemId: fx.file.id,
+              propertyKey: "name",
+              ruleKey: "test",
+              sources: [],
+            }),
+          );
+          await expect(write("system")).resolves.toMatchObject({ properties: { name: "system" } });
+          await runInTenant(tenant, () =>
+            cp.updateItem(
+              { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: "system" } },
+              undefined,
+              undefined,
+              USER,
+            ),
+          );
+          const read = () =>
+            withTenantTransaction(runtime, tenant, (client) => listValueLinksByItemIds(client, [fx.file.id]));
+          expect((await read())[0]).toMatchObject({ state: "on" });
+          await runInTenant(tenant, () =>
+            cp.updateItem(
+              { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: "user" } },
+              undefined,
+              undefined,
+              USER,
+            ),
+          );
+          expect((await read())[0]).toMatchObject({ state: "broken", brokenBy: "user" });
+          await expectRefusedWithoutEffects("blocked again");
+          expect((await readItem())?.properties.name).toBe("user");
+        } finally {
+          setInvalidationHook(() => {});
+        }
       });
     });
 
