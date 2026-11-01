@@ -2054,6 +2054,37 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     expect(readIdArray(notifications, "notifications")).toEqual([a.notificationId]);
   });
 
+  it("omits a historical foreign blob from an authenticated item envelope", async () => {
+    const path = `/api/items/${a.fileItemId}`;
+    const ownText = await sendOk(a.member, { method: "GET", path });
+    const own: unknown = JSON.parse(ownText);
+    if (!isRecord(own) || !isRecord(own.properties)) throw new Error("expected item properties");
+    expect(own).toHaveProperty("blobs.file.blobId", a.blobId);
+    const original = own.properties;
+    const historical = { ...original, file: { blobId: b.blobId } };
+    // Historical invalid JSONB predates the blob-reference guard; the fixture is tenant-scoped.
+    async function replaceProperties(properties: Record<string, unknown>) {
+      await inTenantTransaction(a.tenantId, async (client) => {
+        const result = await client.query("UPDATE items SET properties = $3::jsonb WHERE tenant_id = $1 AND id = $2", [
+          a.tenantId,
+          a.fileItemId,
+          JSON.stringify(properties),
+        ]);
+        expect(result.rowCount).toBe(1);
+      });
+    }
+    try {
+      await replaceProperties(historical);
+      const answer = await send(a.member, { method: "GET", path });
+      expect(answer.status).toBe(200);
+      const body: unknown = JSON.parse(answer.text);
+      expect(body).toMatchObject({ properties: historical });
+      expect(body).not.toHaveProperty("blobs");
+    } finally {
+      await replaceProperties(original);
+    }
+  });
+
   it("answers A's own ids differently from random ids on every probed route, so a foreign answer is a real refusal", async () => {
     // Positive control for the tenant cases: for each id they probe, A naming its own row must
     // take another branch than A naming a random id. Mutating probes are idempotent for A's rows

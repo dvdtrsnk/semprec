@@ -541,6 +541,69 @@ describe("files and blobs routes (issue #158)", () => {
       expect(body.properties).toMatchObject({ name: "no file here" });
     });
 
+    it("returns metadata on generic item create and PATCH, and omits it after clearing the image", async () => {
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const upload = await fetch(`${baseUrl}/api/blobs`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "image/png" },
+        body: PNG_IMAGE,
+      });
+      expect(upload.status).toBe(201);
+      const uploaded: unknown = await upload.json();
+      if (
+        typeof uploaded !== "object" ||
+        uploaded === null ||
+        !("blobId" in uploaded) ||
+        typeof uploaded.blobId !== "string"
+      )
+        throw new Error("expected blob id");
+      const blobId = uploaded.blobId;
+      const cp = createChokePoint(pool);
+      const db = await cp.createDatabase({ name: "Images" });
+      await cp.createProperty({ databaseId: db.id, key: "photo", name: "Photo", type: "image" });
+      const create = await fetch(`${baseUrl}/api/databases/${db.id}/items`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ properties: { photo: { blobId } } }),
+      });
+      expect(create.status).toBe(201);
+      const created: unknown = await create.json();
+      if (
+        typeof created !== "object" ||
+        created === null ||
+        !("id" in created) ||
+        typeof created.id !== "string" ||
+        !("updatedAt" in created) ||
+        typeof created.updatedAt !== "string"
+      )
+        throw new Error("expected created item");
+      const metadata = { blobId, byteSize: PNG_IMAGE.length, mimeType: "image/png", filename: null };
+      expect(created).toMatchObject({ properties: { photo: { blobId } }, blobs: { photo: metadata } });
+      const clear = await fetch(`${baseUrl}/api/items/${created.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties: { photo: null }, ifVersion: created.updatedAt }),
+      });
+      expect(clear.status).toBe(200);
+      const cleared: unknown = await clear.json();
+      if (
+        typeof cleared !== "object" ||
+        cleared === null ||
+        !("updatedAt" in cleared) ||
+        typeof cleared.updatedAt !== "string"
+      )
+        throw new Error("expected patched item");
+      expect(cleared).toMatchObject({ properties: { photo: null } });
+      expect(cleared).not.toHaveProperty("blobs");
+      const restore = await fetch(`${baseUrl}/api/items/${created.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties: { photo: { blobId } }, ifVersion: cleared.updatedAt }),
+      });
+      expect(restore.status).toBe(200);
+      expect(await restore.json()).toMatchObject({ properties: { photo: { blobId } }, blobs: { photo: metadata } });
+    });
+
     it("fetches blobs once for an actual 50-item database query response", async () => {
       const headers = await authHeader();
       const uploaded = (await (await uploadFile("query-count-bytes")).json()) as BlobsItemBody;
@@ -549,6 +612,7 @@ describe("files and blobs routes (issue #158)", () => {
       for (let i = 0; i < 49; i += 1) {
         await chokePoint.createItem({ databaseId: uploaded.databaseId, properties: { name: `File ${i}`, file } });
       }
+      const view = await chokePoint.createView({ databaseId: uploaded.databaseId, type: "table", name: "All files" });
 
       let blobQueries = 0;
       const wrapped = new Map<PoolClient, PoolClient["query"]>();
@@ -567,21 +631,24 @@ describe("files and blobs routes (issue #158)", () => {
       };
       pool.on("acquire", instrument);
       try {
-        const response = await fetch(`${baseUrl}/api/databases/${uploaded.databaseId}/query`, {
-          method: "POST",
-          headers: { ...headers, "Content-Type": "application/json" },
-          body: JSON.stringify({ limit: 50 }),
-        });
-        expect(response.status).toBe(200);
-        const body: unknown = await response.json();
-        if (typeof body !== "object" || body === null || !("items" in body) || !Array.isArray(body.items)) {
-          throw new Error("expected query items");
+        for (const path of [`/api/databases/${uploaded.databaseId}/query`, `/api/views/${view.id}/query`]) {
+          blobQueries = 0;
+          const response = await fetch(`${baseUrl}${path}`, {
+            method: "POST",
+            headers: { ...headers, "Content-Type": "application/json" },
+            body: JSON.stringify({ limit: 50 }),
+          });
+          expect(response.status).toBe(200);
+          const body: unknown = await response.json();
+          if (typeof body !== "object" || body === null || !("items" in body) || !Array.isArray(body.items)) {
+            throw new Error("expected query items");
+          }
+          expect(body.items).toHaveLength(50);
+          for (const item of body.items) {
+            expect(item).toHaveProperty("blobs.file.blobId", uploaded.blobs?.file?.blobId);
+          }
+          expect(blobQueries).toBe(1);
         }
-        expect(body.items).toHaveLength(50);
-        for (const item of body.items) {
-          expect(item).toHaveProperty("blobs.file.blobId", uploaded.blobs?.file?.blobId);
-        }
-        expect(blobQueries).toBe(1);
       } finally {
         pool.off("acquire", instrument);
         for (const [client, query] of wrapped) client.query = query;

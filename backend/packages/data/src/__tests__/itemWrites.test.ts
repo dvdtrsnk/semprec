@@ -738,6 +738,57 @@ describe("title validation on item writes", () => {
 
   const rejected = { status: 400, code: "validation_failed", details: { field: "name" } };
 
+  it("publishes neither invalidation nor heartbeat jobs for rejected user and agent creates", async () => {
+    await seedSystem(pool);
+    const db = await makeDb();
+    const projects = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'");
+    const project = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [
+      projects.rows[0]?.id,
+    ]);
+    const projectId = project.rows[0]?.id;
+    if (!projectId) throw new Error("missing seeded project");
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId: projectId,
+        name: "On create",
+        rule: { kind: "onItemEvent", databaseId: db.id, event: "create" },
+        actionId: "noop",
+      }),
+    );
+    const countJobs = async () => {
+      const result = await pool.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM graphile_worker._private_jobs j
+         JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+         WHERE t.identifier = $1 AND j.payload -> 'payload' ->> 'heartbeatId' = $2`,
+        [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE, heartbeat.id],
+      );
+      return result.rows[0]?.n;
+    };
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      expect(await countJobs()).toBe(0);
+      for (const writer of [userWriter, agentWriter]) {
+        await expect(
+          chokePoint.createItem({ databaseId: db.id, properties: { name: "   " } }, undefined, undefined, writer),
+        ).rejects.toMatchObject(rejected);
+      }
+      expect(await countItems(db.id)).toBe(0);
+      expect(events).toEqual([]);
+      expect(await countJobs()).toBe(0);
+      const created = await chokePoint.createItem(
+        { databaseId: db.id, properties: { name: "Valid" } },
+        undefined,
+        undefined,
+        userWriter,
+      );
+      expect(events).toMatchObject([{ scope: "item", itemId: created.id, op: "create" }]);
+      expect(await countJobs()).toBe(1);
+    } finally {
+      setInvalidationHook(() => {});
+    }
+  });
+
   it.each([
     ["user", userWriter],
     ["agent", agentWriter],
@@ -776,6 +827,13 @@ describe("title validation on item writes", () => {
         ),
       ).rejects.toMatchObject(rejected);
     }
+    const userUpdated = await chokePoint.updateItem(
+      { databaseId: db.id, itemId: item.id, propertiesPatch: { note: "user note" } },
+      undefined,
+      undefined,
+      userWriter,
+    );
+    expect(userUpdated.properties).toEqual({ name: "Keep", note: "user note" });
     const updated = await chokePoint.updateItem(
       { databaseId: db.id, itemId: item.id, propertiesPatch: { note: "n" } },
       undefined,

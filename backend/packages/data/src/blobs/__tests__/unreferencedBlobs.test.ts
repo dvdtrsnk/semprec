@@ -24,7 +24,7 @@ import { ingestUploadedBlob } from "../fileUploadStore.js";
 import { handleBlobsUnreferencedSweepTask, sweepUnreferencedBlobs } from "../unreferencedBlobSweep.js";
 import { insertInboxAttachments } from "../../inbox/inboxAttachmentsStore.js";
 import { withTransaction } from "../../db/pool.js";
-import { createItemWithClient } from "../../chokePoint/itemWrites.js";
+import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { registerItemPreWriteTransform } from "../../chokePoint/hooks.js";
 
 /** In-memory storage that enforces `maxBytes` like the real writer and records deletes. */
@@ -443,6 +443,157 @@ describe("standalone blobs (issue #1401)", () => {
         database.id,
       ]);
       expect(rows.rows[0]?.n).toBe(0);
+      expect(await countBlobs(blob.id)).toBe(0);
+      expect(storage.deleteCalls).toEqual([]);
+    });
+    it("waits for a committed image UPDATE before rechecking and keeps its bytes", async () => {
+      const database = await recipesDatabaseWithImageProperty();
+      const storage = new FakeStorage();
+      const prior = (await upload(storage, "prior image bytes")).blob;
+      const item = await chokePoint.createItem({
+        databaseId: database.id,
+        properties: { photo: { blobId: prior.id } },
+      });
+      const blob = (await upload(storage, "concurrent image")).blob;
+      await ageBlob(blob.id, 25);
+      const writerPool = await createRuntimeRolePool(pool, "semprec_data");
+      const sweepPool = await createRuntimeRolePool(pool, "semprec_data");
+      let release!: () => void;
+      let ready!: (pid: number) => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<number>((resolve) => {
+        ready = resolve;
+      });
+      const writer = runInTenant(getTenantZeroId(), () =>
+        withTransaction(writerPool, async (client) => {
+          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          if (pid === undefined) throw new Error("missing writer pid");
+          await updateItemWithClient(client, {
+            databaseId: database.id,
+            itemId: item.id,
+            propertiesPatch: { photo: { blobId: blob.id.toUpperCase() } },
+          });
+          ready(pid);
+          await gate;
+        }),
+      );
+      const writerOutcome = Promise.allSettled([writer]);
+      let sweep: Promise<number> | undefined;
+      try {
+        const pid = await bounded(
+          Promise.race([
+            started,
+            writer.then(() => {
+              throw new Error("writer exited before barrier");
+            }),
+          ]),
+        );
+        sweep = runInTenant(getTenantZeroId(), () => sweepUnreferencedBlobs(sweepPool, storage));
+        await expect
+          .poll(
+            async () => {
+              const result = await pool.query<{ blocked: boolean }>(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked",
+                [pid],
+              );
+              return result.rows[0]?.blocked;
+            },
+            { timeout: 5000 },
+          )
+          .toBe(true);
+      } finally {
+        release();
+        await writerOutcome;
+        if (sweep) await Promise.allSettled([sweep]);
+        await writerPool.end();
+        await sweepPool.end();
+      }
+      await writer;
+      expect(await sweep).toBe(0);
+      expect(await countBlobs(blob.id)).toBe(1);
+      expect(storage.bytesByKey.has(blob.storageKey)).toBe(true);
+      expect((await chokePoint.getItem(database.id, item.id))?.properties.photo).toEqual({
+        blobId: blob.id.toUpperCase(),
+      });
+    });
+
+    it("rejects an image UPDATE that waits for a deletion to commit", async () => {
+      const database = await recipesDatabaseWithImageProperty();
+      const storage = new FakeStorage();
+      const prior = (await upload(storage, "prior image bytes")).blob;
+      const item = await chokePoint.createItem({
+        databaseId: database.id,
+        properties: { photo: { blobId: prior.id } },
+      });
+      const blob = (await upload(storage, "deleted image")).blob;
+      const deletePool = await createRuntimeRolePool(pool, "semprec_data");
+      const writerPool = await createRuntimeRolePool(pool, "semprec_data");
+      let release!: () => void;
+      let ready!: (pid: number) => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<number>((resolve) => {
+        ready = resolve;
+      });
+      const deleting = runInTenant(getTenantZeroId(), () =>
+        withTransaction(deletePool, async (client) => {
+          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          if (pid === undefined) throw new Error("missing deletion pid");
+          expect(await deleteBlobIfUnreferenced(client, blob.id)).toBe(blob.storageKey);
+          ready(pid);
+          await gate;
+        }),
+      );
+      const deletionOutcome = Promise.allSettled([deleting]);
+      let writing: Promise<unknown> | undefined;
+      try {
+        const pid = await bounded(
+          Promise.race([
+            started,
+            deleting.then(() => {
+              throw new Error("delete exited before barrier");
+            }),
+          ]),
+        );
+        writing = runInTenant(getTenantZeroId(), () =>
+          createChokePoint(writerPool).updateItem({
+            databaseId: database.id,
+            itemId: item.id,
+            propertiesPatch: { photo: { blobId: blob.id } },
+          }),
+        );
+        void writing.catch(() => {});
+        await expect
+          .poll(
+            async () => {
+              const result = await pool.query<{ blocked: boolean }>(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked",
+                [pid],
+              );
+              return result.rows[0]?.blocked;
+            },
+            { timeout: 5000 },
+          )
+          .toBe(true);
+      } finally {
+        release();
+        await deletionOutcome;
+        if (writing) await Promise.allSettled([writing]);
+        await deletePool.end();
+        await writerPool.end();
+      }
+      await deleting;
+      await expect(writing).rejects.toMatchObject({ code: "validation_failed", details: { field: "photo" } });
+      const rows = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+        database.id,
+      ]);
+      expect(rows.rows[0]?.n).toBe(1);
+      const persisted = await chokePoint.getItem(database.id, item.id);
+      expect(persisted?.properties.photo).toEqual({ blobId: prior.id });
+      expect(storage.bytesByKey.get(prior.storageKey)).toEqual(Buffer.from("prior image bytes"));
       expect(await countBlobs(blob.id)).toBe(0);
       expect(storage.deleteCalls).toEqual([]);
     });
