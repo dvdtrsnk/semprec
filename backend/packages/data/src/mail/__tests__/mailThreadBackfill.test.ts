@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import "../../domainWriteHooks.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
-import { requireSingleRow, withTransaction, type Queryable } from "../../db/pool.js";
+import { requireSingleRow, withTransaction } from "../../db/pool.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import {
   createRuntimeRolePool,
@@ -15,9 +15,10 @@ import {
   resetDatabase,
 } from "../../testSupport/testDb.js";
 import { EMAIL_INGEST_ALLOWED_SYSTEM_KEYS } from "../ingest.js";
-import { createMailThread, upsertMailMessageMeta } from "../mailMessageMetaStore.js";
+import { createMailThread, resolveMergedThreadId, upsertMailMessageMeta } from "../mailMessageMetaStore.js";
 import { handleMailThreadBackfillTask } from "../mailThreadBackfillJob.js";
 import { resolveThreadId } from "../threading.js";
+import { lockMailThreadMutation } from "../mailThreadMutationGuard.js";
 
 // Fault injection for the failing-tenant test: `resolveThreadId` throws for one Message-ID and passes every other
 // call through to the real function.
@@ -53,7 +54,7 @@ interface StoredMessage {
 }
 
 /** Writes one `mail_message_meta` row through the store. No thread unless one is given. */
-async function writeMessage(client: Queryable, message: StoredMessage): Promise<void> {
+async function writeMessage(client: PoolClient, message: StoredMessage): Promise<void> {
   await upsertMailMessageMeta(client, {
     itemId: message.itemId,
     mailboxItemId: message.mailboxItemId,
@@ -196,6 +197,256 @@ describe("mailThreadBackfill (issue #1570)", () => {
     await runInTenant(tenantZero, () => seedSystem(pool));
     await runInTenant(tenantB, () => seedSystem(pool));
   });
+
+  it("rejects missing, system, nontransactional, mismatched tenant, and non-READ COMMITTED scopes", async () => {
+    const client = await runInTenant(tenantZero, () => pool.connect());
+    try {
+      await expect(lockMailThreadMutation(client)).rejects.toMatchObject({ name: "TenantScopeMissingError" });
+      await expect(runAsSystem("test", () => lockMailThreadMutation(client))).rejects.toMatchObject({
+        name: "TenantScopeMissingError",
+      });
+      await expect(runInTenant(tenantZero, () => lockMailThreadMutation(client))).rejects.toThrow(
+        "Mail thread mutation requires a READ COMMITTED tenant transaction",
+      );
+      await client.query("BEGIN");
+      await expect(runInTenant(tenantB, () => lockMailThreadMutation(client))).rejects.toThrow(
+        "Mail thread mutation requires a READ COMMITTED tenant transaction",
+      );
+      await client.query("ROLLBACK");
+      for (const isolation of ["repeatable_read", "serializable"] as const) {
+        await expect(
+          runInTenant(tenantZero, () => withTransaction(pool, lockMailThreadMutation, { isolation })),
+        ).rejects.toThrow("Mail thread mutation requires a READ COMMITTED tenant transaction");
+      }
+      await expect(
+        runInTenant(tenantZero, () => withTransaction(pool, lockMailThreadMutation)),
+      ).resolves.toBeUndefined();
+    } finally {
+      if (client.getTransactionStatus() === "T" || client.getTransactionStatus() === "E")
+        await client.query("ROLLBACK");
+      client.release();
+    }
+  });
+
+  it("releases the tenant guard on rollback while another tenant proceeds", async () => {
+    let release: () => void = () => undefined;
+    let reportHolder: (pid: number) => void = () => undefined;
+    let reportWaiter: (pid: number) => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holderStarted = new Promise<number>((resolve) => {
+      reportHolder = resolve;
+    });
+    const waiterStarted = new Promise<number>((resolve) => {
+      reportWaiter = resolve;
+    });
+    async function bounded<T>(promise: Promise<T>): Promise<T> {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error("Guard overlap timed out")), 5000);
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+    const holder = runInTenant(tenantZero, () =>
+      withTransaction(pool, async (client) => {
+        await lockMailThreadMutation(client);
+        const result = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+        reportHolder(requireSingleRow(result.rows, "holder pid").pid);
+        await gate;
+        throw new Error("forced rollback");
+      }),
+    ).then(
+      () => ({ ok: true }),
+      (error: unknown) => ({ ok: false, error }),
+    );
+    let waiter: Promise<void> | undefined;
+    let otherTenant: Promise<void> | undefined;
+    try {
+      const holderPid = await bounded(holderStarted);
+      waiter = runInTenant(tenantZero, () =>
+        withTransaction(pool, async (client) => {
+          const result = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          reportWaiter(requireSingleRow(result.rows, "waiter pid").pid);
+          await lockMailThreadMutation(client);
+        }),
+      );
+      const waiterSettled = waiter.then(
+        () => ({ ok: true }),
+        (error: unknown) => ({ ok: false, error }),
+      );
+      const waiterPid = await bounded(waiterStarted);
+      const deadline = Date.now() + 5000;
+      let blocked = false;
+      while (Date.now() < deadline) {
+        const result = await admin.query<{ blocked: boolean }>(
+          "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+          [holderPid, waiterPid],
+        );
+        if (result.rows[0]?.blocked) {
+          blocked = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(blocked).toBe(true);
+      otherTenant = runInTenant(tenantB, () => withTransaction(pool, lockMailThreadMutation));
+      await bounded(otherTenant);
+      console.info("MAIL_GUARD_ROLLBACK", { holderPid, waiterPid });
+      release();
+      expect(await bounded(holder)).toMatchObject({
+        ok: false,
+        error: expect.objectContaining({ message: "forced rollback" }),
+      });
+      expect(await bounded(waiterSettled)).toEqual({ ok: true });
+    } finally {
+      release();
+      await Promise.allSettled([holder, ...(waiter ? [waiter] : []), ...(otherTenant ? [otherTenant] : [])]);
+    }
+  }, 15000);
+
+  it.each(["backfill-first", "bridge-first"] as const)(
+    "serializes a multi-thread bridge with backfill in %s order",
+    async (order) => {
+      const first = await newThread(tenantZero);
+      const second = await newThread(tenantZero);
+      const third = await newThread(tenantZero);
+      // Historical split copies are the input the backfill was created to repair.
+      await store(tenantZero, {
+        itemId: randomUUID(),
+        mailboxItemId: MAILBOX_A,
+        messageId: "<split@x>",
+        threadId: first,
+      });
+      await store(tenantZero, {
+        itemId: randomUUID(),
+        mailboxItemId: MAILBOX_B,
+        messageId: "<split@x>",
+        threadId: second,
+      });
+      await store(tenantZero, {
+        itemId: randomUUID(),
+        mailboxItemId: MAILBOX_A,
+        messageId: "<other@x>",
+        threadId: third,
+      });
+      const control = await admin.connect();
+      const controlPid = requireSingleRow(
+        (await control.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows,
+        "control pid",
+      ).pid;
+      let backfill: Promise<void> | undefined;
+      let bridge: Promise<void> | undefined;
+      const waitBlocked = async (holder: number, query: string): Promise<number> => {
+        const deadline = Date.now() + 5000;
+        while (Date.now() < deadline) {
+          const result = await admin.query<{ pid: number; blockers: number[]; query: string }>(
+            "SELECT pid, pg_blocking_pids(pid) AS blockers, query FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()",
+          );
+          const match = result.rows.find((row) => row.blockers.includes(holder) && row.query.includes(query));
+          if (match) return match.pid;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        throw new Error(`No backend blocked by ${holder} at ${query}`);
+      };
+      async function bounded<T>(promise: Promise<T>): Promise<T> {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          return await Promise.race([
+            promise,
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error("Bridge overlap timed out")), 5000);
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      }
+      try {
+        await control.query("SELECT pg_advisory_lock(712340003)");
+        await admin.query(
+          "CREATE FUNCTION test_mail_bridge_gate() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(712340003); RETURN NEW; END $$",
+        );
+        await admin.query(
+          "CREATE TRIGGER test_mail_bridge_gate BEFORE UPDATE OF thread_id ON mail_message_meta FOR EACH ROW WHEN (OLD.thread_id IS DISTINCT FROM NEW.thread_id) EXECUTE FUNCTION test_mail_bridge_gate()",
+        );
+        const startBridge = () =>
+          runInTenant(tenantZero, () =>
+            withTransaction(pool, async (client) => {
+              const threadId = await resolveThreadId(client, {
+                messageId: "<bridge@x>",
+                references: ["<split@x>", "<other@x>"],
+              });
+              await writeMessage(client, {
+                itemId: randomUUID(),
+                mailboxItemId: MAILBOX_A,
+                messageId: "<bridge@x>",
+                references: ["<split@x>", "<other@x>"],
+                threadId,
+              });
+            }),
+          );
+        let holderPid: number;
+        let waiterPid: number;
+        if (order === "backfill-first") {
+          backfill = runBackfill();
+          const observed = backfill.then(
+            () => null,
+            (error: unknown) => error,
+          );
+          holderPid = await waitBlocked(controlPid, "UPDATE mail_message_meta");
+          bridge = startBridge();
+          const bridgeObserved = bridge.then(
+            () => null,
+            (error: unknown) => error,
+          );
+          waiterPid = await waitBlocked(holderPid, "pg_advisory_xact_lock");
+          await control.query("SELECT pg_advisory_unlock(712340003)");
+          expect(await bounded(observed)).toBeNull();
+          expect(await bounded(bridgeObserved)).toBeNull();
+        } else {
+          bridge = startBridge();
+          const observed = bridge.then(
+            () => null,
+            (error: unknown) => error,
+          );
+          holderPid = await waitBlocked(controlPid, "UPDATE mail_message_meta");
+          backfill = runBackfill();
+          const backfillObserved = backfill.then(
+            () => null,
+            (error: unknown) => error,
+          );
+          waiterPid = await waitBlocked(holderPid, "pg_advisory_xact_lock");
+          await control.query("SELECT pg_advisory_unlock(712340003)");
+          expect(await bounded(observed)).toBeNull();
+          expect(await bounded(backfillObserved)).toBeNull();
+        }
+        expect(holderPid).not.toBe(waiterPid);
+        console.info("MAIL_GUARD_BRIDGE", { order, holderPid, waiterPid });
+        const remaining = await threadIds(tenantZero);
+        expect(remaining).toHaveLength(1);
+        for (const id of [first, second, third]) {
+          expect(
+            await runInTenant(tenantZero, () => withTransaction(pool, (client) => resolveMergedThreadId(client, id))),
+          ).toBe(remaining[0]);
+        }
+        expect(await orphanThreads(tenantZero)).toBe(0);
+      } finally {
+        await control.query("SELECT pg_advisory_unlock_all()");
+        await Promise.allSettled([...(backfill ? [backfill] : []), ...(bridge ? [bridge] : [])]);
+        await admin.query("DROP TRIGGER IF EXISTS test_mail_bridge_gate ON mail_message_meta");
+        await admin.query("DROP FUNCTION IF EXISTS test_mail_bridge_gate()");
+        control.release();
+      }
+    },
+    15000,
+  );
 
   it("gives a sent message its replied-to message's thread, and a send with no ancestors a new thread named by its subject", async () => {
     const parentThread = await synced(tenantZero, {

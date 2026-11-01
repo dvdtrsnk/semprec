@@ -1,3 +1,4 @@
+import { runInTenant } from "@semprec/shared";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
@@ -139,11 +140,13 @@ describe("mail identities stay within a tenant", () => {
     await inRolledBackTransaction(async (client) => {
       const { a, b } = await twoTenantsAsRuntimeRole(client);
       await scopeTo(client, a);
-      const threadA = await resolveThreadId(client, { messageId: "<m1@x>" });
-      const rowA = await insertMessage(client, "<m1@x>", { threadId: threadA });
+      const threadA = await runInTenant(a, () => resolveThreadId(client, { messageId: "<m1@x>" }));
+      const rowA = await runInTenant(a, () => insertMessage(client, "<m1@x>", { threadId: threadA }));
 
       await scopeTo(client, b);
-      const threadB = await resolveThreadId(client, { messageId: "<reply@x>", inReplyTo: "<m1@x>" });
+      const threadB = await runInTenant(b, () =>
+        resolveThreadId(client, { messageId: "<reply@x>", inReplyTo: "<m1@x>" }),
+      );
       expect(threadB).not.toBe(threadA);
 
       await scopeTo(client, a);
@@ -155,11 +158,15 @@ describe("mail identities stay within a tenant", () => {
     await inRolledBackTransaction(async (client) => {
       const { a, b } = await twoTenantsAsRuntimeRole(client);
       await scopeTo(client, a);
-      const threadA = await resolveThreadId(client, { messageId: "<child@x>", references: ["<m2@x>"] });
-      const rowA = await insertMessage(client, "<child@x>", { threadId: threadA, references: ["<m2@x>"] });
+      const threadA = await runInTenant(a, () =>
+        resolveThreadId(client, { messageId: "<child@x>", references: ["<m2@x>"] }),
+      );
+      const rowA = await runInTenant(a, () =>
+        insertMessage(client, "<child@x>", { threadId: threadA, references: ["<m2@x>"] }),
+      );
 
       await scopeTo(client, b);
-      const threadB = await resolveThreadId(client, { messageId: "<m2@x>" });
+      const threadB = await runInTenant(b, () => resolveThreadId(client, { messageId: "<m2@x>" }));
       expect(threadB).not.toBe(threadA);
 
       await scopeTo(client, a);
@@ -172,13 +179,15 @@ describe("mail identities stay within a tenant", () => {
     await inRolledBackTransaction(async (client) => {
       const { b } = await twoTenantsAsRuntimeRole(client);
       await scopeTo(client, b);
-      const thread1 = await resolveThreadId(client, { messageId: "<x1@x>" });
-      const row1 = await insertMessage(client, "<x1@x>", { threadId: thread1 });
-      const thread2 = await resolveThreadId(client, { messageId: "<x2@x>" });
-      const row2 = await insertMessage(client, "<x2@x>", { threadId: thread2 });
+      const thread1 = await runInTenant(b, () => resolveThreadId(client, { messageId: "<x1@x>" }));
+      const row1 = await runInTenant(b, () => insertMessage(client, "<x1@x>", { threadId: thread1 }));
+      const thread2 = await runInTenant(b, () => resolveThreadId(client, { messageId: "<x2@x>" }));
+      const row2 = await runInTenant(b, () => insertMessage(client, "<x2@x>", { threadId: thread2 }));
       expect(thread2).not.toBe(thread1);
 
-      const bridged = await resolveThreadId(client, { messageId: "<bridge@x>", references: ["<x1@x>", "<x2@x>"] });
+      const bridged = await runInTenant(b, () =>
+        resolveThreadId(client, { messageId: "<bridge@x>", references: ["<x1@x>", "<x2@x>"] }),
+      );
 
       expect(bridged).toBe(thread1);
       expect(await threadIdOf(client, row1.itemId)).toBe(thread1);
