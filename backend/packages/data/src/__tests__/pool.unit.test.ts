@@ -102,11 +102,13 @@ describe("withClient", () => {
 describe("withTransaction", () => {
   function fakeClient(failOn: Partial<Record<"COMMIT" | "ROLLBACK", unknown>>) {
     const release = vi.fn();
-    const query = vi.fn(async (sql: string): Promise<{ rows: Record<string, unknown>[]; rowCount: number }> => {
-      if (sql === "COMMIT" && "COMMIT" in failOn) throw failOn.COMMIT;
-      if (sql === "ROLLBACK" && "ROLLBACK" in failOn) throw failOn.ROLLBACK;
-      return { rows: [], rowCount: 0 };
-    });
+    const query = vi.fn(
+      async (sql: string, _values?: unknown[]): Promise<{ rows: Record<string, unknown>[]; rowCount: number }> => {
+        if (sql === "COMMIT" && "COMMIT" in failOn) throw failOn.COMMIT;
+        if (sql === "ROLLBACK" && "ROLLBACK" in failOn) throw failOn.ROLLBACK;
+        return { rows: [], rowCount: 0 };
+      },
+    );
     const client = { query, release } as unknown as PoolClient;
     const pool = { connect: vi.fn().mockResolvedValue(client) } as unknown as Pool;
     return { client, pool, query, release };
@@ -244,6 +246,44 @@ describe("withTransaction", () => {
     ).rejects.toBe(failure);
     expect(sqlCalls(query).at(-1)).toBe("ROLLBACK");
     expect(sqlCalls(query)).not.toContain("COMMIT");
+  });
+
+  it("restores nested protected timeouts in stack order", async () => {
+    const { pool, query } = fakeClient({});
+    let setting = "5s";
+    const writes: string[] = [];
+    query.mockImplementation(async (sql: string, values?: unknown[]) => {
+      if (sql.includes("current_setting('lock_timeout')")) return { rows: [{ setting }], rowCount: 1 };
+      if (sql.includes("set_config('lock_timeout'")) {
+        const value = values?.[0];
+        if (typeof value !== "string") throw new Error("Missing timeout value");
+        setting = value;
+        writes.push(value);
+      }
+      if (sql.includes("FROM value_links")) return { rows: [{ exists: 1 }], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    });
+    const input = { definitionId: "d", itemA: "a", itemB: "b", callerItemId: "a", propertyKey: "x", insert: false };
+    await withTransaction(pool, async (client) =>
+      withValueLinkRelationAdmission(
+        client,
+        input,
+        async () => {},
+        async () => {
+          expect(setting).toBe("1ms");
+          await withValueLinkRelationAdmission(
+            client,
+            input,
+            async () => {},
+            async () => {
+              expect(setting).toBe("1ms");
+            },
+          );
+          expect(setting).toBe("1ms");
+        },
+      ),
+    );
+    expect(writes).toEqual(["1ms", "1ms", "1ms", "5s"]);
   });
 
   it("rethrows fn's error and discards the client when ROLLBACK fails", async () => {
