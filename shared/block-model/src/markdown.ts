@@ -262,7 +262,7 @@ function serializeInline(runs: readonly TextRun[]): string {
     const piece = pieces[index];
     if (piece === undefined) continue;
     if (piece.kind === "br") {
-      out += "<br>";
+      out += piece.marks.code ? "<code><br></code>" : "<br>";
     } else if (piece.marks.code) {
       out += codeSpan(piece.text);
     } else {
@@ -536,6 +536,12 @@ function parseInlineInto(source: string, initial: InlineState, runs: TextRun[]):
       continue;
     }
     if (char === "<") {
+      if (source.startsWith("<code><br></code>", i)) {
+        flush();
+        runs.push(withAttributes("\n", runAttributes(state, true)));
+        i += "<code><br></code>".length;
+        continue;
+      }
       const tag = /^<(\/?)(strong|b|em|i)>/i.exec(source.slice(i));
       if (tag) {
         flush();
@@ -664,24 +670,24 @@ function parseLine(raw: string): ParsedLine {
   if (page) {
     return { type: "page", lineIndent: null, pageId: page[1] as string };
   }
-  const heading = /^(#{1,3})(?: +(.*))?$/.exec(line);
+  const heading = /^(#{1,3})(?: +([\s\S]*))?$/.exec(line);
   if (heading) {
     return { type: `h${(heading[1] as string).length}`, lineIndent: null, text: parseInline(heading[2] ?? "") };
   }
   const listIndent = clampIndent(spaces / 2);
-  const todo = /^[-*] \[([ xX])\](?: +(.*))?$/.exec(line);
+  const todo = /^[-*] \[([ xX])\](?: +([\s\S]*))?$/.exec(line);
   if (todo) {
     return { type: "todo", lineIndent: listIndent, done: todo[1] !== " ", text: parseInline(todo[2] ?? "") };
   }
-  const bullet = /^[-*](?: +(.*))?$/.exec(line);
+  const bullet = /^[-*](?: +([\s\S]*))?$/.exec(line);
   if (bullet) {
     return { type: "bullet", lineIndent: listIndent, text: parseInline(bullet[1] ?? "") };
   }
-  const number = /^\d+\.(?: +(.*))?$/.exec(line);
+  const number = /^\d+\.(?: +([\s\S]*))?$/.exec(line);
   if (number) {
     return { type: "number", lineIndent: listIndent, text: parseInline(number[1] ?? "") };
   }
-  const quote = /^> ?(.*)$/.exec(line);
+  const quote = /^> ?([\s\S]*)$/.exec(line);
   if (quote) {
     return { type: "quote", lineIndent: null, text: parseInline((quote[1] as string).trim()) };
   }

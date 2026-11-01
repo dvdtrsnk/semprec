@@ -2,6 +2,16 @@
   "description": "Shared Markdown <-> block vectors. Blocks without an id get b1, b2, ... in order. direction: both (default) parses and serializes, parse parses only, serialize serializes only. A parse vector may carry canonical, the Markdown it serializes back to.",
   "vectors": [
     {
+      "name": "code formatted soft break",
+      "markdown": "`a`<code><br></code>`b`",
+      "blocks": [{ "type": "text", "text": [{ "insert": "a\nb", "attributes": { "code": true } }] }]
+    },
+    {
+      "name": "code only soft break",
+      "markdown": "<code><br></code>",
+      "blocks": [{ "type": "text", "text": [{ "insert": "\n", "attributes": { "code": true } }] }]
+    },
+    {
       "name": "significant boundary whitespace",
       "markdown": "&#x20;&#x9;Hello&#xd;&#xa0;",
       "blocks": [{ "type": "text", "text": [{ "insert": " \tHello\r\u00a0" }] }]

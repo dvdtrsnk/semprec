@@ -191,6 +191,57 @@ describe("markdown fixtures", () => {
 });
 
 describe("lossless canonical inline content", () => {
+  it.each(
+    (
+      [
+        [{ insert: "\n", attributes: { code: true } }],
+        [{ insert: "a\nb", attributes: { code: true } }],
+        [{ insert: "\na\n\n", attributes: { code: true } }],
+        [{ insert: "a", attributes: { code: true } }, { insert: "\n" }, { insert: "b", attributes: { code: true } }],
+        [{ insert: "\n", attributes: { code: true, bold: true, italic: true, link: { href: "https://example.com" } } }],
+        [{ insert: "<br> <code><br></code>", attributes: { code: true } }],
+        [{ insert: "<code><br></code>" }],
+      ] satisfies TextRun[][]
+    ).map((text) => [text] as const),
+  )("preserves code and plain LF attributes in Y.Text %#", (text) => {
+    const doc = new Y.Doc();
+    writeBlock(doc, { id: "source", type: "text", text });
+    const blocks = readPageBlocks(doc);
+    for (const withIds of [false, true]) {
+      const markdown = serializeBlocks(blocks, { withIds });
+      const parsed = parseMarkdown(markdown);
+      expect(parsed[0]).toMatchObject({ type: "text", text: blocks[0]?.text });
+      expect(serializeBlocks(parsed, { withIds })).toBe(markdown);
+    }
+  });
+
+  it.each(["\r", "\u2028", "\u2029"])("preserves interior %j in structural blocks and code", (separator) => {
+    const doc = new Y.Doc();
+    const text: TextRun[] = [
+      { insert: `A${separator}B`, attributes: { bold: true } },
+      { insert: `C${separator}D`, attributes: { code: true } },
+    ];
+    writeBlock(doc, { id: "heading", type: "h2", text });
+    writeBlock(doc, { id: "quote", type: "quote", text });
+    writeBlock(doc, { id: "list", type: "bullet", indent: 2, text });
+    const blocks = readPageBlocks(doc);
+    const markdown = serializeBlocks(blocks, { withIds: true });
+    const parsed = parseMarkdown(markdown);
+    expect(parsed.map(({ id, type, indent, text: runs }) => ({ id, type, indent, text: runs }))).toEqual(
+      blocks.map(({ id, type, indent, text: runs }) => ({ id, type, indent, text: runs })),
+    );
+    expect(serializeBlocks(parsed, { withIds: true })).toBe(markdown);
+    expect(parseMarkdown("  \n\n# ordinary\n\n  - item").map((block) => block.type)).toEqual(["h1", "bullet"]);
+    expect(parseMarkdown("# heading\r\n\r\n  - item\r\n").map((block) => block.type)).toEqual(["h1", "bullet"]);
+  });
+
+  it("retains a code break in a preserved unknown block", () => {
+    const text: TextRun[] = [{ insert: "a\nb", attributes: { code: true } }];
+    const markdown = serializeBlocks([{ id: "x", type: "future-kind", indent: 0, text }], { withIds: true });
+    expect(parseMarkdown(markdown)[0]).toMatchObject({ id: "x", type: "future-kind", text });
+    expect(serializeBlocks(parseMarkdown(markdown), { withIds: true })).toBe(markdown);
+  });
+
   it.each([false, true])("preserves an actual Y.Text page link with ids=%s and either page policy", (withIds) => {
     const doc = new Y.Doc();
     const text: TextRun[] = [{ insert: " [Title] ", attributes: { bold: true, link: { href: "semprec://page/p1" } } }];
