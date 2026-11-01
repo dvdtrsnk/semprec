@@ -75,6 +75,15 @@ async function linkOf(itemId: string, propertyKey: string): Promise<ValueLinkRow
   return rows.find((row) => row.propertyKey === propertyKey);
 }
 
+function throwFailure(error: unknown): never {
+  if (error instanceof Error) throw error;
+  throw new Error("Non-error test failure", { cause: error });
+}
+
+function requireSuccessful(outcome: { ok: true } | { ok: false; error: unknown }): void {
+  if (!outcome.ok) throwFailure(outcome.error);
+}
+
 async function withRuntimePool<T>(body: (runtime: Pool) => Promise<T>): Promise<T> {
   const runtime = await createRuntimeRolePool(pool, "semprec_data");
   let outcome: { value: T } | { error: unknown };
@@ -86,10 +95,11 @@ async function withRuntimePool<T>(body: (runtime: Pool) => Promise<T>): Promise<
   try {
     await runtime.end();
   } catch (error) {
-    if ("error" in outcome) throw new AggregateError([outcome.error, error], "Test and runtime cleanup failed");
+    if ("error" in outcome)
+      throw new AggregateError([outcome.error, error], "Test and runtime cleanup failed", { cause: error });
     throw error;
   }
-  if ("error" in outcome) throw outcome.error;
+  if ("error" in outcome) throwFailure(outcome.error);
   return outcome.value;
 }
 
@@ -721,7 +731,7 @@ describe("value link state on writes (issue #1516)", () => {
             release.resolve();
             try {
               const result = await bounded(holder);
-              if (!result.ok) throw result.error;
+              requireSuccessful(result);
             } catch (error) {
               failure =
                 failure === undefined
@@ -729,7 +739,7 @@ describe("value link state on writes (issue #1516)", () => {
                   : new AggregateError([failure, error], "Test and proposal cleanup failed");
             }
           }
-          if (failure !== undefined) throw failure;
+          if (failure !== undefined) throwFailure(failure);
           const links = await withTenantTransaction(holderPool, tenant, (client) =>
             listValueLinksByItemIds(client, [fx.file.id]),
           );
@@ -827,7 +837,7 @@ describe("value link state on writes (issue #1516)", () => {
             spy.mockRestore();
             setInvalidationHook(() => {});
           }
-          if (failure !== undefined) throw failure;
+          if (failure !== undefined) throwFailure(failure);
         }),
       );
     }, 30000);
@@ -886,13 +896,13 @@ describe("value link state on writes (issue #1516)", () => {
             release.resolve();
             try {
               const outcome = await bounded(holder);
-              if (!outcome.ok) throw outcome.error;
+              requireSuccessful(outcome);
             } catch (error) {
               failure =
                 failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
             }
           }
-          if (failure !== undefined) throw failure;
+          if (failure !== undefined) throwFailure(failure);
           const edges = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
           expect(edges?.[0]?.metadata).toEqual({ holder: true });
         }),
@@ -1087,13 +1097,13 @@ describe("value link state on writes (issue #1516)", () => {
             release.resolve();
             try {
               const result = await bounded(holder);
-              if (!result.ok) throw result.error;
+              requireSuccessful(result);
             } catch (error) {
               failure =
                 failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
             }
           }
-          if (failure !== undefined) throw failure;
+          if (failure !== undefined) throwFailure(failure);
         }),
       );
     }, 30000);
@@ -1180,7 +1190,7 @@ describe("value link state on writes (issue #1516)", () => {
             release.resolve();
             try {
               const result = await bounded(settledHolder);
-              if (!result.ok) throw result.error;
+              requireSuccessful(result);
             } catch (error) {
               failure =
                 failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
@@ -1188,7 +1198,7 @@ describe("value link state on writes (issue #1516)", () => {
               setInvalidationHook(() => {});
             }
           }
-          if (failure !== undefined) throw failure;
+          if (failure !== undefined) throwFailure(failure);
         }),
       );
     }, 30000);
@@ -1363,7 +1373,7 @@ describe("value link state on writes (issue #1516)", () => {
                 "Rollup diagnostic cleanup failed",
               );
           }
-          if (failure !== undefined) throw failure;
+          if (failure !== undefined) throwFailure(failure);
         }),
       );
     }, 30000);
@@ -1505,7 +1515,7 @@ describe("value link state on writes (issue #1516)", () => {
                   "Relation diagnostic cleanup failed",
                 );
             }
-            if (failure !== undefined) throw failure;
+            if (failure !== undefined) throwFailure(failure);
           }),
         );
       },
@@ -1674,7 +1684,7 @@ describe("value link state on writes (issue #1516)", () => {
                   "Relation diagnostic cleanup failed",
                 );
             }
-            if (failure !== undefined) throw failure;
+            if (failure !== undefined) throwFailure(failure);
           }),
         );
       },
@@ -2036,7 +2046,7 @@ describe("value link state on writes (issue #1516)", () => {
                 );
               }
             }
-            if (failure !== undefined) throw failure;
+            if (failure !== undefined) throwFailure(failure);
           }),
         );
       },

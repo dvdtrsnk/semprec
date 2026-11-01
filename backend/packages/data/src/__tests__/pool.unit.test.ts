@@ -184,7 +184,7 @@ describe("withTransaction", () => {
       return { rows: [], rowCount: 0 };
     });
     const input = { definitionId: "d", itemA: "a", itemB: "b", callerItemId: "a", propertyKey: "x", insert: false };
-    const fake = { code: "55P03" };
+    const fake = Object.assign(new Error("not PostgreSQL"), { code: "55P03" });
     await expect(
       withTransaction(pool, async (client) => {
         await expect(
@@ -192,13 +192,18 @@ describe("withTransaction", () => {
             client,
             input,
             async () => {},
-            async () => {
-              throw fake;
-            },
+            async () => Promise.reject(fake),
           ),
         ).rejects.toBe(fake);
       }),
     ).rejects.toBe(fake);
+    const objectSpoof = { code: "55P03" };
+    const rejectSpoof = vi.fn(async (): Promise<void> => {}).mockRejectedValue(objectSpoof);
+    await expect(
+      withTransaction(pool, async (client) =>
+        withValueLinkRelationAdmission(client, input, async () => {}, rejectSpoof),
+      ),
+    ).rejects.toBe(objectSpoof);
     const pgError = new DatabaseError("lock", 0, "error");
     pgError.code = "55P03";
     await expect(

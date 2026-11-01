@@ -23,6 +23,15 @@ import { createTranscriptSpeakersRouteHandler } from "../transcriptionRouteHandl
 
 let pool: Pool;
 
+function throwFailure(error: unknown): never {
+  if (error instanceof Error) throw error;
+  throw new Error("Non-error test failure", { cause: error });
+}
+
+function requireSuccessful(outcome: { ok: true } | { ok: false; error: unknown }): void {
+  if (!outcome.ok) throwFailure(outcome.error);
+}
+
 async function bounded<T>(promise: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -226,7 +235,7 @@ describe("Transcript speaker mappings (issue #185)", () => {
         release();
         try {
           const outcome = await bounded(holder);
-          if (!outcome.ok) throw outcome.error;
+          requireSuccessful(outcome);
         } catch (error) {
           failure =
             failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
@@ -246,7 +255,7 @@ describe("Transcript speaker mappings (issue #185)", () => {
             failure === undefined ? error : new AggregateError([failure, error], "Test and pool cleanup failed");
         }
       }
-      if (failure !== undefined) throw failure;
+      if (failure !== undefined) throwFailure(failure);
     });
 
     it("replaces a person's key by writing the edge again", async () => {

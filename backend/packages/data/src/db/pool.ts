@@ -76,6 +76,19 @@ function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
 }
 
+function releaseTransactionClient(
+  client: PoolClient,
+  releaseError: Error | undefined,
+  hasPrimaryFailure: boolean,
+): void {
+  try {
+    client.release(releaseError);
+  } catch (error) {
+    if (!hasPrimaryFailure) throw error;
+    logger.error({ err: error }, "withTransaction: release failed while handling a transaction error");
+  }
+}
+
 /** Acquires a client from a `createPool` pool without the session-level tenant hook; plain pools connect normally. */
 const rawConnectors = new WeakMap<Pool, () => Promise<PoolClient>>();
 
@@ -329,12 +342,7 @@ export async function withTransaction<T>(
     primaryFailure = { error };
     throw error;
   } finally {
-    try {
-      client.release(releaseError);
-    } catch (error) {
-      if (!primaryFailure) throw error;
-      logger.error({ err: error }, "withTransaction: release failed while handling a transaction error");
-    }
+    releaseTransactionClient(client, releaseError, primaryFailure !== undefined);
   }
 }
 
