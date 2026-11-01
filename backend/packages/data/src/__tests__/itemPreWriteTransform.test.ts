@@ -315,18 +315,24 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
       databaseId: eventsId,
       properties: { name: "Standup", timeFrom: "10:00" },
     });
-    const updated = await chokePoint.updateItem({
-      databaseId: eventsId,
-      itemId: created.id,
-      propertiesPatch: { timeFrom: "9:00" },
-    });
+    const update = vi.spyOn(itemsStore, "updateItemProperties");
+    try {
+      const updated = await chokePoint.updateItem({
+        databaseId: eventsId,
+        itemId: created.id,
+        propertiesPatch: { timeFrom: "9:00" },
+      });
 
-    expect(updated.properties.timeFrom).toBe("09:00");
-    expect((await chokePoint.getItem(eventsId, created.id))!.properties.timeFrom).toBe("09:00");
-    expect(Date.parse(updated.updatedAt)).toBeGreaterThanOrEqual(Date.parse(created.updatedAt));
-    expect(hookPatches).toEqual([{ timeFrom: "09:00" }]);
-    // A create sees no stored row; the update sees the row it replaces, as committed.
-    expect(transformInputs).toEqual([null, "10:00"]);
+      expect(updated.properties.timeFrom).toBe("09:00");
+      expect((await chokePoint.getItem(eventsId, created.id))!.properties.timeFrom).toBe("09:00");
+      expect(Date.parse(updated.updatedAt)).toBeGreaterThanOrEqual(Date.parse(created.updatedAt));
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(hookPatches).toEqual([{ timeFrom: "09:00" }]);
+      // A create sees no stored row; the update sees the row it replaces, as committed.
+      expect(transformInputs).toEqual([null, "10:00"]);
+    } finally {
+      update.mockRestore();
+    }
   });
 
   it("replays an idempotent create without writing, running a create hook, or keeping the second transform result", async () => {

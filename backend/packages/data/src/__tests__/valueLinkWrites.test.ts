@@ -529,40 +529,40 @@ describe("value link state on writes (issue #1516)", () => {
       });
     });
 
-    it("requires handoff even when a transform-added null equals the stored value", async () => {
-      await seedSystem(pool);
-      const tenant = getTenantZeroId();
-      await withRuntimePool(async (runtime) => {
-        const cp = createChokePoint(runtime);
-        const task = await runInTenant(tenant, async () => {
-          const db = (await cp.listDatabases()).find((entry) => entry.key === "tasks");
-          if (!db) throw new Error("Missing Tasks database");
-          return cp.createItem({ databaseId: db.id, properties: { name: "Undated" } });
-        });
-        await withTenantTransaction(runtime, tenant, (client) =>
-          insertValueLink(client, {
-            itemId: task.id,
-            propertyKey: "date",
-            ruleKey: "test",
-            sources: [],
-          }),
-        );
-        await expect(
-          runInTenant(tenant, () =>
-            withTransaction(runtime, (client) =>
-              updateItemWithClient(
-                client,
-                { databaseId: task.databaseId, itemId: task.id, propertiesPatch: { date: null } },
-                { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
+    it.each(["timeFrom", "timeTo"] as const)(
+      "requires handoff for unchanged transform-added null %s",
+      async (missingKey) => {
+        await seedSystem(pool);
+        const tenant = getTenantZeroId();
+        await withRuntimePool(async (runtime) => {
+          const cp = createChokePoint(runtime);
+          const task = await runInTenant(tenant, async () => {
+            const db = (await cp.listDatabases()).find((entry) => entry.key === "tasks");
+            if (!db) throw new Error("Missing Tasks database");
+            return cp.createItem({ databaseId: db.id, properties: { name: "Undated" } });
+          });
+          await withTenantTransaction(runtime, tenant, async (client) => {
+            for (const propertyKey of ["date", "timeFrom", "timeTo"].filter((key) => key !== missingKey)) {
+              await insertValueLink(client, { itemId: task.id, propertyKey, ruleKey: "test", sources: [] });
+            }
+          });
+          await expect(
+            runInTenant(tenant, () =>
+              withTransaction(runtime, (client) =>
+                updateItemWithClient(
+                  client,
+                  { databaseId: task.databaseId, itemId: task.id, propertiesPatch: { date: null } },
+                  { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
+                ),
               ),
             ),
-          ),
-        ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-        expect((await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id)))?.properties).toEqual(
-          task.properties,
-        );
-      });
-    });
+          ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+          expect((await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id)))?.properties).toEqual(
+            task.properties,
+          );
+        });
+      },
+    );
 
     async function relationWrites(client: PoolClient, fx: Awaited<ReturnType<typeof setup>>) {
       const edge = { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id };
@@ -642,6 +642,57 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
+    it("checks multiple caller keys once in stable order and preserves ordinary writer locking", async () => {
+      const tenant = await createTestTenant(pool);
+      await withRuntimePool(async (runtime) => {
+        const cp = createChokePoint(runtime);
+        const fx = await runInTenant(tenant, () => setup(cp));
+        await runInTenant(tenant, () =>
+          cp.createProperty({ databaseId: fx.files.id, key: "note", name: "Note", type: "text" }),
+        );
+        await withTenantTransaction(runtime, tenant, async (client) => {
+          for (const propertyKey of ["name", "note"]) {
+            await insertValueLink(client, { itemId: fx.file.id, propertyKey, ruleKey: "test", sources: [] });
+          }
+        });
+        const handoff = vi.spyOn(valueLinksStore, "lockOnValueLink");
+        const prelock = vi.spyOn(itemsStore, "lockItemById");
+        try {
+          await runInTenant(tenant, () =>
+            withTransaction(runtime, (client) =>
+              updateItemWithClient(
+                client,
+                { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { note: "one", name: "system" } },
+                { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
+              ),
+            ),
+          );
+          expect(handoff.mock.calls.map((call) => call[2])).toEqual(["name", "note"]);
+          expect(prelock).toHaveBeenCalledTimes(1);
+          prelock.mockClear();
+          await runInTenant(tenant, () =>
+            cp.updateItem(
+              { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: "user" } },
+              undefined,
+              undefined,
+              USER,
+            ),
+          );
+          expect(prelock).not.toHaveBeenCalled();
+          const links = await withTenantTransaction(runtime, tenant, (client) =>
+            listValueLinksByItemIds(client, [fx.file.id]),
+          );
+          expect(links.map((entry) => [entry.propertyKey, entry.state])).toEqual([
+            ["name", "broken"],
+            ["note", "on"],
+          ]);
+        } finally {
+          handoff.mockRestore();
+          prelock.mockRestore();
+        }
+      });
+    });
+
     it("checks a live scoped item before looking up any handoff link", async () => {
       const tenantA = await createTestTenant(pool);
       const tenantB = await createTestTenant(pool);
@@ -737,10 +788,12 @@ describe("value link state on writes (issue #1516)", () => {
       ["plain", "system-first"],
       ["transformed", "user-first"],
       ["transformed", "system-first"],
+      ["plain", "system-rollback"],
     ] as const)(
       "serializes %s item and handoff writes with %s",
       async (kind, order) => {
         const tenant = await createTestTenant(pool);
+        const otherTenant = await createTestTenant(pool);
         await withRuntimePool(async (userPool) =>
           withRuntimePool(async (systemPool) => {
             const cp = createChokePoint(userPool);
@@ -752,6 +805,10 @@ describe("value link state on writes (issue #1516)", () => {
               const file = await cp.createItem({ databaseId: files.id, properties: { name: "initial" } });
               return { files, file };
             });
+            const unrelated = await runInTenant(tenant, () =>
+              cp.createItem({ databaseId: fx.files.id, properties: { name: "other" } }),
+            );
+            const foreign = await runInTenant(otherTenant, () => setup(cp));
             await withTenantTransaction(userPool, tenant, (client) =>
               insertValueLink(client, {
                 itemId: fx.file.id,
@@ -812,13 +869,15 @@ describe("value link state on writes (issue #1516)", () => {
                       systemPid = pid;
                       systemStarted.resolve();
                     }
-                    return updateItemWithClient(
+                    const result = await updateItemWithClient(
                       client,
                       { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: kind } },
                       kind === "user"
                         ? { writer: USER }
                         : { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
                     );
+                    if (kind === "system" && order === "system-rollback") throw new Error("forced rollback");
+                    return result;
                   }),
                 ),
               );
@@ -846,6 +905,26 @@ describe("value link state on writes (issue #1516)", () => {
               } else {
                 system = run("system");
                 await bounded(systemHeld.promise);
+                await bounded(
+                  runInTenant(tenant, () =>
+                    cp.updateItem(
+                      { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "progress" } },
+                      undefined,
+                      undefined,
+                      USER,
+                    ),
+                  ),
+                );
+                await bounded(
+                  runInTenant(otherTenant, () =>
+                    cp.updateItem(
+                      { databaseId: foreign.files.id, itemId: foreign.file.id, propertiesPatch: { name: "progress" } },
+                      undefined,
+                      undefined,
+                      USER,
+                    ),
+                  ),
+                );
                 user = run("user");
                 await bounded(userStarted.promise);
                 if (!userPid || !systemPid) throw new Error("Missing participant PID");
@@ -863,11 +942,13 @@ describe("value link state on writes (issue #1516)", () => {
               expect(results[0]).toEqual({ ok: true });
               if (order === "user-first") {
                 expect(results[1]).toMatchObject({ ok: false, error: { status: 403, code: "owner_violation" } });
+              } else if (order === "system-rollback") {
+                expect(results[1]).toMatchObject({ ok: false, error: { message: "forced rollback" } });
               } else {
                 expect(results[1]).toEqual({ ok: true });
               }
               expect(events.filter((event) => event.scope === "item" && event.itemId === fx.file.id)).toHaveLength(
-                order === "user-first" ? 1 : 2,
+                order === "system-first" ? 2 : 1,
               );
               const current = await runInTenant(tenant, () => cp.getItem(fx.files.id, fx.file.id));
               const links = await withTenantTransaction(userPool, tenant, (client) =>
