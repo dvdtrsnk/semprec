@@ -206,6 +206,7 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
     const foreignAttempt = await patchOther(foreign.id);
     const missingAttempt = await patchOther(randomUUID());
     expect(foreignAttempt).toEqual(missingAttempt);
+    expect(foreignAttempt.body).toMatchObject({ error: { code: -32601 } });
     const patched = await callTool(credential.token, "semprec.item.patch", {
       itemId: own.id,
       properties: { note: "after" },
