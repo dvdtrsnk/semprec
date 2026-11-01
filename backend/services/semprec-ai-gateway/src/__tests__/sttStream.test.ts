@@ -200,6 +200,7 @@ describe("WebSocket /internal/stt/stream", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await stt.closeAll();
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -329,6 +330,34 @@ describe("WebSocket /internal/stt/stream", () => {
     expect(Number(found[0]?.audio_seconds)).toBeCloseTo(0.1, 6);
   });
 
+  it("aborts an in-flight provider handshake and settles the reservation on disconnect", async () => {
+    let opened = false;
+    let aborted = false;
+    vi.spyOn(provider, "open").mockImplementation(
+      (request) =>
+        new Promise((_resolve, reject) => {
+          opened = true;
+          request.signal?.addEventListener(
+            "abort",
+            () => {
+              aborted = true;
+              reject(new AudioProviderCallError("aborted"));
+            },
+            { once: true },
+          );
+        }),
+    );
+    await start();
+    const client = await connect();
+    client.ws.send(frame());
+    await waitFor(() => opened);
+    expect((await rows())[0]?.status).toBe("reserved");
+    client.ws.terminate();
+    await waitFor(() => aborted);
+    await waitFor(async () => (await rows()).every((row) => row.status !== "reserved"));
+    expect((await rows())[0]?.status).toBe("failed");
+  });
+
   it("fails the chunk row when the caller disconnects before any audio was forwarded", async () => {
     await start();
     const client = await connect();
@@ -351,6 +380,10 @@ describe("WebSocket /internal/stt/stream", () => {
     expect(await client.closed).toBe(1011);
     expect(client.messages.at(-1)).toEqual({ type: "error", code: "provider_error" });
     await waitFor(async () => (await rows()).every((row) => row.status !== "reserved"));
+    const calls = await rows();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.status).toBe("settled");
+    expect(Number(calls[0]?.audio_seconds)).toBeCloseTo(0.1, 6);
   });
 
   it("omits streamed audio from serialized logs when the provider fails", async () => {
