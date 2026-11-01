@@ -410,6 +410,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
   it.each<[string, (attachmentId: string, blobId: string) => Partial<ProposalStep>]>([
     ["a file property", (attachmentId, blobId) => ({ properties: { attachmentId, name: "Scan", file: { blobId } } })],
     ["a type", (attachmentId) => ({ properties: { attachmentId, name: "Scan", type: "jpg" } })],
+    ["an unrelated property", (attachmentId) => ({ properties: { attachmentId, name: "Scan", untrusted: true } })],
     ["an empty name", (attachmentId) => ({ properties: { attachmentId, name: "   " } })],
     ["no attachment", () => ({ properties: { name: "Scan" } })],
     ["an attachment id that is not a UUID", () => ({ properties: { attachmentId: "not-a-uuid", name: "Scan" } })],
