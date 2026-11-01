@@ -33,13 +33,13 @@ function requireSuccessful(outcome: { ok: true } | { ok: false; error: unknown }
   if (!outcome.ok) throwFailure(outcome.error);
 }
 
-async function bounded<T>(promise: Promise<T>): Promise<T> {
+async function bounded<T>(promise: Promise<T>, milliseconds = 3000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("Participant timed out")), 8000);
+        timer = setTimeout(() => reject(new Error("Participant timed out")), milliseconds);
       }),
     ]);
   } finally {
@@ -199,6 +199,7 @@ describe("Transcript speaker mappings (issue #185)", () => {
       const beforeSpeakers = await speakers(transcriptId);
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
+      const contenders: Array<{ pid: number | undefined; settled: boolean; done: Promise<void> }> = [];
       let holderSettled = false;
       const holder = runInTenant(tenant, () =>
         withTransaction(runtime, async (client) => {
@@ -209,7 +210,7 @@ describe("Transcript speaker mappings (issue #185)", () => {
             propertiesPatch: { name: "Held" },
           });
           acquired();
-          await gate;
+          await bounded(gate, 10000);
         }),
       )
         .then(
@@ -228,10 +229,17 @@ describe("Transcript speaker mappings (issue #185)", () => {
           [transcriptId, holderPid],
         );
         expect(lock.rows[0]?.held).toBe(true);
-        const attempt = (metadata: Record<string, unknown>, target = personId) =>
-          runInTenant(tenant, () =>
+        const attempt = (metadata: Record<string, unknown>, target = personId) => {
+          const participant: { pid: number | undefined; settled: boolean; done: Promise<void> } = {
+            pid: undefined,
+            settled: false,
+            done: Promise.resolve(),
+          };
+          contenders.push(participant);
+          const operation = runInTenant(tenant, () =>
             withTransaction(runtime, async (client) => {
               contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              participant.pid = contenderPid;
               return createRelationWithClient(
                 client,
                 {
@@ -244,6 +252,16 @@ describe("Transcript speaker mappings (issue #185)", () => {
               );
             }),
           );
+          participant.done = operation.then(
+            () => {
+              participant.settled = true;
+            },
+            () => {
+              participant.settled = true;
+            },
+          );
+          return bounded(operation);
+        };
         await expect(attempt({})).rejects.toMatchObject({ status: 400, code: "validation_failed" });
         await expect(attempt({ speaker: "SPEAKER_01" })).rejects.toMatchObject({
           status: 409,
@@ -289,6 +307,30 @@ describe("Transcript speaker mappings (issue #185)", () => {
       } finally {
         release();
         setInvalidationHook(() => {});
+        for (const participant of contenders) {
+          if (participant.settled) continue;
+          try {
+            await bounded(participant.done);
+          } catch (error) {
+            failure =
+              failure === undefined ? error : new AggregateError([failure, error], "Test and contender cleanup failed");
+            if (!participant.settled && participant.pid === undefined) {
+              try {
+                await bounded(participant.done);
+              } catch (lateError) {
+                failure = new AggregateError([failure, lateError], "Late contender settlement failed");
+              }
+            }
+            if (!participant.settled && participant.pid !== undefined) {
+              try {
+                await bounded(pool.query("SELECT pg_terminate_backend($1::int)", [participant.pid]));
+                await bounded(participant.done);
+              } catch (cleanupError) {
+                failure = new AggregateError([failure, cleanupError], "Contender termination failed");
+              }
+            }
+          }
+        }
         try {
           const outcome = await bounded(holder);
           requireSuccessful(outcome);

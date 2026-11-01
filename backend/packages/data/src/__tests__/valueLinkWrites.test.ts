@@ -42,6 +42,18 @@ const VALUE_LINKS = { ownerProcess: VALUE_LINKS_OWNER_PROCESS };
 let pool: Pool;
 let chokePoint: ChokePoint;
 
+async function graphileJobHeldBy(jobKey: string, holderPid: number | undefined): Promise<boolean> {
+  // Graphile Worker 0.17.3's public jobs view does not expose the tuple xmax
+  // needed to connect this exact queued row to its transaction lock holder.
+  const result = await pool.query<{ held: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM graphile_worker._private_jobs j JOIN pg_locks l
+       ON l.transactionid::text = j.xmax::text
+       WHERE j.key = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.mode = 'ExclusiveLock' AND l.granted) AS held`,
+    [jobKey, holderPid],
+  );
+  return result.rows[0]?.held === true;
+}
+
 async function setup(cp: ChokePoint = chokePoint) {
   const projects = await cp.createDatabase({ name: "Projects" });
   const files = await cp.createDatabase({ name: "Files" });
@@ -2178,15 +2190,7 @@ describe("value link state on writes (issue #1516)", () => {
           try {
             user = run("user");
             await bounded(jobHeld.promise);
-            // Graphile Worker 0.17.3's public jobs view does not expose the tuple xmax
-            // needed to connect this exact queued row to its transaction lock holder.
-            const queueLock = await pool.query<{ held: boolean }>(
-              `SELECT EXISTS (SELECT 1 FROM graphile_worker._private_jobs j JOIN pg_locks l
-                 ON l.transactionid::text = j.xmax::text
-                 WHERE j.key = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.mode = 'ExclusiveLock' AND l.granted) AS held`,
-              [jobKey, userPid],
-            );
-            expect(queueLock.rows[0]?.held).toBe(true);
+            expect(await graphileJobHeldBy(jobKey, userPid)).toBe(true);
             system = run("system");
             await bounded(linkHeld.promise);
             if (!userPid || !systemPid || !userClient) throw new Error("Missing queue participant PID");
