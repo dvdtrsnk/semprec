@@ -204,3 +204,39 @@ compacted to retain the 60,000-character limit; all embedded requirements,
 model classification, dependency order, scope limits and aggregate gates stay
 present. Exact modified source/aggregate records are reapproved and hashes
 propagated. No acceptance result is granted.
+
+## Typed test harnesses without provider or database connections
+
+The current APNs suite returns a partial `FakeApnsSession` by asserting it is a
+complete `ClientHttp2Session`; the MCP invocation unit suite similarly casts an
+empty object to `Pool`. These test objects are internally constructed rather
+than parsed external payloads, but the assertions conceal incomplete interface
+implementations. No blanket exception to typed test boundaries is granted.
+
+Clarify gh-1445 Task 3 to retain a stubbed `node:http2.connect` while returning
+a real typed session backed exclusively by an owned loopback HTTP/2 peer.
+The tests remain at the existing unit-tier path and must not access Postgres
+or APNs. Capture the actual local request headers/body and preserve every
+background/alert payload, status, missing-config, reserved-key and failure
+assertion. Bind only loopback on an ephemeral port, bound waits and request
+work, settle and close owned streams/sessions/server, and restore spies on all
+paths. Parse received unknown JSON as a boundary value. The stub must prevent
+a production APNs address from being dialed. This proves the adapter contract
+against the controlled peer, not live APNs delivery or provider TLS behavior.
+No production injection seam, transport change or dependency is authorized.
+
+For the already scoped `mcpToolExecution.unit.test.ts`, replace the empty-object
+cast with a genuine lazy, unconnected `Pool` instance. Installed `pg-pool`
+initializes an empty client list in its constructor and opens clients through
+`connect`/`query`. Install fail-fast spies on both before invoking code, retain
+the fully mocked connection and state-store dependencies, and close the owned
+empty pool. No test may connect/query a Postgres server, import the database
+fixture/setup, or gain a database URL. Accidental database access must fail,
+not be silently accepted. This is test construction using the actual type,
+not a new production test-only API or a validation waiver.
+
+The existing topic skills and cleanup/error rules apply. Only gh-1445's named
+harness wording changes; MCP unit-file scope is already approved. All functional
+Tasks/AC and production contracts remain intact. Refreeze exact source and
+aggregate hashes, and require affected tests, build and independent review on
+the resulting candidate. No test result or completed gate is inferred here.
