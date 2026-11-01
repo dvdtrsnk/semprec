@@ -721,6 +721,67 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
+    it("keeps the Inbox missing-source error after a real purge", async () => {
+      await seedSystem(pool);
+      const tenant = getTenantZeroId();
+      await withRuntimePool(async (runtime) => {
+        const cp = createChokePoint(runtime);
+        const dbs = await runInTenant(tenant, () => cp.listDatabases());
+        const inbox = dbs.find((db) => db.ownerModuleId === "inbox");
+        const types = dbs.find((db) => db.ownerModuleId === "inboxItemTypes");
+        if (!inbox || !types) throw new Error("Missing Inbox databases");
+        const property = await runInTenant(tenant, () => cp.getPropertyByKey(inbox.id, "type"));
+        if (!property) throw new Error("Missing Inbox type relation");
+        const fixture = await withTenantTransaction(runtime, tenant, async (client) => {
+          const type = await createInboxTypeWithClient(client, {
+            inboxItemTypesDatabaseId: types.id,
+            name: "Page",
+            emoji: "P",
+            processingMethod: "pageContent",
+          });
+          const item = await createInboxItemWithClient(client, {
+            inboxDatabaseId: inbox.id,
+            date: "2026-10-01",
+            time: "09:00",
+            text: "Source",
+            type: type.id,
+          });
+          await insertValueLink(client, { itemId: item.id, propertyKey: "type", ruleKey: "test", sources: [] });
+          return { item, type };
+        });
+        await runInTenant(tenant, () => cp.softDeleteItem(inbox.id, fixture.item.id));
+        await runInTenant(tenant, () => cp.purgeExpiredTrashSubtree(fixture.item.id, new Date(Date.now() + 60000)));
+        const links = await withTenantTransaction(runtime, tenant, (client) =>
+          listValueLinksByItemIds(client, [fixture.item.id]),
+        );
+        expect(links[0]).toMatchObject({ state: "on" });
+        const events: InvalidationEvent[] = [];
+        setInvalidationHook((event) => events.push(event));
+        try {
+          await expect(
+            runInTenant(tenant, () =>
+              withTransaction(runtime, (client) =>
+                deleteRelationWithClient(
+                  client,
+                  { relationPropertyId: property.id, callerItemId: fixture.item.id, targetItemId: fixture.type.id },
+                  VALUE_LINKS,
+                  SYSTEM_WRITER,
+                ),
+              ),
+            ),
+          ).rejects.toMatchObject({ status: 404, code: "not_found" });
+          expect(events).toEqual([]);
+          expect(
+            await withTenantTransaction(runtime, tenant, (client) =>
+              listValueLinksByItemIds(client, [fixture.item.id]),
+            ),
+          ).toEqual(links);
+        } finally {
+          setInvalidationHook(() => {});
+        }
+      });
+    });
+
     it("refuses protected Inbox deletion when its trashed source is locked", async () => {
       await seedSystem(pool);
       const tenant = getTenantZeroId();

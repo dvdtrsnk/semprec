@@ -45,9 +45,13 @@ describe("Tasks title, date and time rules (issue gh-1536)", () => {
 
   describe("on create", () => {
     it.each([
-      ["10:00", "09:30"],
-      ["23:55", "23:55"],
-    ] as const)("refuses create with start %s and end %s without row or event", async (timeFrom, timeTo) => {
+      [{ name: "Plan", timeFrom: "10:00" }, "timeFrom"],
+      [{ name: "  " }, "name"],
+      [{ name: "Plan", date: "2026-02-30" }, "date"],
+      [{ name: "Plan", date: "2026-10-13", timeTo: "15:00" }, "timeTo"],
+      [{ name: "Plan", date: "2026-10-13", timeFrom: "10:00", timeTo: "09:30" }, "timeTo"],
+      [{ name: "Plan", date: "2026-10-13", timeFrom: "23:55", timeTo: "23:55" }, "timeTo"],
+    ] as const)("refuses invalid create %j without row or event", async (properties, field) => {
       const before = await countTasks();
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
@@ -55,9 +59,9 @@ describe("Tasks title, date and time rules (issue gh-1536)", () => {
         await expect(
           chokePoint.createItem({
             databaseId: tasksDatabaseId,
-            properties: { name: "Plan", date: "2026-10-13", timeFrom, timeTo },
+            properties,
           }),
-        ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field: "timeTo" } });
+        ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field } });
         expect(await countTasks()).toBe(before);
         expect(events).toEqual([]);
       } finally {
@@ -145,22 +149,25 @@ describe("Tasks title, date and time rules (issue gh-1536)", () => {
 
   describe("on patch", () => {
     it.each([
-      [{ name: "  " }, "name"],
-      [{ date: "2026-02-30" }, "date"],
-      [{ timeFrom: "10:00", timeTo: "09:30" }, "timeTo"],
-      [{ timeFrom: "23:55", timeTo: "23:55" }, "timeTo"],
-    ] as const)("refuses named invalid patch %j without writes or events", async (propertiesPatch, field) => {
+      [{ name: "  " }, "name", true],
+      [{ date: "2026-02-30" }, "date", true],
+      [{ timeFrom: "10:00" }, "timeFrom", false],
+      [{ timeTo: "15:00" }, "timeTo", true],
+      [{ timeFrom: "10:00", timeTo: "09:30" }, "timeTo", true],
+      [{ timeFrom: "23:55", timeTo: "23:55" }, "timeTo", true],
+    ] as const)("refuses named invalid patch %j without writes or events", async (propertiesPatch, field, dated) => {
       const task = await chokePoint.createItem({
         databaseId: tasksDatabaseId,
-        properties: { name: "Plan", date: "2026-10-13" },
+        properties: { name: "Plan", ...(dated ? { date: "2026-10-13" } : {}) },
       });
+      const before = await chokePoint.getItem(tasksDatabaseId, task.id);
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
       try {
         await expect(
           chokePoint.updateItem({ databaseId: tasksDatabaseId, itemId: task.id, propertiesPatch }),
         ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field } });
-        expect(await chokePoint.getItem(tasksDatabaseId, task.id)).toEqual(task);
+        expect(await chokePoint.getItem(tasksDatabaseId, task.id)).toEqual(before);
         expect(events).toEqual([]);
       } finally {
         setInvalidationHook(() => {});
@@ -406,6 +413,7 @@ describe("Tasks title, date and time rules (issue gh-1536)", () => {
         propertiesPatch: { status: "done" },
       });
       expect(updated.properties).toMatchObject({ status: "done", timeFrom: "10:00", time: "10:00" });
+      const before = await chokePoint.getItem(tasksDatabaseId, legacy.id);
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
       try {
@@ -419,7 +427,7 @@ describe("Tasks title, date and time rules (issue gh-1536)", () => {
             propertiesPatch: { timeFrom: "11:00" },
           }),
         ).rejects.toMatchObject({ status: 400, details: { field: "timeFrom" } });
-        expect(await chokePoint.getItem(tasksDatabaseId, legacy.id)).toEqual(updated);
+        expect(await chokePoint.getItem(tasksDatabaseId, legacy.id)).toEqual(before);
         expect(events).toEqual([]);
       } finally {
         setInvalidationHook(() => {});
