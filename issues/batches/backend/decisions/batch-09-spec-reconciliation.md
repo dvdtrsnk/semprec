@@ -13,3 +13,5 @@ Relations are matched by exact target database and ID actually present in the re
 Current production and tests are not accepted by these decisions. Root owns exact source/snapshot/manifest/approval/hash updates; the worker owns dependent implementation only after committed refreeze.
 
 6. Gh-1577 uses deterministic backend speech/media fixtures with a declared AAC-LC/M4A profile and late audio video, actual seek/content comparison and checkpoint-versus-playback duration. Physical iPhone capture/player and subjective listening stay NOT RUN. Tone-only checks are insufficient for spoken-marker evidence. This replaces an unavailable physical-source assumption without claiming a device/player test; no local or paid provider call is introduced.
+
+7. Exact path correction: gh-1488/gh-1492 computation-result types and envelope builder live in `inbox/inboxTickSnapshot.ts`, imported/re-exported by `inboxTickAction.ts`. Both files are in scope for the already-approved relation/invalid-context handoff and real tick clarification branch. This correction changes no Task, AC, disclosure policy, response contract or acceptance verdict.
