@@ -29,6 +29,7 @@ import * as inboxSourceGuard from "../inbox/inboxSourceGuard.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
+import { rollupRecomputeJobKey } from "../rollup/recompute.js";
 
 /** Issue #1516: user and agent writes end value links; the valueLinks process needs an `on` link. */
 const USER: WriterIdentity = { writerKind: "user" };
@@ -646,6 +647,178 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
+    it("diagnoses a populated rollup job and relation handoff cycle", async () => {
+      const tenant = await createTestTenant(pool);
+      await withRuntimePool(async (userPool) =>
+        withRuntimePool(async (systemPool) => {
+          const cp = createChokePoint(userPool);
+          const fx = await runInTenant(tenant, () => setup(cp));
+          const gamma = await runInTenant(tenant, async () => {
+            await cp.createProperty({ databaseId: fx.alpha.databaseId, key: "hours", name: "Hours", type: "number" });
+            await cp.updateItem({
+              databaseId: fx.alpha.databaseId,
+              itemId: fx.alpha.id,
+              propertiesPatch: { hours: 1 },
+            });
+            const third = await cp.createItem({ databaseId: fx.alpha.databaseId, properties: { hours: 3 } });
+            await cp.createProperty({
+              databaseId: fx.files.id,
+              key: "totalHours",
+              name: "Total hours",
+              type: "rollup",
+              config: { relationPropertyKey: "projects", aggregation: "sum", targetPropertyKey: "hours" },
+            });
+            await cp.createRelation({
+              relationPropertyId: fx.projectsProperty.id,
+              callerItemId: fx.file.id,
+              targetItemId: fx.alpha.id,
+            });
+            await cp.createRelation({
+              relationPropertyId: fx.projectsProperty.id,
+              callerItemId: fx.file.id,
+              targetItemId: fx.beta.id,
+            });
+            return third;
+          });
+          const rollup = await runInTenant(tenant, () => cp.getPropertyByKey(fx.files.id, "totalHours"));
+          if (!rollup) throw new Error("Missing rollup property");
+          const jobKey = rollupRecomputeJobKey(rollup.id, fx.file.id);
+          const beforeJob = await pool.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM graphile_worker._private_jobs WHERE key = $1",
+            [jobKey],
+          );
+          expect(beforeJob.rows[0]?.count).toBe("1");
+          await withTenantTransaction(userPool, tenant, (client) =>
+            insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+          );
+          const jobHeld = barrier();
+          const linkHeld = barrier();
+          const releaseJob = barrier();
+          const releaseLink = barrier();
+          let userClient: PoolClient | undefined;
+          let systemClient: PoolClient | undefined;
+          let userPid: number | undefined;
+          let systemPid: number | undefined;
+          const originalLink = valueLinksStore.lockOnValueLink;
+          const linkSpy = vi.spyOn(valueLinksStore, "lockOnValueLink").mockImplementation(async (client, id, key) => {
+            const result = await originalLink(client, id, key);
+            if (client === systemClient && result) {
+              linkHeld.resolve();
+              await bounded(releaseLink.promise);
+            }
+            return result;
+          });
+          type Outcome = { ok: true } | { ok: false; error: unknown };
+          const run = (kind: "user" | "system"): Promise<Outcome> =>
+            runInTenant(tenant, () =>
+              withTransaction(kind === "user" ? userPool : systemPool, async (client) => {
+                await client.query("SET LOCAL statement_timeout = '7s'");
+                const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                if (!pid) throw new Error("Missing queue participant PID");
+                if (kind === "user") {
+                  userClient = client;
+                  userPid = pid;
+                  await updateItemWithClient(
+                    client,
+                    { databaseId: fx.alpha.databaseId, itemId: fx.alpha.id, propertiesPatch: { hours: 2 } },
+                    { writer: USER },
+                  );
+                  jobHeld.resolve();
+                  await bounded(releaseJob.promise);
+                  return deleteRelationWithClient(
+                    client,
+                    { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.beta.id },
+                    undefined,
+                    USER,
+                  );
+                }
+                systemClient = client;
+                systemPid = pid;
+                return createRelationWithClient(
+                  client,
+                  { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: gamma.id },
+                  VALUE_LINKS,
+                  SYSTEM_WRITER,
+                );
+              }),
+            ).then(
+              () => ({ ok: true }),
+              (error: unknown) => ({ ok: false, error }),
+            );
+          let user: Promise<Outcome> | undefined;
+          let system: Promise<Outcome> | undefined;
+          let failure: unknown;
+          const events: InvalidationEvent[] = [];
+          setInvalidationHook((event) => events.push(event));
+          try {
+            user = run("user");
+            await bounded(jobHeld.promise);
+            system = run("system");
+            await bounded(linkHeld.promise);
+            if (!userPid || !systemPid || !userClient) throw new Error("Missing queue participant PID");
+            releaseLink.resolve();
+            await waitBlocked(userPid, systemPid);
+            releaseJob.resolve();
+            const outcomes = await bounded(Promise.all([user, system]));
+            console.info("Observed populated rollup cycle", { userPid, systemPid, jobKey, outcomes });
+            expect(outcomes.filter((result) => result.ok)).toHaveLength(1);
+            expect(outcomes.filter((result) => !result.ok)).toMatchObject([{ error: { code: "40P01" } }]);
+            const links = await withTenantTransaction(userPool, tenant, (client) =>
+              listValueLinksByItemIds(client, [fx.file.id]),
+            );
+            const edges = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
+            const targetIds = edges?.map((edge) => edge.targetItemId) ?? [];
+            const alpha = await runInTenant(tenant, () => cp.getItem(fx.alpha.databaseId, fx.alpha.id));
+            expect(links[0]).toMatchObject(outcomes[0]?.ok ? { state: "broken", brokenBy: "user" } : { state: "on" });
+            expect(alpha?.properties.hours).toBe(outcomes[0]?.ok ? 2 : 1);
+            expect(targetIds.includes(fx.beta.id)).toBe(!outcomes[0]?.ok);
+            expect(targetIds.includes(gamma.id)).toBe(Boolean(outcomes[1]?.ok));
+            expect(events.filter((event) => event.scope === "item" && event.itemId === fx.alpha.id)).toHaveLength(
+              outcomes[0]?.ok ? 1 : 0,
+            );
+            const afterJob = await pool.query<{ count: string }>(
+              "SELECT count(*)::text AS count FROM graphile_worker._private_jobs WHERE key = $1",
+              [jobKey],
+            );
+            expect(afterJob.rows[0]?.count).toBe("1");
+          } catch (error) {
+            failure = error;
+          } finally {
+            releaseJob.resolve();
+            releaseLink.resolve();
+            const participants = [user, system].filter((value): value is Promise<Outcome> => value !== undefined);
+            const errors: unknown[] = [];
+            try {
+              await bounded(Promise.all(participants), 9000);
+            } catch (error) {
+              errors.push(error);
+              for (const pid of [userPid, systemPid])
+                if (pid) {
+                  try {
+                    await bounded(pool.query("SELECT pg_terminate_backend($1::int)", [pid]));
+                  } catch (error) {
+                    errors.push(error);
+                  }
+                }
+              try {
+                await bounded(Promise.all(participants));
+              } catch (error) {
+                errors.push(error);
+              }
+            }
+            linkSpy.mockRestore();
+            setInvalidationHook(() => {});
+            if (errors.length)
+              failure = new AggregateError(
+                failure === undefined ? errors : [failure, ...errors],
+                "Rollup diagnostic cleanup failed",
+              );
+          }
+          if (failure !== undefined) throw failure;
+        }),
+      );
+    }, 30000);
+
     it.each(["system-first", "user-first"] as const)(
       "diagnoses relation definition advisory and handoff with %s",
       async (order) => {
