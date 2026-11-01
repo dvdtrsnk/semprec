@@ -18,7 +18,15 @@ const mediaOutput = join(backend, "services/semprec-transcribe/dist/__tests__/fi
 const audioPath = join(backend, "services/semprec-transcribe/src/__tests__/fixtures/spoken-markers.wav");
 const resolver = join(backend, "services/semprec-transcribe/src/__tests__/fixtures/workspaceDistResolver.mjs");
 type GuardControl = "hang" | "overflow" | "malformed" | "duplicate" | "resolver";
-type GuardObservation = { pid: number | null; closed: boolean; temporaryRemoved: boolean; poolClosed: boolean };
+type GuardObservation = {
+  pid: number | null;
+  descendantPid: number | null;
+  descendantGoneAfterGroupKill: boolean;
+  emergencyCleanupError: string | null;
+  closed: boolean;
+  temporaryRemoved: boolean;
+  poolClosed: boolean;
+};
 const resultSchema = z.strictObject({
   mode: z.enum(["failure", "stop", "consume"]),
   fileItemId: z.uuid(),
@@ -59,8 +67,12 @@ async function runProducer(
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolveResult, reject) => {
     const scripts: Record<GuardControl, string> = {
-      hang: "setInterval(() => {}, 1000)",
-      overflow: "process.stdout.write('x'.repeat(700)); process.stderr.write('y'.repeat(700))",
+      hang: `import { spawn } from 'node:child_process';
+        const descendant = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+        descendant.on('spawn', () => console.log('BATCH09_DESCENDANT ' + descendant.pid));
+        descendant.on('error', () => process.exit(1));
+        setInterval(() => {}, 1000)`,
+      overflow: "process.stdout.write('x'.repeat(1100000)); process.stderr.write('y'.repeat(1100000))",
       malformed: "console.log('BATCH09_FRAME {bad-json')",
       duplicate: "console.log('BATCH09_FRAME {}'); console.log('BATCH09_FRAME {}')",
       resolver: `import { register } from 'node:module'; import { pathToFileURL } from 'node:url'; register(pathToFileURL(${JSON.stringify(resolver)})); await import('@semprec/data/private')`,
@@ -95,13 +107,25 @@ async function runProducer(
         }
       }
     }
-    const timer = setTimeout(() => stop(new Error("Transcription fixture timed out")), control ? 1000 : 25_000);
+    const timer = setTimeout(() => stop(new Error("Transcription fixture timed out")), 25_000);
     function collect(chunk: Buffer, stream: "stdout" | "stderr") {
       bytes += chunk.length;
-      if (bytes > (control === "overflow" ? 1024 : 2_000_000))
-        return stop(new Error("Transcription fixture output exceeds limit"));
+      if (bytes > 2_000_000) return stop(new Error("Transcription fixture output exceeds limit"));
       if (stream === "stdout") stdout += chunk.toString("utf8");
       else stderr += chunk.toString("utf8");
+      if (control === "hang" && stream === "stdout" && observation && observation.descendantPid === null) {
+        const line = stdout.split("\n").find((entry) => entry.startsWith("BATCH09_DESCENDANT "));
+        if (line && stdout.includes(`${line}\n`)) {
+          const match = /^BATCH09_DESCENDANT ([1-9]\d*)$/.exec(line);
+          const parsed = z
+            .number()
+            .int()
+            .positive()
+            .safeParse(match ? Number(match[1]) : null);
+          if (!parsed.success) stop(new Error("Invalid fixture descendant PID"));
+          else observation.descendantPid = parsed.data;
+        }
+      }
     }
     child.stdout.on("data", (chunk: Buffer) => collect(chunk, "stdout"));
     child.stderr.on("data", (chunk: Buffer) => collect(chunk, "stderr"));
@@ -110,9 +134,61 @@ async function runProducer(
     child.on("close", (code, signal) => {
       clearTimeout(timer);
       if (observation) observation.closed = true;
-      if (failure) return reject(failure);
-      if (code !== 0) return reject(new Error(`Transcription fixture failed: ${code ?? signal}\n${stdout}\n${stderr}`));
-      resolveResult({ stdout, stderr });
+      void (async () => {
+        if (control === "hang" && observation?.descendantPid) {
+          const descendantPid = observation.descendantPid;
+          const deadline = Date.now() + 3000;
+          let gone = false;
+          try {
+            do {
+              try {
+                process.kill(descendantPid, 0);
+              } catch (error) {
+                if (error instanceof Error && "code" in error && error.code === "ESRCH") {
+                  gone = true;
+                  break;
+                }
+                throw error;
+              }
+              await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+            } while (Date.now() < deadline);
+            observation.descendantGoneAfterGroupKill = gone && failure?.message === "Transcription fixture timed out";
+            if (!gone) process.kill(descendantPid, "SIGKILL");
+          } catch (error) {
+            observation.emergencyCleanupError = String(error);
+            try {
+              process.kill(descendantPid, "SIGKILL");
+            } catch (cleanupError) {
+              if (!(cleanupError instanceof Error && "code" in cleanupError && cleanupError.code === "ESRCH"))
+                observation.emergencyCleanupError += `; fallback: ${String(cleanupError)}`;
+            }
+          }
+          if (!gone) {
+            const cleanupDeadline = Date.now() + 3000;
+            try {
+              do {
+                try {
+                  process.kill(descendantPid, 0);
+                } catch (error) {
+                  if (error instanceof Error && "code" in error && error.code === "ESRCH") {
+                    gone = true;
+                    break;
+                  }
+                  throw error;
+                }
+                await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+              } while (Date.now() < cleanupDeadline);
+              if (!gone) observation.emergencyCleanupError = "Owned descendant did not settle after fallback";
+            } catch (error) {
+              observation.emergencyCleanupError = `Owned descendant settlement failed: ${String(error)}`;
+            }
+          }
+        }
+        if (failure) return reject(failure);
+        if (code !== 0)
+          return reject(new Error(`Transcription fixture failed: ${code ?? signal}\n${stdout}\n${stderr}`));
+        resolveResult({ stdout, stderr });
+      })();
     });
     child.stdin.end(stdin);
   });
@@ -239,7 +315,15 @@ export function runTranscriptionFixture(input: FixtureInput, adminPool: Pool) {
 
 /** Closed fault controls exercise the same runner, parser and ownership cleanup as the producer. */
 export async function runFixtureGuardControl(control: GuardControl, input: FixtureInput, adminPool: Pool) {
-  const observation: GuardObservation = { pid: null, closed: false, temporaryRemoved: false, poolClosed: false };
+  const observation: GuardObservation = {
+    pid: null,
+    descendantPid: null,
+    descendantGoneAfterGroupKill: false,
+    emergencyCleanupError: null,
+    closed: false,
+    temporaryRemoved: false,
+    poolClosed: false,
+  };
   try {
     await runFixture(input, adminPool, control, observation);
     throw new Error("Guard control unexpectedly succeeded");

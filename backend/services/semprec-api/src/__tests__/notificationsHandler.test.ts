@@ -94,8 +94,29 @@ describe("createNotificationsRequestListener", () => {
     });
   });
 
+  // The temporary compiler has a 25 s bound; the actual child deadline is another 25 s.
+  it("stops the owned fixture and its observed descendant at the real deadline", async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), "semprec-fixture-guard-"));
+    await withFixtureStorage(storageRoot, async () => {
+      const result = await runFixtureGuardControl(
+        "hang",
+        { mode: "failure", tenantId: getTenantZeroId(), storageRoot },
+        pool,
+      );
+      expect(result.message).toBe("Transcription fixture timed out");
+      expect(result.pid).toEqual(expect.any(Number));
+      expect(result.descendantPid).toEqual(expect.any(Number));
+      expect(result.descendantPid).toBeGreaterThan(0);
+      expect(result.descendantPid).not.toBe(result.pid);
+      expect(result.closed).toBe(true);
+      expect(result.descendantGoneAfterGroupKill).toBe(true);
+      expect(result.emergencyCleanupError).toBeNull();
+      expect(result.temporaryRemoved).toBe(true);
+      expect(result.poolClosed).toBe(true);
+    });
+  }, 65000);
+
   it.each([
-    ["hang", "Transcription fixture timed out"],
     ["overflow", "Transcription fixture output exceeds limit"],
     ["malformed", "Invalid transcription fixture frame"],
     ["duplicate", "Expected exactly one transcription fixture frame"],
