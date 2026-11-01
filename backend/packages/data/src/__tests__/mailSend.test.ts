@@ -924,7 +924,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       return rows[0]!.id;
     }
 
-    async function ingestSynced(messageId: string): Promise<void> {
+    async function ingestSynced(messageId: string, mailbox = mailboxId, folder?: string): Promise<void> {
       const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
       await withTransaction(pool, async (client) => {
         await ingestEmailMessage(client, {
@@ -932,8 +932,8 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
           filesDatabaseId: await databaseIdFor("files"),
           folderRelationPropertyId,
           attachmentsRelationPropertyId: attachmentsProperty.id,
-          folderItemId: await sentFolderId(),
-          mailboxItemId: mailboxId,
+          folderItemId: folder ?? (await sentFolderId()),
+          mailboxItemId: mailbox,
           messageId,
           subject: "Original",
           envelope: { from: { address: "bob@example.com" }, to: [{ address: "me@example.com" }] },
@@ -1000,6 +1000,37 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       expect(raw).toContain(`Message-ID: ${result.messageId}\r\n`);
       expect(raw).toContain("In-Reply-To: <orig@example.com>\r\n");
       expect(raw).toContain("References: <orig@example.com>\r\n");
+    });
+
+    it("threads an outgoing reply using an ancestor in another mailbox of the same tenant", async () => {
+      const other = await withTransaction(pool, async (client) => {
+        const mailbox = await createItemWithClient(client, {
+          databaseId: mailboxesId,
+          properties: { name: "Other", provider: "generic" },
+        });
+        const folder = await createItemWithClient(
+          client,
+          { databaseId: foldersId, properties: { name: "Other Sent", behavior: "folder", specialPurpose: "sent" } },
+          { allowedSystemKeys: ["name", "behavior", "specialPurpose"] },
+        );
+        await createRelationWithClient(
+          client,
+          { relationPropertyId: mailboxFolderRelationPropertyId, callerItemId: folder.id, targetItemId: mailbox.id },
+          { ownerProcess: FOLDERS_MODULE_ID },
+        );
+        return { mailboxId: mailbox.id, folderId: folder.id };
+      });
+      await ingestSynced("<other@example.com>", other.mailboxId, other.folderId);
+      const ancestor = await getMailMessageMetaByMailboxAndMessageId(pool, other.mailboxId, "<other@example.com>");
+      const smtp = recordingTransport();
+      const sent = await send(await newDraft(), smtp, { inReplyTo: "<other@example.com>" });
+      const meta = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, sent.messageId);
+      expect(ancestor?.threadId).toBeTruthy();
+      expect(meta?.threadId).toBe(ancestor?.threadId);
+      expect(meta?.itemId).not.toBe(ancestor?.itemId);
+      expect(smtp.sent).toHaveLength(1);
+      expect(smtp.sent[0]?.raw.toString("utf8")).toContain("In-Reply-To: <other@example.com>\r\n");
+      expect(await threadCount()).toBe(1);
     });
 
     it("a send without ancestors starts a new thread that a later reply joins", async () => {
