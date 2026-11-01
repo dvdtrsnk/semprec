@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import { prepareUserItemPatch } from "../chokePoint/itemWrites.js";
+import { prepareUserItemPatch, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import {
   clearHooksForTests,
@@ -17,6 +17,7 @@ import { getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.
 import * as schedulerStore from "../scheduler/schedulerStore.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { runOnce } from "@semprec/queue";
+import * as queue from "@semprec/queue";
 import { createActionRegistry } from "../scheduler/actions.js";
 import { createCoreTaskList } from "../worker.js";
 import { withTransaction } from "../db/pool.js";
@@ -405,6 +406,103 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
       expect(transformInputs).toEqual([null, "10:00"]);
     } finally {
       update.mockRestore();
+    }
+  });
+
+  it("enqueues a transformed update heartbeat and rolls it back with the item on later failure", async () => {
+    const databaseId = await databaseIdFor(EVENTS_MODULE_ID);
+    registerItemPreWriteTransform(EVENTS_MODULE_ID, async ({ patch }) => {
+      if (patch.timeFrom === "bad") throw new ValidationError("Invalid time");
+      return patch.timeFrom === "9:00" ? { ...patch, timeFrom: "09:00" } : patch;
+    });
+    const projectDb = await databaseIdFor("projects");
+    const project = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [
+      projectDb,
+    ]);
+    if (!project.rows[0]) throw new Error("Missing seeded project");
+    const first = await chokePoint.createItem({ databaseId, properties: { name: "Success", timeFrom: "10:00" } });
+    const second = await chokePoint.createItem({ databaseId, properties: { name: "Rollback", timeFrom: "10:00" } });
+    const heartbeat = await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        schedulerStore.createHeartbeat(client, {
+          projectItemId: project.rows[0]!.id,
+          name: "Update probe",
+          rule: { kind: "onItemEvent", databaseId, event: "update" },
+          actionId: "noop",
+        }),
+      ),
+    );
+    const job = (id: string) => schedulerStore.heartbeatFireJobKey(heartbeat.id, id);
+    const readJob = (id: string) =>
+      pool.query<{ key: string; locked_at: Date | null; attempts: number; max_attempts: number }>(
+        "SELECT key, locked_at, attempts, max_attempts FROM graphile_worker.jobs WHERE key = $1",
+        [job(id)],
+      );
+    const events: InvalidationEvent[] = [];
+    const enqueue = vi.spyOn(queue, "enqueueJob");
+    const update = vi.spyOn(itemsStore, "updateItemProperties");
+    setInvalidationHook((event) => events.push(event));
+    try {
+      await expect(
+        chokePoint.updateItem({ databaseId, itemId: first.id, propertiesPatch: { timeFrom: "bad" } }),
+      ).rejects.toMatchObject({ code: "validation_failed" });
+      expect((await readJob(first.id)).rows).toEqual([]);
+      expect((await chokePoint.getItem(databaseId, first.id))?.properties.timeFrom).toBe("10:00");
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(events).toEqual([]);
+      const updated = await chokePoint.updateItem({
+        databaseId,
+        itemId: first.id,
+        propertiesPatch: { timeFrom: "9:00" },
+      });
+      expect(updated.properties.timeFrom).toBe("09:00");
+      expect((await readJob(first.id)).rows).toEqual([
+        { key: job(first.id), locked_at: null, attempts: 0, max_attempts: 3 },
+      ]);
+      expect(enqueue).toHaveBeenCalledWith(
+        update.mock.calls[0]?.[0],
+        queue.CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE,
+        { heartbeatId: heartbeat.id, itemId: first.id },
+        expect.objectContaining({ jobKey: job(first.id) }),
+      );
+      const before = await chokePoint.getItem(databaseId, second.id);
+      const beforeEvents = [...events];
+      const failure = new Error("rollback after heartbeat enqueue");
+      await expect(
+        inTenantZero(() =>
+          withTransaction(pool, async (client) => {
+            const changed = await updateItemWithClient(client, {
+              databaseId,
+              itemId: second.id,
+              propertiesPatch: { timeFrom: "9:00" },
+            });
+            expect(changed.properties.timeFrom).toBe("09:00");
+            const queued = await client.query<{
+              key: string;
+              locked_at: Date | null;
+              attempts: number;
+              max_attempts: number;
+            }>("SELECT key, locked_at, attempts, max_attempts FROM graphile_worker.jobs WHERE key = $1", [
+              job(second.id),
+            ]);
+            expect(queued.rows).toEqual([{ key: job(second.id), locked_at: null, attempts: 0, max_attempts: 3 }]);
+            expect(enqueue).toHaveBeenCalledWith(
+              client,
+              queue.CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE,
+              { heartbeatId: heartbeat.id, itemId: second.id },
+              expect.objectContaining({ jobKey: job(second.id) }),
+            );
+            throw failure;
+          }),
+        ),
+      ).rejects.toBe(failure);
+      expect(await chokePoint.getItem(databaseId, second.id)).toEqual(before);
+      expect((await readJob(second.id)).rows).toEqual([]);
+      expect(events).toEqual(beforeEvents);
+    } finally {
+      update.mockRestore();
+      enqueue.mockRestore();
+      setInvalidationHook(() => {});
     }
   });
 

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
+import * as queue from "@semprec/queue";
 import { runInTenant } from "@semprec/shared";
 import {
   createRuntimeRolePool,
@@ -25,6 +26,7 @@ import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js"
 import { SYSTEM_WRITER, type WriterIdentity } from "../chokePoint/writerKind.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
+import * as schedulerStore from "../scheduler/schedulerStore.js";
 import * as valueLinksStore from "../chokePoint/valueLinksStore.js";
 import * as inboxSourceGuard from "../inbox/inboxSourceGuard.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
@@ -1034,20 +1036,48 @@ describe("value link state on writes (issue #1516)", () => {
                   : {}),
               });
           });
+          const heartbeat = await withTenantTransaction(runtime, tenant, async (client) => {
+            const project = await client.query<{ id: string }>(
+              "SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id WHERE d.key = 'projects' LIMIT 1",
+            );
+            if (!project.rows[0]) throw new Error("Missing seeded project");
+            return schedulerStore.createHeartbeat(client, {
+              projectItemId: project.rows[0].id,
+              name: "Task update probe",
+              rule: { kind: "onItemEvent", databaseId: db.id, event: "update" },
+              actionId: "noop",
+            });
+          });
+          const jobKey = schedulerStore.heartbeatFireJobKey(heartbeat.id, task.id);
+          const readJobs = () =>
+            pool.query<{ key: string | null; locked_at: Date | null; attempts: number; max_attempts: number }>(
+              "SELECT key, locked_at, attempts, max_attempts FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
+            );
+          const beforeJobs = (await readJobs()).rows;
+          expect(beforeJobs.some((row) => row.key === jobKey)).toBe(false);
           const beforeItem = await readStoredItem(runtime, tenant, db.id, task.id);
+          if (!beforeItem) throw new Error("Missing task before update");
           const beforeLinks = await readStoredLinks(runtime, tenant, task.id);
+          const advanced = await pool.query<{ advanced: boolean }>(
+            "SELECT clock_timestamp() > $1::timestamptz AS advanced",
+            [beforeItem.updated_at],
+          );
+          expect(advanced.rows[0]?.advanced).toBe(true);
           const events: InvalidationEvent[] = [];
+          const enqueue = vi.spyOn(queue, "enqueueJob");
           setInvalidationHook((event) => events.push(event));
           try {
+            let writeClient: PoolClient | undefined;
             const write = () =>
               runInTenant(tenant, () =>
-                withTransaction(runtime, (client) =>
-                  updateItemWithClient(
+                withTransaction(runtime, (client) => {
+                  writeClient = client;
+                  return updateItemWithClient(
                     client,
                     { databaseId: db.id, itemId: task.id, propertiesPatch: { date: "2026-10-14" } },
                     { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
-                  ),
-                ),
+                  );
+                }),
               );
             if (state === "on") {
               const result = await write();
@@ -1057,15 +1087,47 @@ describe("value link state on writes (issue #1516)", () => {
                 timeTo: key === "timeTo" ? null : "10:00",
                 time: key === "timeTo" ? "09:00" : "09:00–10:00",
               });
+              const afterItem = await readStoredItem(runtime, tenant, db.id, task.id);
+              if (!afterItem) throw new Error("Missing task after update");
+              expect(afterItem).toEqual({
+                ...beforeItem,
+                properties: afterItem.properties,
+                updated_at: afterItem.updated_at,
+              });
+              const persistedProperties: unknown = JSON.parse(afterItem.properties);
+              expect(persistedProperties).toEqual({
+                name: "Old",
+                date: "2026-10-14",
+                timeFrom: "09:00",
+                timeTo: key === "timeTo" ? null : "10:00",
+                time: key === "timeTo" ? "09:00" : "09:00–10:00",
+              });
+              expect(afterItem.updated_at).not.toBe(beforeItem.updated_at);
               expect(await readStoredLinks(runtime, tenant, task.id)).toEqual(beforeLinks);
-              expect(events.filter((event) => event.scope === "item" && event.itemId === task.id)).toHaveLength(1);
+              expect((await readJobs()).rows).toContainEqual({
+                key: jobKey,
+                locked_at: null,
+                attempts: 0,
+                max_attempts: 3,
+              });
+              expect(writeClient).toBeDefined();
+              expect(enqueue).toHaveBeenCalledWith(
+                writeClient,
+                queue.CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE,
+                { heartbeatId: heartbeat.id, itemId: task.id },
+                expect.objectContaining({ jobKey }),
+              );
+              expect(events).toEqual([expect.objectContaining({ scope: "item", itemId: task.id, op: "update" })]);
             } else {
               await expect(write()).rejects.toMatchObject({ status: 403, code: "owner_violation" });
               expect(await readStoredItem(runtime, tenant, db.id, task.id)).toEqual(beforeItem);
               expect(await readStoredLinks(runtime, tenant, task.id)).toEqual(beforeLinks);
+              expect((await readJobs()).rows).toEqual(beforeJobs);
+              expect(enqueue).not.toHaveBeenCalled();
               expect(events).toEqual([]);
             }
           } finally {
+            enqueue.mockRestore();
             setInvalidationHook(() => {});
           }
         });
@@ -1103,6 +1165,50 @@ describe("value link state on writes (issue #1516)", () => {
           expect(result.properties).toMatchObject({ date: "2026-10-14", timeFrom, time: timeFrom });
           const links = await readStoredLinks(runtime, tenant, task.id);
           expect(links.map((entry) => [entry.property_key, entry.state])).toEqual([["date", "on"]]);
+        });
+      },
+      30000,
+    );
+
+    it.each(["10:00", null] as const)(
+      "does not require an omitted unchanged end-time link: %s",
+      async (timeTo) => {
+        await seedSystem(pool);
+        const tenant = getTenantZeroId();
+        await withRuntimePool(async (runtime) => {
+          const cp = createChokePoint(runtime);
+          const db = (await runInTenant(tenant, () => cp.listDatabases())).find((entry) => entry.key === "tasks");
+          if (!db) throw new Error("Missing Tasks database");
+          const task = await runInTenant(tenant, () =>
+            cp.createItem({
+              databaseId: db.id,
+              properties: { name: "Task", date: "2026-10-13", timeFrom: "09:00", timeTo },
+            }),
+          );
+          await withTenantTransaction(runtime, tenant, (client) =>
+            insertValueLink(client, { itemId: task.id, propertyKey: "date", ruleKey: "test", sources: [] }),
+          );
+          const links = await readStoredLinks(runtime, tenant, task.id);
+          await runInTenant(tenant, () =>
+            withTransaction(runtime, (client) =>
+              updateItemWithClient(
+                client,
+                { databaseId: db.id, itemId: task.id, propertiesPatch: { date: "2026-10-14" } },
+                { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
+              ),
+            ),
+          );
+          const after = await readStoredItem(runtime, tenant, db.id, task.id);
+          if (!after) throw new Error("Missing task after update");
+          const properties: unknown = JSON.parse(after.properties);
+          expect(properties).toMatchObject({
+            date: "2026-10-14",
+            timeFrom: "09:00",
+            timeTo,
+            time: timeTo === null ? "09:00" : "09:00–10:00",
+          });
+          expect(await readStoredLinks(runtime, tenant, task.id)).toEqual(links);
+          expect(links.map((entry) => entry.property_key)).toEqual(["date"]);
         });
       },
       30000,
@@ -1160,10 +1266,30 @@ describe("value link state on writes (issue #1516)", () => {
               await insertValueLink(client, { itemId: task.id, propertyKey, ruleKey: "test", sources: [] });
             }
           });
+          const heartbeat = await withTenantTransaction(runtime, tenant, async (client) => {
+            const project = await client.query<{ id: string }>(
+              "SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id WHERE d.key = 'projects' LIMIT 1",
+            );
+            if (!project.rows[0]) throw new Error("Missing seeded project");
+            return schedulerStore.createHeartbeat(client, {
+              projectItemId: project.rows[0].id,
+              name: "Date-off probe",
+              rule: { kind: "onItemEvent", databaseId: task.databaseId, event: "update" },
+              actionId: "noop",
+            });
+          });
+          const jobKey = schedulerStore.heartbeatFireJobKey(heartbeat.id, task.id);
+          const readJobs = () =>
+            pool.query<{ key: string | null; locked_at: Date | null; attempts: number; max_attempts: number }>(
+              "SELECT key, locked_at, attempts, max_attempts FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
+            );
+          const beforeJobs = (await readJobs()).rows;
+          expect(beforeJobs.some((row) => row.key === jobKey)).toBe(false);
           const beforeItem = await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id));
           const beforeStoredItem = await readStoredItem(runtime, tenant, task.databaseId, task.id);
           const beforeLinks = await readStoredLinks(runtime, tenant, task.id);
           const events: InvalidationEvent[] = [];
+          const enqueue = vi.spyOn(queue, "enqueueJob");
           setInvalidationHook((event) => events.push(event));
           try {
             await expect(
@@ -1180,8 +1306,11 @@ describe("value link state on writes (issue #1516)", () => {
             expect(await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id))).toEqual(beforeItem);
             expect(await readStoredItem(runtime, tenant, task.databaseId, task.id)).toEqual(beforeStoredItem);
             expect(await readStoredLinks(runtime, tenant, task.id)).toEqual(beforeLinks);
+            expect((await readJobs()).rows).toEqual(beforeJobs);
+            expect(enqueue).not.toHaveBeenCalled();
             expect(events).toEqual([]);
           } finally {
+            enqueue.mockRestore();
             setInvalidationHook(() => {});
           }
         });
@@ -2509,6 +2638,103 @@ describe("value link state on writes (issue #1516)", () => {
         }
       });
     });
+
+    it("rejects stale and foreign transaction owners before admission and permits subsequent borrowers", async () => {
+      const tenant = await createTestTenant(pool);
+      await withRuntimePool(async (runtime, operations) => {
+        const cp = createChokePoint(runtime);
+        const fx = await runInTenant(tenant, () => setup(cp));
+        const edge = {
+          relationPropertyId: fx.projectsProperty.id,
+          callerItemId: fx.file.id,
+          targetItemId: fx.alpha.id,
+        };
+        await withTenantTransaction(runtime, tenant, (client) =>
+          insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+        );
+        const definition = await withTenantTransaction(runtime, tenant, (client) =>
+          relationsStore.getRelationDefinitionByPropertyId(client, fx.projectsProperty.id),
+        );
+        if (!definition) throw new Error("Missing definition");
+        const admission = {
+          definitionId: definition.id,
+          itemA: fx.file.id,
+          itemB: fx.alpha.id,
+          callerItemId: fx.file.id,
+          propertyKey: "projects",
+          insert: true,
+        };
+        const foreign = await runtime.connect();
+        const release = barrier();
+        operations.onCancel(() => release.resolve());
+        let descendant: Promise<void> | undefined;
+        const hook = vi.fn(async () => {});
+        const body = vi.fn(async () => {});
+        const lock = vi.spyOn(relationsStore, "tryLockRelationDefinition");
+        let failure: unknown;
+        try {
+          await runInTenant(tenant, () =>
+            withTransaction(runtime, async (client) => {
+              expect(client).not.toBe(foreign);
+              const foreignQuery = vi.spyOn(foreign, "query");
+              try {
+                await expect(withValueLinkRelationAdmission(foreign, admission, hook, body)).rejects.toThrow(
+                  "active managed transaction",
+                );
+                expect(foreignQuery).not.toHaveBeenCalled();
+                expect(lock).not.toHaveBeenCalled();
+                expect(hook).not.toHaveBeenCalled();
+                expect(body).not.toHaveBeenCalled();
+              } finally {
+                foreignQuery.mockRestore();
+              }
+              await createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
+              const ownerLockCalls = lock.mock.calls.length;
+              descendant = operations.run(async () => {
+                await bounded(release.promise);
+                const oldQuery = vi.spyOn(client, "query");
+                try {
+                  await expect(withValueLinkRelationAdmission(client, admission, hook, body)).rejects.toThrow(
+                    "active managed transaction",
+                  );
+                  expect(oldQuery).not.toHaveBeenCalled();
+                  expect(lock).toHaveBeenCalledTimes(ownerLockCalls);
+                  expect(hook).not.toHaveBeenCalled();
+                  expect(body).not.toHaveBeenCalled();
+                } finally {
+                  oldQuery.mockRestore();
+                }
+              });
+            }),
+          );
+          release.resolve();
+          if (!descendant) throw new Error("Missing descendant");
+          await bounded(descendant);
+          await runInTenant(tenant, () =>
+            withTransaction(runtime, async (client) => {
+              await deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
+            }),
+          );
+          expect(await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id))).toEqual([]);
+        } catch (error) {
+          failure = error;
+        } finally {
+          release.resolve();
+          try {
+            await operations.settle();
+          } catch (error) {
+            failure = failure === undefined ? error : new AggregateError([failure, error], "Body and cleanup failed");
+          }
+          lock.mockRestore();
+          try {
+            foreign.release();
+          } catch (error) {
+            failure = failure === undefined ? error : new AggregateError([failure, error], "Body and release failed");
+          }
+        }
+        if (failure !== undefined) throwFailure(failure);
+      });
+    }, 30000);
 
     it("keeps a caught NOWAIT failure rollback-only after savepoint recovery", async () => {
       const tenant = await createTestTenant(pool);
