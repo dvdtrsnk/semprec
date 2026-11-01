@@ -62,8 +62,8 @@ async function cleanUpLeftover(
 ): Promise<void> {
   try {
     await cleanup();
-  } catch (err) {
-    logger.warn({ ...fields, err }, message);
+  } catch {
+    logger.warn(fields, message);
   }
 }
 
@@ -277,7 +277,7 @@ export function renderPlaybackAudio(
 ): Promise<NormalizedAudioResult> {
   return encodeAudioToStorage(
     inputPath,
-    ["-ac", "1", "-c:a", "aac", "-b:a", "64k", "-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof"],
+    ["-ac", "1", "-c:a", "aac", "-b:a", "64k", "-f", "mp4", "-movflags", "frag_keyframe+delay_moov+default_base_moof"],
     blobStorage,
     storageKey,
   );
@@ -286,8 +286,8 @@ export function renderPlaybackAudio(
 /**
  * Runs `ffmpeg -i inputPath -vn <outputArgs>` and streams its stdout straight into `blobStorage`
  * under `storageKey`, with no intermediate output file. `-vn` drops any video stream and keeps only
- * its audio. There is no `-copyts`, so ffmpeg discards the container `start_time`: every rendition
- * of one input starts at 0 of its decoded audio. On failure, whatever already reached `storageKey`
+ * its audio. The audio timestamps are rebased to the first decoded sample for both outputs.
+ * On failure, whatever already reached `storageKey`
  * is deleted before the error propagates.
  */
 async function encodeAudioToStorage(
@@ -296,9 +296,13 @@ async function encodeAudioToStorage(
   blobStorage: BlobStorageWriter,
   storageKey: string,
 ): Promise<NormalizedAudioResult> {
-  const child = spawn("ffmpeg", ["-y", "-loglevel", "error", "-i", inputPath, "-vn", ...outputArgs, "pipe:1"], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const child = spawn(
+    "ffmpeg",
+    ["-y", "-loglevel", "error", "-i", inputPath, "-vn", "-af", "asetpts=PTS-STARTPTS", ...outputArgs, "pipe:1"],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
   const stderrChunks: Buffer[] = [];
   child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
 

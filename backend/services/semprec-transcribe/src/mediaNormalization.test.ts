@@ -17,13 +17,20 @@ import {
 } from "./mediaNormalization.js";
 import {
   FIXTURE_CREATION_TIME,
+  decodeSpeech,
   generateLateAudioVideoFixture,
   generateMp3Fixture,
   generateMp4Fixture,
   generateOggFixture,
+  generateSeekFixture,
+  generateSpokenMedia,
   generateWebmFixture,
   probeAudioStream,
+  probeAacProfile,
   probeNormalizedAudio,
+  seekToneFrequency,
+  speechSimilarity,
+  speechWindow,
 } from "./__tests__/fixtures/mediaFixtures.js";
 
 // Integration tier although no test here touches the database: every one of them runs the real
@@ -157,6 +164,67 @@ describe("mediaNormalization", () => {
     const m4a = await probeMedia(join(tmpBlobDir, m4aKey));
     expect(Math.abs(m4a.durationSeconds! - opusDecoded)).toBeLessThan(0.1);
   });
+
+  it.each([false, true])(
+    "seeks matching distinct content in normalized and playback audio (late video: %s)",
+    async (lateVideo) => {
+      const source = await writeToTempFile(await generateSeekFixture(lateVideo));
+      const opusKey = `transcriptions/${randomUUID()}.opus`;
+      const playbackKey = `transcriptions/${randomUUID()}.m4a`;
+      await normalizeAudio(source, blobStorage, opusKey);
+      if (lateVideo) await renderPlaybackAudio(source, blobStorage, playbackKey);
+      const playback = lateVideo ? join(tmpBlobDir, playbackKey) : source;
+      for (const [offset, expected] of [
+        [0.4, 440],
+        [1.4, 880],
+      ] as const) {
+        expect(Math.abs((await seekToneFrequency(join(tmpBlobDir, opusKey), offset)) - expected)).toBeLessThan(12);
+        expect(Math.abs((await seekToneFrequency(playback, offset)) - expected)).toBeLessThan(12);
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "seeks the matching spoken marker in AAC-LC and normalized audio (late video: %s)",
+    async (lateVideo) => {
+      const source = await writeToTempFile(await generateSpokenMedia(lateVideo));
+      const opusKey = `transcriptions/${randomUUID()}.opus`;
+      const playbackKey = `transcriptions/${randomUUID()}.m4a`;
+      await normalizeAudio(source, blobStorage, opusKey);
+      if (lateVideo) await renderPlaybackAudio(source, blobStorage, playbackKey);
+      const playback = lateVideo ? join(tmpBlobDir, playbackKey) : source;
+      expect(await probeAacProfile(playback)).toBe("LC");
+      const normalized = join(tmpBlobDir, opusKey);
+      const alpha = await speechWindow(normalized, 0);
+      const bravo = await speechWindow(normalized, 1.35);
+      const playedAlpha = await speechWindow(playback, 0);
+      const playedBravo = await speechWindow(playback, 1.35);
+      const alphaMatch = speechSimilarity(alpha, playedAlpha);
+      const bravoMatch = speechSimilarity(bravo, playedBravo);
+      const normalFull = await decodeSpeech(normalized);
+      const playbackFull = await decodeSpeech(playback);
+      const sampleWindow = (bytes: Buffer, seconds: number) =>
+        bytes.subarray(seconds * 16000 * 2, (seconds + 0.4) * 16000 * 2);
+      const comparisons = {
+        alphaMatch,
+        bravoMatch,
+        normalizedAlphaSeek: speechSimilarity(sampleWindow(normalFull, 0), alpha),
+        normalizedBravoSeek: speechSimilarity(sampleWindow(normalFull, 1.35), bravo),
+        playbackAlphaSeek: speechSimilarity(sampleWindow(playbackFull, 0), playedAlpha),
+        playbackBravoSeek: speechSimilarity(sampleWindow(playbackFull, 1.35), playedBravo),
+      };
+      for (const [label, match] of Object.entries(comparisons)) {
+        expect.soft(match.score, `${label}: ${JSON.stringify(match)}`).toBeGreaterThan(0.5);
+        expect.soft(Math.abs(match.lagSamples), `${label}: ${JSON.stringify(match)}`).toBeLessThanOrEqual(400);
+      }
+      expect(alphaMatch.score).toBeGreaterThan(speechSimilarity(alpha, playedBravo).score + 0.2);
+      expect(bravoMatch.score).toBeGreaterThan(speechSimilarity(bravo, playedAlpha).score + 0.2);
+      const shifted = Buffer.concat([Buffer.alloc(1600), alpha]).subarray(0, alpha.length);
+      const shiftedMatch = speechSimilarity(alpha, shifted);
+      expect(shiftedMatch.score).toBeGreaterThan(0.9);
+      expect(Math.abs(shiftedMatch.lagSamples)).toBeGreaterThan(400);
+    },
+  );
 
   it("renders an Ogg input", async () => {
     const fixturePath = await writeToTempFile(await generateOggFixture());

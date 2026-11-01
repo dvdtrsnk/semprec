@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { inspect } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readdir, rm } from "node:fs/promises";
@@ -46,11 +47,7 @@ import { wireRealtimeHooks } from "@semprec/realtime";
 import type { AiGatewayClientPort, AiGatewayCompletionInput, AiGatewayCompletionResult } from "@semprec/shared";
 import { CORE_TASK_NAMES, enqueueJob, registerTask, runOnce } from "@semprec/queue";
 import { AiGatewayFailedError } from "@semprec/shared";
-import {
-  classifyTranscriptionFailure,
-  createTranscriptionTask,
-  TranscriptionSourceChangedError,
-} from "./transcriptionTask.js";
+import { classifyTranscriptionFailure, createTranscriptionTask } from "./transcriptionTask.js";
 import { AudioGatewayBudgetExceededError, AudioGatewayCallError } from "./audioGatewayClient.js";
 import { MediaToolError, probeMedia } from "./mediaNormalization.js";
 import type {
@@ -180,9 +177,15 @@ describe("transcription step 0", () => {
       segments: [{ start: 0, end: 0.5, text: "Hello." }],
     });
 
-    await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toBe(summaryClient.failure);
+    await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toMatchObject({
+      name: "TranscriptionQueueError",
+      message: "Transcription task failed",
+    });
     await pool.query("UPDATE items SET properties = '{}'::jsonb WHERE id = $1", [file.id]);
-    await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toBe(summaryClient.failure);
+    await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toMatchObject({
+      name: "TranscriptionQueueError",
+      message: "Transcription task failed",
+    });
 
     const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
     if (!transcripts) throw new Error("Transcripts database was not seeded");
@@ -481,7 +484,7 @@ describe("transcription step 1 (prepare)", () => {
 
     await expect(
       createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
-    ).rejects.toBeInstanceOf(TranscriptionSourceChangedError);
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError", code: "unknown" });
 
     const source = await readSource(files.id, file.id);
     expect(source?.computed).not.toHaveProperty("prepare");
@@ -585,6 +588,7 @@ describe("transcription step 1 (prepare)", () => {
     const path = join(tmpBlobDir, rows[0]!.storage_key);
     expect(await probeAudioStream(path)).toMatchObject({ codecName: "aac", channels: 1 });
     const { durationSeconds } = await probeMedia(path);
+    expect(Math.abs((durationSeconds ?? NaN) - prepare.durationSeconds)).toBeLessThan(0.1);
     if (audioSeconds !== null) expect(Math.abs((durationSeconds ?? NaN) - audioSeconds)).toBeLessThan(0.1);
     else expect(durationSeconds).toBeGreaterThan(0);
   });
@@ -602,7 +606,7 @@ describe("transcription step 1 (prepare)", () => {
 
     await expect(
       createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
-    ).rejects.toThrow("disk full");
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
 
     expect(await readNormalizedLeftovers()).toEqual({ blobRows: 0, storedFiles: [] });
   });
@@ -777,7 +781,7 @@ describe("transcription steps 2 and 3 (diarize, ASR)", () => {
 
     await expect(
       createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
-    ).rejects.toThrow("simulated crash");
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
 
     const midSource = await readSource(files.id, file.id);
     expect(Object.keys(asrCheckpointSchema.parse(midSource?.computed.asr).chunks)).toEqual(["0"]);
@@ -1055,7 +1059,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     };
     await expect(
       createTranscriptionTask(pool, blobStorage, failingGateway, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
-    ).rejects.toBe(diarizeFailure);
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
     // 25 minutes: chunk 0 = [0, 1200], chunk 1 = [1170, 1500], cut at 1185.
     await pool.query(
       `UPDATE items SET computed = jsonb_set(computed, '{prepare,durationSeconds}', to_jsonb(1500::float8)) WHERE id = $1`,
@@ -1143,7 +1147,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
 
     await expect(
       createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
-    ).rejects.toBe(summaryFailure);
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
 
     const failed = await readTranscript(file.id);
     expect(failed.computed.segments).toHaveLength(2);
@@ -1351,7 +1355,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
 
     await expect(
       createTranscriptionTask(pool, blobStorage, gatewayClient, failing)({ fileItemId: file.id }, FIRST_ATTEMPT),
-    ).rejects.toThrow("gateway refused");
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
     expect((await readTranscript(file.id)).properties.status).toBe("processing");
     expect(await readSpeakerCards()).toEqual([]);
 
@@ -1438,7 +1442,10 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       summaryClient.failure = failure;
       const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
 
-      await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toBe(failure);
+      await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toMatchObject({
+        name: "TranscriptionQueueError",
+        message: "Transcription task failed",
+      });
 
       const failed = await readTranscript(file.id);
       expect(failed.properties.status).toBe("processing");
@@ -1465,7 +1472,10 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
 
       for (const attempts of [1, 2, 3]) {
-        await expect(task({ fileItemId: file.id }, { job: { attempts, max_attempts: 3 } })).rejects.toBe(failure);
+        await expect(task({ fileItemId: file.id }, { job: { attempts, max_attempts: 3 } })).rejects.toMatchObject({
+          name: "TranscriptionQueueError",
+          message: "Transcription task failed",
+        });
       }
 
       const transcript = await readTranscript(file.id);
@@ -1528,7 +1538,10 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       await createUser();
       summaryClient.failure = new AiGatewayFailedError("http");
       const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
-      await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toBe(summaryClient.failure);
+      await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toMatchObject({
+        name: "TranscriptionQueueError",
+        message: "Transcription task failed",
+      });
       const transcript = await readTranscript(file.id);
       const readCode = async () =>
         (
@@ -1580,7 +1593,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
         for (const attempts of [1, 2, 3]) {
           await expect(
             runInTenant(tenantB, () => task({ fileItemId: fileId }, { job: { attempts, max_attempts: 3 } })),
-          ).rejects.toBe(failure);
+          ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
         }
 
         const { rows } = await pool.query<{ user_id: string; kind: string; tenant_id: string }>(
@@ -1632,7 +1645,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       }
     });
 
-    it("commits none of a permanent failure's writes when its transaction rolls back, and rethrows the original failure", async () => {
+    it("commits none of a permanent failure's writes when its transaction rolls back, and returns a safe failure", async () => {
       const { file } = await createSourceFile();
       await createUser();
       const failure = new Error("simulated summary outage");
@@ -1649,7 +1662,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
             gatewayClient,
             summaryClient,
           )({ fileItemId: file.id }, FINAL_ATTEMPT),
-        ).rejects.toBe(failure);
+        ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
       } finally {
         await pool.query("DROP TRIGGER test_reject_notification ON notifications");
         await pool.query("DROP FUNCTION test_reject_notification()");
@@ -1672,7 +1685,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
           gatewayClient,
           summaryClient,
         )({ fileItemId: file.id }, FINAL_ATTEMPT),
-      ).rejects.toBe(summaryClient.failure);
+      ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
 
       const transcript = await readTranscript(file.id);
       expect(transcript.properties.status).toBe("error");
@@ -1710,7 +1723,10 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       const { file } = await createSourceFile();
       summaryClient.failure = new Error("simulated summary outage");
       const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
-      await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toBe(summaryClient.failure);
+      await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toMatchObject({
+        name: "TranscriptionQueueError",
+        message: "Transcription task failed",
+      });
       const transcript = await readTranscript(file.id);
       await pool.query("UPDATE item_automation SET status = 'locked' WHERE item_id = $1", [transcript.id]);
 
@@ -1801,7 +1817,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
           gatewayClient,
           lockingSummary,
         )({ fileItemId: file.id }, FINAL_ATTEMPT),
-      ).rejects.toBe(lockingSummary.failure);
+      ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
 
       const transcript = await readTranscript(file.id);
       expect(transcript.properties.status).toBe("processing");
@@ -1954,6 +1970,42 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       expect(transcript.properties.status).toBe("error");
       expect(await readAutomation(transcript.id)).toEqual({ status: "error", error: failure.message, attempts: 3 });
       expect(await readNotifications(transcript.id)).toHaveLength(1);
+    });
+
+    it("keeps the diagnostic sentinel out of actual worker failure logs and queue state", async () => {
+      const { file } = await createSourceFile();
+      await createUser();
+      const sentinel = "PRIVATE_PROVIDER_SENTINEL_1386";
+      summaryClient.failure = new Error(sentinel);
+      const jobKey = `transcription-job:${file.id}`;
+      const taskList = {
+        [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+          CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+          createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient),
+        ),
+      };
+      const lines: string[] = [];
+      const logger = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+        lines.push(inspect(args, { depth: 8 }));
+      });
+      try {
+        await inTenantZero(() =>
+          enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey, maxAttempts: 1 }),
+        );
+        await runOnce({ pgPool: pool, taskList });
+      } finally {
+        logger.mockRestore();
+      }
+      const job = await pool.query<{ last_error: string | null }>(
+        "SELECT last_error FROM graphile_worker.jobs WHERE key = $1",
+        [jobKey],
+      );
+      expect(job.rows[0]?.last_error).toContain("Transcription task failed");
+      expect(job.rows[0]?.last_error).not.toContain(sentinel);
+      expect(lines.join("\n")).toContain("Transcription task failed");
+      expect(lines.join("\n")).not.toContain(sentinel);
+      const transcript = await readTranscript(file.id);
+      expect((await readAutomation(transcript.id)).error).toBe(sentinel);
     });
 
     describe("daily requeue and manual rerun (issue #186)", () => {

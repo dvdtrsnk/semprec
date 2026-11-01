@@ -354,10 +354,9 @@ async function runPrepareStep(
   // worse than leaving an unreferenced file behind.
   let referenced = false;
   try {
-    // The source container can carry no duration at all (e.g. a streamed WebM/Matroska recording);
-    // the normalized Ogg Opus output always does.
-    const durationSeconds =
-      probe.durationSeconds ?? (await probeNormalizedDuration(blobStorage, normalized.storageKey));
+    // Segment times refer to normalized audio, whose duration can differ from its source container
+    // when an audio track starts late or a video continues after the audio ends.
+    const durationSeconds = await probeNormalizedDuration(blobStorage, normalized.storageKey);
 
     await withRepeatableReadTransaction(pool, async (client) => {
       await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
@@ -934,6 +933,16 @@ function requireGatewayInternalToken(): string {
  * provider, per `docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md`.
  * `summaryInstruction` selects the instruction step 5 summarizes with and step 8 requires.
  */
+export class TranscriptionQueueError extends Error {
+  readonly code: ItemAutomationErrorCode;
+
+  constructor(code: ItemAutomationErrorCode) {
+    super("Transcription task failed");
+    this.name = "TranscriptionQueueError";
+    this.code = code;
+  }
+}
+
 export function createTranscriptionTask(
   pool: Pool,
   blobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR")),
@@ -958,7 +967,7 @@ export function createTranscriptionTask(
       token: requireGatewayInternalToken(),
     });
 
-  return async (payload: unknown, helpers: TranscriptionJobHelpers): Promise<void> => {
+  const run = async (payload: unknown, helpers: TranscriptionJobHelpers): Promise<void> => {
     const { fileItemId } = transcriptionJobPayloadSchema.parse(payload);
     const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, FILES_MODULE_ID));
     if (!files) throw new NotFoundError("Files database not found");
@@ -1019,9 +1028,9 @@ export function createTranscriptionTask(
         outcome = await withTransaction(pool, (client) =>
           recordTranscriptionFailure(client, transcriptId, message, errorCode, permanent),
         );
-      } catch (recordErr) {
+      } catch {
         // The attempt's own failure is what the caller must see; this one is only logged.
-        logger.error({ err: recordErr, transcriptId }, "Failed to record a transcription failure");
+        logger.error({ transcriptId }, "Failed to record a transcription failure");
         throw err;
       }
       if (outcome === "deleted") {
@@ -1033,6 +1042,13 @@ export function createTranscriptionTask(
         return;
       }
       throw err;
+    }
+  };
+  return async (payload: unknown, helpers: TranscriptionJobHelpers): Promise<void> => {
+    try {
+      await run(payload, helpers);
+    } catch (error) {
+      throw new TranscriptionQueueError(classifyTranscriptionFailure(error));
     }
   };
 }
