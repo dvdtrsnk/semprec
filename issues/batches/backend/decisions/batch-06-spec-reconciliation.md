@@ -93,8 +93,9 @@ no mutation under authenticated HTTP, plus bodyless/empty-object success. Do not
 change other routes, strict operation schemas, `/mcp` or global body parsing.
 
 For agent-only optional reason fields, preserve null-as-absence consistently in
-both generic and MCP wrappers. Strip the reserved field and store null; other
-non-string and over-500 values remain invalid. Keep the optional-string tool
+both generic and MCP wrappers. Strip the reserved field and store null; reject non-string values actually
+reaching a wrapper and over-500 strings. Earlier SDK coercion is preserved, as
+clarified below. Keep the optional-string tool
 schemas and existing provider normalization; do not add a raw-model interceptor.
 This tolerance applies to optional approval reasons only, not context refs or
 REST reason input. The failed null-rejection experiment remains diagnostic.
@@ -241,3 +242,69 @@ regressions for this positive case and matched/no-call negatives in already
 scoped tests; do not implement a last-event-only filter or rewrite old rows.
 Preserve the original reviewer finding and obtain focused review of the revised
 clause and evidence. All other Tasks/ACs and historical ADRs remain unchanged.
+
+## Atomic thread-filtered checkpoint boundary
+
+Gh-1560 explicitly names persistCompaction, so correct caller pairing alone is
+insufficient. Reuse the existing withTransaction and getAgentRun FOR UPDATE
+contract: validate the target session key under tenant RLS, then insert on the
+same client. Thread mains require their explicit filter; optional legacy paths
+remain for other runs, and supplied legacy keys must match completely and exclude
+thread mains. Reject mismatches without an event; missing and foreign targets
+remain indistinguishable. Compute compacted entries before locking; no provider
+work or content-provenance traversal is added to this short transaction.
+
+Pass the thread filter from SempConversation and route its compaction await
+through the existing failRun handler, preserving the original error and avoiding
+any prompt on failure. This supersedes only the compaction part of the earlier
+pre-session-write deferral because the new guard introduces a deliberate failure
+there. The initial running-status publication remains an OPEN preexisting
+follow-up. No general lifecycle refactor is authorized. Existing store APIs and
+[[2026-09-29-withtransaction-is-the-sole-transaction-opener]] cover this transaction
+pattern; no new advisory lock, store export or migration is needed.
+
+Runtime-role success/refusal cases and a bounded forced-overlap mutation must
+prove that validation and insertion share the held row lock. Matching legacy
+sessions remain compatible. The exact source Task/AC and caller/test Touches are
+refrozen; prior independent review carries forward only for unchanged clauses.
+
+## Index eligibility rather than a forced physical plan
+
+Gh-1560's index wording means thread/tenant predicates compatible with the one
+existing tenant/thread/wake index, not an unconditional planner choice. PostgreSQL
+[chooses plans from query and data properties](https://www.postgresql.org/docs/16/using-explain.html).
+A small fixture's sequential scan is not by itself a failure. An owned populated
+fixture may capture EXPLAIN of the actual query under its real tenant role and
+normal planner settings, recording row counts and the actual plan. Do not disable
+sequential scans, force a plan, add a second index, or generalize one measurement
+into a production performance guarantee.
+
+## SDK normalization and reconstruction boundaries
+
+The pinned pi validateToolArguments clones arguments, normalizes optional nulls
+and applies value conversion before tool execute. Numeric/boolean optional reasons
+can therefore arrive as strings. Preserve the existing no-interceptor decision
+and optional-string schemas: reject nonstrings actually reaching each wrapper,
+and disclose/test SDK-coerced stored strings separately. Reserved-field stripping,
+null-as-absence, length validation and strict REST rejection remain unchanged.
+Do not claim raw-model rejection from a later wrapper test.
+
+For newly introduced user_message history, validate required string text and its
+strict labeled context at the stored-row and compaction-entry read boundary.
+Malformed fields fail with content-free diagnostics; no silent default/backfill.
+AgentMessage itself promises kind plus unknown extras, not fully validated fields
+for every old event variant. Remove avoidable structural-access casts in the
+existing guards but preserve compatible legacy per-kind behavior and unknown
+metadata. A new schema project for every historical kind is not authorized.
+
+## SDK-erased MCP HTTP status
+
+Apply the current-batch correlated-transport-error ADR. Local negative controls
+show an SSE tools/call POST 401/403 can become an untyped SDK Error and fall through
+to toolError. Approved scope includes the private observational helper, exact
+factory boundary, test fixtures and ADR; it permits no early fetch throw or
+response/OAuth-flow modification. Preserve original errors and correlate only
+checked status with the exact rejected operation, including retries and setup
+notifications, without retaining body/credential content or ambient status flags.
+The separate reviewer must assess races, precedence and all declared local
+transport cases; existing failures or diagnostic-only probes are not a PASS.
