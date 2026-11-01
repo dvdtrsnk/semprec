@@ -100,6 +100,23 @@ function ownOverlap(runtime: Pool, cancel: () => void) {
     void settled.then(() => tasks.delete(settled));
     return operation;
   };
+  const wait = <T>(signal: Promise<T>, ...actors: Promise<unknown>[]): Promise<T> =>
+    overlapBounded(
+      Promise.race([
+        signal,
+        ...actors.map((actor) =>
+          actor.then(
+            () => {
+              throw new Error("Overlap participant completed before its barrier");
+            },
+            (error: unknown) => {
+              throw error;
+            },
+          ),
+        ),
+      ]),
+      5000,
+    );
   const finish = (bodyFailed = false): Promise<void> => {
     if (closingPromise) return closingPromise;
     closing = true;
@@ -154,7 +171,7 @@ function ownOverlap(runtime: Pool, cancel: () => void) {
     expired = true;
     void finish(true).catch(() => {});
   }, 8000);
-  return { run, finish };
+  return { run, wait, finish };
 }
 
 async function overlapBounded<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
@@ -952,6 +969,46 @@ describe("file from attachment on confirm (issue #1703)", () => {
     expect(firstCard?.properties.status).toBe("proposed");
   });
 
+  it("preserves an early checkout failure together with cleanup failure", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const actorError = new Error("pre-verify checkout failure");
+    const cleanupError = new Error("cleanup failure");
+    let release = () => {};
+    const signal = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    runtime.options.verify = (_client, done) => done(actorError);
+    const owned = ownOverlap(runtime, () => {
+      release();
+      throw cleanupError;
+    });
+    let failure: { error: unknown } | undefined;
+    try {
+      const actor = owned.run(() => withTenantTransaction(runtime, getTenantZeroId(), async () => {}));
+      await owned.wait(signal, actor);
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await owned.finish(failure !== undefined);
+      } catch (error) {
+        failure = combineOverlapFailure(failure, error);
+      }
+    }
+    const observed = failure?.error;
+    expect(observed).toBeInstanceOf(AggregateError);
+    if (!(observed instanceof AggregateError)) throw new Error("Expected combined error");
+    expect(observed.cause).toBe(actorError);
+    expect(observed.errors[0]).toBe(actorError);
+    expect(observed.errors[1]).toBeInstanceOf(AggregateError);
+    expect(observed.errors[1] instanceof AggregateError && observed.errors[1].errors).toContain(cleanupError);
+    expect(runtime.ended).toBe(true);
+    expect(runtime.totalCount).toBe(0);
+    expect(runtime.waitingCount).toBe(0);
+    expect(runtime.listenerCount("acquire")).toBe(0);
+    expect(runtime.listenerCount("release")).toBe(0);
+  }, 20000);
+
   it("settles blocked overlap participants on an injected body failure", async () => {
     const itemId = await plainInboxItem("cleanup source");
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
@@ -995,7 +1052,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
           holderSettled = true;
         },
       );
-      await bounded(holderStarted);
+      await owned.wait(holderStarted, holder);
       const contender = owned.run(() =>
         withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
           contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
@@ -1011,11 +1068,15 @@ describe("file from attachment on confirm (issue #1703)", () => {
           contenderSettled = true;
         },
       );
-      await bounded(contenderStarted);
+      await owned.wait(contenderStarted, holder, contender);
       if (!holderPid || !contenderPid) throw new Error("Missing participant PID");
       const holderId = holderPid;
       const contenderId = contenderPid;
-      await bounded(owned.run(() => waitForBlobLockWait(holderId, contenderId, runtime)));
+      await owned.wait(
+        owned.run(() => waitForBlobLockWait(holderId, contenderId, runtime)),
+        holder,
+        contender,
+      );
       throw bodyError;
     } catch (error) {
       failure = { error };
@@ -1118,6 +1179,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
           ),
         );
         pending.purge.catch(() => {});
+        return pending.purge;
       };
       const startConfirm = () => {
         pending.confirm = owned.run(() =>
@@ -1138,24 +1200,28 @@ describe("file from attachment on confirm (issue #1703)", () => {
           }),
         );
         pending.confirm.catch(() => {});
+        return pending.confirm;
       };
       let failure: { error: unknown } | undefined;
       try {
         if (purgeFirst) {
-          startPurge();
-          await bounded(purgeAtBlob);
-          startConfirm();
-          await bounded(confirmAtBlob);
+          const purge = startPurge();
+          await owned.wait(purgeAtBlob, purge);
+          const confirm = startConfirm();
+          await owned.wait(confirmAtBlob, purge, confirm);
         } else {
-          startConfirm();
-          await bounded(confirmAtBlob);
-          startPurge();
-          await bounded(purgeAtBlob);
+          const confirm = startConfirm();
+          await owned.wait(confirmAtBlob, confirm);
+          const purge = startPurge();
+          await owned.wait(purgeAtBlob, confirm, purge);
         }
         if (!purgePid || !confirmPid) throw new Error("Missing competing backend PID");
         const actualPurgePid = purgePid;
         const actualConfirmPid = confirmPid;
-        await bounded(
+        const purge = pending.purge;
+        const confirmRun = pending.confirm;
+        if (!purge || !confirmRun) throw new Error("Both operations must start");
+        await owned.wait(
           owned.run(() =>
             waitForBlobLockWait(
               purgeFirst ? actualPurgePid : actualConfirmPid,
@@ -1163,12 +1229,11 @@ describe("file from attachment on confirm (issue #1703)", () => {
               runtime,
             ),
           ),
+          purge,
+          confirmRun,
         );
         releasePurge();
         releaseConfirm();
-        const purge = pending.purge;
-        const confirmRun = pending.confirm;
-        if (!purge || !confirmRun) throw new Error("Both operations must start");
         const [purgeResult, confirmResult] = await bounded(Promise.all([purge, confirmRun]));
         expect(purgeResult.purgedItemIds).toContain(trashed);
         expect(purgeResult.blobStorageKeys).toEqual([]);

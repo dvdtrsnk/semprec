@@ -96,6 +96,23 @@ function ownOverlap(runtime: Pool, cancel: () => void) {
     void settled.then(() => tasks.delete(settled));
     return operation;
   };
+  const wait = <T>(signal: Promise<T>, ...actors: Promise<unknown>[]): Promise<T> =>
+    overlapBounded(
+      Promise.race([
+        signal,
+        ...actors.map((actor) =>
+          actor.then(
+            () => {
+              throw new Error("Overlap participant completed before its barrier");
+            },
+            (error: unknown) => {
+              throw error;
+            },
+          ),
+        ),
+      ]),
+      5000,
+    );
   const finish = (bodyFailed = false): Promise<void> => {
     if (closingPromise) return closingPromise;
     closing = true;
@@ -150,7 +167,7 @@ function ownOverlap(runtime: Pool, cancel: () => void) {
     expired = true;
     void finish(true).catch(() => {});
   }, 8000);
-  return { run, finish };
+  return { run, wait, finish };
 }
 
 async function overlapBounded<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
@@ -2340,11 +2357,67 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     });
   });
 
+  it("preserves an early checkout failure together with cleanup failure", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const actorError = new Error("pre-verify checkout failure");
+    const cleanupError = new Error("cleanup failure");
+    let release = () => {};
+    const signal = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    runtime.options.verify = (_client, done) => done(actorError);
+    const owned = ownOverlap(runtime, () => {
+      release();
+      throw cleanupError;
+    });
+    let failure: { error: unknown } | undefined;
+    try {
+      const actor = owned.run(() => withTenantTransaction(runtime, getTenantZeroId(), async () => {}));
+      await owned.wait(signal, actor);
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await owned.finish(failure !== undefined);
+      } catch (error) {
+        failure = combineOverlapFailure(failure, error);
+      }
+    }
+    const observed = failure?.error;
+    expect(observed).toBeInstanceOf(AggregateError);
+    if (!(observed instanceof AggregateError)) throw new Error("Expected combined error");
+    expect(observed.cause).toBe(actorError);
+    expect(observed.errors[0]).toBe(actorError);
+    expect(observed.errors[1]).toBeInstanceOf(AggregateError);
+    expect(observed.errors[1] instanceof AggregateError && observed.errors[1].errors).toContain(cleanupError);
+    expect(runtime.ended).toBe(true);
+    expect(runtime.totalCount).toBe(0);
+    expect(runtime.waitingCount).toBe(0);
+    expect(runtime.listenerCount("acquire")).toBe(0);
+    expect(runtime.listenerCount("release")).toBe(0);
+  }, 20000);
+
   it("refuses overlap success while a runtime client remains checked out", async () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     const owned = ownOverlap(runtime, () => {});
-    await runInTenant(getTenantZeroId(), () => runtime.connect());
-    await expect(owned.finish()).rejects.toMatchObject({ message: "Overlap cleanup failed" });
+    let bodyFailure: { error: unknown } | undefined;
+    let cleanupFailure: unknown;
+    try {
+      await owned.run(() => runInTenant(getTenantZeroId(), () => runtime.connect()));
+    } catch (error) {
+      bodyFailure = { error };
+    } finally {
+      try {
+        await owned.finish(bodyFailure !== undefined);
+      } catch (error) {
+        cleanupFailure = error;
+      }
+    }
+    if (bodyFailure)
+      rethrowOverlap(
+        cleanupFailure === undefined ? bodyFailure.error : combineOverlapFailure(bodyFailure, cleanupFailure).error,
+      );
+    expect(cleanupFailure).toMatchObject({ message: "Overlap cleanup failed" });
     expect(runtime.ended).toBe(true);
     expect(runtime.totalCount).toBe(0);
     expect(runtime.listenerCount("acquire")).toBe(0);
@@ -2383,19 +2456,26 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         settled = true;
       },
     );
-    await boundedBarrier(verifying);
-    let failure: unknown = bodyError;
+    let failure: { error: unknown } | undefined;
     try {
-      await owned.finish(true);
+      await owned.wait(verifying, operation);
+      failure = { error: bodyError };
     } catch (error) {
-      failure = combineOverlapFailure({ error: failure }, error).error;
+      failure = { error };
+    } finally {
+      try {
+        await owned.finish(true);
+      } catch (error) {
+        failure = combineOverlapFailure(failure, error);
+      }
     }
-    expect(failure).toBeInstanceOf(AggregateError);
-    if (!(failure instanceof AggregateError)) throw new Error("Expected combined failure");
-    expect(failure.cause).toBe(bodyError);
-    expect(failure.errors[0]).toBe(bodyError);
-    expect(failure.errors[1]).toBeInstanceOf(AggregateError);
-    expect(failure.errors[1] instanceof AggregateError && failure.errors[1].errors).toContain(cleanupError);
+    const observed = failure?.error;
+    expect(observed).toBeInstanceOf(AggregateError);
+    if (!(observed instanceof AggregateError)) throw new Error("Expected combined failure");
+    expect(observed.cause).toBe(bodyError);
+    expect(observed.errors[0]).toBe(bodyError);
+    expect(observed.errors[1]).toBeInstanceOf(AggregateError);
+    expect(observed.errors[1] instanceof AggregateError && observed.errors[1].errors).toContain(cleanupError);
     expect(ran).toBe(false);
     expect(settled).toBe(true);
     expect(runtime.ended).toBe(true);
@@ -2453,7 +2533,6 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       postModel = true;
       return { properties: { name: "Old proposal" } };
     });
-    let timeout: ReturnType<typeof setTimeout> | undefined;
     let writer: Promise<void> | undefined;
     let writerPid: number | undefined;
     let writerStarted = () => {};
@@ -2486,12 +2565,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     tick.catch(() => {});
     let failure: { error: unknown } | undefined;
     try {
-      await Promise.race([
-        atFingerprint,
-        new Promise<never>((_, reject) => {
-          timeout = setTimeout(() => reject(new Error("Fingerprint barrier timed out")), 10000);
-        }),
-      ]);
+      await owned.wait(atFingerprint, tick);
       expect(tickPid).toBeGreaterThan(0);
       writer = owned.run(() =>
         withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
@@ -2507,12 +2581,12 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         }),
       );
       writer.catch(() => {});
-      await boundedBarrier(started);
+      await owned.wait(started, writer, tick);
       expect(writerPid).toBeGreaterThan(0);
       expect(writerPid).not.toBe(tickPid);
       let blocked = false;
       for (let n = 0; n < 100 && !blocked; n++) {
-        const result = await boundedBarrier(
+        const result = await owned.wait(
           owned.run(() =>
             runInTenant(getTenantZeroId(), () =>
               runtime.query<{ blocked: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked", [
@@ -2521,6 +2595,8 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
               ]),
             ),
           ),
+          writer,
+          tick,
         );
         blocked = result.rows[0]?.blocked === true;
         if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
@@ -2528,7 +2604,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       expect(blocked).toBe(true);
       resume();
       await tick;
-      await boundedBarrier(updated);
+      await owned.wait(updated, writer);
       const card = await boundedBarrier(
         owned.run(() => runInTenant(getTenantZeroId(), () => findProposalForItem(runtime, proposalsId, item.id))),
       );
@@ -2538,7 +2614,6 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     } catch (error) {
       failure = { error };
     } finally {
-      if (timeout) clearTimeout(timeout);
       resume();
       releaseWriter();
       try {
@@ -2626,7 +2701,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       let tick: Promise<void> | undefined;
       let failure: { error: unknown } | undefined;
       try {
-        await boundedBarrier(ready);
+        await owned.wait(ready, writer);
         const handler = createSemprecTickAction(observedPool, async () => {
           postModel = true;
           return { properties: { name: "Old proposal" } };
@@ -2644,10 +2719,10 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
           ),
         );
         tick.catch(() => {});
-        await boundedBarrier(waiting);
+        await owned.wait(waiting, writer, tick);
         let blocked = false;
         for (let n = 0; n < 100 && !blocked; n++) {
-          const result = await boundedBarrier(
+          const result = await owned.wait(
             owned.run(() =>
               runInTenant(getTenantZeroId(), () =>
                 runtime.query<{ blocked: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked", [
@@ -2656,6 +2731,8 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
                 ]),
               ),
             ),
+            writer,
+            tick,
           );
           blocked = result.rows[0]?.blocked === true;
           if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
@@ -2822,7 +2899,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         let tick: Promise<void> | undefined;
         let failure: { error: unknown } | undefined;
         try {
-          if (writerFirst) await boundedBarrier(writerAtBoundary);
+          if (writerFirst) await owned.wait(writerAtBoundary, writer);
           const handler = createSemprecTickAction(observed, async () => {
             postModel = true;
             return { properties: { name: "Old proposal" } };
@@ -2840,16 +2917,16 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
             ),
           );
           tick.catch(() => {});
-          await boundedBarrier(tickAtBoundary);
+          await owned.wait(tickAtBoundary, writer, tick);
           if (!writerFirst) {
-            await boundedBarrier(writerAtBoundary);
+            await owned.wait(writerAtBoundary, writer, tick);
             startMutation();
           }
           let blocked = false;
           for (let n = 0; n < 100 && !blocked; n++) {
             const holder = writerFirst ? writerPid : tickPid;
             const competitor = writerFirst ? tickPid : writerPid;
-            const result = await boundedBarrier(
+            const result = await owned.wait(
               owned.run(() =>
                 runInTenant(getTenantZeroId(), () =>
                   runtime.query<{ blocked: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked", [
@@ -2858,6 +2935,8 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
                   ]),
                 ),
               ),
+              writer,
+              tick,
             );
             blocked = result.rows[0]?.blocked === true;
             if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
@@ -2880,7 +2959,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
           } else {
             releaseTick();
             await tick;
-            await boundedBarrier(writerMutated);
+            await owned.wait(writerMutated, writer);
             expect(
               (
                 await boundedBarrier(
