@@ -17,6 +17,7 @@ import {
   deleteRelationWithClient,
   updateRelationWithClient,
   assertRelationCreatableWithClient,
+  assertRelationTargetLinkableWithClient,
 } from "../chokePoint/relationOps.js";
 import { VALUE_LINKS_OWNER_PROCESS } from "../chokePoint/valueLinkWrites.js";
 import { insertValueLink, listValueLinksByItemIds, type ValueLinkRow } from "../chokePoint/valueLinksStore.js";
@@ -24,7 +25,6 @@ import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js"
 import { SYSTEM_WRITER, type WriterIdentity } from "../chokePoint/writerKind.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
-import { clearHooksForTests, registerItemPreWriteTransform } from "../chokePoint/hooks.js";
 import * as valueLinksStore from "../chokePoint/valueLinksStore.js";
 import * as inboxSourceGuard from "../inbox/inboxSourceGuard.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
@@ -32,6 +32,7 @@ import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { enqueueRollupRecompute, rollupRecomputeJobKey } from "../rollup/recompute.js";
 import { executeProposalSteps } from "../inbox/proposalSteps.js";
+import { withValueLinkRelationAdmission } from "../chokePoint/valueLinkRelationAdmission.js";
 
 /** Issue #1516: user and agent writes end value links; the valueLinks process needs an `on` link. */
 const USER: WriterIdentity = { writerKind: "user" };
@@ -611,20 +612,33 @@ describe("value link state on writes (issue #1516)", () => {
               await insertValueLink(client, { itemId: task.id, propertyKey, ruleKey: "test", sources: [] });
             }
           });
-          await expect(
-            runInTenant(tenant, () =>
-              withTransaction(runtime, (client) =>
-                updateItemWithClient(
-                  client,
-                  { databaseId: task.databaseId, itemId: task.id, propertiesPatch: { date: null } },
-                  { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
+          const beforeLinks = await withTenantTransaction(runtime, tenant, (client) =>
+            listValueLinksByItemIds(client, [task.id]),
+          );
+          const events: InvalidationEvent[] = [];
+          setInvalidationHook((event) => events.push(event));
+          try {
+            await expect(
+              runInTenant(tenant, () =>
+                withTransaction(runtime, (client) =>
+                  updateItemWithClient(
+                    client,
+                    { databaseId: task.databaseId, itemId: task.id, propertiesPatch: { date: null } },
+                    { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
+                  ),
                 ),
               ),
-            ),
-          ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-          expect((await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id)))?.properties).toEqual(
-            task.properties,
-          );
+            ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+            expect((await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id)))?.properties).toEqual(
+              task.properties,
+            );
+            expect(
+              await withTenantTransaction(runtime, tenant, (client) => listValueLinksByItemIds(client, [task.id])),
+            ).toEqual(beforeLinks);
+            expect(events).toEqual([]);
+          } finally {
+            setInvalidationHook(() => {});
+          }
         });
       },
     );
@@ -707,6 +721,320 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
+    it("refuses protected Inbox deletion when its trashed source is locked", async () => {
+      await seedSystem(pool);
+      const tenant = getTenantZeroId();
+      await withRuntimePool(async (holderPool) =>
+        withRuntimePool(async (contenderPool) => {
+          const cp = createChokePoint(holderPool);
+          const dbs = await runInTenant(tenant, () => cp.listDatabases());
+          const inbox = dbs.find((db) => db.ownerModuleId === "inbox");
+          const types = dbs.find((db) => db.ownerModuleId === "inboxItemTypes");
+          if (!inbox || !types) throw new Error("Missing Inbox databases");
+          const property = await runInTenant(tenant, () => cp.getPropertyByKey(inbox.id, "type"));
+          if (!property) throw new Error("Missing Inbox type relation");
+          const fixture = await withTenantTransaction(holderPool, tenant, async (client) => {
+            const type = await createInboxTypeWithClient(client, {
+              inboxItemTypesDatabaseId: types.id,
+              name: "Page",
+              emoji: "P",
+              processingMethod: "pageContent",
+            });
+            const item = await createInboxItemWithClient(client, {
+              inboxDatabaseId: inbox.id,
+              date: "2026-10-01",
+              time: "09:00",
+              text: "Source",
+              type: type.id,
+            });
+            await insertValueLink(client, { itemId: item.id, propertyKey: "type", ruleKey: "test", sources: [] });
+            return { item, type };
+          });
+          await runInTenant(tenant, () => cp.softDeleteItem(inbox.id, fixture.item.id));
+          const edge = {
+            relationPropertyId: property.id,
+            callerItemId: fixture.item.id,
+            targetItemId: fixture.type.id,
+          };
+          const held = barrier();
+          const release = barrier();
+          let holderPid: number | undefined;
+          let contenderPid: number | undefined;
+          const holder = runInTenant(tenant, () =>
+            withTransaction(holderPool, async (client) => {
+              holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              await deleteRelationWithClient(client, edge, undefined, USER);
+              held.resolve();
+              await bounded(release.promise);
+            }),
+          ).then(
+            () => ({ ok: true as const }),
+            (error: unknown) => ({ ok: false as const, error }),
+          );
+          let failure: unknown;
+          try {
+            await bounded(held.promise);
+            const lock = await pool.query<{ held: boolean }>(
+              `SELECT EXISTS (SELECT 1 FROM items i JOIN pg_locks l ON l.transactionid::text = i.xmax::text WHERE i.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.granted) AS held`,
+              [fixture.item.id, holderPid],
+            );
+            expect(lock.rows[0]?.held).toBe(true);
+            await expect(
+              runInTenant(tenant, () =>
+                withTransaction(contenderPool, async (client) => {
+                  contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                  return deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
+                }),
+              ),
+            ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
+            expect(holderPid).toBeTypeOf("number");
+            expect(contenderPid).toBeTypeOf("number");
+          } catch (error) {
+            failure = error;
+          } finally {
+            release.resolve();
+            try {
+              requireSuccessful(await settleOwned(holder, () => holderPid));
+            } catch (error) {
+              failure =
+                failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
+            }
+          }
+          if (failure !== undefined) throwFailure(failure);
+          const links = await withTenantTransaction(holderPool, tenant, (client) =>
+            listValueLinksByItemIds(client, [fixture.item.id]),
+          );
+          expect(links[0]).toMatchObject({ state: "broken", brokenBy: "user" });
+        }),
+      );
+    }, 30000);
+
+    it("preserves proposed-nil target validation without taking a link lease", async () => {
+      await seedSystem(pool);
+      const tenant = getTenantZeroId();
+      await withRuntimePool(async (runtime) => {
+        const cp = createChokePoint(runtime);
+        const dbs = await runInTenant(tenant, () => cp.listDatabases());
+        const inbox = dbs.find((db) => db.ownerModuleId === "inbox");
+        const types = dbs.find((db) => db.ownerModuleId === "inboxItemTypes");
+        if (!inbox || !types) throw new Error("Missing Inbox databases");
+        const property = await runInTenant(tenant, () => cp.getPropertyByKey(inbox.id, "type"));
+        if (!property) throw new Error("Missing Inbox type relation");
+        const target = await withTenantTransaction(runtime, tenant, (client) =>
+          createInboxTypeWithClient(client, {
+            inboxItemTypesDatabaseId: types.id,
+            name: "Page",
+            emoji: "P",
+            processingMethod: "pageContent",
+          }),
+        );
+        const spy = vi.spyOn(valueLinksStore, "lockOnValueLink");
+        try {
+          await runInTenant(tenant, () =>
+            withTransaction(runtime, (client) =>
+              assertRelationTargetLinkableWithClient(
+                client,
+                { relationPropertyId: property.id, targetItemId: target.id },
+                VALUE_LINKS,
+                SYSTEM_WRITER,
+              ),
+            ),
+          );
+          expect(spy).not.toHaveBeenCalled();
+        } finally {
+          spy.mockRestore();
+        }
+      });
+    });
+
+    it("restores nested managed PostgreSQL lock timeouts in stack order", async () => {
+      const tenant = await createTestTenant(pool);
+      await withRuntimePool(async (runtime) => {
+        const cp = createChokePoint(runtime);
+        const fx = await runInTenant(tenant, () => setup(cp));
+        await withTenantTransaction(runtime, tenant, (client) =>
+          insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+        );
+        await runInTenant(tenant, () =>
+          withTransaction(runtime, async (client) => {
+            const definition = await relationsStore.getRelationDefinitionByPropertyId(client, fx.projectsProperty.id);
+            if (!definition) throw new Error("Missing relation definition");
+            await client.query("SELECT set_config('lock_timeout', $1, true)", ["5s"]);
+            const read = async () =>
+              (await client.query<{ setting: string }>("SELECT current_setting('lock_timeout') AS setting")).rows[0]
+                ?.setting;
+            const before = await read();
+            await withValueLinkRelationAdmission(
+              client,
+              {
+                definitionId: definition.id,
+                itemA: fx.file.id,
+                itemB: fx.alpha.id,
+                callerItemId: fx.file.id,
+                propertyKey: "projects",
+                insert: true,
+              },
+              async () => {},
+              async () => {
+                expect(await read()).toBe("1ms");
+                await createRelationWithClient(
+                  client,
+                  { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id },
+                  VALUE_LINKS,
+                  SYSTEM_WRITER,
+                );
+                expect(await read()).toBe("1ms");
+              },
+            );
+            expect(await read()).toBe(before);
+          }),
+        );
+      });
+    });
+
+    it("preserves a non-driver SC001 value through the protected create store", async () => {
+      const tenant = await createTestTenant(pool);
+      await withRuntimePool(async (runtime) => {
+        const cp = createChokePoint(runtime);
+        const fx = await runInTenant(tenant, () => setup(cp));
+        await withTenantTransaction(runtime, tenant, (client) =>
+          insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+        );
+        const spoof = { code: "SC001" };
+        const original = relationsStore.createItemRelationReportingInsert;
+        const spy = vi
+          .spyOn(relationsStore, "createItemRelationReportingInsert")
+          .mockImplementation(async (client, input) => {
+            const originalQuery = client.query.bind(client);
+            const query = vi.spyOn(client, "query");
+            // pg's last overload is callback-based; the real invocation here is the promise overload.
+            // eslint-disable-next-line @typescript-eslint/no-misused-promises
+            query.mockImplementationOnce(originalQuery).mockRejectedValueOnce(spoof);
+            try {
+              return await original(client, input);
+            } finally {
+              query.mockRestore();
+            }
+          });
+        try {
+          await expect(
+            runInTenant(tenant, () =>
+              withTransaction(runtime, (client) =>
+                createRelationWithClient(
+                  client,
+                  { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id },
+                  VALUE_LINKS,
+                  SYSTEM_WRITER,
+                ),
+              ),
+            ),
+          ).rejects.toBe(spoof);
+          expect(await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id))).toEqual([]);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+    });
+
+    it("keeps genuine cardinality violation mapping through protected create", async () => {
+      const tenant = await createTestTenant(pool);
+      await withRuntimePool(async (runtime) => {
+        const cp = createChokePoint(runtime);
+        const fixture = await runInTenant(tenant, async () => {
+          const source = await cp.createDatabase({ name: "Source" });
+          const target = await cp.createDatabase({ name: "Target" });
+          const { property } = await cp.createRelationProperty({
+            sourceDatabaseId: source.id,
+            targetDatabaseId: target.id,
+            key: "target",
+            name: "Target",
+            cardinality: "one_to_one",
+          });
+          const item = await cp.createItem({ databaseId: source.id, properties: {} });
+          const one = await cp.createItem({ databaseId: target.id, properties: {} });
+          const two = await cp.createItem({ databaseId: target.id, properties: {} });
+          const other = await cp.createItem({ databaseId: source.id, properties: {} });
+          const three = await cp.createItem({ databaseId: target.id, properties: {} });
+          await cp.createRelation({ relationPropertyId: property.id, callerItemId: item.id, targetItemId: one.id });
+          return { property, item, one, two, other, three };
+        });
+        await withTenantTransaction(runtime, tenant, (client) =>
+          insertValueLink(client, { itemId: fixture.item.id, propertyKey: "target", ruleKey: "test", sources: [] }),
+        );
+        await expect(
+          runInTenant(tenant, () =>
+            withTransaction(runtime, (client) =>
+              createRelationWithClient(
+                client,
+                {
+                  relationPropertyId: fixture.property.id,
+                  callerItemId: fixture.item.id,
+                  targetItemId: fixture.two.id,
+                },
+                VALUE_LINKS,
+                SYSTEM_WRITER,
+              ),
+            ),
+          ),
+        ).rejects.toMatchObject({ status: 409, code: "cardinality_violation" });
+        const edges = await runInTenant(tenant, () => cp.listItemRelations(fixture.item.id, fixture.property.id));
+        expect(edges?.map((edge) => edge.targetItemId)).toEqual([fixture.one.id]);
+        const held = barrier();
+        const release = barrier();
+        let holderPid: number | undefined;
+        let contenderPid: number | undefined;
+        const holder = runInTenant(tenant, () =>
+          withTransaction(runtime, async (client) => {
+            holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            await createRelationWithClient(client, {
+              relationPropertyId: fixture.property.id,
+              callerItemId: fixture.other.id,
+              targetItemId: fixture.three.id,
+            });
+            held.resolve();
+            await bounded(release.promise);
+          }),
+        ).then(
+          () => ({ ok: true as const }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+        let failure: unknown;
+        try {
+          await bounded(held.promise);
+          await expect(
+            runInTenant(tenant, () =>
+              withTransaction(runtime, async (client) => {
+                contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                return createRelationWithClient(
+                  client,
+                  {
+                    relationPropertyId: fixture.property.id,
+                    callerItemId: fixture.item.id,
+                    targetItemId: fixture.two.id,
+                  },
+                  VALUE_LINKS,
+                  SYSTEM_WRITER,
+                );
+              }),
+            ),
+          ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
+          expect(holderPid).toBeTypeOf("number");
+          expect(contenderPid).toBeTypeOf("number");
+        } catch (error) {
+          failure = error;
+        } finally {
+          release.resolve();
+          try {
+            requireSuccessful(await settleOwned(holder, () => holderPid));
+          } catch (error) {
+            failure =
+              failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
+          }
+        }
+        if (failure !== undefined) throwFailure(failure);
+      });
+    });
+
     it("refuses a relation while its new active link is still uncommitted", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (holderPool) =>
@@ -1108,9 +1436,15 @@ describe("value link state on writes (issue #1516)", () => {
       );
     }, 30000);
 
-    it.each(["create", "update", "delete"] as const)(
-      "refuses protected %s while the exact existing edge is held",
-      async (operation) => {
+    it.each([
+      ["create", "on"],
+      ["update", "on"],
+      ["delete", "on"],
+      ["update", "missing"],
+      ["update", "broken"],
+    ] as const)(
+      "refuses protected %s with %s link while the exact existing edge is held",
+      async (operation, state) => {
         const tenant = await createTestTenant(pool);
         await withRuntimePool(async (holderPool) =>
           withRuntimePool(async (contenderPool) => {
@@ -1122,9 +1456,22 @@ describe("value link state on writes (issue #1516)", () => {
               targetItemId: fx.alpha.id,
             };
             await runInTenant(tenant, () => cp.createRelation(edge));
-            await withTenantTransaction(holderPool, tenant, (client) =>
-              insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
-            );
+            if (state !== "missing")
+              await withTenantTransaction(holderPool, tenant, (client) =>
+                insertValueLink(client, {
+                  itemId: fx.file.id,
+                  propertyKey: "projects",
+                  ruleKey: "test",
+                  sources: [],
+                  ...(state === "broken"
+                    ? {
+                        state: "broken" as const,
+                        brokenBy: "user" as const,
+                        brokenAt: new Date("2026-01-01T00:00:00Z"),
+                      }
+                    : {}),
+                }),
+              );
             const held = barrier();
             const release = barrier();
             let holderPid: number | undefined;
@@ -1170,7 +1517,9 @@ describe("value link state on writes (issue #1516)", () => {
                     return deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
                   }),
                 ),
-              ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
+              ).rejects.toMatchObject(
+                state === "on" ? { status: 409, code: "value_link_busy" } : { status: 403, code: "owner_violation" },
+              );
               expect(holderPid).toBeTypeOf("number");
               expect(contenderPid).toBeTypeOf("number");
             } catch (error) {
@@ -1193,7 +1542,8 @@ describe("value link state on writes (issue #1516)", () => {
             const links = await withTenantTransaction(holderPool, tenant, (client) =>
               listValueLinksByItemIds(client, [fx.file.id]),
             );
-            expect(links[0]).toMatchObject({ state: "on" });
+            if (state === "missing") expect(links).toEqual([]);
+            else expect(links[0]).toMatchObject({ state });
           }),
         );
       },
@@ -1292,16 +1642,17 @@ describe("value link state on writes (issue #1516)", () => {
         const prediction = vi.spyOn(valueLinksStore, "lockOnValueLink");
         try {
           await client.query("SELECT set_config('app.tenant_id', $1, false)", [tenant]);
-          await expect(
-            runInTenant(tenant, () =>
-              createRelationWithClient(
-                client,
-                { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id },
-                VALUE_LINKS,
-                SYSTEM_WRITER,
-              ),
-            ),
-          ).rejects.toThrow("active managed transaction");
+          const edge = {
+            relationPropertyId: fx.projectsProperty.id,
+            callerItemId: fx.file.id,
+            targetItemId: fx.alpha.id,
+          };
+          for (const operation of [
+            () => createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER),
+            () => updateRelationWithClient(client, { ...edge, metadata: {} }, VALUE_LINKS, SYSTEM_WRITER),
+            () => deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER),
+          ])
+            await expect(runInTenant(tenant, operation)).rejects.toThrow("active managed transaction");
           expect(prediction).not.toHaveBeenCalled();
         } finally {
           prediction.mockRestore();
@@ -1324,12 +1675,39 @@ describe("value link state on writes (issue #1516)", () => {
           const unrelated = await runInTenant(tenant, () =>
             cp.createItem({ databaseId: fx.files.id, properties: { name: "original" } }),
           );
+          const rollup = await runInTenant(tenant, async () => {
+            const target = await cp.createDatabase({ name: "Other rollup targets" });
+            await cp.createRelationProperty({
+              sourceDatabaseId: fx.files.id,
+              targetDatabaseId: target.id,
+              key: "others",
+              name: "Others",
+            });
+            return cp.createProperty({
+              databaseId: fx.files.id,
+              key: "otherCount",
+              name: "Other count",
+              type: "rollup",
+              config: { relationPropertyKey: "others", aggregation: "count" },
+            });
+          });
+          const jobKey = rollupRecomputeJobKey(rollup.id, unrelated.id);
+          const jobCount = async () =>
+            (
+              await pool.query<{ count: string }>(
+                "SELECT count(*)::text AS count FROM graphile_worker._private_jobs WHERE key = $1",
+                [jobKey],
+              )
+            ).rows[0]?.count;
+          expect(await jobCount()).toBe("0");
           await withTenantTransaction(holderPool, tenant, (client) =>
             insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
           );
           const held = barrier();
           const release = barrier();
           const callback = vi.fn();
+          const events: InvalidationEvent[] = [];
+          setInvalidationHook((event) => events.push(event));
           let holderPid: number | undefined;
           let competitorPid: number | undefined;
           const holder = runInTenant(tenant, () =>
@@ -1360,6 +1738,7 @@ describe("value link state on writes (issue #1516)", () => {
                     { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "before" } },
                     { writer: USER },
                   );
+                  await enqueueRollupRecompute(client, rollup.id, unrelated.id);
                   runAfterCommit(client, callback);
                   await client.query("SAVEPOINT relation_busy");
                   await expect(
@@ -1390,6 +1769,8 @@ describe("value link state on writes (issue #1516)", () => {
               "original",
             );
             expect(callback).not.toHaveBeenCalled();
+            expect(await jobCount()).toBe("0");
+            expect(events.filter((event) => event.scope === "item" && event.itemId === unrelated.id)).toEqual([]);
             await runInTenant(tenant, () =>
               withTransaction(contenderPool, async (client) => {
                 const result = await client.query<{ pid: number; timeout: string }>(
@@ -1422,6 +1803,7 @@ describe("value link state on writes (issue #1516)", () => {
               failure =
                 failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
             }
+            setInvalidationHook(() => {});
           }
           if (failure !== undefined) throwFailure(failure);
         }),
@@ -2186,31 +2568,31 @@ describe("value link state on writes (issue #1516)", () => {
     ] as const)(
       "serializes %s item and handoff writes with %s",
       async (kind, order) => {
-        const tenant = await createTestTenant(pool);
+        if (kind === "transformed") await seedSystem(pool);
+        const tenant = kind === "transformed" ? getTenantZeroId() : await createTestTenant(pool);
         const otherTenant = await createTestTenant(pool);
         await withRuntimePool(async (userPool) =>
           withRuntimePool(async (systemPool) => {
             const cp = createChokePoint(userPool);
             const fx = await runInTenant(tenant, async () => {
               if (kind === "plain") return setup(cp);
-              const files = await cp.createDatabase({ name: "Transformed", ownerModuleId: "handoffProbe" });
-              await cp.createProperty({ databaseId: files.id, key: "name", name: "Name", type: "text" });
-              registerItemPreWriteTransform("handoffProbe", async ({ patch }) => patch);
-              const file = await cp.createItem({ databaseId: files.id, properties: { name: "initial" } });
+              const files = (await cp.listDatabases()).find((entry) => entry.key === "tasks");
+              if (!files) throw new Error("Missing seeded Tasks database");
+              const file = await cp.createItem({
+                databaseId: files.id,
+                properties: { name: "initial", date: "2026-10-13", timeFrom: "10:00", timeTo: "11:00" },
+              });
               return { files, file };
             });
             const unrelated = await runInTenant(tenant, () =>
               cp.createItem({ databaseId: fx.files.id, properties: { name: "other" } }),
             );
             const foreign = await runInTenant(otherTenant, () => setup(cp));
-            await withTenantTransaction(userPool, tenant, (client) =>
-              insertValueLink(client, {
-                itemId: fx.file.id,
-                propertyKey: "name",
-                ruleKey: "test",
-                sources: [],
-              }),
-            );
+            await withTenantTransaction(userPool, tenant, async (client) => {
+              for (const propertyKey of kind === "transformed" ? ["date", "timeFrom", "timeTo"] : ["name"]) {
+                await insertValueLink(client, { itemId: fx.file.id, propertyKey, ruleKey: "test", sources: [] });
+              }
+            });
             const userHeld = barrier();
             const systemHeld = barrier();
             const releaseUser = barrier();
@@ -2247,14 +2629,14 @@ describe("value link state on writes (issue #1516)", () => {
                 () => ({ ok: true }),
                 (error: unknown) => ({ ok: false, error }),
               );
-            const run = (kind: "user" | "system") =>
+            const run = (actor: "user" | "system") =>
               settled(
                 runInTenant(tenant, () =>
-                  withTransaction(kind === "user" ? userPool : systemPool, async (client) => {
+                  withTransaction(actor === "user" ? userPool : systemPool, async (client) => {
                     await client.query("SET LOCAL statement_timeout = '7s'");
                     const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
                     if (!pid) throw new Error("Missing operation PID");
-                    if (kind === "user") {
+                    if (actor === "user") {
                       userClient = client;
                       userPid = pid;
                       userStarted.resolve();
@@ -2265,12 +2647,17 @@ describe("value link state on writes (issue #1516)", () => {
                     }
                     const result = await updateItemWithClient(
                       client,
-                      { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: kind } },
-                      kind === "user"
+                      {
+                        databaseId: fx.files.id,
+                        itemId: fx.file.id,
+                        propertiesPatch:
+                          kind === "transformed" ? { date: actor === "user" ? "2026-10-14" : null } : { name: actor },
+                      },
+                      actor === "user"
                         ? { writer: USER }
                         : { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
                     );
-                    if (kind === "system" && order === "system-rollback") throw new Error("forced rollback");
+                    if (actor === "system" && order === "system-rollback") throw new Error("forced rollback");
                     return result;
                   }),
                 ),
@@ -2348,8 +2735,22 @@ describe("value link state on writes (issue #1516)", () => {
               const links = await withTenantTransaction(userPool, tenant, (client) =>
                 listValueLinksByItemIds(client, [fx.file.id]),
               );
-              expect(current?.properties.name).toBe("user");
-              expect(links[0]).toMatchObject({ state: "broken", brokenBy: "user" });
+              if (kind === "transformed") {
+                expect(current?.properties.date).toBe("2026-10-14");
+                expect(links.find((link) => link.propertyKey === "date")).toMatchObject({
+                  state: "broken",
+                  brokenBy: "user",
+                });
+                expect(links.filter((link) => link.propertyKey !== "date").map((link) => link.state)).toEqual([
+                  "on",
+                  "on",
+                ]);
+                expect(current?.properties.timeFrom).toBe(order === "system-first" ? null : "10:00");
+                expect(current?.properties.timeTo).toBe(order === "system-first" ? null : "11:00");
+              } else {
+                expect(current?.properties.name).toBe("user");
+                expect(links[0]).toMatchObject({ state: "broken", brokenBy: "user" });
+              }
             } catch (error) {
               failure = error;
             } finally {
@@ -2364,7 +2765,6 @@ describe("value link state on writes (issue #1516)", () => {
               updateSpy.mockRestore();
               lockSpy.mockRestore();
               setInvalidationHook(() => {});
-              if (kind === "transformed") clearHooksForTests();
               if (cleanupErrors.length) {
                 failure = new AggregateError(
                   failure === undefined ? cleanupErrors : [failure, ...cleanupErrors],

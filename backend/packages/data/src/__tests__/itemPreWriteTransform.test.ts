@@ -315,6 +315,15 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
       databaseId: eventsId,
       properties: { name: "Standup", timeFrom: "10:00" },
     });
+    const deadline = Date.now() + 3000;
+    for (;;) {
+      const { rows } = await pool.query<{ advanced: boolean }>(
+        "SELECT clock_timestamp() >= $1::timestamptz + interval '2 milliseconds' AS advanced",
+        [created.updatedAt],
+      );
+      if (rows[0]?.advanced) break;
+      if (Date.now() >= deadline) throw new Error("Database clock did not advance");
+    }
     const update = vi.spyOn(itemsStore, "updateItemProperties");
     try {
       const updated = await chokePoint.updateItem({
@@ -325,7 +334,7 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
 
       expect(updated.properties.timeFrom).toBe("09:00");
       expect((await chokePoint.getItem(eventsId, created.id))!.properties.timeFrom).toBe("09:00");
-      expect(Date.parse(updated.updatedAt)).toBeGreaterThanOrEqual(Date.parse(created.updatedAt));
+      expect(Date.parse(updated.updatedAt)).toBeGreaterThan(Date.parse(created.updatedAt));
       expect(update).toHaveBeenCalledTimes(1);
       expect(hookPatches).toEqual([{ timeFrom: "09:00" }]);
       // A create sees no stored row; the update sees the row it replaces, as committed.

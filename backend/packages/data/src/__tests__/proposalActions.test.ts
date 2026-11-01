@@ -15,7 +15,7 @@ import { createPool, withTransaction } from "../db/pool.js";
 import { runMigrations } from "../db/migrate.js";
 import { ConflictError, ValidationError } from "../errors.js";
 import { randomUUID } from "node:crypto";
-import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { createItemWithClient, prepareUserItemPatch, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
@@ -35,6 +35,7 @@ import {
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
+import * as databasesStore from "../chokePoint/databasesStore.js";
 import { createDocStore, type DocStore } from "../docs/docStore.js";
 import { matchTranscriptToEvent } from "../transcription/transcriptEventMatch.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
@@ -1017,7 +1018,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(await cardStatus(card)).toBe("proposed");
     });
 
-    it("checks an implicit time precondition even when the current transform no longer emits it", async () => {
+    it("checks an implicit time precondition after the current time is cleared", async () => {
       const task = await createIn("tasks", { name: "Task", date: "2026-11-01", timeFrom: "09:00", timeTo: null });
       const card = await cardWithSteps("tasks", [
         {
@@ -1040,6 +1041,49 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       );
       await expect(confirm(card)).rejects.toMatchObject({ status: 400, details: { ref: "task", field: "timeFrom" } });
       expect(await cardStatus(card)).toBe("proposed");
+    });
+
+    it("checks a declared pin precondition after the registered Projects transform stops emitting it", async () => {
+      const project = await createIn("projects", { name: "Project", status: "inProgress", pinned: true });
+      const projectsDb = await databaseIdFor("projects");
+      const prepare = () =>
+        withTransaction(pool, async (client) => {
+          const db = await databasesStore.getDatabase(client, projectsDb);
+          const [item] = await itemsStore.getItemsByIds(client, [project]);
+          if (!db || !item) throw new Error("Missing project fixture");
+          const properties = await propertiesStore.listPropertiesByDatabase(client, projectsDb);
+          return { item, prepared: await prepareUserItemPatch(properties, { status: "done" }, db, item) };
+        });
+      const initial = await prepare();
+      const order = initial.item.properties.pinnedOrder;
+      if (typeof order !== "number") throw new Error("Missing project pin order");
+      expect(initial.prepared.patch).toMatchObject({ status: "done", pinned: false, pinnedOrder: null });
+      const card = await cardWithSteps("projects", [
+        {
+          ref: "project",
+          op: "update",
+          role: "primary",
+          itemId: project,
+          properties: { status: "done" },
+          before: { properties: { status: "inProgress", pinned: true, pinnedOrder: order } },
+          after: { properties: { status: "done", pinned: false, pinnedOrder: null } },
+        },
+      ]);
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(client, { databaseId: projectsDb, itemId: project, propertiesPatch: { pinned: false } }),
+      );
+      const later = await prepare();
+      expect(Object.hasOwn(later.prepared.patch, "pinned")).toBe(false);
+      const [cardBefore] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [card]));
+      await expect(confirm(card)).rejects.toMatchObject({ status: 400, details: { ref: "project", field: "pinned" } });
+      const [targetAfter, cardAfter] = await withTransaction(pool, (client) =>
+        itemsStore.getItemsByIds(client, [project, card]),
+      );
+      const byId = new Map(
+        [targetAfter, cardAfter].filter((item) => item !== undefined).map((item) => [item.id, item]),
+      );
+      expect(byId.get(project)).toEqual(later.item);
+      expect(byId.get(card)).toEqual(cardBefore);
     });
 
     it("waits for an overlapping task time change and rejects the stale implicit clear", async () => {

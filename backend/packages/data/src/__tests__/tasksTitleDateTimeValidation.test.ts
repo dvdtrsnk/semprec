@@ -4,6 +4,7 @@ import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -43,6 +44,27 @@ describe("Tasks title, date and time rules (issue gh-1536)", () => {
   });
 
   describe("on create", () => {
+    it.each([
+      ["10:00", "09:30"],
+      ["23:55", "23:55"],
+    ] as const)("refuses create with start %s and end %s without row or event", async (timeFrom, timeTo) => {
+      const before = await countTasks();
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await expect(
+          chokePoint.createItem({
+            databaseId: tasksDatabaseId,
+            properties: { name: "Plan", date: "2026-10-13", timeFrom, timeTo },
+          }),
+        ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field: "timeTo" } });
+        expect(await countTasks()).toBe(before);
+        expect(events).toEqual([]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
+    });
+
     it("normalizes a single-digit start time and derives time from it", async () => {
       const task = await chokePoint.createItem({
         databaseId: tasksDatabaseId,
@@ -122,6 +144,29 @@ describe("Tasks title, date and time rules (issue gh-1536)", () => {
   });
 
   describe("on patch", () => {
+    it.each([
+      [{ name: "  " }, "name"],
+      [{ date: "2026-02-30" }, "date"],
+      [{ timeFrom: "10:00", timeTo: "09:30" }, "timeTo"],
+      [{ timeFrom: "23:55", timeTo: "23:55" }, "timeTo"],
+    ] as const)("refuses named invalid patch %j without writes or events", async (propertiesPatch, field) => {
+      const task = await chokePoint.createItem({
+        databaseId: tasksDatabaseId,
+        properties: { name: "Plan", date: "2026-10-13" },
+      });
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await expect(
+          chokePoint.updateItem({ databaseId: tasksDatabaseId, itemId: task.id, propertiesPatch }),
+        ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field } });
+        expect(await chokePoint.getItem(tasksDatabaseId, task.id)).toEqual(task);
+        expect(events).toEqual([]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
+    });
+
     it("writes explicit null time fields when the date is switched off", async () => {
       const task = await chokePoint.createItem({ databaseId: tasksDatabaseId, properties: { name: "Plan" } });
       const updated = await chokePoint.updateItem({
@@ -361,6 +406,24 @@ describe("Tasks title, date and time rules (issue gh-1536)", () => {
         propertiesPatch: { status: "done" },
       });
       expect(updated.properties).toMatchObject({ status: "done", timeFrom: "10:00", time: "10:00" });
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await expect(
+          chokePoint.updateItem({ databaseId: tasksDatabaseId, itemId: legacy.id, propertiesPatch: { name: "  " } }),
+        ).rejects.toMatchObject({ status: 400, details: { field: "name" } });
+        await expect(
+          chokePoint.updateItem({
+            databaseId: tasksDatabaseId,
+            itemId: legacy.id,
+            propertiesPatch: { timeFrom: "11:00" },
+          }),
+        ).rejects.toMatchObject({ status: 400, details: { field: "timeFrom" } });
+        expect(await chokePoint.getItem(tasksDatabaseId, legacy.id)).toEqual(updated);
+        expect(events).toEqual([]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
     });
   });
 });

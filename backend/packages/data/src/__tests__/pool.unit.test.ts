@@ -291,6 +291,35 @@ describe("withTransaction", () => {
     expect(sqlCalls(query)).not.toContain("COMMIT");
   });
 
+  it.each(["current_setting", "set_config"] as const)(
+    "preserves and marks timeout setup failure in %s",
+    async (stage) => {
+      const { pool, query } = fakeClient({});
+      const failure = new Error(`failed ${stage}`);
+      query.mockImplementation(async (sql: string) => {
+        if (sql.includes(stage)) throw failure;
+        if (sql.includes("current_setting('lock_timeout')")) return { rows: [{ setting: "0" }], rowCount: 1 };
+        if (sql.includes("FROM value_links")) return { rows: [{ exists: 1 }], rowCount: 1 };
+        return { rows: [], rowCount: 0 };
+      });
+      const input = { definitionId: "d", itemA: "a", itemB: "b", callerItemId: "a", propertyKey: "x", insert: false };
+      await expect(
+        withTransaction(pool, async (client) => {
+          await expect(
+            withValueLinkRelationAdmission(
+              client,
+              input,
+              async () => {},
+              async () => "never",
+            ),
+          ).rejects.toBe(failure);
+        }),
+      ).rejects.toBe(failure);
+      expect(sqlCalls(query).at(-1)).toBe("ROLLBACK");
+      expect(sqlCalls(query)).not.toContain("COMMIT");
+    },
+  );
+
   it("restores nested protected timeouts in stack order", async () => {
     const { pool, query } = fakeClient({});
     let setting = "5s";
