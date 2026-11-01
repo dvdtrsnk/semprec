@@ -84,7 +84,7 @@ function splitGenericOperationReason(operation: GenericOperationName, params: un
   if (!(GENERIC_OPERATION_REASON_KEY in params)) return { ok: true, args: params };
   const { [GENERIC_OPERATION_REASON_KEY]: raw, ...args } = params;
   if (raw === undefined || raw === null) return { ok: true, args };
-  if (typeof raw !== "string" || raw.length > APPROVAL_REQUEST_REASON_MAX_LENGTH) {
+  if (typeof raw !== "string" || Array.from(raw).length > APPROVAL_REQUEST_REASON_MAX_LENGTH) {
     return {
       ok: false,
       error: `Invalid argument 'reason': it must be a string of at most ${APPROVAL_REQUEST_REASON_MAX_LENGTH} characters.`,
@@ -164,7 +164,14 @@ async function createMcpTools(pool: Pool, runId: string, projectItemId: string):
   return grants
     .filter((grant) => grant.granted && grant.mcpServerOnline)
     .map((grant) => {
-      const invoke = createApprovalGatedMcpInvokeTool(pool, runId, projectItemId, grant.mcpToolRegistrationId);
+      const invoke = createApprovalGatedMcpInvokeTool(
+        pool,
+        runId,
+        projectItemId,
+        grant.mcpToolRegistrationId,
+        {},
+        grant.mcpServerItemId,
+      );
       return {
         name: mcpModelToolName(grant.toolName, grant.mcpServerItemId),
         label: `${grant.mcpServerName}: ${grant.toolName}`,
@@ -198,7 +205,7 @@ async function createMcpTools(pool: Pool, runId: string, projectItemId: string):
                       ? { mcpServerItemId: result.failure.mcpServerItemId }
                       : {}),
                     connectorName: grant.mcpServerName,
-                    ...(result.failure.timeoutMs !== undefined ? { timeoutMs: result.failure.timeoutMs } : {}),
+                    ...(result.failure.failureKind === "timeout" ? { timeoutMs: result.failure.timeoutMs } : {}),
                   }
                 : {}),
             },

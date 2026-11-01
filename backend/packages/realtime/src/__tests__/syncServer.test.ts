@@ -13,6 +13,7 @@ import {
   createAgentRun,
   createUser,
   hashPassword,
+  insertAndNotifyAgentRunEvent,
   insertAgentRunEvent,
   publishSempThreadInvalidation,
   writeNotification,
@@ -1611,6 +1612,37 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     expect(eventIdOf(frames[0])).toBe(first.id);
     expect(eventIdOf(frames[1])).toBe(live.id);
     user.close();
+  });
+
+  it("replays and then delivers live user messages to the authenticated run owner", async () => {
+    const user = await connectAs("own", tenantA, userA);
+    const run = await createRunIn(tenantA, userA);
+    const firstPayload = { kind: "user_message", text: "first", context: [] };
+    const secondPayload = { kind: "user_message", text: "second", context: [] };
+    try {
+      const first = await runInTenant(tenantA, () =>
+        insertAgentRunEvent(runtimePool, run.id, "user_message", firstPayload),
+      );
+      const frames = collectFrames(user);
+      user.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+      await waitUntil(() => frames.length === 1);
+      const live = await runInTenant(tenantA, () =>
+        insertAndNotifyAgentRunEvent(runtimePool, run.id, "user_message", secondPayload),
+      );
+      await waitUntil(() => frames.length === 2);
+      expect(frames).toEqual([
+        expect.objectContaining({
+          type: "agent:event",
+          event: expect.objectContaining({ id: first.id, kind: "user_message", payload: firstPayload }),
+        }),
+        expect.objectContaining({
+          type: "agent:event",
+          event: expect.objectContaining({ id: live.id, kind: "user_message", payload: secondPayload }),
+        }),
+      ]);
+    } finally {
+      user.close();
+    }
   });
 
   it("delivers a heartbeat-triggered run to the tenant's user", async () => {

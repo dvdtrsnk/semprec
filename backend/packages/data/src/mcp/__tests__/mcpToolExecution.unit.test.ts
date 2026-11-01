@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 
+const warn = vi.fn();
+vi.mock("@semprec/shared", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@semprec/shared")>()),
+  createLogger: () => ({ warn }),
+}));
+
 const connectMcpServer = vi.fn();
 vi.mock("../mcpConnectionFactory.js", () => ({ connectMcpServer: (...args: unknown[]) => connectMcpServer(...args) }));
 
@@ -15,6 +21,7 @@ const { executeMcpInvocation } = await import("../mcpToolExecution.js");
 const { McpConnectionError } = await import("../mcpConnectionError.js");
 const { McpError, ErrorCode } = await import("@modelcontextprotocol/sdk/types.js");
 const { StreamableHTTPError } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+const { UnauthorizedError } = await import("@modelcontextprotocol/sdk/client/auth.js");
 
 const POOL = {} as Pool;
 const TARGET = { serverItem: { id: "server-1", properties: {} }, toolName: "search_web" };
@@ -33,6 +40,8 @@ describe("executeMcpInvocation (issue #693)", () => {
 
     expect(result).toEqual({ error: false, result: "ok" });
     expect(close).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith({ mcpServerItemId: "server-1" }, "MCP connection close failed after tools/call");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("close boom");
   });
 
   it("resolves the call's own error even when close() also rejects afterward", async () => {
@@ -85,6 +94,44 @@ describe("executeMcpInvocation failure classification (issue #1444)", () => {
     expect(JSON.stringify(result.failure)).not.toContain("secret detail");
   });
 
+  it("keeps cancellation and timeout ahead of any observed HTTP status", async () => {
+    const callTool = vi.fn().mockRejectedValue(new McpError(ErrorCode.RequestTimeout, "private"));
+    connectMcpServer.mockResolvedValue({
+      client: { callTool },
+      close,
+      beginHttpObservation: () => ({
+        run: <T>(work: () => Promise<T>) => work(),
+        status: () => 403,
+        close: () => {},
+      }),
+    });
+    expect((await executeMcpInvocation(POOL, TARGET, {})).failure).toEqual({
+      failureKind: "timeout",
+      mcpServerItemId: "server-1",
+      timeoutMs: 60000,
+    });
+    const controller = new AbortController();
+    controller.abort();
+    expect(await executeMcpInvocation(POOL, TARGET, {}, {}, controller.signal)).toEqual({
+      error: true,
+      result: "MCP tool call was cancelled before it completed",
+    });
+  });
+
+  it("keeps server exception and close exception details out of failure metadata and logs", async () => {
+    warn.mockClear();
+    const callTool = vi.fn().mockRejectedValue(new McpError(ErrorCode.RequestTimeout, "server-message-sentinel"));
+    const closeWithError = vi.fn().mockRejectedValue(new Error("close-message-sentinel"));
+    mockHandle(callTool, closeWithError);
+    const result = await executeMcpInvocation(POOL, TARGET, {});
+    expect(result.failure).toEqual({ failureKind: "timeout", mcpServerItemId: "server-1", timeoutMs: 60000 });
+    expect(closeWithError).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      { mcpServerItemId: "server-1" },
+      "MCP connection close failed after tools/call",
+    );
+  });
+
   it("carries no failure when the run's signal aborted the call", async () => {
     const controller = new AbortController();
     controller.abort();
@@ -97,6 +144,20 @@ describe("executeMcpInvocation failure classification (issue #1444)", () => {
     connectMcpServer.mockRejectedValue(new McpConnectionError("connect_timeout", "Timed out"));
     const result = await executeMcpInvocation(POOL, TARGET, {});
     expect(result.failure).toEqual({ failureKind: "timeout", mcpServerItemId: "server-1", timeoutMs: 15000 });
+  });
+
+  it("keeps connect timeout and address denial ahead of a conflicting HTTP status", async () => {
+    connectMcpServer.mockRejectedValue(new McpConnectionError("connect_timeout", "slow", 403));
+    expect((await executeMcpInvocation(POOL, TARGET, {})).failure).toEqual({
+      failureKind: "timeout",
+      mcpServerItemId: "server-1",
+      timeoutMs: 15000,
+    });
+    connectMcpServer.mockRejectedValue(new McpConnectionError("address_not_allowed", "denied", 403));
+    expect((await executeMcpInvocation(POOL, TARGET, {})).failure).toEqual({
+      failureKind: "connection",
+      mcpServerItemId: "server-1",
+    });
   });
 
   it.each(["handshake_failed", "address_not_allowed", "transport_not_allowed", "stdio_sandbox_unavailable"] as const)(
@@ -123,6 +184,16 @@ describe("executeMcpInvocation failure classification (issue #1444)", () => {
     });
   });
 
+  it("classifies a typed SDK authorization failure as auth without copying its message", async () => {
+    mockHandle(vi.fn().mockRejectedValue(new UnauthorizedError("credential-sentinel")), close);
+    const result = await executeMcpInvocation(POOL, TARGET, {});
+    expect(result).toEqual({
+      error: true,
+      result: "MCP tool call failed for an unexpected reason",
+      failure: { failureKind: "auth", mcpServerItemId: "server-1" },
+    });
+  });
+
   it("classifies an isError result and any other thrown error as toolError", async () => {
     mockHandle(vi.fn().mockResolvedValue({ isError: true, content: [{ type: "text", text: "nope" }] }), close);
     expect(await executeMcpInvocation(POOL, TARGET, {})).toEqual({
@@ -137,6 +208,17 @@ describe("executeMcpInvocation failure classification (issue #1444)", () => {
   it("carries no failure for a successful call", async () => {
     mockHandle(vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] }), close);
     expect(await executeMcpInvocation(POOL, TARGET, {})).toEqual({ error: false, result: "ok" });
+  });
+
+  it("handles the SDK compatibility result and rejects a malformed result without exposing it", async () => {
+    mockHandle(vi.fn().mockResolvedValue({ toolResult: "legacy" }), close);
+    expect(await executeMcpInvocation(POOL, TARGET, {})).toEqual({ error: false, result: "" });
+    mockHandle(vi.fn().mockResolvedValue(null), close);
+    expect(await executeMcpInvocation(POOL, TARGET, {})).toEqual({
+      error: true,
+      result: "MCP tool call failed for an unexpected reason",
+      failure: { failureKind: "toolError", mcpServerItemId: "server-1" },
+    });
   });
 });
 

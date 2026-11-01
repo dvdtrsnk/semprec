@@ -18,6 +18,10 @@ import {
 } from "../agentRuns/agentRunsStore.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { createHeartbeat } from "../scheduler/schedulerStore.js";
+import { coreAgentRunAction, CORE_AGENT_RUN_ACTION_ID } from "../scheduler/actions.js";
+import { AgentRunError } from "../agentRuns/agentRunErrorCodes.js";
 
 let pool: Pool;
 
@@ -43,6 +47,10 @@ describe("finishAgentRunWithErrorNotification (issue #149)", () => {
     await expect(
       withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, run.id, "boom", "internal")),
     ).resolves.toBe(true);
+    const stored = await pool.query<{ error_code: string | null }>("SELECT error_code FROM agent_runs WHERE id = $1", [
+      run.id,
+    ]);
+    expect(stored.rows).toEqual([{ error_code: "internal" }]);
 
     const { rows: afterFirst } = await pool.query(
       `SELECT user_id, kind, title, link_href, source_table, source_id, transition_instance FROM notifications WHERE source_id = $1`,
@@ -92,6 +100,10 @@ describe("finishAgentRunWithErrorNotification (issue #149)", () => {
 
     const finished = await getAgentRun(pool, run.id);
     expect(finished!.status).toBe("error");
+    const stored = await pool.query<{ error_code: string | null }>("SELECT error_code FROM agent_runs WHERE id = $1", [
+      run.id,
+    ]);
+    expect(stored.rows).toEqual([{ error_code: "internal" }]);
     const { rows } = await pool.query(`SELECT user_id, kind FROM notifications WHERE source_id = $1`, [run.id]);
     expect(rows).toMatchObject([{ user_id: user.id, kind: "agent_run_error" }]);
   });
@@ -114,6 +126,42 @@ describe("finishAgentRunWithErrorNotification (issue #149)", () => {
     await expect(createAgentRun(pool, { triggeredBy: "user", task: "do the thing" })).rejects.toThrow(
       "Cannot create an agent run: the current tenant has no user",
     );
+  });
+
+  it("records the structured code on both final and non-final heartbeat failures", async () => {
+    await createTestUser();
+    await seedSystem(pool);
+    const { rows } = await pool.query<{ id: string }>(
+      "SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id WHERE d.owner_module_id = 'projects' LIMIT 1",
+    );
+    const projectItemId = rows[0]!.id;
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "failure test",
+        rule: { kind: "interval", minutes: 5 },
+        actionId: CORE_AGENT_RUN_ACTION_ID,
+        actionConfig: { task: "test" },
+      }),
+    );
+    const action = coreAgentRunAction(pool, async () => {
+      throw new AgentRunError("modelError", "model failed");
+    });
+    for (const isFinalAttempt of [false, true]) {
+      await expect(
+        runInTenant(getTenantZeroId(), () =>
+          action({ task: "test" }, { heartbeatId: heartbeat.id, projectItemId, isFinalAttempt }),
+        ),
+      ).rejects.toThrow("model failed");
+    }
+    const runs = await pool.query<{ status: string; error_code: string | null }>(
+      "SELECT status, error_code FROM agent_runs WHERE heartbeat_id = $1 ORDER BY wake_seq",
+      [heartbeat.id],
+    );
+    expect(runs.rows).toEqual([
+      { status: "error", error_code: "modelError" },
+      { status: "error", error_code: "modelError" },
+    ]);
   });
 });
 

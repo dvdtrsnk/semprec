@@ -6,6 +6,7 @@ import type { AgentRunRow, McpInvokeResult, McpToolGrantForProject } from "@semp
 import { Type, fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { createAgentSessionFactoryForRun, mcpModelToolName, withUniqueNames } from "../agentSessionComposition.js";
 import { logger } from "../logger.js";
+import * as piSession from "../piAgentSession.js";
 
 const testMetadataResolver = {
   resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
@@ -413,6 +414,48 @@ describe("agent-only approval reason (issue #1420)", () => {
     expect(fixtures.calls).toEqual([["run-1", { itemId: "item-1" }, { toolCallId: "call" }]]);
   });
 
+  it("normalizes a null reason to absence in the provider-facing composition", async () => {
+    await runCalls({ itemId: "item-1", reason: null });
+    expect(fixtures.calls).toEqual([["run-1", { itemId: "item-1" }, { toolCallId: "call" }]]);
+  });
+
+  it.each([true, 123])("documents SDK normalization of generic reason %s before the wrapper", async (reason) => {
+    await runCalls({ itemId: "item-1", reason });
+    expect(fixtures.calls).toEqual([["run-1", { itemId: "item-1" }, { reason: String(reason), toolCallId: "call" }]]);
+  });
+
+  it.each([true, 123])("rejects generic non-string reason %s that reaches the wrapper", async (reason) => {
+    fixtures.operations = ["item.delete"];
+    fixtures.calls = [];
+    const pool = new Pool();
+    const faux = fauxProvider();
+    let tools: AgentTool[] = [];
+    vi.spyOn(piSession, "createPiAgentSessionFactory").mockImplementation((options) => {
+      tools = options.tools;
+      return () => ({ async *messages() {} });
+    });
+    try {
+      await createAgentSessionFactoryForRun(
+        pool,
+        new ModuleRegistry(() => new Set<string>()),
+        {
+          model: faux.getModel(),
+          streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+          isBudgetRefusal: () => false,
+        },
+        run,
+      );
+      const tool = tools.find((candidate) => candidate.name === "item_delete");
+      if (!tool) throw new Error("expected generic tool");
+      const result = await tool.execute("call", { itemId: "item-1", reason });
+      expect(result.details).toMatchObject({ error: true });
+      expect(fixtures.calls).toEqual([]);
+    } finally {
+      fixtures.operations = ["item.patch"];
+      await pool.end();
+    }
+  });
+
   it("writes approvalRequestId and changes into the generic tool result details", async () => {
     fixtures.structured = { approvalRequestId: "req-1", changes: [{ key: "due", before: "a", after: "b" }] };
     try {
@@ -438,6 +481,15 @@ describe("agent-only approval reason (issue #1420)", () => {
     const { results } = await runCalls({ itemId: "item-1", reason: "x".repeat(501) });
     expect(fixtures.calls).toEqual([]);
     expect(results.join()).toMatch(/reason/);
+  });
+
+  it("accepts 500 non-BMP characters and rejects 501", async () => {
+    const reason = "😀".repeat(500);
+    await runCalls({ itemId: "item-1", reason });
+    expect(fixtures.calls).toEqual([["run-1", { itemId: "item-1" }, { reason, toolCallId: "call" }]]);
+    const { results } = await runCalls({ itemId: "item-1", reason: "😀".repeat(501) });
+    expect(fixtures.calls).toEqual([]);
+    expect(results.join()).toMatch(/reason/i);
   });
 });
 

@@ -8,6 +8,7 @@ import type {
   UserTurnContextRef,
 } from "@semprec/agent-runtime";
 import { AgentRunError, AiBudgetExceededError } from "@semprec/data";
+import { labeledSempMessageRefSchema } from "@semprec/shared";
 import { logger } from "./logger.js";
 import { toPiMessages } from "./piConversationHistory.js";
 
@@ -48,6 +49,7 @@ function toAgentMessage(
   event: AgentEvent,
   toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>,
   targets: Map<string, { targetDatabaseId?: string; targetItemId?: string }>,
+  isBudgetRefusal: ((message: AssistantMessage) => boolean) | undefined,
 ): AgentMessage | null {
   switch (event.type) {
     // The turn's assistant message and tool results are already their own `message`/`tool_result`
@@ -65,6 +67,16 @@ function toAgentMessage(
     case "message_end": {
       const message = event.message;
       if (!isAssistantMessage(message)) return null;
+      if (message.stopReason === "error" && isBudgetRefusal?.(message)) {
+        return {
+          kind: "message",
+          role: message.role,
+          text: "",
+          content: [],
+          stopReason: "error",
+          errorMessage: "AI budget exceeded",
+        };
+      }
       return {
         kind: "message",
         role: message.role,
@@ -140,15 +152,18 @@ async function* promptMessages(
   agent: Agent,
   task: string,
   context: readonly UserTurnContextRef[],
-  promptText: string,
+  pendingSystemMessages: (() => readonly string[]) | undefined,
   toolFailure: { error: Error | undefined },
   toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>,
   isBudgetRefusal: ((message: AssistantMessage) => boolean) | undefined,
   signal?: AbortSignal,
 ): AsyncGenerator<AgentMessage> {
   signal?.throwIfAborted();
+  const parsed = labeledSempMessageRefSchema.array().safeParse(context);
+  if (!parsed.success) throw new Error("Invalid user turn context");
+  const promptText = [...(pendingSystemMessages?.() ?? []), task].join("\n\n");
   // Yielded (and so persisted by the consumer) before the prompt is sent to the model.
-  yield { kind: "user_message", text: task, context };
+  yield { kind: "user_message", text: task, context: parsed.data };
   signal?.throwIfAborted();
   const queue: AgentMessage[] = [];
   let wake: (() => void) | null = null;
@@ -160,7 +175,7 @@ async function* promptMessages(
 
   const targets = new Map<string, { targetDatabaseId?: string; targetItemId?: string }>();
   const unsubscribe = agent.subscribe((event) => {
-    const message = toAgentMessage(event, toolEventMetadata, targets);
+    const message = toAgentMessage(event, toolEventMetadata, targets, isBudgetRefusal);
     if (!message) return;
     queue.push(message);
     notify();
@@ -195,9 +210,9 @@ async function* promptMessages(
       agent.abort();
       try {
         await prompt;
-      } catch (err) {
+      } catch {
         // The consumer's own failure is what propagates; this one is only evidence.
-        logger.error({ err }, "pi agent prompt failed after its consumer stopped reading");
+        logger.error("pi agent prompt failed after its consumer stopped reading");
       }
     }
   }
@@ -250,12 +265,11 @@ export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOption
     // second `prompt()` while one is active).
     const prompt = (task: string, context: readonly UserTurnContextRef[] = []): AsyncIterable<AgentMessage> => {
       toolFailure.error = undefined;
-      const promptText = [...(options.pendingSystemMessages?.() ?? []), task].join("\n\n");
       return promptMessages(
         piAgent,
         task,
         context,
-        promptText,
+        options.pendingSystemMessages,
         toolFailure,
         options.toolEventMetadata,
         options.isBudgetRefusal,

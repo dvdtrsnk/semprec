@@ -227,6 +227,59 @@ describe("MCP invoke adapter (issue #128)", () => {
   });
 
   describe("createApprovalGatedMcpInvokeTool (issue #130)", () => {
+    it.each([true, 123])("rejects non-string MCP reason %s reaching the wrapper", async (reason) => {
+      const contractServer = startStdioContractServer([SEARCH_TOOL]);
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+      const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
+      expect((await invoke({ query: "test", semprecReason: reason })).error).toBe(true);
+      const { rows } = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests");
+      expect(rows[0]?.count).toBe("0");
+      expect(contractServer.getHandshakeCount()).toBe(0);
+    });
+    it("stores 500 non-BMP reason characters and rejects 501 without another request", async () => {
+      const contractServer = startStdioContractServer([SEARCH_TOOL]);
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+      const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
+      const reason = "😀".repeat(500);
+      const accepted = await invoke({ query: "test", semprecReason: reason });
+      expect(accepted.error).toBe(false);
+      expect(accepted.approvalRequestId).toBeDefined();
+      expect((await getApprovalRequest(pool, accepted.approvalRequestId!))?.reason).toBe(reason);
+      const rejected = await invoke({ query: "test", semprecReason: "😀".repeat(501) });
+      expect(rejected.error).toBe(true);
+      const { rows } = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests");
+      expect(rows[0]?.count).toBe("1");
+      expect(contractServer.getHandshakeCount()).toBe(0);
+    });
+    it("does not trust an argument hint when no server snapshot exists", async () => {
+      const contractServer = startStdioContractServer([SEARCH_TOOL]);
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+      const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
+      await withTransaction(pool, (client) =>
+        setProjectMcpGrantForAgentPage(client, {
+          projectItemId,
+          mcpToolRegistrationId: registration.id,
+          granted: false,
+        }),
+      );
+      const result = await invoke({ query: "test", mcpServerItemId: randomUUID() });
+      expect(result.failure).toEqual({ failureKind: "unavailable" });
+      expect(contractServer.getHandshakeCount()).toBe(0);
+      const { rows } = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests");
+      expect(rows[0]?.count).toBe("0");
+    });
+
+    it("rejects malformed trusted server metadata without echoing it", () => {
+      expect(() =>
+        createApprovalGatedMcpInvokeTool(pool, randomUUID(), randomUUID(), randomUUID(), {}, "bad-id"),
+      ).toThrow("Invalid MCP server item id");
+    });
     it("defers a tool that requires approval: no transport call, a pending request, a synthetic success result", async () => {
       const contractServer = startStdioContractServer([SEARCH_TOOL]);
       servers.push(contractServer);
@@ -349,6 +402,20 @@ describe("MCP invoke adapter (issue #128)", () => {
       expect(result.error).toBe(true);
       const { rows } = await pool.query(`SELECT count(*)::int AS count FROM approval_requests`);
       expect(rows[0].count).toBe(0);
+    });
+
+    it("normalizes a null semprecReason to an absent reason", async () => {
+      const contractServer = startStdioContractServer([SEARCH_TOOL]);
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+      const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
+      const result = await invoke({ query: "semprec", semprecReason: null });
+      expect(result.error).toBe(false);
+      const request = await getApprovalRequest(pool, result.approvalRequestId!);
+      expect(request?.reason).toBeNull();
+      expect(request?.payload).toMatchObject({ args: { query: "semprec" } });
+      expect(JSON.stringify(request?.payload)).not.toContain("semprecReason");
     });
 
     it("does not send semprecReason to the MCP server when the tool needs no approval (issue #1420)", async () => {

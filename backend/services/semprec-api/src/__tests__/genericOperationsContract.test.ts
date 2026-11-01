@@ -418,6 +418,25 @@ describe("generic operation REST contract (issue #219)", () => {
     await pool?.end();
   });
 
+  it("rejects nonempty and non-object item DELETE bodies before dispatch", async () => {
+    const fx = await buildFixtures();
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    for (const body of [{ reason: "private reason" }, { unexpected: true }, []]) {
+      const response = await fetch(`${baseUrl}/api/items/${fx.itemA.id}`, {
+        method: "DELETE",
+        headers,
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: "validation_failed" } });
+      expect((await fetch(`${baseUrl}/api/items/${fx.itemA.id}`, { headers })).status).toBe(200);
+    }
+    expect((await fetch(`${baseUrl}/api/items/${fx.itemB.id}`, { method: "DELETE", headers, body: "{}" })).status).toBe(
+      200,
+    );
+    expect((await fetch(`${baseUrl}/api/items/${fx.itemA.id}`, { method: "DELETE", headers })).status).toBe(200);
+  });
+
   it("returns the same expansion on item, database and view reads while retaining path and links", async () => {
     const fx = await buildFixtures();
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };

@@ -8,7 +8,7 @@ import {
   getAgentRun,
   withTransaction,
 } from "@semprec/data";
-import { currentTenantScope, runInTenant, withTraceContext } from "@semprec/shared";
+import { currentTenantScope, labeledSempMessageRefSchema, runInTenant, withTraceContext } from "@semprec/shared";
 import type { CompactionAdapter } from "./compaction.js";
 import {
   persistCompaction,
@@ -16,7 +16,7 @@ import {
   type ReconstructedHistory,
 } from "./conversationReconstruction.js";
 import { extractResultSnapshot, pairDanglingToolCalls, pushRunStatus, runAgentTurn } from "./lifecycleAdapter.js";
-import type { AgentMessage, AgentSession, CreateAgentSession } from "./types.js";
+import type { AgentMessage, AgentSession, CreateAgentSession, UserTurnContextRef } from "./types.js";
 import { logger } from "./logger.js";
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -135,6 +135,7 @@ export interface SempTurnStart {
 }
 
 export interface SempSendOptions {
+  context?: readonly UserTurnContextRef[];
   /** Cancels the turn, including a prompt blocked on its next event; the run then closes as `error`. */
   signal?: AbortSignal;
   /**
@@ -294,6 +295,11 @@ export class SempConversation {
 
   async send(task: string, thread: SempThread, sendOptions: SempSendOptions = {}): Promise<SempTurnResult> {
     const { signal, onTurnStart } = sendOptions;
+    const parsedContext = labeledSempMessageRefSchema
+      .array()
+      .safeParse(sendOptions.context === undefined ? [] : sendOptions.context);
+    if (!parsedContext.success) throw new Error("Invalid user turn context");
+    const context = parsedContext.data;
     // Read synchronously, before any `await`: nothing is read or written without a tenant.
     const scope = currentTenantScope();
     if (scope?.kind !== "tenant") {
@@ -326,7 +332,7 @@ export class SempConversation {
             lastMessage = await runAgentTurn(
               this.pool,
               entry.agentRunId,
-              entry.session.send(task),
+              entry.session.send(task, context),
               undefined,
               signal,
               onTurnStart && ((firstEventId) => onTurnStart({ agentRunId: entry.agentRunId, firstEventId })),
@@ -373,19 +379,21 @@ export class SempConversation {
       return await withTraceContext({ agentRunId: run.id }, async () => {
         await pushRunStatus(this.pool, run.id, "running");
 
-        // The compacted continuation replaces the raw history it was derived from — persisted
-        // here, on the run it seeds, so a later restart's reconstruction resumes from this
-        // checkpoint instead of re-deriving (and potentially re-compacting) it all over again.
-        if (priorHistory?.compacted) {
-          await persistCompaction(this.pool, run.id, priorHistory.entries);
-        }
-
         let session: AgentSession;
         let lastMessage: AgentMessage | null;
         try {
+          // Persist the checkpoint on the same thread's run before creating a session.
+          if (priorHistory?.compacted) {
+            await persistCompaction(this.pool, run.id, priorHistory.entries, {
+              threadId: thread.threadId,
+              triggeredBy: "user",
+              parentRunId: null,
+            });
+          }
           const createAgentSession = await this.options.createAgentSessionForRun(run);
           session = createAgentSession({
             task,
+            context,
             signal,
             initialState: priorHistory ? { messages: priorHistory.entries } : undefined,
           });

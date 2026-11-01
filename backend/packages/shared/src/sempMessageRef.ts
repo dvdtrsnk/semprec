@@ -56,6 +56,18 @@ export const sempMessageRefSchema = z.discriminatedUnion("kind", [
 
 export type SempMessageRef = z.infer<typeof sempMessageRefSchema>;
 
+/** A stored user-turn reference with the label captured when it was sent. */
+export const labeledSempMessageRefSchema = z.discriminatedUnion("kind", [
+  itemRefSchema.safeExtend({ label: z.string() }),
+  blockRefSchema.safeExtend({ label: z.string() }),
+  transcriptSegmentRefSchema.safeExtend({ label: z.string() }),
+  mailAttachmentRefSchema.safeExtend({ label: z.string() }),
+  agentRunRefSchema.safeExtend({ label: z.string() }),
+  approvalRequestRefSchema.safeExtend({ label: z.string() }),
+]);
+
+export type LabeledSempMessageRef = z.infer<typeof labeledSempMessageRefSchema>;
+
 export const SEMP_MESSAGE_REF_KINDS = [
   "item",
   "block",

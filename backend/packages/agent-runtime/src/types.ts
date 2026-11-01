@@ -1,3 +1,5 @@
+import type { LabeledSempMessageRef } from "@semprec/shared";
+
 export type AgentMessageKind =
   "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "message_update" | "user_message";
 
@@ -5,10 +7,7 @@ export type AgentMessageKind =
  * One context ref attached to a user turn, stored as sent: the ref object (item, block,
  * transcript segment, ...) plus its label at send time. Expanded ref content is never stored.
  */
-export interface UserTurnContextRef {
-  label: string;
-  [key: string]: unknown;
-}
+export type UserTurnContextRef = LabeledSempMessageRef;
 
 /** The full pi-agent-core message shape, persisted verbatim into `agent_run_events.payload`. */
 export interface AgentMessage {

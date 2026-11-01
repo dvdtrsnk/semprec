@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
-import { SEMP_MESSAGE_REF_KINDS, messageRefKey, sempMessageRefSchema } from "../sempMessageRef.js";
+import {
+  SEMP_MESSAGE_REF_KINDS,
+  labeledSempMessageRefSchema,
+  messageRefKey,
+  sempMessageRefSchema,
+} from "../sempMessageRef.js";
 
 const id = () => randomUUID();
 
@@ -27,6 +32,16 @@ describe("sempMessageRefSchema", () => {
 
       it("rejects an extra field", () => {
         expect(sempMessageRefSchema.safeParse({ ...value, extra: 1 }).success).toBe(false);
+      });
+
+      it("accepts the labeled variant and rejects missing labels and expanded fields", () => {
+        expect(labeledSempMessageRefSchema.parse({ ...value, label: "At send time" })).toEqual({
+          ...value,
+          label: "At send time",
+        });
+        expect(labeledSempMessageRefSchema.safeParse(value).success).toBe(false);
+        expect(labeledSempMessageRefSchema.safeParse({ ...value, label: 1 }).success).toBe(false);
+        expect(labeledSempMessageRefSchema.safeParse({ ...value, label: "x", expanded: "secret" }).success).toBe(false);
       });
 
       const required = Object.keys(value).filter((k) => k !== "kind" && k !== "messageId");

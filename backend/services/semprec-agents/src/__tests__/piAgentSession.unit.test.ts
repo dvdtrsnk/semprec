@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
+import { randomUUID } from "node:crypto";
+import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import {
   Type,
   fauxAssistantMessage,
@@ -12,6 +13,7 @@ import type { AgentMessage, ToolEventMetadata } from "@semprec/agent-runtime";
 import { AiBudgetExceededError, agentRunErrorCodeOf } from "@semprec/data";
 import { toPiMessages } from "../piConversationHistory.js";
 import { createPiAgentSessionFactory } from "../piAgentSession.js";
+import { logger } from "../logger.js";
 
 function fauxModel() {
   const faux = fauxProvider();
@@ -40,6 +42,52 @@ async function collect(messages: AsyncIterable<AgentMessage>): Promise<AgentMess
 }
 
 describe("createPiAgentSessionFactory (issue #647)", () => {
+  it("does not log prompt error content when the consumer stops reading", async () => {
+    const { model, streamFn } = fauxModel();
+    let listener: ((event: AgentEvent, signal: AbortSignal) => Promise<void> | void) | undefined;
+    let rejectPrompt: ((error: Error) => void) | undefined;
+    let markAborted: (() => void) | undefined;
+    const aborted = new Promise<void>((resolve) => {
+      markAborted = resolve;
+    });
+    const logs = vi.spyOn(logger, "error").mockImplementation(() => {});
+    vi.spyOn(Agent.prototype, "subscribe").mockImplementation((callback) => {
+      listener = callback;
+      return () => {};
+    });
+    vi.spyOn(Agent.prototype, "prompt").mockImplementation(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPrompt = reject;
+        }),
+    );
+    vi.spyOn(Agent.prototype, "abort").mockImplementation(() => {
+      markAborted?.();
+    });
+    try {
+      const session = createPiAgentSessionFactory({
+        model,
+        streamFn,
+        tools: [],
+        toolEventMetadata: new Map(),
+        systemPrompt: "base",
+      })({ task: "message-sentinel" });
+      const iterator = session.messages()[Symbol.asyncIterator]();
+      expect((await iterator.next()).value).toMatchObject({ kind: "user_message" });
+      const next = iterator.next();
+      expect(listener).toBeDefined();
+      await listener?.({ type: "turn_start" }, new AbortController().signal);
+      expect((await next).value).toMatchObject({ kind: "turn_start" });
+      const stopped = iterator.return?.();
+      await aborted;
+      rejectPrompt?.(new Error("message-sentinel-ref-sentinel"));
+      await stopped;
+      expect(logs).toHaveBeenCalledOnce();
+      expect(logs).toHaveBeenCalledWith("pi agent prompt failed after its consumer stopped reading");
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
   it("maps a tool-calling reply onto paired tool_use/tool_result events inside ordered turns", async () => {
     const { faux, model, streamFn } = fauxModel();
     faux.setResponses([
@@ -86,6 +134,7 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
       return streamFn(m, context, options);
     };
     const pending = [["approved: X"], []];
+    const ref = { kind: "item" as const, itemId: randomUUID(), databaseId: randomUUID(), label: "Budget" };
     const session = createPiAgentSessionFactory({
       toolEventMetadata: new Map(),
       model,
@@ -93,16 +142,66 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
       tools: [],
       systemPrompt: "base",
       pendingSystemMessages: () => pending.shift() ?? [],
-    })({ task: "hello", context: [{ label: "Budget", id: "i1" }] });
+    })({ task: "hello", context: [ref] });
 
     const first = await collect(session.messages());
     const second = await collect(session.send!("again"));
 
-    expect(first[0]).toEqual({ kind: "user_message", text: "hello", context: [{ label: "Budget", id: "i1" }] });
+    expect(first[0]).toEqual({ kind: "user_message", text: "hello", context: [ref] });
     expect(second[0]).toEqual({ kind: "user_message", text: "again", context: [] });
     expect(seen[0]).toContain("approved: X");
     expect(seen[0]).toContain("hello");
     expect(seen[1]).toBe(JSON.stringify([{ type: "text", text: "again" }]));
+  });
+
+  it.each([
+    ["unknown kind", { kind: "unknown", label: "x" }],
+    ["invalid UUID", { kind: "item", itemId: "invalid", databaseId: randomUUID(), label: "x" }],
+    ["invalid range", { kind: "transcriptSegment", itemId: randomUUID(), startsAt: 2, endsAt: 1, label: "x" }],
+    ["invalid label", { kind: "block", itemId: randomUUID(), blockId: randomUUID(), label: 1 }],
+    ["expanded field", { kind: "block", itemId: randomUUID(), blockId: randomUUID(), label: "x", text: "secret" }],
+  ])("rejects %s before yielding or prompting", async (_name, invalid: unknown) => {
+    const { model, streamFn } = fauxModel();
+    const observed = vi.fn(streamFn);
+    const session = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn: observed,
+      tools: [],
+      systemPrompt: "base",
+      // @ts-expect-error Exercise invalid input crossing the runtime boundary.
+    })({ task: "secret task", context: [invalid] });
+    const iterator = session.messages()[Symbol.asyncIterator]();
+    await expect(iterator.next()).rejects.toThrow("Invalid user turn context");
+    expect(observed).not.toHaveBeenCalled();
+  });
+
+  it("does not consume pending system messages for invalid context", async () => {
+    const { faux, model, streamFn } = fauxModel();
+    faux.setResponses([fauxAssistantMessage("ok")]);
+    const seen: string[] = [];
+    const observed: StreamFn = (m, context, options) => {
+      seen.push(JSON.stringify(context.messages.at(-1)?.content));
+      return streamFn(m, context, options);
+    };
+    const pending = vi.fn(() => ["pending outcome"]);
+    const session = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn: observed,
+      tools: [],
+      systemPrompt: "base",
+      pendingSystemMessages: pending,
+      // @ts-expect-error Exercise invalid input crossing the runtime boundary.
+    })({ task: "invalid", context: null });
+    await expect(collect(session.messages())).rejects.toThrow("Invalid user turn context");
+    expect(pending).not.toHaveBeenCalled();
+    expect(seen).toEqual([]);
+    await collect(session.send!("valid"));
+    expect(pending).toHaveBeenCalledOnce();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain("pending outcome");
+    expect(seen[0]).toContain("valid");
   });
 
   it("aborts a blocked production tool directly while its async generator waits", async () => {

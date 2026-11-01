@@ -4,31 +4,24 @@ import { connectMcpServer, type McpClientHandle } from "./mcpConnectionFactory.j
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SseError } from "@modelcontextprotocol/sdk/client/sse.js";
-import { McpConnectionError, MCP_DEFAULT_CONNECT_TIMEOUT_MS } from "./mcpConnectionError.js";
+import {
+  McpConnectionAuthenticationError,
+  McpConnectionError,
+  MCP_DEFAULT_CONNECT_TIMEOUT_MS,
+} from "./mcpConnectionError.js";
 import type { McpToolInvocationTarget } from "./mcpToolInvocation.js";
 import { recordMcpConnectionFailure, recordMcpConnectionSuccess } from "./mcpServerConnectionStateStore.js";
+import type { McpInvokeFailure } from "./mcpFailure.js";
+import type { McpHttpObservation } from "./mcpHttpFailureObservation.js";
+import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
+export { MCP_FAILURE_KINDS } from "./mcpFailure.js";
+export type { McpFailureKind, McpInvokeFailure } from "./mcpFailure.js";
 
 const logger = createLogger("mcp");
 
 /** Shaped like a pi-agent-core `tool_result` payload — see `delegateTool.ts`'s own comment for the same convention. */
-export interface McpInvokeResult {
-  error: boolean;
-  result: string;
-  /** Present only when `error` is true and the failure was not a cancellation by the run's signal. */
-  failure?: McpInvokeFailure;
-}
-
-export const MCP_FAILURE_KINDS = ["timeout", "unavailable", "connection", "auth", "toolError"] as const;
-
-export type McpFailureKind = (typeof MCP_FAILURE_KINDS)[number];
-
-/** Machine-readable reason for a failed MCP call; carries ids and numbers only, never an exception message. */
-export interface McpInvokeFailure {
-  failureKind: McpFailureKind;
-  /** Omitted only for `unavailable`, where no server item was loaded. */
-  mcpServerItemId?: string;
-  timeoutMs?: number;
-}
+export type McpInvokeResult =
+  { error: false; result: string; failure?: never } | { error: true; result: string; failure?: McpInvokeFailure };
 
 export type McpInvokeArgs = Record<string, unknown>;
 
@@ -64,6 +57,7 @@ function safeInvokeErrorMessage(err: unknown): string {
 
 /** Whether `err` is an HTTP 401/403 rejection from the server, on connect or on `tools/call`. */
 function isAuthRejection(err: unknown): boolean {
+  if (err instanceof UnauthorizedError) return true;
   if (err instanceof McpConnectionError) return err.httpStatus === 401 || err.httpStatus === 403;
   if (err instanceof StreamableHTTPError || err instanceof SseError || err instanceof McpError) {
     return err.code === 401 || err.code === 403;
@@ -71,64 +65,69 @@ function isAuthRejection(err: unknown): boolean {
   return false;
 }
 
-function classifyFailure(err: unknown, mcpServerItemId: string): McpInvokeFailure {
+function classifyFailure(err: unknown, mcpServerItemId: string, observedStatus?: 401 | 403): McpInvokeFailure {
   if (err instanceof McpConnectionError) {
-    if (err.reason === "credential_decryption_failed" || isAuthRejection(err)) {
-      return { failureKind: "auth", mcpServerItemId };
-    }
     if (err.reason === "connect_timeout") {
       return { failureKind: "timeout", mcpServerItemId, timeoutMs: MCP_DEFAULT_CONNECT_TIMEOUT_MS };
     }
+    if (err.reason === "address_not_allowed") return { failureKind: "connection", mcpServerItemId };
+    if (
+      err instanceof McpConnectionAuthenticationError ||
+      err.reason === "credential_decryption_failed" ||
+      isAuthRejection(err)
+    ) {
+      return { failureKind: "auth", mcpServerItemId };
+    }
     return { failureKind: "connection", mcpServerItemId };
   }
-  if (isAuthRejection(err)) return { failureKind: "auth", mcpServerItemId };
   if (err instanceof McpError && err.code === Number(ErrorCode.RequestTimeout)) {
     return { failureKind: "timeout", mcpServerItemId, timeoutMs: MCP_TOOL_CALL_TIMEOUT_MS };
   }
+  if (isAuthRejection(err) || observedStatus !== undefined) return { failureKind: "auth", mcpServerItemId };
   return { failureKind: "toolError", mcpServerItemId };
 }
 
 function formatContentBlock(block: unknown): string {
   if (typeof block !== "object" || block === null || !("type" in block)) return "[content omitted]";
-  const type = (block as { type?: unknown }).type;
+  const type = block.type;
   if (type === "text") {
-    const text = (block as { text?: unknown }).text;
+    const text = "text" in block ? block.text : undefined;
     return typeof text === "string" ? text : "[content omitted]";
   }
   if (type === "image" || type === "audio") {
-    const mimeType = (block as { mimeType?: unknown }).mimeType;
+    const mimeType = "mimeType" in block ? block.mimeType : undefined;
     return `[${type} content${typeof mimeType === "string" ? `, ${mimeType}` : ""} omitted]`;
   }
   if ("uri" in block) {
-    const uri = (block as { uri?: unknown }).uri;
+    const uri = block.uri;
     return `[resource${typeof uri === "string" ? ` ${uri}` : ""} omitted]`;
   }
   return "[content omitted]";
 }
 
-/** `handle.client.callTool`'s result shape — the MCP SDK doesn't export this as a standalone type usable without its zod schema, so this is the narrow subset actually read here. */
-interface CallToolResultLike {
-  content?: unknown[];
-  structuredContent?: Record<string, unknown>;
-  isError?: boolean;
-}
-
-function formatCallToolResult(result: CallToolResultLike, mcpServerItemId: string): McpInvokeResult {
+function formatCallToolResult(result: unknown, mcpServerItemId: string): McpInvokeResult {
   const formatted = formatCallToolContent(result);
   return formatted.error ? { ...formatted, failure: { failureKind: "toolError", mcpServerItemId } } : formatted;
 }
 
-function formatCallToolContent(result: CallToolResultLike): McpInvokeResult {
-  const content = Array.isArray(result.content) ? result.content : [];
+function formatCallToolContent(result: unknown): McpInvokeResult {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) {
+    throw new Error("Invalid MCP tool result");
+  }
+  const content = "content" in result && Array.isArray(result.content) ? result.content : [];
   const text = content
     .map(formatContentBlock)
     .filter((part) => part.length > 0)
     .join("\n");
-  if (text.length > 0) return { error: result.isError === true, result: text };
-  if (result.structuredContent !== undefined) {
-    return { error: result.isError === true, result: JSON.stringify(result.structuredContent) };
-  }
-  return { error: result.isError === true, result: "" };
+  const formattedText =
+    text.length > 0
+      ? text
+      : "structuredContent" in result && result.structuredContent !== undefined
+        ? JSON.stringify(result.structuredContent)
+        : "";
+  return "isError" in result && result.isError === true
+    ? { error: true, result: formattedText }
+    : { error: false, result: formattedText };
 }
 
 /**
@@ -168,22 +167,27 @@ export async function executeMcpInvocation(
   signal?: AbortSignal,
 ): Promise<McpInvokeResult> {
   let handle: McpClientHandle | undefined;
+  let observation: McpHttpObservation | undefined;
   try {
     handle = await connectMcpServer(pool, target.serverItem, {
       actorId: options.actorId,
       purpose: "mcp_tool_invoke",
     });
     await recordConnectionOutcome(() => recordMcpConnectionSuccess(pool, target.serverItem.id), target.serverItem.id);
-    const callResult = await handle.client.callTool(
-      {
-        name: target.toolName,
-        arguments: args,
-        ...(options.idempotencyKey !== undefined ? { _meta: { idempotencyKey: options.idempotencyKey } } : {}),
-      },
-      undefined,
-      { signal, timeout: MCP_TOOL_CALL_TIMEOUT_MS },
-    );
-    return formatCallToolResult(callResult as CallToolResultLike, target.serverItem.id);
+    observation = handle.beginHttpObservation?.();
+    const connected = handle;
+    const call = () =>
+      connected.client.callTool(
+        {
+          name: target.toolName,
+          arguments: args,
+          ...(options.idempotencyKey !== undefined ? { _meta: { idempotencyKey: options.idempotencyKey } } : {}),
+        },
+        undefined,
+        { signal, timeout: MCP_TOOL_CALL_TIMEOUT_MS },
+      );
+    const callResult = await (observation ? observation.run(call) : call());
+    return formatCallToolResult(callResult, target.serverItem.id);
   } catch (err) {
     // `handle` is set only once the connect succeeded, so a `McpConnectionError` here is a failed connect.
     if (handle === undefined && err instanceof McpConnectionError) {
@@ -197,16 +201,17 @@ export async function executeMcpInvocation(
     return {
       error: true,
       result: safeInvokeErrorMessage(err),
-      failure: classifyFailure(err, target.serverItem.id),
+      failure: classifyFailure(err, target.serverItem.id, observation?.status(err)),
     };
   } finally {
+    observation?.close();
     // A close failure must never replace the `try`'s return value or the `catch`'s error result
     // above — only log it, so a rejecting `close()` after a successful `tools/call` can't turn a
     // successful outcome into a job failure (issue #693).
     try {
       await handle?.close();
-    } catch (err) {
-      logger.warn({ err }, "MCP connection close failed after tools/call");
+    } catch {
+      logger.warn({ mcpServerItemId: target.serverItem.id }, "MCP connection close failed after tools/call");
     }
   }
 }

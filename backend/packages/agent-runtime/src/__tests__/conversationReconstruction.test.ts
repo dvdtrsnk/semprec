@@ -1,7 +1,16 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { createAgentRun, insertAgentRunEvent } from "@semprec/data";
+import {
+  createRuntimeRolePool,
+  createTenantZeroUser,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
+import { createAgentRun, createUser as createStoredUser, insertAgentRunEvent, withTransaction } from "@semprec/data";
+import { runInTenant } from "@semprec/shared";
 import { persistCompaction, reconstructConversationHistory } from "../conversationReconstruction.js";
 import type { CompactionAdapter } from "../compaction.js";
 import type { AgentMessage, ConversationEntry } from "../types.js";
@@ -425,10 +434,151 @@ describe("reconstructConversationHistory", () => {
     expect(texts(await reconstructConversationHistory(pool, filterB, noopCompaction))).toEqual(["from B"]);
 
     const compactedA = await reconstructConversationHistory(pool, filterA, alwaysCompacts("summary of A"));
-    await persistCompaction(pool, runA.id, compactedA!.entries);
+    await persistCompaction(pool, runA.id, compactedA!.entries, filterA);
 
     expect(texts(await reconstructConversationHistory(pool, filterA, noopCompaction))).toEqual(["summary of A"]);
     expect(texts(await reconstructConversationHistory(pool, filterB, noopCompaction))).toEqual(["from B"]);
+  });
+
+  it("checks the compaction target and filter in one tenant-scoped transaction", async () => {
+    const tenantA = getTenantZeroId();
+    const tenantB = await createTestTenant(pool);
+    await createStoredUser(pool, { email: `${randomUUID()}@example.test`, passwordHash: "unused", tenantId: tenantB });
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const makeRun = (tenantId: string) =>
+        runInTenant(tenantId, async () => {
+          const { rows } = await runtime.query<{ id: string }>(
+            "INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id",
+          );
+          const threadId = rows[0]!.id;
+          const run = await createAgentRun(runtime, {
+            projectItemId: PROJECT_ITEM_ID,
+            threadId,
+            triggeredBy: "user",
+            unit: "session",
+            task: "thread",
+          });
+          return { threadId, run };
+        });
+      const a = await makeRun(tenantA);
+      const b = await makeRun(tenantA);
+      const foreign = await makeRun(tenantB);
+      const delegated = await runInTenant(tenantA, () =>
+        createAgentRun(runtime, {
+          projectItemId: PROJECT_ITEM_ID,
+          parentRunId: a.run.id,
+          triggeredBy: "supervisor",
+          unit: "session",
+          task: "delegated",
+        }),
+      );
+      const filterA = { threadId: a.threadId, triggeredBy: "user", parentRunId: null } as const;
+      const legacy = { projectItemId: PROJECT_ITEM_ID, triggeredBy: "supervisor", parentRunId: a.run.id } as const;
+      const entries: ConversationEntry[] = [
+        { id: "summary", parentId: null, seq: 0, timestamp: 0, message: { kind: "message", text: "summary" } },
+      ];
+      await runInTenant(tenantA, async () => {
+        await persistCompaction(runtime, a.run.id, entries, filterA);
+        await expect(persistCompaction(runtime, b.run.id, entries, filterA)).rejects.toThrow(
+          "Invalid compaction target",
+        );
+        await expect(persistCompaction(runtime, a.run.id, entries)).rejects.toThrow("Invalid compaction target");
+        await expect(persistCompaction(runtime, delegated.id, entries, filterA)).rejects.toThrow(
+          "Invalid compaction target",
+        );
+        await expect(persistCompaction(runtime, a.run.id, entries, legacy)).rejects.toThrow(
+          "Invalid compaction target",
+        );
+        await expect(
+          persistCompaction(runtime, delegated.id, entries, { ...legacy, projectItemId: randomUUID() }),
+        ).rejects.toThrow("Invalid compaction target");
+        await expect(persistCompaction(runtime, randomUUID(), entries, filterA)).rejects.toThrow(
+          "Invalid compaction target",
+        );
+        await expect(persistCompaction(runtime, foreign.run.id, entries, filterA)).rejects.toThrow(
+          "Invalid compaction target",
+        );
+        await persistCompaction(runtime, delegated.id, entries, legacy);
+        await persistCompaction(runtime, delegated.id, entries);
+        const counts = await runtime.query<{ agent_run_id: string; count: string }>(
+          "SELECT agent_run_id, count(*)::text AS count FROM agent_run_events WHERE kind = 'compaction' GROUP BY agent_run_id ORDER BY agent_run_id",
+        );
+        expect(counts.rows).toEqual(
+          expect.arrayContaining([
+            { agent_run_id: a.run.id, count: "1" },
+            { agent_run_id: delegated.id, count: "2" },
+          ]),
+        );
+        expect(counts.rows).toHaveLength(2);
+      });
+      await runInTenant(tenantB, async () => {
+        const count = await runtime.query<{ count: string }>(
+          "SELECT count(*)::text AS count FROM agent_run_events WHERE kind = 'compaction'",
+        );
+        expect(count.rows).toEqual([{ count: "0" }]);
+      });
+      const raced = await makeRun(tenantA);
+      let releaseWriter: (() => void) | undefined;
+      let writerPid = 0;
+      let writerFailure: { error: unknown } | undefined;
+      const gate = new Promise<void>((resolve) => {
+        releaseWriter = resolve;
+      });
+      const writer = runInTenant(tenantA, () =>
+        withTransaction(runtime, async (client) => {
+          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+          await client.query("UPDATE agent_runs SET thread_id = $2 WHERE id = $1", [raced.run.id, b.threadId]);
+          writerPid = pid;
+          await gate;
+        }),
+      );
+      void writer.catch((error: unknown) => {
+        writerFailure = { error };
+      });
+      let attempt: Promise<unknown> | undefined;
+      try {
+        await vi.waitFor(
+          () => {
+            if (writerFailure)
+              throw writerFailure.error instanceof Error ? writerFailure.error : new Error("Compaction writer failed");
+            expect(writerPid).toBeGreaterThan(0);
+          },
+          { timeout: 5000, interval: 20 },
+        );
+        const staleFilter = { threadId: raced.threadId, triggeredBy: "user", parentRunId: null } as const;
+        attempt = runInTenant(tenantA, () => persistCompaction(runtime, raced.run.id, entries, staleFilter)).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        await vi.waitFor(
+          async () => {
+            const { rows } = await pool.query<{ blocked: boolean }>(
+              "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) AND query LIKE '%FROM agent_runs WHERE id =%FOR UPDATE%') AS blocked",
+              [writerPid],
+            );
+            expect(rows[0]?.blocked).toBe(true);
+          },
+          { timeout: 5000, interval: 20 },
+        );
+      } finally {
+        releaseWriter?.();
+        await Promise.allSettled([writer, attempt]);
+      }
+      if (writerFailure)
+        throw writerFailure.error instanceof Error ? writerFailure.error : new Error("Compaction writer failed");
+      const failure = await attempt;
+      expect(failure).toBeInstanceOf(Error);
+      if (!(failure instanceof Error)) throw new Error("expected compaction refusal");
+      expect(failure.message).toBe("Invalid compaction target");
+      const racedEvents = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'compaction'",
+        [raced.run.id],
+      );
+      expect(racedEvents.rows).toEqual([{ count: "0" }]);
+    } finally {
+      await runtime.end();
+    }
   });
 
   it("reconstructs a woken conversation as question then answer, with follow-up turns, in order", async () => {
@@ -438,7 +588,7 @@ describe("reconstructConversationHistory", () => {
       unit: "session",
       task: "first question",
     });
-    const refs = [{ label: "Budget", kind: "item", id: "i1" }];
+    const refs = [{ label: "Budget", kind: "item", itemId: randomUUID(), databaseId: randomUUID() }];
     await insertAgentRunEvent(pool, run.id, "user_message", {
       kind: "user_message",
       text: "first question",
@@ -461,5 +611,59 @@ describe("reconstructConversationHistory", () => {
       ["message", "second answer"],
     ]);
     expect(history!.entries[0]!.message.context).toEqual(refs);
+  });
+
+  it.each(["normal", "compaction"] as const)(
+    "rejects malformed stored user turns from %s without echoing content",
+    async (source) => {
+      const run = await createAgentRun(pool, {
+        projectItemId: PROJECT_ITEM_ID,
+        triggeredBy: "user",
+        unit: "session",
+        task: "test",
+      });
+      const validRef = { kind: "item", itemId: randomUUID(), databaseId: randomUUID(), label: "safe" };
+      const invalid: Record<string, unknown>[] = [
+        { kind: "user_message", context: [] },
+        { kind: "user_message", text: "private-sentinel" },
+        { kind: "user_message", text: 42, context: [] },
+        { kind: "user_message", text: "private-sentinel", context: null },
+        { kind: "user_message", text: "private-sentinel", context: [{ ...validRef, label: 42 }] },
+        { kind: "user_message", text: "private-sentinel", context: [{ ...validRef, expanded: "ref-sentinel" }] },
+      ];
+      for (const message of invalid) {
+        if (source === "normal") {
+          await insertAgentRunEvent(pool, run.id, "user_message", message);
+        } else {
+          await insertAgentRunEvent(pool, run.id, "compaction", [
+            { id: "entry", parentId: null, seq: 0, timestamp: 0, message },
+          ]);
+        }
+        await expect(
+          reconstructConversationHistory(
+            pool,
+            { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", parentRunId: null },
+            noopCompaction,
+          ),
+        ).rejects.toThrow(/^Invalid stored user message$/);
+        await pool.query("DELETE FROM agent_run_events WHERE agent_run_id = $1", [run.id]);
+      }
+    },
+  );
+
+  it("keeps unknown metadata on compatible legacy messages", async () => {
+    const run = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "test",
+    });
+    await insertAgentRunEvent(pool, run.id, "message", { kind: "message", text: "legacy", extra: { preserved: true } });
+    const history = await reconstructConversationHistory(
+      pool,
+      { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", parentRunId: null },
+      noopCompaction,
+    );
+    expect(history?.entries[0]?.message).toMatchObject({ kind: "message", text: "legacy", extra: { preserved: true } });
   });
 });

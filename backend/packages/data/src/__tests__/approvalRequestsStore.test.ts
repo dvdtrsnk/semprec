@@ -604,5 +604,119 @@ describe("approvalRequestsStore (issue #130)", () => {
       expect(stored!.executionResult).toBe("it broke");
       expect(stored!.executionStatus).toBe("conflict");
     });
+
+    it("round-trips classified MCP failures and refuses malformed metadata", async () => {
+      const id = await createPendingRequest();
+      await decideApprovalRequest(pool, id, "approved", ownerId);
+      await claimApprovalRequestExecution(pool, id);
+      const failure = { failureKind: "timeout" as const, mcpServerItemId: randomUUID(), timeoutMs: 60000 };
+      await recordApprovalRequestOutcome(pool, id, {
+        error: true,
+        result: "failed",
+        outcomeKind: "callFailed",
+        failure,
+      });
+      expect((await getApprovalRequest(pool, id))?.executionResult).toEqual({
+        text: "failed",
+        outcomeKind: "callFailed",
+        failure,
+      });
+      await pool.query("UPDATE approval_requests SET execution_result_jsonb = $2::jsonb WHERE id = $1", [
+        id,
+        JSON.stringify({
+          text: "failed",
+          failure: { failureKind: "timeout", mcpServerItemId: "x", timeoutMs: "secret" },
+        }),
+      ]);
+      await expect(getApprovalRequest(pool, id)).rejects.toThrow("Invalid MCP failure metadata");
+      await pool.query("UPDATE approval_requests SET execution_result_jsonb = $2::jsonb WHERE id = $1", [
+        id,
+        JSON.stringify({
+          text: "failed",
+          failure: { failureKind: "timeout", mcpServerItemId: "not-a-uuid", timeoutMs: 60000 },
+        }),
+      ]);
+      await expect(getApprovalRequest(pool, id)).rejects.toThrow("Invalid MCP failure metadata");
+      await expect(
+        recordApprovalRequestOutcome(pool, id, {
+          error: true,
+          result: "failed",
+          // @ts-expect-error Exercise malformed data crossing the write boundary.
+          failure: { failureKind: "timeout", timeoutMs: "secret" },
+        }),
+      ).rejects.toThrow("Invalid MCP failure metadata");
+    });
+
+    it("rejects failure metadata on successful MCP outcomes at write and read boundaries", async () => {
+      const id = await createPendingRequest();
+      await decideApprovalRequest(pool, id, "approved", ownerId);
+      const failure = { failureKind: "auth" as const, mcpServerItemId: randomUUID() };
+      await expect(recordApprovalRequestOutcome(pool, id, { error: false, result: "ok", failure })).rejects.toThrow(
+        "Invalid MCP failure metadata",
+      );
+      expect((await getApprovalRequest(pool, id))?.executionStatus).toBe("queued");
+      await pool.query(
+        "UPDATE approval_requests SET execution_error = false, execution_result_jsonb = $2::jsonb WHERE id = $1",
+        [id, JSON.stringify({ text: "ok", failure })],
+      );
+      await expect(getApprovalRequest(pool, id)).rejects.toThrow("Invalid MCP failure metadata");
+    });
+
+    it("preserves an existing generic-operation result with its own failure field", async () => {
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+      const snapshot = { kind: "item.delete", resourceId: randomUUID(), sha256: null };
+      const request = await createPendingApprovalRequest(pool, {
+        agentRunId: run.id,
+        toolName: "item.delete",
+        riskClass: "destructive",
+        payload: {
+          operationName: "item.delete",
+          canonicalInput: {},
+          actor: { runId: run.id, agentProjectItemId: randomUUID(), userId: ownerId },
+          resourceSnapshot: snapshot,
+        },
+        resourceSnapshot: snapshot,
+      });
+      const result = { failure: { legacy: "domain data" } };
+      await pool.query("UPDATE approval_requests SET execution_result_jsonb = $2::jsonb WHERE id = $1", [
+        request.id,
+        JSON.stringify(result),
+      ]);
+      expect((await getApprovalRequest(pool, request.id))?.executionResult).toEqual(result);
+      await pool.query(
+        "UPDATE approval_requests SET payload = jsonb_set(payload, '{operationName}', $2::jsonb) WHERE id = $1",
+        [request.id, JSON.stringify("legacy.retiredOperation")],
+      );
+      expect((await getApprovalRequest(pool, request.id))?.executionResult).toEqual(result);
+    });
+
+    it("rejects malformed payload discriminators and MCP fields before reading failure metadata", async () => {
+      const id = await createPendingRequest();
+      const server = randomUUID();
+      const registration = randomUUID();
+      const outcome = { text: "failed", failure: { failureKind: "auth", mcpServerItemId: server } };
+      const malformed: unknown[] = [
+        null,
+        [],
+        "text",
+        { operationName: 4 },
+        { operationName: "" },
+        { mcpToolRegistrationId: "bad", mcpServerItemId: server, args: {} },
+        { mcpToolRegistrationId: registration, mcpServerItemId: "bad", args: {} },
+        { mcpToolRegistrationId: registration, mcpServerItemId: server, args: [] },
+      ];
+      for (const payload of malformed) {
+        await pool.query(
+          "UPDATE approval_requests SET payload = $2::jsonb, execution_error = true, execution_result_jsonb = $3::jsonb WHERE id = $1",
+          [id, JSON.stringify(payload), JSON.stringify(outcome)],
+        );
+        await expect(getApprovalRequest(pool, id)).rejects.toThrow("Invalid approval outcome payload");
+      }
+      await pool.query("UPDATE approval_requests SET payload = $2::jsonb WHERE id = $1", [
+        id,
+        JSON.stringify({ mcpToolRegistrationId: registration, mcpServerItemId: server, args: {}, legacy: true }),
+      ]);
+      expect((await getApprovalRequest(pool, id))?.executionResult).toEqual(outcome);
+    });
   });
 });

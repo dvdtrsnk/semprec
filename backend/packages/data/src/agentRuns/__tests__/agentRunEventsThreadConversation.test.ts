@@ -1,7 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTenantZeroUser,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
+import { createUser } from "../../auth/usersStore.js";
 import { createAgentRun, finishAgentRun } from "../agentRunsStore.js";
 import { insertAgentRunEvent, listSessionAgentRunEventsFromLastCompaction } from "../agentRunEventsStore.js";
 import { handleAgentRunEventsRetentionTask } from "../agentRunEventsRetention.js";
@@ -75,7 +84,14 @@ describe("thread conversation key (issue #1560)", () => {
     const threadB = await insertThread();
     const runA = await threadSession(threadA);
     const runB = await threadSession(threadB);
-    const delegated = await threadSession(threadA, runA.id);
+    const projectItemId = randomUUID();
+    const delegated = await createAgentRun(pool, {
+      projectItemId,
+      parentRunId: runA.id,
+      triggeredBy: "supervisor",
+      unit: "session",
+      task: "chat",
+    });
     const b1 = await insertAgentRunEvent(pool, runB.id, "message", { kind: "message" });
     const d1 = await insertAgentRunEvent(pool, delegated.id, "message", { kind: "message" });
     const checkpoint = await insertAgentRunEvent(pool, runA.id, "compaction", { kind: "compaction" });
@@ -87,11 +103,11 @@ describe("thread conversation key (issue #1560)", () => {
     });
     expect(forB.map((e) => e.id)).toEqual([b1.id]);
     const forDelegated = await listSessionAgentRunEventsFromLastCompaction(pool, {
-      projectItemId: randomUUID(),
+      projectItemId,
       triggeredBy: "supervisor",
       parentRunId: runA.id,
     });
-    expect(forDelegated).toEqual([]);
+    expect(forDelegated.map((e) => e.id)).toEqual([d1.id]);
     const forA = await listSessionAgentRunEventsFromLastCompaction(pool, {
       threadId: threadA,
       triggeredBy: "user",
@@ -123,16 +139,66 @@ describe("thread conversation key (issue #1560)", () => {
     expect(events.map((e) => e.id)).toEqual([plainEvent.id]);
   });
 
+  it("isolates thread reads and retention between tenants under the runtime role", async () => {
+    const tenantA = getTenantZeroId();
+    const tenantB = await createTestTenant(pool);
+    await createUser(pool, { email: `${randomUUID()}@example.test`, passwordHash: "unused", tenantId: tenantB });
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const createThreadRun = (tenantId: string) =>
+        runInTenant(tenantId, async () => {
+          const thread = await runtime.query<{ id: string }>(
+            "INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id",
+          );
+          const threadId = thread.rows[0]!.id;
+          const run = await createAgentRun(runtime, { threadId, triggeredBy: "user", unit: "session", task: "chat" });
+          const event = await insertAgentRunEvent(runtime, run.id, "message", {
+            kind: "message",
+            text: "tenant event",
+          });
+          return { threadId, run, event };
+        });
+      const a = await createThreadRun(tenantA);
+      const b = await createThreadRun(tenantB);
+      await runInTenant(tenantB, async () => {
+        await insertAgentRunEvent(runtime, b.run.id, "compaction", { kind: "compaction" });
+        await finishAgentRun(runtime, b.run.id, "done", null);
+      });
+      await runInTenant(tenantA, () => finishAgentRun(runtime, a.run.id, "done", null));
+      await backdate(a.run.id);
+      await backdate(b.run.id);
+      await runInTenant(tenantA, async () => {
+        expect(
+          (
+            await listSessionAgentRunEventsFromLastCompaction(runtime, {
+              threadId: a.threadId,
+              triggeredBy: "user",
+              parentRunId: null,
+            })
+          ).map((event) => event.id),
+        ).toEqual([a.event.id]);
+        expect(
+          await listSessionAgentRunEventsFromLastCompaction(runtime, {
+            threadId: b.threadId,
+            triggeredBy: "user",
+            parentRunId: null,
+          }),
+        ).toEqual([]);
+      });
+      expect((await handleAgentRunEventsRetentionTask(runtime)).deleted).toBe(1);
+      expect(await remainingEventIds(a.run.id)).toEqual([a.event.id]);
+      expect(await remainingEventIds(b.run.id)).not.toContain(b.event.id);
+    } finally {
+      await runtime.end();
+    }
+  });
+
   describe("retention", () => {
     it("deletes old pre-checkpoint events of a thread, keeps its checkpoint and tail, and spares other threads and delegated sessions", async () => {
       const threadA = await insertThread();
       const threadB = await insertThread();
       const runA = await threadSession(threadA);
       const oldA = await insertAgentRunEvent(pool, runA.id, "message", { kind: "message" });
-      const checkpointA = await insertAgentRunEvent(pool, runA.id, "compaction", { kind: "compaction" });
-      const tailA = await insertAgentRunEvent(pool, runA.id, "message", { kind: "message" });
-      await finishAgentRun(pool, runA.id, "done", null);
-
       const runB = await threadSession(threadB);
       const b1 = await insertAgentRunEvent(pool, runB.id, "message", { kind: "message" });
       await finishAgentRun(pool, runB.id, "done", null);
@@ -141,7 +207,10 @@ describe("thread conversation key (issue #1560)", () => {
       const d1 = await insertAgentRunEvent(pool, delegated.id, "message", { kind: "message" });
       await finishAgentRun(pool, delegated.id, "done", null);
 
-      // The checkpoint of A is newer than every B and delegated event, yet must not cover them.
+      const checkpointA = await insertAgentRunEvent(pool, runA.id, "compaction", { kind: "compaction" });
+      const tailA = await insertAgentRunEvent(pool, runA.id, "message", { kind: "message" });
+      await finishAgentRun(pool, runA.id, "done", null);
+
       for (const id of [runA.id, runB.id, delegated.id]) await backdate(id);
 
       const result = await handleAgentRunEventsRetentionTask(pool);

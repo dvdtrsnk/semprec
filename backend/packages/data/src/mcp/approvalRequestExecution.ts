@@ -150,6 +150,7 @@ export async function handleApprovalRequestExecuteTask(
   const noLongerAvailableOutcome: ApprovalRequestOutcome = {
     error: true,
     outcomeKind: "toolUnavailable",
+    failure: { failureKind: "unavailable", mcpServerItemId: payload.mcpServerItemId },
     result:
       "This MCP tool is no longer available to the requesting project: its grant was revoked, or its registration or server is inactive.",
   };
