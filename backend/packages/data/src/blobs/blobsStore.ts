@@ -71,7 +71,10 @@ export async function getBlob(client: Queryable, id: string): Promise<BlobRow | 
  * a concurrent transaction filing the same bytes waits and then sees the item the first one created.
  */
 export async function lockBlobById(client: Queryable, id: string): Promise<boolean> {
-  const { rows } = await client.query<{ id: string }>("SELECT id FROM blobs WHERE id = $1 FOR UPDATE", [id]);
+  const { rows } = await client.query<{ id: string }>(
+    "SELECT id FROM blobs WHERE tenant_id = app_tenant_default() AND id = $1 FOR UPDATE",
+    [id],
+  );
   return rows.length > 0;
 }
 

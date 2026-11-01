@@ -10,12 +10,15 @@ import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testS
 import {
   createUser,
   createChokePoint,
+  createItemWithClient,
+  getDatabaseByModuleId,
   createViewTypeRegistry,
   hashPassword,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
   seedSystem,
+  withTransaction,
   type PasswordResetMailer,
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
@@ -475,6 +478,42 @@ describe("files and blobs routes (issue #158)", () => {
         })
       ).json()) as QueryBody;
       expect(queried.items.find((item) => item.id === uploaded.id)?.blobs).toEqual({ file: expected });
+    });
+
+    it("returns blob metadata for a Library cover on the real item route", async () => {
+      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const upload = await fetch(`${baseUrl}/api/blobs`, {
+        method: "POST",
+        headers: { ...(await authHeader()), "Content-Type": "image/png" },
+        body: png,
+      });
+      expect(upload.status).toBe(201);
+      const uploaded: unknown = await upload.json();
+      if (
+        typeof uploaded !== "object" ||
+        uploaded === null ||
+        !("blobId" in uploaded) ||
+        typeof uploaded.blobId !== "string"
+      ) {
+        throw new Error("expected uploaded blob id");
+      }
+      const blobId = uploaded.blobId;
+      const item = await withTransaction(pool, async (client) => {
+        const books = await getDatabaseByModuleId(client, "books");
+        if (!books) throw new Error("missing Books database");
+        return createItemWithClient(
+          client,
+          { databaseId: books.id, properties: { name: "A book", cover: { blobId } } },
+          { allowedSystemKeys: ["cover"] },
+        );
+      });
+      const response = await fetch(`${baseUrl}/api/items/${item.id}`, { headers: await authHeader() });
+      expect(response.status).toBe(200);
+      const body: unknown = await response.json();
+      expect(body).toMatchObject({
+        properties: { cover: { blobId } },
+        blobs: { cover: { blobId, byteSize: png.length, mimeType: "image/png", filename: null } },
+      });
     });
 
     it("has no blobs key on an item without a file blob", async () => {

@@ -1192,6 +1192,26 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         path: "/api/databases",
         body: { name: "Child of a foreign item", parentItemId },
       }));
+      const footprint = () =>
+        runInTenant(b.tenantId, () =>
+          pool.query<{ databases: number; properties: number; partitions: number }>(
+            "SELECT (SELECT count(*)::int FROM databases) AS databases, (SELECT count(*)::int FROM properties) AS properties, (SELECT count(*)::int FROM pg_class WHERE relname LIKE 'items\\_p\\_%') AS partitions",
+          ),
+        );
+      const before = (await footprint()).rows;
+      const foreignAnswer = await expectForeignLikeRandom(b.member, [a.targetDatabaseId], ([targetDatabaseId]) => ({
+        method: "POST",
+        path: "/api/databases",
+        body: {
+          name: "Foreign target",
+          properties: [
+            { key: "target", name: "Target", type: "relation", targetDatabaseId, cardinality: "many_to_many" },
+          ],
+        },
+      }));
+      expect(foreignAnswer.status).toBeGreaterThanOrEqual(400);
+      expect(foreignAnswer.status).toBeLessThan(500);
+      expect((await footprint()).rows).toEqual(before);
     }),
   "database detail": async () => {
     await expectForeignLikeRandom(b.member, [a.databaseId], ([id]) => ({

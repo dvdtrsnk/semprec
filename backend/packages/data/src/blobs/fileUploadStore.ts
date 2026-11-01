@@ -6,7 +6,8 @@ import { safeStorageFilename } from "../mail/attachments.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { findFileItemByBlobId } from "../chokePoint/itemsStore.js";
-import { findOrCreateBlob, tenantBlobStorageKey } from "./blobsStore.js";
+import { findOrCreateBlob, lockBlobById, tenantBlobStorageKey } from "./blobsStore.js";
+import { ValidationError } from "../errors.js";
 import type { BlobRow, ItemRow } from "../types.js";
 import { logger } from "./logger.js";
 import { detectFileType, FILE_TYPE_DETECTION_HEAD_BYTES } from "./fileTypeDetection.js";
@@ -56,13 +57,8 @@ export interface IngestUploadedFileResult {
  * write-then-dedupe-in-a-transaction shape `mail/attachments.ts`'s `ingestAttachments` already
  * uses, minus the relation link (an upload through this route isn't attached to a source item).
  *
- * Concurrent identical uploads converge on one row deterministically without any extra locking:
- * `findOrCreateBlob`'s `INSERT ... ON CONFLICT DO NOTHING` blocks a second transaction
- * inserting the same hash until the first commits, so by the time a second caller's
- * `findFileItemByBlobId` runs, either it's racing to create the very first Files item for that
- * blob (no conflict possible — the blob row itself didn't exist for anyone else to have already
- * created one), or the first caller's whole transaction — blob insert and Files item insert
- * together — has already committed and this call simply finds it.
+ * Filing a deduplicated blob locks that blob before checking for an existing Files item, so a
+ * concurrent filing waits and then reads the committed item in a fresh statement.
  *
  * `docs/adr/2026-09-10-side-effects-follow-the-commit.md`: writing the bytes has to happen before
  * the transaction (the content hash driving the dedup only exists once they're written), so both
@@ -123,6 +119,9 @@ export async function ingestUploadedFile(
         });
       }
 
+      if (!(await lockBlobById(client, blob.id))) {
+        throw new ValidationError("Invalid blob reference", { field: "file" });
+      }
       const existing = await findFileItemByBlobId(client, input.filesDatabaseId, blob.id);
       if (existing) return { item: existing, blob, created: false };
 
