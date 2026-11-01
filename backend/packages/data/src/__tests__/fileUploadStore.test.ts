@@ -7,7 +7,7 @@ import { ForbiddenError } from "../errors.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
-import { ingestUploadedFile } from "../blobs/fileUploadStore.js";
+import { ingestUploadedBlob, ingestUploadedFile } from "../blobs/fileUploadStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { logger } from "../blobs/logger.js";
 
@@ -153,6 +153,23 @@ describe("ingestUploadedFile (issue #670)", () => {
     expect(first.item.properties["type"]).toBe("png");
     expect(second.created).toBe(false);
     expect(second.item).toEqual(first.item);
+  });
+
+  it("reuses a standalone blob and its original storage root when filing identical bytes", async () => {
+    const storage = new FakeBlobStorageWriter();
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+    const standalone = await ingestUploadedBlob(pool, {
+      mimeType: "image/png",
+      source: Readable.from([bytes]),
+      maxBytes: 1024,
+      storage,
+    });
+    const filed = await uploadBytes(storage, await filesDatabaseId(), bytes, "image/png");
+    expect(filed.created).toBe(true);
+    expect(filed.blob.id).toBe(standalone.blob.id);
+    expect(filed.blob.storageKey).toBe(standalone.blob.storageKey);
+    expect(filed.item.properties.file).toEqual({ blobId: standalone.blob.id });
+    expect(storage.bytesByKey.has(standalone.blob.storageKey)).toBe(true);
   });
 
   it("deletes the streamed bytes and leaves no blobs row when the transaction fails", async () => {
