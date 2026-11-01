@@ -1,0 +1,52 @@
+# Batch 10 parent scope decisions
+
+Owner-delegated controller: thr_pz39tcih5r. These decisions authorize scoped
+implementation and exact refreeze; they do not accept a candidate.
+
+1. Gh-1474's claim-removal contract is violated by two reproduced concurrent send
+   schedules. Insert-first cleanup fails its thread foreign key and rolls back the
+   failed claim deletion; cleanup-first makes the competing reply fail its foreign
+   key. The database prevents dangling references. Neither observed result proves
+   a deadlock. Preserve both negative diagnostics and exact participant evidence in
+   batch-10-run/mail-overlap-initial.log and mail-overlap-diagnostic.ts.
+
+   Use the new ADR
+   `2026-11-01-mail-thread-mutations-use-a-tenant-transaction-guard`: a tenant-wide
+   transaction advisory guard, real scope and READ COMMITTED, before participating
+   thread/member/alias decisions and metadata locks. Resolver, send cleanup, ingest
+   before savepoint, both backfill page transactions, per-item legacy migration and
+   IMAP/Gmail/Graph reconciliation participate. Gmail order is tenant thread guard
+   before its existing mailbox guard. Preserve existing thread/alias and claim
+   semantics. Original SMTP error precedence survives genuine compensation failure.
+   No provider I/O moves into send transactions. Existing sync/storage I/O under
+   their already broad transactions is an explicit limited consequence, not a
+   claim that all provider work is outside locks or that deadlocks are impossible.
+
+   Exact source/test/ADR Touches are added to gh-1474 and embedded unchanged into
+   its aggregate. This expanded cross-owner lifecycle/concurrency Task is high
+   complexity; update its model tier and rationale under owner delegation.
+   Required evidence includes both send and ingest acquisition orders, successful
+   failed-draft retry, shared/live alias targets, overlapping bridge/backfill,
+   provider-ID savepoint continuation, rollback release, real tenant isolation and
+   missing/system/isolation refusals. Prove exact blocked participants, complete
+   bounded settlement and actual state, not merely query order or Promise.all.
+   Preserve all ten original handover bytes. No schema migration, dependency,
+   generic DB infrastructure, provider lifecycle redesign or client work is added.
+
+2. Replace the aggregate's duplicated top-level Touches index with a binding
+   reference to the exact union of the embedded per-source Touches sections. This
+   avoids the 60,000-character limit without deleting a source Task, AC, scope
+   restriction or authorized path. The independently approved source snapshots
+   remain fully embedded. Manifest and dispatch hashes are refreshed together.
+
+3. Gh-1396 adds the exact provider-side outbound buffer contract in
+   `2026-11-01-streaming-transcription-provider-outbound-buffer-limit`. Use 262144
+   bytes including UTF-8 JSON/base64 frame length and current bufferedAmount;
+   projected equality is allowed and overflow fails before send. Every provider
+   event passes the same gate. A pending configuration failure rejects open;
+   established sessions fail once through provider_error and settle accounting.
+   Require controlled adapter boundary/teardown tests and actual gateway error plus
+   no-reserved-row evidence, with no live probe or configurable capacity. The
+   incoming gateway queue and realtime-invalidations refetch policy do not prove
+   or define this audio buffer. Existing provider/test Touches remain and the new
+   exact ADR path is added. This accepts no code or test result.
