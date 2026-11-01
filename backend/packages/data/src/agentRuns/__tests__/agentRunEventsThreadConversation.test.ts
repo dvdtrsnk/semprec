@@ -1,7 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTenantZeroUser,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
+import { createUser } from "../../auth/usersStore.js";
 import { createAgentRun, finishAgentRun } from "../agentRunsStore.js";
 import { insertAgentRunEvent, listSessionAgentRunEventsFromLastCompaction } from "../agentRunEventsStore.js";
 import { handleAgentRunEventsRetentionTask } from "../agentRunEventsRetention.js";
@@ -128,6 +137,60 @@ describe("thread conversation key (issue #1560)", () => {
       parentRunId: null,
     });
     expect(events.map((e) => e.id)).toEqual([plainEvent.id]);
+  });
+
+  it("isolates thread reads and retention between tenants under the runtime role", async () => {
+    const tenantA = getTenantZeroId();
+    const tenantB = await createTestTenant(pool);
+    await createUser(pool, { email: `${randomUUID()}@example.test`, passwordHash: "unused", tenantId: tenantB });
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const createThreadRun = (tenantId: string) =>
+        runInTenant(tenantId, async () => {
+          const thread = await runtime.query<{ id: string }>(
+            "INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id",
+          );
+          const threadId = thread.rows[0]!.id;
+          const run = await createAgentRun(runtime, { threadId, triggeredBy: "user", unit: "session", task: "chat" });
+          const event = await insertAgentRunEvent(runtime, run.id, "message", {
+            kind: "message",
+            text: "tenant event",
+          });
+          return { threadId, run, event };
+        });
+      const a = await createThreadRun(tenantA);
+      const b = await createThreadRun(tenantB);
+      await runInTenant(tenantB, async () => {
+        await insertAgentRunEvent(runtime, b.run.id, "compaction", { kind: "compaction" });
+        await finishAgentRun(runtime, b.run.id, "done", null);
+      });
+      await runInTenant(tenantA, () => finishAgentRun(runtime, a.run.id, "done", null));
+      await backdate(a.run.id);
+      await backdate(b.run.id);
+      await runInTenant(tenantA, async () => {
+        expect(
+          (
+            await listSessionAgentRunEventsFromLastCompaction(runtime, {
+              threadId: a.threadId,
+              triggeredBy: "user",
+              parentRunId: null,
+            })
+          ).map((event) => event.id),
+        ).toEqual([a.event.id]);
+        expect(
+          await listSessionAgentRunEventsFromLastCompaction(runtime, {
+            threadId: b.threadId,
+            triggeredBy: "user",
+            parentRunId: null,
+          }),
+        ).toEqual([]);
+      });
+      expect((await handleAgentRunEventsRetentionTask(runtime)).deleted).toBe(1);
+      expect(await remainingEventIds(a.run.id)).toEqual([a.event.id]);
+      expect(await remainingEventIds(b.run.id)).not.toContain(b.event.id);
+    } finally {
+      await runtime.end();
+    }
   });
 
   describe("retention", () => {
