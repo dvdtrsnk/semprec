@@ -1,8 +1,20 @@
 import { randomUUID } from "node:crypto";
+import { copyFile, mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Pool, PoolClient } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { Pool, type PoolClient } from "pg";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+  withTenantTransaction,
+} from "../testSupport/testDb.js";
 import { ValidationError } from "../errors.js";
+import { runMigrations } from "../db/migrate.js";
 import {
   deleteMailServerSettings,
   getMailServerSettings,
@@ -37,7 +49,8 @@ async function expectField(input: MailServerSettingsInput, field: string): Promi
   await inRolledBackTransaction(async (client) => {
     const error = await upsertMailServerSettings(client, randomUUID(), input).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).details).toEqual({ field });
+    if (!(error instanceof ValidationError)) throw error;
+    expect(error.details).toEqual({ field });
   });
 }
 
@@ -51,6 +64,78 @@ afterAll(async () => {
 });
 
 describe("mail server settings store (issue #1473)", () => {
+  it("upgrades a populated pre-0101 database with the real migration runner", async () => {
+    const url = process.env.TEST_DATABASE_URL;
+    if (!url) throw new Error("Missing test database URL");
+    // The database name is a fixed prefix and UUID hex, so the quoted identifier cannot escape.
+    const name = `mail_upgrade_${randomUUID().replaceAll("-", "")}`;
+    const admin = new Pool({ connectionString: url });
+    const dir = await mkdtemp(path.join(tmpdir(), "semprec-mail-upgrade-"));
+    const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+    let created = false;
+    let scratch: Pool | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      await admin.query(`CREATE DATABASE "${name}"`);
+      created = true;
+      const scratchUrl = new URL(url);
+      scratchUrl.pathname = `/${name}`;
+      scratch = new Pool({ connectionString: scratchUrl.toString() });
+      const files = (await readdir(migrations)).filter((file) => file.endsWith(".sql") && file < "0101_").sort();
+      for (const file of files) await copyFile(path.join(migrations, file), path.join(dir, file));
+      await runMigrations(scratch, dir);
+      const mailboxId = randomUUID();
+      await scratch.query(
+        "INSERT INTO mail_account_sync_state (item_id, tenant_id, sync_mode) SELECT $1, id, 'imap' FROM tenants",
+        [mailboxId],
+      );
+      const before = await scratch.query<{ item_id: string; sync_mode: string }>(
+        "SELECT item_id, sync_mode FROM mail_account_sync_state WHERE item_id = $1",
+        [mailboxId],
+      );
+      expect(before.rows).toEqual([{ item_id: mailboxId, sync_mode: "imap" }]);
+      const migration = "0101_mail_account_server_settings.sql";
+      await copyFile(path.join(migrations, migration), path.join(dir, migration));
+      await runMigrations(scratch, dir);
+      const after = await scratch.query<{ item_id: string; sync_mode: string }>(
+        "SELECT item_id, sync_mode FROM mail_account_sync_state WHERE item_id = $1",
+        [mailboxId],
+      );
+      expect(after.rows).toEqual(before.rows);
+      await scratch.query("UPDATE mail_account_sync_state SET last_error = 'legacy write' WHERE item_id = $1", [
+        mailboxId,
+      ]);
+      expect(
+        (
+          await scratch.query<{ last_error: string }>(
+            "SELECT last_error FROM mail_account_sync_state WHERE item_id = $1",
+            [mailboxId],
+          )
+        ).rows[0]?.last_error,
+      ).toBe("legacy write");
+      expect(
+        (await scratch.query<{ id: string }>("SELECT id FROM schema_migrations WHERE id = $1", [migration])).rows,
+      ).toHaveLength(1);
+    } catch (error) {
+      failure = { error };
+    }
+    for (const cleanup of [
+      async () => scratch?.end(),
+      async () => {
+        if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      },
+      async () => admin.end(),
+      async () => rm(dir, { recursive: true, force: true }),
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        failure ??= { error };
+      }
+    }
+    if (failure) throw failure.error;
+  }, 120_000);
+
   it("round-trips settings and the row holds no password", async () => {
     await inRolledBackTransaction(async (client) => {
       const id = randomUUID();
@@ -140,26 +225,25 @@ describe("mail server settings store (issue #1473)", () => {
   });
 
   it("hides another tenant's row under row-level security", async () => {
-    await inRolledBackTransaction(async (client) => {
-      const { rows: existing } = await client.query<{ id: string }>("SELECT id FROM tenants");
-      const a = existing[0]?.id;
-      if (!a) throw new Error("no existing tenant");
-      await client.query("DROP INDEX IF EXISTS tenants_single_tenant_guard");
-      const { rows } = await client.query<{ id: string }>(
-        "INSERT INTO tenants (status) VALUES ('active') RETURNING id",
-      );
-      const b = rows[0]?.id;
-      if (!b) throw new Error("second tenant was not inserted");
-      await client.query("SET LOCAL ROLE semprec_data");
-      const id = randomUUID();
-      await client.query("SELECT set_config('app.tenant_id', $1, true)", [a]);
-      await upsertMailServerSettings(client, id, VALID);
-      expect(await getMailServerSettings(client, id)).not.toBeNull();
-      await client.query("SELECT set_config('app.tenant_id', $1, true)", [b]);
-      expect(await getMailServerSettings(client, id)).toBeNull();
-      const { rows: all } = await client.query("SELECT 1 FROM mail_account_server_settings");
-      expect(all).toEqual([]);
-      expect(await deleteMailServerSettings(client, id)).toBe(false);
-    });
+    const tenantA = getTenantZeroId();
+    const tenantB = await createTestTenant(pool);
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const id = randomUUID();
+    try {
+      await withTenantTransaction(runtimePool, tenantA, async (client) => {
+        await upsertMailServerSettings(client, id, VALID);
+        expect(await getMailServerSettings(client, id)).not.toBeNull();
+      });
+      await withTenantTransaction(runtimePool, tenantB, async (client) => {
+        expect(await getMailServerSettings(client, id)).toBeNull();
+        expect((await client.query("SELECT 1 FROM mail_account_server_settings")).rows).toEqual([]);
+        expect(await deleteMailServerSettings(client, id)).toBe(false);
+      });
+      await withTenantTransaction(runtimePool, tenantA, async (client) => {
+        expect(await getMailServerSettings(client, id)).not.toBeNull();
+      });
+    } finally {
+      await runtimePool.end();
+    }
   });
 });

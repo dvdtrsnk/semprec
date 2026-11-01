@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -11,7 +12,9 @@ import {
   createTestTenant,
   getTenantZeroId,
   getTestPool,
+  reconcileGmailAccount,
   resetDatabase,
+  type GmailMailClient,
 } from "@semprec/data/testSupport";
 import {
   createBlob,
@@ -24,6 +27,7 @@ import {
   ingestUploadedFile,
   LocalFsBlobStorageWriter,
   login,
+  resolveMailModuleIds,
   seedSystem,
   withTransaction,
 } from "@semprec/data";
@@ -244,6 +248,135 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
   });
 
   describe("bytes in either storage root", () => {
+    it("downloads a Sent attachment after real reconciliation and upload deduplication", async () => {
+      const content = "sent attachment bytes";
+      const uploadedFirstContent = "upload-first attachment bytes";
+      const uploadedFirst = await uploadIn(tenantA, "first.txt", uploadedFirstContent);
+      const gmail: GmailMailClient = {
+        getCurrentHistoryId: async () => "100",
+        listHistorySince: async () => ({
+          invalidated: false,
+          newHistoryId: "101",
+          changedMessageIds: [],
+          removedMessageIds: [],
+        }),
+        listAllMessageIds: async () => ["sent-message", "uploaded-first"],
+        listLabels: async () => [{ id: "SENT", name: "Sent", type: "system" }],
+        fetchMessage: async (id) => ({
+          id,
+          threadId: "thread",
+          labelIds: ["SENT"],
+          message: {
+            messageId: `<${id}@example.test>`,
+            subject: "Sent",
+            envelope: { from: { address: "sender@example.test" }, to: [{ address: "recipient@example.test" }] },
+            attachments: [
+              {
+                filename: "sent.txt",
+                contentType: "text/plain",
+                contentId: null,
+                disposition: "attachment",
+                openStream: () => Readable.from([id === "sent-message" ? content : uploadedFirstContent]),
+              },
+            ],
+          },
+        }),
+        modifyMessageLabels: async () => undefined,
+      };
+      await runInTenant(tenantA, () =>
+        withTransaction(pool, async (client) => {
+          const ids = await resolveMailModuleIds(client);
+          const chokePoint = createChokePoint(pool);
+          const emailProperties = await chokePoint.listProperties(ids.emailsDatabaseId);
+          const folderProperties = await chokePoint.listProperties(ids.foldersDatabaseId);
+          const propertyId = (properties: typeof emailProperties, key: string): string => {
+            const property = properties.find((entry) => entry.key === key);
+            if (!property) throw new Error(`Missing ${key} property`);
+            return property.id;
+          };
+          const mailbox = await createItemWithClient(client, {
+            databaseId: ids.mailboxesDatabaseId,
+            properties: { name: "Gmail", provider: "gmail" },
+          });
+          await reconcileGmailAccount(client, gmail, {
+            mailboxItemId: mailbox.id,
+            emailsDatabaseId: ids.emailsDatabaseId,
+            filesDatabaseId: ids.filesDatabaseId,
+            foldersDatabaseId: ids.foldersDatabaseId,
+            folderRelationPropertyId: propertyId(emailProperties, "folder"),
+            attachmentsRelationPropertyId: propertyId(emailProperties, "attachments"),
+            mailboxFolderRelationPropertyId: propertyId(folderProperties, "mailbox"),
+            storage: mailStorage,
+            storageKeyPrefix: "sent-test",
+          });
+        }),
+      );
+      const { rows } = await runInTenant(tenantA, () =>
+        withTransaction(pool, (client) =>
+          client.query<{ blob_id: string; provider_message_id: string }>(
+            `SELECT attachment.blob_id, meta.provider_message_id FROM mail_attachments attachment
+             JOIN mail_message_meta meta ON meta.item_id = attachment.message_item_id`,
+          ),
+        ),
+      );
+      expect(rows).toHaveLength(2);
+      const blobId = rows.find((row) => row.provider_message_id === "sent-message")?.blob_id;
+      if (!blobId) throw new Error("Missing Sent attachment blob");
+      expect(rows.find((row) => row.provider_message_id === "uploaded-first")?.blob_id).toBe(uploadedFirst.blobId);
+      const sentEdges = await runInTenant(tenantA, () =>
+        withTransaction(pool, (client) =>
+          client.query<{ provider_id: string }>(
+            `SELECT folder.properties ->> 'providerId' AS provider_id
+               FROM mail_attachments attachment
+               JOIN item_relations edge ON edge.item_a = attachment.message_item_id OR edge.item_b = attachment.message_item_id
+               JOIN items folder ON folder.id = CASE WHEN edge.item_a = attachment.message_item_id THEN edge.item_b ELSE edge.item_a END
+              WHERE attachment.blob_id = $1 AND folder.properties ->> 'providerId' = 'SENT'`,
+            [blobId],
+          ),
+        ),
+      );
+      expect(sentEdges.rows).toEqual([{ provider_id: "SENT" }]);
+      const uploaded = await uploadIn(tenantA, "upload.txt", content);
+      expect(uploaded.blobId).toBe(blobId);
+      const stored = await runInTenant(tenantA, () =>
+        withTransaction(pool, (client) =>
+          client.query<{ storage_key: string }>("SELECT storage_key FROM blobs WHERE id = $1", [blobId]),
+        ),
+      );
+      const key = stored.rows[0]?.storage_key;
+      if (!key) throw new Error("Missing blob storage key");
+      expect(existsSync(join(tmpMailDir, key))).toBe(true);
+      expect(existsSync(join(tmpBlobDir, key))).toBe(false);
+      const headers = await createUserIn(tenantA);
+      const firstKeyRows = await runInTenant(tenantA, () =>
+        withTransaction(pool, (client) =>
+          client.query<{ storage_key: string }>("SELECT storage_key FROM blobs WHERE id = $1", [uploadedFirst.blobId]),
+        ),
+      );
+      const firstKey = firstKeyRows.rows[0]?.storage_key;
+      if (!firstKey) throw new Error("Missing uploaded blob storage key");
+      expect(existsSync(join(tmpBlobDir, firstKey))).toBe(true);
+      expect(existsSync(join(tmpMailDir, firstKey))).toBe(false);
+      const mailReads = vi.spyOn(mailStorage, "readStream");
+      const fileReads = vi.spyOn(storage, "readStream");
+      const fallback = await download(headers, uploadedFirst.blobId);
+      expect(fallback.status).toBe(200);
+      expect(fallback.text).toBe(uploadedFirstContent);
+      expect(mailReads).toHaveBeenCalledWith(firstKey, undefined);
+      expect(fileReads).toHaveBeenCalledWith(firstKey, undefined);
+      const full = await download(headers, blobId);
+      expect(full.status).toBe(200);
+      expect(full.text).toBe(content);
+      const partial = await download({ ...headers, Range: "bytes=0-3" }, blobId);
+      expect(partial.status).toBe(206);
+      expect(partial.text).toBe("sent");
+      const foreignHeaders = await createUserIn(tenantB);
+      const foreign = await download(foreignHeaders, blobId);
+      const unknown = await download(foreignHeaders, randomUUID());
+      expect(foreign.status).toBe(404);
+      expect(foreign).toEqual(unknown);
+    });
+
     /** Writes `content` under a fresh key in `target` and records the blob (and, for an attachment, its `mail_attachments` row) in tenant zero. */
     async function seedBlob(opts: {
       target: LocalFsBlobStorageWriter | null;

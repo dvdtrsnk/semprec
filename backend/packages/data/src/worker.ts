@@ -204,7 +204,7 @@ export function createCoreTaskList(
       await handleMailMessagePreviewBackfillTask(pool);
     },
     [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: async () => {
-      await handleMailGmailPseudoFolderCleanupTask(pool);
+      await handleMailGmailPseudoFolderCleanupTask(pool, mailSyncAdapters.loadGmailLabels);
     },
     [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: async () => {
       await handleMailThreadBackfillTask(pool);

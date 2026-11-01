@@ -19,7 +19,7 @@ import {
   type MailSyncFailureKind,
 } from "./mailAccountSyncStateStore.js";
 import { reconcileImapAccount, type ImapMailClient } from "./imapReconcile.js";
-import { reconcileGmailAccount, type GmailMailClient } from "./gmailReconcile.js";
+import { reconcileGmailAccount, type GmailLabelRef, type GmailMailClient } from "./gmailReconcile.js";
 import { reconcileGraphAccount, type GraphMailClient } from "./graphReconcile.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import { MailConnectionLimitError, MailReauthorizationRequiredError } from "./providerTypes.js";
@@ -46,6 +46,7 @@ import { mailProblemKey } from "../semp/sourceProblemKeys.js";
 export interface MailSyncAdapterFactory {
   createImapClient?: (mailboxItemId: string, credential: string) => Promise<ImapMailClient>;
   createGmailClient?: (mailboxItemId: string, credential: string) => GmailMailClient;
+  loadGmailLabels?: (mailboxItemId: string) => Promise<GmailLabelRef[]>;
   createGraphClient?: (mailboxItemId: string, credential: string) => GraphMailClient;
 }
 

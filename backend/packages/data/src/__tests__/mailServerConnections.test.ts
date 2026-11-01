@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import net from "node:net";
 import { Socket as NetSocket, createServer as createNetServer, type Server as NetServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,6 +58,7 @@ let restorePolicy: (() => void) | undefined;
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  syncBuiltinESMExports();
   stub?.restore();
   stub = undefined;
   restorePolicy?.();
@@ -251,6 +254,66 @@ function smtpReply(line: string, password: string): string {
   }
 }
 
+function startTlsSession(
+  protocol: "imap" | "smtp",
+  certificate: TestCertificate,
+  names: string[],
+): (socket: Socket) => void {
+  return (socket) => {
+    socket.write(protocol === "imap" ? "* OK fake IMAP server ready\r\n" : "220 mail.test ESMTP fake\r\n");
+    let pending = "";
+    const onPlainData = (chunk: Buffer) => {
+      pending += chunk.toString("utf8");
+      let end = pending.indexOf("\r\n");
+      while (end !== -1) {
+        const line = pending.slice(0, end);
+        pending = pending.slice(end + 2);
+        const words = line.split(" ");
+        const command = (protocol === "imap" ? words[1] : words[0])?.toUpperCase();
+        if (command === "STARTTLS") {
+          socket.removeListener("data", onPlainData);
+          socket.write(protocol === "imap" ? `${words[0]} OK Begin TLS\r\n` : "220 Ready for TLS\r\n", () => {
+            const secure = new tls.TLSSocket(socket, {
+              isServer: true,
+              secureContext: tls.createSecureContext({ key: certificate.key, cert: certificate.cert }),
+              SNICallback: (name, done) => {
+                names.push(name);
+                done(null, tls.createSecureContext({ key: certificate.key, cert: certificate.cert }));
+              },
+            });
+            secure.on("error", () => undefined);
+            let securePending = "";
+            secure.on("data", (data: Buffer) => {
+              securePending += data.toString("utf8");
+              let next = securePending.indexOf("\r\n");
+              while (next !== -1) {
+                const secureLine = securePending.slice(0, next);
+                securePending = securePending.slice(next + 2);
+                secure.write(
+                  protocol === "imap"
+                    ? imapReply(secureLine, credential.password)
+                    : smtpReply(secureLine, credential.password),
+                );
+                next = securePending.indexOf("\r\n");
+              }
+            });
+          });
+          return;
+        }
+        if (protocol === "imap" && command === "CAPABILITY")
+          socket.write(`* CAPABILITY IMAP4rev1 STARTTLS\r\n${words[0]} OK completed\r\n`);
+        else if (protocol === "smtp" && command === "EHLO") socket.write("250-mail.test\r\n250 STARTTLS\r\n");
+        else
+          socket.write(
+            protocol === "imap" ? imapReply(line, credential.password) : smtpReply(line, credential.password),
+          );
+        end = pending.indexOf("\r\n");
+      }
+    };
+    socket.on("data", onPlainData);
+  };
+}
+
 function settingsFor(host: string, port: number, security: MailServerSecurity = "tls"): MailServerConnectionSettings {
   const endpoint: MailServerEndpoint = { host, port, security };
   return { endpoint, username };
@@ -379,15 +442,34 @@ describe("openImapConnection (issue #1478)", () => {
     expect(server.secureConnections()).toBe(0);
   });
 
+  it("upgrades a local STARTTLS session, retains the host name and logs in", async () => {
+    useLoopbackPolicy();
+    trustCertificate(mailCertificate);
+    const names: string[] = [];
+    const server = await startFakeServer(startTlsSession("imap", mailCertificate, names));
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const client = await openImapConnection(settingsFor("mail.test", server.port, "starttls"), credential);
+    expect(client).toBeInstanceOf(ImapFlowMailClient);
+    expect(names).toEqual(["mail.test"]);
+    expect(stub.calls).toEqual(["mail.test"]);
+  });
+
   it("hands the socket the policy lookup, which vets a public address and keeps the host name as the server name", async () => {
     stub = stubDnsLookup({ "public.test": ["93.184.216.34"] });
     const seen: tls.ConnectionOptions[] = [];
+    let selected: unknown;
     vi.spyOn(tls, "connect").mockImplementation(((options: tls.ConnectionOptions) => {
       seen.push(options);
       const socket = new tls.TLSSocket(new NetSocket());
-      process.nextTick(() =>
-        socket.destroy(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" })),
-      );
+      process.nextTick(() => {
+        lookupThroughPolicy(options, "public.test").then(
+          (address) => {
+            selected = address;
+            socket.destroy(Object.assign(new Error("test transport stopped"), { code: "ECONNREFUSED" }));
+          },
+          (error: unknown) => socket.destroy(error instanceof Error ? error : new Error("lookup failed")),
+        );
+      });
       return socket;
     }) as typeof tls.connect);
 
@@ -397,7 +479,36 @@ describe("openImapConnection (issue #1478)", () => {
     const [options] = seen;
     expect(options?.servername).toBe("public.test");
     expect(options?.host).toBe("public.test");
-    expect(await lookupThroughPolicy(options ?? {}, "public.test")).toBe("93.184.216.34");
+    expect(selected).toBe("93.184.216.34");
+    expect(stub.calls).toEqual(["public.test"]);
+  });
+
+  it("invokes its public-address policy lookup during the STARTTLS connector attempt", async () => {
+    stub = stubDnsLookup({ "public.test": ["93.184.216.34"] });
+    let selected: unknown;
+    let hostname: string | undefined;
+    let servername: unknown;
+    vi.spyOn(net, "connect").mockImplementation(((options: net.TcpNetConnectOpts) => {
+      hostname = options.host;
+      servername = Reflect.get(options, "servername");
+      const socket = new NetSocket();
+      process.nextTick(() => {
+        lookupThroughPolicy(options, "public.test").then(
+          (address) => {
+            selected = address;
+            socket.destroy(Object.assign(new Error("test transport stopped"), { code: "ECONNREFUSED" }));
+          },
+          (error: unknown) => socket.destroy(error instanceof Error ? error : new Error("lookup failed")),
+        );
+      });
+      return socket;
+    }) as typeof net.connect);
+    syncBuiltinESMExports();
+    const error = await rejectionOf(openImapConnection(settingsFor("public.test", 143, "starttls"), credential));
+    expect(error).toBeInstanceOf(MailServerUnreachableError);
+    expect(hostname).toBe("public.test");
+    expect(servername).toBe("public.test");
+    expect(selected).toBe("93.184.216.34");
     expect(stub.calls).toEqual(["public.test"]);
   });
 });
@@ -477,6 +588,36 @@ describe("openImapFlow (issue #1550)", () => {
 });
 
 describe("createSmtpTransporter (issue #1478)", () => {
+  it.each(["tls", "starttls"] as const)(
+    "invokes its public-address policy lookup during the %s connector attempt",
+    async (security) => {
+      stub = stubDnsLookup({ "public.test": ["93.184.216.34"] });
+      let selected: unknown;
+      let hostname: string | undefined;
+      vi.spyOn(net, "connect").mockImplementation(((options: net.TcpNetConnectOpts) => {
+        hostname = options.host;
+        const socket = new NetSocket();
+        process.nextTick(() => {
+          lookupThroughPolicy(options, "public.test").then(
+            (address) => {
+              selected = address;
+              socket.destroy(Object.assign(new Error("test transport stopped"), { code: "ECONNREFUSED" }));
+            },
+            (error: unknown) => socket.destroy(error instanceof Error ? error : new Error("lookup failed")),
+          );
+        });
+        return socket;
+      }) as typeof net.connect);
+      syncBuiltinESMExports();
+      const transport = createSmtpTransporter(settingsFor("public.test", 587, security), credential);
+      const error = await rejectionOf(transport.verify());
+      transport.close();
+      expect(error).toBeInstanceOf(MailServerUnreachableError);
+      expect(hostname).toBe("public.test");
+      expect(selected).toBe("93.184.216.34");
+      expect(stub.calls).toEqual(["public.test"]);
+    },
+  );
   it.each(["127.0.0.1", "10.0.0.1", "169.254.169.254", "::1"])(
     "refuses a name that resolves to %s under the default policy, with the unreachable error",
     async (address) => {
@@ -588,5 +729,18 @@ describe("createSmtpTransporter (issue #1478)", () => {
     expect(received).toContain("STARTTLS");
     expect(error).toBeInstanceOf(MailServerUnreachableError);
     expect(server.secureConnections()).toBe(0);
+  });
+
+  it("upgrades a local STARTTLS session, retains the host name and logs in", async () => {
+    useLoopbackPolicy();
+    trustCertificate(mailCertificate);
+    const names: string[] = [];
+    const server = await startFakeServer(startTlsSession("smtp", mailCertificate, names));
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const transport = createSmtpTransporter(settingsFor("mail.test", server.port, "starttls"), credential);
+    expect(await transport.verify()).toBe(true);
+    transport.close();
+    expect(names).toEqual(["mail.test"]);
+    expect(stub.calls).toEqual(["mail.test"]);
   });
 });

@@ -66,7 +66,7 @@ export function createMailSyncAdapters(options: CreateMailSyncAdaptersOptions): 
     );
   } else {
     const { clientId, clientSecret } = gmail;
-    adapters.createGmailClient = (mailboxItemId) => {
+    const gmailClient = (mailboxItemId: string) => {
       const getAccessToken = createOAuthAccessTokenSource({
         pool,
         mailboxItemId,
@@ -78,6 +78,8 @@ export function createMailSyncAdapters(options: CreateMailSyncAdaptersOptions): 
       });
       return new GmailRestClient(getAccessToken, fetchImpl);
     };
+    adapters.createGmailClient = gmailClient;
+    adapters.loadGmailLabels = (mailboxItemId) => gmailClient(mailboxItemId).listLabels();
   }
 
   const graph = readOAuthClient(env, "MS_GRAPH_OAUTH_CLIENT_ID", "MS_GRAPH_OAUTH_CLIENT_SECRET");

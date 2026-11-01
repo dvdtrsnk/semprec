@@ -149,11 +149,24 @@ describe("buildOutgoingMime", () => {
 
   it.each([
     ["subject", { subject: "Hi\r\nBcc: evil@example.com" }],
+    ["message id", { messageId: "<id@example.com>\r\nX: injected" }],
+    ["in-reply-to", { inReplyTo: "<id@example.com>\nX: injected" }],
+    ["second reference", { references: ["<ok@example.com>", "<id@example.com>\rX: injected"] }],
+    ["from address", { from: { address: "a@example.com\nX: injected" } }],
+    ["from display name", { from: { name: "Alice\nX: injected", address: "a@example.com" } }],
+    ["to address", { to: [{ address: "a@example.com\nX: injected" }] }],
     ["display name", { to: [{ name: "Bob\nX-Evil: 1", address: "bob@example.com" }] }],
     ["address", { cc: [{ address: "a@example.com\r\nX-Evil: 1" }] }],
+    ["cc display name", { cc: [{ name: "Cc\nX: injected", address: "a@example.com" }] }],
+    ["bcc address", { bcc: [{ address: "a@example.com\nX: injected" }] }],
+    ["bcc display name", { bcc: [{ name: "Bcc\nX: injected", address: "a@example.com" }] }],
     [
       "attachment filename",
       { attachments: [{ filename: "a\r\nX: 1", contentType: "text/plain", blobId: randomUUID() }] },
+    ],
+    [
+      "attachment content type",
+      { attachments: [{ filename: "a.txt", contentType: "text/plain\nX: injected", blobId: randomUUID() }] },
     ],
   ])("throws when the %s contains a line break", async (_label, patch) => {
     await inRolledBackTransaction(async (client) => {

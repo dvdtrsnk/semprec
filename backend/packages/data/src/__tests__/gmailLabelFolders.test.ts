@@ -1,9 +1,16 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import "../domainWriteHooks.js";
-import { runInTenant } from "@semprec/shared";
-import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runAsSystem, runInTenant } from "@semprec/shared";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import * as relationOps from "../chokePoint/relationOps.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { withTransaction } from "../db/pool.js";
@@ -79,8 +86,8 @@ interface Setup {
   storageKeyPrefix: string;
 }
 
-async function setup(): Promise<Setup> {
-  return runInTenant(tenantId, () =>
+async function setup(scopeTenant = tenantId): Promise<Setup> {
+  return runInTenant(scopeTenant, () =>
     withTransaction(pool, async (client) => {
       const [emails, files, folders, mailboxes] = await Promise.all(
         ["emails", "files", "folders", "mailboxes"].map((m) => getDatabaseByModuleId(client, m)),
@@ -138,6 +145,52 @@ async function foldersOf(params: Setup, providerMessageId: string): Promise<stri
   return rows.map((r) => r.pid);
 }
 
+async function seedOverlap(params: Setup): Promise<{ folderItemId: string; messageItemId: string }> {
+  return runInTenant(tenantId, () =>
+    withTransaction(pool, async (client) => {
+      const folderItemId = await ensureFolderItem(client, {
+        foldersDatabaseId: params.foldersDatabaseId,
+        mailboxItemId: params.mailboxItemId,
+        mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
+        providerId: "UNREAD",
+        name: "Unread",
+        behavior: "label",
+        specialPurpose: "none",
+      });
+      for (const [providerId, purpose] of [
+        ["INBOX", "inbox"],
+        [GMAIL_ARCHIVE_PROVIDER_ID, "archive"],
+      ] as const) {
+        await ensureFolderItem(client, {
+          foldersDatabaseId: params.foldersDatabaseId,
+          mailboxItemId: params.mailboxItemId,
+          mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
+          providerId,
+          name: purpose,
+          behavior: "label",
+          specialPurpose: purpose,
+        });
+      }
+      const message = await ingestEmailMessage(client, {
+        emailsDatabaseId: params.emailsDatabaseId,
+        filesDatabaseId: params.filesDatabaseId,
+        folderRelationPropertyId: params.folderRelationPropertyId,
+        attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
+        folderItemId,
+        mailboxItemId: params.mailboxItemId,
+        providerMessageId: "overlap",
+        messageId: "<overlap@x>",
+        envelope: { from: { address: "sender@example.test" } },
+        subject: "Overlap",
+        attachments: [],
+        storage,
+        storageKeyPrefix: "overlap",
+      });
+      return { folderItemId, messageItemId: message.itemId };
+    }),
+  );
+}
+
 describe("Gmail label folders (issue #1496)", () => {
   beforeAll(async () => {
     admin = getTestPool();
@@ -193,19 +246,404 @@ describe("Gmail label folders (issue #1496)", () => {
     expect(await foldersOf(params, "m1")).toEqual([GMAIL_ARCHIVE_PROVIDER_ID]);
   });
 
+  it("fails before deleting a mailbox folder when its label inventory is unavailable or ambiguous", async () => {
+    const params = await setup();
+    await runInTenant(tenantId, () =>
+      withTransaction(pool, (client) =>
+        ensureFolderItem(client, {
+          foldersDatabaseId: params.foldersDatabaseId,
+          mailboxItemId: params.mailboxItemId,
+          mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
+          providerId: "UNREAD",
+          name: "Unread",
+          behavior: "label",
+          specialPurpose: "none",
+        }),
+      ),
+    );
+    const before = await folderProviderIds(params);
+    await expect(handleMailGmailPseudoFolderCleanupTask(pool, undefined)).rejects.toThrow();
+    expect(await folderProviderIds(params)).toEqual(before);
+    await expect(
+      handleMailGmailPseudoFolderCleanupTask(pool, async () => {
+        throw new Error("provider offline");
+      }),
+    ).rejects.toThrow();
+    expect(await folderProviderIds(params)).toEqual(before);
+    await expect(
+      handleMailGmailPseudoFolderCleanupTask(pool, async () => [
+        { id: "UNREAD", name: "Unread", type: "system" },
+        { id: "UNREAD", name: "Unread", type: "user" },
+      ]),
+    ).rejects.toThrow();
+    expect(await folderProviderIds(params)).toEqual(before);
+    await handleMailGmailPseudoFolderCleanupTask(pool, async () => LABELS);
+    expect(await folderProviderIds(params)).not.toContain("UNREAD");
+  });
+
+  it("walks more than one cleanup page and leaves every affected message in Archive", async () => {
+    const params = await setup();
+    await runInTenant(tenantId, () =>
+      withTransaction(pool, async (client) => {
+        const folderItemId = await ensureFolderItem(client, {
+          foldersDatabaseId: params.foldersDatabaseId,
+          mailboxItemId: params.mailboxItemId,
+          mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
+          providerId: "UNREAD",
+          name: "Unread",
+          behavior: "label",
+          specialPurpose: "none",
+        });
+        for (let index = 0; index < 201; index += 1) {
+          await ingestEmailMessage(client, {
+            emailsDatabaseId: params.emailsDatabaseId,
+            filesDatabaseId: params.filesDatabaseId,
+            folderRelationPropertyId: params.folderRelationPropertyId,
+            attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
+            folderItemId,
+            mailboxItemId: params.mailboxItemId,
+            providerMessageId: `page-${index}`,
+            messageId: `<page-${index}@example.test>`,
+            envelope: { from: { address: "sender@example.test" } },
+            subject: "Page",
+            attachments: [],
+            storage,
+            storageKeyPrefix: "page-test",
+          });
+        }
+      }),
+    );
+    await handleMailGmailPseudoFolderCleanupTask(pool, async () => LABELS);
+    for (const index of [0, 100, 200]) {
+      expect(await foldersOf(params, `page-${index}`)).toEqual([GMAIL_ARCHIVE_PROVIDER_ID]);
+    }
+    const { rows } = await admin.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM mail_message_meta m
+        JOIN item_relations r ON r.item_a = m.item_id OR r.item_b = m.item_id
+        JOIN items f ON f.id = CASE WHEN r.item_a = m.item_id THEN r.item_b ELSE r.item_a END
+        WHERE m.mailbox_item_id = $1 AND f.properties ->> 'providerId' = $2`,
+      [params.mailboxItemId, GMAIL_ARCHIVE_PROVIDER_ID],
+    );
+    expect(rows[0]?.count).toBe("201");
+    expect(await folderProviderIds(params)).not.toContain("UNREAD");
+  }, 30_000);
+
+  it("rejects missing and system tenant scope before Gmail reconciliation queries", async () => {
+    const params = await setup();
+    const client = await admin.connect();
+    const query = vi.spyOn(client, "query");
+    try {
+      await expect(reconcileGmailAccount(client, gmailClient({}), params)).rejects.toThrow(/tenant scope/i);
+      await expect(
+        runAsSystem("gmail-scope-test", () => reconcileGmailAccount(client, gmailClient({}), params)),
+      ).rejects.toThrow(/tenant scope/i);
+      expect(query).not.toHaveBeenCalled();
+    } finally {
+      query.mockRestore();
+      client.release();
+    }
+  });
+
+  it("keeps Inbox without Archive when cleanup overlaps a Gmail move to Inbox", async () => {
+    const params = await setup();
+    const seeded = await seedOverlap(params);
+    const cleanupPool = await createRuntimeRolePool(admin, "semprec_data");
+    const syncPool = await createRuntimeRolePool(admin, "semprec_data");
+    let release: () => void = () => undefined;
+    const mayContinue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reportPid: (pid: number) => void = () => undefined;
+    const paused = new Promise<number>((resolve) => {
+      reportPid = resolve;
+    });
+    const original = relationOps.deleteRelationWithClient;
+    const spy = vi
+      .spyOn(relationOps, "deleteRelationWithClient")
+      .mockImplementation(async (client, input, context, writer) => {
+        const result = await original(client, input, context, writer);
+        if (input.callerItemId === seeded.messageItemId && input.targetItemId === seeded.folderItemId && result) {
+          const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          const pid = rows[0]?.pid;
+          if (pid === undefined) throw new Error("Missing cleanup backend pid");
+          reportPid(pid);
+          await mayContinue;
+        }
+        return result;
+      });
+    const cleanup = handleMailGmailPseudoFolderCleanupTask(cleanupPool, async () => LABELS);
+    const cleanupSettled = Promise.allSettled([cleanup]);
+    let syncSettled: Promise<PromiseSettledResult<void>[]> | undefined;
+    let outcomes: PromiseSettledResult<void>[][];
+    let blocked = false;
+    let blockedQuery = "";
+    try {
+      const pid = await Promise.race([
+        paused,
+        cleanup.then(() => {
+          throw new Error("Cleanup ended before barrier");
+        }),
+      ]);
+      const syncing = runInTenant(tenantId, () =>
+        withTransaction(syncPool, async (client) => {
+          await client.query("SET LOCAL statement_timeout = '5s'");
+          await reconcileGmailAccount(client, gmailClient({ overlap: ["INBOX"] }), params);
+        }),
+      );
+      syncSettled = Promise.allSettled([syncing]);
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline) {
+        const { rows } = await admin.query<{ query: string }>(
+          "SELECT query FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+          [pid],
+        );
+        if (rows[0]) {
+          blocked = true;
+          blockedQuery = rows[0].query;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    } finally {
+      release();
+      outcomes = await Promise.all([cleanupSettled, syncSettled ?? Promise.resolve([])]);
+      spy.mockRestore();
+      await cleanupPool.end();
+      await syncPool.end();
+    }
+    expect(outcomes.flat().map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    expect(blocked).toBe(true);
+    expect(blockedQuery).toMatch(/pg_advisory_xact_lock/i);
+    expect(await foldersOf(params, "overlap")).toEqual(["INBOX"]);
+  }, 15_000);
+
+  it("rolls back a failed cleanup page and releases the waiting Gmail sync", async () => {
+    const params = await setup();
+    const seeded = await seedOverlap(params);
+    const cleanupPool = await createRuntimeRolePool(admin, "semprec_data");
+    const syncPool = await createRuntimeRolePool(admin, "semprec_data");
+    let failCleanup: () => void = () => undefined;
+    let releaseSync: () => void = () => undefined;
+    const cleanupGate = new Promise<void>((resolve) => {
+      failCleanup = resolve;
+    });
+    const syncGate = new Promise<void>((resolve) => {
+      releaseSync = resolve;
+    });
+    let reportCleanup: (pid: number) => void = () => undefined;
+    const cleanupPaused = new Promise<number>((resolve) => {
+      reportCleanup = resolve;
+    });
+    let reportSync: () => void = () => undefined;
+    const syncPaused = new Promise<void>((resolve) => {
+      reportSync = resolve;
+    });
+    const original = relationOps.deleteRelationWithClient;
+    const spy = vi
+      .spyOn(relationOps, "deleteRelationWithClient")
+      .mockImplementation(async (client, input, context, writer) => {
+        const result = await original(client, input, context, writer);
+        if (input.callerItemId === seeded.messageItemId && input.targetItemId === seeded.folderItemId && result) {
+          const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          const pid = rows[0]?.pid;
+          if (pid === undefined) throw new Error("Missing cleanup backend pid");
+          reportCleanup(pid);
+          await cleanupGate;
+          throw new Error("Injected failure after guarded edge deletion");
+        }
+        return result;
+      });
+    const cleanup = handleMailGmailPseudoFolderCleanupTask(cleanupPool, async () => LABELS);
+    const cleanupSettled = Promise.allSettled([cleanup]);
+    let syncSettled: Promise<PromiseSettledResult<void>[]> | undefined;
+    let outcomes: PromiseSettledResult<void>[][];
+    let blockedQuery = "";
+    let restored: string[];
+    let folderRestored: boolean;
+    try {
+      const pid = await Promise.race([
+        cleanupPaused,
+        cleanup.then(() => {
+          throw new Error("Cleanup ended before barrier");
+        }),
+      ]);
+      const syncing = runInTenant(tenantId, () =>
+        withTransaction(syncPool, async (client) => {
+          await client.query("SET LOCAL statement_timeout = '5s'");
+          const gmail = gmailClient({ overlap: ["INBOX"] });
+          gmail.listLabels = async () => {
+            reportSync();
+            await syncGate;
+            return LABELS;
+          };
+          await reconcileGmailAccount(client, gmail, params);
+        }),
+      );
+      syncSettled = Promise.allSettled([syncing]);
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline) {
+        const { rows } = await admin.query<{ query: string }>(
+          "SELECT query FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+          [pid],
+        );
+        if (rows[0]) {
+          blockedQuery = rows[0].query;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      failCleanup();
+      await Promise.race([
+        syncPaused,
+        syncing.then(() => {
+          throw new Error("Sync ended before barrier");
+        }),
+      ]);
+      await cleanupSettled;
+      spy.mockRestore();
+      restored = await foldersOf(params, "overlap");
+      folderRestored = (await folderProviderIds(params)).includes("UNREAD");
+    } finally {
+      failCleanup();
+      releaseSync();
+      outcomes = await Promise.all([cleanupSettled, syncSettled ?? Promise.resolve([])]);
+      spy.mockRestore();
+      await cleanupPool.end();
+      await syncPool.end();
+    }
+    expect(blockedQuery).toMatch(/pg_advisory_xact_lock/i);
+    const cleanupResult = outcomes[0]?.[0];
+    expect(cleanupResult?.status).toBe("rejected");
+    if (cleanupResult?.status !== "rejected" || !(cleanupResult.reason instanceof AggregateError)) {
+      throw new Error("Expected cleanup to propagate the injected failure");
+    }
+    expect(
+      cleanupResult.reason.errors.some(
+        (error: unknown) => error instanceof Error && error.message === "Injected failure after guarded edge deletion",
+      ),
+    ).toBe(true);
+    expect(outcomes[1]?.[0]?.status).toBe("fulfilled");
+    expect(restored).toEqual(["UNREAD"]);
+    expect(folderRestored).toBe(true);
+    expect(await foldersOf(params, "overlap")).toEqual(["INBOX"]);
+  }, 15_000);
+
+  it("waits for an in-flight Gmail move before cleaning the same mailbox", async () => {
+    const params = await setup();
+    await seedOverlap(params);
+    const otherMailbox = await setup();
+    const otherTenant = await createTestTenant(admin);
+    await runInTenant(otherTenant, () => seedSystem(pool));
+    const otherTenantMailbox = await setup(otherTenant);
+    const cleanupPool = await createRuntimeRolePool(admin, "semprec_data");
+    const syncPool = await createRuntimeRolePool(admin, "semprec_data");
+    let release: () => void = () => undefined;
+    const mayContinue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reportPid: (pid: number) => void = () => undefined;
+    const paused = new Promise<number>((resolve) => {
+      reportPid = resolve;
+    });
+    const syncing = runInTenant(tenantId, () =>
+      withTransaction(syncPool, async (client) => {
+        await client.query("SET LOCAL statement_timeout = '5s'");
+        const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+        const pid = rows[0]?.pid;
+        if (pid === undefined) throw new Error("Missing sync backend pid");
+        const gmail = gmailClient({ overlap: ["INBOX"] });
+        gmail.listLabels = async () => {
+          reportPid(pid);
+          await mayContinue;
+          return LABELS;
+        };
+        await reconcileGmailAccount(client, gmail, params);
+      }),
+    );
+    const syncSettled = Promise.allSettled([syncing]);
+    let cleanupSettled: Promise<PromiseSettledResult<void>[]> | undefined;
+    let outcomes: PromiseSettledResult<void>[][];
+    let blockedQuery = "";
+    let independentSettled: Promise<PromiseSettledResult<void>[]> | undefined;
+    let independentCompleted: boolean;
+    try {
+      const pid = await Promise.race([
+        paused,
+        syncing.then(() => {
+          throw new Error("Sync ended before barrier");
+        }),
+      ]);
+      const independent = [
+        { tenant: tenantId, params: otherMailbox, id: "other-mailbox" },
+        { tenant: otherTenant, params: otherTenantMailbox, id: "other-tenant" },
+      ].map(({ tenant, params: other, id }) =>
+        runInTenant(tenant, () =>
+          withTransaction(syncPool, async (client) => {
+            await client.query("SET LOCAL statement_timeout = '3s'");
+            await reconcileGmailAccount(client, gmailClient({ [id]: ["INBOX"] }), other);
+          }),
+        ),
+      );
+      independentSettled = Promise.allSettled(independent);
+      const results = await independentSettled;
+      independentCompleted = results.every((result) => result.status === "fulfilled");
+      const cleanup = handleMailGmailPseudoFolderCleanupTask(cleanupPool, async () => LABELS);
+      cleanupSettled = Promise.allSettled([cleanup]);
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline) {
+        const { rows } = await admin.query<{ query: string }>(
+          "SELECT query FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+          [pid],
+        );
+        if (rows[0]) {
+          blockedQuery = rows[0].query;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    } finally {
+      release();
+      outcomes = await Promise.all([
+        syncSettled,
+        cleanupSettled ?? Promise.resolve([]),
+        independentSettled ?? Promise.resolve([]),
+      ]);
+      await syncPool.end();
+      await cleanupPool.end();
+    }
+    expect(outcomes.flat().map((result) => result.status)).toEqual([
+      "fulfilled",
+      "fulfilled",
+      "fulfilled",
+      "fulfilled",
+    ]);
+    expect(independentCompleted).toBe(true);
+    expect(await foldersOf(otherMailbox, "other-mailbox")).toEqual(["INBOX"]);
+    expect(await foldersOf(otherTenantMailbox, "other-tenant")).toEqual(["INBOX"]);
+    expect(blockedQuery).toMatch(/pg_advisory_xact_lock/i);
+    expect(await foldersOf(params, "overlap")).toEqual(["INBOX"]);
+  }, 15_000);
+
   it("cleanup removes pseudo-folders, keeps archived mail visible through Archive, and a second run changes nothing", async () => {
     const params = await setup();
+    const inventory: GmailLabelRef[] = [
+      ...LABELS,
+      { id: "opaque-user", name: "Private", type: "user" },
+      { id: "opaque-system", name: "System", type: "system" },
+    ];
+    const storedLabels: GmailLabelRef[] = [...inventory, { id: "absent-id", name: "Unknown", type: "user" }];
     // The state an older sync left behind: a folder for every label, mail linked to each.
     const messageIdsByLabels: Record<string, string[]> = {
       inboxUnread: ["INBOX", "UNREAD"],
       archivedUnread: ["UNREAD", "CATEGORY_PROMOTIONS"],
       archivedWork: ["STARRED", "Label_1"],
       sentStarred: ["SENT", "STARRED"],
+      opaque: ["opaque-system", "opaque-user", "absent-id"],
     };
     await runInTenant(tenantId, () =>
       withTransaction(pool, async (client) => {
         const folderIds = new Map<string, string>();
-        for (const label of LABELS) {
+        for (const label of storedLabels) {
           folderIds.set(
             label.id,
             await ensureFolderItem(client, {
@@ -242,21 +680,22 @@ describe("Gmail label folders (issue #1496)", () => {
       }),
     );
 
-    await handleMailGmailPseudoFolderCleanupTask(pool);
+    await handleMailGmailPseudoFolderCleanupTask(pool, async () => inventory);
 
     expect(await folderProviderIds(params)).toEqual(
-      ["DRAFT", "INBOX", "Label_1", "SENT", GMAIL_ARCHIVE_PROVIDER_ID].sort(),
+      ["DRAFT", "INBOX", "Label_1", "SENT", "opaque-user", "absent-id", GMAIL_ARCHIVE_PROVIDER_ID].sort(),
     );
     expect(await foldersOf(params, "inboxUnread")).toEqual(["INBOX"]);
     expect(await foldersOf(params, "archivedUnread")).toEqual([GMAIL_ARCHIVE_PROVIDER_ID]);
     expect(await foldersOf(params, "archivedWork")).toEqual(["Label_1", GMAIL_ARCHIVE_PROVIDER_ID].sort());
     expect(await foldersOf(params, "sentStarred")).toEqual(["SENT"]);
+    expect(await foldersOf(params, "opaque")).toEqual(["opaque-user", "absent-id", GMAIL_ARCHIVE_PROVIDER_ID].sort());
 
     const snapshot = async () =>
       (await admin.query("SELECT * FROM item_relations ORDER BY id")).rows.map((r) => JSON.stringify(r));
     const edgesAfterFirst = await snapshot();
     const { rows: itemsAfterFirst } = await admin.query("SELECT id, deleted_at FROM items ORDER BY id");
-    await handleMailGmailPseudoFolderCleanupTask(pool);
+    await handleMailGmailPseudoFolderCleanupTask(pool, async () => inventory);
     expect(await snapshot()).toEqual(edgesAfterFirst);
     expect((await admin.query("SELECT id, deleted_at FROM items ORDER BY id")).rows).toEqual(itemsAfterFirst);
   });

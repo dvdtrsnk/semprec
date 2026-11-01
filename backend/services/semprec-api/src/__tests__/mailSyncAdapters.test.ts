@@ -354,6 +354,22 @@ describe("createMailSyncAdapters (issues #1505, #1508)", () => {
     vi.restoreAllMocks();
   });
 
+  it("loads Gmail labels through the mailbox OAuth adapter", async () => {
+    const mailboxId = await createGmailMailbox("Cleanup");
+    const google = createFakeGoogle({});
+    const adapters = createMailSyncAdapters({
+      pool,
+      env: { GMAIL_OAUTH_CLIENT_ID: GMAIL_CLIENT_ID, GMAIL_OAUTH_CLIENT_SECRET: GMAIL_CLIENT_SECRET },
+      fetchImpl: google.fetchImpl,
+    });
+    const loader = adapters.loadGmailLabels;
+    if (!loader) throw new Error("Missing Gmail label loader");
+    const labels = await inTenantZero(() => loader(mailboxId));
+    expect(labels).toEqual([{ id: "INBOX", name: "INBOX", type: "system" }]);
+    expect(google.calls.presentedRefreshTokens).toEqual([STORED_REFRESH_TOKEN]);
+    expect(google.calls.gmailRoutes).toEqual(["/labels"]);
+  });
+
   it.each([
     {
       case: "the client id is unset",

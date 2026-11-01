@@ -6,6 +6,7 @@ import { getTenantZeroId, tenantZeroSessionOptions } from "./tenantFixtures.js";
 export { storeCredential } from "../credentials/externalCredentialsStore.js";
 export { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 export { ensureFolderItem } from "../mail/folderDiscovery.js";
+export { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
 export {
   bindToTenantZero,
   createRuntimeRolePool,

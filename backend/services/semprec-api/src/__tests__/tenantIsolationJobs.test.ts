@@ -63,6 +63,7 @@ import {
   writePageTextBlocks,
 } from "@semprec/data/testSupport";
 import { createApiActionRegistry } from "../actionRegistryComposition.js";
+import { createMailSyncAdapters } from "../mailSyncAdapters.js";
 
 /**
  * Two-tenant proof that every task of the `api` affinity set keeps its data, notifications and side
@@ -409,7 +410,11 @@ async function createMailbox(tenant: Tenant, syncMode: "imap" | "gmail_api" = "i
         databaseId: mailboxesId,
         properties: { name: `Mailbox ${randomUUID()}`, provider: "generic" },
       });
-      await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" });
+      await storeCredential(client, {
+        itemId: mailbox.id,
+        credentialType: syncMode === "gmail_api" ? "oauth2_refresh_token" : "app_password",
+        plaintext: "s3cr3t",
+      });
       await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode });
       return mailbox.id;
     }),
@@ -1250,11 +1255,25 @@ describe("background task isolation across two tenants: api runtime (issue #1056
 
     // Composed exactly as createApiQueueRuntime composes it.
     const actionRegistry = createApiActionRegistry(pool, moduleRegistry);
+    const gmailAdapters = createMailSyncAdapters({
+      pool,
+      env: { GMAIL_OAUTH_CLIENT_ID: "test-client", GMAIL_OAUTH_CLIENT_SECRET: "test-secret" },
+      fetchImpl: async (input) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url === "https://oauth2.googleapis.com/token") {
+          return Response.json({ access_token: "test-access", expires_in: 3600, token_type: "Bearer" });
+        }
+        if (url === "https://gmail.googleapis.com/gmail/v1/users/me/labels") {
+          return Response.json({ labels: [{ id: "UNREAD", name: "Unread", type: "system" }] });
+        }
+        throw new Error("Unexpected fake provider request");
+      },
+    });
     const coreTaskList = createApiCoreTaskList(
       pool,
       actionRegistry,
       undefined,
-      undefined,
+      { loadGmailLabels: gmailAdapters.loadGmailLabels },
       undefined,
       undefined,
       moduleRegistry,

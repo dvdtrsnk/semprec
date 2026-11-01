@@ -1844,7 +1844,9 @@ describe("Gmail reconcile core (issue #26)", () => {
 
   it("initial sync (no stored historyId) does a full listAllMessageIds pass and stores the returned historyId", async () => {
     const params = await reconcileParams();
-    await withTransaction(pool, (client) => reconcileGmailAccount(client, fakeGmailClient(), params));
+    await inTenantZero(() =>
+      withTransaction(pool, (client) => reconcileGmailAccount(client, fakeGmailClient(), params)),
+    );
 
     const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, params.mailboxItemId));
     expect(state?.gmailHistoryId).toBe("100");
@@ -1854,7 +1856,9 @@ describe("Gmail reconcile core (issue #26)", () => {
 
   it("a history.list 404 (invalidated) clears the stored historyId and forces a full resync instead of resuming", async () => {
     const params = await reconcileParams();
-    await withTransaction(pool, (client) => reconcileGmailAccount(client, fakeGmailClient(), params));
+    await inTenantZero(() =>
+      withTransaction(pool, (client) => reconcileGmailAccount(client, fakeGmailClient(), params)),
+    );
 
     let fullResyncCallCount = 0;
     const secondClient = fakeGmailClient({
@@ -1881,7 +1885,7 @@ describe("Gmail reconcile core (issue #26)", () => {
         },
       }),
     });
-    await withTransaction(pool, (client) => reconcileGmailAccount(client, secondClient, params));
+    await inTenantZero(() => withTransaction(pool, (client) => reconcileGmailAccount(client, secondClient, params)));
 
     expect(fullResyncCallCount).toBe(1);
     const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, params.mailboxItemId));
@@ -1892,7 +1896,9 @@ describe("Gmail reconcile core (issue #26)", () => {
 
   it("writes Gmail read and flagged transitions, and a matching history observation converges without an echo", async () => {
     const params = await reconcileParams();
-    await withTransaction(pool, (client) => reconcileGmailAccount(client, fakeGmailClient(), params));
+    await inTenantZero(() =>
+      withTransaction(pool, (client) => reconcileGmailAccount(client, fakeGmailClient(), params)),
+    );
     const emailItemId = (
       await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [params.emailsDatabaseId])
     ).rows[0]!.id;
@@ -1908,7 +1914,7 @@ describe("Gmail reconcile core (issue #26)", () => {
       itemId: emailItemId,
       propertiesPatch: { read: true, flagged: true },
     });
-    await withTransaction(pool, (client) => reconcileGmailAccount(client, writer, params));
+    await inTenantZero(() => withTransaction(pool, (client) => reconcileGmailAccount(client, writer, params)));
     expect(writes).toEqual([
       { id: "m1", add: ["STARRED"], remove: [] },
       { id: "m1", add: [], remove: ["UNREAD"] },
@@ -1919,7 +1925,7 @@ describe("Gmail reconcile core (issue #26)", () => {
       itemId: emailItemId,
       propertiesPatch: { read: false, flagged: false },
     });
-    await withTransaction(pool, (client) => reconcileGmailAccount(client, writer, params));
+    await inTenantZero(() => withTransaction(pool, (client) => reconcileGmailAccount(client, writer, params)));
     expect(writes.slice(2)).toEqual([
       { id: "m1", add: [], remove: ["STARRED"] },
       { id: "m1", add: ["UNREAD"], remove: [] },
@@ -1947,7 +1953,7 @@ describe("Gmail reconcile core (issue #26)", () => {
         throw new Error("converged Gmail observation must not echo");
       },
     });
-    await withTransaction(pool, (client) => reconcileGmailAccount(client, observed, params));
+    await inTenantZero(() => withTransaction(pool, (client) => reconcileGmailAccount(client, observed, params)));
   });
 });
 
