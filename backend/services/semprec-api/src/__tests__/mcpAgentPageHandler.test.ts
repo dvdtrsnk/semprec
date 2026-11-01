@@ -436,6 +436,22 @@ describe("createMcpAgentPageRequestListener", () => {
       expect(body).toMatchObject({ error: expect.stringContaining("displayLabel") });
     });
 
+    it("does not apply a valid risk change alongside an invalid label", async () => {
+      const id = await registerTool();
+      const headers = await authHeader();
+      const response = await fetch(`${baseUrl}/api/mcp-tool-registrations/${id}`, {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ riskClass: "destructive", displayLabel: { en: 42 } }),
+      });
+      expect(response.status).toBe(400);
+      const listing = await fetch(`${baseUrl}/api/projects/${randomUUID()}/mcp-grants`, { headers });
+      const body: unknown = await listing.json();
+      expect(body).toMatchObject({
+        rows: [expect.objectContaining({ mcpToolRegistrationId: id, riskClass: "unclassified", displayLabel: "tool" })],
+      });
+    });
+
     it.each([[null], [[]], ["invalid"], [42]])(
       "rejects a non-object registration PATCH body %j without changing the label",
       async (body) => {
