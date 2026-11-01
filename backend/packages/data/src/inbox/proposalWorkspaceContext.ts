@@ -5,6 +5,7 @@ import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.js";
 
 const MODULES = ["projects", "areas", "people", "companies", "events"] as const;
+const ACTIVE_PROJECT_STATUSES = ["inProgress", "longTerm"];
 type WorkspaceModule = (typeof MODULES)[number];
 
 export interface ProposalWorkspaceEntry {
@@ -58,13 +59,7 @@ export async function readProposalRelationCatalog(
 const databaseRow = z.object({ id: z.uuid(), owner_module_id: z.enum(MODULES) });
 const itemRow = z.object({ id: z.uuid(), name: z.string() });
 
-/** Reads only the fixed, bounded built-in workspace context under the active tenant transaction. */
-export async function readProposalWorkspaceContext(
-  client: PoolClient,
-  captureDate: unknown,
-): Promise<ProposalWorkspaceGroup[]> {
-  const scope = currentTenantScope();
-  if (scope?.kind !== "tenant") throw new Error("Proposal workspace context requires tenant scope");
+function workspaceDateWindow(captureDate: unknown): [string | null, string | null] {
   const parsedDate = z.iso.date().safeParse(captureDate);
   let firstDate: string | null = null;
   let lastDate: string | null = null;
@@ -74,6 +69,38 @@ export async function readProposalWorkspaceContext(
     firstDate = new Date(date.getTime() - day).toISOString().slice(0, 10);
     lastDate = new Date(date.getTime() + 14 * day).toISOString().slice(0, 10);
   }
+  return [firstDate, lastDate];
+}
+
+function eligibilitySql(module: number, statuses: number, first: number, last: number): string {
+  return `($${module} <> 'projects' OR properties->>'status' = ANY($${statuses}::text[]))
+    AND ($${module} <> 'events' OR ($${first}::text IS NOT NULL AND left(properties->>'date', 10) BETWEEN $${first} AND $${last}))`;
+}
+
+/** Uses the context reader's predicate on the already-read current baseline, without another target read. */
+export async function isWorkspaceUpdateEligible(
+  client: PoolClient,
+  moduleId: string | null,
+  properties: Record<string, unknown>,
+  captureDate: unknown,
+): Promise<boolean> {
+  if (moduleId !== "projects" && moduleId !== "events") return true;
+  const [firstDate, lastDate] = workspaceDateWindow(captureDate);
+  const result = await client.query<Record<string, unknown>>(
+    `SELECT (${eligibilitySql(2, 3, 4, 5)}) AS eligible FROM (SELECT $1::jsonb AS properties) baseline`,
+    [JSON.stringify(properties), moduleId, ACTIVE_PROJECT_STATUSES, firstDate, lastDate],
+  );
+  return z.object({ eligible: z.boolean().nullable() }).parse(result.rows[0]).eligible === true;
+}
+
+/** Reads only the fixed, bounded built-in workspace context under the active tenant transaction. */
+export async function readProposalWorkspaceContext(
+  client: PoolClient,
+  captureDate: unknown,
+): Promise<ProposalWorkspaceGroup[]> {
+  const scope = currentTenantScope();
+  if (scope?.kind !== "tenant") throw new Error("Proposal workspace context requires tenant scope");
+  const [firstDate, lastDate] = workspaceDateWindow(captureDate);
   const databases = await client.query<Record<string, unknown>>(
     `SELECT id, owner_module_id FROM databases
      WHERE tenant_id = $1 AND system AND archived_at IS NULL AND owner_module_id = ANY($2::text[])
@@ -87,12 +114,11 @@ export async function readProposalWorkspaceContext(
       `SELECT id, left(properties->>'name', 100) AS name FROM items
        WHERE tenant_id = $1 AND database_id = $2 AND deleted_at IS NULL
          AND jsonb_typeof(properties->'name') = 'string'
-         AND ($3 <> 'projects' OR properties->>'status' = ANY($4::text[]))
-         AND ($3 <> 'events' OR ($5::text IS NOT NULL AND left(properties->>'date', 10) BETWEEN $5 AND $6))
+         AND ${eligibilitySql(3, 4, 5, 6)}
        ORDER BY CASE WHEN $3 = 'events' THEN properties->>'date' END ASC NULLS LAST,
                 CASE WHEN $3 <> 'events' THEN updated_at END DESC NULLS LAST, id ASC
        LIMIT 20`,
-      [scope.tenantId, database.id, database.owner_module_id, ["inProgress", "longTerm"], firstDate, lastDate],
+      [scope.tenantId, database.id, database.owner_module_id, ACTIVE_PROJECT_STATUSES, firstDate, lastDate],
     );
     result.push({
       moduleId: database.owner_module_id,

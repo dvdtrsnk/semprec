@@ -8,11 +8,13 @@ import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } fr
 import { prepareUserItemPatch } from "../chokePoint/itemWrites.js";
 import type { ProposalEnvelope, ProposalStep } from "./proposalEnvelope.js";
 import { effectiveStepRelations, selectActiveSteps } from "./proposalStepGraph.js";
+import { isWorkspaceUpdateEligible } from "./proposalWorkspaceContext.js";
 
 /** Forms server-owned baselines only for freshly computed multi-step proposals. */
 export async function prepareComputedUpdates(
   client: PoolClient,
   envelope: ProposalEnvelope,
+  captureDate: unknown,
 ): Promise<ProposalEnvelope> {
   if (!envelope.operations) return envelope;
   const active = selectActiveSteps(envelope.operations);
@@ -29,6 +31,8 @@ export async function prepareComputedUpdates(
     if (!item || item.deletedAt) throw new ValidationError("Proposal update target is unavailable");
     const database = await getDatabase(client, item.databaseId);
     if (!database || database.archivedAt) throw new ValidationError("Proposal update database is unavailable");
+    if (!(await isWorkspaceUpdateEligible(client, database.ownerModuleId, item.properties, captureDate)))
+      throw new ValidationError("Proposal update target is no longer eligible");
     const properties = await listPropertiesByDatabase(client, database.id);
     const byKey = new Map(properties.map((property) => [property.key, property]));
     const patch = step.properties ?? {};
@@ -49,6 +53,9 @@ export async function prepareComputedUpdates(
     for (const key of prepared.deferredKeys) required.add(key);
     const beforeProperties: Record<string, unknown> = {};
     const afterProperties: Record<string, unknown> = {};
+    const eligibilityKey =
+      database.ownerModuleId === "projects" ? "status" : database.ownerModuleId === "events" ? "date" : null;
+    if (eligibilityKey) beforeProperties[eligibilityKey] = item.properties[eligibilityKey] ?? null;
     for (const key of required) {
       beforeProperties[key] = item.properties[key] ?? null;
       if (!prepared.deferredKeys.includes(key) || Object.hasOwn(patch, key))

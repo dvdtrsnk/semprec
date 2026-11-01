@@ -70,7 +70,7 @@ import { parseFileFromAttachmentProperties } from "./fileAttachmentStep.js";
 import { assertNoRefCycle, selectActiveSteps, stepError } from "./proposalStepGraph.js";
 import { appendHistoryEntry } from "./proposalHistory.js";
 import { isSerializationFailure, withTickTransaction } from "./tickTransaction.js";
-import { ValidationError } from "../errors.js";
+import { CardinalityViolationError, ValidationError } from "../errors.js";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 
@@ -910,10 +910,10 @@ async function writeTickResult(
 
   try {
     if (invalidProposal) throw new ValidationError("Proposal needs clarification");
-    envelope = await prepareComputedUpdates(client, envelope);
+    envelope = await prepareComputedUpdates(client, envelope, snapshot.item.properties.date);
     await assertValidProposalEnvelope(client, envelope);
   } catch (err) {
-    if (!(err instanceof ValidationError)) throw err;
+    if (!(err instanceof ValidationError) && !(err instanceof CardinalityViolationError)) throw err;
     // Same race as below: another tick may have created a proposal for this source while this
     // one waited on the AI call, so a null `snapshot.existingProposal` doesn't mean there is
     // still nothing to revise — re-check before falling through to `writeNeedsClarification`'s

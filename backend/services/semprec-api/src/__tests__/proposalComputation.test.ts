@@ -683,7 +683,7 @@ describe("createProposalComputation (issue #1434)", () => {
         operations: [
           expect.anything(),
           {
-            before: { properties: {}, relations: { area: [oldArea.id] } },
+            before: { properties: { status: "inProgress" }, relations: { area: [oldArea.id] } },
             after: { properties: {}, relations: { area: [newArea.id] } },
           },
         ],
@@ -697,6 +697,90 @@ describe("createProposalComputation (issue #1434)", () => {
       );
       expect(edges.rows.some((edge) => edge.item_a === newArea.id || edge.item_b === newArea.id)).toBe(true);
       expect(edges.rows.some((edge) => edge.item_a === oldArea.id || edge.item_b === oldArea.id)).toBe(false);
+    });
+
+    it.each([
+      ["projects", "done"],
+      ["projects", "archived"],
+      ["events", "outside"],
+      ["projects", "valid"],
+      ["events", "valid"],
+      ["projects", "late"],
+      ["events", "late"],
+      ["projects", "requested"],
+      ["events", "requested"],
+    ] as const)("checks %s eligibility at formation and confirmation (%s)", async (module, scenario) => {
+      const databaseId = await databaseIdFor(module);
+      const peopleId = await databaseIdFor("people");
+      const cp = createChokePoint(pool);
+      const eligibilityKey = module === "projects" ? "status" : "date";
+      const originalValue = module === "projects" ? "inProgress" : "2026-08-28";
+      const changedValue = module === "projects" ? (scenario === "archived" ? "archived" : "done") : "2026-10-01";
+      const target = await inTenantZero(() =>
+        cp.createItem({ databaseId, properties: { name: "Original", [eligibilityKey]: originalValue } }),
+      );
+      const itemId = await createTaskItem("Update existing record", "people");
+      const patch = scenario === "requested" ? { [eligibilityKey]: changedValue } : { name: "Updated" };
+      const delegate = stubGateway({
+        properties: { name: "Eva" },
+        operations: [
+          { op: "create", database: "people", properties: { name: "Eva" } },
+          { op: "update", itemId: target.id, properties: patch },
+        ],
+      });
+      const gateway: AiGatewayClientPort = {
+        async complete(input) {
+          if (scenario === "done" || scenario === "archived" || scenario === "outside") {
+            await inTenantZero(() =>
+              cp.updateItem({ databaseId, itemId: target.id, propertiesPatch: { [eligibilityKey]: changedValue } }),
+            );
+          }
+          return delegate.complete(input);
+        },
+      };
+      const beforePeople = await cp.listItems(peopleId);
+      await runTick(pool, gateway, itemId);
+      expect(JSON.stringify(delegate.calls[0]?.messages)).toContain(target.id);
+      const card = (await cp.listItems(config.processingProposalsDatabaseId)).items[0];
+      if (!card) throw new Error("Missing proposal");
+      if (scenario === "done" || scenario === "archived" || scenario === "outside") {
+        expect(card.properties).toMatchObject({ status: "needsClarification", proposal: null });
+        expect((await cp.listItems(peopleId)).items.map((item) => item.id)).toEqual(
+          beforePeople.items.map((item) => item.id),
+        );
+        expect((await cp.getItem(databaseId, target.id))?.properties.name).toBe("Original");
+        return;
+      }
+      expect(card.properties.status).toBe("proposed");
+      const proposal = z
+        .object({
+          operations: z.array(
+            z.object({
+              before: z.object({ properties: z.record(z.string(), z.unknown()) }).optional(),
+              after: z.object({ properties: z.record(z.string(), z.unknown()) }).optional(),
+            }),
+          ),
+        })
+        .parse(card.properties.proposal);
+      const update = proposal.operations[1];
+      expect(update?.before?.properties[eligibilityKey]).toBe(originalValue);
+      if (scenario === "requested") expect(update?.after?.properties[eligibilityKey]).toBe(changedValue);
+      else expect(update?.after?.properties).not.toHaveProperty(eligibilityKey);
+      if (scenario === "late") {
+        await inTenantZero(() =>
+          cp.updateItem({ databaseId, itemId: target.id, propertiesPatch: { [eligibilityKey]: changedValue } }),
+        );
+      }
+      const response = await confirmByHttp(card.id);
+      expect(response.status).toBe(scenario === "late" ? 400 : 200);
+      if (scenario === "requested")
+        expect((await cp.getItem(databaseId, target.id))?.properties[eligibilityKey]).toBe(changedValue);
+      expect((await cp.getItem(databaseId, target.id))?.properties.name).toBe(
+        scenario === "late" || scenario === "requested" ? "Original" : "Updated",
+      );
+      expect((await cp.listItems(peopleId)).items.length).toBe(
+        beforePeople.items.length + (scenario === "late" ? 0 : 1),
+      );
     });
 
     it.each(["deleted", "repeated"] as const)(
@@ -729,6 +813,49 @@ describe("createProposalComputation (issue #1434)", () => {
         if (kind === "repeated") expect((await cp.getItem(projects, project.id))?.properties.name).toBe("Project");
       },
     );
+
+    it("requires clarification when a computed update would violate relation cardinality", async () => {
+      const cp = createChokePoint(pool);
+      const projects = await databaseIdFor("projects");
+      const events = await databaseIdFor("events");
+      const people = await databaseIdFor("people");
+      const first = await inTenantZero(() =>
+        cp.createItem({ databaseId: projects, properties: { name: "First", status: "inProgress" } }),
+      );
+      const second = await inTenantZero(() =>
+        cp.createItem({ databaseId: projects, properties: { name: "Second", status: "inProgress" } }),
+      );
+      const event = await inTenantZero(() =>
+        cp.createItem({ databaseId: events, properties: { name: "Meeting", date: "2026-08-28" } }),
+      );
+      const property = (await cp.listProperties(projects)).find((candidate) => candidate.key === "events");
+      if (!property) throw new Error("Missing project events relation");
+      await inTenantZero(() =>
+        cp.createRelation({ relationPropertyId: property.id, callerItemId: first.id, targetItemId: event.id }),
+      );
+      const source = await createTaskItem("Move event", "people");
+      const before = await cp.listItems(people);
+      const gateway = stubGateway({
+        properties: { name: "Eva" },
+        operations: [
+          { op: "create", database: "people", properties: { name: "Eva" } },
+          { op: "update", itemId: second.id, relations: { events: [event.id] } },
+        ],
+      });
+      await runTick(pool, gateway, source);
+      expect(JSON.stringify(gateway.calls[0]?.messages)).toContain(second.id);
+      expect(JSON.stringify(gateway.calls[0]?.messages)).toContain(event.id);
+      const card = (await cp.listItems(config.processingProposalsDatabaseId)).items[0];
+      expect(card?.properties).toMatchObject({ status: "needsClarification", proposal: null });
+      expect((await cp.listItems(people)).items.map((item) => item.id)).toEqual(before.items.map((item) => item.id));
+      const edges = await pool.query<Record<string, unknown>>(
+        "SELECT item_a, item_b FROM item_relations WHERE item_b = $1",
+        [event.id],
+      );
+      const parsedEdges = z.array(z.object({ item_a: z.uuid(), item_b: z.uuid() })).parse(edges.rows);
+      expect(parsedEdges.some((edge) => edge.item_a === first.id)).toBe(true);
+      expect(parsedEdges.some((edge) => edge.item_a === second.id)).toBe(false);
+    });
 
     it.each(["update", "link", "wrongTarget", "noneRemain", "alias"] as const)(
       "requires clarification for a nonrepresentable explicit %s operation instead of creating an item",
