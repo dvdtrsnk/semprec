@@ -899,7 +899,7 @@ describe("MCP connection factory (issue #231)", () => {
     try {
       first = await startServer();
       const activeFirst = first;
-      const item = await createMcpServerItem(activeFirst.connectionConfig);
+      const item = await createMcpServerItem(activeFirst.connectionConfig, "mcp-secret-marker");
       await runInTenant(tenantId, async () => {
         const initial = await executeMcpInvocation(runtimePool, { serverItem: item, toolName: "search" }, {});
         expect(initial.error).toBe(false);
@@ -915,10 +915,13 @@ describe("MCP connection factory (issue #231)", () => {
         expect(offline?.lastErrorReason).toBe("handshake_failed");
         expect(offline?.lastConnectedAt).toEqual(connected?.lastConnectedAt);
         expect(JSON.stringify(offline)).not.toContain("127.0.0.1");
+        expect(JSON.stringify(offline)).not.toContain("mcp-secret-marker");
 
         const second = await startServer();
         try {
           const newTarget = { ...item, properties: { ...item.properties, connectionConfig: second.connectionConfig } };
+          const before = (await runtimePool.query<{ at: Date }>("SELECT clock_timestamp() AS at")).rows[0]?.at;
+          if (!before) throw new Error("Missing start timestamp");
           const toolFailure = await executeMcpInvocation(
             runtimePool,
             { serverItem: newTarget, toolName: "search" },
@@ -931,6 +934,11 @@ describe("MCP connection factory (issue #231)", () => {
           const [reconnected] = await getMcpConnectionStates(runtimePool, [item.id]);
           expect(reconnected?.lastErrorReason).toBeNull();
           expect(reconnected?.lastConnectedAt).not.toBeNull();
+          const { rows: freshness } = await runtimePool.query<{ current: boolean }>(
+            "SELECT last_connected_at >= $2 AND last_connected_at <= clock_timestamp() AS current FROM mcp_server_connection_state WHERE mcp_server_item_id = $1",
+            [item.id, before],
+          );
+          expect(freshness).toEqual([{ current: true }]);
         } finally {
           await second.stop();
         }
