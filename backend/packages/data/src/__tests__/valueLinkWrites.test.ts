@@ -1537,6 +1537,11 @@ describe("value link state on writes (issue #1516)", () => {
             const release = barrier();
             let holderPid: number | undefined;
             let contenderPid: number | undefined;
+            const events: InvalidationEvent[] = [];
+            setInvalidationHook((event) => events.push(event));
+            const jobsBefore = (
+              await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker._private_jobs")
+            ).rows[0]?.count;
             const holder = runInTenant(tenant, () =>
               withTransaction(holderPool, async (client) => {
                 holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
@@ -1583,6 +1588,14 @@ describe("value link state on writes (issue #1516)", () => {
               );
               expect(holderPid).toBeTypeOf("number");
               expect(contenderPid).toBeTypeOf("number");
+              expect(events).toEqual([]);
+              expect(
+                (
+                  await pool.query<{ count: string }>(
+                    "SELECT count(*)::text AS count FROM graphile_worker._private_jobs",
+                  )
+                ).rows[0]?.count,
+              ).toBe(jobsBefore);
             } catch (error) {
               failure = error;
             } finally {
@@ -1596,6 +1609,7 @@ describe("value link state on writes (issue #1516)", () => {
                     ? error
                     : new AggregateError([failure, error], "Test and holder cleanup failed");
               }
+              setInvalidationHook(() => {});
             }
             if (failure !== undefined) throwFailure(failure);
             const edges = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
@@ -1790,6 +1804,12 @@ describe("value link state on writes (issue #1516)", () => {
           let failure: unknown;
           try {
             await bounded(held.promise);
+            const linkLock = await pool.query<{ held: boolean }>(
+              `SELECT EXISTS (SELECT 1 FROM value_links v JOIN pg_locks l ON l.transactionid::text = v.xmax::text
+                 WHERE v.item_id = $1 AND v.property_key = 'projects' AND l.pid = $2 AND l.locktype = 'transactionid' AND l.granted) AS held`,
+              [fx.file.id, holderPid],
+            );
+            expect(linkLock.rows[0]?.held).toBe(true);
             await expect(
               runInTenant(tenant, () =>
                 withTransaction(contenderPool, async (client) => {
