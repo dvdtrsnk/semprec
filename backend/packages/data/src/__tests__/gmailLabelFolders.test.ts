@@ -849,6 +849,11 @@ describe("Gmail label folders (issue #1496)", () => {
       );
       const result = await bounded(operationSettled);
       expect(result[0]?.status).toBe("rejected");
+      if (result[0]?.status !== "rejected" || !(result[0].reason instanceof Error))
+        throw new Error("Expected the owned reconcile to fail on termination");
+      expect(result[0].reason.message).toMatch(
+        /terminating connection due to administrator command|Connection terminated unexpectedly/,
+      );
       const remaining = await control.query<{ present: boolean }>(
         "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1) AS present",
         [participantPid],
@@ -884,11 +889,8 @@ describe("Gmail label folders (issue #1496)", () => {
     const capturedBackends: OwnedBackend[] = [];
     const capture = capturePoolPids(operationPool, capturedBackends);
     const control = await admin.connect();
-    const holder = await admin.connect();
-    await holder.query("BEGIN");
-    await holder.query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", [
-      `mail-thread-mutation:v1:${tenantId.toLowerCase()}`,
-    ]);
+    let holder: PoolClient | undefined;
+    let guardHeld = false;
     let releaseConnection: () => void = () => undefined;
     let signalConnecting: () => void = () => undefined;
     const connecting = new Promise<void>((resolve) => {
@@ -897,18 +899,39 @@ describe("Gmail label folders (issue #1496)", () => {
     const allowConnection = new Promise<void>((resolve) => {
       releaseConnection = resolve;
     });
-    const options: unknown = Reflect.get(operationPool, "options");
-    if (typeof options !== "object" || options === null) throw new Error("Missing owned pool options");
-    Reflect.set(options, "onConnect", async () => {
-      signalConnecting();
-      await allowConnection;
-    });
-    const operation = runInTenant(tenantId, () =>
-      withTransaction(operationPool, (client) => reconcileGmailAccount(client, gmailClient({}), params)),
-    );
-    const result = Promise.allSettled([operation]);
+    let operation: Promise<void> | undefined;
     let observedCleanup: Promise<unknown> | undefined;
     try {
+      const options: unknown = Reflect.get(operationPool, "options");
+      if (typeof options !== "object" || options === null) throw new Error("Missing owned pool options");
+      Reflect.set(options, "onConnect", async () => {
+        signalConnecting();
+        await allowConnection;
+      });
+      holder = await admin.connect();
+      await bounded(control.query("SET statement_timeout = '3s'"));
+      await bounded(holder.query("SET statement_timeout = '3s'"));
+      await bounded(holder.query("SET lock_timeout = '2s'"));
+      await bounded(holder.query("BEGIN"));
+      guardHeld = true;
+      const guard = `mail-thread-mutation:v1:${tenantId.toLowerCase()}`;
+      const locked = await bounded(
+        holder.query<{ locked: boolean }>("SELECT pg_try_advisory_xact_lock(hashtextextended($1::text, 0)) AS locked", [
+          guard,
+        ]),
+      );
+      expect(locked.rows[0]?.locked).toBe(true);
+      const refused = await bounded(
+        control.query<{ locked: boolean }>(
+          "SELECT pg_try_advisory_xact_lock(hashtextextended($1::text, 0)) AS locked",
+          [guard],
+        ),
+      );
+      expect(refused.rows[0]?.locked).toBe(false);
+      operation = runInTenant(tenantId, () =>
+        withTransaction(operationPool, (client) => reconcileGmailAccount(client, gmailClient({}), params)),
+      );
+      const result = Promise.allSettled([operation]);
       await bounded(connecting);
       expect(capturedBackends).toEqual([]);
       const cleanup = settleOwnedPools(control, [operationPool], [operation], [capturedBackends], 100);
@@ -924,7 +947,13 @@ describe("Gmail label folders (issue #1496)", () => {
       expect(capturedBackends).toEqual([]);
       releaseConnection();
       expect(await bounded(observedCleanup, 20_000)).toEqual(new Error("Gmail overlap timed out"));
-      expect((await bounded(result))[0]?.status).toBe("rejected");
+      const operationResult = (await bounded(result))[0];
+      expect(operationResult?.status).toBe("rejected");
+      if (operationResult?.status !== "rejected" || !(operationResult.reason instanceof Error))
+        throw new Error("Expected the late reconcile to fail on termination");
+      expect(operationResult.reason.message).toMatch(
+        /terminating connection due to administrator command|Connection terminated unexpectedly/,
+      );
       expect(capturedBackends).toHaveLength(1);
       const backend = capturedBackends[0];
       if (!backend) throw new Error("Missing late acquired backend");
@@ -940,11 +969,12 @@ describe("Gmail label folders (issue #1496)", () => {
       releaseConnection();
       try {
         if (observedCleanup) await bounded(observedCleanup, 20_000);
-        await bounded(holder.query("ROLLBACK"));
-        if (!observedCleanup) await settleOwnedPools(control, [operationPool], [operation], [capturedBackends]);
+        if (guardHeld && holder) await bounded(holder.query("ROLLBACK"));
+        if (!observedCleanup)
+          await settleOwnedPools(control, [operationPool], operation ? [operation] : [], [capturedBackends]);
       } finally {
         capture.detach();
-        holder.release(true);
+        holder?.release(true);
         control.release(true);
       }
     }
