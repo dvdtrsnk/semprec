@@ -22,11 +22,12 @@ const PASSWORD = "s3cret-password";
 let pool: Pool;
 let mcpServersId: string;
 
-async function authHeader(): Promise<{ Authorization: string }> {
+async function authHeader(locale?: string): Promise<{ Authorization: string }> {
   const user = await createUser(pool, {
     tenantId: await tenantForNextTestUser(pool),
     email: `${randomUUID()}@example.com`,
     passwordHash: await hashPassword(PASSWORD),
+    locale,
   });
   const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
   return { Authorization: `Bearer ${token}` };
@@ -318,6 +319,13 @@ describe("createMcpAgentPageRequestListener", () => {
       const cleared = await patchLabel(headers, id, null);
       expect(cleared.status).toBe(200);
       expect(await listedLabel(headers)).toBe("tool");
+    });
+
+    it("returns the English label for an English user over HTTP", async () => {
+      const id = await registerTool();
+      const headers = await authHeader("en");
+      expect((await patchLabel(headers, id, { cs: "Czech label", en: "Read" })).status).toBe(200);
+      expect(await listedLabel(headers)).toBe("Read");
     });
 
     it.each([
