@@ -50,6 +50,12 @@ function newBlockId(): string {
   return crypto.randomUUID();
 }
 
+function assertNewBlockId(doc: Y.Doc, id: string, reserved: ReadonlySet<string> = new Set()): void {
+  if (getBlocksMap(doc).has(id) || reserved.has(id)) {
+    throw new BlockOperationError("duplicate_block_id", `Block ${id} already exists`);
+  }
+}
+
 /** The real blocks in normalized document order; empty for a document read as the synthetic block. */
 function currentBlocks(doc: Y.Doc): PageBlock[] {
   return readPageBlocks(doc).filter((block) => !block.synthetic);
@@ -167,7 +173,7 @@ export function insertBlocks(
 ): string[] {
   const current = currentBlocks(doc);
   requireAfterId(current, afterId);
-  const existing = new Set(current.map((block) => block.id));
+  const existing = new Set<string>();
   const prepared: BlockInput[] = [];
   for (const block of blocks) {
     const candidate =
@@ -177,9 +183,7 @@ export function insertBlocks(
       throw new BlockInputError(issues);
     }
     const input = candidate as BlockInput;
-    if (existing.has(input.id)) {
-      throw new BlockOperationError("duplicate_block_id", `Block ${input.id} already exists`);
-    }
+    assertNewBlockId(doc, input.id, existing);
     existing.add(input.id);
     prepared.push(input);
   }
@@ -211,6 +215,7 @@ export function splitBlock(doc: Y.Doc, id: string, offset: number, origin?: unkn
     throw new BlockOperationError("offset_out_of_range", `Offset ${offset} is outside 0..${length}`);
   }
   const newId = newBlockId();
+  assertNewBlockId(doc, newId);
   doc.transact(() => {
     tidyOrder(doc, current);
     const text = textOf(blockMap(doc, id));
@@ -341,7 +346,13 @@ export function duplicateBlocks(doc: Y.Doc, ids: readonly string[], origin?: unk
   if (last === undefined) {
     return [];
   }
-  const copies = sources.map((block) => toInput(block, newBlockId()));
+  const reserved = new Set<string>();
+  const copies = sources.map((block) => {
+    const id = newBlockId();
+    assertNewBlockId(doc, id, reserved);
+    reserved.add(id);
+    return toInput(block, id);
+  });
   doc.transact(() => {
     tidyOrder(doc, current);
     getOrderArray(doc).insert(
@@ -362,6 +373,8 @@ export function deleteBlocks(doc: Y.Doc, ids: readonly string[], origin?: unknow
   if (selected.size === 0) {
     return;
   }
+  const emptyId = selected.size === current.length ? newBlockId() : undefined;
+  if (emptyId !== undefined) assertNewBlockId(doc, emptyId);
   doc.transact(() => {
     tidyOrder(doc, current);
     const blocks = getBlocksMap(doc);
@@ -369,8 +382,8 @@ export function deleteBlocks(doc: Y.Doc, ids: readonly string[], origin?: unknow
       blocks.delete(id);
     }
     removeEveryOccurrence(doc, selected);
-    if (selected.size === current.length) {
-      writeBlock(doc, { id: newBlockId(), type: "text" });
+    if (emptyId !== undefined) {
+      writeBlock(doc, { id: emptyId, type: "text" });
     }
   }, origin);
 }

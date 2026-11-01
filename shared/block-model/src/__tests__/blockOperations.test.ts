@@ -1,5 +1,5 @@
 import * as Y from "yjs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   BlockInputError,
   BlockOperationError,
@@ -97,11 +97,75 @@ describe("insertBlocks", () => {
   it("validates every block before mutating a bulk insert", () => {
     const doc = docWith({ id: "a", type: "text", text: "unchanged" });
     const before = Y.encodeStateAsUpdate(doc);
-    expect(() => insertBlocks(doc, "a", [{ id: "new", type: "text" }, { id: "bad", type: "page" }])).toThrow(
-      BlockInputError,
+    expect(() =>
+      insertBlocks(doc, "a", [
+        { id: "new", type: "text" },
+        { id: "bad", type: "page" },
+      ]),
+    ).toThrow(BlockInputError);
+    expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
+  });
+
+  it.each(["remote scalar", 0, false, null] as const)(
+    "refuses an existing synthetic remote-CRDT non-map value %s without partial insertion",
+    (value) => {
+      const doc = docWith({ id: "a", type: "text", text: "unchanged" });
+      const remote = clone(doc);
+      remote.getMap<unknown>("blocks").set("taken", value);
+      Y.applyUpdate(doc, Y.encodeStateAsUpdate(remote));
+      const before = Y.encodeStateAsUpdate(doc);
+      expectCode(
+        () =>
+          insertBlocks(doc, null, [
+            { id: "new", type: "text" },
+            { id: "taken", type: "text" },
+          ]),
+        "duplicate_block_id",
+      );
+      expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
+    },
+  );
+
+  it("refuses an existing synthetic remote-CRDT map even when its fields are malformed", () => {
+    const doc = docWith({ id: "a", type: "text" });
+    const remote = clone(doc);
+    const malformed = new Y.Map<unknown>();
+    malformed.set("sys:flavour", 42);
+    remote.getMap<unknown>("blocks").set("taken", malformed);
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(remote));
+    const before = Y.encodeStateAsUpdate(doc);
+    expectCode(
+      () =>
+        insertBlocks(doc, null, [
+          { id: "new", type: "text" },
+          { id: "taken", type: "text" },
+        ]),
+      "duplicate_block_id",
     );
     expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
   });
+
+  it.each(["insert", "split", "duplicate", "delete"] as const)(
+    "refuses a generated id collision before %s mutates the document",
+    (operation) => {
+      const id = "00000000-0000-4000-8000-000000000001";
+      const doc = docWith({ id, type: "text", text: "abc" });
+      const before = Y.encodeStateAsUpdate(doc);
+      const uuid = vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(id);
+      try {
+        const actions = {
+          insert: () => insertBlocks(doc, null, [{ type: "text" }]),
+          split: () => splitBlock(doc, id, 1),
+          duplicate: () => duplicateBlocks(doc, [id]),
+          delete: () => deleteBlocks(doc, [id]),
+        };
+        expectCode(actions[operation], "duplicate_block_id");
+        expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
+      } finally {
+        uuid.mockRestore();
+      }
+    },
+  );
 
   it("keeps both blocks in the same order after concurrent inserts after the same block", () => {
     const a = docWith({ id: "base", type: "text" });
