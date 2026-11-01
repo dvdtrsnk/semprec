@@ -2,12 +2,15 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import * as Y from "yjs";
 import {
   BlockInputError,
   collectItemLinks,
   parseMarkdown,
   serializeBlocks,
   stripMarkdown,
+  readPageBlocks,
+  writeBlock,
   type PageBlock,
   type SerializeOptions,
   type TextRun,
@@ -164,6 +167,7 @@ describe("markdown fixtures", () => {
         const reserialized = serializeBlocks(parseMarkdown(vector.markdown), serializeOptions(vector));
         expect(reserialized).toBe(canonical);
         expect(parseMarkdown(canonical)).toEqual(expectedBlocks(vector));
+        expect(serializeBlocks(parseMarkdown(canonical), serializeOptions(vector))).toBe(canonical);
       }
       if (direction !== "parse") {
         expect(serializeBlocks(serializable(vector), serializeOptions(vector))).toBe(vector.markdown);
@@ -184,6 +188,80 @@ describe("markdown fixtures", () => {
       expect(thrown.issues).toMatchObject([{ path: rejection.path, code: rejection.code }]);
     });
   }
+});
+
+describe("lossless canonical inline content", () => {
+  it.each([false, true])("preserves an actual Y.Text page link with ids=%s and either page policy", (withIds) => {
+    const doc = new Y.Doc();
+    const text: TextRun[] = [{ insert: " [Title] ", attributes: { bold: true, link: { href: "semprec://page/p1" } } }];
+    writeBlock(doc, { id: "source", type: "text", text });
+    const blocks = readPageBlocks(doc);
+    expect(blocks[0]?.text).toEqual(text);
+    const markdown = serializeBlocks(blocks, { withIds });
+    expect(markdown).toContain("(<semprec://page/p1>)");
+    for (const allowPage of [false, true]) {
+      const parsed = parseMarkdown(markdown, { allowPage });
+      expect(parsed[0]).toMatchObject({ type: "text", text });
+      expect(serializeBlocks(parsed, { withIds })).toBe(markdown);
+    }
+    expect(stripMarkdown(markdown, 100)).toContain("[Title]");
+  });
+
+  it("keeps page links inline in preserved unknown types and alongside other text", () => {
+    const text: TextRun[] = [
+      { insert: "Page", attributes: { link: { href: "semprec://page/p1" } } },
+      { insert: " and " },
+      { insert: "web", attributes: { link: { href: "https://example.com" } } },
+    ];
+    const source = [{ id: "x", type: "future-kind", indent: 0, text }];
+    const markdown = serializeBlocks(source, { withIds: true });
+    expect(markdown).toContain("[Page](<semprec://page/p1>) and [web](https://example.com)");
+    expect(parseMarkdown(markdown, { allowPage: false })[0]).toMatchObject({ type: "future-kind", text });
+    expect(serializeBlocks(parseMarkdown(markdown), { withIds: true })).toBe(markdown);
+    expect(parseMarkdown("[Title](semprec://page/p1)")[0]).toMatchObject({ type: "page", pageId: "p1" });
+    expect(() => parseMarkdown("[Title](semprec://page/p1)", { allowPage: false })).toThrow(BlockInputError);
+  });
+
+  it.each([
+    ["text", 0],
+    ["quote", 0],
+    ["h2", 0],
+    ["bullet", 2],
+    ["unknown-kind", 0],
+  ] as const)("preserves boundary whitespace in %s", (type, indent) => {
+    const text: TextRun[] = [
+      { insert: " \t", attributes: { italic: true } },
+      { insert: "A", attributes: { link: { href: "https://example.com" } } },
+      { insert: "\r\u2003" },
+    ];
+    const doc = new Y.Doc();
+    if (type === "unknown-kind") {
+      const markdown = serializeBlocks([{ id: "x", type, indent, text }], { withIds: true });
+      expect(parseMarkdown(markdown)[0]).toMatchObject({ type, indent, text });
+      expect(serializeBlocks(parseMarkdown(markdown), { withIds: true })).toBe(markdown);
+      return;
+    }
+    writeBlock(doc, { id: "x", type, indent, text });
+    const markdown = serializeBlocks(readPageBlocks(doc), { withIds: true });
+    expect(parseMarkdown(markdown)[0]).toMatchObject({ type, indent, text });
+    expect(serializeBlocks(parseMarkdown(markdown), { withIds: true })).toBe(markdown);
+  });
+
+  it.each([" a ", " a", "a ", "  ", "&#x20;"])("preserves literal code %j", (value) => {
+    const text: TextRun[] = [{ insert: value, attributes: { code: true } }];
+    const markdown = serializeBlocks([{ id: "x", type: "text", indent: 0, text }]);
+    expect(parseMarkdown(markdown)[0]?.text).toEqual(text);
+    expect(serializeBlocks(parseMarkdown(markdown))).toBe(markdown);
+  });
+
+  it("does not decode invalid, noncanonical, non-whitespace or escaped references", () => {
+    const literal = "&#x20; \\&#x9; &#x020; &#xA; &#x61; &#x110000;";
+    const markdown = serializeBlocks([{ id: "x", type: "text", indent: 0, text: [{ insert: literal }] }]);
+    expect(parseMarkdown(markdown)[0]?.text).toEqual([{ insert: literal }]);
+    expect(parseMarkdown("&#x23; heading")[0]).toMatchObject({ type: "text", text: [{ insert: "&#x23; heading" }] });
+    expect(parseMarkdown("&#x20;# heading")[0]).toMatchObject({ type: "text", text: [{ insert: " # heading" }] });
+    expect(parseMarkdown("   \n\n")).toEqual([]);
+  });
 });
 
 describe("markdown behaviour", () => {

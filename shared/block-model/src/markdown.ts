@@ -6,8 +6,8 @@ import { BlockInputError, validateBlockInput, type BlockIssue, type TextRun } fr
  * One non-empty line is one block. The parser and serializer are pure and import nothing
  * but this module's own files, so the WebView editor runs the same code.
  *
- * Normalization on a round trip: leading and trailing whitespace of a block line is
- * dropped, and a number block is always written as `1.`.
+ * Raw outer line whitespace is normalized; canonical content whitespace is escaped.
+ * A number block is always written as `1.`.
  */
 
 const PAGE_LINK_PREFIX = "semprec://page/";
@@ -95,7 +95,7 @@ function toPieces(runs: readonly TextRun[]): Piece[] {
       code: run.attributes?.code === true,
       href: run.attributes?.link?.href ? run.attributes.link.href : null,
     };
-    const segments = run.insert.replace(/\r\n?/g, "\n").split("\n");
+    const segments = run.insert.split("\n");
     segments.forEach((segment, index) => {
       if (segment !== "") {
         pieces.push({ kind: "text", text: segment, marks });
@@ -156,9 +156,18 @@ function markHtmlSpans(spans: Span[], pieces: readonly Piece[]): void {
 
 function escapePlain(text: string, offset: number, whole: string): string {
   let out = "";
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i] as string;
-    if (char === "\\" || char === "*" || char === "`" || char === "[" || char === "]" || char === "<") {
+  const leading = /^[^\S\n]*/u.exec(whole)?.[0].length ?? 0;
+  const trailing = whole.length - (/[^\S\n]*$/u.exec(whole)?.[0].length ?? 0);
+  for (let i = 0; i < text.length;) {
+    const point = text.codePointAt(i);
+    if (point === undefined) break;
+    const char = String.fromCodePoint(point);
+    const position = offset + i;
+    if (char !== "\n" && /\s/u.test(char) && (position < leading || position >= trailing)) {
+      out += `&#x${point.toString(16)};`;
+    } else if (char === "&" && whitespaceReference(whole.slice(position)) !== null) {
+      out += "\\&";
+    } else if (char === "\\" || char === "*" || char === "`" || char === "[" || char === "]" || char === "<") {
       out += `\\${char}`;
     } else if (char === "_") {
       const before = whole[offset + i - 1];
@@ -168,19 +177,33 @@ function escapePlain(text: string, offset: number, whole: string): string {
     } else {
       out += char;
     }
+    i += char.length;
   }
   return out;
+}
+
+/** Only the canonical numeric spelling of non-LF ECMAScript whitespace is recognized. */
+function whitespaceReference(source: string): { text: string; length: number } | null {
+  const match = /^&#x([1-9a-f][0-9a-f]*);/.exec(source);
+  if (!match) return null;
+  const point = Number.parseInt(match[1] as string, 16);
+  if (point > 0x10ffff) return null;
+  const text = String.fromCodePoint(point);
+  return text !== "\n" && /^\s$/u.test(text) ? { text, length: match[0].length } : null;
 }
 
 function codeSpan(text: string): string {
   const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
   const fence = "`".repeat(longest === 0 ? 1 : longest + 1);
-  const pad = text.startsWith("`") || text.endsWith("`") ? " " : "";
+  const pad =
+    text.startsWith("`") || text.endsWith("`") || (text.trim() !== "" && (text.startsWith(" ") || text.endsWith(" ")))
+      ? " "
+      : "";
   return `${fence}${pad}${text}${pad}${fence}`;
 }
 
 function linkDestination(href: string): string {
-  if (/[\s()<>\\]/.test(href)) {
+  if (href.startsWith(PAGE_LINK_PREFIX) || /[\s()<>\\]/.test(href)) {
     return `<${href.replace(/[\\<>]/g, (char) => `\\${char}`)}>`;
   }
   return href;
@@ -486,6 +509,12 @@ function parseInlineInto(source: string, initial: InlineState, runs: TextRun[]):
     if (char === "\\" && i + 1 < source.length && PUNCTUATION.test(source[i + 1] as string)) {
       buffer += source[i + 1];
       i += 2;
+      continue;
+    }
+    const reference = char === "&" ? whitespaceReference(source.slice(i)) : null;
+    if (reference !== null) {
+      buffer += reference.text;
+      i += reference.length;
       continue;
     }
     if (char === "`") {

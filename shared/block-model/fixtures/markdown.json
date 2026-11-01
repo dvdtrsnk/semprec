@@ -2,6 +2,36 @@
   "description": "Shared Markdown <-> block vectors. Blocks without an id get b1, b2, ... in order. direction: both (default) parses and serializes, parse parses only, serialize serializes only. A parse vector may carry canonical, the Markdown it serializes back to.",
   "vectors": [
     {
+      "name": "significant boundary whitespace",
+      "markdown": "&#x20;&#x9;Hello&#xd;&#xa0;",
+      "blocks": [{ "type": "text", "text": [{ "insert": " \tHello\r\u00a0" }] }]
+    },
+    {
+      "name": "whitespace-only quote and indented list",
+      "markdown": "> &#x20;&#x9;\n\n  - &#x20;x&#x20;",
+      "blocks": [
+        { "type": "quote", "text": [{ "insert": " \t" }] },
+        { "type": "bullet", "indent": 1, "text": [{ "insert": " x " }] }
+      ]
+    },
+    {
+      "name": "inline page link is text",
+      "markdown": "[Title](<semprec://page/p1>)",
+      "blocks": [
+        { "type": "text", "text": [{ "insert": "Title", "attributes": { "link": { "href": "semprec://page/p1" } } }] }
+      ]
+    },
+    {
+      "name": "literal whitespace reference and code",
+      "markdown": "\\&#x20; and `&#x20;`",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [{ "insert": "&#x20; and " }, { "insert": "&#x20;", "attributes": { "code": true } }]
+        }
+      ]
+    },
+    {
       "name": "project notes sample",
       "markdown": "## Project notes\n\nBuild `0.4 (52)` is out, see [the spec](https://example.com/spec)\n\n- Release checklist\n  - Tag the build\n- [x] Ship build `0.4 (52)`\n\n> Keep the scope small\n\n[Roadmap](semprec://page/page-roadmap)",
       "pageTitles": { "page-roadmap": "Roadmap" },
