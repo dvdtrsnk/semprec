@@ -803,17 +803,24 @@ describe("createProposalComputation (issue #1434)", () => {
         [project.id],
       );
       const itemId = await createTaskItem("Move area", "people");
-      await runTick(
-        pool,
-        stubGateway({
-          properties: { name: "Eva" },
-          operations: [
-            { op: "create", database: "people", properties: { name: "Eva" } },
-            { op: "update", itemId: project.id, relations: { area: [newArea.id] } },
-          ],
-        }),
-        itemId,
-      );
+      const gateway = stubGateway({
+        properties: { name: "Eva" },
+        operations: [
+          { op: "create", database: "people", properties: { name: "Eva" } },
+          { op: "update", itemId: project.id, relations: { area: [newArea.id] } },
+        ],
+      });
+      await runTick(pool, gateway, itemId);
+      const request = JSON.stringify(gateway.calls[0]);
+      const userMessage = z.string().parse(gateway.calls[0]?.messages[0]?.content);
+      expect(request).toContain(project.id);
+      expect(request).toContain("Project");
+      expect(request).toContain(oldArea.id);
+      expect(request).toContain("Old");
+      expect(request.split(project.id)).toHaveLength(2);
+      expect(request.split(oldArea.id)).toHaveLength(2);
+      expect(userMessage).not.toContain('"before"');
+      expect(userMessage).not.toContain(JSON.stringify([oldArea.id]));
       const card = (await cp.listItems(config.processingProposalsDatabaseId)).items[0];
       if (!card) throw new Error("Missing proposal");
       expect(card.properties.status).toBe("proposed");
