@@ -150,6 +150,7 @@ describe("createNotificationsRequestListener", () => {
   it("settles the owned child when its group signal fails without masking the primary failure", async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), "semprec-fixture-guard-"));
     const originalKill = process.kill.bind(process);
+    const originalStderrWrite = process.stderr.write.bind(process.stderr);
     const signaled: number[] = [];
     const stderr = vi.spyOn(process.stderr, "write");
     const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
@@ -190,6 +191,28 @@ describe("createNotificationsRequestListener", () => {
                 typeof chunk === "string" && chunk.includes("Group kill failed: Error: group signal refused"),
             ),
         ).toBe(true);
+        stderr.mockImplementation((chunk, encoding, callback) => {
+          if (typeof chunk === "string" && chunk.startsWith("Transcription fixture cleanup:"))
+            throw new Error("fixture diagnostic output failed");
+          return Reflect.apply(originalStderrWrite, process.stderr, [chunk, encoding, callback]);
+        });
+        let caught: unknown;
+        try {
+          await runFixtureOverflowWithoutObservation(
+            { mode: "failure", tenantId: getTenantZeroId(), storageRoot },
+            pool,
+          );
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBeInstanceOf(AggregateError);
+        if (!(caught instanceof AggregateError)) throw new Error("Expected the original and reporting errors");
+        expect(caught.message).toBe("Transcription fixture output exceeds limit");
+        expect(caught.cause).toBeInstanceOf(Error);
+        expect(caught.errors.map((error: unknown) => (error instanceof Error ? error.message : ""))).toEqual([
+          "Transcription fixture output exceeds limit",
+          "fixture diagnostic output failed",
+        ]);
       });
     } finally {
       kill.mockRestore();

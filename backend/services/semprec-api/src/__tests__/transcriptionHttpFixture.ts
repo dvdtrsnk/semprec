@@ -94,12 +94,22 @@ async function runProducer(
     let stderr = "";
     let bytes = 0;
     let failure: Error | undefined;
+    const reportingFailures: unknown[] = [];
     let emergencyTimer: ReturnType<typeof setTimeout> | undefined;
     let groupSignalSucceeded = false;
     function reportCleanupFailure(message: string) {
       if (observation)
         observation.emergencyCleanupError = [observation.emergencyCleanupError, message].filter(Boolean).join("; ");
-      process.stderr.write(`Transcription fixture cleanup: ${message}\n`);
+      try {
+        process.stderr.write(`Transcription fixture cleanup: ${message}\n`);
+      } catch (error) {
+        reportingFailures.push(error);
+      }
+    }
+    function primaryError(reason: Error): Error {
+      return reportingFailures.length
+        ? new AggregateError([reason, ...reportingFailures], reason.message, { cause: reason })
+        : reason;
     }
     function stop(reason: Error) {
       if (failure) return;
@@ -126,7 +136,7 @@ async function runProducer(
             child.stdout.destroy();
             child.stderr.destroy();
             child.unref();
-            reject(reason);
+            reject(primaryError(reason));
           }, 3000);
         }
       }
@@ -210,7 +220,7 @@ async function runProducer(
             }
           }
         }
-        if (failure) return reject(failure);
+        if (failure) return reject(primaryError(failure));
         if (code !== 0)
           return reject(new Error(`Transcription fixture failed: ${code ?? signal}\n${stdout}\n${stderr}`));
         resolveResult({ stdout, stderr });
