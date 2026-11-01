@@ -30,7 +30,7 @@ it.each([
       created = true;
       const url = new URL(connectionString);
       url.pathname = `/${name}`;
-      database = createPool(url.toString());
+      database = createPool(url.toString(), { statementTimeoutMs: 15_000 });
       for (const file of (await readdir(migrations)).filter((f) => f.endsWith(".sql") && f < expand).sort()) {
         await copyFile(path.join(migrations, file), path.join(dir, file));
       }
@@ -73,6 +73,7 @@ it.each([
           const readerPid = (await reader.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
           const writerPid = (await writer.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
           migration = runMigrations(database, dir);
+          void migration.catch(() => {});
           let migrationPid = 0;
           await vi.waitFor(
             async () => {
@@ -90,6 +91,8 @@ it.each([
           );
           read = reader.query("SELECT id FROM agent_runs WHERE id = $1", [runIds[0]]);
           write = writer.query("UPDATE agent_runs SET task = task WHERE id = $1", [runIds[0]]);
+          void read.catch(() => {});
+          void write.catch(() => {});
           await vi.waitFor(
             async () => {
               const { rows } = await database!.query<{ pid: number; blockers: number[] }>(
@@ -123,13 +126,23 @@ it.each([
         "SELECT convalidated FROM pg_constraint WHERE conname = 'agent_runs_thread_id_fkey'",
       );
       expect(after.rows).toEqual([{ convalidated: true }]);
-      const runs = await database.query<{ id: string; tenant_id: string; thread_id: string | null }>(
-        "SELECT id, tenant_id, thread_id FROM agent_runs WHERE id = ANY($1::uuid[]) ORDER BY id",
-        [runIds],
-      );
+      const runs = await database.query<{
+        id: string;
+        tenant_id: string;
+        thread_id: string | null;
+        task: string;
+        triggered_by: string;
+      }>("SELECT id, tenant_id, thread_id, task, triggered_by FROM agent_runs WHERE id = ANY($1::uuid[]) ORDER BY id", [
+        runIds,
+      ]);
       expect(runs.rows).toHaveLength(tenantIds.length);
+      expect(runs.rows.map((row) => `${row.id}:${row.tenant_id}`).sort()).toEqual(
+        runIds.map((id, index) => `${id}:${tenantIds[index]}`).sort(),
+      );
       expect(runs.rows.map((row) => row.tenant_id).sort()).toEqual(tenantIds.sort());
+      expect(runs.rows.map((row) => row.id).sort()).toEqual([...runIds].sort());
       expect(runs.rows.every((row) => row.thread_id === null)).toBe(true);
+      expect(runs.rows.every((row) => row.task === "existing" && row.triggered_by === "user")).toBe(true);
       const errorCodeMigration = "0104_agent_run_error_code.sql";
       for (const file of (await readdir(migrations))
         .filter((f) => f.endsWith(".sql") && f > validate && f < errorCodeMigration)

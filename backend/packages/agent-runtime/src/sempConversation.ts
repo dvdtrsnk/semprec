@@ -379,16 +379,17 @@ export class SempConversation {
       return await withTraceContext({ agentRunId: run.id }, async () => {
         await pushRunStatus(this.pool, run.id, "running");
 
-        // The compacted continuation replaces the raw history it was derived from — persisted
-        // here, on the run it seeds, so a later restart's reconstruction resumes from this
-        // checkpoint instead of re-deriving (and potentially re-compacting) it all over again.
-        if (priorHistory?.compacted) {
-          await persistCompaction(this.pool, run.id, priorHistory.entries);
-        }
-
         let session: AgentSession;
         let lastMessage: AgentMessage | null;
         try {
+          // Persist the checkpoint on the same thread's run before creating a session.
+          if (priorHistory?.compacted) {
+            await persistCompaction(this.pool, run.id, priorHistory.entries, {
+              threadId: thread.threadId,
+              triggeredBy: "user",
+              parentRunId: null,
+            });
+          }
           const createAgentSession = await this.options.createAgentSessionForRun(run);
           session = createAgentSession({
             task,

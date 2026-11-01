@@ -169,7 +169,7 @@ export async function createAgentRun(client: Pool | PoolClient, input: CreateAge
     }
   }
   const actorUserId = await resolveActorUserId(client, parent, input.userId);
-  const threadId = input.threadId ?? parent?.threadId ?? null;
+  const threadId = input.threadId === undefined ? (parent?.threadId ?? null) : input.threadId;
   const { rows } = await client.query<AgentRunDbRow>(
     `INSERT INTO agent_runs (project_item_id, parent_run_id, heartbeat_id, retry_of_run_id, attempt, heartbeat_occurrence_id, thread_id, triggered_by, unit, task, actor_user_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)

@@ -60,6 +60,14 @@ describe("agent_runs.thread_id (issue #1452)", () => {
       threadId: otherThreadId,
     });
     expect(explicit.threadId).toBe(otherThreadId);
+    const cleared = await createAgentRun(pool, {
+      triggeredBy: "supervisor",
+      task: "sub",
+      parentRunId: parent.id,
+      threadId: null,
+    });
+    expect(cleared.threadId).toBeNull();
+    expect((await getAgentRun(pool, cleared.id))?.threadId).toBeNull();
   });
 
   it("leaves thread_id NULL for a run with no thread, such as an MCP run", async () => {

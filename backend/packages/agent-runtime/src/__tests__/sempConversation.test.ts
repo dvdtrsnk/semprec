@@ -298,6 +298,46 @@ describe("SempConversation", () => {
     conversation.clear();
   });
 
+  it("closes a new run if its compaction write fails before session creation", async () => {
+    const name = `reject_compaction_${randomUUID().replaceAll("-", "")}`;
+    const createAgentSessionForRun = vi.fn(async () => scriptedSession([]).createAgentSession);
+    const conversation = new SempConversation(pool, {
+      createAgentSessionForRun,
+      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+      reconstructHistory: async () => ({ entries: [], compacted: true }),
+    });
+    try {
+      await pool.query(`CREATE FUNCTION ${name}() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.kind = 'compaction' AND EXISTS (SELECT 1 FROM agent_runs WHERE id = NEW.agent_run_id AND task = 'compaction-failure-test') THEN
+            RAISE EXCEPTION 'compaction write refused';
+          END IF;
+          RETURN NEW;
+        END $$`);
+      await pool.query(
+        `CREATE TRIGGER ${name} BEFORE INSERT ON agent_run_events FOR EACH ROW EXECUTE FUNCTION ${name}()`,
+      );
+      await expect(sendInTenantZero(conversation, "compaction-failure-test")).rejects.toThrow(
+        "compaction write refused",
+      );
+      expect(createAgentSessionForRun).not.toHaveBeenCalled();
+      const runs = await pool.query<{ id: string; status: string; error_code: string | null }>(
+        "SELECT id, status, error_code FROM agent_runs WHERE task = 'compaction-failure-test'",
+      );
+      expect(runs.rows).toHaveLength(1);
+      expect(runs.rows[0]).toMatchObject({ status: "error", error_code: "internal" });
+      const checkpoints = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'compaction'",
+        [runs.rows[0]!.id],
+      );
+      expect(checkpoints.rows).toEqual([{ count: "0" }]);
+    } finally {
+      conversation.clear();
+      await pool.query(`DROP TRIGGER IF EXISTS ${name} ON agent_run_events`);
+      await pool.query(`DROP FUNCTION IF EXISTS ${name}()`);
+    }
+  });
+
   it("pauses (not finishes) the conversation on TTL expiry: closes the wake run as done, and the next send opens a fresh one", async () => {
     const ttlMs = 60;
     // Two batches from one factory: the second wake calls createAgentSession() again for a
