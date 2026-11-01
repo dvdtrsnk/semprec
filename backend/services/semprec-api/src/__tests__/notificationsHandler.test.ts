@@ -1,6 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import fsPromises from "node:fs/promises";
 import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +19,35 @@ import {
 } from "./transcriptionHttpFixture.js";
 
 const PASSWORD = "s3cret-password";
+const poolFault = vi.hoisted(() => ({ failNextClose: false, closed: Array<unknown>() }));
+
+vi.mock("@semprec/data/testSupport", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@semprec/data/testSupport")>();
+  return {
+    ...actual,
+    createRuntimeRolePool: async (...args: Parameters<typeof actual.createRuntimeRolePool>) => {
+      const owned = await actual.createRuntimeRolePool(...args);
+      if (poolFault.failNextClose) {
+        poolFault.failNextClose = false;
+        const close = owned.end.bind(owned);
+        Object.defineProperty(owned, "end", {
+          value: async () => {
+            await close();
+            try {
+              await owned.query("SELECT 1");
+              throw new Error("Fixture pool remained open after close");
+            } catch (error) {
+              if (!(error instanceof Error && error.message.includes("after calling end"))) throw error;
+            }
+            poolFault.closed.push(owned);
+            throw new Error("fixture pool close diagnostic");
+          },
+        });
+      }
+      return owned;
+    },
+  };
+});
 
 let pool: Pool;
 
@@ -261,6 +291,86 @@ describe("createNotificationsRequestListener", () => {
       if (ownedDirectory) originalRemove(ownedDirectory, { recursive: true, force: true });
     }
   }, 15000);
+
+  it.each([true, false])(
+    "reports an owned pool-close error with primary failure: %s",
+    async (primaryFailure) => {
+      const storageRoot = await mkdtemp(join(tmpdir(), "semprec-fixture-pool-"));
+      poolFault.closed.length = 0;
+      poolFault.failNextClose = true;
+      try {
+        await withFixtureStorage(storageRoot, async () => {
+          let caught: unknown;
+          try {
+            if (primaryFailure) {
+              const result = await runFixtureGuardControl(
+                "overflow",
+                { mode: "failure", tenantId: getTenantZeroId(), storageRoot },
+                pool,
+              );
+              caught = result.error;
+            } else {
+              await runTranscriptionFixture({ mode: "failure", tenantId: getTenantZeroId(), storageRoot }, pool);
+            }
+          } catch (error) {
+            caught = error;
+          }
+          expect(caught).toBeInstanceOf(AggregateError);
+          if (!(caught instanceof AggregateError)) throw new Error("Expected a fixture cleanup error");
+          expect(caught.message).toBe(
+            primaryFailure ? "Transcription fixture output exceeds limit" : "Transcription fixture cleanup failed",
+          );
+          expect(caught.errors.map((error: unknown) => (error instanceof Error ? error.message : ""))).toEqual(
+            primaryFailure
+              ? ["Transcription fixture output exceeds limit", "fixture pool close diagnostic"]
+              : ["fixture pool close diagnostic"],
+          );
+          if (primaryFailure) expect(caught.cause).toBeInstanceOf(Error);
+          expect(poolFault.closed).toHaveLength(1);
+        });
+      } finally {
+        poolFault.failNextClose = false;
+        poolFault.closed.length = 0;
+      }
+    },
+    15000,
+  );
+
+  it.each([true, false])("preserves storage removal failure with scenario failure: %s", async (scenarioFailure) => {
+    const storageRoot = await mkdtemp(join(tmpdir(), "semprec-fixture-storage-"));
+    const originalRemove = fsPromises.rm.bind(fsPromises);
+    const remove = vi.spyOn(fsPromises, "rm").mockImplementation(async (path, options) => {
+      if (path === storageRoot) throw new Error("fixture storage removal failed");
+      return originalRemove(path, options);
+    });
+    try {
+      let caught: unknown;
+      try {
+        await withFixtureStorage(storageRoot, async () => {
+          if (scenarioFailure) throw new Error("fixture scenario failed");
+        });
+      } catch (error) {
+        caught = error;
+      }
+      if (scenarioFailure) {
+        expect(caught).toBeInstanceOf(AggregateError);
+        if (!(caught instanceof AggregateError)) throw new Error("Expected both storage errors");
+        expect(caught.message).toBe("fixture scenario failed");
+        expect(caught.cause).toBeInstanceOf(Error);
+        expect(caught.errors.map((error: unknown) => (error instanceof Error ? error.message : ""))).toEqual([
+          "fixture scenario failed",
+          "fixture storage removal failed",
+        ]);
+      } else {
+        expect(caught).toBeInstanceOf(Error);
+        if (!(caught instanceof Error)) throw new Error("Expected the storage cleanup error");
+        expect(caught.message).toBe("fixture storage removal failed");
+      }
+    } finally {
+      remove.mockRestore();
+      await originalRemove(storageRoot, { recursive: true, force: true });
+    }
+  });
 
   it("removes the owned temporary build when the transcription producer fails", async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), "semprec-http-transcription-"));

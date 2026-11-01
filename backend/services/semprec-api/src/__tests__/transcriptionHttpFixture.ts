@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import fs, { existsSync, mkdtempSync, statSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import fsPromises from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Pool } from "pg";
@@ -46,7 +46,7 @@ export async function withFixtureStorage<T>(path: string, run: () => Promise<T>)
     outcome = { ok: false, error };
   }
   try {
-    await rm(path, { recursive: true, force: true });
+    await fsPromises.rm(path, { recursive: true, force: true });
   } catch (error) {
     if (outcome.ok) outcome = { ok: false, error };
     else {
