@@ -63,3 +63,31 @@ implementation and exact refreeze; they do not accept a candidate.
    change is authorized. Exact existing handler/test paths remain; add only the
    new ADR path to source Touches. Current prototype and development pass are
    unaccepted until review and final-candidate execution.
+
+5. Gh-1396 uses the new
+   `2026-11-01-stt-stream-close-waits-for-accounting-ownership`: the existing frame
+   queue owns started reservations, provider open, settlement/failure and retries
+   until idempotent stream cleanup completes. Mark done/abort immediately, then
+   wait the final queue tail outside its active callback before closing the last
+   chunk and releasing registry/slot. CloseAll and the existing shutdown hook
+   cannot race ahead to pool closure. No self-await, parallel final accounting,
+   generic shutdown rewrite or detached retry is authorized. Preserve existing
+   terminal DB-failure estimate/reconciliation policy rather than inventing
+   unconditional no-reserved-row success during outage. Require actual blocked
+   reservation and settlement/closeAll ordering, retry/failure and idempotency
+   controls under the exact gateway runtime role, with bounded owned settlement.
+   Add only the new ADR path to current handler/service-test scope; current
+   shutdown source ordering is used unchanged.
+
+6. Gh-1381's 9 MiB evidence means a constructed declared image-bearing request
+   streamed toward the unmodified endpoint, with actual complete HTTP413 JSON and
+   no provider/reservation. The client attempts its body under backpressure until
+   an early response arrives (then stops) or reaches request end. Receiving all
+   rejected bytes before replying is not required. Artificially stalling at
+   8 MiB+64KiB without any response is not that ordinary scenario; overriding
+   response.end is reserved for explicitly labeled cleanup branch controls.
+   Clarify the source AC exactly, preserving actual response and bounded rejection
+   requirements; this does not waive a transport error or claim every client
+   receives a response after cutoff. Reviewer disagreement with this delegated
+   contract is recorded, not resolved by changing correct rejection code to
+   consume an otherwise refused whole request.
