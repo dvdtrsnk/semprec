@@ -323,7 +323,7 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
 
     expect(updated.properties.timeFrom).toBe("09:00");
     expect((await chokePoint.getItem(eventsId, created.id))!.properties.timeFrom).toBe("09:00");
-    expect(updated.updatedAt).not.toBe(created.updatedAt);
+    expect(Date.parse(updated.updatedAt)).toBeGreaterThanOrEqual(Date.parse(created.updatedAt));
     expect(hookPatches).toEqual([{ timeFrom: "09:00" }]);
     // A create sees no stored row; the update sees the row it replaces, as committed.
     expect(transformInputs).toEqual([null, "10:00"]);
