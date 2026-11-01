@@ -706,6 +706,44 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
+    it("does not use another tenant's active relation handoff", async () => {
+      const tenantA = await createTestTenant(pool);
+      const tenantB = await createTestTenant(pool);
+      await withRuntimePool(async (runtime) => {
+        const cp = createChokePoint(runtime);
+        const own = await runInTenant(tenantA, () => setup(cp));
+        const foreign = await runInTenant(tenantB, () => setup(cp));
+        await withTenantTransaction(runtime, tenantB, (client) =>
+          insertValueLink(client, { itemId: foreign.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+        );
+        const edge = {
+          relationPropertyId: own.projectsProperty.id,
+          callerItemId: own.file.id,
+          targetItemId: own.alpha.id,
+        };
+        await expect(
+          runInTenant(tenantA, () =>
+            withTransaction(runtime, (client) => createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER)),
+          ),
+        ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+        expect(await runInTenant(tenantA, () => cp.listItemRelations(own.file.id, own.projectsProperty.id))).toEqual(
+          [],
+        );
+        const foreignLinks = await withTenantTransaction(runtime, tenantB, (client) =>
+          listValueLinksByItemIds(client, [foreign.file.id]),
+        );
+        expect(foreignLinks[0]).toMatchObject({ state: "on" });
+        await withTenantTransaction(runtime, tenantA, (client) =>
+          insertValueLink(client, { itemId: own.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+        );
+        await expect(
+          runInTenant(tenantA, () =>
+            withTransaction(runtime, (client) => createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER)),
+          ),
+        ).resolves.toMatchObject({ itemA: own.file.id, itemB: own.alpha.id });
+      });
+    });
+
     it("preserves Library rating validation on protected relation writes", async () => {
       await seedSystem(pool);
       const tenant = getTenantZeroId();
