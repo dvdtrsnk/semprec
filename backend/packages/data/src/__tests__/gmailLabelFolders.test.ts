@@ -921,26 +921,34 @@ describe("Gmail label folders (issue #1496)", () => {
         console.info("GMAIL_PRE_BARRIER_CLEANUP", { holderPid, participantPid });
       },
       async () => {
-        try {
-          await rollbackAndSettleOwned(
-            async () => {
-              if (guardHeld) await bounded(holder.query("ROLLBACK"));
-            },
-            () => {
-              holder.release(true);
-              holderReleased = true;
-            },
-            async () => {
-              if (!cleanupStarted)
-                await settleOwnedPools(control, [operationPool], operation ? [operation] : [], [capturedBackends]);
-            },
-          );
-        } finally {
-          capture.detach();
-          if (!holderReleased) holder.release(true);
-          control.release(true);
-          expect(operationPool.listeners("acquire")).not.toContain(capture.onAcquire);
-        }
+        await withOwnedFixture(
+          async () =>
+            rollbackAndSettleOwned(
+              async () => {
+                if (guardHeld) await bounded(holder.query("ROLLBACK"));
+              },
+              () => {
+                holderReleased = true;
+                holder.release(true);
+              },
+              async () => {
+                if (!cleanupStarted)
+                  await settleOwnedPools(control, [operationPool], operation ? [operation] : [], [capturedBackends]);
+              },
+            ),
+          async () => {
+            capture.detach();
+            await withOwnedFixture(
+              async () => {
+                if (!holderReleased) holder.release(true);
+              },
+              async () => {
+                control.release(true);
+              },
+            );
+            expect(operationPool.listeners("acquire")).not.toContain(capture.onAcquire);
+          },
+        );
       },
     );
   }, 30_000);
@@ -968,8 +976,8 @@ describe("Gmail label folders (issue #1496)", () => {
               throw rollbackFailure;
             },
             () => {
-              holder.release(true);
               released = true;
+              holder.release(true);
             },
             () => settleOwnedPools(control, [operationPool], [operation], [backends]),
           ),
@@ -986,13 +994,19 @@ describe("Gmail label folders (issue #1496)", () => {
         expect(remaining.rows[0]?.present).toBe(false);
       },
       async () => {
-        try {
-          if (!released) holder.release(true);
-          if (!cleanupStarted) await settleOwnedPools(control, [operationPool], [], [backends]);
-        } finally {
-          capture.detach();
-          control.release(true);
-        }
+        await withOwnedFixture(
+          async () => {
+            if (!released) holder.release(true);
+          },
+          async () => {
+            try {
+              if (!cleanupStarted) await settleOwnedPools(control, [operationPool], [], [backends]);
+            } finally {
+              capture.detach();
+              control.release(true);
+            }
+          },
+        );
       },
     );
   }, 30_000);
@@ -1005,6 +1019,7 @@ describe("Gmail label folders (issue #1496)", () => {
     const control = await admin.connect();
     const bodyFailure = new Error("Injected body failure");
     const rollbackFailure = new Error("Injected rollback failure");
+    const releaseFailure = new Error("Injected release failure");
     let released = false;
     let cleanupStarted = false;
     await withOwnedFixture(
@@ -1023,8 +1038,9 @@ describe("Gmail label folders (issue #1496)", () => {
                   throw rollbackFailure;
                 },
                 () => {
-                  holder.release(true);
                   released = true;
+                  holder.release(true);
+                  throw releaseFailure;
                 },
                 () => settleOwnedPools(control, [operationPool], [], [backends]),
               );
@@ -1036,6 +1052,10 @@ describe("Gmail label folders (issue #1496)", () => {
         expect(outcome.reason.cause).toBe(bodyFailure);
         expect(outcome.reason.errors[0]).toBe(bodyFailure);
         expect(outcome.reason.errors[1]).toMatchObject({ cause: rollbackFailure });
+        const cleanupFailure: unknown = outcome.reason.errors[1];
+        expect(cleanupFailure).toBeInstanceOf(AggregateError);
+        if (!(cleanupFailure instanceof AggregateError)) throw new Error("Expected rollback and release failures");
+        expect(cleanupFailure.errors).toEqual([rollbackFailure, releaseFailure]);
         await expect(
           withOwnedFixture(
             async () => {
@@ -1064,13 +1084,19 @@ describe("Gmail label folders (issue #1496)", () => {
         expect(remaining.rows[0]?.present).toBe(false);
       },
       async () => {
-        try {
-          if (!released) holder.release(true);
-          if (!cleanupStarted) await settleOwnedPools(control, [operationPool], [], [backends]);
-        } finally {
-          capture.detach();
-          control.release(true);
-        }
+        await withOwnedFixture(
+          async () => {
+            if (!released) holder.release(true);
+          },
+          async () => {
+            try {
+              if (!cleanupStarted) await settleOwnedPools(control, [operationPool], [], [backends]);
+            } finally {
+              capture.detach();
+              control.release(true);
+            }
+          },
+        );
       },
     );
   }, 30_000);
@@ -1163,32 +1189,42 @@ describe("Gmail label folders (issue #1496)", () => {
       },
       async () => {
         releaseConnection();
-        try {
-          await withOwnedFixture(
-            async () => {
-              if (observedCleanup) await bounded(observedCleanup, 20_000);
-            },
-            async () => {
-              await rollbackAndSettleOwned(
-                async () => {
-                  if (guardHeld && holder) await bounded(holder.query("ROLLBACK"));
-                },
-                () => {
-                  holder?.release(true);
-                  holderReleased = true;
-                },
-                async () => {
-                  if (!observedCleanup)
-                    await settleOwnedPools(control, [operationPool], operation ? [operation] : [], [capturedBackends]);
-                },
-              );
-            },
-          );
-        } finally {
-          capture.detach();
-          if (!holderReleased) holder?.release(true);
-          control.release(true);
-        }
+        await withOwnedFixture(
+          async () =>
+            withOwnedFixture(
+              async () => {
+                if (observedCleanup) await bounded(observedCleanup, 20_000);
+              },
+              async () => {
+                await rollbackAndSettleOwned(
+                  async () => {
+                    if (guardHeld && holder) await bounded(holder.query("ROLLBACK"));
+                  },
+                  () => {
+                    holderReleased = true;
+                    holder?.release(true);
+                  },
+                  async () => {
+                    if (!observedCleanup)
+                      await settleOwnedPools(control, [operationPool], operation ? [operation] : [], [
+                        capturedBackends,
+                      ]);
+                  },
+                );
+              },
+            ),
+          async () => {
+            capture.detach();
+            await withOwnedFixture(
+              async () => {
+                if (!holderReleased) holder?.release(true);
+              },
+              async () => {
+                control.release(true);
+              },
+            );
+          },
+        );
       },
     );
   }, 30_000);
