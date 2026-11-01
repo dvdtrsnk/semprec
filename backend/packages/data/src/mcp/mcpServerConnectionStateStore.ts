@@ -1,5 +1,6 @@
+import type { Pool } from "pg";
 import type { Queryable } from "../db/pool.js";
-import type { McpConnectionErrorReason } from "./mcpConnectionError.js";
+import { MCP_CONNECTION_ERROR_REASONS, type McpConnectionErrorReason } from "./mcpConnectionError.js";
 
 /**
  * `mcp_server_connection_state` (issue #1450): the outcome of the last connection a tool call
@@ -18,13 +19,27 @@ export interface McpServerConnectionState {
 
 interface McpServerConnectionStateRow {
   mcp_server_item_id: string;
-  last_connected_at: string | null;
-  last_error_reason: McpConnectionErrorReason | null;
-  updated_at: string;
+  last_connected_at: unknown;
+  last_error_reason: unknown;
+  updated_at: unknown;
+}
+
+function timestamp(value: unknown): string {
+  if (!(value instanceof Date) || !Number.isFinite(value.getTime())) {
+    throw new Error("Invalid stored MCP connection timestamp");
+  }
+  return value.toISOString();
+}
+
+function reason(value: unknown): McpConnectionErrorReason | null {
+  if (value === null) return null;
+  const match = MCP_CONNECTION_ERROR_REASONS.find((candidate) => candidate === value);
+  if (match === undefined) throw new Error("Invalid stored MCP connection reason");
+  return match;
 }
 
 /** A successful connect: `last_connected_at = now()` and the previous error cleared. */
-export async function recordMcpConnectionSuccess(pool: Queryable, serverItemId: string): Promise<void> {
+export async function recordMcpConnectionSuccess(pool: Pool, serverItemId: string): Promise<void> {
   await pool.query(
     `INSERT INTO mcp_server_connection_state (mcp_server_item_id, last_connected_at, last_error_reason)
      VALUES ($1, now(), NULL)
@@ -36,7 +51,7 @@ export async function recordMcpConnectionSuccess(pool: Queryable, serverItemId: 
 
 /** A failed connect: records the reason and leaves `last_connected_at` as it was. */
 export async function recordMcpConnectionFailure(
-  pool: Queryable,
+  pool: Pool,
   serverItemId: string,
   reason: McpConnectionErrorReason,
 ): Promise<void> {
@@ -63,8 +78,8 @@ export async function getMcpConnectionStates(
   );
   return rows.map((row) => ({
     mcpServerItemId: row.mcp_server_item_id,
-    lastConnectedAt: row.last_connected_at,
-    lastErrorReason: row.last_error_reason,
-    updatedAt: row.updated_at,
+    lastConnectedAt: row.last_connected_at === null ? null : timestamp(row.last_connected_at),
+    lastErrorReason: reason(row.last_error_reason),
+    updatedAt: timestamp(row.updated_at),
   }));
 }

@@ -117,7 +117,7 @@ export function createMcpAgentPageRequestListener(pool: Pool) {
             for (const [key, value] of Object.entries(rawLabel)) {
               if (key !== "cs" && key !== "en") {
                 sendJson(res, 400, {
-                  error: `'displayLabel' has unknown key '${key}'; allowed keys are 'cs' and 'en'`,
+                  error: "'displayLabel' has an unknown key; allowed keys are 'cs' and 'en'",
                 });
                 return;
               }

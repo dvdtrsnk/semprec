@@ -158,9 +158,9 @@ describe("notification preferences (issue #1441)", () => {
       [{ badgeInbox: 1 }, "badgeInbox"],
       [{ problemsLevel: "none" }, "problemsLevel"],
       [{ problemsLevel: 3 }, "problemsLevel"],
-      [{ mute: true }, "mute"],
+      [{ mute: true }, "body"],
       // A valid field next to an unknown key still refuses the whole request: nothing is written.
-      [{ approvals: false, updatedAt: "2026-01-01T00:00:00.000Z" }, "updatedAt"],
+      [{ approvals: false, updatedAt: "2026-01-01T00:00:00.000Z" }, "body"],
     ];
 
     for (const [body, field] of refused) {
@@ -174,6 +174,27 @@ describe("notification preferences (issue #1441)", () => {
     );
     expect(await countRowsFor(user)).toBe(0);
     expect((await getPreferences(tenant, user)).body).toEqual(DEFAULTS);
+  });
+
+  it("omits an unknown key and value from the validation error without writing mixed input", async () => {
+    const tenant = getTenantZeroId();
+    const user = await userIn(tenant);
+    const before = await patchPreferences(tenant, user, { approvals: true });
+    const key = "private-key-sentinel";
+    const value = "private-value-sentinel";
+    let caught: unknown;
+    try {
+      await patchPreferences(tenant, user, { approvals: false, [key]: value });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ValidationError);
+    if (!(caught instanceof ValidationError)) throw new Error("Expected validation error");
+    expect(caught.details).toEqual({ field: "body" });
+    const exposed = `${caught.message} ${JSON.stringify(caught.details)}`;
+    expect(exposed).not.toContain(key);
+    expect(exposed).not.toContain(value);
+    expect((await getPreferences(tenant, user)).body).toEqual(before.body);
   });
 
   it("refuses a body that is not a JSON object", async () => {

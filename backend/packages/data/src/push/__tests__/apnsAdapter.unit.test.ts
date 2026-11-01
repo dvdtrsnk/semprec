@@ -154,25 +154,48 @@ async function withApnsPeer<T>(
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
   });
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Missing APNs test peer address");
-  const connect = http2.connect.bind(http2);
-  const spy = vi.spyOn(http2, "connect").mockImplementation(() => connect(`http://127.0.0.1:${address.port}`));
-  try {
-    return await run(requests);
-  } finally {
-    spy.mockRestore();
-    for (const session of sessions) session.destroy();
-    for (const socket of sockets) socket.destroy();
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("APNs test peer did not close")), 5000);
-      server.close((err) => {
-        clearTimeout(timer);
-        if (err) reject(err);
-        else resolve();
-      });
-    });
+  let restoreConnect: (() => void) | undefined;
+  let outcome: { ok: true; value: T } | { ok: false; error: unknown };
+  let cleanupFailure: { error: unknown } | undefined;
+  function clean(action: () => void): void {
+    try {
+      action();
+    } catch (error) {
+      cleanupFailure ??= { error };
+    }
   }
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing APNs test peer address");
+    const connect = http2.connect.bind(http2);
+    const spy = vi.spyOn(http2, "connect").mockImplementation(() => connect(`http://127.0.0.1:${address.port}`));
+    restoreConnect = () => spy.mockRestore();
+    outcome = { ok: true, value: await run(requests) };
+  } catch (error) {
+    outcome = { ok: false, error };
+  } finally {
+    clean(() => restoreConnect?.());
+    for (const session of sessions) clean(() => session.destroy());
+    for (const socket of sockets) clean(() => socket.destroy());
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("APNs test peer did not close")), 5000);
+        server.close((err) => {
+          clearTimeout(timer);
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    } catch (error) {
+      cleanupFailure ??= { error };
+    }
+  }
+  if (!outcome.ok) {
+    if (cleanupFailure) console.error("APNs test peer cleanup failed after the test failed");
+    throw outcome.error;
+  }
+  if (cleanupFailure) throw cleanupFailure.error;
+  return outcome.value;
 }
 
 describe("sendApnsNotification interruption level (issue #1443)", () => {

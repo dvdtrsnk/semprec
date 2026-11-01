@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import { afterAll, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
+import type { Pool, PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createRuntimeRolePool, createTestTenant, getTenantZeroId } from "../../testSupport/tenantFixtures.js";
@@ -44,11 +44,21 @@ describe("mcp_server_connection_state (issue #1450)", () => {
     await inZero(() => recordMcpConnectionFailure(dataPool, serverId, "handshake_failed"));
     expect((await stateOf(serverId))?.lastErrorReason).toBe("handshake_failed");
     expect((await stateOf(serverId))?.lastConnectedAt).toBeNull();
+    const failed = await stateOf(serverId);
+    expect(typeof failed?.updatedAt).toBe("string");
+    expect(new Date(failed!.updatedAt).toISOString()).toBe(failed!.updatedAt);
 
     await inZero(() => recordMcpConnectionSuccess(dataPool, serverId));
     const state = await stateOf(serverId);
     expect(state?.lastErrorReason).toBeNull();
-    expect(state?.lastConnectedAt).not.toBeNull();
+    expect(typeof state?.lastConnectedAt).toBe("string");
+    expect(new Date(state!.lastConnectedAt!).toISOString()).toBe(state!.lastConnectedAt);
+    expect(new Date(state!.updatedAt).toISOString()).toBe(state!.updatedAt);
+  });
+
+  it("requires a pool rather than a transaction client for independent writes", () => {
+    expectTypeOf<PoolClient>().not.toExtend<Parameters<typeof recordMcpConnectionSuccess>[0]>();
+    expectTypeOf<PoolClient>().not.toExtend<Parameters<typeof recordMcpConnectionFailure>[0]>();
   });
 
   it("a failure records the reason and keeps the previous last_connected_at", async () => {

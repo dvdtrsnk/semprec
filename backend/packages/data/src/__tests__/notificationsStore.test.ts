@@ -407,5 +407,43 @@ describe("notificationsStore (issue #152)", () => {
       expect(events).toHaveLength(1);
       expect(events[0]!.userId).toBe(otherUserId);
     });
+
+    it("resolves a tenant's source without changing another tenant's different source", async () => {
+      const userA = await createTestUser();
+      const userB = await createTestUser();
+      const tenantA = tenantOfUser.get(userA);
+      const tenantB = tenantOfUser.get(userB);
+      if (!tenantA || !tenantB) throw new Error("Missing tenant fixture");
+      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const write = (tenant: string, userId: string, sourceId: string) =>
+          withTenantTransaction(runtimePool, tenant, (client) =>
+            writeNotification(client, {
+              userId,
+              kind: "heartbeat_error",
+              titleParams: { name: sourceId },
+              linkHref: null,
+              sourceTable: "project_heartbeats",
+              sourceId,
+              transitionInstance: "job-1",
+            }),
+          );
+        const a = await write(tenantA, userA, "source-a");
+        const b = await write(tenantB, userB, "source-b");
+        const events: NotificationReadStateEvent[] = [];
+        setNotificationReadStateHook((event) => events.push(event));
+        const resolved = await withTenantTransaction(runtimePool, tenantA, (client) =>
+          resolveNotificationsBySource(client, { sourceTable: "project_heartbeats", sourceId: "source-a" }),
+        );
+        expect(resolved).toHaveLength(1);
+        const own = await withTenantTransaction(runtimePool, tenantA, (client) => getNotificationById(client, a));
+        const foreign = await withTenantTransaction(runtimePool, tenantB, (client) => getNotificationById(client, b));
+        expect(own).toMatchObject({ id: a, readAt: expect.any(String), resolvedAt: expect.any(String) });
+        expect(foreign).toMatchObject({ id: b, readAt: null, resolvedAt: null });
+        expect(events).toEqual([expect.objectContaining({ userId: userA, notificationIds: [a] })]);
+      } finally {
+        await runtimePool.end();
+      }
+    });
   });
 });

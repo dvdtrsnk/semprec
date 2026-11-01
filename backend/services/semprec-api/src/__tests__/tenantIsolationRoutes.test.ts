@@ -2,7 +2,8 @@ import { createServer, type Server } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { logger } from "../logger.js";
 import type { Pool, PoolClient } from "pg";
 import {
   CAPABILITY_IDS,
@@ -2068,12 +2069,24 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
       expect(JSON.parse(persisted)).toEqual(changed);
       for (const [body, field] of [
         [{ problemsLevel: "invalid" }, "problemsLevel"],
-        [{ approvals: true, unknownField: true }, "unknownField"],
+        [{ approvals: true, "private-key-sentinel": "private-value-sentinel" }, "body"],
       ] as const) {
-        const answer = await send(a.member, { method: "PATCH", path, body });
+        const errorLog = vi.spyOn(logger, "error");
+        const warnLog = vi.spyOn(logger, "warn");
+        let answer: Awaited<ReturnType<typeof send>>;
+        try {
+          answer = await send(a.member, { method: "PATCH", path, body });
+          expect(errorLog).not.toHaveBeenCalled();
+          expect(warnLog).not.toHaveBeenCalled();
+        } finally {
+          errorLog.mockRestore();
+          warnLog.mockRestore();
+        }
         expect(answer.status).toBe(400);
         const response: unknown = JSON.parse(answer.text);
         expect(response).toMatchObject({ error: { code: "validation_failed", details: { field } } });
+        expect(answer.text).not.toContain("private-key-sentinel");
+        expect(answer.text).not.toContain("private-value-sentinel");
         expect(await sendOk(a.member, { method: "GET", path })).toBe(persisted);
       }
     } finally {

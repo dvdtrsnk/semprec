@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import {
   createTestProjectItem,
@@ -27,6 +27,7 @@ import {
 } from "@semprec/data";
 import { createMcpAgentPageRequestListener } from "../mcpAgentPageHandler.js";
 import { createMcpRequestListener } from "../mcp/mcpHandler.js";
+import { logger } from "../logger.js";
 
 const PASSWORD = "s3cret-password";
 
@@ -449,6 +450,46 @@ describe("createMcpAgentPageRequestListener", () => {
       const body: unknown = await listing.json();
       expect(body).toMatchObject({
         rows: [expect.objectContaining({ mcpToolRegistrationId: id, riskClass: "unclassified", displayLabel: "tool" })],
+      });
+    });
+
+    it("omits an unknown label key and value while refusing all mixed changes", async () => {
+      const id = await registerTool();
+      const headers = await authHeader();
+      expect((await patchLabel(headers, id, { en: "Original" })).status).toBe(200);
+      const key = "private-key-sentinel";
+      const value = "private-value-sentinel";
+      const errorLog = vi.spyOn(logger, "error");
+      const warnLog = vi.spyOn(logger, "warn");
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/api/mcp-tool-registrations/${id}`, {
+          method: "PATCH",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ riskClass: "destructive", requiresApproval: false, displayLabel: { [key]: value } }),
+        });
+        expect(errorLog).not.toHaveBeenCalled();
+        expect(warnLog).not.toHaveBeenCalled();
+      } finally {
+        errorLog.mockRestore();
+        warnLog.mockRestore();
+      }
+      expect(response.status).toBe(400);
+      const text = await response.text();
+      expect(text).toContain("displayLabel");
+      expect(text).not.toContain(key);
+      expect(text).not.toContain(value);
+      const listing = await fetch(`${baseUrl}/api/projects/${randomUUID()}/mcp-grants`, { headers });
+      const body: unknown = await listing.json();
+      expect(body).toMatchObject({
+        rows: [
+          expect.objectContaining({
+            mcpToolRegistrationId: id,
+            riskClass: "unclassified",
+            requiresApproval: true,
+            displayLabel: "Original",
+          }),
+        ],
       });
     });
 

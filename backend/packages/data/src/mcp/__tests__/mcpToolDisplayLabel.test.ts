@@ -102,6 +102,25 @@ describe("mcp_tool_registrations.display_label (issue #1391)", () => {
     expect(await storedLabel()).toEqual({ cs: "x".repeat(120) });
   });
 
+  it("does not expose an unknown label key or value in the validation error", async () => {
+    await setMcpToolDisplayLabel(pool, registrationId, { en: "Original" });
+    const key = "private-key-sentinel";
+    const value = "private-value-sentinel";
+    let caught: unknown;
+    try {
+      await setMcpToolDisplayLabel(pool, registrationId, { [key]: value });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ValidationError);
+    if (!(caught instanceof ValidationError)) throw new Error("Expected validation error");
+    expect(caught.message).toContain("displayLabel");
+    const exposed = `${caught.message} ${JSON.stringify(caught.details)}`;
+    expect(exposed).not.toContain(key);
+    expect(exposed).not.toContain(value);
+    expect(await storedLabel()).toEqual({ en: "Original" });
+  });
+
   it("throws NotFoundError for an unknown id", async () => {
     await expect(setMcpToolDisplayLabel(pool, randomUUID(), { cs: "x" })).rejects.toBeInstanceOf(NotFoundError);
   });

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { WebSocket, type RawData } from "ws";
 import * as Y from "yjs";
@@ -856,6 +856,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     for (const socket of [a1, a2, b1]) socket?.close();
   });
 
@@ -891,11 +892,6 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
       await expectNothingReceived(b1, tenantB.tenantId);
       return { requestId: request.id, notificationId };
     }
-    async function noMoreForA(): Promise<void> {
-      const sentinel = await publishSentinel(tenantA.tenantId);
-      const drained = await Promise.all([a1.drainUntil(isSentinel(sentinel)), a2.drainUntil(isSentinel(sentinel))]);
-      expect(drained).toEqual([[], []]);
-    }
     async function decideOverHttp(id: string): Promise<Response> {
       return fetch(`${baseUrl}/api/approval-requests/${id}`, {
         method: "PATCH",
@@ -903,8 +899,58 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         body: JSON.stringify({ decision: "rejected" }),
       });
     }
+    const foreignId = await runInTenant(tenantB.tenantId, () =>
+      withTransaction(pool, (client) =>
+        writeNotification(client, {
+          userId: tenantB.userId,
+          kind: "approval_pending",
+          linkHref: null,
+          sourceTable: "approval_requests",
+          sourceId: randomUUID(),
+          transitionInstance: "pending",
+        }),
+      ),
+    );
+    await b1.nextMatching(
+      (frame) =>
+        frame.kind === "text" &&
+        frame.type === "notification" &&
+        isRecord(frame.body.notification) &&
+        frame.body.notification.id === foreignId,
+    );
     const first = await createApprovalNotification();
+    // The real hook invokes this same wired pool synchronously from the after-commit callback.
+    const querySpy = vi.spyOn(pool, "query");
+    function readStatePublications(): Record<string, unknown>[] {
+      const messages: Record<string, unknown>[] = [];
+      for (const call of querySpy.mock.calls) {
+        const args: readonly unknown[] = call;
+        if (typeof args[0] !== "string" || !args[0].includes("pg_notify") || !Array.isArray(args[1])) continue;
+        const values: unknown[] = args[1];
+        if (values[0] !== "semprec_events" || typeof values[1] !== "string") continue;
+        const value: unknown = JSON.parse(values[1]);
+        if (!isRecord(value) || typeof value.type !== "string") throw new Error("Invalid realtime publication");
+        if (value.type === "notification_read_state") {
+          if (
+            typeof value.userId !== "string" ||
+            !Array.isArray(value.notificationIds) ||
+            !value.notificationIds.every((id: unknown) => typeof id === "string")
+          ) {
+            throw new Error("Invalid read-state publication");
+          }
+          messages.push(value);
+        }
+      }
+      return messages;
+    }
     expect((await decideOverHttp(first.requestId)).status).toBe(200);
+    expect(readStatePublications()).toEqual([
+      expect.objectContaining({
+        type: "notification_read_state",
+        userId: tenantA.userId,
+        notificationIds: [first.notificationId],
+      }),
+    ]);
     const matchesResolved = (frame: Frame) =>
       frame.kind === "text" &&
       frame.type === "notification" &&
@@ -919,11 +965,17 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
       });
     }
     await expectNothingReceived(b1, tenantB.tenantId);
+    expect(await runInTenant(tenantB.tenantId, () => getNotificationById(pool, foreignId))).toMatchObject({
+      id: foreignId,
+      readAt: null,
+      resolvedAt: null,
+    });
+    querySpy.mockClear();
     expect((await decideOverHttp(first.requestId)).status).toBe(200);
-    await noMoreForA();
-    await expectNothingReceived(b1, tenantB.tenantId);
+    expect(readStatePublications()).toEqual([]);
 
     const rollback = await createApprovalNotification();
+    querySpy.mockClear();
     await expect(
       runInTenant(tenantA.tenantId, () =>
         withTransaction(pool, async (client) => {
@@ -939,8 +991,12 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     ).rejects.toThrow("intentional rollback");
     const unchanged = await runInTenant(tenantA.tenantId, () => getNotificationById(pool, rollback.notificationId));
     expect(unchanged).toMatchObject({ readAt: null, resolvedAt: null });
-    await noMoreForA();
-    await expectNothingReceived(b1, tenantB.tenantId);
+    expect(readStatePublications()).toEqual([]);
+    expect(await runInTenant(tenantB.tenantId, () => getNotificationById(pool, foreignId))).toMatchObject({
+      id: foreignId,
+      readAt: null,
+      resolvedAt: null,
+    });
   });
 
   describe("NOTIFY messages on semprec_events", () => {

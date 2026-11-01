@@ -68,7 +68,7 @@ function validateDisplayLabel(label: unknown): McpToolDisplayLabel {
   const validated: McpToolDisplayLabel = {};
   for (const [key, value] of entries) {
     if (key !== "cs" && key !== "en") {
-      throw new ValidationError(`'displayLabel' has unknown key '${key}'; allowed keys are 'cs' and 'en'`);
+      throw new ValidationError("'displayLabel' has an unknown key; allowed keys are 'cs' and 'en'");
     }
     if (typeof value !== "string") throw new ValidationError(`'displayLabel.${key}' must be a string`);
     const trimmed = value.trim();
