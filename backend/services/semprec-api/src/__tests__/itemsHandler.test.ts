@@ -1,5 +1,11 @@
 import type { CollectionMetadataResolver } from "@semprec/data";
-import { createItemWithClient, getDatabaseByModuleId } from "@semprec/data";
+import {
+  createBlob,
+  createItemWithClient,
+  getDatabaseByModuleId,
+  insertInboxAttachments,
+  listInboxAttachments,
+} from "@semprec/data";
 import { z } from "zod";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -227,6 +233,144 @@ describe("item routes (issue #241)", () => {
     expect(edge.status).toBe(200);
     const edgeBody: unknown = await edge.json();
     expect(z.object({ metadata: z.object({ rating: z.number() }) }).parse(edgeBody).metadata.rating).toBe(9);
+  });
+
+  it("refuses foreign and forbidden file-step inputs over HTTP without writes, then confirms its own attachment", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const idFor = async (module: string) => {
+        const row = await withTransaction(pool, (client) => getDatabaseByModuleId(client, module));
+        if (!row) throw new Error(`Missing ${module}`);
+        return row.id;
+      };
+      const inboxDatabaseId = await idFor("inbox");
+      const inboxItemTypesDatabaseId = await idFor("inboxItemTypes");
+      const processingProposalsDatabaseId = await idFor("processingProposals");
+      const tasks = await idFor("tasks");
+      const files = await idFor("files");
+      const type = await chokePoint.createItem({
+        databaseId: inboxItemTypesDatabaseId,
+        properties: { name: "Task", emoji: "T", processingMethod: "database", targetDatabase: "tasks" },
+      });
+      const source = await chokePoint.createItem({
+        databaseId: inboxDatabaseId,
+        properties: { text: "Own", date: "2026-08-28", time: "09:00" },
+      });
+      const foreign = await chokePoint.createItem({
+        databaseId: inboxDatabaseId,
+        properties: { text: "Other", date: "2026-08-28", time: "09:00" },
+      });
+      const typeProperty = (await chokePoint.listProperties(inboxDatabaseId)).find((entry) => entry.key === "type");
+      if (!typeProperty) throw new Error("Missing Inbox type relation");
+      await chokePoint.createRelation({
+        relationPropertyId: typeProperty.id,
+        callerItemId: source.id,
+        targetItemId: type.id,
+      });
+      const attachment = await withTransaction(pool, async (client) => {
+        const ownBlob = await createBlob(client, {
+          mimeType: "image/jpeg",
+          byteSize: 3,
+          storageKey: `${getTenantZeroId()}/blobs/${randomUUID()}`,
+        });
+        const otherBlob = await createBlob(client, {
+          mimeType: "image/jpeg",
+          byteSize: 3,
+          storageKey: `${getTenantZeroId()}/blobs/${randomUUID()}`,
+        });
+        await insertInboxAttachments(client, source.id, [{ blobId: ownBlob.id, source: "camera" }]);
+        await insertInboxAttachments(client, foreign.id, [{ blobId: otherBlob.id, source: "camera" }]);
+        const own = await listInboxAttachments(client, [source.id]);
+        const other = await listInboxAttachments(client, [foreign.id]);
+        if (!own[0] || !other[0]) throw new Error("Missing test attachments");
+        return { own: own[0].attachmentId, foreign: other[0].attachmentId, blobId: ownBlob.id };
+      });
+      const tick = createSemprecTickAction(pool, async () => ({ properties: { name: "Task" } }));
+      await tick(
+        { inboxDatabaseId, inboxItemTypesDatabaseId, processingProposalsDatabaseId },
+        { heartbeatId: "hb", projectItemId: "proj", itemId: source.id },
+      );
+      const cards = await chokePoint.listItems(processingProposalsDatabaseId);
+      if (cards.items.length !== 1 || !cards.items[0]) throw new Error("Missing proposal card");
+      return { source, foreign, attachment, tasks, files, processingProposalsDatabaseId, cardId: cards.items[0].id };
+    });
+    const store = async (properties: Record<string, unknown>) =>
+      runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, (client) =>
+          updateItemWithClient(
+            client,
+            {
+              databaseId: fixture.processingProposalsDatabaseId,
+              itemId: fixture.cardId,
+              propertiesPatch: {
+                proposal: {
+                  entityKind: "database",
+                  target: fixture.tasks,
+                  properties: { name: "Task" },
+                  operations: [
+                    { ref: "task", op: "create", role: "primary", databaseKey: "tasks", properties: { name: "Task" } },
+                    { ref: "file", op: "fileFromAttachment", role: "secondary", properties },
+                  ],
+                },
+              },
+            },
+            { allowedSystemKeys: ["proposal"] },
+          ),
+        ),
+      );
+    const snapshot = async () => {
+      const card = await runInTenant(getTenantZeroId(), () =>
+        chokePoint.getItem(fixture.processingProposalsDatabaseId, fixture.cardId),
+      );
+      const items = await pool.query<Record<string, unknown>>(
+        "SELECT id, properties FROM items WHERE database_id = ANY($1::uuid[]) ORDER BY id",
+        [[fixture.tasks, fixture.files]],
+      );
+      const attachments = await runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, (client) => listInboxAttachments(client, [fixture.source.id, fixture.foreign.id])),
+      );
+      return {
+        card,
+        items: z.array(z.object({ id: z.uuid(), properties: z.record(z.string(), z.unknown()) })).parse(items.rows),
+        attachments,
+      };
+    };
+    for (const [properties, field] of [
+      [{ attachmentId: fixture.attachment.foreign, name: "Photo" }, "attachmentId"],
+      [{ attachmentId: fixture.attachment.own, name: "Photo", file: { blobId: fixture.attachment.blobId } }, "file"],
+      [{ attachmentId: fixture.attachment.own, name: "Photo", type: "jpg" }, "type"],
+      [{ attachmentId: fixture.attachment.own, name: "Photo", untrusted: true }, "untrusted"],
+    ] as const) {
+      await store(properties);
+      const before = await snapshot();
+      const response = await fetch(`${baseUrl}/api/proposals/${fixture.cardId}/confirm`, { method: "POST", headers });
+      expect(response.status).toBe(400);
+      const body: unknown = await response.json();
+      expect(
+        z
+          .object({ error: z.object({ code: z.string(), details: z.object({ ref: z.string(), field: z.string() }) }) })
+          .parse(body).error,
+      ).toMatchObject({ code: "validation_failed", details: { ref: "file", field } });
+      expect(await snapshot()).toEqual(before);
+    }
+    await store({ attachmentId: fixture.attachment.own, name: "Photo" });
+    const success = await fetch(`${baseUrl}/api/proposals/${fixture.cardId}/confirm`, { method: "POST", headers });
+    expect(success.status).toBe(200);
+    const response: unknown = await success.json();
+    expect(
+      z.object({ properties: z.object({ status: z.string(), resultItemId: z.uuid() }) }).parse(response).properties
+        .status,
+    ).toBe("confirmed");
+    const after = await snapshot();
+    expect(after.attachments.map((item) => item.attachmentId)).toEqual([fixture.attachment.foreign]);
+    expect(
+      after.items.some(
+        (item) =>
+          z.object({ file: z.object({ blobId: z.uuid() }).optional() }).parse(item.properties).file?.blobId ===
+          fixture.attachment.blobId,
+      ),
+    ).toBe(true);
   });
 
   it("projects confirmed Inbox origin through item, database and view HTTP reads", async () => {

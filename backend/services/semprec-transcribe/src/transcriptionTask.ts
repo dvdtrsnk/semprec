@@ -245,8 +245,8 @@ function withRepeatableReadTransaction<T>(pool: Pool, fn: (client: PoolClient) =
  * Row-locks the Transcriptions row's `item_automation` inside the caller's transaction and throws
  * `TranscriptionLockedError` when a user locked it. Held until that transaction ends, so a user's
  * lock cannot land between this check and the writes after it — it waits for them to commit.
- * Every transaction of steps 1–8 calls it first, including the read transaction ahead of a paid
- * call, so a lock set while a step runs stops the pipeline before its next write or paid call.
+ * Each step checks at entry, and again before a checkpoint write or the next chunk's paid call,
+ * so a lock set while a step runs stops the pipeline before its next write or paid call.
  * Taken before any `items` row lock, the same order `recordTranscriptionFailure` takes them in.
  * Then throws `TranscriptionStoppedError` when the transcript or the source Files item is in
  * Trash or gone, so no step writes to or pays for deleted data.
@@ -473,6 +473,7 @@ async function runAsrStep(
 ): Promise<void> {
   const { pool, filesDatabaseId, fileItemId, transcriptId } = context;
   const prepare = await withTransaction(pool, async (client) => {
+    await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
     const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
     return requirePrepareCheckpoint(source, fileItemId);
   });
@@ -906,17 +907,27 @@ function requireGatewayInternalToken(): string {
   return token;
 }
 
+class TranscriptionQueueError extends Error {
+  readonly code: ItemAutomationErrorCode;
+
+  constructor(code: ItemAutomationErrorCode) {
+    super("Transcription task failed");
+    this.name = "TranscriptionQueueError";
+    this.code = code;
+  }
+}
+
 /**
  * Runs each declared transcription step in order; each skips itself once its checkpoint exists,
  * so a retried attempt (`transcriptionJob` is enqueued with `max_attempts: 3` and graphile-worker's
  * built-in exponential backoff) resumes from the last checkpoint without repeating a paid call.
  * Every attempt is counted on the Transcriptions row's `item_automation`, and a row a user locked
- * is left alone — checked inside every step transaction (`requireTranscriptionUnlocked`), so a lock
- * set mid-run keeps the running step's pending write from landing and stops the pipeline. A failure
- * is recorded by `recordTranscriptionFailure` and rethrown for graphile-worker to retry, except a
+ * is left alone — checked at step entry and before checkpoint writes (`requireTranscriptionUnlocked`),
+ * so a lock set mid-run keeps the running step's pending write from landing. A failure
+ * is recorded by `recordTranscriptionFailure` and a safe error reaches graphile-worker for retry, except a
  * budget rejection: that is permanent at once, so once recorded the job completes instead of
  * spending its remaining attempts on calls the gateway will reject. A failure in step 0 happens
- * before there is a Transcriptions row to record it on and is only rethrown. When
+ * before there is a Transcriptions row to record it on and is returned as a safe error. When
  * `helpers.abortSignal` fires (graphile-worker's `Runner.stop()`, given the systemd unit's
  * `TimeoutStopSec` to let the in-flight chunk finish and checkpoint), the next
  * `throwIfShutdownRequested` check — before a step or an ASR chunk — throws
@@ -933,16 +944,6 @@ function requireGatewayInternalToken(): string {
  * provider, per `docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md`.
  * `summaryInstruction` selects the instruction step 5 summarizes with and step 8 requires.
  */
-export class TranscriptionQueueError extends Error {
-  readonly code: ItemAutomationErrorCode;
-
-  constructor(code: ItemAutomationErrorCode) {
-    super("Transcription task failed");
-    this.name = "TranscriptionQueueError";
-    this.code = code;
-  }
-}
-
 export function createTranscriptionTask(
   pool: Pool,
   blobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR")),

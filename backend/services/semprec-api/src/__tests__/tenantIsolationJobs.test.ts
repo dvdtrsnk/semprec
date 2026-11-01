@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { escapeIdentifier, type Pool } from "pg";
+import { z } from "zod";
 import { replayApprovedGenericOperation } from "@semprec/application";
 import {
   CORE_TASK_NAMES,
@@ -38,6 +39,7 @@ import {
   getOrCreateJournalItem,
   insertAgentRunEvent,
   loadFullModuleRegistry,
+  LocalFsBlobStorageWriter,
   mergeModuleTaskListForAffinity,
   mintMcpRunCredential,
   provisionTenant,
@@ -50,6 +52,7 @@ import {
   writeNotification,
   type ChokePoint,
   type DocStore,
+  type BlobStorageWriter,
 } from "@semprec/data";
 import {
   createRuntimeRolePool,
@@ -64,6 +67,7 @@ import {
 } from "@semprec/data/testSupport";
 import { createApiActionRegistry } from "../actionRegistryComposition.js";
 import { createMailSyncAdapters } from "../mailSyncAdapters.js";
+import { runTranscriptionFixture } from "./transcriptionHttpFixture.js";
 
 /**
  * Two-tenant proof that every task of the `api` affinity set keeps its data, notifications and side
@@ -1298,6 +1302,124 @@ describe("background task isolation across two tenants: api runtime (issue #1056
     }
     if (previousScope === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
     else process.env.SEMPREC_TENANT_SCOPE = previousScope;
+  });
+
+  it("purges rendered audio through the queued tenant sweep while preserving another tenant's live bytes", async () => {
+    const first = await buildTenant(await createTestTenant(adminPool));
+    const second = await buildTenant(await createTestTenant(adminPool));
+    const root = join(blobRoot, "files");
+    let primary: unknown;
+    let failed = false;
+    try {
+      const a = await runTranscriptionFixture(
+        { mode: "failure", source: "ogg", tenantId: first.tenantId, storageRoot: root },
+        adminPool,
+      );
+      const b = await runTranscriptionFixture(
+        { mode: "failure", source: "ogg", tenantId: second.tenantId, storageRoot: root },
+        adminPool,
+      );
+      const inspect = async (tenant: Tenant, itemId: string) =>
+        inTenant(tenant, async () => {
+          const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
+          if (!files) throw new Error("Missing Files database");
+          const item = await chokePoint.getItem(files.id, itemId);
+          if (!item) throw new Error("Missing rendered source");
+          const original = z.object({ blobId: z.uuid() }).parse(item.properties.file).blobId;
+          const prepare = z
+            .object({ normalizedBlobId: z.uuid(), playbackBlobId: z.uuid() })
+            .parse(item.computed.prepare);
+          const ids = [original, prepare.normalizedBlobId, prepare.playbackBlobId];
+          expect(new Set(ids).size).toBe(3);
+          const found = await withTransaction(pool, (client) =>
+            client.query<Record<string, unknown>>(
+              "SELECT id, storage_key FROM blobs WHERE id = ANY($1::uuid[]) ORDER BY id",
+              [ids],
+            ),
+          );
+          const blobs = z.array(z.object({ id: z.uuid(), storage_key: z.string() })).parse(found.rows);
+          expect(blobs).toHaveLength(3);
+          for (const blob of blobs) {
+            expect(blob.storage_key.startsWith(`${tenant.tenantId}/`)).toBe(true);
+            expect((await readFile(join(root, blob.storage_key))).length).toBeGreaterThan(0);
+          }
+          return { filesId: files.id, ids, blobs };
+        });
+      const aBefore = await inspect(first, a.result.fileItemId);
+      const bBefore = await inspect(second, b.result.fileItemId);
+      expect(aBefore.ids).toContain(a.result.playbackBlobId);
+      expect(bBefore.ids).toContain(b.result.playbackBlobId);
+      await inTenant(first, async () => {
+        await chokePoint.softDeleteItem(aBefore.filesId, a.result.fileItemId);
+        await pool.query("UPDATE items SET deleted_at = now() - interval '31 days' WHERE id = $1", [
+          a.result.fileItemId,
+        ]);
+      });
+      await discardQueuedJobs();
+      const actualStorage = new LocalFsBlobStorageWriter(root);
+      const observed: Array<{ key: string; remaining: number }> = [];
+      const storage: BlobStorageWriter = {
+        writeStream: (key, source, options) => actualStorage.writeStream(key, source, options),
+        readStream: (key, range) => actualStorage.readStream(key, range),
+        async delete(key) {
+          const rows = await adminPool.query("SELECT id FROM blobs WHERE storage_key = $1", [key]);
+          observed.push({ key, remaining: rows.rows.length });
+          await actualStorage.delete(key);
+        },
+      };
+      const registry = createApiActionRegistry(pool, moduleRegistry);
+      const tasks = createApiCoreTaskList(
+        pool,
+        registry,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        moduleRegistry,
+        undefined,
+        replayApprovedGenericOperation,
+        storage,
+      );
+      const key = randomUUID();
+      await runAsSystem("test:enqueue-rendered-purge", () =>
+        enqueueJob(pool, CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP, {}, { jobKey: key }),
+      );
+      await runOnce({ pgPool: pool, taskList: tasks });
+      expect(await jobOutcome(key)).toEqual({ attempts: null, lastError: null });
+      for (const blob of aBefore.blobs) {
+        expect(observed).toContainEqual({ key: blob.storage_key, remaining: 0 });
+        await expect(readFile(join(root, blob.storage_key))).rejects.toMatchObject({ code: "ENOENT" });
+      }
+      expect(await inTenant(first, () => chokePoint.getItem(aBefore.filesId, a.result.fileItemId))).toBeNull();
+      expect(
+        await inTenant(first, () =>
+          withTransaction(pool, (client) =>
+            client.query("SELECT id FROM blobs WHERE id = ANY($1::uuid[])", [aBefore.ids]),
+          ),
+        ).then((result) => result.rows),
+      ).toEqual([]);
+      const bAfter = await inspect(second, b.result.fileItemId);
+      expect(bAfter.blobs).toEqual(bBefore.blobs);
+      expect(observed.some((entry) => bBefore.blobs.some((blob) => blob.storage_key === entry.key))).toBe(false);
+    } catch (error) {
+      primary = error;
+      failed = true;
+    }
+    try {
+      await adminPool.query("UPDATE tenants SET status = 'suspended' WHERE id = ANY($1::uuid[])", [
+        [first.tenantId, second.tenantId],
+      ]);
+    } catch (error) {
+      if (failed) process.stderr.write(`Could not suspend fixture tenants: ${String(error)}\n`);
+      else {
+        primary = error;
+        failed = true;
+      }
+    }
+    if (failed) {
+      if (primary instanceof Error) throw primary;
+      throw new Error("Rendered purge scenario failed with a non-error value", { cause: primary });
+    }
   });
 
   it("has exactly one case per task of the api affinity set", async () => {

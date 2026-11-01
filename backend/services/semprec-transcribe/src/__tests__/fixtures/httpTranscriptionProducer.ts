@@ -1,9 +1,8 @@
 import { register } from "node:module";
 import { readFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute } from "node:path";
 import { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
-import { Pool } from "pg";
 import { z } from "zod";
 import type { AiGatewayClientPort } from "@semprec/shared";
 import type { AudioGatewayClient } from "../../audioGatewayClient.js";
@@ -14,14 +13,17 @@ const {
   createBlob,
   createChokePoint,
   createItemWithClient,
+  createPool,
   getDatabaseByModuleId,
   getItemById,
   LocalFsBlobStorageWriter,
+  tenantBlobStorageKey,
   withTransaction,
 } = await import("@semprec/data");
 const { runInTenant } = await import("@semprec/shared");
 const { CORE_TASK_NAMES, enqueueJob, registerTask, runOnce } = await import("@semprec/queue");
 const { createTranscriptionTask } = await import("../../transcriptionTask.js");
+const { generateOggFixture } = await import("./mediaFixtures.js");
 
 const inputSchema = z.strictObject({
   mode: z.enum(["failure", "stop", "consume"]),
@@ -29,6 +31,7 @@ const inputSchema = z.strictObject({
   storageRoot: z.string().refine(isAbsolute),
   audioPath: z.string().refine(isAbsolute),
   fileItemId: z.uuid().optional(),
+  source: z.enum(["wav", "ogg"]).optional(),
 });
 const chunks: Buffer[] = [];
 let length = 0;
@@ -42,9 +45,9 @@ const input: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 const request = inputSchema.parse(input);
 if ((request.mode === "consume") !== (request.fileItemId !== undefined))
   throw new Error("Invalid fixture mode and file ID");
-const connectionString = process.env.TEST_DATABASE_URL;
-if (!connectionString) throw new Error("Missing isolated test database");
-const pool = new Pool({ connectionString, max: 3 });
+const connectionString = process.env.BATCH09_RUNTIME_DATABASE_URL;
+if (!connectionString) throw new Error("Missing isolated runtime database");
+const pool = createPool(connectionString);
 const storage = new LocalFsBlobStorageWriter(request.storageRoot);
 let diarizeCalls = 0;
 let transcribeCalls = 0;
@@ -60,12 +63,18 @@ try {
     const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
     if (!files || !transcripts) throw new Error("Missing fixture databases");
     if (!fileItemId) {
-      const audio = await readFile(request.audioPath);
+      const audio = request.source === "ogg" ? await generateOggFixture() : await readFile(request.audioPath);
       if (audio.length === 0 || audio.length > 2_000_000) throw new Error("Invalid fixture audio length");
-      const storageKey = join("fixture", `${randomUUID()}.wav`);
+      const storageKey = await withTransaction(pool, (client) =>
+        tenantBlobStorageKey(client, `blobs/${randomUUID()}.${request.source === "ogg" ? "ogg" : "wav"}`),
+      );
       await storage.writeStream(storageKey, Readable.from(audio));
       const file = await withTransaction(pool, async (client) => {
-        const blob = await createBlob(client, { mimeType: "audio/wav", byteSize: audio.length, storageKey });
+        const blob = await createBlob(client, {
+          mimeType: request.source === "ogg" ? "audio/ogg" : "audio/wav",
+          byteSize: audio.length,
+          storageKey,
+        });
         return createItemWithClient(client, {
           databaseId: files.id,
           properties: { name: "Fixture audio", file: { blobId: blob.id } },
@@ -118,12 +127,15 @@ try {
     withTransaction(pool, (client) => getItemById(client, filesId, id)),
   );
   const transcriptId = z.uuid().parse(source?.computed.create);
-  const prepare = z.object({ normalizedBlobId: z.uuid() }).parse(source?.computed.prepare);
+  const prepare = z
+    .object({ normalizedBlobId: z.uuid(), playbackBlobId: z.uuid().optional() })
+    .parse(source?.computed.prepare);
   const result = {
     mode: request.mode,
     fileItemId: id,
     transcriptId,
     normalizedBlobId: prepare.normalizedBlobId,
+    ...(prepare.playbackBlobId ? { playbackBlobId: prepare.playbackBlobId } : {}),
     diarizeCalls,
     transcribeCalls,
     summaryCalls,

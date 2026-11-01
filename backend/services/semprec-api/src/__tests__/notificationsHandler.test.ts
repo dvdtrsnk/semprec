@@ -53,7 +53,7 @@ describe("createNotificationsRequestListener", () => {
     const headers = await authHeader();
     const storageRoot = await mkdtemp(join(tmpdir(), "semprec-http-transcription-"));
     await withFixtureStorage(storageRoot, async () => {
-      const child = await runTranscriptionFixture({ mode: "failure", tenantId: getTenantZeroId(), storageRoot });
+      const child = await runTranscriptionFixture({ mode: "failure", tenantId: getTenantZeroId(), storageRoot }, pool);
       const sentinel = "BATCH09_PRIVATE_PROVIDER_DIAGNOSTIC";
       const automation = await pool.query<Record<string, unknown>>(
         "SELECT error, error_code FROM item_automation WHERE item_id = $1",
@@ -100,12 +100,15 @@ describe("createNotificationsRequestListener", () => {
     const before = (await readdir(tempParent)).filter((entry) => entry.startsWith(".batch09-")).sort();
     await withFixtureStorage(storageRoot, async () => {
       await expect(
-        runTranscriptionFixture({
-          mode: "consume",
-          tenantId: getTenantZeroId(),
-          fileItemId: randomUUID(),
-          storageRoot,
-        }),
+        runTranscriptionFixture(
+          {
+            mode: "consume",
+            tenantId: getTenantZeroId(),
+            fileItemId: randomUUID(),
+            storageRoot,
+          },
+          pool,
+        ),
       ).rejects.toThrow("Transcription fixture failed");
       expect((await readdir(tempParent)).filter((entry) => entry.startsWith(".batch09-")).sort()).toEqual(before);
     });

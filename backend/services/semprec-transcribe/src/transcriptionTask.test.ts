@@ -1921,6 +1921,68 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
         });
       }
 
+      it("stops cleanly when the source is purged after diarization commits and before ASR starts", async () => {
+        const { files, file } = await createSourceFile();
+        await createUser();
+        let checkpointWritten = false;
+        let purged = false;
+        let transcriptId: string | undefined;
+        const observedPool = new Proxy(pool, {
+          get(target, property, receiver) {
+            if (property !== "connect") {
+              const value: unknown = Reflect.get(target, property, receiver);
+              return typeof value === "function" ? value.bind(target) : value;
+            }
+            return async () => {
+              const client = await target.connect();
+              return new Proxy(client, {
+                get(connection, key, receiver) {
+                  if (key !== "query") {
+                    const value: unknown = Reflect.get(connection, key, receiver);
+                    return typeof value === "function" ? value.bind(connection) : value;
+                  }
+                  return async (...args: unknown[]) => {
+                    const result: unknown = await Reflect.apply(connection.query.bind(connection), undefined, args);
+                    const sql = typeof args[0] === "string" ? args[0] : "";
+                    const parameters = z.array(z.unknown()).safeParse(args[1]);
+                    if (
+                      sql.includes("UPDATE items SET computed") &&
+                      parameters.success &&
+                      parameters.data[2] === "diarize"
+                    )
+                      checkpointWritten = true;
+                    if (checkpointWritten && !purged && sql.trim().toUpperCase() === "COMMIT") {
+                      purged = true;
+                      await inTenantZero(async () => {
+                        const source = await withTransaction(pool, (inner) => getItemById(inner, files.id, file.id));
+                        transcriptId = z.uuid().parse(source?.computed.create);
+                        const cp = createChokePoint(pool);
+                        await cp.softDeleteItem(files.id, file.id);
+                        const removed = await cp.purgeExpiredTrashSubtree(file.id, new Date(Date.now() + 60_000));
+                        expect(removed.purgedItemIds).toContain(file.id);
+                      });
+                    }
+                    return result;
+                  };
+                },
+              });
+            };
+          },
+        });
+        await createTranscriptionTask(
+          observedPool,
+          blobStorage,
+          gatewayClient,
+          summaryClient,
+        )({ fileItemId: file.id }, FINAL_ATTEMPT);
+        expect(purged).toBe(true);
+        expect(gatewayClient.diarizeCalls).toHaveLength(1);
+        expect(gatewayClient.transcribeCalls).toEqual([]);
+        if (!transcriptId) throw new Error("Missing transcript ID");
+        expect(await readStoppedState(transcriptId)).toEqual({ status: "error", error_code: "deleted" });
+        expect(await readNotifications(transcriptId)).toEqual([]);
+      });
+
       it("falls back to the deleted stop instead of rolling back when the last attempt fails on a trashed transcript", async () => {
         const { file } = await createSourceFile();
         await createUser();

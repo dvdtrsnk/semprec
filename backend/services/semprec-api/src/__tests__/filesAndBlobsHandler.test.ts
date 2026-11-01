@@ -113,11 +113,14 @@ describe("files and blobs routes (issue #158)", () => {
   it("restores a deleted-stop transcript and runs its queued HTTP rerun from committed checkpoints", async () => {
     const headers = await authHeader();
     await withFixtureStorage(tmpBlobDir, async () => {
-      const first = await runTranscriptionFixture({
-        mode: "stop",
-        tenantId: getTenantZeroId(),
-        storageRoot: tmpBlobDir,
-      });
+      const first = await runTranscriptionFixture(
+        {
+          mode: "stop",
+          tenantId: getTenantZeroId(),
+          storageRoot: tmpBlobDir,
+        },
+        pool,
+      );
       expect(first.result.diarizeCalls).toBe(1);
       expect(first.result.transcribeCalls).toBe(0);
       const stopped = await pool.query<Record<string, unknown>>(
@@ -150,12 +153,15 @@ describe("files and blobs routes (issue #158)", () => {
         `transcription-job:${first.result.fileItemId}`,
       ]);
       expect(z.array(z.object({ key: z.string() })).parse(queued.rows)).toHaveLength(1);
-      const resumed = await runTranscriptionFixture({
-        mode: "consume",
-        tenantId: getTenantZeroId(),
-        storageRoot: tmpBlobDir,
-        fileItemId: first.result.fileItemId,
-      });
+      const resumed = await runTranscriptionFixture(
+        {
+          mode: "consume",
+          tenantId: getTenantZeroId(),
+          storageRoot: tmpBlobDir,
+          fileItemId: first.result.fileItemId,
+        },
+        pool,
+      );
       expect(resumed.result.transcriptId).toBe(first.result.transcriptId);
       expect(resumed.result.normalizedBlobId).toBe(first.result.normalizedBlobId);
       expect(resumed.result.diarizeCalls).toBe(1);
