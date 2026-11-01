@@ -1,6 +1,7 @@
 import * as Y from "yjs";
 import { describe, expect, it } from "vitest";
 import {
+  BlockInputError,
   BlockOperationError,
   deleteBlocks,
   duplicateBlocks,
@@ -41,7 +42,8 @@ function expectCode(action: () => unknown, code: string): void {
     action();
   } catch (error) {
     expect(error).toBeInstanceOf(BlockOperationError);
-    expect((error as BlockOperationError).code).toBe(code);
+    if (!(error instanceof BlockOperationError)) throw new Error("Expected BlockOperationError", { cause: error });
+    expect(error.code).toBe(code);
     return;
   }
   throw new Error(`expected ${code}`);
@@ -80,7 +82,7 @@ describe("insertBlocks", () => {
         ]),
       "duplicate_block_id",
     );
-    expect(() => insertBlocks(doc, null, [{ type: "page" } as never])).toThrow();
+    expect(() => insertBlocks(doc, null, [{ type: "page" }])).toThrow();
     expect(ids(doc)).toEqual(["z", "a"]);
   });
 
@@ -105,6 +107,19 @@ describe("insertBlocks", () => {
 });
 
 describe("splitBlock", () => {
+  it.each([
+    ["italic", { italic: true }],
+    ["code", { code: true }],
+    ["link", { link: { href: "https://example.com" } }],
+  ] as const)("keeps %s attributes on both sides of the split", (_name, attributes) => {
+    const doc = docWith({ id: "t", type: "text", text: [{ insert: "abcd", attributes }] });
+    splitBlock(doc, "t", 2);
+    expect(readPageBlocks(doc).map((block) => block.text)).toEqual([
+      [{ insert: "ab", attributes }],
+      [{ insert: "cd", attributes }],
+    ]);
+  });
+
   it("keeps bold on both parts, type and indent, and resets done", () => {
     const doc = docWith({
       id: "t",
@@ -200,6 +215,14 @@ describe("moveBlocks", () => {
 });
 
 describe("setType", () => {
+  it("rejects an unknown runtime type without mutating the document", () => {
+    const doc = docWith({ id: "t", type: "todo", done: true });
+    const before = Y.encodeStateAsUpdate(doc);
+    // @ts-expect-error Exercise the JavaScript boundary with an invalid type.
+    expect(() => setType(doc, ["t"], "unknown")).toThrow(BlockInputError);
+    expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
+  });
+
   it("resets done when a todo becomes text and drops done", () => {
     const doc = docWith({ id: "t", type: "todo", done: true });
     setType(doc, ["t"], "text");
@@ -265,6 +288,57 @@ describe("deleteBlocks", () => {
 });
 
 describe("order tidying", () => {
+  it.each([
+    ["insert", (doc: Y.Doc) => insertBlocks(doc, null, [])],
+    ["move", (doc: Y.Doc) => moveBlocks(doc, [], null)],
+    ["type", (doc: Y.Doc) => setType(doc, [], "text")],
+    ["indent", (doc: Y.Doc) => setIndent(doc, [], 1)],
+    ["duplicate", (doc: Y.Doc) => duplicateBlocks(doc, [])],
+    ["delete", (doc: Y.Doc) => deleteBlocks(doc, [])],
+  ])("keeps empty %s input a no-write operation", (_name, operation) => {
+    const doc = docWith({ id: "a", type: "text" });
+    doc.transact(() => getOrderArray(doc).push(["a"]));
+    const before = Y.encodeStateAsUpdate(doc);
+    operation(doc);
+    expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
+    expect(getOrderArray(doc).toArray()).toEqual(["a", "a"]);
+
+    const empty = new Y.Doc();
+    const emptyBefore = Y.encodeStateAsUpdate(empty);
+    operation(empty);
+    expect(Y.encodeStateAsUpdate(empty)).toEqual(emptyBefore);
+    expect(readPageBlocks(empty)[0]?.synthetic).toBe(true);
+  });
+
+  it("still validates invalid arguments for an empty operation", () => {
+    const doc = new Y.Doc();
+    expectCode(() => insertBlocks(doc, "missing", []), "invalid_after_id");
+    expectCode(() => moveBlocks(doc, [], "missing"), "invalid_after_id");
+    expectCode(() => setIndent(doc, [], 0.5), "invalid_delta");
+    // @ts-expect-error Exercise the JavaScript boundary with an invalid type.
+    expect(() => setType(doc, [], "unknown")).toThrow(BlockInputError);
+  });
+
+  it.each([
+    ["insert", (doc: Y.Doc) => insertBlocks(doc, "a", [{ id: "new", type: "text" }], "test")],
+    ["split", (doc: Y.Doc) => splitBlock(doc, "a", 0, "test")],
+    ["merge", (doc: Y.Doc) => mergeBlocks(doc, "b", "test")],
+    ["move", (doc: Y.Doc) => moveBlocks(doc, ["a"], "c", "test")],
+    ["type", (doc: Y.Doc) => setType(doc, ["a"], "h1", "test")],
+    ["indent", (doc: Y.Doc) => setIndent(doc, ["a"], 1, "test")],
+    ["duplicate", (doc: Y.Doc) => duplicateBlocks(doc, ["a"], "test")],
+    ["delete", (doc: Y.Doc) => deleteBlocks(doc, ["a"], "test")],
+  ])("tidies duplicates in the same transaction as %s", (_name, operation) => {
+    const doc = docWith({ id: "a", type: "text" }, { id: "b", type: "text" }, { id: "c", type: "text" });
+    doc.transact(() => getOrderArray(doc).push(["a", "b"]));
+    const origins: unknown[] = [];
+    doc.on("afterTransaction", (transaction) => origins.push(transaction.origin));
+    operation(doc);
+    const order = getOrderArray(doc).toArray();
+    expect(new Set(order).size).toBe(order.length);
+    expect(origins).toEqual(["test"]);
+  });
+
   it("drops repeated ids on write", () => {
     const doc = docWith({ id: "a", type: "text" }, { id: "b", type: "text" });
     doc.transact(() => getOrderArray(doc).push(["a", "b"]));

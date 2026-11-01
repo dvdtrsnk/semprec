@@ -11,6 +11,7 @@ import {
   type PageBlock,
   type SerializeOptions,
   type TextRun,
+  type InlineAttributes,
 } from "../index.js";
 
 interface VectorBlock {
@@ -41,9 +42,80 @@ interface Rejection {
   code: string;
 }
 
-const fixtures = JSON.parse(
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function inlineAttributes(value: unknown): value is InlineAttributes {
+  if (!record(value)) return false;
+  return Object.entries(value).every(([key, entry]) => {
+    if (key === "link") return record(entry) && typeof entry.href === "string";
+    return (key === "bold" || key === "italic" || key === "code") && entry === true;
+  });
+}
+
+function vectorBlock(value: unknown): value is VectorBlock {
+  if (!record(value) || typeof value.type !== "string") return false;
+  return (
+    (value.id === undefined || typeof value.id === "string") &&
+    (value.indent === undefined || typeof value.indent === "number") &&
+    (value.done === undefined || typeof value.done === "boolean") &&
+    (value.pageId === undefined || typeof value.pageId === "string") &&
+    (value.text === undefined ||
+      (Array.isArray(value.text) &&
+        value.text.every(
+          (run: unknown) =>
+            record(run) &&
+            typeof run.insert === "string" &&
+            (run.attributes === undefined || inlineAttributes(run.attributes)),
+        )))
+  );
+}
+
+function vector(value: unknown): value is Vector {
+  if (!record(value)) return false;
+  return (
+    typeof value.name === "string" &&
+    typeof value.markdown === "string" &&
+    Array.isArray(value.blocks) &&
+    value.blocks.every(vectorBlock) &&
+    (value.direction === undefined ||
+      value.direction === "both" ||
+      value.direction === "parse" ||
+      value.direction === "serialize") &&
+    (value.canonical === undefined || typeof value.canonical === "string") &&
+    (value.withIds === undefined || typeof value.withIds === "boolean") &&
+    (value.synthetic === undefined || typeof value.synthetic === "boolean") &&
+    (value.pageTitles === undefined ||
+      (record(value.pageTitles) && Object.values(value.pageTitles).every((title) => typeof title === "string")))
+  );
+}
+
+function rejection(value: unknown): value is Rejection {
+  return (
+    record(value) &&
+    typeof value.name === "string" &&
+    typeof value.markdown === "string" &&
+    record(value.parseOptions) &&
+    typeof value.parseOptions.allowPage === "boolean" &&
+    typeof value.path === "string" &&
+    typeof value.code === "string"
+  );
+}
+
+const rawFixtures: unknown = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "markdown.json"), "utf8"),
-) as { vectors: Vector[]; rejections: Rejection[] };
+);
+if (
+  !record(rawFixtures) ||
+  !Array.isArray(rawFixtures.vectors) ||
+  !rawFixtures.vectors.every(vector) ||
+  !Array.isArray(rawFixtures.rejections) ||
+  !rawFixtures.rejections.every(rejection)
+) {
+  throw new Error("Invalid Markdown fixture file");
+}
+const fixtures = { vectors: rawFixtures.vectors, rejections: rawFixtures.rejections };
 
 function expectedBlocks(vector: Vector): unknown[] {
   return vector.blocks.map((block, index) => ({
@@ -101,7 +173,8 @@ describe("markdown fixtures", () => {
         thrown = error;
       }
       expect(thrown).toBeInstanceOf(BlockInputError);
-      expect((thrown as BlockInputError).issues).toMatchObject([{ path: rejection.path, code: rejection.code }]);
+      if (!(thrown instanceof BlockInputError)) throw new Error("Expected BlockInputError");
+      expect(thrown.issues).toMatchObject([{ path: rejection.path, code: rejection.code }]);
     });
   }
 });
@@ -201,7 +274,15 @@ describe("collectItemLinks", () => {
 describe("stripMarkdown", () => {
   it("reduces markers, emphasis, links and breaks to plain text", () => {
     const md = "## Title\n\n- **bold** and [a link](https://e.com)<br>next\n- [x] `code`\n\n[Page](semprec://page/p1)";
-    expect(stripMarkdown(md, 100)).toBe("Title bold and a link next code");
+    expect(stripMarkdown(md, 100)).toBe("Title bold and a link next code Page");
+  });
+
+  it("retains escaped page-link labels without changing the page model", () => {
+    const md = "[Roadmap \\[draft\\]](semprec://page/p1)";
+    expect(stripMarkdown(md, 100)).toBe("Roadmap [draft]");
+    expect(parseMarkdown(md)).toMatchObject([{ type: "page", pageId: "p1" }]);
+    expect(parseMarkdown(md)[0]).not.toHaveProperty("text");
+    expect(stripMarkdown("[](semprec://page/p1)", 100)).toBe("");
   });
 
   it("truncates to maxChars code points", () => {

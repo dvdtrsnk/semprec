@@ -1,5 +1,5 @@
 import * as Y from "yjs";
-import { BLOCK_TYPE_RULES, MAX_INDENT, MIN_INDENT, type BlockType } from "./blockTypes.js";
+import { BLOCK_TYPE_RULES, MAX_INDENT, MIN_INDENT, isBlockType, type BlockType } from "./blockTypes.js";
 import {
   BlockInputError,
   getBlocksMap,
@@ -278,6 +278,9 @@ export function moveBlocks(doc: Y.Doc, ids: readonly string[], afterId: string |
 
 /** Changes the type of each block and resets `done`; refuses any conversion from or to `page`. */
 export function setType(doc: Y.Doc, ids: readonly string[], type: BlockType, origin?: unknown): void {
+  if (!isBlockType(type)) {
+    throw new BlockInputError([{ path: "type", code: "unknown_type", message: "unknown block type" }]);
+  }
   const current = currentBlocks(doc);
   const selected = requireBlocks(current, ids);
   if (selected.size === 0) {

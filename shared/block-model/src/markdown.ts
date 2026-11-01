@@ -785,14 +785,20 @@ export function parseMarkdown(markdown: string, options: ParseOptions = {}): Par
 
 /**
  * Plain text of `markdown` for subtitles and full-text indexing: markers, emphasis and link
- * syntax removed, soft breaks and block boundaries as one space, page links dropped, cut to
+ * syntax removed, soft breaks and block boundaries as one space, cut to
  * `maxChars` characters (code points).
  */
 export function stripMarkdown(markdown: string, maxChars: number): string {
   if (!(maxChars > 0)) {
     return "";
   }
-  const text = parseMarkdown(markdown)
+  // Parse page links as ordinary links here so their visible labels survive; page-model parsing
+  // deliberately discards those labels because the page title is resolved separately.
+  const withVisiblePageLabels = markdown.replace(
+    /^([ \t]*\[(?:\\.|[^\]\\])*\])\(semprec:\/\/page\/[^)\s]+\)([ \t]*)$/gm,
+    "$1(https://example.invalid)$2",
+  );
+  const text = parseMarkdown(withVisiblePageLabels)
     .map((block) => (block.text ?? []).map((run) => run.insert).join(""))
     .join(" ")
     .replace(/\s+/g, " ")
