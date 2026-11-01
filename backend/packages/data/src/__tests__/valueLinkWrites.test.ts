@@ -54,6 +54,16 @@ async function graphileJobHeldBy(jobKey: string, holderPid: number | undefined):
   return result.rows[0]?.held === true;
 }
 
+async function relationAdvisoryHeldBy(definitionId: string, holderPid: number | undefined): Promise<boolean> {
+  const result = await pool.query<{ held: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 AND locktype = 'advisory' AND granted
+       AND classid::bigint = ((hashtextextended($2::text, 0) >> 32) & 4294967295::bigint)
+       AND objid::bigint = (hashtextextended($2::text, 0) & 4294967295::bigint) AND objsubid = 1) AS held`,
+    [holderPid, definitionId],
+  );
+  return result.rows[0]?.held === true;
+}
+
 async function setup(cp: ChokePoint = chokePoint) {
   const projects = await cp.createDatabase({ name: "Projects" });
   const files = await cp.createDatabase({ name: "Files" });
@@ -2559,6 +2569,7 @@ describe("value link state on writes (issue #1516)", () => {
           let systemClient: PoolClient | undefined;
           let userPid: number | undefined;
           let systemPid: number | undefined;
+          let systemEnqueueAttempted = false;
           const originalLink = valueLinksStore.lockOnValueLink;
           const linkSpy = vi
             .spyOn(valueLinksStore, "lockOnValueLink")
@@ -2596,12 +2607,32 @@ describe("value link state on writes (issue #1516)", () => {
                 }
                 systemClient = client;
                 systemPid = pid;
-                return createRelationWithClient(
-                  client,
-                  { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: gamma.id },
-                  VALUE_LINKS,
-                  SYSTEM_WRITER,
-                );
+                // eslint-disable-next-line @typescript-eslint/unbound-method
+                const originalQuery = client.query;
+                // eslint-disable-next-line @typescript-eslint/unbound-method
+                client.query = new Proxy(client.query, {
+                  apply(target, receiver, args: unknown[]) {
+                    const params: unknown = args[1];
+                    if (
+                      typeof args[0] === "string" &&
+                      args[0].includes("graphile_worker.add_job") &&
+                      Array.isArray(params) &&
+                      params[5] === jobKey
+                    )
+                      systemEnqueueAttempted = true;
+                    return Reflect.apply(target, receiver, args);
+                  },
+                });
+                try {
+                  return await createRelationWithClient(
+                    client,
+                    { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: gamma.id },
+                    VALUE_LINKS,
+                    SYSTEM_WRITER,
+                  );
+                } finally {
+                  client.query = originalQuery;
+                }
               }),
             ).then(
               () => ({ ok: true }),
@@ -2621,6 +2652,7 @@ describe("value link state on writes (issue #1516)", () => {
             if (!userPid || !systemPid || !userClient) throw new Error("Missing queue participant PID");
             releaseLink.resolve();
             const systemOutcome = await bounded(system);
+            expect(systemEnqueueAttempted).toBe(true);
             expect(systemOutcome).toMatchObject({ ok: false, error: { status: 409, code: "value_link_busy" } });
             releaseJob.resolve();
             const outcomes = await bounded(Promise.all([user, system]));
@@ -2685,6 +2717,10 @@ describe("value link state on writes (issue #1516)", () => {
             await withTenantTransaction(userPool, tenant, (client) =>
               insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
             );
+            const definition = await withTenantTransaction(userPool, tenant, (client) =>
+              relationsStore.getRelationDefinitionByPropertyId(client, fx.projectsProperty.id),
+            );
+            if (!definition) throw new Error("Missing relation definition");
             const edgeHeld = barrier();
             const userStarted = barrier();
             const linkHeld = barrier();
@@ -2755,6 +2791,7 @@ describe("value link state on writes (issue #1516)", () => {
               if (order === "system-first") {
                 system = run("system");
                 await bounded(linkHeld.promise);
+                expect(await relationAdvisoryHeldBy(definition.id, systemPid)).toBe(true);
                 user = run("user");
                 await bounded(userStarted.promise);
                 if (!userPid || !systemPid) throw new Error("Missing relation participant PID");
@@ -2764,6 +2801,7 @@ describe("value link state on writes (issue #1516)", () => {
               } else {
                 user = run("user");
                 await bounded(edgeHeld.promise);
+                expect(await relationAdvisoryHeldBy(definition.id, userPid)).toBe(true);
                 system = run("system");
                 expect(await bounded(system)).toMatchObject({
                   ok: false,

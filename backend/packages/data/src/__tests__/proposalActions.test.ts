@@ -1585,6 +1585,53 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(current?.properties).toMatchObject({ date: "2026-11-01", timeFrom: "09:30", timeTo: "10:00" });
     }, 25000);
 
+    it("holds the Tasks precondition against a later valid schedule writer", async () => {
+      const task = await createIn("tasks", { name: "Task", date: "2026-11-01", timeFrom: "09:00", timeTo: "10:00" });
+      const card = await cardWithSteps("tasks", [
+        {
+          ref: "task",
+          op: "update",
+          itemId: task,
+          role: "primary",
+          properties: { date: null },
+          before: { properties: { date: "2026-11-01", timeFrom: "09:00", timeTo: "10:00" } },
+          after: { properties: { date: null, timeFrom: null, timeTo: null } },
+        },
+      ]);
+      const tasksDb = await databaseIdFor("tasks");
+      const [confirmation, writer] = await runPreconditionOverlap(
+        async (client) => {
+          const confirmed = await confirmProposalWithClient(
+            client,
+            { processingProposalsDatabaseId: proposalsId },
+            card,
+          );
+          const [cleared] = await itemsStore.getItemsByIds(client, [task]);
+          expect(cleared?.properties).toMatchObject({ date: null, timeFrom: null, timeTo: null, time: null });
+          return confirmed;
+        },
+        (client) =>
+          updateItemWithClient(client, {
+            databaseId: tasksDb,
+            itemId: task,
+            propertiesPatch: { date: "2026-11-02", timeFrom: "09:30" },
+          }),
+        (pid, observer) => assertItemHeld(task, pid, observer),
+      );
+      if (confirmation.status === "rejected") throw confirmation.reason;
+      if (writer.status === "rejected") throw writer.reason;
+      expect(confirmation.value.properties.status).toBe("confirmed");
+      expect(await cardStatus(card)).toBe("confirmed");
+      expect(writer.value.properties).toMatchObject({
+        date: "2026-11-02",
+        timeFrom: "09:30",
+        timeTo: null,
+        time: "09:30",
+      });
+      const [current] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
+      expect(current?.properties).toMatchObject({ date: "2026-11-02", timeFrom: "09:30", timeTo: null, time: "09:30" });
+    }, 25000);
+
     it("rolls back an earlier created item when a later update has stale before values", async () => {
       const task = await createIn("tasks", { name: "Actual" });
       const card = await cardWithSteps("companies", [

@@ -228,7 +228,7 @@ async function jobExists(key: string): Promise<boolean> {
 }
 
 /** Polls until a confirm is blocked on the blob row lock (`SELECT ... FROM blobs ... FOR UPDATE`); fails after two seconds. */
-async function waitForBlobLockWait(holderPid: number, competitorPid: number, queryPool: Pool = pool): Promise<void> {
+async function waitForBlockingPid(holderPid: number, competitorPid: number, queryPool: Pool = pool): Promise<void> {
   const deadline = Date.now() + 2000;
   while (Date.now() < deadline) {
     const { rows } = await runInTenant(getTenantZeroId(), () =>
@@ -240,7 +240,64 @@ async function waitForBlobLockWait(holderPid: number, competitorPid: number, que
     if (rows[0]?.waiting) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error("No transaction waited on the blob row lock");
+  throw new Error("No transaction waited on the expected holder");
+}
+
+type WaitResource = { kind: "blob" | "source"; id: string };
+
+function observeResourceAttempt(client: PoolClient, resource: WaitResource, record: () => void): () => void {
+  // The proxy forwards all production query calls unchanged, recording only the exact target row.
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  const original = client.query;
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  client.query = new Proxy(client.query, {
+    apply(target, receiver, args: unknown[]) {
+      const sql = typeof args[0] === "string" ? args[0] : "";
+      const params: unknown = args[1];
+      const matches =
+        resource.kind === "blob"
+          ? sql.includes("FROM blobs WHERE") && sql.includes("FOR UPDATE")
+          : sql.includes("FROM items i JOIN databases") && sql.includes("FOR UPDATE OF i");
+      if (matches && Array.isArray(params) && params[0] === resource.id) record();
+      return Reflect.apply(target, receiver, args);
+    },
+  });
+  return () => {
+    client.query = original;
+  };
+}
+
+async function assertResourceHeld(resource: WaitResource, holderPid: number, observer: Pool): Promise<void> {
+  const table = resource.kind === "blob" ? "blobs" : "items";
+  const result = await withTenantTransaction(observer, getTenantZeroId(), (client) =>
+    client.query<{ held: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM ${table} target JOIN pg_locks l ON l.transactionid::text = target.xmax::text
+         WHERE target.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.granted) AS held`,
+      [resource.id, holderPid],
+    ),
+  );
+  expect(result.rows[0]?.held).toBe(true);
+}
+
+async function waitForResourceWait(
+  resource: WaitResource,
+  holderPid: number,
+  competitorPid: number,
+  observer: Pool,
+): Promise<void> {
+  const pattern =
+    resource.kind === "blob" ? "%FROM blobs WHERE%FOR UPDATE%" : "%FROM items i JOIN databases%FOR UPDATE OF i%";
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    const result = await observer.query<{ waiting: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $2 AND query LIKE $3
+       AND $1::int = ANY(pg_blocking_pids(pid))) AS waiting`,
+      [holderPid, competitorPid, pattern],
+    );
+    if (result.rows[0]?.waiting) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Expected ${resource.kind} statement to wait on the specified holder`);
 }
 
 /** A settled outcome instead of a promise, so a rejected concurrent confirm is never an unhandled rejection. */
@@ -255,6 +312,7 @@ function settle<T>(run: Promise<T>): Promise<Outcome<T>> {
 async function runHeldBlobOverlap<T>(
   first: (client: PoolClient) => Promise<unknown>,
   second: (client: PoolClient) => Promise<T>,
+  resource: WaitResource,
   rollbackFirst = false,
 ): Promise<Outcome<T>> {
   const runtime = await createRuntimeRolePool(pool, "semprec_data");
@@ -274,6 +332,7 @@ async function runHeldBlobOverlap<T>(
   const rollback = new Error("forced holder rollback");
   let failure: { error: unknown } | undefined;
   let result: Outcome<T> | undefined;
+  let attempted = false;
   try {
     const holder = owned.run(() =>
       withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
@@ -286,20 +345,37 @@ async function runHeldBlobOverlap<T>(
       }),
     );
     const holderPid = await owned.wait(firstStarted, holder);
+    await owned.wait(
+      owned.run(() => assertResourceHeld(resource, holderPid, runtime)),
+      holder,
+    );
     const competitor = owned.run(() =>
       withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
         const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
         if (pid === undefined) throw new Error("Missing competitor PID");
+        const restore = observeResourceAttempt(client, resource, () => {
+          attempted = true;
+        });
         secondReady(pid);
-        return second(client);
+        try {
+          return await second(client);
+        } finally {
+          restore();
+        }
       }),
     );
     const competitorPid = await owned.wait(secondStarted, holder, competitor);
     await owned.wait(
-      owned.run(() => waitForBlobLockWait(holderPid, competitorPid, runtime)),
+      owned.run(() => waitForBlockingPid(holderPid, competitorPid, runtime)),
       holder,
       competitor,
     );
+    await owned.wait(
+      owned.run(() => waitForResourceWait(resource, holderPid, competitorPid, runtime)),
+      holder,
+      competitor,
+    );
+    expect(attempted).toBe(true);
     release();
     const holderResult = await settle(holder);
     if (rollbackFirst) expect(holderResult).toEqual({ error: rollback });
@@ -881,6 +957,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
     const outcome = await runHeldBlobOverlap(
       (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, first.cardId),
       (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, second.cardId),
+      { kind: "blob", id: blobId },
     );
     if (!("value" in outcome)) throw outcome.error;
     expect(outcome.value.properties.status).toBe("confirmed");
@@ -902,6 +979,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
     const outcome = await runHeldBlobOverlap(
       (client) => executeProposalSteps(client, steps, options),
       (client) => executeProposalSteps(client, steps, options),
+      { kind: "source", id: source },
     );
     expect(outcome).toMatchObject({ error: { status: 409, code: "version_conflict" } });
 
@@ -920,6 +998,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
     const outcome = await runHeldBlobOverlap(
       (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, first.cardId),
       (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, second.cardId),
+      { kind: "blob", id: blobId },
       true,
     );
     if (!("value" in outcome)) throw outcome.error;
@@ -1046,7 +1125,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
       const holderId = holderPid;
       const contenderId = contenderPid;
       await owned.wait(
-        owned.run(() => waitForBlobLockWait(holderId, contenderId, runtime)),
+        owned.run(() => waitForBlockingPid(holderId, contenderId, runtime)),
         holder,
         contender,
       );
@@ -1084,6 +1163,8 @@ describe("file from attachment on confirm (issue #1703)", () => {
       const runtime = await createRuntimeRolePool(pool, "semprec_data");
       let purgePid: number | undefined;
       let confirmPid: number | undefined;
+      let purgeAttempted = false;
+      let confirmAttempted = false;
       let purgeReady = () => {};
       let confirmReady = () => {};
       let releasePurge = () => {};
@@ -1124,6 +1205,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
                   const sql = typeof args[0] === "string" ? args[0] : "";
                   const match = sql.includes("FROM blobs WHERE") && sql.includes("FOR UPDATE");
                   if (match) {
+                    if (Array.isArray(args[1]) && args[1][0] === blobId) purgeAttempted = true;
                     purgePid = (await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
                     if (!purgeFirst) purgeReady();
                   }
@@ -1160,16 +1242,23 @@ describe("file from attachment on confirm (issue #1703)", () => {
             await client.query("SET LOCAL statement_timeout = '5s'");
             confirmPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
             if (purgeFirst) confirmReady();
-            const result = await confirmProposalWithClient(
-              client,
-              { processingProposalsDatabaseId: proposalsId },
-              source.cardId,
-            );
-            if (!purgeFirst) {
-              confirmReady();
-              await confirmGate;
+            const restore = observeResourceAttempt(client, { kind: "blob", id: blobId }, () => {
+              confirmAttempted = true;
+            });
+            try {
+              const result = await confirmProposalWithClient(
+                client,
+                { processingProposalsDatabaseId: proposalsId },
+                source.cardId,
+              );
+              if (!purgeFirst) {
+                confirmReady();
+                await confirmGate;
+              }
+              return result;
+            } finally {
+              restore();
             }
-            return result;
           }),
         );
         pending.confirm.catch(() => {});
@@ -1196,7 +1285,14 @@ describe("file from attachment on confirm (issue #1703)", () => {
         if (!purge || !confirmRun) throw new Error("Both operations must start");
         await owned.wait(
           owned.run(() =>
-            waitForBlobLockWait(
+            assertResourceHeld({ kind: "blob", id: blobId }, purgeFirst ? actualPurgePid : actualConfirmPid, runtime),
+          ),
+          purge,
+          confirmRun,
+        );
+        await owned.wait(
+          owned.run(() =>
+            waitForBlockingPid(
               purgeFirst ? actualPurgePid : actualConfirmPid,
               purgeFirst ? actualConfirmPid : actualPurgePid,
               runtime,
@@ -1205,6 +1301,19 @@ describe("file from attachment on confirm (issue #1703)", () => {
           purge,
           confirmRun,
         );
+        await owned.wait(
+          owned.run(() =>
+            waitForResourceWait(
+              { kind: "blob", id: blobId },
+              purgeFirst ? actualPurgePid : actualConfirmPid,
+              purgeFirst ? actualConfirmPid : actualPurgePid,
+              runtime,
+            ),
+          ),
+          purge,
+          confirmRun,
+        );
+        expect(purgeFirst ? confirmAttempted : purgeAttempted).toBe(true);
         releasePurge();
         releaseConfirm();
         const [purgeResult, confirmResult] = await bounded(Promise.all([purge, confirmRun]));
