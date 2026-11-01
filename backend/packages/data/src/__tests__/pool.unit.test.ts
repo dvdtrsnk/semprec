@@ -153,6 +153,29 @@ describe("withTransaction", () => {
     expect(sqlCalls(query)).toEqual(["BEGIN", "ROLLBACK"]);
   });
 
+  it("preserves a transaction failure if release also fails", async () => {
+    const { pool, release } = fakeClient({});
+    const primary = new Error("primary");
+    const cleanup = new Error("release failed");
+    release.mockImplementation(() => {
+      throw cleanup;
+    });
+    const log = vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    try {
+      await expect(
+        withTransaction(pool, async () => {
+          throw primary;
+        }),
+      ).rejects.toBe(primary);
+      expect(log).toHaveBeenCalledWith(
+        { err: cleanup },
+        "withTransaction: release failed while handling a transaction error",
+      );
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("maps only actual PostgreSQL lock errors inside the protected body and keeps the first failure", async () => {
     const { pool, query } = fakeClient({});
     query.mockImplementation(async (sql: string) => {

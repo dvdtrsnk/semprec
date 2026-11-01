@@ -279,6 +279,7 @@ export async function withTransaction<T>(
   const scope = enforceTenantScope("withTransaction");
   const client = await connectWithoutScopeHook(pool);
   let releaseError: Error | undefined;
+  let primaryFailure: { error: unknown } | undefined;
   try {
     if (options.isolation === "serializable") {
       await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
@@ -324,8 +325,16 @@ export async function withTransaction<T>(
       }
       throw err;
     }
+  } catch (error) {
+    primaryFailure = { error };
+    throw error;
   } finally {
-    client.release(releaseError);
+    try {
+      client.release(releaseError);
+    } catch (error) {
+      if (!primaryFailure) throw error;
+      logger.error({ err: error }, "withTransaction: release failed while handling a transaction error");
+    }
   }
 }
 

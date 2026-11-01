@@ -647,6 +647,100 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("tenants", () => {
+    it("rechecks an active prediction after a concurrent user breaks the link", async () => {
+      const tenant = await createTestTenant(pool);
+      await withRuntimePool(async (userPool) =>
+        withRuntimePool(async (systemPool) => {
+          const cp = createChokePoint(userPool);
+          const fx = await runInTenant(tenant, () => setup(cp));
+          const edge = {
+            relationPropertyId: fx.projectsProperty.id,
+            callerItemId: fx.file.id,
+            targetItemId: fx.beta.id,
+          };
+          await runInTenant(tenant, () => cp.createRelation(edge));
+          await withTenantTransaction(userPool, tenant, (client) =>
+            insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+          );
+          const admitted = barrier();
+          const release = barrier();
+          let systemClient: PoolClient | undefined;
+          let systemPid: number | undefined;
+          let userPid: number | undefined;
+          const original = relationsStore.lockExistingRelationNowait;
+          const spy = vi
+            .spyOn(relationsStore, "lockExistingRelationNowait")
+            .mockImplementation(async (client, definitionId, itemA, itemB) => {
+              await original(client, definitionId, itemA, itemB);
+              if (client === systemClient) {
+                admitted.resolve();
+                await bounded(release.promise);
+              }
+            });
+          const events: InvalidationEvent[] = [];
+          setInvalidationHook((event) => events.push(event));
+          const system = runInTenant(tenant, () =>
+            withTransaction(systemPool, async (client) => {
+              systemClient = client;
+              systemPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              return createRelationWithClient(
+                client,
+                { ...edge, targetItemId: fx.alpha.id },
+                VALUE_LINKS,
+                SYSTEM_WRITER,
+              );
+            }),
+          ).then(
+            () => ({ ok: true as const }),
+            (error: unknown) => ({ ok: false as const, error }),
+          );
+          let failure: unknown;
+          try {
+            await bounded(admitted.promise);
+            await runInTenant(tenant, () =>
+              withTransaction(userPool, async (client) => {
+                userPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                await deleteRelationWithClient(client, edge, undefined, USER);
+              }),
+            );
+            release.resolve();
+            expect(await bounded(system)).toMatchObject({ ok: false, error: { status: 403, code: "owner_violation" } });
+            expect(systemPid).toBeTypeOf("number");
+            expect(userPid).toBeTypeOf("number");
+            const links = await withTenantTransaction(userPool, tenant, (client) =>
+              listValueLinksByItemIds(client, [fx.file.id]),
+            );
+            expect(links[0]).toMatchObject({ state: "broken", brokenBy: "user" });
+            expect(await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id))).toEqual(
+              [],
+            );
+            expect(events.filter((event) => event.scope === "item" && event.itemId === fx.file.id)).toHaveLength(1);
+          } catch (error) {
+            failure = error;
+          } finally {
+            release.resolve();
+            try {
+              await bounded(system);
+            } catch (error) {
+              failure =
+                failure === undefined ? error : new AggregateError([failure, error], "Test and system cleanup failed");
+              if (systemPid) {
+                try {
+                  await bounded(pool.query("SELECT pg_terminate_backend($1::int)", [systemPid]));
+                  await bounded(system);
+                } catch (cleanupError) {
+                  failure = new AggregateError([failure, cleanupError], "System termination failed");
+                }
+              }
+            }
+            spy.mockRestore();
+            setInvalidationHook(() => {});
+          }
+          if (failure !== undefined) throw failure;
+        }),
+      );
+    }, 30000);
+
     it("refuses a protected update while the exact existing edge is held", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (holderPool) =>
