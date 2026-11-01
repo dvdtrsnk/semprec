@@ -218,3 +218,37 @@ The complete frozen run and manifests settled before this refreeze. Preserve
 its integration FAIL and E2E PASS separately; neither grants acceptance or a
 failure waiver. The rowCount fix, repaired fixtures and any new candidate still
 require affected checks, independent delta review and a complete frozen gate.
+
+## Permanent evidence for the remaining exact clauses
+
+The final per-clause audit found execution gaps despite complete static review.
+The local MCP exception for `878d9cba` does not accept those gaps or transfer to
+a changed candidate. Preserve the original Tasks and AC and add permanent tests:
+
+- Gh-1404 Task 3: count actual production SQL for one versus many nonempty
+  real relation sets under runtime tenant scope, with correct returned edges.
+  Authorize the exact existing `data/src/__tests__/itemRelationList.test.ts`.
+  An external temporary harness alone would not retain this regression guard.
+- Gh-1401 AC 7: demonstrate UPDATE-versus-collection in both lock orders, not
+  only CREATE. The existing scoped `blobs/__tests__/unreferencedBlobs.test.ts`
+  supplies bounded runtime-role barriers, observed blocking and full settlement;
+  a refused update must retain its original item state and prior reference.
+- Gh-1519 Task 2: directly assert no invalidation or relevant heartbeat/job
+  publication for rejected user/agent creation, plus no row and a valid-create
+  positive control proving the same event harness is connected. Its existing
+  `data/src/__tests__/itemWrites.test.ts` is already scoped.
+- Gh-1412 Task 2 and AC 5: use actual authenticated item/query responses for
+  foreign metadata omission, preserving original historical JSONB and an
+  own-blob positive control under runtime RLS. Also exercise real VIEW query
+  and generic item create/PATCH response metadata and batch behavior. Existing
+  API envelope-test scope covers these; explicitly list
+  `tenantIsolationRoutes.test.ts` and `filesAndBlobsHandler.test.ts` for clarity.
+  Historical fixture injection remains checked and tenant-scoped, never a
+  production write bypass.
+
+No new production behavior or Task/AC relaxation is authorized here. Finish the
+entire 39-Task/48-AC execution-coverage audit and consolidate remaining gaps
+before another full pipeline. Bundle repairs, appropriate targeted checks and
+fresh independent delta review first; then freeze the new clean candidate.
+Static-only evidence suffices for actual documentation/type declarations, not
+for named routes, query counts, publication refusals or concurrency scenarios.
