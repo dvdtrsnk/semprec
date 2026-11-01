@@ -795,7 +795,7 @@ export function stripMarkdown(markdown: string, maxChars: number): string {
   // Parse page links as ordinary links here so their visible labels survive; page-model parsing
   // deliberately discards those labels because the page title is resolved separately.
   const withVisiblePageLabels = markdown.replace(
-    /^([ \t]*\[(?:\\.|[^\]\\])*\])\(semprec:\/\/page\/[^)\s]+\)([ \t]*)$/gm,
+    /^([ \t]*\[(?:\\.|[^\]\\])*\])\(semprec:\/\/page\/[^)\s]+\)([ \t]*\r?)$/gm,
     "$1(https://example.invalid)$2",
   );
   const text = parseMarkdown(withVisiblePageLabels)

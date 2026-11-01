@@ -147,6 +147,13 @@ function serializeOptions(vector: Vector): SerializeOptions {
 }
 
 describe("markdown fixtures", () => {
+  it("loads a nonempty set of uniquely named vectors and rejections", () => {
+    expect(fixtures.vectors.length).toBeGreaterThan(0);
+    expect(fixtures.rejections.length).toBeGreaterThan(0);
+    const names = [...fixtures.vectors, ...fixtures.rejections].map((entry) => entry.name);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
   for (const vector of fixtures.vectors) {
     const direction = vector.direction ?? "both";
     it(vector.name, () => {
@@ -283,6 +290,7 @@ describe("stripMarkdown", () => {
     expect(parseMarkdown(md)).toMatchObject([{ type: "page", pageId: "p1" }]);
     expect(parseMarkdown(md)[0]).not.toHaveProperty("text");
     expect(stripMarkdown("[](semprec://page/p1)", 100)).toBe("");
+    expect(stripMarkdown("[Page](semprec://page/p1)\r\nnext", 100)).toBe("Page next");
   });
 
   it("truncates to maxChars code points", () => {
