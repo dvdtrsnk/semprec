@@ -1,6 +1,7 @@
 import https from "node:https";
 import { createServer } from "node:http";
 import net from "node:net";
+import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
@@ -30,6 +31,7 @@ import { McpConnectionError } from "../mcp/mcpConnectionError.js";
 import { executeMcpInvocation } from "../mcp/mcpToolExecution.js";
 import { Server as McpServer } from "@modelcontextprotocol/sdk/server/index.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { McpConnectionConfig } from "../mcp/mcpConnectionConfig.js";
 
@@ -406,6 +408,364 @@ describe("MCP connection factory (issue #231)", () => {
         await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
       }
     }, 75_000);
+
+    it.each([401, 403])("classifies an actual SSE initial GET HTTP %i as auth", async (status) => {
+      const server = createServer((_req, res) => {
+        res.writeHead(status).end("private-get-error-sentinel");
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("expected a TCP address");
+        const item = await createMcpServerItem({ transport: "sse", url: `http://127.0.0.1:${address.port}/sse` });
+        const result = await executeMcpInvocation(pool, { serverItem: item, toolName: "blocked" }, {});
+        expect(result).toMatchObject({ error: true, failure: { failureKind: "auth", mcpServerItemId: item.id } });
+        expect(JSON.stringify(result)).not.toContain("private-get-error-sentinel");
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      }
+    });
+
+    it.each([
+      ["tools/call", 401, false],
+      ["tools/call", 403, false],
+      ["tools/call", 403, true],
+      ["initialize", 401, false],
+      ["initialize", 403, false],
+      ["notifications/initialized", 401, false],
+      ["notifications/initialized", 403, false],
+    ] as const)(
+      "classifies an actual SSE %s HTTP %i as auth (credential=%s)",
+      async (method, status, hasCredential) => {
+        let transport: SSEServerTransport | undefined;
+        const server = createServer((req, res) => {
+          void (async () => {
+            if (req.method === "GET" && req.url === "/sse") {
+              transport = new SSEServerTransport("/messages", res);
+              const mcp = new McpServer({ name: "auth-call", version: "1" }, { capabilities: { tools: {} } });
+              mcp.setRequestHandler(CallToolRequestSchema, async () => ({ content: [] }));
+              await mcp.connect(transport);
+              return;
+            }
+            if (req.method === "POST" && transport) {
+              const chunks: Buffer[] = [];
+              for await (const chunk of req) {
+                if (!Buffer.isBuffer(chunk)) throw new Error("Expected request bytes");
+                chunks.push(chunk);
+              }
+              const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+              if (typeof parsed === "object" && parsed !== null && "method" in parsed && parsed.method === method) {
+                res.writeHead(status).end("private-server-error-sentinel");
+                return;
+              }
+              await transport.handlePostMessage(req, res, parsed);
+              return;
+            }
+            res.writeHead(404).end();
+          })().catch(() => {
+            if (!res.headersSent) res.writeHead(500);
+            res.end();
+          });
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        try {
+          const address = server.address();
+          if (!address || typeof address === "string") throw new Error("expected a TCP address");
+          const item = await createMcpServerItem(
+            { transport: "sse", url: `http://127.0.0.1:${address.port}/sse` },
+            hasCredential ? "credential-sentinel" : undefined,
+          );
+          const result = await executeMcpInvocation(pool, { serverItem: item, toolName: "blocked" }, {});
+          expect(result).toMatchObject({ error: true, failure: { failureKind: "auth", mcpServerItemId: item.id } });
+          expect(JSON.stringify(result)).not.toContain("private-server-error-sentinel");
+          expect(JSON.stringify(result)).not.toContain("credential-sentinel");
+        } finally {
+          await transport?.close();
+          server.closeAllConnections();
+          await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+        }
+      },
+    );
+
+    it.each([
+      ["tools/call", 401],
+      ["tools/call", 403],
+      ["initialize", 401],
+      ["initialize", 403],
+      ["notifications/initialized", 401],
+      ["notifications/initialized", 403],
+    ] as const)("classifies actual streamable HTTP %s %i as auth", async (method, status) => {
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
+      const mcp = new McpServer({ name: "http-auth-call", version: "1" }, { capabilities: { tools: {} } });
+      mcp.setRequestHandler(CallToolRequestSchema, async () => ({ content: [] }));
+      await mcp.connect(transport);
+      const server = createServer((req, res) => {
+        void (async () => {
+          if (req.method === "POST") {
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) {
+              if (!Buffer.isBuffer(chunk)) throw new Error("Expected request bytes");
+              chunks.push(chunk);
+            }
+            const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            if (typeof parsed === "object" && parsed !== null && "method" in parsed && parsed.method === method) {
+              res.writeHead(status).end("private-http-error-sentinel");
+              return;
+            }
+            await transport.handleRequest(req, res, parsed);
+            return;
+          }
+          await transport.handleRequest(req, res);
+        })().catch(() => {
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("expected a TCP address");
+        const item = await createMcpServerItem({ transport: "http", url: `http://127.0.0.1:${address.port}/mcp` });
+        const result = await executeMcpInvocation(pool, { serverItem: item, toolName: "blocked" }, {});
+        expect(result).toMatchObject({ error: true, failure: { failureKind: "auth", mcpServerItemId: item.id } });
+        expect(JSON.stringify(result)).not.toContain("private-http-error-sentinel");
+      } finally {
+        await transport.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      }
+    });
+
+    it("keeps actual overlapping SSE connections' auth and non-auth failures separate", async () => {
+      let calls = 0;
+      let release: (() => void) | undefined;
+      let bothArrived: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const arrived = new Promise<void>((resolve) => {
+        bothArrived = resolve;
+      });
+      const transports = new Set<SSEServerTransport>();
+      const server = createServer((req, res) => {
+        void (async () => {
+          if (req.method === "GET" && (req.url === "/auth" || req.url === "/other")) {
+            const endpoint = req.url === "/auth" ? "/messages-auth" : "/messages-other";
+            const transport = new SSEServerTransport(endpoint, res);
+            transports.add(transport);
+            const mcp = new McpServer({ name: "concurrent", version: "1" }, { capabilities: { tools: {} } });
+            mcp.setRequestHandler(CallToolRequestSchema, async () => ({ content: [] }));
+            await mcp.connect(transport);
+            return;
+          }
+          if (req.method === "POST" && req.url) {
+            const url = new URL(req.url, "http://127.0.0.1");
+            const session = url.searchParams.get("sessionId");
+            const transport = [...transports].find((candidate) => candidate.sessionId === session);
+            if (!transport) {
+              res.writeHead(404).end();
+              return;
+            }
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) {
+              if (!Buffer.isBuffer(chunk)) throw new Error("Expected request bytes");
+              chunks.push(chunk);
+            }
+            const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            if (typeof parsed === "object" && parsed !== null && "method" in parsed && parsed.method === "tools/call") {
+              calls += 1;
+              if (calls === 2) bothArrived?.();
+              await gate;
+              res.writeHead(url.pathname === "/messages-auth" ? 403 : 500).end("private-concurrent-sentinel");
+              return;
+            }
+            await transport.handlePostMessage(req, res, parsed);
+            return;
+          }
+          res.writeHead(404).end();
+        })().catch(() => {
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      let results: Promise<PromiseSettledResult<Awaited<ReturnType<typeof executeMcpInvocation>>>[]> | undefined;
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("expected a TCP address");
+        const first = await createMcpServerItem({ transport: "sse", url: `http://127.0.0.1:${address.port}/auth` });
+        const second = await createMcpServerItem({ transport: "sse", url: `http://127.0.0.1:${address.port}/other` });
+        results = Promise.allSettled([
+          executeMcpInvocation(pool, { serverItem: first, toolName: "blocked" }, {}),
+          executeMcpInvocation(pool, { serverItem: second, toolName: "blocked" }, {}),
+        ]);
+        await Promise.race([
+          arrived,
+          new Promise<never>((_resolve, reject) => {
+            deadline = setTimeout(() => reject(new Error("calls did not overlap")), 5000);
+          }),
+        ]);
+        release?.();
+        const settled = await results;
+        expect(settled[0]).toMatchObject({
+          status: "fulfilled",
+          value: { error: true, failure: { failureKind: "auth", mcpServerItemId: first.id } },
+        });
+        expect(settled[1]).toMatchObject({
+          status: "fulfilled",
+          value: { error: true, failure: { failureKind: "toolError", mcpServerItemId: second.id } },
+        });
+      } finally {
+        if (deadline) clearTimeout(deadline);
+        release?.();
+        await results;
+        await Promise.all([...transports].map((transport) => transport.close()));
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      }
+    }, 15_000);
+
+    it("does not attach a late HTTP denial to an already cancelled SSE call", async () => {
+      let transport: SSEServerTransport | undefined;
+      let markArrived: (() => void) | undefined;
+      let markResponded: (() => void) | undefined;
+      let release: (() => void) | undefined;
+      const arrived = new Promise<void>((resolve) => {
+        markArrived = resolve;
+      });
+      const responded = new Promise<void>((resolve) => {
+        markResponded = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const server = createServer((req, res) => {
+        void (async () => {
+          if (req.method === "GET" && req.url === "/sse") {
+            transport = new SSEServerTransport("/messages", res);
+            const mcp = new McpServer({ name: "late-auth", version: "1" }, { capabilities: { tools: {} } });
+            mcp.setRequestHandler(CallToolRequestSchema, async () => ({ content: [] }));
+            await mcp.connect(transport);
+            return;
+          }
+          if (req.method === "POST" && transport) {
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) {
+              if (!Buffer.isBuffer(chunk)) throw new Error("Expected request bytes");
+              chunks.push(chunk);
+            }
+            const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            if (typeof parsed === "object" && parsed !== null && "method" in parsed && parsed.method === "tools/call") {
+              markArrived?.();
+              await gate;
+              try {
+                res.writeHead(403).end("private-late-sentinel");
+              } finally {
+                markResponded?.();
+              }
+              return;
+            }
+            await transport.handlePostMessage(req, res, parsed);
+            return;
+          }
+          res.writeHead(404).end();
+        })().catch(() => {
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const controller = new AbortController();
+      let call: ReturnType<typeof executeMcpInvocation> | undefined;
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("expected a TCP address");
+        const item = await createMcpServerItem({ transport: "sse", url: `http://127.0.0.1:${address.port}/sse` });
+        call = executeMcpInvocation(pool, { serverItem: item, toolName: "blocked" }, {}, {}, controller.signal);
+        await Promise.race([
+          arrived,
+          new Promise<never>((_resolve, reject) => {
+            deadline = setTimeout(() => reject(new Error("call did not arrive")), 5000);
+          }),
+        ]);
+        controller.abort();
+        expect(await call).toEqual({ error: true, result: "MCP tool call was cancelled before it completed" });
+        release?.();
+        await responded;
+      } finally {
+        if (deadline) clearTimeout(deadline);
+        controller.abort();
+        release?.();
+        await call?.catch(() => undefined);
+        await transport?.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      }
+    }, 15_000);
+
+    it("does not classify an SSE OAuth challenge followed by discovery failure as terminal auth", async () => {
+      let transport: SSEServerTransport | undefined;
+      let challenges = 0;
+      let discoveryRequests = 0;
+      const server = createServer((req, res) => {
+        void (async () => {
+          if (req.method === "GET" && req.url === "/sse") {
+            transport = new SSEServerTransport("/messages", res);
+            const mcp = new McpServer({ name: "oauth-failure", version: "1" }, { capabilities: { tools: {} } });
+            mcp.setRequestHandler(CallToolRequestSchema, async () => ({ content: [] }));
+            await mcp.connect(transport);
+            return;
+          }
+          if (req.method === "POST" && transport) {
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) {
+              if (!Buffer.isBuffer(chunk)) throw new Error("Expected request bytes");
+              chunks.push(chunk);
+            }
+            const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            if (typeof parsed === "object" && parsed !== null && "method" in parsed && parsed.method === "tools/call") {
+              challenges += 1;
+              const address = server.address();
+              if (!address || typeof address === "string") throw new Error("expected a TCP address");
+              res
+                .writeHead(401, {
+                  "www-authenticate": `Bearer resource_metadata="http://127.0.0.1:${address.port}/unreachable"`,
+                })
+                .end();
+              return;
+            }
+            await transport.handlePostMessage(req, res, parsed);
+            return;
+          }
+          discoveryRequests += 1;
+          res.writeHead(500).end();
+        })().catch(() => {
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("expected a TCP address");
+        const item = await createMcpServerItem(
+          { transport: "sse", url: `http://127.0.0.1:${address.port}/sse` },
+          "credential-sentinel",
+        );
+        const result = await executeMcpInvocation(pool, { serverItem: item, toolName: "blocked" }, {});
+        expect(challenges).toBe(1);
+        expect(discoveryRequests).toBeGreaterThan(0);
+        expect(result).toMatchObject({ error: true, failure: { failureKind: "toolError", mcpServerItemId: item.id } });
+        expect(JSON.stringify(result)).not.toContain("credential-sentinel");
+      } finally {
+        await transport?.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      }
+    });
 
     it("cancels a tools/call already blocked at the MCP server without classifying it as a failure", async () => {
       let releaseCall: (() => void) | undefined;

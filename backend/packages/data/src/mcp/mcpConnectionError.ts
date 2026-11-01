@@ -45,3 +45,10 @@ export class McpConnectionError extends Error {
     if (httpStatus !== undefined) this.httpStatus = httpStatus;
   }
 }
+
+/** A typed SDK authorization failure during the handshake, without an invented HTTP status. */
+export class McpConnectionAuthenticationError extends McpConnectionError {
+  constructor(message: string) {
+    super("handshake_failed", message);
+  }
+}

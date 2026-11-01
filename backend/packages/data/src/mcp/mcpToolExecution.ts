@@ -4,10 +4,16 @@ import { connectMcpServer, type McpClientHandle } from "./mcpConnectionFactory.j
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SseError } from "@modelcontextprotocol/sdk/client/sse.js";
-import { McpConnectionError, MCP_DEFAULT_CONNECT_TIMEOUT_MS } from "./mcpConnectionError.js";
+import {
+  McpConnectionAuthenticationError,
+  McpConnectionError,
+  MCP_DEFAULT_CONNECT_TIMEOUT_MS,
+} from "./mcpConnectionError.js";
 import type { McpToolInvocationTarget } from "./mcpToolInvocation.js";
 import { recordMcpConnectionFailure, recordMcpConnectionSuccess } from "./mcpServerConnectionStateStore.js";
 import type { McpInvokeFailure } from "./mcpFailure.js";
+import type { McpHttpObservation } from "./mcpHttpFailureObservation.js";
+import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 export { MCP_FAILURE_KINDS } from "./mcpFailure.js";
 export type { McpFailureKind, McpInvokeFailure } from "./mcpFailure.js";
 
@@ -51,6 +57,7 @@ function safeInvokeErrorMessage(err: unknown): string {
 
 /** Whether `err` is an HTTP 401/403 rejection from the server, on connect or on `tools/call`. */
 function isAuthRejection(err: unknown): boolean {
+  if (err instanceof UnauthorizedError) return true;
   if (err instanceof McpConnectionError) return err.httpStatus === 401 || err.httpStatus === 403;
   if (err instanceof StreamableHTTPError || err instanceof SseError || err instanceof McpError) {
     return err.code === 401 || err.code === 403;
@@ -58,20 +65,25 @@ function isAuthRejection(err: unknown): boolean {
   return false;
 }
 
-function classifyFailure(err: unknown, mcpServerItemId: string): McpInvokeFailure {
+function classifyFailure(err: unknown, mcpServerItemId: string, observedStatus?: 401 | 403): McpInvokeFailure {
   if (err instanceof McpConnectionError) {
-    if (err.reason === "credential_decryption_failed" || isAuthRejection(err)) {
-      return { failureKind: "auth", mcpServerItemId };
-    }
     if (err.reason === "connect_timeout") {
       return { failureKind: "timeout", mcpServerItemId, timeoutMs: MCP_DEFAULT_CONNECT_TIMEOUT_MS };
     }
+    if (err.reason === "address_not_allowed") return { failureKind: "connection", mcpServerItemId };
+    if (
+      err instanceof McpConnectionAuthenticationError ||
+      err.reason === "credential_decryption_failed" ||
+      isAuthRejection(err)
+    ) {
+      return { failureKind: "auth", mcpServerItemId };
+    }
     return { failureKind: "connection", mcpServerItemId };
   }
-  if (isAuthRejection(err)) return { failureKind: "auth", mcpServerItemId };
   if (err instanceof McpError && err.code === Number(ErrorCode.RequestTimeout)) {
     return { failureKind: "timeout", mcpServerItemId, timeoutMs: MCP_TOOL_CALL_TIMEOUT_MS };
   }
+  if (isAuthRejection(err) || observedStatus !== undefined) return { failureKind: "auth", mcpServerItemId };
   return { failureKind: "toolError", mcpServerItemId };
 }
 
@@ -155,21 +167,26 @@ export async function executeMcpInvocation(
   signal?: AbortSignal,
 ): Promise<McpInvokeResult> {
   let handle: McpClientHandle | undefined;
+  let observation: McpHttpObservation | undefined;
   try {
     handle = await connectMcpServer(pool, target.serverItem, {
       actorId: options.actorId,
       purpose: "mcp_tool_invoke",
     });
     await recordConnectionOutcome(() => recordMcpConnectionSuccess(pool, target.serverItem.id), target.serverItem.id);
-    const callResult = await handle.client.callTool(
-      {
-        name: target.toolName,
-        arguments: args,
-        ...(options.idempotencyKey !== undefined ? { _meta: { idempotencyKey: options.idempotencyKey } } : {}),
-      },
-      undefined,
-      { signal, timeout: MCP_TOOL_CALL_TIMEOUT_MS },
-    );
+    observation = handle.beginHttpObservation?.();
+    const connected = handle;
+    const call = () =>
+      connected.client.callTool(
+        {
+          name: target.toolName,
+          arguments: args,
+          ...(options.idempotencyKey !== undefined ? { _meta: { idempotencyKey: options.idempotencyKey } } : {}),
+        },
+        undefined,
+        { signal, timeout: MCP_TOOL_CALL_TIMEOUT_MS },
+      );
+    const callResult = await (observation ? observation.run(call) : call());
     return formatCallToolResult(callResult, target.serverItem.id);
   } catch (err) {
     // `handle` is set only once the connect succeeded, so a `McpConnectionError` here is a failed connect.
@@ -184,9 +201,10 @@ export async function executeMcpInvocation(
     return {
       error: true,
       result: safeInvokeErrorMessage(err),
-      failure: classifyFailure(err, target.serverItem.id),
+      failure: classifyFailure(err, target.serverItem.id, observation?.status(err)),
     };
   } finally {
+    observation?.close();
     // A close failure must never replace the `try`'s return value or the `catch`'s error result
     // above — only log it, so a rejecting `close()` after a successful `tools/call` can't turn a
     // successful outcome into a job failure (issue #693).
