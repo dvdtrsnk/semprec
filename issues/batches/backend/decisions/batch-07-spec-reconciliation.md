@@ -56,3 +56,20 @@ store/test paths and the new ADR. Existing one-to-one derived-blob deletion is
 outside this protocol. The expanded Task and AC require production overlap,
 rollback, effective-value and isolation evidence; the diagnostic or an intended
 implementation is not acceptance.
+
+## Historical read fixtures and UUID metadata lookup
+
+Authorize `backend/packages/data/src/__tests__/relationExpansion.test.ts` for
+the fixture repair required by the new blob-reference guard. Create valid blank
+items through production writes, then inject explicitly historical dangling or
+foreign JSONB references through a typed, tenant-scoped test fixture. Preserve
+the original projected values and runtime-role read/isolation assertions. The
+new production write refusal remains; no guard bypass is added to production.
+
+Within existing gh-1412 Task 1 and its approved paths, normalize valid UUID
+lookup keys in `blobMetadata.ts` to lowercase so accepted uppercase or
+mixed-case references find PostgreSQL's canonical UUID row IDs. Stored item
+properties remain unchanged, metadata uses the actual blob row ID, and missing
+or foreign metadata remains omitted. Keep batched reads and add discriminating
+evidence in the existing blob metadata test. This is an implementation fix
+within the current metadata contract, not a new projection or storage format.
