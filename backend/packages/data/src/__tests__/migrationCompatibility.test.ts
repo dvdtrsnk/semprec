@@ -183,3 +183,202 @@ it("upgrades populated properties through the real runner and retains previous-r
   }
   if (failure) throw failure.error;
 }, 120_000);
+
+it("upgrades populated MCP and notification rows through the batch 08 migrations", async () => {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("Missing test database URL");
+  // The generated identifier contains only a fixed prefix and UUID hex.
+  const name = `batch08_upgrade_${randomUUID().replaceAll("-", "")}`;
+  const admin = new Pool({ connectionString: url });
+  const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch08-upgrade-"));
+  const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+  const files = (await readdir(migrations)).filter((file) => file.endsWith(".sql")).sort();
+  let scratch: Pool | undefined;
+  let created = false;
+  let failure: { error: unknown } | undefined;
+  try {
+    await admin.query(`CREATE DATABASE "${name}"`);
+    created = true;
+    const scratchUrl = new URL(url);
+    scratchUrl.pathname = `/${name}`;
+    scratch = new Pool({ connectionString: scratchUrl.toString() });
+    const db = scratch;
+    async function migrateThrough(last: string): Promise<void> {
+      for (const file of files.filter((entry) => entry <= last)) {
+        await copyFile(path.join(migrations, file), path.join(dir, file));
+      }
+      await runMigrations(db, dir);
+    }
+    const prior = files.find((file) => file.startsWith("0092_"));
+    if (!prior) throw new Error("Missing pre-0093 migration");
+    await migrateThrough(prior);
+    const tenantId = (await db.query<{ id: string }>("SELECT id FROM tenants LIMIT 1")).rows[0]?.id;
+    if (!tenantId) throw new Error("Missing initial tenant");
+    const userId = randomUUID();
+    const serverId = randomUUID();
+    const registrationId = randomUUID();
+    const notificationId = randomUUID();
+    await db.query("INSERT INTO users (id, tenant_id, email, password_hash) VALUES ($1, $2, $3, $4)", [
+      userId,
+      tenantId,
+      `${userId}@example.test`,
+      "unused",
+    ]);
+    await db.query(
+      "INSERT INTO mcp_tool_registrations (id, tenant_id, mcp_server_item_id, tool_name, tool_schema) VALUES ($1, $2, $3, $4, $5::jsonb)",
+      [registrationId, tenantId, serverId, "legacy_tool", "{}"],
+    );
+    await db.query(
+      "INSERT INTO notifications (id, tenant_id, user_id, kind, title, source_table, source_id, transition_instance) VALUES ($1, $2, $3, 'approval_pending', 'Legacy', 'legacy', 'old', 'one')",
+      [notificationId, tenantId, userId],
+    );
+    async function hasColumn(table: string, column: string): Promise<boolean> {
+      const { rows } = await db.query<{ present: boolean }>(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2) AS present",
+        [table, column],
+      );
+      return rows[0]?.present === true;
+    }
+    expect(await hasColumn("mcp_tool_registrations", "display_label")).toBe(false);
+
+    await migrateThrough("0093_mcp_tool_display_label.sql");
+    expect(
+      (
+        await db.query<{ tool_name: string; display_label: unknown }>(
+          "SELECT tool_name, display_label FROM mcp_tool_registrations WHERE id = $1",
+          [registrationId],
+        )
+      ).rows,
+    ).toEqual([{ tool_name: "legacy_tool", display_label: null }]);
+    await db.query("UPDATE mcp_tool_registrations SET description = $2 WHERE id = $1", [
+      registrationId,
+      "legacy update",
+    ]);
+    await expect(
+      db.query("UPDATE mcp_tool_registrations SET display_label = $2::jsonb WHERE id = $1", [
+        registrationId,
+        '"invalid"',
+      ]),
+    ).rejects.toMatchObject({ code: "23514" });
+
+    const beforeResolved = files.find((file) => file.startsWith("0097_"));
+    if (!beforeResolved) throw new Error("Missing pre-0098 migration");
+    await migrateThrough(beforeResolved);
+    expect(await hasColumn("notifications", "resolved_at")).toBe(false);
+    expect(
+      (await db.query<{ title: string }>("SELECT title FROM notifications WHERE id = $1", [notificationId])).rows,
+    ).toEqual([{ title: "Legacy" }]);
+    await migrateThrough("0098_notifications_resolved_at.sql");
+    expect(
+      (
+        await db.query<{ title: string; resolved_at: Date | null }>(
+          "SELECT title, resolved_at FROM notifications WHERE id = $1",
+          [notificationId],
+        )
+      ).rows,
+    ).toEqual([{ title: "Legacy", resolved_at: null }]);
+    await db.query("UPDATE notifications SET title = $2 WHERE id = $1", [notificationId, "Legacy updated"]);
+    expect(
+      (
+        await db.query<{ name: string | null }>(
+          "SELECT to_regclass('public.mcp_server_connection_state')::text AS name",
+        )
+      ).rows[0]?.name,
+    ).toBeNull();
+    await migrateThrough("0099_mcp_server_connection_state.sql");
+    await db.query("INSERT INTO mcp_server_connection_state (tenant_id, mcp_server_item_id) VALUES ($1, $2)", [
+      tenantId,
+      serverId,
+    ]);
+    expect(
+      (
+        await db.query<{ last_connected_at: Date | null; last_error_reason: string | null }>(
+          "SELECT last_connected_at, last_error_reason FROM mcp_server_connection_state WHERE tenant_id = $1",
+          [tenantId],
+        )
+      ).rows,
+    ).toEqual([{ last_connected_at: null, last_error_reason: null }]);
+    await expect(
+      db.query("UPDATE mcp_server_connection_state SET last_error_reason = $1 WHERE tenant_id = $2", [
+        "invalid",
+        tenantId,
+      ]),
+    ).rejects.toMatchObject({ code: "23514" });
+
+    const beforePreferences = files.find((file) => file.startsWith("0118_"));
+    if (!beforePreferences) throw new Error("Missing pre-0119 migration");
+    await migrateThrough(beforePreferences);
+    expect(
+      (await db.query<{ name: string | null }>("SELECT to_regclass('public.notification_preferences')::text AS name"))
+        .rows[0]?.name,
+    ).toBeNull();
+    await migrateThrough("0119_notification_preferences.sql");
+    await db.query("INSERT INTO notification_preferences (tenant_id, user_id) VALUES ($1, $2)", [tenantId, userId]);
+    expect(
+      (
+        await db.query<{
+          approvals: boolean;
+          invites: boolean;
+          reminders: boolean;
+          problems_level: string;
+          problems_summary: boolean;
+          badge_approvals: boolean;
+          badge_invites: boolean;
+          badge_inbox: boolean;
+        }>(
+          "SELECT approvals, invites, reminders, problems_level, problems_summary, badge_approvals, badge_invites, badge_inbox FROM notification_preferences WHERE user_id = $1",
+          [userId],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        approvals: true,
+        invites: true,
+        reminders: true,
+        problems_level: "critical",
+        problems_summary: true,
+        badge_approvals: true,
+        badge_invites: true,
+        badge_inbox: false,
+      },
+    ]);
+    const beforeKind = files.find((file) => file.startsWith("0120_"));
+    if (!beforeKind) throw new Error("Missing pre-0121 migration");
+    await migrateThrough(beforeKind);
+    await expect(
+      db.query(
+        "INSERT INTO notifications (tenant_id, user_id, kind, title, source_table, source_id, transition_instance) VALUES ($1, $2, 'semp_problem', 'Problem', 'legacy', 'new', 'one')",
+        [tenantId, userId],
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+    await migrateThrough("0121_notification_kind_semp_problem.sql");
+    await db.query(
+      "INSERT INTO notifications (tenant_id, user_id, kind, title, source_table, source_id, transition_instance) VALUES ($1, $2, 'semp_problem', 'Problem', 'legacy', 'new', 'one'), ($1, $2, 'approval_pending', 'Old writer', 'legacy', 'old-writer', 'one')",
+      [tenantId, userId],
+    );
+    expect(
+      (await db.query<{ kind: string; title: string }>("SELECT kind, title FROM notifications ORDER BY title")).rows,
+    ).toEqual([
+      { kind: "approval_pending", title: "Legacy updated" },
+      { kind: "approval_pending", title: "Old writer" },
+      { kind: "semp_problem", title: "Problem" },
+    ]);
+  } catch (error) {
+    failure = { error };
+  }
+  for (const cleanup of [
+    async () => scratch?.end(),
+    async () => {
+      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+    },
+    async () => admin.end(),
+    async () => rm(dir, { recursive: true, force: true }),
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      failure ??= { error };
+    }
+  }
+  if (failure) throw failure.error;
+}, 120_000);
