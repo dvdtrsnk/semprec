@@ -97,11 +97,24 @@ async function settleOwnedPools(
   }
   const closing = Promise.allSettled(pools.map((ownedPool) => ownedPool.end()));
   if (timedOut !== undefined) {
-    const pids = capturedBackends.flat().map((backend) => backend.pid);
-    for (const pid of new Set(pids)) {
-      await bounded(control.query("SELECT pg_terminate_backend($1)", [pid]));
-    }
-    await bounded(settled);
+    const terminated = new Set<number>();
+    let finished = false;
+    void settled.then(() => {
+      finished = true;
+    });
+    const terminateUntilSettled = async (): Promise<void> => {
+      const deadline = Date.now() + 15_000;
+      while (!finished) {
+        if (Date.now() >= deadline) throw new Error("Owned Gmail operations did not settle");
+        for (const { pid } of capturedBackends.flat()) {
+          if (terminated.has(pid)) continue;
+          terminated.add(pid);
+          await bounded(control.query("SELECT pg_terminate_backend($1)", [pid]));
+        }
+        if (!finished) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
+    await terminateUntilSettled();
   }
   const closed = await bounded(closing);
   for (const backend of capturedBackends.flat()) backend.client.off("error", backend.onError);
@@ -859,6 +872,78 @@ describe("Gmail label folders (issue #1496)", () => {
       } finally {
         capture.detach();
         expect(operationPool.listeners("acquire")).not.toContain(capture.onAcquire);
+        holder.release(true);
+        control.release(true);
+      }
+    }
+  }, 30_000);
+
+  it("settles a connection acquired after owned pool cleanup starts", async () => {
+    const params = await setup();
+    const operationPool = await createRuntimeRolePool(admin, "semprec_data");
+    const capturedBackends: OwnedBackend[] = [];
+    const capture = capturePoolPids(operationPool, capturedBackends);
+    const control = await admin.connect();
+    const holder = await admin.connect();
+    await holder.query("BEGIN");
+    await holder.query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", [
+      `mail-thread-mutation:v1:${tenantId.toLowerCase()}`,
+    ]);
+    let releaseConnection: () => void = () => undefined;
+    let signalConnecting: () => void = () => undefined;
+    const connecting = new Promise<void>((resolve) => {
+      signalConnecting = resolve;
+    });
+    const allowConnection = new Promise<void>((resolve) => {
+      releaseConnection = resolve;
+    });
+    const options: unknown = Reflect.get(operationPool, "options");
+    if (typeof options !== "object" || options === null) throw new Error("Missing owned pool options");
+    Reflect.set(options, "onConnect", async () => {
+      signalConnecting();
+      await allowConnection;
+    });
+    const operation = runInTenant(tenantId, () =>
+      withTransaction(operationPool, (client) => reconcileGmailAccount(client, gmailClient({}), params)),
+    );
+    const result = Promise.allSettled([operation]);
+    let observedCleanup: Promise<unknown> | undefined;
+    try {
+      await bounded(connecting);
+      expect(capturedBackends).toEqual([]);
+      const cleanup = settleOwnedPools(control, [operationPool], [operation], [capturedBackends], 100);
+      observedCleanup = cleanup.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      const deadline = Date.now() + 3000;
+      while (Reflect.get(operationPool, "ending") !== true && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(Reflect.get(operationPool, "ending")).toBe(true);
+      expect(capturedBackends).toEqual([]);
+      releaseConnection();
+      expect(await bounded(observedCleanup, 20_000)).toEqual(new Error("Gmail overlap timed out"));
+      expect((await bounded(result))[0]?.status).toBe("rejected");
+      expect(capturedBackends).toHaveLength(1);
+      const backend = capturedBackends[0];
+      if (!backend) throw new Error("Missing late acquired backend");
+      expect(backend.errors.length).toBeGreaterThan(0);
+      expect(backend.errors.every((error) => error.message === "Connection terminated unexpectedly")).toBe(true);
+      expect(backend.client.listeners("error")).not.toContain(backend.onError);
+      const remaining = await control.query<{ present: boolean }>(
+        "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1) AS present",
+        [backend.pid],
+      );
+      expect(remaining.rows[0]?.present).toBe(false);
+    } finally {
+      releaseConnection();
+      try {
+        if (observedCleanup) await bounded(observedCleanup, 20_000);
+        await bounded(holder.query("ROLLBACK"));
+        if (!observedCleanup) await settleOwnedPools(control, [operationPool], [operation], [capturedBackends]);
+      } finally {
+        capture.detach();
         holder.release(true);
         control.release(true);
       }
