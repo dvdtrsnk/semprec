@@ -2,8 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import http2 from "node:http2";
+import type { Socket } from "node:net";
 import crypto from "node:crypto";
-import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getApnsConfigFromEnv, sendApnsBackgroundPush, sendApnsNotification, type ApnsConfig } from "../apnsAdapter.js";
 import type { NotificationPushPayload } from "../pushSenders.js";
@@ -67,7 +67,9 @@ describe("sendApnsNotification (issue #703)", () => {
 
   it("resolves not-configured naming the missing variable when APNS_* is unset, without making an HTTP/2 request", async () => {
     for (const key of ENV_KEYS) delete process.env[key];
-    const connectSpy = vi.spyOn(http2, "connect");
+    const connectSpy = vi.spyOn(http2, "connect").mockImplementation(() => {
+      throw new Error("Unexpected connection");
+    });
 
     const result = await sendApnsNotification(target, payload);
 
@@ -81,10 +83,15 @@ describe("sendApnsNotification (issue #703)", () => {
     process.env.APNS_KEY_ID = "key-1";
     process.env.APNS_PRIVATE_KEY_PATH = path.join(os.tmpdir(), `apns-key-missing-${process.pid}-${Date.now()}.p8`);
     process.env.APNS_TOPIC = "com.example.app";
+    const connectSpy = vi.spyOn(http2, "connect").mockImplementation(() => {
+      throw new Error("Unexpected connection");
+    });
 
     const result = await sendApnsNotification(target, payload);
 
     expect(result).toEqual({ outcome: "not-configured", reason: expect.stringMatching(/ENOENT/) });
+    expect(connectSpy).not.toHaveBeenCalled();
+    connectSpy.mockRestore();
   });
 });
 
@@ -100,9 +107,9 @@ const apnsTestConfig: ApnsConfig = {
   topic: "com.example.app",
 };
 
-/** One HTTP/2 request as the fake session received it: its headers and the body it was ended with. */
+/** One HTTP/2 request as the owned peer received it: its headers and the body it was ended with. */
 interface RecordedApnsRequest {
-  headers: http2.OutgoingHttpHeaders;
+  headers: http2.IncomingHttpHeaders;
   body: string;
 }
 
@@ -112,48 +119,60 @@ interface FakeApnsAnswer {
   reason?: string;
 }
 
-/** One HTTP/2 request's stand-in: records its headers and body when ended, then gives `answer`. */
-class FakeApnsStream extends EventEmitter {
-  private readonly requests: RecordedApnsRequest[];
-  private readonly headers: http2.OutgoingHttpHeaders;
-  private readonly answer: FakeApnsAnswer;
-
-  constructor(requests: RecordedApnsRequest[], headers: http2.OutgoingHttpHeaders, answer: FakeApnsAnswer) {
-    super();
-    this.requests = requests;
-    this.headers = headers;
-    this.answer = answer;
-  }
-
-  setEncoding(): void {}
-
-  end(body: string): void {
-    this.requests.push({ headers: this.headers, body });
-    queueMicrotask(() => {
-      this.emit("response", { ":status": this.answer.status });
-      if (this.answer.reason !== undefined) this.emit("data", JSON.stringify({ reason: this.answer.reason }));
-      this.emit("end");
+/** The connect stub redirects the real client to a test-owned, cleartext loopback peer. */
+async function withApnsPeer<T>(
+  answer: FakeApnsAnswer,
+  run: (requests: RecordedApnsRequest[]) => Promise<T>,
+): Promise<T> {
+  const requests: RecordedApnsRequest[] = [];
+  const sessions = new Set<http2.ServerHttp2Session>();
+  const sockets = new Set<Socket>();
+  const server = http2.createServer();
+  server.on("connection", (socket: Socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  server.on("session", (session) => {
+    sessions.add(session);
+    session.on("close", () => sessions.delete(session));
+  });
+  server.on("stream", (stream, headers) => {
+    let body = "";
+    stream.setTimeout(5000, () => stream.close(http2.constants.NGHTTP2_CANCEL));
+    stream.setEncoding("utf8");
+    stream.on("data", (chunk: string) => {
+      body += chunk;
+      if (Buffer.byteLength(body) > 65536) stream.close(http2.constants.NGHTTP2_CANCEL);
+    });
+    stream.on("end", () => {
+      requests.push({ headers, body });
+      stream.respond({ ":status": answer.status });
+      stream.end(answer.reason === undefined ? undefined : JSON.stringify({ reason: answer.reason }));
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing APNs test peer address");
+  const connect = http2.connect.bind(http2);
+  const spy = vi.spyOn(http2, "connect").mockImplementation(() => connect(`http://127.0.0.1:${address.port}`));
+  try {
+    return await run(requests);
+  } finally {
+    spy.mockRestore();
+    for (const session of sessions) session.destroy();
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("APNs test peer did not close")), 5000);
+      server.close((err) => {
+        clearTimeout(timer);
+        if (err) reject(err);
+        else resolve();
+      });
     });
   }
-}
-
-/** The HTTP/2 session the adapter connects; every request it sends is kept in `requests`. */
-class FakeApnsSession extends EventEmitter {
-  readonly requests: RecordedApnsRequest[] = [];
-  private readonly answer: FakeApnsAnswer;
-
-  constructor(answer: FakeApnsAnswer = { status: 200 }) {
-    super();
-    this.answer = answer;
-  }
-
-  request(headers: http2.OutgoingHttpHeaders): FakeApnsStream {
-    return new FakeApnsStream(this.requests, headers, this.answer);
-  }
-
-  close(): void {}
-
-  destroy(): void {}
 }
 
 describe("sendApnsNotification interruption level (issue #1443)", () => {
@@ -161,17 +180,14 @@ describe("sendApnsNotification interruption level (issue #1443)", () => {
     vi.restoreAllMocks();
   });
 
-  /** Sends through a fake session and returns the result with the JSON body the adapter put on the wire. */
+  /** Sends through the owned peer and returns the result with the JSON body the adapter put on the wire. */
   async function sendAndReadBody(payload: NotificationPushPayload) {
-    const session = new FakeApnsSession();
-    // The adapter uses only request, close, destroy and on, which the fake provides.
-    vi.spyOn(http2, "connect").mockImplementation(() => session as unknown as http2.ClientHttp2Session);
-
-    const result = await sendApnsNotification(apnsTarget, payload, apnsTestConfig);
-
-    expect(session.requests).toHaveLength(1);
-    const wire: unknown = JSON.parse(session.requests[0]!.body);
-    return { result, wire };
+    return withApnsPeer({ status: 200 }, async (requests) => {
+      const result = await sendApnsNotification(apnsTarget, payload, apnsTestConfig);
+      expect(requests).toHaveLength(1);
+      const wire: unknown = JSON.parse(requests[0]!.body);
+      return { result, wire };
+    });
   }
 
   it("sends aps interruption-level when the payload carries one", async () => {
@@ -213,15 +229,14 @@ describe("sendApnsNotification body (issue #1773)", () => {
     vi.restoreAllMocks();
   });
 
-  /** Sends through a fake session and returns the JSON body the adapter put on the wire. */
+  /** Sends through the owned peer and returns the JSON body the adapter put on the wire. */
   async function sendAndReadWire(payload: NotificationPushPayload): Promise<unknown> {
-    const session = new FakeApnsSession();
-    vi.spyOn(http2, "connect").mockImplementation(() => session as unknown as http2.ClientHttp2Session);
-
-    await sendApnsNotification(apnsTarget, payload, apnsTestConfig);
-
-    expect(session.requests).toHaveLength(1);
-    return JSON.parse(session.requests[0]!.body);
+    return withApnsPeer({ status: 200 }, async (requests) => {
+      await sendApnsNotification(apnsTarget, payload, apnsTestConfig);
+      expect(requests).toHaveLength(1);
+      const wire: unknown = JSON.parse(requests[0]!.body);
+      return wire;
+    });
   }
 
   it("sends aps.alert.body beside the title when the notification has a body", async () => {
@@ -256,16 +271,14 @@ describe("sendApnsBackgroundPush (issue #1445)", () => {
     vi.restoreAllMocks();
   });
 
-  /** Sends through a fake session and returns the result with the exact body and headers the adapter put on the wire. */
+  /** Sends through the owned peer and returns the result with the exact body and headers the adapter put on the wire. */
   async function sendBackgroundAndRead(data: Record<string, unknown>, answer?: FakeApnsAnswer) {
-    const session = new FakeApnsSession(answer);
-    vi.spyOn(http2, "connect").mockImplementation(() => session as unknown as http2.ClientHttp2Session);
-
-    const result = await sendApnsBackgroundPush(apnsTarget, data, apnsTestConfig);
-
-    expect(session.requests).toHaveLength(1);
-    const request = session.requests[0]!;
-    return { result, body: request.body, headers: request.headers };
+    return withApnsPeer(answer ?? { status: 200 }, async (requests) => {
+      const result = await sendApnsBackgroundPush(apnsTarget, data, apnsTestConfig);
+      expect(requests).toHaveLength(1);
+      const request = requests[0]!;
+      return { result, body: request.body, headers: request.headers };
+    });
   }
 
   it("sends a sleepResync data object beside aps as a silent background push at priority 5", async () => {
@@ -287,10 +300,9 @@ describe("sendApnsBackgroundPush (issue #1445)", () => {
   });
 
   it("rejects a data object that contains aps with a ValidationError, before any request", async () => {
-    const session = new FakeApnsSession();
-    const connectSpy = vi
-      .spyOn(http2, "connect")
-      .mockImplementation(() => session as unknown as http2.ClientHttp2Session);
+    const connectSpy = vi.spyOn(http2, "connect").mockImplementation(() => {
+      throw new Error("Unexpected connection");
+    });
 
     await expect(
       sendApnsBackgroundPush(apnsTarget, { aps: { alert: "Title" } }, apnsTestConfig),
@@ -332,10 +344,9 @@ describe("sendApnsBackgroundPush (issue #1445)", () => {
 
   it("resolves not-configured naming the missing variable when APNS_* is unset, without a request", async () => {
     for (const key of ENV_KEYS) delete process.env[key];
-    const session = new FakeApnsSession();
-    const connectSpy = vi
-      .spyOn(http2, "connect")
-      .mockImplementation(() => session as unknown as http2.ClientHttp2Session);
+    const connectSpy = vi.spyOn(http2, "connect").mockImplementation(() => {
+      throw new Error("Unexpected connection");
+    });
 
     const result = await sendApnsBackgroundPush(apnsTarget, { kind: "sleepResync" });
 
@@ -350,18 +361,15 @@ describe("sendApnsNotification push headers (issue #1445)", () => {
   });
 
   it("sends an alert without the background push-type or priority headers", async () => {
-    const session = new FakeApnsSession();
-    vi.spyOn(http2, "connect").mockImplementation(() => session as unknown as http2.ClientHttp2Session);
-
-    await sendApnsNotification(
-      apnsTarget,
-      { notificationId: "notif-3", title: "Title", body: null, linkHref: null },
-      apnsTestConfig,
-    );
-
-    expect(session.requests).toHaveLength(1);
-    const headers = session.requests[0]!.headers;
-    expect(headers).not.toHaveProperty("apns-push-type");
-    expect(headers).not.toHaveProperty("apns-priority");
+    await withApnsPeer({ status: 200 }, async (requests) => {
+      await sendApnsNotification(
+        apnsTarget,
+        { notificationId: "notif-3", title: "Title", body: null, linkHref: null },
+        apnsTestConfig,
+      );
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.headers).not.toHaveProperty("apns-push-type");
+      expect(requests[0]!.headers).not.toHaveProperty("apns-priority");
+    });
   });
 });

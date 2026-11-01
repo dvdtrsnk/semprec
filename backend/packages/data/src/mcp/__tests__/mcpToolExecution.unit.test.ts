@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Pool } from "pg";
 
 const warn = vi.fn();
 vi.mock("@semprec/shared", async (importOriginal) => ({
@@ -23,12 +23,38 @@ const { McpError, ErrorCode } = await import("@modelcontextprotocol/sdk/types.js
 const { StreamableHTTPError } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
 const { UnauthorizedError } = await import("@modelcontextprotocol/sdk/client/auth.js");
 
-const POOL = {} as Pool;
+const POOL = new Pool();
+const poolConnect = vi.spyOn(POOL, "connect").mockImplementation(() => {
+  throw new Error("Unexpected database connection");
+});
+const poolQuery = vi.spyOn(POOL, "query").mockImplementation(() => {
+  throw new Error("Unexpected database query");
+});
+afterEach(() => {
+  const queries = poolQuery.mock.calls.length;
+  const connections = poolConnect.mock.calls.length;
+  poolQuery.mockClear();
+  poolConnect.mockClear();
+  expect(queries).toBe(0);
+  expect(connections).toBe(0);
+});
+afterAll(async () => {
+  vi.restoreAllMocks();
+  await POOL.end();
+});
 const TARGET = { serverItem: { id: "server-1", properties: {} }, toolName: "search_web" };
 
 function mockHandle(callTool: ReturnType<typeof vi.fn>, close: ReturnType<typeof vi.fn>) {
   connectMcpServer.mockResolvedValue({ client: { callTool }, close });
 }
+
+it("rejects accidental pool query and connect without opening a client", () => {
+  expect(() => POOL.query("SELECT 1")).toThrow("Unexpected database query");
+  expect(() => POOL.connect()).toThrow("Unexpected database connection");
+  expect(POOL.totalCount).toBe(0);
+  poolQuery.mockClear();
+  poolConnect.mockClear();
+});
 
 describe("executeMcpInvocation (issue #693)", () => {
   it("resolves the tool's result even when close() rejects afterward", async () => {
