@@ -108,7 +108,7 @@ describe("standalone blobs (issue #1401)", () => {
       const { blob, created } = await upload(storage, "png bytes");
 
       expect(created).toBe(true);
-      expect(blob.mimeType).toBe("image/png");
+      expect(blob.mimeType).toBe("application/octet-stream");
       expect(blob.byteSize).toBe(String("png bytes".length));
       expect(blob.storageKey.split("/")[1]).toBe("blobs");
       expect(storage.bytesByKey.get(blob.storageKey)).toEqual(Buffer.from("png bytes"));

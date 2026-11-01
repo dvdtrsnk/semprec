@@ -613,6 +613,12 @@ describe("database routes (issue #240)", () => {
       });
       expect(noTarget.status).toBe(400);
       expect(JSON.stringify(await noTarget.json())).toContain("targetDatabaseId");
+      const noCardinality = await post(headers, {
+        name: "X",
+        properties: [{ key: "link", name: "Link", type: "relation", targetDatabaseId: randomUUID() }],
+      });
+      expect(noCardinality.status).toBe(400);
+      expect(JSON.stringify(await noCardinality.json())).toContain("cardinality");
       for (const type of ["rollup", "title", "multi_select"]) {
         const res = await post(headers, { name: "X", properties: [{ key: "k", name: "K", type }] });
         expect(res.status).toBe(400);

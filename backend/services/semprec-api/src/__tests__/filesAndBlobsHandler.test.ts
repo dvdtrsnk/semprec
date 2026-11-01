@@ -195,7 +195,7 @@ describe("files and blobs routes (issue #158)", () => {
   });
 
   describe("POST /api/blobs (issue #1401)", () => {
-    async function uploadBlob(body: string, contentType = "image/png", authenticated = true) {
+    async function uploadBlob(body: string | Buffer, contentType = "image/png", authenticated = true) {
       const headers: Record<string, string> = {
         ...(authenticated ? await authHeader() : {}),
         "Content-Type": contentType,
@@ -216,10 +216,11 @@ describe("files and blobs routes (issue #158)", () => {
     });
 
     it("stores an image as a blob, 201, without creating a Files item", async () => {
-      const res = await uploadBlob("image bytes");
+      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const res = await uploadBlob(png);
       expect(res.status).toBe(201);
       const body = (await res.json()) as { blobId: string; byteSize: number; mimeType: string };
-      expect(body).toEqual({ blobId: expect.any(String), byteSize: 11, mimeType: "image/png" });
+      expect(body).toEqual({ blobId: expect.any(String), byteSize: png.length, mimeType: "image/png" });
       const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE properties ? 'file'");
       expect(rows[0].n).toBe(0);
       expect(await storedFileCount()).toBe(1);
@@ -231,6 +232,26 @@ describe("files and blobs routes (issue #158)", () => {
       expect(res.status).toBe(200);
       expect(((await res.json()) as { blobId: string; mimeType: string }).blobId).toBe(first.blobId);
       // The duplicate's bytes are removed after the commit, without the response waiting for it.
+      await vi.waitFor(async () => expect(await storedFileCount()).toBe(1));
+    });
+
+    it("detects a mismatched PDF and falls back for unknown bytes despite an image header", async () => {
+      const pdf = await uploadBlob("%PDF-1.7 test", "image/jpeg");
+      expect(pdf.status).toBe(201);
+      expect(await pdf.json()).toMatchObject({ mimeType: "application/pdf" });
+      const unknown = await uploadBlob("unrecognised content", "image/png");
+      expect(unknown.status).toBe(201);
+      expect(await unknown.json()).toMatchObject({ mimeType: "application/octet-stream" });
+    });
+
+    it("returns existing historical metadata unchanged on a deduplication hit", async () => {
+      const first = await uploadBlob("%PDF-1.7 historical", "image/png");
+      expect(first.status).toBe(201);
+      const body = (await first.json()) as { blobId: string };
+      await pool.query("UPDATE blobs SET mime_type = $2 WHERE id = $1", [body.blobId, "image/legacy"]);
+      const second = await uploadBlob("%PDF-1.7 historical", "image/jpeg");
+      expect(second.status).toBe(200);
+      expect(await second.json()).toMatchObject({ blobId: body.blobId, mimeType: "image/legacy" });
       await vi.waitFor(async () => expect(await storedFileCount()).toBe(1));
     });
 

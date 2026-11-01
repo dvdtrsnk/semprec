@@ -1,10 +1,14 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { runAsSystem } from "@semprec/shared";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import { createRuntimeRolePool } from "../../testSupport/tenantFixtures.js";
+import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { runFilesTypeOptionsCutoverMigration } from "../filesTypeOptionsCutoverMigration.js";
 
 let pool: Pool;
+let runtimePool: Pool | undefined;
 
 async function typeConfig(): Promise<{ options: { key: string }[] }> {
   const { rows } = await pool.query<{ config: { options: { key: string }[] } }>(
@@ -23,6 +27,7 @@ describe("runFilesTypeOptionsCutoverMigration (issue #1410)", () => {
   });
 
   afterAll(async () => {
+    await runtimePool?.end();
     await pool?.end();
   });
 
@@ -50,5 +55,18 @@ describe("runFilesTypeOptionsCutoverMigration (issue #1410)", () => {
     expect(before.options.map((o) => o.key)).toEqual(["pdf", "xlsx", "docx", "jpg", "png", "heic", "audio"]);
     await runFilesTypeOptionsCutoverMigration(pool);
     expect(await typeConfig()).toEqual(before);
+  });
+
+  it("upgrades a populated install through the tenant cutover runner twice", async () => {
+    await pool.query(
+      `UPDATE properties p SET config = jsonb_set(config, '{options}', '[{"key":"pdf"},{"key":"xlsx"},{"key":"docx"},{"key":"jpg"}]'::jsonb)
+       FROM databases d WHERE d.id = p.database_id AND d.owner_module_id = 'files' AND p.key = 'type'`,
+    );
+    runtimePool ??= await createRuntimeRolePool(pool, "semprec_data");
+    await runAsSystem("Files type cutover test", () => runTenantCutoverMigrations(runtimePool!));
+    const first = await typeConfig();
+    expect(first.options.map((option) => option.key)).toEqual(["pdf", "xlsx", "docx", "jpg", "png", "heic", "audio"]);
+    await runAsSystem("Files type cutover test", () => runTenantCutoverMigrations(runtimePool!));
+    expect(await typeConfig()).toEqual(first);
   });
 });

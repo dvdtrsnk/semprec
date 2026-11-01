@@ -152,7 +152,7 @@ export async function ingestUploadedFile(
 }
 
 export interface IngestUploadedBlobInput {
-  /** The validated mime type to store, e.g. `image/png`; the caller decides which types are accepted. */
+  /** The caller-validated content type; admission is independent of detection from stored bytes. */
   mimeType: string;
   source: Readable;
   /** Hard cap enforced while streaming — see `BlobStorageWriter.writeStream`'s `maxBytes`. */
@@ -191,9 +191,10 @@ export async function ingestUploadedBlob(
   }
 
   try {
+    const detected = detectFileType(await readHead(input.storage, storageKey, byteSize));
     return await withTransaction(pool, async (client) => {
       const blob = await findOrCreateBlob(client, {
-        mimeType: input.mimeType,
+        mimeType: detected?.mimeType ?? UNKNOWN_CONTENT_MIME,
         byteSize,
         storageKey,
         contentHash,

@@ -6,7 +6,8 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createDocStore, type DocStore } from "../docs/docStore.js";
 import { CANVAS_ELEMENT_TYPES } from "../docs/canvas.js";
-import { loadDoc, mutateDoc } from "../docs/docPersistence.js";
+import { loadDoc, mutateDoc, mutateDocWithClient } from "../docs/docPersistence.js";
+import { withTransaction } from "../db/pool.js";
 import { HistoryNotRetainedError, NotFoundError, ValidationError } from "../errors.js";
 import { setDocUpdateHook } from "../realtimeHook.js";
 
@@ -213,6 +214,58 @@ describe("page.restoreVersion (issue #1617): restoring a page to an earlier vers
     await mutateDoc(pool, page.docId, "user", (doc) => Y.applyUpdate(doc, clientUpdate));
 
     expect(await blockContents(page.itemId)).toEqual({ b1: "first", b2: "second", b5: "from another client" });
+  });
+
+  it("waits for an in-flight document mutation before computing the restore", async () => {
+    const page = await pageWithUserBlocks();
+    await agentEdit(page);
+    let releaseWriter!: () => void;
+    let writerReady!: (pid: number) => void;
+    const release = new Promise<void>((resolve) => {
+      releaseWriter = resolve;
+    });
+    const ready = new Promise<number>((resolve) => {
+      writerReady = resolve;
+    });
+    const writer = withTransaction(pool, async (client) => {
+      const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+      if (pid === undefined) throw new Error("missing writer pid");
+      await mutateDocWithClient(client, page.docId, "user", (doc) => {
+        const block = new Y.Map<unknown>();
+        doc.getMap<Y.Map<unknown>>("blocks").set("overlap", block);
+        block.set("sys:id", "overlap");
+        block.set("sys:flavour", "paragraph");
+        block.set("content", "in-flight");
+      });
+      writerReady(pid);
+      await release;
+    });
+    let restore: Promise<unknown> | undefined;
+    try {
+      const pid = await Promise.race([
+        ready,
+        writer.then(() => {
+          throw new Error("writer finished before the barrier");
+        }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("writer barrier timed out")), 5_000)),
+      ]);
+      restore = docStore.restoreVersion(page.itemId, page.at(-1.5));
+      let blocked = false;
+      for (let attempt = 0; attempt < 100 && !blocked; attempt += 1) {
+        const result = await pool.query<{ blocked: boolean }>(
+          "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked",
+          [pid],
+        );
+        blocked = result.rows[0]?.blocked === true;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked).toBe(true);
+    } finally {
+      releaseWriter();
+      const settled = await Promise.allSettled([writer, ...(restore ? [restore] : [])]);
+      for (const result of settled) if (result.status === "rejected") throw result.reason;
+    }
+    expect(await blockContents(page.itemId)).toEqual({ b1: "first", b2: "second" });
   });
 
   it("refuses an instant outside the retention window with 410 and a future instant with 400, writing nothing", async () => {
