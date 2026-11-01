@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 
+const warn = vi.fn();
+vi.mock("@semprec/shared", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@semprec/shared")>()),
+  createLogger: () => ({ warn }),
+}));
+
 const connectMcpServer = vi.fn();
 vi.mock("../mcpConnectionFactory.js", () => ({ connectMcpServer: (...args: unknown[]) => connectMcpServer(...args) }));
 
@@ -33,6 +39,8 @@ describe("executeMcpInvocation (issue #693)", () => {
 
     expect(result).toEqual({ error: false, result: "ok" });
     expect(close).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith({ mcpServerItemId: "server-1" }, "MCP connection close failed after tools/call");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("close boom");
   });
 
   it("resolves the call's own error even when close() also rejects afterward", async () => {

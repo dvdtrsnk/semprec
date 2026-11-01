@@ -8,6 +8,7 @@ import type {
   UserTurnContextRef,
 } from "@semprec/agent-runtime";
 import { AgentRunError, AiBudgetExceededError } from "@semprec/data";
+import { labeledSempMessageRefSchema } from "@semprec/shared";
 import { logger } from "./logger.js";
 import { toPiMessages } from "./piConversationHistory.js";
 
@@ -147,8 +148,10 @@ async function* promptMessages(
   signal?: AbortSignal,
 ): AsyncGenerator<AgentMessage> {
   signal?.throwIfAborted();
+  const parsed = labeledSempMessageRefSchema.array().safeParse(context);
+  if (!parsed.success) throw new Error("Invalid user turn context");
   // Yielded (and so persisted by the consumer) before the prompt is sent to the model.
-  yield { kind: "user_message", text: task, context };
+  yield { kind: "user_message", text: task, context: parsed.data };
   signal?.throwIfAborted();
   const queue: AgentMessage[] = [];
   let wake: (() => void) | null = null;

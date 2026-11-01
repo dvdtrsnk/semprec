@@ -192,14 +192,25 @@ describe("createGatewayModel (issue #647)", () => {
     });
 
     it("marks only the refused call when two run concurrently", async () => {
+      const pending: { which: string; res: import("node:http").ServerResponse }[] = [];
       const gateway = await listenWith((which, res) => {
-        if (which === "refuse") refuse(403, { "x-semprec-error-code": "budget_exceeded" })("", res);
-        else refuse(500, {})("", res);
+        const deadline = setTimeout(() => res.destroy(), 3000);
+        res.once("close", () => clearTimeout(deadline));
+        pending.push({ which, res });
+        if (pending.length !== 2) return;
+        for (const request of pending) {
+          if (request.which === "refuse") {
+            refuse(403, { "x-semprec-error-code": "budget_exceeded" })("", request.res);
+          } else {
+            refuse(500, {})("", request.res);
+          }
+        }
       });
       const [refused, failed] = await Promise.all([
         finalMessage(gateway, { "x-case": "refuse" }),
         finalMessage(gateway, { "x-case": "fail" }),
       ]);
+      expect(pending.map(({ which }) => which).sort()).toEqual(["fail", "refuse"]);
       expect(gateway.isBudgetRefusal(refused)).toBe(true);
       expect(gateway.isBudgetRefusal(failed)).toBe(false);
     });

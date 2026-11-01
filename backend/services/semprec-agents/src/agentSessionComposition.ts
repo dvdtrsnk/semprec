@@ -198,7 +198,7 @@ async function createMcpTools(pool: Pool, runId: string, projectItemId: string):
                       ? { mcpServerItemId: result.failure.mcpServerItemId }
                       : {}),
                     connectorName: grant.mcpServerName,
-                    ...(result.failure.timeoutMs !== undefined ? { timeoutMs: result.failure.timeoutMs } : {}),
+                    ...(result.failure.failureKind === "timeout" ? { timeoutMs: result.failure.timeoutMs } : {}),
                   }
                 : {}),
             },

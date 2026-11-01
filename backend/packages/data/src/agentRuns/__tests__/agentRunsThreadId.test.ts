@@ -2,10 +2,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import {
   createTenantZeroUser,
+  createRuntimeRolePool,
   createTestTenant,
   getTenantZeroId,
   getTestPool,
   resetDatabase,
+  withTenantTransaction,
 } from "../../testSupport/testDb.js";
 import { createAgentRun, getAgentRun } from "../agentRunsStore.js";
 
@@ -78,5 +80,32 @@ describe("agent_runs.thread_id (issue #1452)", () => {
     await expect(createAgentRun(pool, { triggeredBy: "user", task: "chat", threadId: threadB })).rejects.toMatchObject({
       code: "23503",
     });
+  });
+
+  it("enforces thread and parent isolation using the runtime role", async () => {
+    const tenantB = await createTestTenant(pool);
+    const threadB = await insertThread(tenantB);
+    const threadA = await insertThread();
+    const parentA = await createAgentRun(pool, { triggeredBy: "user", task: "chat", threadId: threadA });
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      await withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+        const child = await createAgentRun(client, { triggeredBy: "supervisor", task: "sub", parentRunId: parentA.id });
+        expect(child.threadId).toBe(threadA);
+      });
+      await expect(
+        withTenantTransaction(runtime, getTenantZeroId(), (client) =>
+          createAgentRun(client, { triggeredBy: "user", task: "chat", threadId: threadB }),
+        ),
+      ).rejects.toMatchObject({ code: "23503" });
+      await withTenantTransaction(runtime, tenantB, async (client) => {
+        expect(await getAgentRun(client, parentA.id)).toBeNull();
+        await expect(
+          createAgentRun(client, { triggeredBy: "supervisor", task: "sub", parentRunId: parentA.id }),
+        ).rejects.toThrow("does not exist");
+      });
+    } finally {
+      await runtime.end();
+    }
   });
 });

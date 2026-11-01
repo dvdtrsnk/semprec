@@ -23,12 +23,10 @@ export const MCP_FAILURE_KINDS = ["timeout", "unavailable", "connection", "auth"
 export type McpFailureKind = (typeof MCP_FAILURE_KINDS)[number];
 
 /** Machine-readable reason for a failed MCP call; carries ids and numbers only, never an exception message. */
-export interface McpInvokeFailure {
-  failureKind: McpFailureKind;
-  /** Omitted only for `unavailable`, where no server item was loaded. */
-  mcpServerItemId?: string;
-  timeoutMs?: number;
-}
+export type McpInvokeFailure =
+  | { failureKind: "unavailable"; mcpServerItemId?: string }
+  | { failureKind: "timeout"; mcpServerItemId: string; timeoutMs: number }
+  | { failureKind: "connection" | "auth" | "toolError"; mcpServerItemId: string };
 
 export type McpInvokeArgs = Record<string, unknown>;
 
@@ -205,8 +203,8 @@ export async function executeMcpInvocation(
     // successful outcome into a job failure (issue #693).
     try {
       await handle?.close();
-    } catch (err) {
-      logger.warn({ err }, "MCP connection close failed after tools/call");
+    } catch {
+      logger.warn({ mcpServerItemId: target.serverItem.id }, "MCP connection close failed after tools/call");
     }
   }
 }

@@ -75,7 +75,14 @@ describe("thread conversation key (issue #1560)", () => {
     const threadB = await insertThread();
     const runA = await threadSession(threadA);
     const runB = await threadSession(threadB);
-    const delegated = await threadSession(threadA, runA.id);
+    const projectItemId = randomUUID();
+    const delegated = await createAgentRun(pool, {
+      projectItemId,
+      parentRunId: runA.id,
+      triggeredBy: "supervisor",
+      unit: "session",
+      task: "chat",
+    });
     const b1 = await insertAgentRunEvent(pool, runB.id, "message", { kind: "message" });
     const d1 = await insertAgentRunEvent(pool, delegated.id, "message", { kind: "message" });
     const checkpoint = await insertAgentRunEvent(pool, runA.id, "compaction", { kind: "compaction" });
@@ -87,11 +94,11 @@ describe("thread conversation key (issue #1560)", () => {
     });
     expect(forB.map((e) => e.id)).toEqual([b1.id]);
     const forDelegated = await listSessionAgentRunEventsFromLastCompaction(pool, {
-      projectItemId: randomUUID(),
+      projectItemId,
       triggeredBy: "supervisor",
       parentRunId: runA.id,
     });
-    expect(forDelegated).toEqual([]);
+    expect(forDelegated.map((e) => e.id)).toEqual([d1.id]);
     const forA = await listSessionAgentRunEventsFromLastCompaction(pool, {
       threadId: threadA,
       triggeredBy: "user",
@@ -129,10 +136,6 @@ describe("thread conversation key (issue #1560)", () => {
       const threadB = await insertThread();
       const runA = await threadSession(threadA);
       const oldA = await insertAgentRunEvent(pool, runA.id, "message", { kind: "message" });
-      const checkpointA = await insertAgentRunEvent(pool, runA.id, "compaction", { kind: "compaction" });
-      const tailA = await insertAgentRunEvent(pool, runA.id, "message", { kind: "message" });
-      await finishAgentRun(pool, runA.id, "done", null);
-
       const runB = await threadSession(threadB);
       const b1 = await insertAgentRunEvent(pool, runB.id, "message", { kind: "message" });
       await finishAgentRun(pool, runB.id, "done", null);
@@ -141,7 +144,10 @@ describe("thread conversation key (issue #1560)", () => {
       const d1 = await insertAgentRunEvent(pool, delegated.id, "message", { kind: "message" });
       await finishAgentRun(pool, delegated.id, "done", null);
 
-      // The checkpoint of A is newer than every B and delegated event, yet must not cover them.
+      const checkpointA = await insertAgentRunEvent(pool, runA.id, "compaction", { kind: "compaction" });
+      const tailA = await insertAgentRunEvent(pool, runA.id, "message", { kind: "message" });
+      await finishAgentRun(pool, runA.id, "done", null);
+
       for (const id of [runA.id, runB.id, delegated.id]) await backdate(id);
 
       const result = await handleAgentRunEventsRetentionTask(pool);

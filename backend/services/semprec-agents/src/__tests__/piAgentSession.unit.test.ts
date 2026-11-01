@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
 import {
   Type,
@@ -86,6 +87,7 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
       return streamFn(m, context, options);
     };
     const pending = [["approved: X"], []];
+    const ref = { kind: "item" as const, itemId: randomUUID(), databaseId: randomUUID(), label: "Budget" };
     const session = createPiAgentSessionFactory({
       toolEventMetadata: new Map(),
       model,
@@ -93,16 +95,38 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
       tools: [],
       systemPrompt: "base",
       pendingSystemMessages: () => pending.shift() ?? [],
-    })({ task: "hello", context: [{ label: "Budget", id: "i1" }] });
+    })({ task: "hello", context: [ref] });
 
     const first = await collect(session.messages());
     const second = await collect(session.send!("again"));
 
-    expect(first[0]).toEqual({ kind: "user_message", text: "hello", context: [{ label: "Budget", id: "i1" }] });
+    expect(first[0]).toEqual({ kind: "user_message", text: "hello", context: [ref] });
     expect(second[0]).toEqual({ kind: "user_message", text: "again", context: [] });
     expect(seen[0]).toContain("approved: X");
     expect(seen[0]).toContain("hello");
     expect(seen[1]).toBe(JSON.stringify([{ type: "text", text: "again" }]));
+  });
+
+  it.each([
+    ["unknown kind", { kind: "unknown", label: "x" }],
+    ["invalid UUID", { kind: "item", itemId: "invalid", databaseId: randomUUID(), label: "x" }],
+    ["invalid range", { kind: "transcriptSegment", itemId: randomUUID(), startsAt: 2, endsAt: 1, label: "x" }],
+    ["invalid label", { kind: "block", itemId: randomUUID(), blockId: randomUUID(), label: 1 }],
+    ["expanded field", { kind: "block", itemId: randomUUID(), blockId: randomUUID(), label: "x", text: "secret" }],
+  ])("rejects %s before yielding or prompting", async (_name, invalid: unknown) => {
+    const { model, streamFn } = fauxModel();
+    const observed = vi.fn(streamFn);
+    const session = createPiAgentSessionFactory({
+      toolEventMetadata: new Map(),
+      model,
+      streamFn: observed,
+      tools: [],
+      systemPrompt: "base",
+      // @ts-expect-error Exercise invalid input crossing the runtime boundary.
+    })({ task: "secret task", context: [invalid] });
+    const iterator = session.messages()[Symbol.asyncIterator]();
+    await expect(iterator.next()).rejects.toThrow("Invalid user turn context");
+    expect(observed).not.toHaveBeenCalled();
   });
 
   it("aborts a blocked production tool directly while its async generator waits", async () => {
