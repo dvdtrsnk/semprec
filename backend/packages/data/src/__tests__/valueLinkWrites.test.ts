@@ -29,7 +29,7 @@ import * as inboxSourceGuard from "../inbox/inboxSourceGuard.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
-import { rollupRecomputeJobKey } from "../rollup/recompute.js";
+import { enqueueRollupRecompute, rollupRecomputeJobKey } from "../rollup/recompute.js";
 import { executeProposalSteps } from "../inbox/proposalSteps.js";
 
 /** Issue #1516: user and agent writes end value links; the valueLinks process needs an `on` link. */
@@ -1208,6 +1208,24 @@ describe("value link state on writes (issue #1516)", () => {
           const unrelated = await runInTenant(tenant, () =>
             cp.createItem({ databaseId: fx.files.id, properties: { name: "original" } }),
           );
+          const rollup = await runInTenant(tenant, () =>
+            cp.createProperty({
+              databaseId: fx.files.id,
+              key: "projectCount",
+              name: "Project count",
+              type: "rollup",
+              config: { relationPropertyKey: "projects", aggregation: "count" },
+            }),
+          );
+          const jobKey = rollupRecomputeJobKey(rollup.id, unrelated.id);
+          const jobCount = async () =>
+            (
+              await pool.query<{ count: string }>(
+                "SELECT count(*)::text AS count FROM graphile_worker._private_jobs WHERE key = $1",
+                [jobKey],
+              )
+            ).rows[0]?.count;
+          expect(await jobCount()).toBe("0");
           await withTenantTransaction(holderPool, tenant, (client) =>
             insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
           );
@@ -1247,6 +1265,7 @@ describe("value link state on writes (issue #1516)", () => {
                     { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "before" } },
                     { writer: USER },
                   );
+                  await enqueueRollupRecompute(client, rollup.id, unrelated.id);
                   runAfterCommit(client, callback);
                   await expect(
                     createRelationWithClient(
@@ -1275,6 +1294,7 @@ describe("value link state on writes (issue #1516)", () => {
             );
             expect(events.filter((event) => event.scope === "item" && event.itemId === unrelated.id)).toEqual([]);
             expect(callback).not.toHaveBeenCalled();
+            expect(await jobCount()).toBe("0");
           } catch (error) {
             failure = error;
           } finally {
