@@ -711,12 +711,12 @@
       "sequence": 7,
       "status": "proposed",
       "title": "[backend-delivery 07/74] Implement data/blobs, data/chokePoint, application changes",
-      "bodyCharacters": 57539,
-      "specSha256": "b91f2b02354a247b3a04860c0ec1dadcfaddd33d6e839cda8d29dfa56ee4c691",
+      "bodyCharacters": 58849,
+      "specSha256": "c420c7c79aa93e36dff8882192916c9a27a1ac17e65b7e7b0cbae58b7d8d08eb",
       "members": [
         {
           "id": "gh-1401",
-          "specSha256": "15c2eb897cdd5b440321b84ece7471ecfe2e46ac93b40d71224ff39047a15eec",
+          "specSha256": "aabeff1890fe2c72a01b7f1b41499524e8f95fb0edc802862dfb3844cae4e2b6",
           "parent": "gh-1325",
           "dependencies": [
             "gh-1355",
@@ -735,7 +735,7 @@
         },
         {
           "id": "gh-1410",
-          "specSha256": "3488e5dea7c7ee8c3e85e04cd49c290a79612d84335731a5c121dc918609d486",
+          "specSha256": "a0d4ef0391834afeb5dcc5b2d0b23d73221b51c11d423c0ff1d9256f97eb4351",
           "parent": "gh-1328",
           "dependencies": [
             "gh-1389"
