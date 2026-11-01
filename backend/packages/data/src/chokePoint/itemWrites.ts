@@ -460,22 +460,21 @@ export async function updateItemWithClient(
   const patchKeys = Object.keys(input.propertiesPatch);
   assertWritableProperties(properties, patchKeys, options);
   assertColorValues(properties, input.propertiesPatch);
-  // The declared handoff: the valueLinks process may write a user-owned value only while its link is on.
-  if (options.systemOwnerProcess === VALUE_LINKS_OWNER_PROCESS) {
-    for (const key of patchKeys) await assertValueLinkHandoff(client, { itemId: input.itemId, propertyKey: key });
-  }
-
   const database = await databasesStore.getDatabase(client, input.databaseId);
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
   const writer = options.writer ?? SYSTEM_WRITER;
   assertTitlePresent(properties, input.propertiesPatch, database.ownerModuleId, writer, "patch");
   let propertiesPatch = input.propertiesPatch;
   const moduleId = database.ownerModuleId;
-  if (moduleId !== null && hasItemPreWriteTransform(moduleId)) {
-    // The row lock is taken before the transforms read `stored`, so the decision is made on the row this
-    // update will replace; a database whose module has no transform takes no lock here.
-    const stored = await itemsStore.lockItemById(client, input.databaseId, input.itemId);
+  const valueLinksHandoff = options.systemOwnerProcess === VALUE_LINKS_OWNER_PROCESS;
+  const needsTransform = moduleId !== null && hasItemPreWriteTransform(moduleId);
+  let stored: Awaited<ReturnType<typeof itemsStore.lockItemById>> = null;
+  if (valueLinksHandoff || needsTransform) {
+    stored = await itemsStore.lockItemById(client, input.databaseId, input.itemId);
     if (!stored || stored.deletedAt) throw new NotFoundError(`Item ${input.itemId} not found`);
+  }
+  if (moduleId !== null && needsTransform && stored) {
+    // The transform reads the locked row that this update will replace.
     propertiesPatch = await applyItemPreWriteTransforms(
       moduleId,
       { client, database, stored, patch: input.propertiesPatch, humanWriterUserId: options.humanWriterUserId, writer },
@@ -488,6 +487,15 @@ export async function updateItemWithClient(
   // and the timezone check treat these like any other written key; `patchKeys` (the caller's keys)
   // stays the basis of the returned `previous`.
   const writtenKeys = Object.keys(propertiesPatch);
+  if (valueLinksHandoff) {
+    const userKeys = new Set(
+      properties.filter((property) => property.owner === "user").map((property) => property.key),
+    );
+    const handoffKeys = new Set([...patchKeys, ...writtenKeys.filter((key) => userKeys.has(key))]);
+    for (const key of [...handoffKeys].sort()) {
+      await assertValueLinkHandoff(client, { itemId: input.itemId, propertyKey: key });
+    }
+  }
 
   const { previous, ...item } = await itemsStore.updateItemProperties(client, {
     databaseId: input.databaseId,

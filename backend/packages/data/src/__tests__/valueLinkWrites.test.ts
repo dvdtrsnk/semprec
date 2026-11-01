@@ -23,7 +23,6 @@ import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js"
 import { SYSTEM_WRITER, type WriterIdentity } from "../chokePoint/writerKind.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
-import * as valueLinksStore from "../chokePoint/valueLinksStore.js";
 
 /** Issue #1516: user and agent writes end value links; the valueLinks process needs an `on` link. */
 const USER: WriterIdentity = { writerKind: "user" };
@@ -427,76 +426,71 @@ describe("value link state on writes (issue #1516)", () => {
   });
 
   describe("valueLinks handoff", () => {
-    it.each(["missing", "broken"] as const)(
-      "rejects a date-off Tasks transform when an added user-key link is %s",
-      async (state) => {
-        await seedSystem(pool);
-        const tenant = getTenantZeroId();
-        await withRuntimePool(async (runtime) => {
-          const cp = createChokePoint(runtime);
-          const task = await runInTenant(tenant, async () => {
-            const db = (await cp.listDatabases()).find((entry) => entry.key === "tasks");
-            if (!db) throw new Error("Missing Tasks database");
-            return cp.createItem({
-              databaseId: db.id,
-              properties: { name: "Timed", date: "2026-10-13", timeFrom: "10:00", timeTo: "11:00" },
+    it.each([
+      ["timeFrom", "missing"],
+      ["timeFrom", "broken"],
+      ["timeTo", "missing"],
+      ["timeTo", "broken"],
+    ] as const)("rejects a date-off Tasks transform when the %s link is %s", async (missingKey, state) => {
+      await seedSystem(pool);
+      const tenant = getTenantZeroId();
+      await withRuntimePool(async (runtime) => {
+        const cp = createChokePoint(runtime);
+        const task = await runInTenant(tenant, async () => {
+          const db = (await cp.listDatabases()).find((entry) => entry.key === "tasks");
+          if (!db) throw new Error("Missing Tasks database");
+          return cp.createItem({
+            databaseId: db.id,
+            properties: { name: "Timed", date: "2026-10-13", timeFrom: "10:00", timeTo: "11:00" },
+          });
+        });
+        await withTenantTransaction(runtime, tenant, async (client) => {
+          for (const propertyKey of ["date", "timeFrom", "timeTo"].filter((key) => key !== missingKey)) {
+            await insertValueLink(client, { itemId: task.id, propertyKey, ruleKey: "test", sources: [] });
+          }
+          if (state === "broken") {
+            await insertValueLink(client, {
+              itemId: task.id,
+              propertyKey: missingKey,
+              ruleKey: "test",
+              state: "broken",
+              brokenBy: "user",
+              brokenAt: new Date("2026-01-01T00:00:00Z"),
+              sources: [],
             });
-          });
-          await withTenantTransaction(runtime, tenant, async (client) => {
-            for (const propertyKey of ["date", "timeFrom"]) {
-              await insertValueLink(client, { itemId: task.id, propertyKey, ruleKey: "test", sources: [] });
-            }
-            if (state === "broken") {
-              await insertValueLink(client, {
-                itemId: task.id,
-                propertyKey: "timeTo",
-                ruleKey: "test",
-                state: "broken",
-                brokenBy: "user",
-                brokenAt: new Date("2026-01-01T00:00:00Z"),
-                sources: [],
-              });
-            }
-          });
-          const events: InvalidationEvent[] = [];
-          setInvalidationHook((event) => events.push(event));
-          try {
-            await expect(
-              runInTenant(tenant, () =>
-                withTransaction(runtime, (client) =>
-                  updateItemWithClient(
-                    client,
-                    { databaseId: task.databaseId, itemId: task.id, propertiesPatch: { date: null } },
-                    { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
-                  ),
+          }
+        });
+        const events: InvalidationEvent[] = [];
+        setInvalidationHook((event) => events.push(event));
+        try {
+          await expect(
+            runInTenant(tenant, () =>
+              withTransaction(runtime, (client) =>
+                updateItemWithClient(
+                  client,
+                  { databaseId: task.databaseId, itemId: task.id, propertiesPatch: { date: null } },
+                  { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
                 ),
               ),
-            ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-            expect(events).toEqual([]);
-          } finally {
-            setInvalidationHook(() => {});
-          }
-          expect((await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id)))?.properties).toEqual(
-            task.properties,
-          );
-          const links = await withTenantTransaction(runtime, tenant, (client) =>
-            listValueLinksByItemIds(client, [task.id]),
-          );
-          expect(links.map((entry) => [entry.propertyKey, entry.state])).toEqual(
-            state === "missing"
-              ? [
-                  ["date", "on"],
-                  ["timeFrom", "on"],
-                ]
-              : [
-                  ["date", "on"],
-                  ["timeFrom", "on"],
-                  ["timeTo", "broken"],
-                ],
-          );
-        });
-      },
-    );
+            ),
+          ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+          expect(events).toEqual([]);
+        } finally {
+          setInvalidationHook(() => {});
+        }
+        expect((await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id)))?.properties).toEqual(
+          task.properties,
+        );
+        const links = await withTenantTransaction(runtime, tenant, (client) =>
+          listValueLinksByItemIds(client, [task.id]),
+        );
+        expect(links.map((entry) => [entry.propertyKey, entry.state])).toEqual(
+          ["date", "timeFrom", "timeTo"]
+            .filter((key) => state !== "missing" || key !== missingKey)
+            .map((key) => [key, key === missingKey ? "broken" : "on"]),
+        );
+      });
+    });
 
     it("allows a date-off Tasks transform when every added user key has an on link", async () => {
       await seedSystem(pool);
@@ -647,7 +641,7 @@ describe("value link state on writes (issue #1516)", () => {
 
   describe("tenants", () => {
     it.each(["user-first", "system-first"] as const)(
-      "diagnoses the existing item/link lock inversion with %s",
+      "serializes item and handoff writes with %s",
       async (order) => {
         const tenant = await createTestTenant(pool);
         await withRuntimePool(async (userPool) =>
@@ -666,12 +660,14 @@ describe("value link state on writes (issue #1516)", () => {
             const systemHeld = barrier();
             const releaseUser = barrier();
             const releaseSystem = barrier();
+            const userStarted = barrier();
+            const systemStarted = barrier();
             let userClient: PoolClient | undefined;
             let systemClient: PoolClient | undefined;
             let userPid: number | undefined;
             let systemPid: number | undefined;
             const realUpdate = itemsStore.updateItemProperties;
-            const realHandoff = valueLinksStore.lockOnValueLink;
+            const realLock = itemsStore.lockItemById;
             const updateSpy = vi.spyOn(itemsStore, "updateItemProperties").mockImplementation(async (client, input) => {
               const result = await realUpdate(client, input);
               if (client === userClient) {
@@ -680,10 +676,10 @@ describe("value link state on writes (issue #1516)", () => {
               }
               return result;
             });
-            const handoffSpy = vi
-              .spyOn(valueLinksStore, "lockOnValueLink")
-              .mockImplementation(async (client, id, key) => {
-                const found = await realHandoff(client, id, key);
+            const lockSpy = vi
+              .spyOn(itemsStore, "lockItemById")
+              .mockImplementation(async (client, databaseId, itemId) => {
+                const found = await realLock(client, databaseId, itemId);
                 if (client === systemClient && found) {
                   systemHeld.resolve();
                   await bounded(releaseSystem.promise);
@@ -706,9 +702,11 @@ describe("value link state on writes (issue #1516)", () => {
                     if (kind === "user") {
                       userClient = client;
                       userPid = pid;
+                      userStarted.resolve();
                     } else {
                       systemClient = client;
                       systemPid = pid;
+                      systemStarted.resolve();
                     }
                     return updateItemWithClient(
                       client,
@@ -730,43 +728,37 @@ describe("value link state on writes (issue #1516)", () => {
                 user = run("user");
                 await bounded(userHeld.promise);
                 system = run("system");
-                await bounded(systemHeld.promise);
+                await bounded(systemStarted.promise);
                 if (!userPid || !systemPid) throw new Error("Missing participant PID");
-                releaseSystem.resolve();
                 await waitBlocked(userPid, systemPid);
                 releaseUser.resolve();
+                releaseSystem.resolve();
               } else {
                 system = run("system");
                 await bounded(systemHeld.promise);
                 user = run("user");
-                await bounded(userHeld.promise);
+                await bounded(userStarted.promise);
                 if (!userPid || !systemPid) throw new Error("Missing participant PID");
-                releaseUser.resolve();
                 await waitBlocked(systemPid, userPid);
                 releaseSystem.resolve();
+                releaseUser.resolve();
               }
               const results = await bounded(Promise.all([user, system]));
-              const failed = results.filter((result) => !result.ok);
-              const codes = failed.map((result) => {
-                if (result.ok || typeof result.error !== "object" || result.error === null || !("code" in result.error))
-                  return null;
-                return result.error.code;
-              });
-              console.info("value-link diagnostic", { order, userPid, systemPid, codes });
-              expect(codes).toEqual(["40P01"]);
-              expect(results.filter((result) => result.ok)).toHaveLength(1);
-              expect(events.filter((event) => event.scope === "item" && event.itemId === fx.file.id)).toHaveLength(1);
+              expect(results[0]).toEqual({ ok: true });
+              if (order === "user-first") {
+                expect(results[1]).toMatchObject({ ok: false, error: { status: 403, code: "owner_violation" } });
+              } else {
+                expect(results[1]).toEqual({ ok: true });
+              }
+              expect(events.filter((event) => event.scope === "item" && event.itemId === fx.file.id)).toHaveLength(
+                order === "user-first" ? 1 : 2,
+              );
               const current = await runInTenant(tenant, () => cp.getItem(fx.files.id, fx.file.id));
               const links = await withTenantTransaction(userPool, tenant, (client) =>
                 listValueLinksByItemIds(client, [fx.file.id]),
               );
-              if (results[0]?.ok) {
-                expect(current?.properties.name).toBe("user");
-                expect(links[0]).toMatchObject({ state: "broken", brokenBy: "user" });
-              } else {
-                expect(current?.properties.name).toBe("system");
-                expect(links[0]).toMatchObject({ state: "on" });
-              }
+              expect(current?.properties.name).toBe("user");
+              expect(links[0]).toMatchObject({ state: "broken", brokenBy: "user" });
             } catch (error) {
               failure = error;
             } finally {
@@ -798,7 +790,7 @@ describe("value link state on writes (issue #1516)", () => {
                 }
               }
               updateSpy.mockRestore();
-              handoffSpy.mockRestore();
+              lockSpy.mockRestore();
               setInvalidationHook(() => {});
               if (cleanupErrors.length) {
                 failure = new AggregateError(
