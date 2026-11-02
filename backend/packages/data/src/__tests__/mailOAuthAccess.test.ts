@@ -486,6 +486,54 @@ describe("refreshAndPersistAccessToken", () => {
     if (distinct.length > 1) throw new AggregateError(distinct, "OAuth commit test had multiple failures");
   });
 
+  it("does not return an access token when the actual commit rejects the rotation", async () => {
+    const itemId = await seed("before-rejected-commit");
+    const failures: unknown[] = [];
+    let functionCreated = false;
+    let triggerCreated = false;
+    try {
+      await pool.query(`CREATE FUNCTION test_mail_oauth_commit_reject() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'test deferred commit rejection'; END $$`);
+      functionCreated = true;
+      await pool.query(`CREATE CONSTRAINT TRIGGER test_mail_oauth_commit_reject AFTER UPDATE ON external_credentials
+        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION test_mail_oauth_commit_reject()`);
+      triggerCreated = true;
+      let returned = false;
+      const fetchImpl: typeof fetch = async () =>
+        Response.json({ access_token: "uncommitted-access", refresh_token: "uncommitted-refresh", expires_in: 60 });
+      await expect(
+        refreshInTenant(pool, { ...INPUT, mailboxItemId: itemId, fetchImpl }).then((value) => {
+          returned = true;
+          return value;
+        }),
+      ).rejects.toThrow("test deferred commit rejection");
+      expect(returned).toBe(false);
+      expect(await stored(itemId)).toBe("before-rejected-commit");
+    } catch (error) {
+      failures.push(error);
+    }
+    for (const cleanup of [
+      async () => {
+        if (triggerCreated) await pool.query("DROP TRIGGER test_mail_oauth_commit_reject ON external_credentials");
+      },
+      async () => {
+        if (functionCreated) await pool.query("DROP FUNCTION test_mail_oauth_commit_reject()");
+      },
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "OAuth failed-commit test and cleanup failed");
+    const provider = fakeProvider({ rotate: () => "after-retry" });
+    await refreshInTenant(pool, { ...INPUT, mailboxItemId: itemId });
+    expect(provider.presented).toEqual(["before-rejected-commit"]);
+    expect(await stored(itemId)).toBe("after-retry");
+  });
+
   it("rolls back a failed rotation and releases the credential lock to a waiting refresh", async () => {
     const itemId = await seed("rollback-generation");
     const operationPool = new Pool({
