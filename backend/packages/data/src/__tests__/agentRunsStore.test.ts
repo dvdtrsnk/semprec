@@ -208,7 +208,16 @@ describe("agent run retry chain (issue #1448)", () => {
     try {
       contender = await chainPool.connect();
     } catch (error) {
-      winner.release();
+      let cleanupFailure: { error: unknown } | undefined;
+      try {
+        winner.release();
+      } catch (cleanup) {
+        cleanupFailure = { error: cleanup };
+      }
+      if (cleanupFailure)
+        throw new AggregateError([error, cleanupFailure.error], "Retry overlap setup and cleanup failed", {
+          cause: error,
+        });
       throw error;
     }
     let pending: Promise<{ value: Awaited<ReturnType<typeof createChainedAgentRun>> } | { error: unknown }> | undefined;
@@ -216,6 +225,7 @@ describe("agent run retry chain (issue #1448)", () => {
     try {
       await winner.query("BEGIN");
       await contender.query("BEGIN");
+      await winner.query("SET LOCAL statement_timeout = '5s'");
       await contender.query("SET LOCAL statement_timeout = '5s'");
       const winnerPid = (await winner.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
       const contenderPid = (await contender.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
@@ -258,8 +268,13 @@ describe("agent run retry chain (issue #1448)", () => {
       const outcome = await pending;
       if ("error" in outcome) cleanupErrors.push(outcome.error);
     }
-    winner.release();
-    contender.release();
+    for (const client of [winner, contender]) {
+      try {
+        client.release();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
     if (cleanupErrors.length)
       throw new AggregateError(
         failure ? [failure.error, ...cleanupErrors] : cleanupErrors,

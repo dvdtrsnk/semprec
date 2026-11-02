@@ -14,12 +14,27 @@ let admin: Pool;
 let runtime: Pool;
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  try {
+    runtime = await createRuntimeRolePool(admin, "semprec_data");
+  } catch (error) {
+    let cleanupFailure: { error: unknown } | undefined;
+    try {
+      await admin.end();
+    } catch (cleanup) {
+      cleanupFailure = { error: cleanup };
+    }
+    if (cleanupFailure)
+      throw new AggregateError([error, cleanupFailure.error], "Runtime pool setup and cleanup failed", {
+        cause: error,
+      });
+    throw error;
+  }
 });
 beforeEach(async () => resetDatabase(admin));
 afterAll(async () => {
-  await runtime.end();
-  await admin.end();
+  const results = await Promise.allSettled([runtime?.end(), admin?.end()]);
+  const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+  if (errors.length) throw new AggregateError(errors, "Pool cleanup failed", { cause: errors[0] });
 });
 
 function inTenant<T>(tenant: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {

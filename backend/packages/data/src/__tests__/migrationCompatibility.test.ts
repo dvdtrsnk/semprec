@@ -469,8 +469,8 @@ it("upgrades populated heartbeats and runs through origin and retry migrations",
   if (!url) throw new Error("Missing test database URL");
   // This identifier contains only the hexadecimal digits of a generated UUID.
   const name = `batch12_upgrade_${randomUUID().replaceAll("-", "")}`;
-  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch12-upgrade-"));
+  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
   const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
   let scratch: Pool | undefined;
   let created = false;
