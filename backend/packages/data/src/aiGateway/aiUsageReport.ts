@@ -1,15 +1,13 @@
+import { z } from "zod";
 import { requireSingleRow, type Queryable } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import type { AgentRunUnit } from "../agentRuns/agentRunsStore.js";
-import { assertKnownValue } from "../dbRowValidation.js";
 import { getCurrentTenantAiBudget } from "./tenantAiBudgetsStore.js";
 import { getModelDisplayCatalogs, resolveModelDisplayName, resolveOperationLabel } from "./modelDisplayNames.js";
 
 /** Operations whose native unit is audio seconds; every other operation (including NULL) is token-native. */
 const AUDIO_OPERATIONS: readonly string[] = ["transcription_transcribe", "transcription_diarize"];
-
-const AGENT_RUN_UNITS: readonly AgentRunUnit[] = ["invocation", "session"];
 
 /** Daily reports retain the existing range cap; monthly reports span account history. */
 const MAX_RANGE_DAYS = 366;
@@ -135,54 +133,45 @@ function assertRange(from: string, to: string, granularity: "day" | "month"): { 
   return { fromDate, toDate };
 }
 
-interface UsageRow {
-  provider: string;
-  model: string;
-  native_unit: NativeUnit;
-  run_unit: AgentRunUnit | null;
-  call_count: string;
-  cost_usd: string;
-  input_tokens: string | null;
-  output_tokens: string | null;
-  audio_seconds: string | null;
-  has_reserved: boolean;
-}
-
-interface ByModelRow {
-  provider: string;
-  model: string;
-  call_count: string;
-  cost_usd: string;
-  input_tokens: string | null;
-  output_tokens: string | null;
-  audio_seconds: string | null;
-  operations: string[];
-}
-
-interface ByOperationRow {
-  operation: string;
-  call_count: string;
-  cost_usd: string;
-}
-
-/** Operations recorded under several keys that the report shows as one activity. */
-const MERGED_OPERATIONS: Readonly<Record<string, string>> = {
-  agent_behavior_drift: "agent_guidance_drift",
-  voice_transcribe_stream: "voice",
-  voice_synthesize: "voice",
-};
-
-interface MonthlyRow {
-  month: string;
-  cost_usd: string;
-}
-
-interface DailyRow {
-  day: string;
-  cost_usd: string;
-  input_tokens: string | null;
-  output_tokens: string | null;
-}
+const usageRowSchema = z.object({
+  provider: z.string(),
+  model: z.string(),
+  native_unit: z.enum(["tokens", "audio_seconds"]),
+  run_unit: z.enum(["invocation", "session"]).nullable(),
+  call_count: z.string(),
+  cost_usd: z.string(),
+  input_tokens: z.string().nullable(),
+  output_tokens: z.string().nullable(),
+  audio_seconds: z.string().nullable(),
+});
+const modelRowSchema = z.object({
+  provider: z.string(),
+  model: z.string(),
+  call_count: z.string(),
+  cost_usd: z.string(),
+  input_tokens: z.string().nullable(),
+  output_tokens: z.string().nullable(),
+  audio_seconds: z.string().nullable(),
+  operations: z.array(z.string()),
+});
+const operationRowSchema = z.object({ operation: z.string(), call_count: z.string(), cost_usd: z.string() });
+const dailyRowSchema = z.object({
+  day: z.string(),
+  cost_usd: z.string(),
+  input_tokens: z.string().nullable(),
+  output_tokens: z.string().nullable(),
+});
+const monthlyRowSchema = z.object({ month: z.string(), cost_usd: z.string() });
+const aggregateRowSchema = z.object({
+  account_started_at: z.iso.datetime({ offset: true }).nullable(),
+  rows: z.array(usageRowSchema),
+  models: z.array(modelRowSchema),
+  operations: z.array(operationRowSchema),
+  daily: z.array(dailyRowSchema),
+  monthly: z.array(monthlyRowSchema),
+  estimated: z.boolean(),
+  total_cost_usd: z.string(),
+});
 
 /**
  * The read model behind #121's utilization report: `ai_gateway_calls` aggregated by provider,
@@ -194,90 +183,94 @@ export async function getAiUsageReport(client: Queryable, input: AiUsageReportIn
   const granularity = input.granularity ?? "day";
   const { fromDate, toDate } = assertRange(input.from, input.to, granularity);
   const timezone = await getSystemTimezone(client);
-  const { rows: accountRows } = await client.query<{ account_started_at: Date | null }>(
-    `SELECT LEAST(
-       (SELECT MIN(created_at) FROM users WHERE tenant_id = app_tenant_default()),
-       (SELECT MIN(at) FROM ai_gateway_calls)
-     ) AS account_started_at`,
-  );
-  const accountStartedAt = requireSingleRow(accountRows, "AI usage account start").account_started_at;
-
-  const { rows } = await client.query<UsageRow>(
-    `WITH classified AS (
-       SELECT
-         c.provider,
-         c.model,
-         COALESCE(c.operation = ANY($3::text[]), false) AS is_audio,
-         r.unit AS run_unit,
-         c.cost_usd,
-         c.input_tokens,
-         c.output_tokens,
-         c.audio_seconds,
-         c.status
-       FROM ai_gateway_calls c
-       LEFT JOIN agent_runs r ON r.id = c.agent_run_id
-       WHERE c.at >= $1 AND c.at < $2 AND c.status <> 'failed'
+  // One statement snapshot covers every value derived from calls, including account start and calendar series.
+  const result = await client.query<{ data: unknown }>(
+    `WITH account AS (
+       SELECT LEAST((SELECT MIN(created_at) FROM users WHERE tenant_id = app_tenant_default()),
+                    (SELECT MIN(at) FROM ai_gateway_calls)) AS account_started_at
+     ), classified AS MATERIALIZED (
+       SELECT c.provider, c.model, c.operation, c.status, c.at, c.cost_usd,
+              c.input_tokens, c.output_tokens, c.audio_seconds,
+              COALESCE(c.operation = ANY($3::text[]), false) AS is_audio, r.unit AS run_unit
+       FROM ai_gateway_calls c LEFT JOIN agent_runs r ON r.id = c.agent_run_id
+       WHERE c.at >= $1 AND c.at < $2
+     ), usage_rows AS (
+       SELECT provider, model, CASE WHEN is_audio THEN 'audio_seconds' ELSE 'tokens' END AS native_unit,
+              run_unit, COUNT(*)::text AS call_count, SUM(cost_usd)::text AS cost_usd,
+              CASE WHEN is_audio THEN NULL ELSE COALESCE(SUM(input_tokens), 0)::text END AS input_tokens,
+              CASE WHEN is_audio THEN NULL ELSE COALESCE(SUM(output_tokens), 0)::text END AS output_tokens,
+              CASE WHEN is_audio THEN COALESCE(SUM(audio_seconds), 0)::text ELSE NULL END AS audio_seconds
+       FROM classified WHERE status <> 'failed' GROUP BY provider, model, is_audio, run_unit
+     ), models AS (
+       SELECT provider, model, COUNT(*)::text AS call_count, SUM(cost_usd)::text AS cost_usd,
+              CASE WHEN BOOL_AND(is_audio) THEN NULL ELSE COALESCE(SUM(input_tokens) FILTER (WHERE NOT is_audio), 0)::text END AS input_tokens,
+              CASE WHEN BOOL_AND(is_audio) THEN NULL ELSE COALESCE(SUM(output_tokens) FILTER (WHERE NOT is_audio), 0)::text END AS output_tokens,
+              CASE WHEN BOOL_OR(is_audio) THEN COALESCE(SUM(audio_seconds) FILTER (WHERE is_audio), 0)::text ELSE NULL END AS audio_seconds,
+              ARRAY_AGG(DISTINCT COALESCE(operation, 'other') ORDER BY COALESCE(operation, 'other')) AS operations,
+              SUM(cost_usd) AS sort_cost
+       FROM classified WHERE status <> 'failed' GROUP BY provider, model
+     ), operations AS (
+       SELECT CASE COALESCE(operation, 'other')
+                WHEN 'agent_behavior_drift' THEN 'agent_guidance_drift'
+                WHEN 'voice_transcribe_stream' THEN 'voice'
+                WHEN 'voice_synthesize' THEN 'voice'
+                ELSE COALESCE(operation, 'other') END AS operation,
+              COUNT(*)::text AS call_count, SUM(cost_usd)::text AS cost_usd
+       FROM classified WHERE status <> 'failed' GROUP BY 1
+     ), days AS (
+       SELECT generate_series(date_trunc('day', $1::timestamptz AT TIME ZONE $4),
+         date_trunc('day', ($2::timestamptz - interval '1 microsecond') AT TIME ZONE $4), interval '1 day') AS day
+       WHERE $5 = 'day'
+     ), daily_totals AS (
+       SELECT date_trunc('day', at AT TIME ZONE $4) AS day, SUM(cost_usd) AS cost_usd,
+              SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens
+       FROM classified GROUP BY 1
+     ), daily AS (
+       SELECT to_char(days.day, 'YYYY-MM-DD') AS day, COALESCE(daily_totals.cost_usd, 0)::text AS cost_usd,
+              daily_totals.input_tokens::text AS input_tokens, daily_totals.output_tokens::text AS output_tokens
+       FROM days LEFT JOIN daily_totals ON daily_totals.day = days.day
+     ), months AS (
+       SELECT generate_series(
+         GREATEST(date_trunc('month', $1::timestamptz AT TIME ZONE $4),
+                  date_trunc('month', COALESCE(account.account_started_at, $1::timestamptz) AT TIME ZONE $4)),
+         date_trunc('month', ($2::timestamptz - interval '1 microsecond') AT TIME ZONE $4), interval '1 month') AS month
+       FROM account WHERE $5 = 'month'
+     ), monthly_totals AS (
+       SELECT date_trunc('month', at AT TIME ZONE $4) AS month, SUM(cost_usd) AS cost_usd
+       FROM classified GROUP BY 1
+     ), monthly AS (
+       SELECT to_char(months.month, 'YYYY-MM') AS month, COALESCE(monthly_totals.cost_usd, 0)::text AS cost_usd
+       FROM months LEFT JOIN monthly_totals ON monthly_totals.month = months.month
      )
-     SELECT
-       provider,
-       model,
-       CASE WHEN is_audio THEN 'audio_seconds' ELSE 'tokens' END AS native_unit,
-       run_unit,
-       COUNT(*) AS call_count,
-       SUM(cost_usd) AS cost_usd,
-       CASE WHEN is_audio THEN NULL ELSE COALESCE(SUM(input_tokens), 0) END AS input_tokens,
-       CASE WHEN is_audio THEN NULL ELSE COALESCE(SUM(output_tokens), 0) END AS output_tokens,
-       CASE WHEN is_audio THEN COALESCE(SUM(audio_seconds), 0) ELSE NULL END AS audio_seconds,
-       BOOL_OR(status = 'reserved') AS has_reserved
-     FROM classified
-     GROUP BY provider, model, is_audio, run_unit
-     ORDER BY provider, model, native_unit, run_unit`,
-    [fromDate.toISOString(), toDate.toISOString(), AUDIO_OPERATIONS],
+     SELECT jsonb_build_object(
+       'account_started_at', (SELECT account_started_at FROM account),
+       'rows', COALESCE((SELECT jsonb_agg(to_jsonb(u) ORDER BY provider, model, native_unit, run_unit) FROM usage_rows u), '[]'::jsonb),
+       'models', COALESCE((SELECT jsonb_agg(to_jsonb(m) - 'sort_cost' ORDER BY sort_cost DESC, model, provider) FROM models m), '[]'::jsonb),
+       'operations', COALESCE((SELECT jsonb_agg(to_jsonb(o)) FROM operations o), '[]'::jsonb),
+       'daily', COALESCE((SELECT jsonb_agg(to_jsonb(d) ORDER BY day) FROM daily d), '[]'::jsonb),
+       'monthly', COALESCE((SELECT jsonb_agg(to_jsonb(m) ORDER BY month) FROM monthly m), '[]'::jsonb),
+       'estimated', COALESCE((SELECT BOOL_OR(status = 'reserved') FROM classified WHERE status <> 'failed'), false),
+       'total_cost_usd', COALESCE((SELECT SUM(cost_usd) FROM classified WHERE status <> 'failed'), 0)::text
+     ) AS data`,
+    [fromDate.toISOString(), toDate.toISOString(), AUDIO_OPERATIONS, timezone, granularity],
   );
-
-  const reportRows: AiUsageReportRow[] = rows.map((row) => ({
+  const raw = requireSingleRow(result.rows, "AI usage aggregate").data;
+  const aggregate = aggregateRowSchema.parse(raw);
+  const accountStartedAt = aggregate.account_started_at === null ? null : new Date(aggregate.account_started_at);
+  const reportRows: AiUsageReportRow[] = aggregate.rows.map((row) => ({
     provider: row.provider,
     model: row.model,
     nativeUnit: row.native_unit,
-    runUnit: row.run_unit === null ? null : assertKnownValue(AGENT_RUN_UNITS, row.run_unit, "run_unit"),
+    runUnit: row.run_unit,
     callCount: Number(row.call_count),
     costUsd: Number(row.cost_usd),
     inputTokens: row.input_tokens === null ? null : Number(row.input_tokens),
     outputTokens: row.output_tokens === null ? null : Number(row.output_tokens),
     audioSeconds: row.audio_seconds === null ? null : Number(row.audio_seconds),
   }));
-
-  const { rows: modelRows } = await client.query<ByModelRow>(
-    `WITH classified AS (
-       SELECT
-         provider,
-         model,
-         COALESCE(operation, 'other') AS operation,
-         COALESCE(operation = ANY($3::text[]), false) AS is_audio,
-         cost_usd,
-         input_tokens,
-         output_tokens,
-         audio_seconds
-       FROM ai_gateway_calls
-       WHERE at >= $1 AND at < $2 AND status <> 'failed'
-     )
-     SELECT
-       provider,
-       model,
-       COUNT(*) AS call_count,
-       SUM(cost_usd) AS cost_usd,
-       CASE WHEN BOOL_AND(is_audio) THEN NULL ELSE COALESCE(SUM(input_tokens) FILTER (WHERE NOT is_audio), 0) END AS input_tokens,
-       CASE WHEN BOOL_AND(is_audio) THEN NULL ELSE COALESCE(SUM(output_tokens) FILTER (WHERE NOT is_audio), 0) END AS output_tokens,
-       CASE WHEN BOOL_OR(is_audio) THEN COALESCE(SUM(audio_seconds) FILTER (WHERE is_audio), 0) ELSE NULL END AS audio_seconds,
-       ARRAY_AGG(DISTINCT operation ORDER BY operation) AS operations
-     FROM classified
-     GROUP BY provider, model
-     ORDER BY SUM(cost_usd) DESC, model, provider`,
-    [fromDate.toISOString(), toDate.toISOString(), AUDIO_OPERATIONS],
-  );
   const catalogs = await getModelDisplayCatalogs();
   const locale = input.locale ?? "en";
-  const byModel: AiUsageByModel[] = modelRows.map((row) => ({
+  const byModel: AiUsageByModel[] = aggregate.models.map((row) => ({
     provider: row.provider,
     model: row.model,
     displayName: resolveModelDisplayName(catalogs, locale, row.model),
@@ -288,101 +281,33 @@ export async function getAiUsageReport(client: Queryable, input: AiUsageReportIn
     audioSeconds: row.audio_seconds === null ? null : Number(row.audio_seconds),
     operations: row.operations,
   }));
-
-  const { rows: operationRows } = await client.query<ByOperationRow>(
-    `SELECT COALESCE(operation, 'other') AS operation, COUNT(*) AS call_count, SUM(cost_usd) AS cost_usd
-     FROM ai_gateway_calls
-     WHERE at >= $1 AND at < $2 AND status <> 'failed'
-     GROUP BY 1`,
-    [fromDate.toISOString(), toDate.toISOString()],
-  );
-  const mergedOperations = new Map<string, { costUsd: number; callCount: number }>();
-  for (const row of operationRows) {
-    const key = MERGED_OPERATIONS[row.operation] ?? row.operation;
-    const entry = mergedOperations.get(key) ?? { costUsd: 0, callCount: 0 };
-    entry.costUsd += Number(row.cost_usd);
-    entry.callCount += Number(row.call_count);
-    mergedOperations.set(key, entry);
-  }
-  const operationsTotalCostUsd = [...mergedOperations.values()].reduce((sum, entry) => sum + entry.costUsd, 0);
-  const byOperation: AiUsageByOperation[] = [...mergedOperations.entries()]
-    .map(([operation, entry]) => ({
-      operation,
-      label: resolveOperationLabel(catalogs, locale, operation),
-      costUsd: entry.costUsd,
-      share: operationsTotalCostUsd === 0 ? 0 : entry.costUsd / operationsTotalCostUsd,
-      callCount: entry.callCount,
-    }))
+  const totalCostUsd = Number(aggregate.total_cost_usd);
+  const byOperation: AiUsageByOperation[] = aggregate.operations
+    .map((row) => {
+      const costUsd = Number(row.cost_usd);
+      return {
+        operation: row.operation,
+        label: resolveOperationLabel(catalogs, locale, row.operation),
+        costUsd,
+        share: totalCostUsd === 0 ? 0 : costUsd / totalCostUsd,
+        callCount: Number(row.call_count),
+      };
+    })
     .sort((a, b) => b.costUsd - a.costUsd || (a.operation < b.operation ? -1 : a.operation > b.operation ? 1 : 0));
-
-  let monthlyCostUsd: MonthlyCostPoint[] | undefined;
-  let dailyRows: DailyRow[] = [];
-  if (granularity === "month") {
-    const { rows: monthlyRows } = await client.query<MonthlyRow>(
-      `WITH months AS (
-         SELECT generate_series(
-           GREATEST(
-             date_trunc('month', $1::timestamptz AT TIME ZONE $3),
-             date_trunc('month', $4::timestamptz AT TIME ZONE $3)
-           ),
-           date_trunc('month', ($2::timestamptz - interval '1 microsecond') AT TIME ZONE $3),
-           interval '1 month'
-         ) AS month
-       ), monthly AS (
-         SELECT date_trunc('month', at AT TIME ZONE $3) AS month, SUM(cost_usd) AS cost_usd
-         FROM ai_gateway_calls
-         WHERE at >= $1 AND at < $2
-         GROUP BY 1
-       )
-       SELECT to_char(months.month, 'YYYY-MM') AS month, COALESCE(monthly.cost_usd, 0) AS cost_usd
-       FROM months LEFT JOIN monthly ON monthly.month = months.month
-       ORDER BY months.month`,
-      [
-        fromDate.toISOString(),
-        toDate.toISOString(),
-        timezone,
-        accountStartedAt?.toISOString() ?? fromDate.toISOString(),
-      ],
-    );
-    monthlyCostUsd = monthlyRows.map((row) => ({ month: row.month, costUsd: Number(row.cost_usd) }));
-  } else {
-    ({ rows: dailyRows } = await client.query<DailyRow>(
-      `WITH days AS (
-       SELECT generate_series(
-         date_trunc('day', $1::timestamptz AT TIME ZONE $3),
-         date_trunc('day', ($2::timestamptz - interval '1 microsecond') AT TIME ZONE $3),
-         interval '1 day'
-       ) AS day
-     ),
-     daily AS (
-       SELECT
-         date_trunc('day', at AT TIME ZONE $3) AS day,
-         SUM(cost_usd) AS cost_usd,
-         SUM(input_tokens) AS input_tokens,
-         SUM(output_tokens) AS output_tokens
-       FROM ai_gateway_calls
-       WHERE at >= $1 AND at < $2
-       GROUP BY 1
-     )
-     SELECT
-       to_char(days.day, 'YYYY-MM-DD') AS day,
-       COALESCE(daily.cost_usd, 0) AS cost_usd,
-       daily.input_tokens,
-       daily.output_tokens
-     FROM days LEFT JOIN daily ON daily.day = days.day
-     ORDER BY days.day`,
-      [fromDate.toISOString(), toDate.toISOString(), timezone],
-    ));
-  }
-
-  const dailyCostUsd: DailyCostPoint[] = dailyRows.map((row) => ({ day: row.day, costUsd: Number(row.cost_usd) }));
-  const dailyTokenUsage: DailyTokenPoint[] = dailyRows.map((row) => ({
+  const dailyCostUsd: DailyCostPoint[] = aggregate.daily.map((row) => ({
+    day: row.day,
+    costUsd: Number(row.cost_usd),
+  }));
+  const dailyTokenUsage: DailyTokenPoint[] = aggregate.daily.map((row) => ({
     day: row.day,
     inputTokens: row.input_tokens === null ? 0 : Number(row.input_tokens),
     outputTokens: row.output_tokens === null ? 0 : Number(row.output_tokens),
   }));
-  const estimated = rows.some((row) => row.has_reserved);
-  const totalCostUsd = reportRows.reduce((sum, row) => sum + row.costUsd, 0);
+  const monthlyCostUsd: MonthlyCostPoint[] | undefined =
+    granularity === "month"
+      ? aggregate.monthly.map((row) => ({ month: row.month, costUsd: Number(row.cost_usd) }))
+      : undefined;
+  const estimated = aggregate.estimated;
   // A tenant without a tenant_ai_budgets row may not spend (the gateway refuses every call), so its
   // effective cap is 0, never null: null would render as "uncapped".
   const tenantBudget = await getCurrentTenantAiBudget(client);

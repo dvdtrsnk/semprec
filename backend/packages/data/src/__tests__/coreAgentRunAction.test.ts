@@ -11,7 +11,7 @@ import {
   type ActionContext,
 } from "../scheduler/actions.js";
 import { createHeartbeatFireAgentTask } from "../scheduler/sweep.js";
-import { getLatestRunOfOccurrence, listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
+import { createAgentRun, getLatestRunOfOccurrence, listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 
@@ -49,9 +49,15 @@ describe("coreAgentRunAction", () => {
   });
 
   async function getSemprecProjectId(): Promise<string> {
-    const { rows } = await pool.query("SELECT id FROM databases WHERE owner_module_id = 'projects'");
-    const { rows: items } = await pool.query("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [rows[0].id]);
-    return items[0].id;
+    const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'");
+    const database = rows[0];
+    if (!database) throw new Error("Missing projects database");
+    const { rows: items } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [
+      database.id,
+    ]);
+    const item = items[0];
+    if (!item) throw new Error("Missing project item");
+    return item.id;
   }
 
   async function createTestHeartbeat(): Promise<{ heartbeatId: string; projectItemId: string }> {
@@ -203,6 +209,49 @@ describe("coreAgentRunAction", () => {
     );
     return rows[0]!.id;
   }
+
+  it("selects the highest occurrence attempt and breaks ties by start time", async () => {
+    const { heartbeatId, projectItemId } = await createTestHeartbeat();
+    const occurrenceId = await createOccurrence(heartbeatId);
+    expect(await getLatestRunOfOccurrence(pool, occurrenceId)).toBeNull();
+    const first = await createAgentRun(pool, {
+      triggeredBy: "heartbeat",
+      task: "first",
+      projectItemId,
+      heartbeatId,
+      heartbeatOccurrenceId: occurrenceId,
+      attempt: 1,
+    });
+    const older = await createAgentRun(pool, {
+      triggeredBy: "heartbeat",
+      task: "older",
+      projectItemId,
+      heartbeatId,
+      heartbeatOccurrenceId: occurrenceId,
+      attempt: 2,
+    });
+    const newer = await createAgentRun(pool, {
+      triggeredBy: "heartbeat",
+      task: "newer",
+      projectItemId,
+      heartbeatId,
+      heartbeatOccurrenceId: occurrenceId,
+      attempt: 2,
+    });
+    // Set distinct timestamps explicitly to prove the tie-break without relying on clock timing.
+    for (const [id, startedAt] of [
+      [first.id, "2026-01-03T00:00:00Z"],
+      [older.id, "2026-01-01T00:00:00Z"],
+      [newer.id, "2026-01-02T00:00:00Z"],
+    ] as const) {
+      const result = await pool.query("UPDATE agent_runs SET started_at = $2::timestamptz WHERE id = $1", [
+        id,
+        startedAt,
+      ]);
+      expect(result.rowCount).toBe(1);
+    }
+    expect((await getLatestRunOfOccurrence(pool, occurrenceId))?.id).toBe(newer.id);
+  });
 
   it("chains the attempts of one occurrence: fails twice, succeeds on the third", async () => {
     const { heartbeatId, projectItemId } = await createTestHeartbeat();

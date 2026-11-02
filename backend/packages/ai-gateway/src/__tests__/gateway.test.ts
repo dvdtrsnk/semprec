@@ -1,6 +1,16 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { createAgentRun, createUser, failGatewayCall, ForbiddenError, hashPassword, seedSystem } from "@semprec/data";
+import {
+  createAgentRun,
+  createUser,
+  failGatewayCall,
+  ForbiddenError,
+  getAiUsageSummary,
+  hashPassword,
+  reserveGatewayCall,
+  seedSystem,
+  withTransaction,
+} from "@semprec/data";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -521,17 +531,31 @@ describe("gateway caps across tenants, through the semprec_side role", () => {
   const REFUSAL = "AI budget exceeded";
   let adminPool: Pool;
   let sidePool: Pool;
+  let dataPool: Pool;
   let tenantA: string;
   let tenantB: string;
+  let setupCleanupAttempted = false;
 
   beforeAll(async () => {
     adminPool = getTestPool();
-    sidePool = await createRuntimeRolePool(adminPool, "semprec_side");
+    try {
+      sidePool = await createRuntimeRolePool(adminPool, "semprec_side");
+      dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    } catch (error) {
+      setupCleanupAttempted = true;
+      const results = await Promise.allSettled([sidePool?.end(), adminPool.end()]);
+      const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+      if (errors.length)
+        throw new AggregateError([error, ...errors], "Gateway pool setup and cleanup failed", { cause: error });
+      throw error;
+    }
   });
 
   afterAll(async () => {
-    await sidePool?.end();
-    await adminPool?.end();
+    if (setupCleanupAttempted) return;
+    const results = await Promise.allSettled([sidePool?.end(), dataPool?.end(), adminPool?.end()]);
+    const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (errors.length) throw new AggregateError(errors, "Gateway pool cleanup failed", { cause: errors[0] });
   });
 
   beforeEach(async () => {
@@ -576,6 +600,114 @@ describe("gateway caps across tenants, through the semprec_side role", () => {
     expect(err).toBeInstanceOf(BudgetExceededError);
     expect(err instanceof Error && err.message).toBe(REFUSAL);
   }
+
+  it("reports a real reservation at the daily cap and the gateway refuses before invoking the provider", async () => {
+    await setTenantAiBudget(adminPool, tenantA, { dailyCapUsd: 1, monthlyCapUsd: null });
+    await setTenantAiBudget(adminPool, tenantB, { dailyCapUsd: 1, monthlyCapUsd: null });
+    const reservation = await runInTenant(tenantA, () =>
+      reserveGatewayCall(sidePool, {
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        estimatedCostUsd: 1,
+      }),
+    );
+    const { summary, now } = await runInTenant(tenantA, () =>
+      withTransaction(dataPool, async (client) => {
+        const current = await client.query<{ now: Date }>("SELECT now() AS now");
+        const now = current.rows[0]?.now;
+        if (!now) throw new Error("Missing database time");
+        return { summary: await getAiUsageSummary(client), now };
+      }),
+    );
+    expect(summary).toMatchObject({ spentTodayUsd: 1, spentMonthUsd: 1, dailyCapUsd: 1, exhausted: "daily" });
+    if (!summary.resetsAt) throw new Error("Missing daily reset");
+    const dateFormat = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Prague",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const dayOf = (date: Date): string => {
+      const parts = dateFormat.formatToParts(date);
+      const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((value) => value.type === type)?.value;
+      const year = part("year"),
+        month = part("month"),
+        day = part("day");
+      if (!year || !month || !day) throw new Error("Missing local date part");
+      return `${year}-${month}-${day}`;
+    };
+    const today = dayOf(now);
+    const tomorrow = new Date(`${today}T00:00:00Z`);
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    expect(dayOf(new Date(summary.resetsAt))).toBe(tomorrow.toISOString().slice(0, 10));
+    expect(
+      new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Europe/Prague",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }).format(new Date(summary.resetsAt)),
+    ).toBe("00:00");
+    let invoked = false;
+    await expect(
+      runInTenant(tenantA, () =>
+        complete(
+          sidePool,
+          {
+            provider: "anthropic",
+            model: "claude-sonnet-5",
+            estimatedCostUsd: 0.01,
+            globalCaps: GLOBAL_CAPS,
+          },
+          async () => {
+            invoked = true;
+            return { inputTokens: 1, outputTokens: 1, costUsd: 0.01 };
+          },
+        ),
+      ),
+    ).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(invoked).toBe(false);
+    expect(await rowCount()).toBe(1);
+    await callIn(tenantB);
+    expect(await rowCount()).toBe(2);
+    await runInTenant(tenantA, () => failGatewayCall(sidePool, reservation.id));
+  });
+
+  it("keeps the summary unexhausted when only the operator cap refuses the gateway", async () => {
+    await setTenantAiBudget(adminPool, tenantA, { dailyCapUsd: 10, monthlyCapUsd: 100 });
+    await setTenantAiBudget(adminPool, tenantB, { dailyCapUsd: 10, monthlyCapUsd: 100 });
+    await callIn(tenantA);
+    let invoked = false;
+    await expect(
+      runInTenant(tenantB, () =>
+        complete(
+          sidePool,
+          {
+            provider: "anthropic",
+            model: "claude-sonnet-5",
+            estimatedCostUsd: 0.01,
+            globalCaps: { dailyCapUsd: 0.01, monthlyCapUsd: 100 },
+          },
+          async () => {
+            invoked = true;
+            return { inputTokens: 1, outputTokens: 1, costUsd: 0.01 };
+          },
+        ),
+      ),
+    ).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(invoked).toBe(false);
+    const summary = await runInTenant(tenantB, () => getAiUsageSummary(dataPool));
+    expect(summary).toEqual({
+      hasBudget: true,
+      spentTodayUsd: 0,
+      spentMonthUsd: 0,
+      dailyCapUsd: 10,
+      monthlyCapUsd: 100,
+      exhausted: null,
+      resetsAt: null,
+    });
+    expect(await rowCount()).toBe(1);
+  });
 
   it("refuses tenant A at its daily cap, writing no row, while tenant B is admitted", async () => {
     const logWarn = vi.spyOn(logger, "warn");

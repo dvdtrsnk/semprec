@@ -9,9 +9,15 @@ import { CORE_AGENT_RUN_ACTION_ID } from "../actions.js";
 let pool: Pool;
 
 async function getProjectItemId(): Promise<string> {
-  const { rows } = await pool.query("SELECT id FROM databases WHERE owner_module_id = 'projects'");
-  const { rows: items } = await pool.query("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [rows[0].id]);
-  return items[0].id;
+  const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'");
+  const database = rows[0];
+  if (!database) throw new Error("Missing projects database");
+  const { rows: items } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [
+    database.id,
+  ]);
+  const item = items[0];
+  if (!item) throw new Error("Missing project item");
+  return item.id;
 }
 
 describe("project_heartbeats.origin (issue #1438)", () => {
@@ -29,7 +35,7 @@ describe("project_heartbeats.origin (issue #1438)", () => {
   });
 
   it("reads every seeded heartbeat as system", async () => {
-    const { rows } = await pool.query("SELECT origin FROM project_heartbeats");
+    const { rows } = await pool.query<{ origin: string }>("SELECT origin FROM project_heartbeats");
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((r) => r.origin === "system")).toBe(true);
   });

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { logger } from "../logger.js";
-import type { Pool, PoolClient } from "pg";
+import { Pool, type PoolClient } from "pg";
 import {
   CAPABILITY_IDS,
   GENERIC_OPERATION_NAMES,
@@ -23,6 +23,8 @@ import {
 } from "@semprec/data/testSupport";
 import {
   createActionRegistry,
+  coreAgentRunAction,
+  CORE_AGENT_RUN_ACTION_ID,
   createAgentRun,
   createChokePoint,
   createCoreTaskList,
@@ -36,9 +38,13 @@ import {
   insertAgentRunEvent,
   listPushSubscriptionsForUser,
   loadFullModuleRegistry,
+  listAgentRunsByHeartbeat,
   LocalFsBlobStorageWriter,
   provisionTenant,
   recordTokenGatewayCall,
+  reserveGatewayCall,
+  settleAudioGatewayCall,
+  setSempThreadInvalidationHook,
   revokeInvite,
   setProjectMcpGrantForAgentPage,
   upsertMcpToolRegistration,
@@ -46,7 +52,7 @@ import {
   writeNotification,
   type PasswordResetMailer,
 } from "@semprec/data";
-import { CORE_TASK_NAMES, runOnce, type TaskList } from "@semprec/queue";
+import { AGENT_TASK_NAMES, CORE_TASK_NAMES, runOnce, runWorker, type TaskList } from "@semprec/queue";
 import { createDispatcher } from "../app.js";
 import { SESSION_COOKIE_NAME } from "../authHandler.js";
 import { ROUTE_MATRIX, ROUTE_TENANCIES, type RouteMatrixEntry } from "../routeMatrix.js";
@@ -2053,6 +2059,527 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     ]);
     const notifications = await sendOk(a.member, { method: "GET", path: "/api/notifications/unread" });
     expect(readIdArray(notifications, "notifications")).toEqual([a.notificationId]);
+  });
+
+  it("returns localized model and operation breakdowns over authenticated HTTP", async () => {
+    for (const [locale, expectedModel, expectedOperation] of [
+      ["cs", "Diarizace", "Rozpoznání mluvčích"],
+      ["en", "Diarization", "Speaker recognition"],
+    ] as const) {
+      const tenantId = await createTestTenant(adminPool);
+      const email = `${randomUUID()}@example.test`;
+      const password = `pw-${randomUUID()}`;
+      const passwordHash = await hashPassword(password);
+      await runAsSystem("usage-http-fixture", () => createUser(adminPool, { tenantId, email, passwordHash, locale }));
+      const caller = await signIn(email, password, "ios");
+      await runInTenant(tenantId, async () => {
+        const invocation = await createAgentRun(pool, { triggeredBy: "user", task: "usage", unit: "invocation" });
+        const session = await createAgentRun(pool, { triggeredBy: "user", task: "usage", unit: "session" });
+        for (const run of [invocation, session]) {
+          await recordTokenGatewayCall(pool, {
+            provider: "anthropic",
+            model: "claude-sonnet-5",
+            inputTokens: 10,
+            outputTokens: 5,
+            costUsd: 1,
+            agentRunId: run.id,
+            operation: "agent_turn",
+          });
+        }
+        const audio = await reserveGatewayCall(pool, {
+          provider: "pyannoteai",
+          model: "pyannote-3",
+          estimatedCostUsd: 1,
+          operation: "transcription_diarize",
+        });
+        await settleAudioGatewayCall(pool, audio.id, { audioSeconds: 60, costUsd: 1 });
+      });
+      const clock = await adminPool.query<{ now: Date }>("SELECT now() AS now");
+      const instant = clock.rows[0]?.now.getTime();
+      if (instant === undefined) throw new Error("Missing database time");
+      const range = new URLSearchParams({
+        from: new Date(instant - 86_400_000).toISOString(),
+        to: new Date(instant + 86_400_000).toISOString(),
+      });
+      const answer = await send(caller, { method: "GET", path: `/api/ai-usage?${range.toString()}` });
+      expect(answer.status).toBe(200);
+      const body: unknown = JSON.parse(answer.text);
+      if (
+        !isRecord(body) ||
+        !Array.isArray(body.byModel) ||
+        !Array.isArray(body.byOperation) ||
+        !Array.isArray(body.rows)
+      )
+        throw new Error("Invalid usage response");
+      expect(body).toMatchObject({ totalCostUsd: 3, estimated: false });
+      expect(body.byModel).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            provider: "anthropic",
+            model: "claude-sonnet-5",
+            displayName: "Claude Sonnet",
+            callCount: 2,
+            inputTokens: 20,
+            outputTokens: 10,
+            audioSeconds: null,
+            costUsd: 2,
+            operations: ["agent_turn"],
+          }),
+          expect.objectContaining({
+            provider: "pyannoteai",
+            model: "pyannote-3",
+            displayName: expectedModel,
+            callCount: 1,
+            inputTokens: null,
+            outputTokens: null,
+            audioSeconds: 60,
+            costUsd: 1,
+            operations: ["transcription_diarize"],
+          }),
+        ]),
+      );
+      expect(body.byModel).toHaveLength(2);
+      expect(body.byModel.every((entry: unknown) => isRecord(entry) && !("runUnit" in entry))).toBe(true);
+      expect(body.byOperation).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            operation: "transcription_diarize",
+            label: expectedOperation,
+            costUsd: 1,
+            callCount: 1,
+          }),
+        ]),
+      );
+      expect(body.rows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ model: "claude-sonnet-5", runUnit: "invocation", callCount: 1 }),
+          expect.objectContaining({ model: "claude-sonnet-5", runUnit: "session", callCount: 1 }),
+          expect.objectContaining({ model: "pyannote-3", nativeUnit: "audio_seconds", audioSeconds: 60 }),
+        ]),
+      );
+    }
+  });
+
+  it("triggers an automation over authenticated HTTP and rejects a second request while its worker runs", async () => {
+    const heartbeat = await runInTenant(b.tenantId, () =>
+      withTransaction(pool, (client) =>
+        createHeartbeat(client, {
+          projectItemId: b.projectItemId,
+          name: "Manual worker evidence",
+          rule: { kind: "interval", minutes: 5 },
+          actionId: CORE_AGENT_RUN_ACTION_ID,
+          actionConfig: { task: "manual evidence" },
+        }),
+      ),
+    );
+    const path = `/api/heartbeats/${heartbeat.id}/trigger`;
+    const first = await send(b.member, { method: "POST", path, body: {} });
+    expect(first.status).toBe(202);
+    const firstBody: unknown = JSON.parse(first.text);
+    if (!isRecord(firstBody) || typeof firstBody.jobKey !== "string") throw new Error("Missing job key");
+    expect(firstBody.activeRun).toBeNull();
+    let releaseRun: () => void = () => {};
+    let signalStarted: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const workerPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    workerPool.options.max = 5;
+    workerPool.options.connectionTimeoutMillis = 2000;
+    workerPool.options.statement_timeout = 3000;
+    workerPool.options.query_timeout = 4000;
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(workerPool, async () => {
+        signalStarted();
+        await gate;
+        return { result: "done" };
+      }),
+    );
+    const task = createCoreTaskList(workerPool, registry)[AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT];
+    if (!task) {
+      const failure = new Error("Missing heartbeat worker task");
+      let cleanupFailure: { error: unknown } | undefined;
+      try {
+        await workerPool.end();
+      } catch (cleanup) {
+        cleanupFailure = { error: cleanup };
+      }
+      if (cleanupFailure)
+        throw new AggregateError([failure, cleanupFailure.error], "Worker setup cleanup failed", { cause: failure });
+      throw failure;
+    }
+    const observer = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      max: 1,
+      connectionTimeoutMillis: 2000,
+      statement_timeout: 3000,
+      query_timeout: 4000,
+    });
+    const invalidations: Array<{ tenantId: string; threadId: string }> = [];
+    setSempThreadInvalidationHook((event) => invalidations.push(event));
+    let runner: Awaited<ReturnType<typeof runWorker>> | undefined;
+    let running: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
+    let failure: { error: unknown } | undefined;
+    let runningFailureObserved = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      runner = await runWorker({
+        pgPool: workerPool,
+        taskList: { [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: task },
+        concurrency: 1,
+        pollInterval: 50,
+        noHandleSignals: true,
+      });
+      running = runner.promise.then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      const startOutcome = await Promise.race([
+        started.then(() => ({ kind: "started" as const })),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Worker did not start")), 5000);
+        }),
+        running.then((result) => ({ kind: "settled" as const, result })),
+      ]);
+      if (startOutcome.kind === "settled") {
+        if (!startOutcome.result.ok) {
+          runningFailureObserved = true;
+          throw startOutcome.result.error;
+        }
+        throw new Error("Worker stopped before start");
+      }
+      const runs = await runInTenant(b.tenantId, () => listAgentRunsByHeartbeat(pool, heartbeat.id));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({ status: "running", actorUserId: b.member.userId, parentRunId: null });
+      expect(invalidations).toEqual([{ tenantId: b.tenantId, threadId: runs[0]?.threadId }]);
+      const second = await send(b.member, { method: "POST", path, body: {} });
+      expect(second.status).toBe(409);
+      const body: unknown = JSON.parse(second.text);
+      expect(body).toMatchObject({
+        error: {
+          code: "heartbeat_running",
+          details: {
+            activeRun: {
+              id: runs[0]?.id,
+              status: "running",
+              triggeredBy: "heartbeat",
+              threadId: runs[0]?.threadId,
+            },
+          },
+        },
+      });
+    } catch (error) {
+      failure = { error };
+    }
+    if (timer) clearTimeout(timer);
+    releaseRun();
+    const cleanupErrors: unknown[] = [];
+    try {
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        const job = await observer.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE key = $1",
+          [firstBody.jobKey],
+        );
+        if (job.rows[0]?.count === 0) break;
+        if (Date.now() >= deadline) throw new Error("Worker did not finish publishing its job outcome");
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      }
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (runner) {
+      try {
+        await runner.stop();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      if (running) {
+        const result = await running;
+        if (!result.ok && !runningFailureObserved) cleanupErrors.push(result.error);
+      }
+    }
+    try {
+      await workerPool.end();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      await observer.end();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    setSempThreadInvalidationHook(() => {});
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+        "HTTP worker cleanup failed",
+        { cause: failure?.error },
+      );
+    if (failure) throw failure.error;
+    const runs = await runInTenant(b.tenantId, () => listAgentRunsByHeartbeat(pool, heartbeat.id));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      status: "done",
+      parentRunId: null,
+      actorUserId: b.member.userId,
+      heartbeatOccurrenceId: null,
+      retryOfRunId: null,
+      attempt: 1,
+    });
+  });
+
+  it("drains an owned worker when heartbeat setup fails before the action", async () => {
+    const heartbeat = await runInTenant(b.tenantId, () =>
+      withTransaction(pool, (client) =>
+        createHeartbeat(client, {
+          projectItemId: b.projectItemId,
+          name: "Pre-action failure",
+          rule: { kind: "interval", minutes: 5 },
+          actionId: CORE_AGENT_RUN_ACTION_ID,
+          actionConfig: { task: "not invoked" },
+        }),
+      ),
+    );
+    const answer = await send(b.member, { method: "POST", path: `/api/heartbeats/${heartbeat.id}/trigger`, body: {} });
+    expect(answer.status).toBe(202);
+    const body: unknown = JSON.parse(answer.text);
+    if (!isRecord(body) || typeof body.jobKey !== "string") throw new Error("Missing job key");
+    const owned = await createRuntimeRolePool(adminPool, "semprec_data");
+    owned.options.max = 5;
+    owned.options.connectionTimeoutMillis = 2000;
+    owned.options.statement_timeout = 3000;
+    owned.options.query_timeout = 4000;
+    const observer = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      max: 1,
+      connectionTimeoutMillis: 2000,
+      statement_timeout: 3000,
+      query_timeout: 4000,
+    });
+    let signalFailure: () => void = () => {};
+    const observed = new Promise<void>((resolve) => {
+      signalFailure = resolve;
+    });
+    const injected = new Error("pre-action connection failure");
+    let injectedOnce = false;
+    const actionPool = new Proxy(owned, {
+      get(target, property, receiver) {
+        if (property === "connect" && !injectedOnce)
+          return () => {
+            injectedOnce = true;
+            signalFailure();
+            return Promise.reject(injected);
+          };
+        const value: unknown = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    let invoked = false;
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(actionPool, async () => {
+        invoked = true;
+        return { result: "unexpected" };
+      }),
+    );
+    const task = createCoreTaskList(actionPool, registry)[AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT];
+    let runner: Awaited<ReturnType<typeof runWorker>> | undefined;
+    let running: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
+    let failure: { error: unknown } | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      if (!task) throw new Error("Missing heartbeat worker task");
+      runner = await runWorker({
+        pgPool: owned,
+        taskList: { [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: task },
+        concurrency: 1,
+        pollInterval: 50,
+        noHandleSignals: true,
+      });
+      running = runner.promise.then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      await Promise.race([
+        observed,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Pre-action failure did not occur")), 5000);
+        }),
+      ]);
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        const row = await observer.query<{ last_error: string | null }>(
+          "SELECT last_error FROM graphile_worker.jobs WHERE key = $1",
+          [body.jobKey],
+        );
+        if (row.rows[0]?.last_error?.includes(injected.message)) break;
+        if (Date.now() >= deadline) throw new Error("Worker did not publish its setup failure");
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      }
+    } catch (error) {
+      failure = { error };
+    }
+    if (timer) clearTimeout(timer);
+    const errors: unknown[] = [];
+    if (runner) {
+      try {
+        await runner.stop();
+      } catch (error) {
+        errors.push(error);
+      }
+      if (running) {
+        const result = await running;
+        if (!result.ok) errors.push(result.error);
+      }
+    }
+    try {
+      await owned.end();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await observer.end();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length)
+      throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Pre-action worker cleanup failed", {
+        cause: failure?.error,
+      });
+    if (failure) throw failure.error;
+    expect(invoked).toBe(false);
+    expect(await runInTenant(b.tenantId, () => listAgentRunsByHeartbeat(pool, heartbeat.id))).toEqual([]);
+    const row = await adminPool.query<{ last_error: string | null }>(
+      "SELECT last_error FROM graphile_worker.jobs WHERE key = $1",
+      [body.jobKey],
+    );
+    expect(row.rows[0]?.last_error).toContain(injected.message);
+  });
+
+  it("bounds the owned job observer when its database read is blocked", async () => {
+    const observer = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      max: 2,
+      connectionTimeoutMillis: 1000,
+      statement_timeout: 400,
+      query_timeout: 1500,
+    });
+    let release: () => void = () => {};
+    let announce: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const locked = new Promise<void>((resolve) => {
+      announce = resolve;
+    });
+    const holder = runInTenant(b.tenantId, () =>
+      withTransaction(observer, async (client) => {
+        await client.query("LOCK TABLE graphile_worker._private_jobs IN ACCESS EXCLUSIVE MODE");
+        announce();
+        await gate;
+      }),
+    ).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    let failure: { error: unknown } | undefined;
+    let holderFailureObserved = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        locked.then(() => ({ kind: "locked" as const })),
+        holder.then((outcome) => ({ kind: "settled" as const, outcome })),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Observer lock did not start")), 2000);
+        }),
+      ]);
+      if (result.kind === "settled") {
+        if (!result.outcome.ok) {
+          holderFailureObserved = true;
+          throw result.outcome.error;
+        }
+        throw new Error("Observer lock ended too early");
+      }
+      let refusal: unknown;
+      try {
+        await observer.query("SELECT count(*) FROM graphile_worker.jobs");
+        throw new Error("Blocked observer unexpectedly completed");
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toMatchObject({ code: "57014" });
+    } catch (error) {
+      failure = { error };
+    }
+    if (timer) clearTimeout(timer);
+    release();
+    const held = await holder;
+    const errors: unknown[] = [];
+    if (!held.ok && !holderFailureObserved) errors.push(held.error);
+    try {
+      const result = await observer.query<{ count: number }>("SELECT count(*)::int AS count FROM graphile_worker.jobs");
+      expect(result.rows[0]?.count).toEqual(expect.any(Number));
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await observer.end();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length)
+      throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Observer cleanup failed", {
+        cause: failure?.error,
+      });
+    if (failure) throw failure.error;
+  });
+
+  it("refuses disabled and item-event automations over authenticated HTTP", async () => {
+    const heartbeats = await runInTenant(b.tenantId, () =>
+      withTransaction(pool, async (client) => {
+        const disabled = await createHeartbeat(client, {
+          projectItemId: b.projectItemId,
+          name: "Disabled manual evidence",
+          rule: { kind: "interval", minutes: 5 },
+          actionId: CORE_AGENT_RUN_ACTION_ID,
+          enabled: false,
+        });
+        const event = await createHeartbeat(client, {
+          projectItemId: b.projectItemId,
+          name: "Event manual evidence",
+          rule: { kind: "onItemEvent", databaseId: b.databaseId, event: "create" },
+          actionId: CORE_AGENT_RUN_ACTION_ID,
+        });
+        return { disabled, event };
+      }),
+    );
+    for (const [heartbeat, code] of [
+      [heartbeats.disabled, "heartbeat_disabled"],
+      [heartbeats.event, "heartbeat_event_triggered"],
+    ] as const) {
+      const answer = await send(b.member, {
+        method: "POST",
+        path: `/api/heartbeats/${heartbeat.id}/trigger`,
+        body: {},
+      });
+      expect(answer.status).toBe(409);
+      const body: unknown = JSON.parse(answer.text);
+      expect(body).toMatchObject({ error: { code } });
+      expect(await runInTenant(b.tenantId, () => listAgentRunsByHeartbeat(pool, heartbeat.id))).toEqual([]);
+      const jobs = await runInTenant(b.tenantId, () =>
+        pool.query<{ count: number }>("SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE key = $1", [
+          `heartbeat-fire:manual:${heartbeat.id}`,
+        ]),
+      );
+      expect(jobs.rows[0]?.count).toBe(0);
+    }
   });
 
   it("validates notification preferences over HTTP without changing stored values", async () => {

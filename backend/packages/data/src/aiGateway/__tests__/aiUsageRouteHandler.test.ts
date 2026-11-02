@@ -65,8 +65,7 @@ describe("ai usage custom route handler (issue #239)", () => {
     });
 
     expect(result.status).toBe(200);
-    const body = result.body as { totalCostUsd: number };
-    expect(body.totalCostUsd).toBe(1);
+    expect(result.body).toMatchObject({ totalCostUsd: 1 });
   });
 
   it("rejects a request missing the `from`/`to` query parameters", async () => {
@@ -680,4 +679,204 @@ describe("usage by operation (gh-1477)", () => {
       ["transcript_summary", 0],
     ]);
   });
+
+  it("preserves unknown operation keys that are object prototype names", async () => {
+    await record("constructor", 1);
+    await record("__proto__", 2);
+
+    const report = await getAiUsageReport(db, range);
+
+    expect(report.byOperation.map(({ operation, label }) => [operation, label])).toEqual([
+      ["__proto__", "__proto__"],
+      ["constructor", "constructor"],
+    ]);
+  });
+});
+
+describe("AI usage call snapshot", () => {
+  let admin: Pool;
+  let readerPool: Pool;
+  let writerPool: Pool;
+  let tenant: string;
+  let setupCleanupAttempted = false;
+  beforeAll(async () => {
+    admin = getTestPool();
+    try {
+      readerPool = await createRuntimeRolePool(admin, "semprec_data");
+      writerPool = await createRuntimeRolePool(admin, "semprec_data");
+    } catch (error) {
+      setupCleanupAttempted = true;
+      const outcomes = await Promise.allSettled([readerPool?.end(), admin.end()]);
+      const errors = outcomes.flatMap((outcome) => (outcome.status === "rejected" ? [outcome.reason] : []));
+      if (errors.length)
+        throw new AggregateError([error, ...errors], "Snapshot pool setup and cleanup failed", { cause: error });
+      throw error;
+    }
+    for (const owned of [readerPool, writerPool]) {
+      owned.options.connectionTimeoutMillis = 3000;
+      owned.options.statement_timeout = 4000;
+      owned.options.query_timeout = 5000;
+    }
+  });
+  beforeEach(async () => {
+    await resetDatabase(admin);
+    tenant = await createTestTenant(admin);
+  });
+  afterAll(async () => {
+    if (setupCleanupAttempted) return;
+    const results = await Promise.allSettled([readerPool?.end(), writerPool?.end(), admin?.end()]);
+    const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (errors.length) throw new AggregateError(errors, "Snapshot pool cleanup failed", { cause: errors[0] });
+  });
+
+  it.each(["day", "month"] as const)(
+    "keeps %s aggregates on one snapshot across a committed reservation",
+    async (granularity) => {
+      const oldAt = "2026-01-15T12:00:00.000Z";
+      const newAt = "2025-12-15T12:00:00.000Z";
+      const range = { from: "2025-11-30T23:00:00.000Z", to: "2026-01-31T23:00:00.000Z", granularity };
+      await runInTenant(tenant, () =>
+        withTransaction(writerPool, async (client) => {
+          const call = await recordTokenGatewayCall(client, {
+            provider: "anthropic",
+            model: "snapshot-model",
+            inputTokens: 1,
+            outputTokens: 1,
+            costUsd: 0.1,
+            operation: "agent_turn",
+          });
+          // Accounting writers use now; historical timestamps exercise account start and month zero-fill.
+          requireAffectedRows(
+            await client.query<{ id: string }>("UPDATE ai_gateway_calls SET at = $2 WHERE id = $1 RETURNING id", [
+              call.id,
+              oldAt,
+            ]),
+            "dating old call",
+          );
+        }),
+      );
+      let announce: () => void = () => {};
+      let release: () => void = () => {};
+      const readComplete = new Promise<void>((resolve) => {
+        announce = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let readPid: number | undefined;
+      let writePid: number | undefined;
+      const reader = runInTenant(tenant, () =>
+        withTransaction(readerPool, async (client) => {
+          readPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          const wrapped = new Proxy(client, {
+            get(target, property, receiver) {
+              if (property !== "query") {
+                const value: unknown = Reflect.get(target, property, receiver);
+                return typeof value === "function" ? value.bind(target) : value;
+              }
+              return new Proxy(target.query.bind(target), {
+                apply(query, _receiver, args: unknown[]) {
+                  const result: unknown = Reflect.apply(query, target, args);
+                  if (typeof args[0] !== "string" || !/^\s*WITH\s+(?:account|classified)\s+AS\b/i.test(args[0]))
+                    return result;
+                  if (!(result instanceof Promise)) throw new Error("Expected promise query");
+                  return result.then(async (value: unknown) => {
+                    announce();
+                    await gate;
+                    return value;
+                  });
+                },
+              });
+            },
+          });
+          return getAiUsageReport(wrapped, range);
+        }),
+      ).then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      let failure: { error: unknown } | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          readComplete,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("Snapshot read did not reach barrier")), 3000);
+          }),
+        ]);
+        await runInTenant(tenant, () =>
+          withTransaction(writerPool, async (client) => {
+            writePid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            const call = await reserveGatewayCall(client, {
+              provider: "anthropic",
+              model: "second-model",
+              estimatedCostUsd: 0.2,
+              operation: "voice_synthesize",
+            });
+            // The production writer stamps now, so date this reservation into the prior month.
+            requireAffectedRows(
+              await client.query<{ id: string }>("UPDATE ai_gateway_calls SET at = $2 WHERE id = $1 RETURNING id", [
+                call.id,
+                newAt,
+              ]),
+              "dating reservation",
+            );
+          }),
+        );
+        expect(readPid).toEqual(expect.any(Number));
+        expect(writePid).toEqual(expect.any(Number));
+        expect(writePid).not.toBe(readPid);
+      } catch (error) {
+        failure = { error };
+      }
+      if (timer) clearTimeout(timer);
+      release();
+      const oldOutcome = await reader;
+      if ("error" in oldOutcome) {
+        if (failure)
+          throw new AggregateError([failure.error, oldOutcome.error], "Snapshot read and writer failed", {
+            cause: failure.error,
+          });
+        throw oldOutcome.error;
+      }
+      if (failure) throw failure.error;
+      const old = oldOutcome.value;
+      const fresh = await runInTenant(tenant, () => getAiUsageReport(readerPool, range));
+      expect(old.accountStartedAt).toBe(oldAt);
+      expect(old.totalCostUsd).toBe(0.1);
+      expect(old.estimated).toBe(false);
+      expect(old.rows).toMatchObject([{ callCount: 1, costUsd: 0.1 }]);
+      expect(old.byModel).toMatchObject([{ callCount: 1, costUsd: 0.1 }]);
+      expect(old.byOperation).toMatchObject([{ callCount: 1, costUsd: 0.1, share: 1 }]);
+      expect(fresh.accountStartedAt).toBe(newAt);
+      expect(fresh.totalCostUsd).toBe(0.3);
+      expect(fresh.estimated).toBe(true);
+      expect(fresh.rows).toMatchObject([
+        { model: "second-model", callCount: 1, costUsd: 0.2 },
+        { model: "snapshot-model", callCount: 1, costUsd: 0.1 },
+      ]);
+      expect(fresh.byModel).toMatchObject([
+        { model: "second-model", callCount: 1, costUsd: 0.2 },
+        { model: "snapshot-model", callCount: 1, costUsd: 0.1 },
+      ]);
+      expect(fresh.byOperation).toMatchObject([
+        { operation: "voice", callCount: 1, costUsd: 0.2, share: 0.2 / 0.3 },
+        { operation: "agent_turn", callCount: 1, costUsd: 0.1, share: 0.1 / 0.3 },
+      ]);
+      // IEEE-754 binary addition differs from the independently converted SQL numeric total here.
+      expect(0.1 + 0.2).not.toBe(0.3);
+      if (granularity === "month") {
+        expect(old.monthlyCostUsd).toEqual([{ month: "2026-01", costUsd: 0.1 }]);
+        expect(fresh.monthlyCostUsd).toEqual([
+          { month: "2025-12", costUsd: 0.2 },
+          { month: "2026-01", costUsd: 0.1 },
+        ]);
+      } else {
+        expect(old.dailyCostUsd.find((point) => point.day === "2025-12-15")?.costUsd).toBe(0);
+        expect(old.dailyCostUsd.find((point) => point.day === "2026-01-15")?.costUsd).toBe(0.1);
+        expect(fresh.dailyCostUsd.find((point) => point.day === "2025-12-15")?.costUsd).toBe(0.2);
+        expect(fresh.dailyCostUsd.find((point) => point.day === "2026-01-15")?.costUsd).toBe(0.1);
+      }
+    },
+  );
 });

@@ -1,8 +1,9 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import type { Pool } from "pg";
+import { Pool } from "pg";
 import { enqueueJob } from "@semprec/queue";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
+import { createTenantZeroUser, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { createAgentRun, listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
@@ -20,7 +21,7 @@ import {
   setHeartbeatEnabled,
 } from "../scheduler/schedulerStore.js";
 import { createHeartbeatFireAgentTask } from "../scheduler/sweep.js";
-import { createHeartbeatTriggerTool } from "../scheduler/heartbeatAgentTools.js";
+import { createHeartbeatTriggerTool, enqueueManualHeartbeatFire } from "../scheduler/heartbeatAgentTools.js";
 import { createTriggerHeartbeatRouteHandler } from "../scheduler/triggerHeartbeatRoute.js";
 import {
   HeartbeatDisabledError,
@@ -230,6 +231,167 @@ describe("manual heartbeat trigger over HTTP (issue #1453)", () => {
     expect(refusal).toBeInstanceOf(HeartbeatRunningError);
     expect(refusal).toMatchObject({ code: "heartbeat_running", details: { activeRun: null } });
     expect(await jobsByKey(key)).toEqual(before);
+  });
+
+  it("serializes overlapping manual enqueue checks and preserves late participant failures", async () => {
+    const exercise = async (lateFailure?: { error: unknown }): Promise<void> => {
+      const heartbeatId = await createAgentHeartbeat();
+      const url = process.env.TEST_DATABASE_URL;
+      if (!url) throw new Error("Missing test database URL");
+      const owned = new Pool({
+        connectionString: url,
+        max: 3,
+        connectionTimeoutMillis: 3000,
+        statement_timeout: 4000,
+        query_timeout: 5000,
+      });
+      let release: () => void = () => {};
+      let reportHolder: (pid: number) => void = () => {};
+      let reportContender: (pid: number) => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const holderStarted = new Promise<number>((resolve) => {
+        reportHolder = resolve;
+      });
+      const contenderStarted = new Promise<number>((resolve) => {
+        reportContender = resolve;
+      });
+      const request = {
+        heartbeatId,
+        projectItemId: null,
+        trigger: { triggeredByUserId: person },
+        refuseWhileActive: true,
+      };
+      const holder = runInTenant(getTenantZeroId(), () =>
+        withTransaction(owned, async (client) => {
+          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          if (pid === undefined) throw new Error("Missing holder PID");
+          const result = await enqueueManualHeartbeatFire(client, request);
+          reportHolder(pid);
+          await gate;
+          return result;
+        }),
+      ).then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      let contender: Promise<{ value: unknown } | { error: unknown }> | undefined;
+      let failure: { error: unknown } | undefined;
+      let holderFailureObserved = false;
+      let contenderFailureObserved = false;
+      const timers: Array<ReturnType<typeof setTimeout>> = [];
+      const bounded = <T>(signal: Promise<T>): Promise<T> =>
+        Promise.race([
+          signal,
+          new Promise<never>((_, reject) => {
+            timers.push(setTimeout(() => reject(new Error("Manual enqueue coordination timed out")), 3000));
+          }),
+        ]);
+      try {
+        const holderRace = await bounded(
+          Promise.race([
+            holderStarted.then((pid) => ({ kind: "started" as const, pid })),
+            holder.then((outcome) => ({ kind: "settled" as const, outcome })),
+          ]),
+        );
+        if (holderRace.kind === "settled") {
+          if ("error" in holderRace.outcome) {
+            holderFailureObserved = true;
+            throw holderRace.outcome.error;
+          }
+          throw new Error("Holder ended before overlap");
+        }
+        const holderPid = holderRace.pid;
+        contender = runInTenant(getTenantZeroId(), () =>
+          withTransaction(owned, async (client) => {
+            const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            if (pid === undefined) throw new Error("Missing contender PID");
+            reportContender(pid);
+            try {
+              return await enqueueManualHeartbeatFire(client, request);
+            } catch (error) {
+              if (lateFailure) throw lateFailure.error;
+              throw error;
+            }
+          }),
+        ).then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        );
+        const contenderRace = await bounded(
+          Promise.race([
+            contenderStarted.then((pid) => ({ kind: "started" as const, pid })),
+            contender.then((outcome) => ({ kind: "settled" as const, outcome })),
+          ]),
+        );
+        if (contenderRace.kind === "settled") {
+          if ("error" in contenderRace.outcome) {
+            contenderFailureObserved = true;
+            throw contenderRace.outcome.error;
+          }
+          throw new Error("Contender ended before overlap");
+        }
+        const contenderPid = contenderRace.pid;
+        const deadline = Date.now() + 2500;
+        let blocked = false;
+        while (!blocked && Date.now() < deadline) {
+          const observed = await owned.query<{ blocked: boolean }>(
+            "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+            [holderPid, contenderPid],
+          );
+          blocked = observed.rows[0]?.blocked === true;
+          if (!blocked) await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(blocked).toBe(true);
+      } catch (error) {
+        failure = { error };
+      }
+      for (const timer of timers) clearTimeout(timer);
+      release();
+      const outcomes = await Promise.all([holder, ...(contender ? [contender] : [])]);
+      const errors: unknown[] = [];
+      const first = outcomes[0];
+      if (first && "error" in first && !holderFailureObserved) errors.push(first.error);
+      const second = outcomes[1];
+      if (second && "error" in second && !contenderFailureObserved) {
+        if (second.error instanceof HeartbeatRunningError) {
+          try {
+            expect(second.error).toMatchObject({ details: { activeRun: null } });
+          } catch (error) {
+            errors.push(second.error, error);
+          }
+        } else errors.push(second.error);
+      } else if (!failure && (!second || !("error" in second))) {
+        errors.push(new Error("Second enqueue did not refuse"));
+      }
+      try {
+        await owned.end();
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length)
+        throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Manual enqueue overlap failed", {
+          cause: failure?.error,
+        });
+      if (failure) throw failure.error;
+      expect(outcomes).toHaveLength(2);
+      expect(await jobsByKey(manualHeartbeatFireJobKey(heartbeatId))).toHaveLength(1);
+    };
+    await exercise();
+    const sentinel = new Error("late contender failure");
+    for (const injected of [sentinel, undefined]) {
+      let outcome: { error: unknown } | undefined;
+      try {
+        await exercise({ error: injected });
+      } catch (error) {
+        outcome = { error };
+      }
+      expect(outcome?.error).toBeInstanceOf(AggregateError);
+      if (!(outcome?.error instanceof AggregateError)) throw new Error("Missing late participant failure");
+      expect(outcome.error.errors).toHaveLength(1);
+      expect(outcome.error.errors[0]).toBe(injected);
+    }
   });
 
   it("a waiting job whose attempts are exhausted does not block a new trigger, and the new trigger revives it", async () => {

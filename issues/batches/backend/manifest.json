@@ -1162,12 +1162,12 @@
       "sequence": 12,
       "status": "proposed",
       "title": "[backend-delivery 12/74] Implement data/aiGateway, data/scheduler, data/agentRuns changes",
-      "bodyCharacters": 57567,
-      "specSha256": "e0bf3e88ac873871a6214d7e7669bb68a8cc4ac5ff1560827eafe86ed3168a69",
+      "bodyCharacters": 59904,
+      "specSha256": "050c316388d86e916ca949ccd4fc91938a6581157e8f23a3b1c16888d459fb07",
       "members": [
         {
           "id": "gh-1442",
-          "specSha256": "7a13c2ddce6d4b821d42aabf921e2b4a2a810487df8fb9c4ae1cf97e2dbd59e5",
+          "specSha256": "94640f4eb30078fef345fa4b15245a8a6ac609718e12476cf5791b3f23d2276f",
           "parent": "gh-1310",
           "dependencies": [],
           "approval": "approved"
@@ -1183,7 +1183,7 @@
         },
         {
           "id": "gh-1472",
-          "specSha256": "4369021843987fb43ef64c0d554bcc8458a23d32354556b0b52b8255a42c1797",
+          "specSha256": "b34d12d441d6cf55f150171252d687819f953c263c69703c3ffa057aa3001c18",
           "parent": "gh-1310",
           "dependencies": [
             "gh-1442",
@@ -1193,7 +1193,7 @@
         },
         {
           "id": "gh-1477",
-          "specSha256": "dc8959bf916f95972062a26b18f3838096d60cc5df9cdbf55706dc310c67d044",
+          "specSha256": "619a5190568c7d354bff44a019dae50973002f20ee3dcd27d401dd1413de2615",
           "parent": "gh-1310",
           "dependencies": [
             "gh-1472"
@@ -1202,14 +1202,14 @@
         },
         {
           "id": "gh-1448",
-          "specSha256": "455a0f245e0b319d1df2890c614707815bdde4ea797fd2f01e8a0cf9a1504a19",
+          "specSha256": "ff8951a0f5ea2f34f00d9456d3af01c2d604aa89f7a7441bde270354739906cb",
           "parent": "gh-1308",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1458",
-          "specSha256": "c36a6125a67b829a820286e6d7b00634eac552e5dd663bed151c13d29ee2f070",
+          "specSha256": "1271a924fd70e1f90a713d0d5304692b48facdc708b4034890299cf395eca33d",
           "parent": "gh-1308",
           "dependencies": [
             "gh-1448"
@@ -1225,7 +1225,7 @@
         },
         {
           "id": "gh-1438",
-          "specSha256": "c5f02265f513318de6ee0a9dbbf35e62e60ae763aff1c65719b96638bba4561a",
+          "specSha256": "63d9678206504eaae3c91f61446a3b171796efce4aae9bf08b249c49316ed89b",
           "parent": "gh-1333",
           "dependencies": [],
           "approval": "approved"
@@ -1241,7 +1241,7 @@
         },
         {
           "id": "gh-1456",
-          "specSha256": "040784dcd75d1bbfe22201964243cf55f9191c705c38ef059072a2462883ce03",
+          "specSha256": "a02215a2fd7dce2551e956c88675e1780bd01797582ff7f1e5c66214b657c4dd",
           "parent": "gh-1310",
           "dependencies": [
             "gh-1453"
@@ -1250,7 +1250,7 @@
         },
         {
           "id": "gh-1614",
-          "specSha256": "948bf1fbe14f530014b083c00d6d387ff4c31a744309ba036d09bee2dfe8520b",
+          "specSha256": "1eae484666d9262fae8739d4e04ac07311d2cbf04ec88d3b42b31c9d441fb374",
           "parent": "gh-1320",
           "dependencies": [
             "gh-1608"
@@ -3665,8 +3665,8 @@
       "sequence": 38,
       "status": "proposed",
       "title": "[backend-delivery 38/74] Implement data/docs, shared/genericOperations, application changes",
-      "bodyCharacters": 55339,
-      "specSha256": "f720be79eb24be1e20b5ca98c13604b75f25ee4185d48692553f2652a6ca33dd",
+      "bodyCharacters": 55833,
+      "specSha256": "df8e7328632ea8652729389611da537925be836458d6b176c07b8d8cf88553d6",
       "members": [
         {
           "id": "gh-1676",
@@ -3690,10 +3690,11 @@
         },
         {
           "id": "gh-1679",
-          "specSha256": "21e9eb64e50f06428ddc55d74b40b8694fe10927058093327fb9661bc2d4fa9d",
+          "specSha256": "c3df60fd55e255b29b831bbeab457e51aacfb1045f2718cd88159257949e9e50",
           "parent": "gh-1303",
           "dependencies": [
-            "gh-1678"
+            "gh-1678",
+            "gh-1614"
           ],
           "approval": "approved"
         },
@@ -4554,8 +4555,8 @@
       "sequence": 47,
       "status": "proposed",
       "title": "[backend-delivery 47/74] Implement application, data/mcp, data/docs changes",
-      "bodyCharacters": 57203,
-      "specSha256": "6816770777aefbd7030e98db10b514922d459442f535dc414d845e350269b123",
+      "bodyCharacters": 57697,
+      "specSha256": "2100e7756af0a772467499dd93c29e8825507322eec26e56884a7424b84355b5",
       "members": [
         {
           "id": "gh-1763",
@@ -4568,10 +4569,11 @@
         },
         {
           "id": "gh-1765",
-          "specSha256": "e90a5407aa7b09cec15b4e5c70897d30563351c95f4de5c82c69914eca1cc731",
+          "specSha256": "7cb95f375009f174a6aee4212af65bfef0273deef93fd7aba8913c6c8accaf6f",
           "parent": "gh-1303",
           "dependencies": [
-            "gh-1764"
+            "gh-1764",
+            "gh-1614"
           ],
           "approval": "approved"
         },
