@@ -52,7 +52,7 @@ import {
   writeNotification,
   type PasswordResetMailer,
 } from "@semprec/data";
-import { AGENT_TASK_NAMES, CORE_TASK_NAMES, runOnce, type TaskList } from "@semprec/queue";
+import { AGENT_TASK_NAMES, CORE_TASK_NAMES, runOnce, runWorker, type TaskList } from "@semprec/queue";
 import { createDispatcher } from "../app.js";
 import { SESSION_COOKIE_NAME } from "../authHandler.js";
 import { ROUTE_MATRIX, ROUTE_TENANCIES, type RouteMatrixEntry } from "../routeMatrix.js";
@@ -2186,33 +2186,62 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     const started = new Promise<void>((resolve) => {
       signalStarted = resolve;
     });
+    const workerPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    workerPool.options.max = 5;
+    workerPool.options.connectionTimeoutMillis = 2000;
+    workerPool.options.statement_timeout = 3000;
+    workerPool.options.query_timeout = 4000;
     const registry = createActionRegistry();
     registry.set(
       CORE_AGENT_RUN_ACTION_ID,
-      coreAgentRunAction(pool, async () => {
+      coreAgentRunAction(workerPool, async () => {
         signalStarted();
         await gate;
         return { result: "done" };
       }),
     );
-    const task = createCoreTaskList(pool, registry)[AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT];
-    if (!task) throw new Error("Missing heartbeat worker task");
+    const task = createCoreTaskList(workerPool, registry)[AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT];
+    if (!task) {
+      const failure = new Error("Missing heartbeat worker task");
+      let cleanupFailure: { error: unknown } | undefined;
+      try {
+        await workerPool.end();
+      } catch (cleanup) {
+        cleanupFailure = { error: cleanup };
+      }
+      if (cleanupFailure)
+        throw new AggregateError([failure, cleanupFailure.error], "Worker setup cleanup failed", { cause: failure });
+      throw failure;
+    }
     const invalidations: Array<{ tenantId: string; threadId: string }> = [];
     setSempThreadInvalidationHook((event) => invalidations.push(event));
-    const worker = runOnce({ pgPool: pool, taskList: { [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: task } }).then(
-      () => ({ ok: true as const }),
-      (error: unknown) => ({ ok: false as const, error }),
-    );
+    let runner: Awaited<ReturnType<typeof runWorker>> | undefined;
+    let running: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
     let failure: { error: unknown } | undefined;
+    let runningFailureObserved = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      runner = await runWorker({
+        pgPool: workerPool,
+        taskList: { [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: task },
+        concurrency: 1,
+        pollInterval: 50,
+        noHandleSignals: true,
+      });
+      running = runner.promise.then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
       await Promise.race([
         started,
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error("Worker did not start")), 5000);
         }),
-        worker.then((result) => {
-          if (!result.ok) throw result.error;
+        running.then((result) => {
+          if (!result.ok) {
+            runningFailureObserved = true;
+            throw result.error;
+          }
           throw new Error("Worker stopped before start");
         }),
       ]);
@@ -2241,13 +2270,44 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     }
     if (timer) clearTimeout(timer);
     releaseRun();
-    const result = await worker;
-    setSempThreadInvalidationHook(() => {});
-    if (!result.ok) {
-      if (failure)
-        throw new AggregateError([failure.error, result.error], "HTTP and worker failed", { cause: failure.error });
-      throw result.error;
+    const cleanupErrors: unknown[] = [];
+    try {
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        const job = await adminPool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE key = $1",
+          [firstBody.jobKey],
+        );
+        if (job.rows[0]?.count === 0) break;
+        if (Date.now() >= deadline) throw new Error("Worker did not finish publishing its job outcome");
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      }
+    } catch (error) {
+      cleanupErrors.push(error);
     }
+    if (runner) {
+      try {
+        await runner.stop();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      if (running) {
+        const result = await running;
+        if (!result.ok && !runningFailureObserved) cleanupErrors.push(result.error);
+      }
+    }
+    try {
+      await workerPool.end();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    setSempThreadInvalidationHook(() => {});
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+        "HTTP worker cleanup failed",
+        { cause: failure?.error },
+      );
     if (failure) throw failure.error;
     const runs = await runInTenant(b.tenantId, () => listAgentRunsByHeartbeat(pool, heartbeat.id));
     expect(runs).toHaveLength(1);
@@ -2259,6 +2319,123 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
       retryOfRunId: null,
       attempt: 1,
     });
+  });
+
+  it("drains an owned worker when heartbeat setup fails before the action", async () => {
+    const heartbeat = await runInTenant(b.tenantId, () =>
+      withTransaction(pool, (client) =>
+        createHeartbeat(client, {
+          projectItemId: b.projectItemId,
+          name: "Pre-action failure",
+          rule: { kind: "interval", minutes: 5 },
+          actionId: CORE_AGENT_RUN_ACTION_ID,
+          actionConfig: { task: "not invoked" },
+        }),
+      ),
+    );
+    const answer = await send(b.member, { method: "POST", path: `/api/heartbeats/${heartbeat.id}/trigger`, body: {} });
+    expect(answer.status).toBe(202);
+    const body: unknown = JSON.parse(answer.text);
+    if (!isRecord(body) || typeof body.jobKey !== "string") throw new Error("Missing job key");
+    const owned = await createRuntimeRolePool(adminPool, "semprec_data");
+    owned.options.max = 5;
+    owned.options.connectionTimeoutMillis = 2000;
+    owned.options.statement_timeout = 3000;
+    owned.options.query_timeout = 4000;
+    let signalFailure: () => void = () => {};
+    const observed = new Promise<void>((resolve) => {
+      signalFailure = resolve;
+    });
+    const injected = new Error("pre-action connection failure");
+    let injectedOnce = false;
+    const actionPool = new Proxy(owned, {
+      get(target, property, receiver) {
+        if (property === "connect" && !injectedOnce)
+          return () => {
+            injectedOnce = true;
+            signalFailure();
+            return Promise.reject(injected);
+          };
+        const value: unknown = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    let invoked = false;
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(actionPool, async () => {
+        invoked = true;
+        return { result: "unexpected" };
+      }),
+    );
+    const task = createCoreTaskList(actionPool, registry)[AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT];
+    let runner: Awaited<ReturnType<typeof runWorker>> | undefined;
+    let running: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
+    let failure: { error: unknown } | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      if (!task) throw new Error("Missing heartbeat worker task");
+      runner = await runWorker({
+        pgPool: owned,
+        taskList: { [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: task },
+        concurrency: 1,
+        pollInterval: 50,
+        noHandleSignals: true,
+      });
+      running = runner.promise.then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      await Promise.race([
+        observed,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Pre-action failure did not occur")), 5000);
+        }),
+      ]);
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        const row = await adminPool.query<{ last_error: string | null }>(
+          "SELECT last_error FROM graphile_worker.jobs WHERE key = $1",
+          [body.jobKey],
+        );
+        if (row.rows[0]?.last_error?.includes(injected.message)) break;
+        if (Date.now() >= deadline) throw new Error("Worker did not publish its setup failure");
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      }
+    } catch (error) {
+      failure = { error };
+    }
+    if (timer) clearTimeout(timer);
+    const errors: unknown[] = [];
+    if (runner) {
+      try {
+        await runner.stop();
+      } catch (error) {
+        errors.push(error);
+      }
+      if (running) {
+        const result = await running;
+        if (!result.ok) errors.push(result.error);
+      }
+    }
+    try {
+      await owned.end();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length)
+      throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Pre-action worker cleanup failed", {
+        cause: failure?.error,
+      });
+    if (failure) throw failure.error;
+    expect(invoked).toBe(false);
+    expect(await runInTenant(b.tenantId, () => listAgentRunsByHeartbeat(pool, heartbeat.id))).toEqual([]);
+    const row = await adminPool.query<{ last_error: string | null }>(
+      "SELECT last_error FROM graphile_worker.jobs WHERE key = $1",
+      [body.jobKey],
+    );
+    expect(row.rows[0]?.last_error).toContain(injected.message);
   });
 
   it("refuses disabled and item-event automations over authenticated HTTP", async () => {

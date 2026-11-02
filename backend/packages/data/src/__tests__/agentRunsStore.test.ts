@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import {
   createRuntimeRolePool,
@@ -19,6 +19,7 @@ import {
   getRetrySuccessorId,
 } from "../agentRuns/agentRunsStore.js";
 import { NotFoundError } from "../errors.js";
+import { withTransaction } from "../db/pool.js";
 
 let pool: Pool;
 
@@ -203,85 +204,127 @@ describe("agent run retry chain (issue #1448)", () => {
 
   it("creates exactly one row for two concurrent chained runs of the same run", async () => {
     const first = await createAgentRun(chainPool, { triggeredBy: "user", task: "t" });
-    const winner = await chainPool.connect();
-    let contender;
-    try {
-      contender = await chainPool.connect();
-    } catch (error) {
-      let cleanupFailure: { error: unknown } | undefined;
-      try {
-        winner.release();
-      } catch (cleanup) {
-        cleanupFailure = { error: cleanup };
-      }
-      if (cleanupFailure)
-        throw new AggregateError([error, cleanupFailure.error], "Retry overlap setup and cleanup failed", {
-          cause: error,
-        });
-      throw error;
-    }
-    let pending: Promise<{ value: Awaited<ReturnType<typeof createChainedAgentRun>> } | { error: unknown }> | undefined;
+    const url = process.env.TEST_DATABASE_URL;
+    if (!url) throw new Error("Missing test database URL");
+    const owned = new Pool({
+      connectionString: url,
+      max: 3,
+      connectionTimeoutMillis: 3000,
+      statement_timeout: 4000,
+      query_timeout: 5000,
+    });
+    let release: () => void = () => {};
+    let reportHolder: (pid: number) => void = () => {};
+    let reportContender: (pid: number) => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holderStarted = new Promise<number>((resolve) => {
+      reportHolder = resolve;
+    });
+    const contenderStarted = new Promise<number>((resolve) => {
+      reportContender = resolve;
+    });
+    const input = { triggeredBy: "user" as const, task: "t", retryOfRunId: first.id, attempt: 2 };
+    const holder = runInTenant(getTenantZeroId(), () =>
+      withTransaction(owned, async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        if (pid === undefined) throw new Error("Missing holder PID");
+        const inserted = await createChainedAgentRun(client, input);
+        if (!inserted) throw new Error("First retry was not inserted");
+        reportHolder(pid);
+        await gate;
+        return inserted;
+      }),
+    ).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    let contender:
+      Promise<{ value: Awaited<ReturnType<typeof createChainedAgentRun>> } | { error: unknown }> | undefined;
     let failure: { error: unknown } | undefined;
+    let holderFailureObserved = false;
+    let contenderFailureObserved = false;
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
+    const bounded = <T>(signal: Promise<T>): Promise<T> =>
+      Promise.race([
+        signal,
+        new Promise<never>((_, reject) => {
+          timers.push(setTimeout(() => reject(new Error("Retry overlap coordination timed out")), 3000));
+        }),
+      ]);
     try {
-      await winner.query("BEGIN");
-      await contender.query("BEGIN");
-      await winner.query("SET LOCAL statement_timeout = '5s'");
-      await contender.query("SET LOCAL statement_timeout = '5s'");
-      const winnerPid = (await winner.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-      const contenderPid = (await contender.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-      if (winnerPid === undefined || contenderPid === undefined) throw new Error("Missing backend PID");
-      const input = { triggeredBy: "user" as const, task: "t", retryOfRunId: first.id, attempt: 2 };
-      expect(await createChainedAgentRun(winner, input)).not.toBeNull();
-      pending = createChainedAgentRun(contender, input).then(
+      const holderPid = await bounded(
+        Promise.race([
+          holderStarted,
+          holder.then((outcome) => {
+            if ("error" in outcome) {
+              holderFailureObserved = true;
+              throw outcome.error;
+            }
+            throw new Error("Holder ended before overlap");
+          }),
+        ]),
+      );
+      contender = runInTenant(getTenantZeroId(), () =>
+        withTransaction(owned, async (client) => {
+          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          if (pid === undefined) throw new Error("Missing contender PID");
+          reportContender(pid);
+          return createChainedAgentRun(client, input);
+        }),
+      ).then(
         (value) => ({ value }),
         (error: unknown) => ({ error }),
       );
-      const deadline = Date.now() + 3000;
+      const contenderPid = await bounded(
+        Promise.race([
+          contenderStarted,
+          contender.then((outcome) => {
+            if ("error" in outcome) {
+              contenderFailureObserved = true;
+              throw outcome.error;
+            }
+            throw new Error("Contender ended before overlap");
+          }),
+        ]),
+      );
+      const deadline = Date.now() + 2500;
       let blocked = false;
       while (!blocked && Date.now() < deadline) {
-        const result = await chainPool.query<{ blocked: boolean }>(
+        const observed = await owned.query<{ blocked: boolean }>(
           "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
-          [winnerPid, contenderPid],
+          [holderPid, contenderPid],
         );
-        blocked = result.rows[0]?.blocked === true;
+        blocked = observed.rows[0]?.blocked === true;
         if (!blocked) await new Promise((resolve) => setTimeout(resolve, 10));
       }
       expect(blocked).toBe(true);
-      await winner.query("COMMIT");
-      const outcome = await pending;
-      pending = undefined;
-      if ("error" in outcome) throw outcome.error;
-      expect(outcome.value).toBeNull();
-      await contender.query("COMMIT");
     } catch (error) {
       failure = { error };
     }
-    const cleanupErrors: unknown[] = [];
-    for (const client of [winner, contender]) {
-      try {
-        await client.query("ROLLBACK");
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
+    for (const timer of timers) clearTimeout(timer);
+    release();
+    const outcomes = await Promise.all([holder, ...(contender ? [contender] : [])]);
+    const errors: unknown[] = [];
+    for (const [index, outcome] of outcomes.entries()) {
+      if ("error" in outcome && !(index === 0 ? holderFailureObserved : contenderFailureObserved))
+        errors.push(outcome.error);
     }
-    if (pending) {
-      const outcome = await pending;
-      if ("error" in outcome) cleanupErrors.push(outcome.error);
+    try {
+      await owned.end();
+    } catch (error) {
+      errors.push(error);
     }
-    for (const client of [winner, contender]) {
-      try {
-        client.release();
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-    }
-    if (cleanupErrors.length)
-      throw new AggregateError(
-        failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
-        "Retry overlap cleanup failed",
-        { cause: failure?.error },
-      );
+    if (errors.length)
+      throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Retry overlap failed", {
+        cause: failure?.error,
+      });
     if (failure) throw failure.error;
+    expect(outcomes).toHaveLength(2);
+    const second = outcomes[1];
+    if (!second || "error" in second) throw new Error("Missing contender outcome");
+    expect(second.value).toBeNull();
     const { rows } = await chainPool.query<{ n: number }>(
       "SELECT count(*)::int AS n FROM agent_runs WHERE retry_of_run_id = $1",
       [first.id],
