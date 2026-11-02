@@ -33,6 +33,39 @@ findings, proves every AC with exact tests/scenarios and logs, and runs the full
 backend pipeline. Use the repository-pinned pnpm 9.12.0. Routine dependency or
 ephemeral-Postgres setup is part of the work, not an automatic stop.
 
+### Review convergence limit
+
+Owner-directed limit: at most **two automatic independent review rounds per
+batch**. The first is one complete Task/AC and production-path audit, returning
+all findings together. After a bundled repair, the same reviewer gets one
+focused recheck of the actual delta; unchanged evidence is carried by verified
+bytes, without repeating a complete audit or reopening settled requirements.
+An interrupted/incomplete initial review resumes the same review; it is never
+presented as complete approval.
+
+After that recheck, do not automatically commission another round or ask for
+another CLEAR report. The parent makes one final disposition of remaining
+findings using the actual diff and relevant tests. Cheap lows, speculative
+risks and additional test combinations not needed for an explicit requirement
+go to a recorded follow-up, rather than generating a new repair/review loop.
+Correct code is not changed merely to satisfy a mistaken review finding.
+
+A concrete security/privacy defect, data-loss risk, broken behavior or unmet
+explicit Task/AC remains blocking until fixed or explicitly adjudicated; this
+limit never turns it into a false PASS. Any extra independent review requires
+the parent's recorded concrete reason and narrow scope. A newly observed
+frozen test failure does not reset the review budget: routine fixture repairs
+get the parent's targeted diff/test verification and retain the original
+review evidence. The separately mandated batch-19 security review remains
+required, with the same bounded follow-up discipline.
+
+Apply this immediately to batch 13: its automatic review budget is exhausted.
+The pending Gmail/Graph tenant-fixture repair is verified by the parent after
+worker self-review and affected-file tests, without another reviewer turn or
+thread. Keep prior reports and their limitations; do not fabricate a new
+independent CLEAR for a SHA the reviewer did not inspect. Runtime gates,
+approval checks and honest failure reporting remain mandatory.
+
 Use BLOCKED/NOT RUN honestly, inspect the actual test configuration, and never
 claim file presence as proof. Exceptions require the parent's evidence-based
 decision. The pilot's known macOS MCP environment assertion is an explicitly

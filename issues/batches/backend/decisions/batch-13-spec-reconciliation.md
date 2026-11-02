@@ -358,3 +358,22 @@ Do not run skipped E2E on e7e6c8a8, which already needs repair; the repaired fin
 candidate must execute the real vitest.e2e.config.ts tier under section 11.
 No final gate, acceptance, merge/completion or successor dispatch is authorized
 by this compatibility scope decision. No new ADR or source Task/AC change.
+
+## 13. Owner-directed review convergence limit
+
+The owner explicitly requested a reasonable review boundary instead of endless
+new rounds. Apply CONTROLLER.md's two-round automatic budget: one complete
+initial review and one focused check after a bundled repair. The parent then
+disposes of remaining findings; optional test combinations, cheap lows and
+speculative follow-ups do not automatically restart review. Concrete security,
+data, behavior or explicit Task/AC failures remain blocking and must be resolved
+honestly. Extra independent review requires a recorded narrow material reason.
+
+Batch 13 has already exhausted that budget. This supersedes section 12's request
+for another reviewer turn on the pending tenant-fixture repair. The worker
+self-reviews and runs both complete affected files, then returns the exact diff
+and evidence for parent inspection. Retain prior independent reports and carry
+unchanged reviewed production bytes; do not claim the reviewer inspected the
+new SHA. No new reviewer thread, full-ledger replay or automatic CLEAR loop.
+After the parent verifies this routine repair, fresh exact-SHA runtime gates
+remain required. This process limit grants no pipeline waiver or acceptance.
