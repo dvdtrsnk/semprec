@@ -49,6 +49,12 @@ function expectCode(action: () => unknown, code: string): void {
   throw new Error(`expected ${code}`);
 }
 
+function expectUnchangedCode(doc: Y.Doc, action: () => unknown, code: string): void {
+  const before = Y.encodeStateAsUpdate(doc);
+  expectCode(action, code);
+  expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
+}
+
 describe("page references in generic operations", () => {
   it("inserts, moves, indents and deletes existing page references without changing their identity", () => {
     const doc = docWith({ id: "a", type: "text", text: "Alpha" }, { id: "b", type: "todo", text: "Beta", done: true });
@@ -125,9 +131,10 @@ describe("insertBlocks", () => {
     const doc = docWith({ id: "a", type: "text" });
     insertBlocks(doc, null, [{ id: "z", type: "text" }]);
     expect(ids(doc)).toEqual(["z", "a"]);
-    expectCode(() => insertBlocks(doc, "nope", [{ type: "text" }]), "invalid_after_id");
-    expectCode(() => insertBlocks(doc, null, [{ id: "a", type: "text" }]), "duplicate_block_id");
-    expectCode(
+    expectUnchangedCode(doc, () => insertBlocks(doc, "nope", [{ type: "text" }]), "invalid_after_id");
+    expectUnchangedCode(doc, () => insertBlocks(doc, null, [{ id: "a", type: "text" }]), "duplicate_block_id");
+    expectUnchangedCode(
+      doc,
       () =>
         insertBlocks(doc, null, [
           { id: "d", type: "text" },
@@ -135,7 +142,9 @@ describe("insertBlocks", () => {
         ]),
       "duplicate_block_id",
     );
-    expect(() => insertBlocks(doc, null, [{ type: "page" }])).toThrow();
+    const beforeInvalidPage = Y.encodeStateAsUpdate(doc);
+    expect(() => insertBlocks(doc, null, [{ type: "page" }])).toThrow(BlockInputError);
+    expect(Y.encodeStateAsUpdate(doc)).toEqual(beforeInvalidPage);
     expect(ids(doc)).toEqual(["z", "a"]);
   });
 
@@ -144,7 +153,8 @@ describe("insertBlocks", () => {
     expect(readPageBlocks(doc)[0]?.synthetic).toBe(true);
     insertBlocks(doc, null, [{ id: "first", type: "text", text: "hi" }]);
     expect(ids(doc)).toEqual(["first"]);
-    expectCode(() => insertBlocks(new Y.Doc(), "x", [{ type: "text" }]), "invalid_after_id");
+    const empty = new Y.Doc();
+    expectUnchangedCode(empty, () => insertBlocks(empty, "x", [{ type: "text" }]), "invalid_after_id");
   });
 
   it("validates every block before mutating a bulk insert", () => {
@@ -265,9 +275,9 @@ describe("splitBlock", () => {
 
   it("refuses page blocks and offsets outside the text", () => {
     const doc = docWith({ id: "p", type: "page", pageId: "x" }, { id: "t", type: "text", text: "ab" });
-    expectCode(() => splitBlock(doc, "p", 0), "page_block_not_splittable");
-    expectCode(() => splitBlock(doc, "t", 3), "offset_out_of_range");
-    expectCode(() => splitBlock(doc, "t", -1), "offset_out_of_range");
+    expectUnchangedCode(doc, () => splitBlock(doc, "p", 0), "page_block_not_splittable");
+    expectUnchangedCode(doc, () => splitBlock(doc, "t", 3), "offset_out_of_range");
+    expectUnchangedCode(doc, () => splitBlock(doc, "t", -1), "offset_out_of_range");
     expect(ids(doc)).toEqual(["p", "t"]);
   });
 });
@@ -297,9 +307,9 @@ describe("mergeBlocks", () => {
   it("fails on page blocks and on the first block and changes nothing", () => {
     const doc = docWith({ id: "t", type: "text" }, { id: "p", type: "page", pageId: "x" }, { id: "u", type: "text" });
     const before = Y.encodeStateAsUpdate(doc);
-    expectCode(() => mergeBlocks(doc, "p"), "page_block_not_mergeable");
-    expectCode(() => mergeBlocks(doc, "u"), "page_block_not_mergeable");
-    expectCode(() => mergeBlocks(doc, "t"), "no_previous_block");
+    expectUnchangedCode(doc, () => mergeBlocks(doc, "p"), "page_block_not_mergeable");
+    expectUnchangedCode(doc, () => mergeBlocks(doc, "u"), "page_block_not_mergeable");
+    expectUnchangedCode(doc, () => mergeBlocks(doc, "t"), "no_previous_block");
     expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
   });
 });
@@ -315,9 +325,9 @@ describe("moveBlocks", () => {
 
   it("refuses an afterId among the moved ids or unknown", () => {
     const doc = docWith({ id: "a", type: "text" }, { id: "b", type: "text" });
-    expectCode(() => moveBlocks(doc, ["a"], "a"), "invalid_after_id");
-    expectCode(() => moveBlocks(doc, ["a"], "zz"), "invalid_after_id");
-    expectCode(() => moveBlocks(doc, ["zz"], null), "block_not_found");
+    expectUnchangedCode(doc, () => moveBlocks(doc, ["a"], "a"), "invalid_after_id");
+    expectUnchangedCode(doc, () => moveBlocks(doc, ["a"], "zz"), "invalid_after_id");
+    expectUnchangedCode(doc, () => moveBlocks(doc, ["zz"], null), "block_not_found");
   });
 
   it("leaves a concurrently moved block once when read and deleteBlocks removes every occurrence", () => {
@@ -360,8 +370,8 @@ describe("setType", () => {
 
   it("resets done on a todo set to todo and refuses page conversions", () => {
     const doc = docWith({ id: "t", type: "todo", done: true }, { id: "p", type: "page", pageId: "x" });
-    expectCode(() => setType(doc, ["t", "p"], "text"), "page_conversion_required");
-    expectCode(() => setType(doc, ["t"], "page"), "page_conversion_required");
+    expectUnchangedCode(doc, () => setType(doc, ["t", "p"], "text"), "page_conversion_required");
+    expectUnchangedCode(doc, () => setType(doc, ["t"], "page"), "page_conversion_required");
     expect(readPageBlocks(doc)[0]?.done).toBe(true);
     setType(doc, ["t"], "todo");
     expect(readPageBlocks(doc)[0]?.done).toBe(false);
@@ -375,7 +385,7 @@ describe("setIndent", () => {
     expect(readPageBlocks(doc).map((block) => block.indent)).toEqual([5, 4]);
     setIndent(doc, ["a", "b"], -9);
     expect(readPageBlocks(doc).map((block) => block.indent)).toEqual([0, 0]);
-    expectCode(() => setIndent(doc, ["a"], 0.5), "invalid_delta");
+    expectUnchangedCode(doc, () => setIndent(doc, ["a"], 0.5), "invalid_delta");
   });
 });
 
@@ -396,7 +406,7 @@ describe("duplicateBlocks", () => {
 
   it("refuses page blocks", () => {
     const doc = docWith({ id: "p", type: "page", pageId: "x" });
-    expectCode(() => duplicateBlocks(doc, ["p"]), "page_conversion_required");
+    expectUnchangedCode(doc, () => duplicateBlocks(doc, ["p"]), "page_conversion_required");
     expect(ids(doc)).toEqual(["p"]);
   });
 });
@@ -410,6 +420,24 @@ describe("deleteBlocks", () => {
     expect(blocks[0]).toMatchObject({ type: "text", text: [], synthetic: false });
     expect(getOrderArray(doc).toArray()).toHaveLength(1);
     expect(getBlocksMap(doc).size).toBe(1);
+  });
+});
+
+describe("refusal atomicity across bulk operations", () => {
+  it.each([
+    ["move", (doc: Y.Doc) => moveBlocks(doc, ["a", "missing"], null)],
+    ["type", (doc: Y.Doc) => setType(doc, ["a", "missing"], "h1")],
+    ["indent", (doc: Y.Doc) => setIndent(doc, ["a", "missing"], 1)],
+    ["duplicate", (doc: Y.Doc) => duplicateBlocks(doc, ["a", "missing"])],
+    ["delete", (doc: Y.Doc) => deleteBlocks(doc, ["a", "missing"])],
+    ["split", (doc: Y.Doc) => splitBlock(doc, "missing", 0)],
+    ["merge", (doc: Y.Doc) => mergeBlocks(doc, "missing")],
+  ])("leaves the complete document unchanged when %s includes an unknown block", (_name, action) => {
+    const doc = docWith(
+      { id: "a", type: "todo", indent: 2, done: true, text: [{ insert: "marked", attributes: { bold: true } }] },
+      { id: "p", type: "page", pageId: "existing-page" },
+    );
+    expectUnchangedCode(doc, () => action(doc), "block_not_found");
   });
 });
 
@@ -438,11 +466,13 @@ describe("order tidying", () => {
 
   it("still validates invalid arguments for an empty operation", () => {
     const doc = new Y.Doc();
-    expectCode(() => insertBlocks(doc, "missing", []), "invalid_after_id");
-    expectCode(() => moveBlocks(doc, [], "missing"), "invalid_after_id");
-    expectCode(() => setIndent(doc, [], 0.5), "invalid_delta");
+    expectUnchangedCode(doc, () => insertBlocks(doc, "missing", []), "invalid_after_id");
+    expectUnchangedCode(doc, () => moveBlocks(doc, [], "missing"), "invalid_after_id");
+    expectUnchangedCode(doc, () => setIndent(doc, [], 0.5), "invalid_delta");
+    const beforeInvalidType = Y.encodeStateAsUpdate(doc);
     // @ts-expect-error Exercise the JavaScript boundary with an invalid type.
     expect(() => setType(doc, [], "unknown")).toThrow(BlockInputError);
+    expect(Y.encodeStateAsUpdate(doc)).toEqual(beforeInvalidType);
   });
 
   it.each([
