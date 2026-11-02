@@ -26,7 +26,8 @@ async function caught(promise: Promise<unknown>): Promise<Error> {
   try {
     await promise;
   } catch (error) {
-    return error as Error;
+    if (!(error instanceof Error)) throw error;
+    return error;
   }
   throw new Error("expected rejection");
 }
@@ -205,6 +206,75 @@ describe("exchangeAuthorizationCode", () => {
 
     mockFetch(401, "<html>nope</html>");
     expect(await caught(exchangeAuthorizationCode(input))).toBeInstanceOf(MailAuthorizationCodeRejectedError);
+  });
+
+  it("settles an actual stalled authorization response at the 15-second deadline", async () => {
+    const sockets = new Set<Socket>();
+    const closed: Promise<void>[] = [];
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.write('{"access_token":');
+    });
+    server.on("connection", (socket) => {
+      sockets.add(socket);
+      closed.push(
+        new Promise<void>((resolve) =>
+          socket.on("close", () => {
+            sockets.delete(socket);
+            resolve();
+          }),
+        ),
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const failures: unknown[] = [];
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing test server port");
+      const started = Date.now();
+      const error = await caught(
+        exchangeAuthorizationCode({ ...input, tokenUrl: `http://127.0.0.1:${address.port}/token` }),
+      );
+      expect(error.message).toBe("OAuth code exchange response is not valid JSON");
+      expect(Date.now() - started).toBeGreaterThanOrEqual(14_000);
+      expectNoSecrets(error);
+      await Promise.all(closed);
+      expect(sockets.size).toBe(0);
+    } catch (error) {
+      failures.push(error);
+    }
+    for (const socket of sockets) socket.destroy();
+    try {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      await Promise.all(closed);
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Authorization deadline test and cleanup failed");
+  }, 20_000);
+
+  it("redacts network errors, malformed JSON, and secret-shaped provider codes", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error(`request ${SENTINELS.code} ${SENTINELS.codeVerifier} ${SENTINELS.clientSecret}`);
+      }),
+    );
+    expectNoSecrets(await caught(exchangeAuthorizationCode(input)));
+
+    mockFetch(200, `{"access_token":"SENTINEL-ACCESS", ${SENTINELS.code}`);
+    expectNoSecrets(await caught(exchangeAuthorizationCode(input)));
+
+    mockFetch(400, { error: "token_secret" });
+    const unknownCode = await caught(exchangeAuthorizationCode(input));
+    expect(unknownCode).toBeInstanceOf(MailAuthorizationCodeRejectedError);
+    expect(unknownCode.message).not.toContain("token_secret");
+
+    mockFetch(400, { error: "invalid_grant" });
+    const overlappingSecret = await caught(exchangeAuthorizationCode({ ...input, clientSecret: "invalid_grant" }));
+    expect(overlappingSecret).toBeInstanceOf(MailAuthorizationCodeRejectedError);
+    expect(`${overlappingSecret.message} ${JSON.stringify(overlappingSecret)}`).not.toContain("invalid_grant");
   });
 
   it("throws a plain error carrying only the status for other failures", async () => {

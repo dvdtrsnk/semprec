@@ -151,7 +151,15 @@ export interface AuthorizationCodeTokens {
   refreshToken: string;
 }
 
-const PROVIDER_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+const PROVIDER_ERROR_CODES = new Set([
+  "invalid_request",
+  "invalid_client",
+  "invalid_grant",
+  "unauthorized_client",
+  "unsupported_grant_type",
+  "invalid_scope",
+  "consent_required",
+]);
 const ADMIN_CONSENT_MARKERS = ["AADSTS65001", "AADSTS90094"];
 
 /** Reads only the provider's short `error` code and whether the description names an admin-consent AADSTS code. */
@@ -165,7 +173,7 @@ async function readProviderError(response: Response): Promise<{ code: string | n
   }
   if (typeof parsed !== "object" || parsed === null) return { code: null, adminConsent: false };
   const { error, error_description: description } = parsed as Record<string, unknown>;
-  const code = typeof error === "string" && PROVIDER_ERROR_CODE.test(error) ? error : null;
+  const code = typeof error === "string" && PROVIDER_ERROR_CODES.has(error) ? error : null;
   const adminConsent =
     code === "consent_required" ||
     (code === "invalid_grant" &&
@@ -191,15 +199,28 @@ export async function exchangeAuthorizationCode(
     code_verifier: input.codeVerifier,
   });
 
-  const response = await fetch(input.tokenUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-    signal: AbortSignal.timeout(15_000),
-  });
+  let response: Response;
+  try {
+    response = await fetch(input.tokenUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    // Provider and network failures may include submitted credentials.
+    throw new Error("OAuth code exchange request failed");
+  }
   if (!response.ok) {
     if (response.status === 400 || response.status === 401) {
-      const { code, adminConsent } = await readProviderError(response);
+      const { code: providerCode, adminConsent } = await readProviderError(response);
+      const code =
+        providerCode &&
+        [input.code, input.codeVerifier, input.clientSecret].some(
+          (secret) => secret.length > 0 && providerCode.includes(secret),
+        )
+          ? null
+          : providerCode;
       const detail = `status ${response.status}${code ? `, error ${code}` : ""}`;
       if (adminConsent) {
         throw new MailAdminConsentRequiredError(`OAuth code exchange needs administrator consent (${detail})`, code);
@@ -211,15 +232,21 @@ export async function exchangeAuthorizationCode(
     }
     throw new Error(`OAuth code exchange failed with status ${response.status}`);
   }
-  const json = assertJsonObject(await response.json(), `OAuth code exchange response from ${input.tokenUrl}`);
+  let parsed: unknown;
+  try {
+    parsed = await response.json();
+  } catch {
+    throw new Error("OAuth code exchange response is not valid JSON");
+  }
+  const json = assertJsonObject(parsed, "OAuth code exchange response");
   if (typeof json.access_token !== "string" || !json.access_token) {
-    throw new Error(`OAuth code exchange response from ${input.tokenUrl} is missing a string access_token`);
+    throw new Error("OAuth code exchange response is missing a string access_token");
   }
   if (typeof json.expires_in !== "number" || !Number.isFinite(json.expires_in)) {
-    throw new Error(`OAuth code exchange response from ${input.tokenUrl} is missing a numeric expires_in`);
+    throw new Error("OAuth code exchange response is missing a numeric expires_in");
   }
   if (typeof json.refresh_token !== "string" || !json.refresh_token) {
-    throw new Error(`OAuth code exchange response from ${input.tokenUrl} is missing a string refresh_token`);
+    throw new Error("OAuth code exchange response is missing a string refresh_token");
   }
   return {
     accessToken: json.access_token,
