@@ -35,6 +35,7 @@ import { beginTenantDeletion } from "../tenancy/deleteAccount.js";
 import { logger } from "../tenancy/logger.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
 import { handleTenantExportTask } from "../tenancy/tenantExportJob.js";
+import { createMailThread, reassignThread } from "../mail/mailMessageMetaStore.js";
 import { requestTenantExport } from "../tenancy/tenantExportsStore.js";
 import { handleTenantPurgeTask, type TenantPurgeDirs } from "../tenancy/tenantPurgeJob.js";
 import { insertItemOrigins } from "../inbox/itemOriginsStore.js";
@@ -414,6 +415,15 @@ describe("tenant purge (issue #1055)", () => {
     const tenantB = await provisionedTenant();
     const a = await seedTenant(tenantA);
     const b = await seedTenant(tenantB);
+    for (const tenant of [tenantA, tenantB]) {
+      await runInTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const from = await createMailThread(client);
+          const to = await createMailThread(client);
+          await reassignThread(client, from.id, to.id);
+        }),
+      );
+    }
     await runInTenant(tenantB, () => enqueueJob(pool, "purgeTestJob", { which: "b" }));
     await beginDeletion(tenantB);
     const { rows: before } = await adminPool.query<{ status_changed_at: Date }>(
@@ -422,6 +432,8 @@ describe("tenant purge (issue #1055)", () => {
     );
     const requestedAt = before[0]?.status_changed_at;
     const countsA = await rowCounts(tenantA);
+    expect(countsA.mail_thread_aliases).toBe(1);
+    expect((await rowCounts(tenantB)).mail_thread_aliases).toBe(1);
     expect(countsA.item_origins).toBe(1);
     expect((await rowCounts(tenantB)).item_origins).toBe(1);
     expect((await nonEmptyTables(tenantB)).length).toBeGreaterThan(10);
