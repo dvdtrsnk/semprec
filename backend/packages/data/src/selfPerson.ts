@@ -24,6 +24,7 @@ export async function setSelfPersonId(
   client: PoolClient,
   personId: string | null,
   writer: WriterIdentity = SYSTEM_WRITER,
+  actingUserId?: string,
 ): Promise<void> {
   // The singleton row serializes replacements, including two concurrent requests with no edge yet.
   const { rows } = await client.query<{ item_id: string; property_id: string; definition_id: string }>(
@@ -59,6 +60,7 @@ export async function setSelfPersonId(
       },
       undefined,
       writer,
+      actingUserId,
     );
   }
   if (personId !== null) {
@@ -71,6 +73,7 @@ export async function setSelfPersonId(
       },
       undefined,
       writer,
+      actingUserId,
     );
   }
 }

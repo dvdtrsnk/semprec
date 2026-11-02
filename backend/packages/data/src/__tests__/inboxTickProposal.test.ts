@@ -2769,6 +2769,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         const { item, type } = await createTypedItem(`Source ${mutation} ${writerFirst}`);
         const blob = await createBlob(pool, { mimeType: "image/jpeg", byteSize: 3, storageKey: `t/${randomUUID()}` });
         let attachmentId: string | undefined;
+        let insertedAttachmentId: string | undefined;
         if (mutation === "remove attachment") {
           await insertInboxAttachments(pool, item.id, [{ blobId: blob.id, source: "camera" }]);
           attachmentId = (await listInboxAttachments(pool, [item.id]))[0]?.attachmentId;
@@ -2890,6 +2891,11 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
               await mutationGate;
             }
             await mutate(client);
+            if (mutation === "insert attachment") {
+              const inserted = await listInboxAttachments(client, [item.id]);
+              if (inserted.length !== 1 || !inserted[0]) throw new Error("Missing inserted attachment");
+              insertedAttachmentId = inserted[0].attachmentId;
+            }
             writerDone();
             if (writerFirst) writerReady();
             await writerGate;
@@ -2974,6 +2980,29 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
             releaseWriter();
             await writer;
           }
+          const attachments = await boundedBarrier(
+            owned.run(() => runInTenant(getTenantZeroId(), () => listInboxAttachments(runtime, [item.id]))),
+          );
+          if (mutation === "insert attachment") {
+            expect(attachments).toHaveLength(1);
+            expect(attachments[0]).toMatchObject({ inboxItemId: item.id, blobId: blob.id, source: "camera" });
+            expect(insertedAttachmentId).toBeTruthy();
+            expect(attachments[0]?.attachmentId).toBe(insertedAttachmentId);
+          } else {
+            expect(attachments).toEqual([]);
+          }
+          const edges = await boundedBarrier(
+            owned.run(() =>
+              withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+                const definition = await relationsStore.getRelationDefinitionByPropertyId(client, property.id);
+                if (!definition) throw new Error("Missing type definition");
+                return relationsStore.listRelationsForItem(client, definition.id, item.id);
+              }),
+            ),
+          );
+          expect(edges.map((edge) => relationsStore.otherSide(edge, item.id))).toEqual([
+            mutation === "change type" ? alternate.id : type.id,
+          ]);
         } catch (error) {
           failure = { error };
         } finally {

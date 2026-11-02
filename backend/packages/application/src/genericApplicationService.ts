@@ -398,6 +398,7 @@ export function createGenericApplicationService(
           metadata: input.metadata,
         },
         writerIdentityOf(actor),
+        actor.userId,
       );
     },
 
@@ -409,6 +410,7 @@ export function createGenericApplicationService(
           targetItemId: input.targetItemId,
         },
         writerIdentityOf(actor),
+        actor.userId,
       );
       if (!edge) {
         throw new NotFoundError(`Relation edge not found`, {

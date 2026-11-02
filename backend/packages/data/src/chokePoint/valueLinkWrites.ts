@@ -61,7 +61,7 @@ export async function assertValueLinkHandoff(
  */
 export async function breakValueLinksForRelationEdge(
   client: PoolClient,
-  input: { reldef: RelationDefinitionRow; itemA: string; itemB: string; writerKind: WriterKind },
+  input: { reldef: RelationDefinitionRow; itemA: string; itemB: string; writerKind: WriterKind; actingUserId?: string },
 ): Promise<string[]> {
   if (input.writerKind === "system") return [];
   const sides = [{ propertyId: input.reldef.propertyIdA, itemId: input.itemA }];
@@ -86,7 +86,7 @@ export async function breakValueLinksForRelationEdge(
   if (announced.size > 0) {
     runAfterCommit(client, () => {
       for (const { itemId, databaseId, updatedAt } of announced.values()) {
-        notifyInvalidation({ scope: "item", databaseId, itemId, op: "update", updatedAt });
+        notifyInvalidation({ scope: "item", databaseId, itemId, op: "update", updatedAt, userId: input.actingUserId });
       }
     });
   }

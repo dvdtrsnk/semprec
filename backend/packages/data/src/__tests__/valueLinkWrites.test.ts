@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import * as queue from "@semprec/queue";
@@ -732,13 +733,22 @@ describe("value link state on writes (issue #1516)", () => {
       const { file, alpha, projectsProperty } = await setup();
       await link(file.id, "projects");
       await link(alpha.id, "files");
+      const actorId = randomUUID();
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
       try {
         await chokePoint.createRelation(
           { relationPropertyId: projectsProperty.id, callerItemId: file.id, targetItemId: alpha.id },
           USER,
+          actorId,
         );
+        expect(events.filter((event) => event.scope === "item")).toHaveLength(2);
+        await chokePoint.createRelation(
+          { relationPropertyId: projectsProperty.id, callerItemId: file.id, targetItemId: alpha.id },
+          USER,
+          actorId,
+        );
+        expect(events.filter((event) => event.scope === "item")).toHaveLength(2);
       } finally {
         setInvalidationHook(() => {});
       }
@@ -747,7 +757,7 @@ describe("value link state on writes (issue #1516)", () => {
       for (const itemId of [file.id, alpha.id]) {
         expect(
           events.filter((event) => event.scope === "item" && event.itemId === itemId && event.op === "update"),
-        ).toHaveLength(1);
+        ).toEqual([expect.objectContaining({ userId: actorId })]);
       }
     });
 
@@ -764,6 +774,7 @@ describe("value link state on writes (issue #1516)", () => {
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       await link(item.id, "outgoing");
       await link(item.id, "incoming");
+      const actorId = randomUUID();
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
       try {
@@ -773,6 +784,7 @@ describe("value link state on writes (issue #1516)", () => {
             { relationPropertyId: property.id, callerItemId: item.id, targetItemId: item.id },
             undefined,
             USER,
+            actorId,
           );
         const rollback = new Error("rollback self-edge");
         await expect(
@@ -791,7 +803,9 @@ describe("value link state on writes (issue #1516)", () => {
         });
         expect(await linkOf(item.id, "outgoing")).toMatchObject({ state: "broken", brokenBy: "user" });
         expect(await linkOf(item.id, "incoming")).toMatchObject({ state: "broken", brokenBy: "user" });
-        expect(events.filter((event) => event.scope === "item" && event.itemId === item.id)).toHaveLength(1);
+        expect(events.filter((event) => event.scope === "item" && event.itemId === item.id)).toEqual([
+          expect.objectContaining({ userId: actorId }),
+        ]);
       } finally {
         setInvalidationHook(() => {});
       }

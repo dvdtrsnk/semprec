@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { runInTenant, runAsSystem } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant } from "@semprec/data/testSupport";
-import { seedSystem, createChokePoint, getDatabaseByModuleId, withTransaction } from "@semprec/data";
+import {
+  seedSystem,
+  createChokePoint,
+  getDatabaseByModuleId,
+  withTransaction,
+  insertValueLink,
+  setInvalidationHook,
+  type InvalidationEvent,
+} from "@semprec/data";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import pg, { type Pool } from "pg";
@@ -1109,6 +1117,7 @@ describe("self person HTTP contract", () => {
   let baseUrl: string;
   let tenantId: string;
   let token: string;
+  let actorId: string;
   let peopleId: string;
   let ownId: string;
   let foreignId: string;
@@ -1120,13 +1129,14 @@ describe("self person HTTP contract", () => {
     tenantId = await createTestTenant(admin);
     const other = await createTestTenant(admin);
     const passwordHash = await hashPassword(PASSWORD);
-    await runAsSystem("self person test user", () =>
+    const user = await runAsSystem("self person test user", () =>
       createUser(admin, {
         tenantId,
         email: "self@example.com",
         passwordHash,
       }),
     );
+    actorId = user.id;
     for (const id of [tenantId, other]) {
       await runInTenant(id, async () => {
         await seedSystem(runtime);
@@ -1203,6 +1213,35 @@ describe("self person HTTP contract", () => {
     expect(await personId()).toBe(next.id);
     expect((await put({ personId: null })).status).toBe(200);
     expect(await personId()).toBeNull();
+  });
+  it("attributes a linked self-person change to the authenticated user", async () => {
+    const singletonId = await runInTenant(tenantId, async () => {
+      const result = await runtime.query<{ id: string }>(
+        `SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id
+         WHERE d.owner_module_id = 'systemSettings' AND d.system = true AND i.deleted_at IS NULL`,
+      );
+      if (result.rows.length !== 1 || !result.rows[0]) throw new Error("Missing settings singleton");
+      const id = result.rows[0].id;
+      await withTransaction(runtime, (client) =>
+        insertValueLink(client, {
+          itemId: id,
+          propertyKey: "selfPerson",
+          ruleKey: "test",
+          sources: [],
+        }),
+      );
+      return id;
+    });
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      expect((await put({ personId: ownId })).status).toBe(200);
+      expect(events.filter((event) => event.scope === "item" && event.itemId === singletonId)).toEqual([
+        expect.objectContaining({ userId: actorId }),
+      ]);
+    } finally {
+      setInvalidationHook(() => {});
+    }
   });
   it("reads a trashed or purged person as unset and rejects linking a trashed person", async () => {
     expect((await put({ personId: ownId })).status).toBe(200);

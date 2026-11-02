@@ -131,6 +131,7 @@ async function executeDestructiveWithClient(
         input as { relationPropertyId: string; callerItemId: string; targetItemId: string },
         undefined,
         writer,
+        actingUserId,
       );
   }
 }

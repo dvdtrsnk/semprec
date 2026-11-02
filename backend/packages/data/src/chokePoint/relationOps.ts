@@ -271,6 +271,7 @@ export async function createRelationWithClient(
   input: CreateRelationInput,
   context?: SystemRelationWriteContext,
   writer: WriterIdentity = SYSTEM_WRITER,
+  actingUserId?: string,
 ): Promise<RelationEdge> {
   const edgeContext = await loadCreatableRelationEdgeContext(client, input, context, true);
   const hooks = (lockMode?: "nowait") =>
@@ -303,6 +304,7 @@ export async function createRelationWithClient(
         itemA,
         itemB,
         writerKind: writer.writerKind,
+        actingUserId,
       });
     }
     await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
@@ -380,6 +382,7 @@ export async function deleteRelationWithClient(
   input: DeleteRelationInput,
   context?: SystemRelationWriteContext,
   writer: WriterIdentity = SYSTEM_WRITER,
+  actingUserId?: string,
 ): Promise<RelationEdge | null> {
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
   await assertRelationDatabasesNotArchived(client, edgeContext);
@@ -410,6 +413,7 @@ export async function deleteRelationWithClient(
         itemA,
         itemB,
         writerKind: writer.writerKind,
+        actingUserId,
       });
     }
     await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
@@ -420,16 +424,28 @@ export async function deleteRelationWithClient(
 export function createRelationOps(deps: Pick<ChokePointDeps, "pool">) {
   const { pool } = deps;
   return {
-    async createRelation(input: CreateRelationInput, writer?: WriterIdentity): Promise<RelationEdge> {
-      return withTransaction(pool, (client) => createRelationWithClient(client, input, undefined, writer));
+    async createRelation(
+      input: CreateRelationInput,
+      writer?: WriterIdentity,
+      actingUserId?: string,
+    ): Promise<RelationEdge> {
+      return withTransaction(pool, (client) =>
+        createRelationWithClient(client, input, undefined, writer, actingUserId),
+      );
     },
 
     async updateRelation(input: UpdateRelationInput, writer?: WriterIdentity): Promise<RelationEdge> {
       return withTransaction(pool, (client) => updateRelationWithClient(client, input, undefined, writer));
     },
 
-    async deleteRelation(input: DeleteRelationInput, writer?: WriterIdentity): Promise<RelationEdge | null> {
-      return withTransaction(pool, (client) => deleteRelationWithClient(client, input, undefined, writer));
+    async deleteRelation(
+      input: DeleteRelationInput,
+      writer?: WriterIdentity,
+      actingUserId?: string,
+    ): Promise<RelationEdge | null> {
+      return withTransaction(pool, (client) =>
+        deleteRelationWithClient(client, input, undefined, writer, actingUserId),
+      );
     },
   };
 }

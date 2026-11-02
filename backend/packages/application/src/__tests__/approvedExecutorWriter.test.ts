@@ -18,6 +18,10 @@ import {
   decideAndEnqueueApprovalRequest,
   getApprovalRequest,
   getDatabaseByModuleId,
+  insertValueLink,
+  isGenericOperationApprovalRequestPayload,
+  setInvalidationHook,
+  type InvalidationEvent,
   seedSystem,
   withTransaction,
   type ApprovalRequiredError,
@@ -136,6 +140,56 @@ describe("approved destructive operations write as the requesting agent (issue #
     });
   });
 
+  it("rolls back a linked approved relation deletion without publishing an invalidation", async () => {
+    await inTenantZero(async () => {
+      const a = await chokePoint.createDatabase({ name: "Rollback A" });
+      const b = await chokePoint.createDatabase({ name: "Rollback B" });
+      const { property } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: a.id,
+        key: "bs",
+        name: "Bs",
+        targetDatabaseId: b.id,
+      });
+      const itemA = await chokePoint.createItem({ databaseId: a.id, properties: {} });
+      const itemB = await chokePoint.createItem({ databaseId: b.id, properties: {} });
+      const input = { relationPropertyId: property.id, callerItemId: itemA.id, targetItemId: itemB.id };
+      await chokePoint.createRelation(input);
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: itemA.id,
+          propertyKey: "bs",
+          ruleKey: "test",
+          sources: [],
+        }),
+      );
+      const actor = await makeAgentActor();
+      const requestId = await approve("relation.delete", actor, input);
+      const request = await getApprovalRequest(pool, requestId);
+      if (!request || !isGenericOperationApprovalRequestPayload(request.payload)) {
+        throw new Error("Missing generic approval request");
+      }
+      const genericRequest = { ...request, payload: request.payload };
+      const actual = await vi.importActual<typeof import("@semprec/data")>("@semprec/data");
+      const failure = new Error("forced post-delete failure");
+      vi.mocked(data.deleteRelationWithClient).mockImplementationOnce(async (...args) => {
+        await actual.deleteRelationWithClient(...args);
+        throw failure;
+      });
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await expect(replayApprovedGenericOperation(pool, genericRequest)).rejects.toBe(failure);
+        expect(events.filter((event) => event.scope === "item" && event.itemId === itemA.id)).toEqual([]);
+        expect((await chokePoint.getValueLinksForItems([itemA.id])).get(itemA.id)?.bs).toMatchObject({
+          valueKind: "inherited",
+          brokenBy: null,
+        });
+      } finally {
+        setInvalidationHook(() => {});
+      }
+    });
+  });
+
   it("an approved relation.delete executes with agent, the request's run id and project, and its user", async () => {
     await inTenantZero(async () => {
       const a = await chokePoint.createDatabase({ name: "A" });
@@ -150,16 +204,32 @@ describe("approved destructive operations write as the requesting agent (issue #
       const itemB = await chokePoint.createItem({ databaseId: b.id, properties: {} });
       const input = { relationPropertyId: property.id, callerItemId: itemA.id, targetItemId: itemB.id };
       await chokePoint.createRelation(input);
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, { itemId: itemA.id, propertyKey: "bs", ruleKey: "test", sources: [] }),
+      );
       const actor = await makeAgentActor();
       const requestId = await approve("relation.delete", actor, input);
       const request = await getApprovalRequest(pool, requestId);
+      if (!request || !isGenericOperationApprovalRequestPayload(request.payload)) {
+        throw new Error("Missing generic approval request");
+      }
+      const genericRequest = { ...request, payload: request.payload };
 
-      const outcome = await replayApprovedGenericOperation(pool, request as never);
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        const outcome = await replayApprovedGenericOperation(pool, genericRequest);
+        expect(outcome.error).toBe(false);
+        expect(events.filter((event) => event.scope === "item" && event.itemId === itemA.id)).toEqual([
+          expect.objectContaining({ userId: actor.userId }),
+        ]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
 
-      expect(outcome.error).toBe(false);
       const expected: WriterIdentity = {
         writerKind: "agent",
-        agentRunId: request!.agentRunId,
+        agentRunId: request.agentRunId,
         agentProjectItemId: actor.agentProjectItemId,
         onBehalfOfUserId: actor.userId,
       };

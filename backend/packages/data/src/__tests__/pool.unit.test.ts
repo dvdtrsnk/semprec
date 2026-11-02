@@ -153,28 +153,32 @@ describe("withTransaction", () => {
     expect(sqlCalls(query)).toEqual(["BEGIN", "ROLLBACK"]);
   });
 
-  it("preserves a transaction failure if release also fails", async () => {
-    const { pool, release } = fakeClient({});
-    const primary = new Error("primary");
-    const cleanup = new Error("release failed");
-    release.mockImplementation(() => {
-      throw cleanup;
-    });
-    const log = vi.spyOn(logger, "error").mockImplementation(() => undefined);
-    try {
-      await expect(
-        withTransaction(pool, async () => {
-          throw primary;
-        }),
-      ).rejects.toBe(primary);
-      expect(log).toHaveBeenCalledWith(
-        { err: cleanup },
-        "withTransaction: release failed while handling a transaction error",
-      );
-    } finally {
-      log.mockRestore();
-    }
-  });
+  it.each([new Error("secret-canary"), { secret: "secret-canary" }])(
+    "preserves a transaction failure and safely logs a release failure: %s",
+    async (cleanup) => {
+      const { pool, release } = fakeClient({});
+      const primary = new Error("primary");
+      release.mockImplementation(() => {
+        // Exercise a foreign release implementation that throws a non-Error value.
+        // eslint-disable-next-line @typescript-eslint/only-throw-error
+        throw cleanup;
+      });
+      const log = vi.spyOn(logger, "error").mockImplementation(() => undefined);
+      try {
+        await expect(
+          withTransaction(pool, async () => {
+            throw primary;
+          }),
+        ).rejects.toBe(primary);
+        expect(log).toHaveBeenCalledWith(
+          { errorCategory: cleanup instanceof Error ? "error" : "non_error" },
+          "withTransaction: release failed while handling a transaction error",
+        );
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
 
   it("does not leave an active owner after transaction setup fails", async () => {
     const { client, pool, query, release } = fakeClient({});

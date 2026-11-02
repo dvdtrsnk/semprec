@@ -33,6 +33,8 @@ import {
   LocalFsBlobStorageWriter,
   login,
   seedSystem,
+  setInvalidationHook,
+  type InvalidationEvent,
   updateItemWithClient,
   withTransaction,
   type AuthenticatedIdentity,
@@ -1778,6 +1780,45 @@ describe("item routes (issue #241)", () => {
         expect(inverseBody.id).toBe(directBody.id);
         expect(inverseBody.itemA).toBe(task.id);
         expect(inverseBody.itemB).toBe(person.id);
+      });
+
+      it("attributes a linked relation invalidation to the authenticated REST user", async () => {
+        const { source, target, property } = await makePairedRelation();
+        const item = await chokePoint.createItem({ databaseId: source.id, properties: {} });
+        const other = await chokePoint.createItem({ databaseId: target.id, properties: {} });
+        await withTransaction(pool, (client) =>
+          insertValueLink(client, {
+            itemId: item.id,
+            propertyKey: property.key,
+            ruleKey: "test",
+            sources: [],
+          }),
+        );
+        const user = await createUser(pool, {
+          tenantId: await tenantForNextTestUser(pool),
+          email: `${randomUUID()}@example.com`,
+          passwordHash: await hashPassword(PASSWORD),
+        });
+        const { token } = await login(pool, {
+          email: user.email,
+          password: PASSWORD,
+          platform: "ios",
+          ip: "127.0.0.1",
+        });
+        const events: InvalidationEvent[] = [];
+        setInvalidationHook((event) => events.push(event));
+        try {
+          const response = await fetch(`${baseUrl}/api/items/${item.id}/relations/${property.key}/${other.id}`, {
+            method: "PUT",
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          expect(response.status).toBe(200);
+          expect(events.filter((event) => event.scope === "item" && event.itemId === item.id)).toEqual([
+            expect.objectContaining({ userId: user.id }),
+          ]);
+        } finally {
+          setInvalidationHook(() => {});
+        }
       });
 
       it("repeating PUT with different metadata replaces rather than merges", async () => {

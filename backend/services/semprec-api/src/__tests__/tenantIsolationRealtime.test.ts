@@ -14,9 +14,11 @@ import {
   getNotificationById,
   createChokePoint,
   createDocStore,
+  deleteRelationWithClient,
   createUser,
   hashPassword,
   insertAndNotifyAgentRunEvent,
+  insertValueLink,
   loadYDoc,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
@@ -858,6 +860,143 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     for (const socket of [a1, a2, b1]) socket?.close();
+  });
+
+  it("publishes a linked REST relation invalidation with the authenticated actor and tenant", async () => {
+    const { source, target, property } = await runInTenant(tenantA.tenantId, async () => {
+      const source = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
+      const target = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
+      const { property } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: tenantA.databaseId,
+        targetDatabaseId: tenantA.databaseId,
+        key: `linked${randomUUID().replace(/-/g, "").slice(0, 8)}`,
+        name: "Linked",
+        cardinality: "many_to_many",
+      });
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, { itemId: source.id, propertyKey: property.key, ruleKey: "test", sources: [] }),
+      );
+      return { source, target, property };
+    });
+    const setupSentinel = await publishSentinel(tenantA.tenantId);
+    await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(setupSentinel))));
+    const listener = await adminPool.connect();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onNotification: ((message: { channel: string; payload?: string }) => void) | undefined;
+    let cancelObservation: (() => void) | undefined;
+    let observationSettled: Promise<void> | undefined;
+    try {
+      await listener.query("LISTEN semprec_events");
+      const observed = new Promise<unknown>((resolve, reject) => {
+        cancelObservation = () => reject(new Error("Observation cancelled"));
+        timer = setTimeout(() => reject(new Error("Timed out waiting for linked relation event")), FRAME_TIMEOUT_MS);
+        onNotification = (notification) => {
+          if (notification.channel !== "semprec_events" || !notification.payload) return;
+          try {
+            const payload: unknown = JSON.parse(notification.payload);
+            if (!isRecord(payload) || !isRecord(payload.message) || payload.message.itemId !== source.id) return;
+            resolve(payload);
+          } catch (error) {
+            reject(error instanceof Error ? error : new Error("Invalid notification"));
+          }
+        };
+        listener.on("notification", onNotification);
+      });
+      observationSettled = observed.then(
+        () => {},
+        () => {},
+      );
+      const querySpy = vi.spyOn(pool, "query");
+      const itemPublications = (itemId: string): Record<string, unknown>[] => {
+        const messages: Record<string, unknown>[] = [];
+        for (const call of querySpy.mock.calls) {
+          const args: readonly unknown[] = call;
+          if (typeof args[0] !== "string" || !args[0].includes("pg_notify") || !Array.isArray(args[1])) continue;
+          const values: unknown[] = args[1];
+          if (values[0] !== "semprec_events" || typeof values[1] !== "string") continue;
+          const value: unknown = JSON.parse(values[1]);
+          if (isRecord(value) && value.type === "invalidation" && value.itemId === itemId) messages.push(value);
+        }
+        return messages;
+      };
+      const response = await fetch(`${baseUrl}/api/items/${source.id}/relations/${property.key}/${target.id}`, {
+        method: "PUT",
+        headers: { Cookie: a1Cookie, Origin: baseUrl },
+      });
+      expect(response.status).toBe(200);
+      expect(await observed).toMatchObject({
+        tenantId: tenantA.tenantId,
+        message: { type: "invalidation", scope: "item", itemId: source.id, userId: tenantA.userId },
+      });
+      await expectInvalidationInA({ scope: "item", itemId: source.id, op: "update" });
+      expect(itemPublications(source.id)).toEqual([expect.objectContaining({ userId: tenantA.userId })]);
+      querySpy.mockClear();
+      const replay = await fetch(`${baseUrl}/api/items/${source.id}/relations/${property.key}/${target.id}`, {
+        method: "PUT",
+        headers: { Cookie: a1Cookie, Origin: baseUrl },
+      });
+      expect(replay.status).toBe(200);
+      expect(itemPublications(source.id)).toEqual([]);
+
+      const rollbackSource = await runInTenant(tenantA.tenantId, async () => {
+        const item = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
+        await chokePoint.createRelation({
+          relationPropertyId: property.id,
+          callerItemId: item.id,
+          targetItemId: target.id,
+        });
+        await withTransaction(pool, (client) =>
+          insertValueLink(client, {
+            itemId: item.id,
+            propertyKey: property.key,
+            ruleKey: "test",
+            sources: [],
+          }),
+        );
+        return item;
+      });
+      querySpy.mockClear();
+      const failure = new Error("rollback relation invalidation");
+      await expect(
+        runInTenant(tenantA.tenantId, () =>
+          withTransaction(pool, async (client) => {
+            await deleteRelationWithClient(
+              client,
+              {
+                relationPropertyId: property.id,
+                callerItemId: rollbackSource.id,
+                targetItemId: target.id,
+              },
+              undefined,
+              { writerKind: "user" },
+              tenantA.userId,
+            );
+            throw failure;
+          }),
+        ),
+      ).rejects.toBe(failure);
+      expect(itemPublications(rollbackSource.id)).toEqual([]);
+      expect(
+        (await runInTenant(tenantA.tenantId, () => chokePoint.getValueLinksForItems([rollbackSource.id]))).get(
+          rollbackSource.id,
+        )?.[property.key],
+      ).toMatchObject({ valueKind: "inherited", brokenBy: null });
+      querySpy.mockClear();
+      const background = await runInTenant(tenantA.tenantId, () =>
+        chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} }),
+      );
+      expect(itemPublications(background.id)).toEqual([
+        expect.objectContaining({ scope: "item", itemId: background.id, op: "create" }),
+      ]);
+      expect(itemPublications(background.id)[0]).not.toHaveProperty("userId");
+      await expectInvalidationInA({ scope: "item", itemId: background.id, op: "create" });
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (onNotification) listener.removeListener("notification", onNotification);
+      cancelObservation?.();
+      await observationSettled;
+      listener.release(true);
+    }
   });
 
   it("delivers committed approval resolution to its user's sockets, with no replay or rollback event", async () => {

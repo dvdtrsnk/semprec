@@ -91,7 +91,10 @@ function releaseTransactionClient(
     client.release(releaseError);
   } catch (error) {
     if (!hasPrimaryFailure) throw error;
-    logger.error({ err: error }, "withTransaction: release failed while handling a transaction error");
+    logger.error(
+      { errorCategory: error instanceof Error ? "error" : "non_error" },
+      "withTransaction: release failed while handling a transaction error",
+    );
   }
 }
 

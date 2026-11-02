@@ -19,6 +19,8 @@ import {
   insertValueLink,
   login,
   mintMcpRunCredential,
+  setInvalidationHook,
+  type InvalidationEvent,
   withTransaction,
 } from "@semprec/data";
 import { createGenericOperationGateway } from "@semprec/application";
@@ -165,6 +167,54 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
 
     expect(JSON.stringify(ownA.body)).toContain(a.projectItemId);
     expect(JSON.stringify(ownB.body)).toContain(b.projectItemId);
+  });
+
+  it("attributes a linked relation write to the minted run's user", async () => {
+    const user = await createUserIn(tenantA);
+    const projectItemId = await runInTenant(tenantA, () => createTestProjectItem(pool));
+    const credential = await runInTenant(tenantA, () =>
+      withTransaction(pool, (client) =>
+        mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.write"], userId: user.id }),
+      ),
+    );
+    const cp = createChokePoint(pool);
+    const fixture = await runInTenant(tenantA, async () => {
+      const db = await cp.createDatabase({ name: "MCP linked relations" });
+      const { property } = await cp.createRelationProperty({
+        sourceDatabaseId: db.id,
+        targetDatabaseId: db.id,
+        key: "related",
+        name: "Related",
+        cardinality: "many_to_many",
+      });
+      const source = await cp.createItem({ databaseId: db.id, properties: {} });
+      const target = await cp.createItem({ databaseId: db.id, properties: {} });
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: source.id,
+          propertyKey: property.key,
+          ruleKey: "test",
+          sources: [],
+        }),
+      );
+      return { source, target, property };
+    });
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      const result = await callTool(credential.token, "semprec.relation.put", {
+        relationPropertyId: fixture.property.id,
+        callerItemId: fixture.source.id,
+        targetItemId: fixture.target.id,
+      });
+      expect(result.status).toBe(200);
+      expect(result.body).not.toHaveProperty("error");
+      expect(events.filter((event) => event.scope === "item" && event.itemId === fixture.source.id)).toEqual([
+        expect.objectContaining({ userId: user.id }),
+      ]);
+    } finally {
+      setInvalidationHook(() => {});
+    }
   });
 
   it("breaks a linked value through a minted agent-run MCP credential within its tenant", async () => {

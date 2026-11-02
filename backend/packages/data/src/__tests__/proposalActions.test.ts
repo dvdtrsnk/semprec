@@ -34,6 +34,7 @@ import {
 } from "../inbox/proposalActions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
+import { insertValueLink, listValueLinksByItemIds } from "../chokePoint/valueLinksStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { createDocStore, type DocStore } from "../docs/docStore.js";
@@ -909,8 +910,68 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const project = await createProject("Home");
       const proposal = await proposalWithRelations({ project: [project] });
       const before = await countEdges();
-
-      const confirmed = await confirm(proposal.id);
+      const projectsId = await databaseIdFor("projects");
+      const inverseKey = await withTransaction(pool, async (client) => {
+        const property = await propertiesStore.getPropertyByKey(client, tasksId, "project");
+        if (!property) throw new Error("Missing Tasks.project");
+        const definition = await relationsStore.getRelationDefinitionByPropertyId(client, property.id);
+        if (!definition?.propertyIdB) throw new Error("Missing inverse relation property");
+        const inverseId = definition.propertyIdA === property.id ? definition.propertyIdB : definition.propertyIdA;
+        const inverse = await propertiesStore.getProperty(client, inverseId);
+        if (!inverse || inverse.databaseId !== projectsId) throw new Error("Missing Projects inverse");
+        return inverse.key;
+      });
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: project,
+          propertyKey: inverseKey,
+          ruleKey: "test",
+          sources: [],
+        }),
+      );
+      const actorId = randomUUID();
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      const confirmed = await (async () => {
+        try {
+          const failure = new Error("rollback single-envelope confirmation");
+          await expect(
+            withTransaction(pool, async (client) => {
+              await confirmProposalWithClient(
+                client,
+                { processingProposalsDatabaseId: proposalsId },
+                proposal.id,
+                undefined,
+                actorId,
+              );
+              expect(events).toEqual([]);
+              throw failure;
+            }),
+          ).rejects.toBe(failure);
+          expect(events).toEqual([]);
+          expect((await withTransaction(pool, (client) => listValueLinksByItemIds(client, [project])))[0]?.state).toBe(
+            "on",
+          );
+          const result = await withTransaction(pool, (client) =>
+            confirmProposalWithClient(
+              client,
+              { processingProposalsDatabaseId: proposalsId },
+              proposal.id,
+              undefined,
+              actorId,
+            ),
+          );
+          expect(events.filter((event) => event.scope === "item" && event.itemId === project)).toEqual([
+            expect.objectContaining({ userId: actorId }),
+          ]);
+          events.length = 0;
+          await confirm(proposal.id);
+          expect(events).toEqual([]);
+          return result;
+        } finally {
+          setInvalidationHook(() => {});
+        }
+      })();
       expect(await countTasks()).toBe(1);
       expect(await countEdges()).toBe(before + 1);
       const { rows } = await pool.query(
@@ -1264,7 +1325,38 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           after: { relations: { area: [newArea] } },
         },
       ]);
-      await confirm(card);
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, { itemId: project, propertyKey: "area", ruleKey: "test", sources: [] }),
+      );
+      const actorId = randomUUID();
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        const failure = new Error("rollback linked confirmation");
+        await expect(
+          withTransaction(pool, async (client) => {
+            await confirmProposalWithClient(
+              client,
+              { processingProposalsDatabaseId: proposalsId },
+              card,
+              undefined,
+              actorId,
+            );
+            expect(events).toEqual([]);
+            throw failure;
+          }),
+        ).rejects.toBe(failure);
+        expect(events).toEqual([]);
+        expect((await withTransaction(pool, (client) => listValueLinksByItemIds(client, [project])))[0]?.state).toBe(
+          "on",
+        );
+        await confirm(card, actorId);
+        expect(events.filter((event) => event.scope === "item" && event.itemId === project)).toContainEqual(
+          expect.objectContaining({ userId: actorId }),
+        );
+      } finally {
+        setInvalidationHook(() => {});
+      }
       expect(await edgeExists(project, oldArea)).toBe(false);
       expect(await edgeExists(project, newArea)).toBe(true);
     });
