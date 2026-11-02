@@ -190,6 +190,18 @@ const ADMIN_CONSENT_MARKERS = ["AADSTS65001", "AADSTS90094"];
 
 const AUTHORIZATION_RESPONSE_LIMIT_BYTES = 64 * 1024;
 
+function authorizationCleanupDiagnostic(
+  stage: "reader_cancel" | "reader_release" | "response_cancel",
+  observed: unknown[],
+): void {
+  try {
+    if (!logger.isLevelEnabled("error")) throw new Error("OAuth cleanup diagnostic is disabled");
+    logger.error({ stage }, "OAuth code exchange cleanup failed");
+  } catch (diagnosticError) {
+    observed.push(diagnosticError);
+  }
+}
+
 /** Reads a bounded authorization response before parsing it. */
 async function readAuthorizationBody(response: Response): Promise<string> {
   const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = response.body?.getReader();
@@ -212,12 +224,14 @@ async function readAuthorizationBody(response: Response): Promise<string> {
       await reader.cancel();
     } catch (cleanupError) {
       failures.push(cleanupError);
+      authorizationCleanupDiagnostic("reader_cancel", failures);
     }
   }
   try {
     reader.releaseLock();
   } catch (cleanupError) {
     failures.push(cleanupError);
+    authorizationCleanupDiagnostic("reader_release", failures);
   }
   if (failures.length) {
     // Raw body and cleanup failures stay local to this privacy boundary.
@@ -299,6 +313,7 @@ export async function exchangeAuthorizationCode(
       await response.body?.cancel();
     } catch (error) {
       cleanupFailures.push(error);
+      authorizationCleanupDiagnostic("response_cancel", cleanupFailures);
     }
     void cleanupFailures;
     throw new Error(`OAuth code exchange failed with status ${response.status}`);

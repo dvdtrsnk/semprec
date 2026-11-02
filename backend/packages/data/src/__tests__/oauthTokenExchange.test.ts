@@ -247,7 +247,10 @@ describe("refreshAccessToken bounds", () => {
 });
 
 describe("exchangeAuthorizationCode", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
 
   it("returns tokens and posts the authorization_code grant with the PKCE verifier", async () => {
     const fetchMock = mockFetch(200, { access_token: "at", refresh_token: "rt", expires_in: 3600 });
@@ -365,6 +368,167 @@ describe("exchangeAuthorizationCode", () => {
     expect(observed).toBe(failure);
     expect(error.message).toBe("OAuth code exchange failed with status 503");
     expectNoSecrets(error);
+  });
+
+  it.each([200, 400, 503])("logs a safe actual cleanup failure for authorization status %s", async (status) => {
+    const cleanup = new Error("SENTINEL-CLEANUP-PRIVATE");
+    let observed: unknown;
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(pulls++ === 0 ? new Uint8Array(65_536) : new Uint8Array([1]));
+      },
+      cancel() {
+        observed = cleanup;
+        throw cleanup;
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(body, { status })),
+    );
+    const streamSymbol = Object.getOwnPropertySymbols(logger).find((symbol) => symbol.description === "pino.stream");
+    if (!streamSymbol) throw new Error("Missing application logger stream");
+    const original: unknown = Reflect.get(logger, streamSymbol);
+    const logs: string[] = [];
+    if (
+      !Reflect.set(logger, streamSymbol, {
+        write: (line: string) => {
+          logs.push(line);
+          return true;
+        },
+      })
+    )
+      throw new Error("Could not capture application log stream");
+    const failures: unknown[] = [];
+    try {
+      const outcome = await caught(exchangeAuthorizationCode(input));
+      expect(observed).toBe(cleanup);
+      if (status === 400) expect(outcome).toBeInstanceOf(MailAuthorizationCodeRejectedError);
+      else if (status === 503) expect(outcome.message).toBe("OAuth code exchange failed with status 503");
+      else expect(outcome.message).toBe("OAuth code exchange response could not be read");
+      expectNoSecrets(outcome);
+      expect(outcome).not.toHaveProperty("cause");
+      expect(logs).toHaveLength(1);
+      const record: unknown = JSON.parse(logs[0] ?? "null");
+      expect(record).toMatchObject({ stage: status === 503 ? "response_cancel" : "reader_cancel" });
+      expect(logs.join("")).not.toContain("SENTINEL-CLEANUP-PRIVATE");
+      for (const secret of Object.values(SENTINELS)) expect(logs.join("")).not.toContain(secret);
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      if (!Reflect.set(logger, streamSymbol, original)) throw new Error("Could not restore application log stream");
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "OAuth diagnostic test and cleanup failed");
+  });
+
+  it("retains the typed rejection when cleanup and diagnostic publication both fail", async () => {
+    const cleanup = new Error("SENTINEL-CLEANUP-PRIVATE");
+    const diagnostic = new Error("SENTINEL-DIAGNOSTIC-PRIVATE");
+    let observed: unknown;
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(pulls++ === 0 ? new Uint8Array(65_536) : new Uint8Array([1]));
+      },
+      cancel() {
+        observed = cleanup;
+        throw cleanup;
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(body, { status: 401 })),
+    );
+    const log = vi.spyOn(logger, "error").mockImplementation(() => {
+      throw diagnostic;
+    });
+    const outcome = await caught(exchangeAuthorizationCode(input));
+    expect(observed).toBe(cleanup);
+    expect(log).toHaveBeenCalledOnce();
+    expect(outcome).toBeInstanceOf(MailAuthorizationCodeRejectedError);
+    expect(outcome).not.toHaveProperty("cause");
+    expect(`${outcome.stack} ${JSON.stringify(outcome)}`).not.toContain("SENTINEL-CLEANUP-PRIVATE");
+    expect(`${outcome.stack} ${JSON.stringify(outcome)}`).not.toContain("SENTINEL-DIAGNOSTIC-PRIVATE");
+    expectNoSecrets(outcome);
+  });
+
+  it("retains the primary status when cleanup diagnostics are disabled", async () => {
+    const cleanup = new Error("SENTINEL-CLEANUP-PRIVATE");
+    let observed: unknown;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        observed = cleanup;
+        throw cleanup;
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(body, { status: 503 })),
+    );
+    vi.spyOn(logger, "isLevelEnabled").mockReturnValue(false);
+    const log = vi.spyOn(logger, "error");
+    const outcome = await caught(exchangeAuthorizationCode(input));
+    expect(observed).toBe(cleanup);
+    expect(log).not.toHaveBeenCalled();
+    expect(outcome.message).toBe("OAuth code exchange failed with status 503");
+    expect(`${outcome.stack} ${JSON.stringify(outcome)}`).not.toContain("SENTINEL-CLEANUP-PRIVATE");
+  });
+
+  it("safely diagnoses an actual reader release failure without returning a token", async () => {
+    const response = new Response('{"access_token":"access","refresh_token":"refresh","expires_in":60}');
+    if (!response.body) throw new Error("Missing response body");
+    const reader = response.body.getReader();
+    const release = reader.releaseLock.bind(reader);
+    const cleanup = new Error("SENTINEL-RELEASE-PRIVATE");
+    let observed: unknown;
+    vi.spyOn(reader, "releaseLock").mockImplementation(() => {
+      release();
+      observed = cleanup;
+      throw cleanup;
+    });
+    vi.spyOn(response.body, "getReader").mockReturnValue(reader);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => response),
+    );
+    const streamSymbol = Object.getOwnPropertySymbols(logger).find((symbol) => symbol.description === "pino.stream");
+    if (!streamSymbol) throw new Error("Missing application logger stream");
+    const original: unknown = Reflect.get(logger, streamSymbol);
+    const logs: string[] = [];
+    if (
+      !Reflect.set(logger, streamSymbol, {
+        write: (line: string) => {
+          logs.push(line);
+          return true;
+        },
+      })
+    )
+      throw new Error("Could not capture application log stream");
+    const failures: unknown[] = [];
+    try {
+      const outcome = await caught(exchangeAuthorizationCode(input));
+      expect(observed).toBe(cleanup);
+      expect(outcome.message).toBe("OAuth code exchange response could not be read");
+      expect(outcome).not.toHaveProperty("cause");
+      expect(logs).toHaveLength(1);
+      const record: unknown = JSON.parse(logs[0] ?? "null");
+      expect(record).toMatchObject({ stage: "reader_release" });
+      expect(logs.join("")).not.toContain("SENTINEL-RELEASE-PRIVATE");
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      if (!Reflect.set(logger, streamSymbol, original)) throw new Error("Could not restore application log stream");
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "OAuth diagnostic test and cleanup failed");
   });
 
   it("accepts an authorization response exactly at the byte limit", async () => {
