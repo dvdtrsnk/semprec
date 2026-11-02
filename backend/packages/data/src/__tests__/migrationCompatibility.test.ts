@@ -498,11 +498,53 @@ it("upgrades populated heartbeats and runs through origin and retry migrations",
     if (!tenantId || tenantRow.rows.length !== 1) throw new Error("Expected the historical tenant");
     const heartbeatId = randomUUID();
     const runId = randomUUID();
+    const databaseId = randomUUID();
+    const projectId = randomUUID();
+    const seedClient = await db.connect();
+    let seedFailure: { error: unknown } | undefined;
+    try {
+      await seedClient.query("BEGIN");
+      await seedClient.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+      // The current stores depend on later schema columns; seed the historical Projects shape here.
+      await seedClient.query(
+        "INSERT INTO databases (id, name, owner_module_id, system, tenant_id) VALUES ($1, 'Projects', 'projects', true, $2)",
+        [databaseId, tenantId],
+      );
+      await seedClient.query("SELECT create_items_partition($1::uuid)", [databaseId]);
+      await seedClient.query("INSERT INTO items (id, database_id, tenant_id) VALUES ($1, $2, $3)", [
+        projectId,
+        databaseId,
+        tenantId,
+      ]);
+      await seedClient.query("COMMIT");
+    } catch (error) {
+      seedFailure = { error };
+    }
+    const seedCleanup: unknown[] = [];
+    if (seedFailure) {
+      try {
+        await seedClient.query("ROLLBACK");
+      } catch (error) {
+        seedCleanup.push(error);
+      }
+    }
+    try {
+      seedClient.release();
+    } catch (error) {
+      seedCleanup.push(error);
+    }
+    if (seedCleanup.length)
+      throw new AggregateError(
+        seedFailure ? [seedFailure.error, ...seedCleanup] : seedCleanup,
+        "Historical seed cleanup failed",
+        { cause: seedFailure?.error },
+      );
+    if (seedFailure) throw seedFailure.error;
     // These rows use the schema before the three migrations under test.
     await db.query(
       `INSERT INTO project_heartbeats (id, project_item_id, name, rule, action_id, enabled, tenant_id)
       VALUES ($1, $2, 'Legacy', '{"kind":"interval","minutes":5}', 'core.agentRun', false, $3)`,
-      [heartbeatId, randomUUID(), tenantId],
+      [heartbeatId, projectId, tenantId],
     );
     await db.query(
       "INSERT INTO agent_runs (id, heartbeat_id, triggered_by, task, tenant_id) VALUES ($1, $2, 'heartbeat', 'legacy', $3)",
@@ -517,7 +559,7 @@ it("upgrades populated heartbeats and runs through origin and retry migrations",
     const legacyHeartbeat = await db.query<{ origin: string }>(
       `INSERT INTO project_heartbeats (project_item_id, name, rule, action_id, tenant_id)
        VALUES ($1, 'Old writer', '{"kind":"interval","minutes":5}', 'core.agentRun', $2) RETURNING origin`,
-      [randomUUID(), tenantId],
+      [projectId, tenantId],
     );
     expect(legacyHeartbeat.rows).toEqual([{ origin: "system" }]);
     await expect(
