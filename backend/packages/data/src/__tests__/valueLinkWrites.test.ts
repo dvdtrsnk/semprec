@@ -323,17 +323,23 @@ async function settleOwned<T>(promise: Promise<T>, _getPid: () => number | undef
   return bounded(promise, 15000);
 }
 
-async function settleParticipants<T>(
+type ParticipantOutcome = { ok: true } | { ok: false; error: unknown };
+
+async function settleParticipants<T extends ParticipantOutcome>(
   user: Promise<T> | undefined,
   system: Promise<T> | undefined,
   userPid: () => number | undefined,
   systemPid: () => number | undefined,
+  consumed: ReadonlySet<T>,
 ): Promise<unknown[]> {
   const owned: Promise<T>[] = [];
   if (user) owned.push(settleOwned(user, userPid));
   if (system) owned.push(settleOwned(system, systemPid));
   const results = await Promise.allSettled(owned);
-  return results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+  return results.flatMap((result) => {
+    if (result.status === "rejected") return [result.reason];
+    return !result.value.ok && !consumed.has(result.value) ? [result.value.error] : [];
+  });
 }
 
 async function waitBlocked(holderPid: number, competitorPid: number): Promise<void> {
@@ -1433,7 +1439,7 @@ describe("value link state on writes (issue #1516)", () => {
         const writes = await relationWrites(client, fx);
         await expect(writes.create()).rejects.toMatchObject({ code: "owner_violation" });
       });
-      const { rows } = await pool.query("SELECT 1 FROM item_relations");
+      const { rows } = await pool.query<{ "?column?": number }>("SELECT 1 FROM item_relations");
       expect(rows).toHaveLength(0);
     });
 
@@ -2114,178 +2120,201 @@ describe("value link state on writes (issue #1516)", () => {
     });
 
     it.each([
-      ["update", "commit"],
-      ["update", "rollback"],
-      ["delete", "commit"],
-      ["delete", "rollback"],
+      ["update", "commit", "normal"],
+      ["update", "rollback", "normal"],
+      ["delete", "commit", "normal"],
+      ["delete", "rollback", "normal"],
+      ["update", "commit", "undefined"],
+      ["update", "commit", "combined"],
     ] as const)(
-      "refuses protected %s on a proposal-held edge before holder %s",
-      async (operation, outcome) => {
-        const tenant = await createTestTenant(pool);
-        await withRuntimePool(async (holderPool) =>
-          withRuntimePool(async (contenderPool, operations) => {
-            const cp = createChokePoint(holderPool);
-            const fx = await runInTenant(tenant, () => setup(cp));
-            const edge = {
-              relationPropertyId: fx.projectsProperty.id,
-              callerItemId: fx.file.id,
-              targetItemId: fx.alpha.id,
-            };
-            await runInTenant(tenant, () => cp.createRelation(edge));
-            await withTenantTransaction(holderPool, tenant, (client) =>
-              insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
-            );
-            const definition = await withTenantTransaction(contenderPool, tenant, (client) =>
-              relationsStore.getRelationDefinitionByPropertyId(client, fx.projectsProperty.id),
-            );
-            if (!definition) throw new Error("Missing relation definition");
-            const beforeEdges = await withTenantTransaction(contenderPool, tenant, (client) =>
-              relationsStore.listRelationsForItem(client, definition.id, fx.file.id),
-            );
-            const target = beforeEdges[0];
-            if (!target || beforeEdges.length !== 1) throw new Error("Expected one existing edge");
-            const beforeItem = await readStoredItem(contenderPool, tenant, fx.files.id, fx.file.id);
-            const beforeLinks = await readStoredLinks(contenderPool, tenant, fx.file.id);
-            const beforeJobs = await pool.query<{ key: string | null }>(
-              "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
-            );
-            const held = barrier();
-            const release = barrier();
-            const rollback = new Error("forced proposal rollback");
-            let holderPid: number | undefined;
-            let contenderPid: number | undefined;
-            let edgeAttempt = false;
-            const events: InvalidationEvent[] = [];
-            setInvalidationHook((event) => events.push(event));
-            const holder = runInTenant(tenant, () =>
-              withTransaction(holderPool, async (client) => {
-                holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                await executeProposalSteps(
-                  client,
-                  [
-                    {
-                      ref: "same",
-                      op: "update",
-                      role: "primary",
-                      itemId: fx.file.id,
-                      before: { relations: { projects: [fx.alpha.id] } },
-                      after: { relations: { projects: [fx.alpha.id] } },
-                    },
-                  ],
-                  { writer: USER, sourceInboxItemId: null },
-                );
-                held.resolve();
-                await bounded(release.promise);
-                if (outcome === "rollback") throw rollback;
-              }),
-            ).then(
-              () => ({ ok: true as const }),
-              (error: unknown) => ({ ok: false as const, error }),
-            );
-            let failure: { error: unknown } | undefined;
-            try {
-              await bounded(held.promise);
-              const edgeLock = await pool.query<{ held: boolean }>(
-                `SELECT EXISTS (SELECT 1 FROM item_relations e JOIN pg_locks l ON l.transactionid::text = e.xmax::text
-               WHERE e.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.mode = 'ExclusiveLock' AND l.granted) AS held`,
-                [target.id, holderPid],
+      "refuses protected %s on a proposal-held edge before holder %s (%s)",
+      async (operation, outcome, control) => {
+        const original = { marker: "observation" };
+        const cleanup = { marker: "cleanup" };
+        const runControl = async () => {
+          const tenant = await createTestTenant(pool);
+          await withRuntimePool(async (holderPool) =>
+            withRuntimePool(async (contenderPool, operations) => {
+              const cp = createChokePoint(holderPool);
+              const fx = await runInTenant(tenant, () => setup(cp));
+              const edge = {
+                relationPropertyId: fx.projectsProperty.id,
+                callerItemId: fx.file.id,
+                targetItemId: fx.alpha.id,
+              };
+              await runInTenant(tenant, () => cp.createRelation(edge));
+              await withTenantTransaction(holderPool, tenant, (client) =>
+                insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
               );
-              expect(edgeLock.rows[0]?.held).toBe(true);
-              await expect(
-                bounded(
-                  operations.run(() =>
-                    runInTenant(tenant, () =>
-                      withTransaction(contenderPool, async (client) => {
-                        contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
-                          ?.pid;
-                        // eslint-disable-next-line @typescript-eslint/unbound-method
-                        const original = client.query;
-                        // eslint-disable-next-line @typescript-eslint/unbound-method
-                        client.query = new Proxy(client.query, {
-                          apply(query, receiver, args: unknown[]) {
-                            const params: unknown = args[1];
-                            if (
-                              typeof args[0] === "string" &&
-                              args[0].includes("FROM item_relations") &&
-                              args[0].includes("FOR UPDATE NOWAIT") &&
-                              Array.isArray(params) &&
-                              params[0] === definition.id &&
-                              params[1] === target.itemA &&
-                              params[2] === target.itemB
-                            )
-                              edgeAttempt = true;
-                            return Reflect.apply(query, receiver, args);
-                          },
-                        });
-                        try {
-                          return operation === "update"
-                            ? await updateRelationWithClient(
-                                client,
-                                { ...edge, metadata: { attempted: true } },
-                                VALUE_LINKS,
-                                SYSTEM_WRITER,
+              const definition = await withTenantTransaction(contenderPool, tenant, (client) =>
+                relationsStore.getRelationDefinitionByPropertyId(client, fx.projectsProperty.id),
+              );
+              if (!definition) throw new Error("Missing relation definition");
+              const beforeEdges = await withTenantTransaction(contenderPool, tenant, (client) =>
+                relationsStore.listRelationsForItem(client, definition.id, fx.file.id),
+              );
+              const target = beforeEdges[0];
+              if (!target || beforeEdges.length !== 1) throw new Error("Expected one existing edge");
+              const beforeItem = await readStoredItem(contenderPool, tenant, fx.files.id, fx.file.id);
+              const beforeLinks = await readStoredLinks(contenderPool, tenant, fx.file.id);
+              const beforeJobs = await pool.query<{ key: string | null }>(
+                "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
+              );
+              const held = barrier();
+              const release = barrier();
+              const rollback = new Error("forced proposal rollback");
+              let holderPid: number | undefined;
+              let contenderPid: number | undefined;
+              let edgeAttempt = false;
+              const events: InvalidationEvent[] = [];
+              setInvalidationHook((event) => events.push(event));
+              const holder = runInTenant(tenant, () =>
+                withTransaction(holderPool, async (client) => {
+                  holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                  await executeProposalSteps(
+                    client,
+                    [
+                      {
+                        ref: "same",
+                        op: "update",
+                        role: "primary",
+                        itemId: fx.file.id,
+                        before: { relations: { projects: [fx.alpha.id] } },
+                        after: { relations: { projects: [fx.alpha.id] } },
+                      },
+                    ],
+                    { writer: USER, sourceInboxItemId: null },
+                  );
+                  held.resolve();
+                  await bounded(release.promise);
+                  if (outcome === "rollback") throw rollback;
+                }),
+              ).then(
+                () => ({ ok: true as const }),
+                (error: unknown) => ({ ok: false as const, error }),
+              );
+              let failure: { error: unknown } | undefined;
+              try {
+                await bounded(held.promise);
+                const edgeLock = await pool.query<{ held: boolean }>(
+                  `SELECT EXISTS (SELECT 1 FROM item_relations e JOIN pg_locks l ON l.transactionid::text = e.xmax::text
+               WHERE e.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.mode = 'ExclusiveLock' AND l.granted) AS held`,
+                  [target.id, holderPid],
+                );
+                expect(edgeLock.rows[0]?.held).toBe(true);
+                await expect(
+                  bounded(
+                    operations.run(() =>
+                      runInTenant(tenant, () =>
+                        withTransaction(contenderPool, async (client) => {
+                          contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
+                            ?.pid;
+                          // eslint-disable-next-line @typescript-eslint/unbound-method
+                          const original = client.query;
+                          // eslint-disable-next-line @typescript-eslint/unbound-method
+                          client.query = new Proxy(client.query, {
+                            apply(query, receiver, args: unknown[]) {
+                              const params: unknown = args[1];
+                              if (
+                                typeof args[0] === "string" &&
+                                args[0].includes("FROM item_relations") &&
+                                args[0].includes("FOR UPDATE NOWAIT") &&
+                                Array.isArray(params) &&
+                                params[0] === definition.id &&
+                                params[1] === target.itemA &&
+                                params[2] === target.itemB
                               )
-                            : await deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
-                        } finally {
-                          client.query = original;
-                        }
-                      }),
+                                edgeAttempt = true;
+                              return Reflect.apply(query, receiver, args);
+                            },
+                          });
+                          try {
+                            return operation === "update"
+                              ? await updateRelationWithClient(
+                                  client,
+                                  { ...edge, metadata: { attempted: true } },
+                                  VALUE_LINKS,
+                                  SYSTEM_WRITER,
+                                )
+                              : await deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
+                          } finally {
+                            client.query = original;
+                          }
+                        }),
+                      ),
                     ),
                   ),
-                ),
-              ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
-              expect(edgeAttempt).toBe(true);
-              expect(holderPid).toBeTypeOf("number");
-              expect(contenderPid).toBeTypeOf("number");
-              expect(events).toEqual([]);
-              expect(await readStoredItem(contenderPool, tenant, fx.files.id, fx.file.id)).toEqual(beforeItem);
-              expect(await readStoredLinks(contenderPool, tenant, fx.file.id)).toEqual(beforeLinks);
-              expect(
-                (
-                  await pool.query<{ key: string | null }>(
-                    "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
-                  )
-                ).rows,
-              ).toEqual(beforeJobs.rows);
-              expect(
-                await withTenantTransaction(contenderPool, tenant, (client) =>
-                  relationsStore.listRelationsForItem(client, definition.id, fx.file.id),
-                ),
-              ).toEqual(beforeEdges);
-            } catch (error) {
-              failure = { error };
-            } finally {
-              release.resolve();
-              try {
-                await operations.settle();
-                const result = await settleOwned(holder, () => holderPid);
-                if (outcome === "rollback") expect(result).toEqual({ ok: false, error: rollback });
-                else requireSuccessful(result);
-              } catch (error) {
-                failure = combineFailure(failure, [error], "Test and proposal cleanup failed");
-              } finally {
-                setInvalidationHook(() => {});
-              }
-            }
-            if (failure !== undefined) throwFailure(failure.error);
-            await runInTenant(tenant, () =>
-              withTransaction(contenderPool, (client) =>
-                operation === "update"
-                  ? updateRelationWithClient(
-                      client,
-                      { ...edge, metadata: { healthy: true } },
-                      VALUE_LINKS,
-                      SYSTEM_WRITER,
+                ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
+                expect(edgeAttempt).toBe(true);
+                if (control === "undefined") throwFailure(undefined);
+                if (control === "combined") throwFailure(original);
+                expect(holderPid).toBeTypeOf("number");
+                expect(contenderPid).toBeTypeOf("number");
+                expect(events).toEqual([]);
+                expect(await readStoredItem(contenderPool, tenant, fx.files.id, fx.file.id)).toEqual(beforeItem);
+                expect(await readStoredLinks(contenderPool, tenant, fx.file.id)).toEqual(beforeLinks);
+                expect(
+                  (
+                    await pool.query<{ key: string | null }>(
+                      "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
                     )
-                  : deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER),
-              ),
-            );
-            const after = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
-            if (operation === "update") expect(after?.[0]?.metadata).toEqual({ healthy: true });
-            else expect(after).toEqual([]);
-            expect((await readStoredLinks(contenderPool, tenant, fx.file.id))[0]?.state).toBe("on");
-          }),
+                  ).rows,
+                ).toEqual(beforeJobs.rows);
+                expect(
+                  await withTenantTransaction(contenderPool, tenant, (client) =>
+                    relationsStore.listRelationsForItem(client, definition.id, fx.file.id),
+                  ),
+                ).toEqual(beforeEdges);
+              } catch (error) {
+                failure = { error };
+              } finally {
+                release.resolve();
+                try {
+                  await operations.settle();
+                  const result = await settleOwned(holder, () => holderPid);
+                  if (outcome === "rollback") expect(result).toEqual({ ok: false, error: rollback });
+                  else requireSuccessful(result);
+                  if (control === "combined") throwFailure(cleanup);
+                } catch (error) {
+                  failure = combineFailure(failure, [error], "Test and proposal cleanup failed");
+                } finally {
+                  setInvalidationHook(() => {});
+                }
+              }
+              if (failure !== undefined) throwFailure(failure.error);
+              await runInTenant(tenant, () =>
+                withTransaction(contenderPool, (client) =>
+                  operation === "update"
+                    ? updateRelationWithClient(
+                        client,
+                        { ...edge, metadata: { healthy: true } },
+                        VALUE_LINKS,
+                        SYSTEM_WRITER,
+                      )
+                    : deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER),
+                ),
+              );
+              const after = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
+              if (operation === "update") expect(after?.[0]?.metadata).toEqual({ healthy: true });
+              else expect(after).toEqual([]);
+              expect((await readStoredLinks(contenderPool, tenant, fx.file.id))[0]?.state).toBe("on");
+            }),
+          );
+        };
+        if (control === "normal") return runControl();
+        const result = await runControl().then(
+          () => ({ rejected: false as const }),
+          (error: unknown) => ({ rejected: true as const, error }),
         );
+        expect(result.rejected).toBe(true);
+        if (!result.rejected) throw new Error("Expected rejection");
+        if (control === "undefined") expect(result.error).toBeUndefined();
+        else {
+          expect(result.error).toBeInstanceOf(AggregateError);
+          if (!(result.error instanceof AggregateError)) throw new Error("Expected combined failure");
+          expect(result.error.errors).toEqual([original, cleanup]);
+          expect(result.error.cause).toBe(original);
+        }
       },
       30000,
     );
@@ -2450,6 +2479,7 @@ describe("value link state on writes (issue #1516)", () => {
             (error: unknown) => ({ ok: false as const, error }),
           );
           let failure: { error: unknown } | undefined;
+          let consumedSystem: Awaited<typeof system> | undefined;
           try {
             await bounded(admitted.promise);
             await runInTenant(tenant, () =>
@@ -2459,7 +2489,9 @@ describe("value link state on writes (issue #1516)", () => {
               }),
             );
             release.resolve();
-            expect(await bounded(system)).toMatchObject({ ok: false, error: { status: 403, code: "owner_violation" } });
+            const systemOutcome = await bounded(system);
+            expect(systemOutcome).toMatchObject({ ok: false, error: { status: 403, code: "owner_violation" } });
+            consumedSystem = systemOutcome;
             expect(systemPid).toBeTypeOf("number");
             expect(userPid).toBeTypeOf("number");
             const links = await withTenantTransaction(userPool, tenant, (client) =>
@@ -2475,7 +2507,9 @@ describe("value link state on writes (issue #1516)", () => {
           } finally {
             release.resolve();
             try {
-              await settleOwned(system, () => systemPid);
+              const outcome = await settleOwned(system, () => systemPid);
+              if (!outcome.ok && outcome !== consumedSystem)
+                failure = combineFailure(failure, [outcome.error], "Test and system cleanup failed");
             } catch (error) {
               failure = combineFailure(failure, [error], "Test and system cleanup failed");
             }
@@ -3252,6 +3286,7 @@ describe("value link state on writes (issue #1516)", () => {
           let user: Promise<Outcome> | undefined;
           let system: Promise<Outcome> | undefined;
           let failure: { error: unknown } | undefined;
+          const consumed = new Set<Outcome>();
           const events: InvalidationEvent[] = [];
           setInvalidationHook((event) => events.push(event));
           try {
@@ -3265,6 +3300,7 @@ describe("value link state on writes (issue #1516)", () => {
             const systemOutcome = await bounded(system);
             expect(systemEnqueueAttempted).toBe(true);
             expect(systemOutcome).toMatchObject({ ok: false, error: { status: 409, code: "value_link_busy" } });
+            consumed.add(systemOutcome);
             releaseJob.resolve();
             const outcomes = await bounded(Promise.all([user, system]));
             console.info("Populated rollup contention refusal", { userPid, systemPid, jobKey, outcomes });
@@ -3299,6 +3335,7 @@ describe("value link state on writes (issue #1516)", () => {
               system,
               () => userPid,
               () => systemPid,
+              consumed,
             );
             linkSpy.mockRestore();
             setInvalidationHook(() => {});
@@ -3392,6 +3429,7 @@ describe("value link state on writes (issue #1516)", () => {
             let user: Promise<Outcome> | undefined;
             let system: Promise<Outcome> | undefined;
             let failure: { error: unknown } | undefined;
+            const consumed = new Set<Outcome>();
             const events: InvalidationEvent[] = [];
             setInvalidationHook((event) => events.push(event));
             try {
@@ -3410,10 +3448,12 @@ describe("value link state on writes (issue #1516)", () => {
                 await bounded(edgeHeld.promise);
                 expect(await relationAdvisoryHeldBy(definition.id, userPid)).toBe(true);
                 system = run("system");
-                expect(await bounded(system)).toMatchObject({
+                const refused = await bounded(system);
+                expect(refused).toMatchObject({
                   ok: false,
                   error: { code: "value_link_busy", status: 409 },
                 });
+                consumed.add(refused);
                 releaseEdge.resolve();
               }
               const outcomes = await bounded(Promise.all([user, system]));
@@ -3421,6 +3461,7 @@ describe("value link state on writes (issue #1516)", () => {
               expect(outcomes[0]).toEqual({ ok: true });
               if (order === "system-first") expect(outcomes[1]).toEqual({ ok: true });
               else expect(outcomes[1]).toMatchObject({ ok: false, error: { code: "value_link_busy" } });
+              if (outcomes[1]) consumed.add(outcomes[1]);
               const links = await withTenantTransaction(userPool, tenant, (client) =>
                 listValueLinksByItemIds(client, [fx.file.id]),
               );
@@ -3438,6 +3479,7 @@ describe("value link state on writes (issue #1516)", () => {
                 system,
                 () => userPid,
                 () => systemPid,
+                consumed,
               );
               edgeSpy.mockRestore();
               linkSpy.mockRestore();
@@ -3576,6 +3618,7 @@ describe("value link state on writes (issue #1516)", () => {
             let user: Promise<Outcome> | undefined;
             let system: Promise<Outcome> | undefined;
             let failure: { error: unknown } | undefined;
+            const consumed = new Set<Outcome>();
             const events: InvalidationEvent[] = [];
             setInvalidationHook((event) => events.push(event));
             try {
@@ -3612,10 +3655,12 @@ describe("value link state on writes (issue #1516)", () => {
                 );
                 expect(sourceLock.rows[0]?.held).toBe(true);
                 system = run("system");
-                expect(await bounded(system)).toMatchObject({
+                const refused = await bounded(system);
+                expect(refused).toMatchObject({
                   ok: false,
                   error: { code: "value_link_busy", status: 409 },
                 });
+                consumed.add(refused);
                 expect(systemSourceNowaitAttempt).toBe(true);
                 releaseSource.resolve();
               }
@@ -3624,6 +3669,7 @@ describe("value link state on writes (issue #1516)", () => {
               expect(outcomes[0]).toEqual({ ok: true });
               if (order === "system-first") expect(outcomes[1]).toEqual({ ok: true });
               else expect(outcomes[1]).toMatchObject({ ok: false, error: { code: "value_link_busy" } });
+              if (outcomes[1]) consumed.add(outcomes[1]);
               const links = await withTenantTransaction(userPool, tenant, (client) =>
                 listValueLinksByItemIds(client, [fixture.item.id]),
               );
@@ -3643,6 +3689,7 @@ describe("value link state on writes (issue #1516)", () => {
                 system,
                 () => userPid,
                 () => systemPid,
+                consumed,
               );
               sourceSpy.mockRestore();
               linkSpy.mockRestore();
@@ -3798,14 +3845,16 @@ describe("value link state on writes (issue #1516)", () => {
     });
 
     it.each([
-      ["plain", "user-first"],
-      ["plain", "system-first"],
-      ["transformed", "user-first"],
-      ["transformed", "system-first"],
-      ["plain", "system-rollback"],
+      ["plain", "user-first", "normal"],
+      ["plain", "system-first", "normal"],
+      ["transformed", "user-first", "normal"],
+      ["transformed", "system-first", "normal"],
+      ["plain", "system-rollback", "normal"],
+      ["plain", "system-first", "late-undefined"],
+      ["plain", "system-first", "late-object"],
     ] as const)(
-      "serializes %s item and handoff writes with %s",
-      async (kind, order) => {
+      "serializes %s item and handoff writes with %s (%s)",
+      async (kind, order, control) => {
         if (kind === "transformed") await seedSystem(pool);
         const tenant = kind === "transformed" ? getTenantZeroId() : await createTestTenant(pool);
         const otherTenant = await createTestTenant(pool);
@@ -3837,6 +3886,8 @@ describe("value link state on writes (issue #1516)", () => {
             const releaseSystem = barrier();
             const userStarted = barrier();
             const systemStarted = barrier();
+            const bodyError = new Error("forced observation failure");
+            const secondary = { marker: "late participant" };
             let userClient: PoolClient | undefined;
             let systemClient: PoolClient | undefined;
             let userPid: number | undefined;
@@ -3895,6 +3946,8 @@ describe("value link state on writes (issue #1516)", () => {
                         ? { writer: USER }
                         : { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
                     );
+                    if (actor === "system" && control === "late-undefined") throwFailure(undefined);
+                    if (actor === "system" && control === "late-object") throwFailure(secondary);
                     if (actor === "system" && order === "system-rollback") throw new Error("forced rollback");
                     return result;
                   }),
@@ -3903,6 +3956,7 @@ describe("value link state on writes (issue #1516)", () => {
             let user: Promise<Outcome> | undefined;
             let system: Promise<Outcome> | undefined;
             let failure: { error: unknown } | undefined;
+            const consumed = new Set<Outcome>();
             const events: InvalidationEvent[] = [];
             setInvalidationHook((event) => events.push(event));
             try {
@@ -3956,6 +4010,7 @@ describe("value link state on writes (issue #1516)", () => {
                 await bounded(userStarted.promise);
                 if (!userPid || !systemPid) throw new Error("Missing participant PID");
                 await waitBlocked(systemPid, userPid);
+                if (control !== "normal") throw bodyError;
                 console.info("Observed item handoff wait", {
                   kind,
                   order,
@@ -3974,6 +4029,7 @@ describe("value link state on writes (issue #1516)", () => {
               } else {
                 expect(results[1]).toEqual({ ok: true });
               }
+              if (results[1]) consumed.add(results[1]);
               expect(events.filter((event) => event.scope === "item" && event.itemId === fx.file.id)).toHaveLength(
                 order === "system-first" ? 2 : 1,
               );
@@ -4009,6 +4065,7 @@ describe("value link state on writes (issue #1516)", () => {
                 system,
                 () => userPid,
                 () => systemPid,
+                consumed,
               );
               updateSpy.mockRestore();
               lockSpy.mockRestore();
@@ -4016,6 +4073,14 @@ describe("value link state on writes (issue #1516)", () => {
               if (cleanupErrors.length) {
                 failure = combineFailure(failure, cleanupErrors, "Diagnostic and cleanup failed");
               }
+            }
+            if (control !== "normal") {
+              const error = failure?.error;
+              expect(error).toBeInstanceOf(AggregateError);
+              if (!(error instanceof AggregateError)) throw new Error("Expected combined failure");
+              expect(error.errors).toEqual([bodyError, control === "late-undefined" ? undefined : secondary]);
+              expect(error.cause).toBe(bodyError);
+              return;
             }
             if (failure !== undefined) throwFailure(failure.error);
           }),

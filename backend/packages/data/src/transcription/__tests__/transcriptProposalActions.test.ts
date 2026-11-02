@@ -253,6 +253,15 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
       );
       if (cards.rows.length !== 1 || !cards.rows[0]) throw new Error("Missing speaker proposal");
       const cardId = cards.rows[0].id;
+      const speakerEdges = () =>
+        withTransaction(pool, (client) =>
+          client.query<{ metadata: unknown }>(
+            "SELECT metadata FROM item_relations WHERE $1 IN (item_a, item_b) AND $2 IN (item_a, item_b)",
+            [transcriptId, personId],
+          ),
+        );
+      const beforeEdges = (await speakerEdges()).rows;
+      expect(beforeEdges).toEqual([]);
       const actorId = randomUUID();
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
@@ -276,6 +285,7 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
           (await withTransaction(pool, (client) => listValueLinksByItemIds(client, [transcriptId])))[0]?.state,
         ).toBe("on");
         expect((await cardProperties(cardId)).status).toBe("proposed");
+        expect((await speakerEdges()).rows).toEqual(beforeEdges);
         await withTransaction(pool, (client) =>
           confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, undefined, actorId),
         );

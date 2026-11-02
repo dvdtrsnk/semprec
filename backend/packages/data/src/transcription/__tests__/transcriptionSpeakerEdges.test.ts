@@ -330,138 +330,167 @@ describe("Transcript speaker mappings (issue #185)", () => {
   });
 
   describe("writing through the generic relation operation", () => {
-    it("validates protected speaker metadata before refusing a busy transcript lock", async () => {
-      const transcriptId = await createTranscript();
-      const personId = await createPerson("Alice");
-      const otherPersonId = await createPerson("Bob");
-      const tenant = getTenantZeroId();
-      await withRuntimePool(async (runtime, operations) => {
-        let release!: () => void;
-        let acquired!: () => void;
-        const ready = new Promise<void>((resolve) => {
-          acquired = resolve;
-        });
-        const gate = new Promise<void>((resolve) => {
-          release = resolve;
-        });
-        operations.onCancel(release);
-        let holderPid: number | undefined;
-        let contenderPid: number | undefined;
-        await withTenantTransaction(runtime, tenant, (client) =>
-          insertValueLink(client, { itemId: transcriptId, propertyKey: "speakers", ruleKey: "test", sources: [] }),
-        );
-        const beforeJobs = await pool.query<{ count: string }>(
-          "SELECT count(*)::text AS count FROM graphile_worker.jobs",
-        );
-        const beforeLinks = await withTenantTransaction(runtime, tenant, (client) =>
-          listValueLinksByItemIds(client, [transcriptId]),
-        );
-        const beforeSpeakers = await speakers(transcriptId);
-        const events: InvalidationEvent[] = [];
-        setInvalidationHook((event) => events.push(event));
-        const holder = operations
-          .run(() =>
-            runInTenant(tenant, () =>
-              withTransaction(runtime, async (client) => {
-                holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                await updateItemWithClient(client, {
-                  databaseId: transcriptsId,
-                  itemId: transcriptId,
-                  propertiesPatch: { name: "Held" },
-                });
-                acquired();
-                await bounded(gate, 10000);
-              }),
-            ),
-          )
-          .then(
-            () => ({ ok: true as const }),
-            (error: unknown) => ({ ok: false as const, error }),
-          );
-        let failure: { error: unknown } | undefined;
-        try {
-          await bounded(ready);
-          const lock = await pool.query<{ held: boolean }>(
-            `SELECT EXISTS (SELECT 1 FROM items i JOIN pg_locks l ON l.transactionid::text = i.xmax::text
-             WHERE i.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.granted) AS held`,
-            [transcriptId, holderPid],
-          );
-          expect(lock.rows[0]?.held).toBe(true);
-          const attempt = (metadata: Record<string, unknown>, target = personId) =>
-            bounded(
-              operations.run(() =>
+    it.each(["normal", "undefined", "combined"] as const)(
+      "validates protected speaker metadata before refusing a busy transcript lock (%s)",
+      async (control) => {
+        const original = { marker: "observation" };
+        const cleanup = { marker: "cleanup" };
+        const runControl = async () => {
+          const transcriptId = await createTranscript();
+          const personId = await createPerson("Alice");
+          const otherPersonId = await createPerson("Bob");
+          const tenant = getTenantZeroId();
+          await withRuntimePool(async (runtime, operations) => {
+            let release!: () => void;
+            let acquired!: () => void;
+            const ready = new Promise<void>((resolve) => {
+              acquired = resolve;
+            });
+            const gate = new Promise<void>((resolve) => {
+              release = resolve;
+            });
+            operations.onCancel(release);
+            let holderPid: number | undefined;
+            let contenderPid: number | undefined;
+            await withTenantTransaction(runtime, tenant, (client) =>
+              insertValueLink(client, { itemId: transcriptId, propertyKey: "speakers", ruleKey: "test", sources: [] }),
+            );
+            const beforeJobs = await pool.query<{ count: string }>(
+              "SELECT count(*)::text AS count FROM graphile_worker.jobs",
+            );
+            const beforeLinks = await withTenantTransaction(runtime, tenant, (client) =>
+              listValueLinksByItemIds(client, [transcriptId]),
+            );
+            const beforeSpeakers = await speakers(transcriptId);
+            const events: InvalidationEvent[] = [];
+            setInvalidationHook((event) => events.push(event));
+            const holder = operations
+              .run(() =>
                 runInTenant(tenant, () =>
                   withTransaction(runtime, async (client) => {
-                    contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                    return createRelationWithClient(
-                      client,
-                      {
-                        relationPropertyId: speakersPropertyId,
-                        callerItemId: transcriptId,
-                        targetItemId: target,
-                        metadata,
-                      },
-                      { ownerProcess: "valueLinks" },
-                    );
+                    holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+                    await updateItemWithClient(client, {
+                      databaseId: transcriptsId,
+                      itemId: transcriptId,
+                      propertiesPatch: { name: "Held" },
+                    });
+                    acquired();
+                    await bounded(gate, 10000);
                   }),
                 ),
-              ),
-            );
-          await expect(attempt({})).rejects.toMatchObject({ status: 400, code: "validation_failed" });
-          await expect(attempt({ speaker: "SPEAKER_01" })).rejects.toMatchObject({
-            status: 409,
-            code: "value_link_busy",
+              )
+              .then(
+                () => ({ ok: true as const }),
+                (error: unknown) => ({ ok: false as const, error }),
+              );
+            let failure: { error: unknown } | undefined;
+            try {
+              await bounded(ready);
+              const lock = await pool.query<{ held: boolean }>(
+                `SELECT EXISTS (SELECT 1 FROM items i JOIN pg_locks l ON l.transactionid::text = i.xmax::text
+             WHERE i.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.granted) AS held`,
+                [transcriptId, holderPid],
+              );
+              expect(lock.rows[0]?.held).toBe(true);
+              const attempt = (metadata: Record<string, unknown>, target = personId) =>
+                bounded(
+                  operations.run(() =>
+                    runInTenant(tenant, () =>
+                      withTransaction(runtime, async (client) => {
+                        contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
+                          ?.pid;
+                        return createRelationWithClient(
+                          client,
+                          {
+                            relationPropertyId: speakersPropertyId,
+                            callerItemId: transcriptId,
+                            targetItemId: target,
+                            metadata,
+                          },
+                          { ownerProcess: "valueLinks" },
+                        );
+                      }),
+                    ),
+                  ),
+                );
+              await expect(attempt({})).rejects.toMatchObject({ status: 400, code: "validation_failed" });
+              await expect(attempt({ speaker: "SPEAKER_01" })).rejects.toMatchObject({
+                status: 409,
+                code: "value_link_busy",
+              });
+              if (control === "undefined") throwFailure(undefined);
+              if (control === "combined") throwFailure(original);
+              expect(holderPid).toBeTypeOf("number");
+              expect(contenderPid).toBeTypeOf("number");
+              expect(await speakers(transcriptId)).toEqual(beforeSpeakers);
+              expect(
+                await withTenantTransaction(runtime, tenant, (client) =>
+                  listValueLinksByItemIds(client, [transcriptId]),
+                ),
+              ).toEqual(beforeLinks);
+              expect(
+                (await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
+              ).toEqual(beforeJobs.rows);
+              expect(events).toEqual([]);
+              release();
+              requireSuccessful(await bounded(holder));
+              events.length = 0;
+              const edge = await attempt({ speaker: "SPEAKER_01" });
+              expect(edge.metadata).toEqual({ speaker: "SPEAKER_01" });
+              expect((await speakers(transcriptId))[0]?.person?.id).toBe(personId);
+              expect(
+                await withTenantTransaction(runtime, tenant, (client) =>
+                  listValueLinksByItemIds(client, [transcriptId]),
+                ),
+              ).toEqual(beforeLinks);
+              expect(events).toEqual([]);
+              await expect(attempt({ speaker: "SPEAKER_99" }, otherPersonId)).rejects.toMatchObject({
+                status: 400,
+                code: "validation_failed",
+                details: { reason: "unknownSpeaker" },
+              });
+              await expect(attempt({ speaker: "SPEAKER_01" }, otherPersonId)).rejects.toMatchObject({
+                status: 400,
+                code: "validation_failed",
+                details: { reason: "speakerAlreadyMapped" },
+              });
+              expect((await speakers(transcriptId))[0]?.person?.id).toBe(personId);
+              expect(
+                (await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
+              ).toEqual(beforeJobs.rows);
+              expect(events).toEqual([]);
+            } catch (error) {
+              failure = { error };
+            } finally {
+              release();
+              try {
+                await operations.settle();
+                requireSuccessful(await bounded(holder));
+                if (control === "combined") throwFailure(cleanup);
+              } catch (error) {
+                failure = combineFailure(failure, [error], "Test and participant cleanup failed");
+              }
+              setInvalidationHook(() => {});
+            }
+            if (failure !== undefined) throwFailure(failure.error);
           });
-          expect(holderPid).toBeTypeOf("number");
-          expect(contenderPid).toBeTypeOf("number");
-          expect(await speakers(transcriptId)).toEqual(beforeSpeakers);
-          expect(
-            await withTenantTransaction(runtime, tenant, (client) => listValueLinksByItemIds(client, [transcriptId])),
-          ).toEqual(beforeLinks);
-          expect(
-            (await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
-          ).toEqual(beforeJobs.rows);
-          expect(events).toEqual([]);
-          release();
-          requireSuccessful(await bounded(holder));
-          events.length = 0;
-          const edge = await attempt({ speaker: "SPEAKER_01" });
-          expect(edge.metadata).toEqual({ speaker: "SPEAKER_01" });
-          expect((await speakers(transcriptId))[0]?.person?.id).toBe(personId);
-          expect(
-            await withTenantTransaction(runtime, tenant, (client) => listValueLinksByItemIds(client, [transcriptId])),
-          ).toEqual(beforeLinks);
-          expect(events).toEqual([]);
-          await expect(attempt({ speaker: "SPEAKER_99" }, otherPersonId)).rejects.toMatchObject({
-            status: 400,
-            code: "validation_failed",
-            details: { reason: "unknownSpeaker" },
-          });
-          await expect(attempt({ speaker: "SPEAKER_01" }, otherPersonId)).rejects.toMatchObject({
-            status: 400,
-            code: "validation_failed",
-            details: { reason: "speakerAlreadyMapped" },
-          });
-          expect((await speakers(transcriptId))[0]?.person?.id).toBe(personId);
-          expect(
-            (await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
-          ).toEqual(beforeJobs.rows);
-          expect(events).toEqual([]);
-        } catch (error) {
-          failure = { error };
-        } finally {
-          release();
-          try {
-            await operations.settle();
-            requireSuccessful(await bounded(holder));
-          } catch (error) {
-            failure = combineFailure(failure, [error], "Test and participant cleanup failed");
-          }
-          setInvalidationHook(() => {});
+        };
+        if (control === "normal") return runControl();
+        const result = await runControl().then(
+          () => ({ rejected: false as const }),
+          (error: unknown) => ({ rejected: true as const, error }),
+        );
+        expect(result.rejected).toBe(true);
+        if (!result.rejected) throw new Error("Expected rejection");
+        if (control === "undefined") expect(result.error).toBeUndefined();
+        else {
+          expect(result.error).toBeInstanceOf(AggregateError);
+          if (!(result.error instanceof AggregateError)) throw new Error("Expected combined failure");
+          expect(result.error.errors).toEqual([original, cleanup]);
+          expect(result.error.cause).toBe(original);
         }
-        if (failure !== undefined) throwFailure(failure.error);
-      });
-    });
+      },
+    );
 
     it("replaces a person's key by writing the edge again", async () => {
       const transcriptId = await createTranscript();

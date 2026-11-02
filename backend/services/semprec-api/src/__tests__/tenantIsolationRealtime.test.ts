@@ -1272,7 +1272,13 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     const gate = new Promise<void>((resolve) => {
       releaseGate = resolve;
     });
+    let releasePublication = () => {};
+    const publicationGate = new Promise<void>((resolve) => {
+      releasePublication = resolve;
+    });
+    let holdFirstPublication = true;
     let settlePublications = async () => {};
+    let publicationProbe: Promise<void> | undefined;
     try {
       const actualAdapter = adapterRouteModule.createAdapterRequestListener;
       vi.spyOn(adapterRouteModule, "createAdapterRequestListener").mockImplementation((...args) => {
@@ -1340,6 +1346,33 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         () => {},
       );
       const querySpy = vi.spyOn(pool, "query");
+      const publications: Array<Promise<{ ok: true } | { ok: false; error: unknown }>> = [];
+      let settledPublicationCount = 0;
+      // The proxy forwards the original receiver to preserve the pool method's binding.
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      pool.query = new Proxy(pool.query, {
+        apply(target, receiver, args: unknown[]) {
+          const result: unknown = Reflect.apply(target, receiver, args);
+          if (typeof args[0] === "string" && args[0].includes("pg_notify")) {
+            if (!(result instanceof Promise)) throw new Error("Expected asynchronous publication");
+            const forwarded = holdFirstPublication
+              ? result.then(async (value: unknown) => {
+                  await publicationGate;
+                  return value;
+                })
+              : result;
+            holdFirstPublication = false;
+            publications.push(
+              forwarded.then(
+                () => ({ ok: true as const }),
+                (error: unknown) => ({ ok: false as const, error }),
+              ),
+            );
+            return forwarded;
+          }
+          return result;
+        },
+      });
       const itemPublications = (itemId: string): Record<string, unknown>[] => {
         const messages: Record<string, unknown>[] = [];
         for (const call of querySpy.mock.calls) {
@@ -1353,15 +1386,14 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         return messages;
       };
       settlePublications = async () => {
-        const publications: Promise<unknown>[] = [];
-        for (let index = 0; index < querySpy.mock.calls.length; index++) {
-          const args: readonly unknown[] = querySpy.mock.calls[index] ?? [];
-          if (typeof args[0] !== "string" || !args[0].includes("pg_notify")) continue;
-          const result: unknown = querySpy.mock.results[index]?.value;
-          if (!(result instanceof Promise)) throw new Error("Expected asynchronous publication");
-          publications.push(result);
+        const errors: unknown[] = [];
+        while (settledPublicationCount < publications.length) {
+          const end = publications.length;
+          const outcomes = await Promise.all(publications.slice(settledPublicationCount, end));
+          settledPublicationCount = end;
+          for (const outcome of outcomes) if (!outcome.ok) errors.push(outcome.error);
         }
-        await Promise.all(publications);
+        if (errors.length) throw new AggregateError(errors, "Publication failed", { cause: errors[0] });
       };
       const causalBarrier = async (itemId: string): Promise<void> => {
         await settlePublications();
@@ -1427,9 +1459,24 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         tenantId: tenantA.tenantId,
         message: { type: "invalidation", scope: "item", itemId: source.id, userId: tenantA.userId },
       });
-      await expectInvalidationInA({ scope: "item", itemId: source.id, op: "update" });
       expect(itemPublications(source.id)).toEqual([expect.objectContaining({ userId: tenantA.userId })]);
       querySpy.mockClear();
+      let publicationSettled = false;
+      const waitingPublication = settlePublications().then(() => {
+        publicationSettled = true;
+      });
+      publicationProbe = waitingPublication;
+      void waitingPublication.catch(() => {});
+      await Promise.resolve();
+      expect(publicationSettled).toBe(false);
+      expect(activeListener.listenerCount("notification")).toBeGreaterThan(0);
+      releasePublication();
+      try {
+        await waitingPublication;
+      } finally {
+        publicationProbe = undefined;
+      }
+      await expectInvalidationInA({ scope: "item", itemId: source.id, op: "update" });
       expect(await ownedPut(url, headers)).toBe(200);
       expect(requests).toHaveLength(2);
       await requests[1]?.task;
@@ -1627,6 +1674,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
       failure = { error };
     } finally {
       releaseGate();
+      releasePublication();
       const cleanupErrors: unknown[] = [];
       try {
         if (requestServer) {
@@ -1648,6 +1696,11 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         } catch (error) {
           cleanupErrors.push(error);
         }
+      }
+      try {
+        await publicationProbe;
+      } catch (error) {
+        cleanupErrors.push(error);
       }
       try {
         await settlePublications();

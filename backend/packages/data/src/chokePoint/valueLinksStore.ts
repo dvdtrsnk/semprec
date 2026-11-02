@@ -185,7 +185,7 @@ export async function lockOnValueLink(
   lockMode?: "nowait" | "none",
 ): Promise<boolean> {
   // The SQL suffix is selected only from the three fixed lock clauses for this typed mode.
-  const { rows } = await client.query(
+  const { rows } = await client.query<{ "?column?": number }>(
     `SELECT 1 FROM value_links WHERE item_id = $1 AND property_key = $2 AND state = 'on'${lockMode === "none" ? "" : lockMode === "nowait" ? " FOR SHARE NOWAIT" : " FOR SHARE"}`,
     [itemId, propertyKey],
   );
