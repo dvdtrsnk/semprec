@@ -132,6 +132,30 @@ describe("scheduler", () => {
     expect(ran).toBe(1);
   });
 
+  it("creates an unchained run for an item-event fire through the worker", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const db = await chokePoint.createDatabase({ name: "Event-run evidence" });
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Event-run evidence",
+        rule: { kind: "onItemEvent", databaseId: db.id, event: "create" },
+        actionId: CORE_AGENT_RUN_ACTION_ID,
+        actionConfig: { task: "event" },
+      }),
+    );
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async () => ({ result: "done" })),
+    );
+    await inTenantZero(() => chokePoint.createItem({ databaseId: db.id, properties: {} }));
+    await drainQueue(registry);
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ status: "done", heartbeatOccurrenceId: null, retryOfRunId: null, attempt: 1 });
+  });
+
   it("sweepDueHeartbeats fires a due heartbeat exactly once", async () => {
     const projectItemId = await getSemprecProjectId();
     const registry = createActionRegistry();

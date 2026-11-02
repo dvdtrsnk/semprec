@@ -2133,7 +2133,14 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     if (failure) throw failure.error;
     const runs = await runInTenant(b.tenantId, () => listAgentRunsByHeartbeat(pool, heartbeat.id));
     expect(runs).toHaveLength(1);
-    expect(runs[0]).toMatchObject({ status: "done", parentRunId: null, actorUserId: b.member.userId });
+    expect(runs[0]).toMatchObject({
+      status: "done",
+      parentRunId: null,
+      actorUserId: b.member.userId,
+      heartbeatOccurrenceId: null,
+      retryOfRunId: null,
+      attempt: 1,
+    });
   });
 
   it("refuses disabled and item-event automations over authenticated HTTP", async () => {
