@@ -53,7 +53,7 @@ export async function withValueLinkRelationAdmission<T>(
     const { rows } = await client.query<{ setting: string }>("SELECT current_setting('lock_timeout') AS setting");
     if (typeof rows[0]?.setting !== "string") throw new Error("Missing lock timeout setting");
     previous = rows[0].setting;
-    await client.query("SELECT set_config('lock_timeout', $1, true)", ["1ms"]);
+    await client.query<{ set_config: string }>("SELECT set_config('lock_timeout', $1, true)", ["1ms"]);
   } catch (error) {
     markManagedTransactionRollbackOnly(client, error);
     throw error;
@@ -73,7 +73,7 @@ export async function withValueLinkRelationAdmission<T>(
     throw failure;
   }
   try {
-    await client.query("SELECT set_config('lock_timeout', $1, true)", [previous]);
+    await client.query<{ set_config: string }>("SELECT set_config('lock_timeout', $1, true)", [previous]);
   } catch (error) {
     markManagedTransactionRollbackOnly(client, error);
     throw error;

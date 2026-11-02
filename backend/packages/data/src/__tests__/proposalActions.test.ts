@@ -370,33 +370,33 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const expected = { marker: "asserted" };
       const body = new Error("forced observation failure");
       let lateSettled = false;
-      const negative = owned.run(() =>
-        withTransaction(runtime, async (client) => {
-          await client.query<{ "?column?": number }>("SELECT 1");
-          rethrowOverlap(expected);
-        }),
-      );
-      await expect(negative).rejects.toBe(expected);
-      owned.consume(negative, expected);
-      const participant = owned.run(() =>
-        withTransaction(runtime, async (client) => {
-          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-          if (!pid) throw new Error("Missing owned PID");
-          started();
-          await gate;
-          rethrowOverlap(late);
-        }),
-      );
-      void participant.then(
-        () => {
-          lateSettled = true;
-        },
-        () => {
-          lateSettled = true;
-        },
-      );
       let failure: { error: unknown } | undefined;
       try {
+        const negative = owned.run(() =>
+          withTransaction(runtime, async (client) => {
+            await client.query<{ "?column?": number }>("SELECT 1");
+            rethrowOverlap(expected);
+          }),
+        );
+        await expect(negative).rejects.toBe(expected);
+        owned.consume(negative, expected);
+        const participant = owned.run(() =>
+          withTransaction(runtime, async (client) => {
+            const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            if (!pid) throw new Error("Missing owned PID");
+            started();
+            await gate;
+            rethrowOverlap(late);
+          }),
+        );
+        void participant.then(
+          () => {
+            lateSettled = true;
+          },
+          () => {
+            lateSettled = true;
+          },
+        );
         await owned.wait(ready, participant);
         throw body;
       } catch (error) {
@@ -408,6 +408,9 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           failure = combineOverlapFailure(failure, error);
         }
       }
+      if (failure && (!(failure.error instanceof AggregateError) || failure.error.cause !== body)) {
+        rethrowOverlap(failure.error);
+      }
       const combined = failure?.error;
       expect(combined).toBeInstanceOf(AggregateError);
       if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
@@ -416,8 +419,10 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const cleanup: unknown = combined.errors[1];
       expect(cleanup).toBeInstanceOf(AggregateError);
       if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failure");
-      expect(cleanup.errors).toContain(late);
-      expect(cleanup.errors).not.toContain(expected);
+      expect(combined.errors).toHaveLength(2);
+      expect(cleanup.errors).toHaveLength(1);
+      expect(cleanup.errors[0]).toBe(late);
+      expect(cleanup.cause).toBe(late);
       expect(lateSettled).toBe(true);
       expect(runtime.ended).toBe(true);
       expect(runtime.totalCount).toBe(0);
@@ -426,6 +431,60 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     },
     20000,
   );
+
+  it("settles ownership when the first participant has the wrong rejection", async () => {
+    const runtime = getTestPool({ max: 3 });
+    const wrong = { marker: "wrong" };
+    const expected = { marker: "expected" };
+    const cleanupError = new Error("controlled cleanup failure");
+    const owned = ownOverlap(runtime, () => {
+      throw cleanupError;
+    });
+    let assertion: { error: unknown } | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      const negative = owned.run(() =>
+        withTransaction(runtime, async (client) => {
+          await client.query<{ "?column?": number }>("SELECT 1");
+          rethrowOverlap(wrong);
+        }),
+      );
+      try {
+        await expect(negative).rejects.toBe(expected);
+      } catch (error) {
+        assertion = { error };
+        throw error;
+      }
+      owned.consume(negative, expected);
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await owned.finish(failure !== undefined);
+      } catch (error) {
+        failure = combineOverlapFailure(failure, error);
+      }
+    }
+    if (!assertion) throw new Error("Expected assertion failure");
+    const combined = failure?.error;
+    expect(combined).toBeInstanceOf(AggregateError);
+    if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
+    expect(combined.errors).toHaveLength(2);
+    expect(combined.errors[0]).toBe(assertion.error);
+    expect(combined.cause).toBe(assertion.error);
+    const cleanup: unknown = combined.errors[1];
+    expect(cleanup).toBeInstanceOf(AggregateError);
+    if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failure");
+    expect(cleanup.errors).toHaveLength(2);
+    expect(cleanup.errors[0]).toBe(cleanupError);
+    expect(cleanup.errors[1]).toBe(wrong);
+    expect(cleanup.cause).toBe(cleanupError);
+    expect(runtime.ended).toBe(true);
+    expect(runtime.totalCount).toBe(0);
+    expect(runtime.waitingCount).toBe(0);
+    expect(runtime.listenerCount("acquire")).toBe(0);
+    expect(runtime.listenerCount("release")).toBe(0);
+  }, 20000);
 
   it("preserves an early checkout failure together with cleanup failure", async () => {
     const runtime = getTestPool({ max: 3 });
@@ -1728,135 +1787,170 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(byId.get(card)).toEqual(cardBefore);
     });
 
-    it("settles a blocked precondition contender after an owner failure", async () => {
-      const task = await createIn("tasks", { name: "Before" });
-      const tasksDb = await databaseIdFor("tasks");
-      const [before] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
-      const runtime = getTestPool({ max: 3 });
-      let release = () => {};
-      let holderReady = (_pid: number) => {};
-      let contenderReady = (_pid: number) => {};
-      const gate = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const held = new Promise<number>((resolve) => {
-        holderReady = resolve;
-      });
-      const competing = new Promise<number>((resolve) => {
-        contenderReady = resolve;
-      });
-      const owned = ownOverlap(runtime, release);
-      const bodyError = new Error("forced precondition overlap failure");
-      let failure: { error: unknown } | undefined;
-      let holderSettled = false;
-      const lateParticipant = { marker: "late participant" };
-      let holderError: { value: unknown } | undefined;
-      let contenderError: { value: unknown } | undefined;
-      let contenderSettled = false;
-      let contenderFailed = false;
-      try {
-        const holder = owned.run(() =>
-          withTransaction(runtime, async (client) => {
-            const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-            if (pid === undefined) throw new Error("Missing holder PID");
-            await updateItemWithClient(client, {
-              databaseId: tasksDb,
-              itemId: task,
-              propertiesPatch: { name: "Held" },
-            });
-            holderReady(pid);
-            await gate;
-            rethrowOverlap(lateParticipant);
-          }),
-        );
-        void holder.then(
-          () => {
-            holderSettled = true;
-          },
-          (error: unknown) => {
-            holderError = { value: error };
-            holderSettled = true;
-          },
-        );
-        const holderPid = await owned.wait(held, holder);
-        await owned.wait(
-          owned.run(() => assertItemHeld(task, holderPid, runtime)),
-          holder,
-        );
-        const contender = owned.run(() =>
-          withTransaction(runtime, async (client) => {
-            const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-            if (pid === undefined) throw new Error("Missing contender PID");
-            contenderReady(pid);
-            await updateItemWithClient(client, {
-              databaseId: tasksDb,
-              itemId: task,
-              propertiesPatch: { name: "Contender" },
-            });
-          }),
-        );
-        void contender.then(
-          () => {
-            contenderSettled = true;
-          },
-          (error: unknown) => {
-            contenderError = { value: error };
-            contenderSettled = true;
-            contenderFailed = true;
-          },
-        );
-        const contenderPid = await owned.wait(competing, holder, contender);
-        await owned.wait(
-          owned.run(() =>
-            expect
-              .poll(
-                async () => {
-                  const result = await runtime.query<{ blocked: boolean }>(
-                    "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
-                    [holderPid, contenderPid],
-                  );
-                  return result.rows[0]?.blocked;
-                },
-                { timeout: 5000 },
-              )
-              .toBe(true),
-          ),
-          holder,
-          contender,
-        );
-        throw bodyError;
-      } catch (error) {
-        failure = { error };
-      } finally {
-        release();
+    it.each([undefined, { marker: "late participant" }])(
+      "settles a blocked precondition contender after an owner failure %#",
+      async (lateParticipant) => {
+        const task = await createIn("tasks", { name: "Before" });
+        const tasksDb = await databaseIdFor("tasks");
+        const [before] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
+        const runtime = getTestPool({ max: 3 });
+        let release = () => {};
+        let holderReady = (_pid: number) => {};
+        let contenderReady = (_pid: number) => {};
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const held = new Promise<number>((resolve) => {
+          holderReady = resolve;
+        });
+        const competing = new Promise<number>((resolve) => {
+          contenderReady = resolve;
+        });
+        const owned = ownOverlap(runtime, release);
+        const bodyError = new Error("forced precondition overlap failure");
+        let failure: { error: unknown } | undefined;
+        let holderSettled = false;
+        type ObservedClient = { cancelled: boolean; onError: (error: Error) => void };
+        const observedClients = new Map<PoolClient, ObservedClient>();
+        const diagnostics: Array<{ error: Error; owner: ObservedClient }> = [];
+        const observeAcquire = (client: PoolClient) => {
+          const owner: ObservedClient = { cancelled: false, onError: (error) => diagnostics.push({ error, owner }) };
+          observedClients.set(client, owner);
+          client.on("error", owner.onError);
+        };
+        const observeRelease = (reason: unknown, client: PoolClient) => {
+          const owner = observedClients.get(client);
+          if (!owner) throw new Error("Unknown owned client release");
+          owner.cancelled = reason === true;
+          client.removeListener("error", owner.onError);
+          observedClients.delete(client);
+        };
+        runtime.on("acquire", observeAcquire);
+        runtime.on("release", observeRelease);
+        let holderError: { value: unknown } | undefined;
+        let contenderError: { value: unknown } | undefined;
+        let contenderSettled = false;
+        let contenderFailed = false;
         try {
-          await owned.finish(failure !== undefined);
+          const holder = owned.run(() =>
+            withTransaction(runtime, async (client) => {
+              const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              if (pid === undefined) throw new Error("Missing holder PID");
+              await updateItemWithClient(client, {
+                databaseId: tasksDb,
+                itemId: task,
+                propertiesPatch: { name: "Held" },
+              });
+              holderReady(pid);
+              await gate;
+              rethrowOverlap(lateParticipant);
+            }),
+          );
+          void holder.then(
+            () => {
+              holderSettled = true;
+            },
+            (error: unknown) => {
+              holderError = { value: error };
+              holderSettled = true;
+            },
+          );
+          const holderPid = await owned.wait(held, holder);
+          await owned.wait(
+            owned.run(() => assertItemHeld(task, holderPid, runtime)),
+            holder,
+          );
+          const contender = owned.run(() =>
+            withTransaction(runtime, async (client) => {
+              const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              if (pid === undefined) throw new Error("Missing contender PID");
+              contenderReady(pid);
+              await updateItemWithClient(client, {
+                databaseId: tasksDb,
+                itemId: task,
+                propertiesPatch: { name: "Contender" },
+              });
+            }),
+          );
+          void contender.then(
+            () => {
+              contenderSettled = true;
+            },
+            (error: unknown) => {
+              contenderError = { value: error };
+              contenderSettled = true;
+              contenderFailed = true;
+            },
+          );
+          const contenderPid = await owned.wait(competing, holder, contender);
+          await owned.wait(
+            owned.run(() =>
+              expect
+                .poll(
+                  async () => {
+                    const result = await runtime.query<{ blocked: boolean }>(
+                      "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+                      [holderPid, contenderPid],
+                    );
+                    return result.rows[0]?.blocked;
+                  },
+                  { timeout: 5000 },
+                )
+                .toBe(true),
+            ),
+            holder,
+            contender,
+          );
+          throw bodyError;
         } catch (error) {
-          failure = combineOverlapFailure(failure, error);
+          failure = { error };
+        } finally {
+          release();
+          try {
+            await owned.finish(failure !== undefined);
+          } catch (error) {
+            failure = combineOverlapFailure(failure, error);
+          } finally {
+            runtime.removeListener("acquire", observeAcquire);
+            runtime.removeListener("release", observeRelease);
+          }
         }
-      }
-      const combined = failure?.error;
-      expect(combined).toBeInstanceOf(AggregateError);
-      if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
-      expect(combined.cause).toBe(bodyError);
-      expect(combined.errors[0]).toBe(bodyError);
-      const cleanup: unknown = combined.errors[1];
-      expect(cleanup).toBeInstanceOf(AggregateError);
-      if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failures");
-      expect(holderError?.value).toBe(lateParticipant);
-      expect(cleanup.errors).toContain(lateParticipant);
-      if (contenderError) expect(cleanup.errors).toContain(contenderError.value);
-      expect(holderSettled).toBe(true);
-      expect(contenderSettled).toBe(true);
-      expect(contenderFailed).toBe(true);
-      expect(runtime.ended).toBe(true);
-      expect(runtime.totalCount).toBe(0);
-      expect(runtime.waitingCount).toBe(0);
-      expect(runtime.listenerCount("acquire")).toBe(0);
-      expect(runtime.listenerCount("release")).toBe(0);
-      const [after] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
-      expect(after).toEqual(before);
-    }, 25000);
+        const combined = failure?.error;
+        expect(combined).toBeInstanceOf(AggregateError);
+        if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
+        expect(combined.cause).toBe(bodyError);
+        expect(combined.errors[0]).toBe(bodyError);
+        const cleanup: unknown = combined.errors[1];
+        expect(cleanup).toBeInstanceOf(AggregateError);
+        if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failures");
+        expect(holderError).toBeDefined();
+        if (!holderError) throw new Error("Missing participant failure");
+        expect(holderError.value).toBe(lateParticipant);
+        expect(observedClients.size).toBe(0);
+        for (const diagnostic of diagnostics) {
+          expect(diagnostic.error).toBeInstanceOf(Error);
+          expect(diagnostic.owner.cancelled).toBe(true);
+        }
+        if (!contenderError) throw new Error("Missing contender failure");
+        const expectedErrors = [...diagnostics.map((entry) => entry.error), holderError.value, contenderError.value];
+        expect(combined.errors).toHaveLength(2);
+        expect(cleanup.errors).toHaveLength(expectedErrors.length);
+        for (let i = 0; i < expectedErrors.length; i++) expect(cleanup.errors[i]).toBe(expectedErrors[i]);
+        expect(cleanup.cause).toBe(expectedErrors[0]);
+
+        expect(holderSettled).toBe(true);
+        expect(contenderSettled).toBe(true);
+        expect(contenderFailed).toBe(true);
+        expect(runtime.ended).toBe(true);
+        expect(runtime.totalCount).toBe(0);
+        expect(runtime.waitingCount).toBe(0);
+        expect(runtime.listenerCount("acquire")).toBe(0);
+        expect(runtime.listenerCount("release")).toBe(0);
+        const [after] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
+        expect(after).toEqual(before);
+      },
+      25000,
+    );
 
     it("waits for an overlapping task time change and rejects the stale implicit clear", async () => {
       const task = await createIn("tasks", { name: "Task", date: "2026-11-01", timeFrom: "09:00", timeTo: "10:00" });

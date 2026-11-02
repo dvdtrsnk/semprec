@@ -2396,39 +2396,39 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       const competing = new Promise<void>((resolve) => {
         competitorStarted = resolve;
       });
-      const negative = owned.run(() =>
-        withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-          await client.query<{ "?column?": number }>("SELECT 1");
-          rethrowOverlap(expected);
-        }),
-      );
-      await expect(negative).rejects.toBe(expected);
-      owned.consume(negative, expected);
-      const participant = owned.run(() =>
-        withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-          if (!pid) throw new Error("Missing owned PID");
-          holderPid = pid;
-          await updateItemWithClient(client, {
-            databaseId: inboxId,
-            itemId: item.id,
-            propertiesPatch: { text: "Held" },
-          });
-          started();
-          await gate;
-          rethrowOverlap(late);
-        }),
-      );
-      void participant.then(
-        () => {
-          lateSettled = true;
-        },
-        () => {
-          lateSettled = true;
-        },
-      );
       let failure: { error: unknown } | undefined;
       try {
+        const negative = owned.run(() =>
+          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+            await client.query<{ "?column?": number }>("SELECT 1");
+            rethrowOverlap(expected);
+          }),
+        );
+        await expect(negative).rejects.toBe(expected);
+        owned.consume(negative, expected);
+        const participant = owned.run(() =>
+          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+            const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            if (!pid) throw new Error("Missing owned PID");
+            holderPid = pid;
+            await updateItemWithClient(client, {
+              databaseId: inboxId,
+              itemId: item.id,
+              propertiesPatch: { text: "Held" },
+            });
+            started();
+            await gate;
+            rethrowOverlap(late);
+          }),
+        );
+        void participant.then(
+          () => {
+            lateSettled = true;
+          },
+          () => {
+            lateSettled = true;
+          },
+        );
         await owned.wait(ready, participant);
         const competitor = owned.run(() =>
           withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
@@ -2464,7 +2464,13 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
           participant,
           competitor,
         );
-        throw body;
+        try {
+          throw body;
+        } catch (error) {
+          failure = { error };
+        }
+        release();
+        await Promise.allSettled([participant, competitor]);
       } catch (error) {
         failure = { error };
       } finally {
@@ -2474,6 +2480,9 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
           failure = combineOverlapFailure(failure, error);
         }
       }
+      if (failure && (!(failure.error instanceof AggregateError) || failure.error.cause !== body)) {
+        rethrowOverlap(failure.error);
+      }
       const combined = failure?.error;
       expect(combined).toBeInstanceOf(AggregateError);
       if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
@@ -2482,10 +2491,11 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       const cleanup: unknown = combined.errors[1];
       expect(cleanup).toBeInstanceOf(AggregateError);
       if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failure");
-      expect(cleanup.errors).toContain(late);
-      expect(competitorError).toBeDefined();
-      if (competitorError) expect(cleanup.errors).toContain(competitorError.value);
-      expect(cleanup.errors).not.toContain(expected);
+      expect(combined.errors).toHaveLength(2);
+      expect(cleanup.errors).toHaveLength(1);
+      expect(cleanup.errors[0]).toBe(late);
+      expect(cleanup.cause).toBe(late);
+      expect(competitorError).toBeUndefined();
       expect(lateSettled).toBe(true);
       expect(runtime.ended).toBe(true);
       expect(runtime.totalCount).toBe(0);
@@ -2494,6 +2504,60 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     },
     20000,
   );
+
+  it("settles ownership when the first participant has the wrong rejection", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const wrong = { marker: "wrong" };
+    const expected = { marker: "expected" };
+    const cleanupError = new Error("controlled cleanup failure");
+    const owned = ownOverlap(runtime, () => {
+      throw cleanupError;
+    });
+    let assertion: { error: unknown } | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      const negative = owned.run(() =>
+        withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+          await client.query<{ "?column?": number }>("SELECT 1");
+          rethrowOverlap(wrong);
+        }),
+      );
+      try {
+        await expect(negative).rejects.toBe(expected);
+      } catch (error) {
+        assertion = { error };
+        throw error;
+      }
+      owned.consume(negative, expected);
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await owned.finish(failure !== undefined);
+      } catch (error) {
+        failure = combineOverlapFailure(failure, error);
+      }
+    }
+    if (!assertion) throw new Error("Expected assertion failure");
+    const combined = failure?.error;
+    expect(combined).toBeInstanceOf(AggregateError);
+    if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
+    expect(combined.errors).toHaveLength(2);
+    expect(combined.errors[0]).toBe(assertion.error);
+    expect(combined.cause).toBe(assertion.error);
+    const cleanup: unknown = combined.errors[1];
+    expect(cleanup).toBeInstanceOf(AggregateError);
+    if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failure");
+    expect(cleanup.errors).toHaveLength(2);
+    expect(cleanup.errors[0]).toBe(cleanupError);
+    expect(cleanup.errors[1]).toBe(wrong);
+    expect(cleanup.cause).toBe(cleanupError);
+    expect(runtime.ended).toBe(true);
+    expect(runtime.totalCount).toBe(0);
+    expect(runtime.waitingCount).toBe(0);
+    expect(runtime.listenerCount("acquire")).toBe(0);
+    expect(runtime.listenerCount("release")).toBe(0);
+  }, 20000);
 
   it("preserves an early checkout failure together with cleanup failure", async () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
