@@ -197,3 +197,39 @@ only this additive ADR is added to gh-1569 Touches. Forwarding observations of
 real producers must prove internal identity and complete cleanup separately
 from outward sanitization, including undefined/non-Error, combined cleanup and
 secret-bearing nested failures. No public raw-error seam or durable store.
+
+## 8. SMTP send and IMAP sync provider-error privacy
+
+Adopt [[2026-11-02-smtp-and-imap-sync-isolate-secret-bearing-provider-failures]]
+for gh-1634 and gh-1510. Their explicit password/body privacy requirements take
+precedence over outward identity of arbitrary provider errors. Keep originals
+internally through the owning operation's settlement/cleanup and safe diagnostic
+processing, then throw fixed generic unknown failures without cause/properties.
+Known classifications stay known with fresh safe error text. Never label an
+unknown error authentication/unreachable merely to sanitize it.
+
+SMTP includes its synchronous opener, send and mapping. After actual acceptance,
+preserve the existing result for close/Sent-copy failures and report safe fixed
+diagnostics; no duplicate-send retry or claim that cleanup/copy succeeded.
+Only diagnostics of the existing Sent-copy branch are in scope, not its lifecycle.
+
+IMAP includes the initial connect boundary plus narrow library-operation and
+lazy-stream boundaries in ImapFlowMailClient. A whole reconcile/job catch would
+also convert SQL/domain/storage failures and is not authorized. Preserve those
+identities and transaction semantics, known caps and recovery behavior. The
+existing job stores/rethrows the sanitized provider error. Shared connection,
+stream and close log sites need closed tags rather than arbitrary names/codes,
+raw values or hosts. Other helper mappings/defaults remain unchanged; this is
+the explicit narrow log-projection exception to earlier default preservation.
+
+Existing SMTP source/test paths suffice. Gh-1510 Touches expands only to the
+private library/stream privacy boundaries and diagnostics in imapFlowClient.ts,
+the unsafe diagnostic sites in mailServerConnections.ts, and existing tests
+mailSyncAdapters.test.ts, mailServerConnections.test.ts,
+imapFlowClientClose.unit.test.ts and mailSync.test.ts for the composed stored-error
+boundary. No mailSyncJob production redesign, new public types/framework,
+schema, provider parser, private/global interception or new timeout protocol.
+Prove secret-bearing arbitrary failures, genuine known outcomes, actual cleanup,
+accepted-send behavior, stored last_error and serialized logs independently.
+Non-network failure identity is a required negative control. Development passes
+that omit these branches are not evidence for the new privacy contract.
