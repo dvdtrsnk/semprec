@@ -23,6 +23,8 @@ import {
 } from "@semprec/data/testSupport";
 import {
   createActionRegistry,
+  coreAgentRunAction,
+  CORE_AGENT_RUN_ACTION_ID,
   createAgentRun,
   createChokePoint,
   createCoreTaskList,
@@ -36,6 +38,7 @@ import {
   insertAgentRunEvent,
   listPushSubscriptionsForUser,
   loadFullModuleRegistry,
+  listAgentRunsByHeartbeat,
   LocalFsBlobStorageWriter,
   provisionTenant,
   recordTokenGatewayCall,
@@ -46,7 +49,7 @@ import {
   writeNotification,
   type PasswordResetMailer,
 } from "@semprec/data";
-import { CORE_TASK_NAMES, runOnce, type TaskList } from "@semprec/queue";
+import { AGENT_TASK_NAMES, CORE_TASK_NAMES, runOnce, type TaskList } from "@semprec/queue";
 import { createDispatcher } from "../app.js";
 import { SESSION_COOKIE_NAME } from "../authHandler.js";
 import { ROUTE_MATRIX, ROUTE_TENANCIES, type RouteMatrixEntry } from "../routeMatrix.js";
@@ -2053,6 +2056,84 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     ]);
     const notifications = await sendOk(a.member, { method: "GET", path: "/api/notifications/unread" });
     expect(readIdArray(notifications, "notifications")).toEqual([a.notificationId]);
+  });
+
+  it("triggers an automation over authenticated HTTP and rejects a second request while its worker runs", async () => {
+    const heartbeat = await runInTenant(b.tenantId, () =>
+      withTransaction(pool, (client) =>
+        createHeartbeat(client, {
+          projectItemId: b.projectItemId,
+          name: "Manual worker evidence",
+          rule: { kind: "interval", minutes: 5 },
+          actionId: CORE_AGENT_RUN_ACTION_ID,
+          actionConfig: { task: "manual evidence" },
+        }),
+      ),
+    );
+    const path = `/api/heartbeats/${heartbeat.id}/trigger`;
+    const first = await send(b.member, { method: "POST", path, body: {} });
+    expect(first.status).toBe(202);
+    const firstBody: unknown = JSON.parse(first.text);
+    if (!isRecord(firstBody) || typeof firstBody.jobKey !== "string") throw new Error("Missing job key");
+    expect(firstBody.activeRun).toBeNull();
+    let releaseRun: () => void = () => {};
+    let signalStarted: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async () => {
+        signalStarted();
+        await gate;
+        return { result: "done" };
+      }),
+    );
+    const task = createCoreTaskList(pool, registry)[AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT];
+    if (!task) throw new Error("Missing heartbeat worker task");
+    const worker = runOnce({ pgPool: pool, taskList: { [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: task } }).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    let failure: { error: unknown } | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        started,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Worker did not start")), 5000);
+        }),
+        worker.then((result) => {
+          if (!result.ok) throw result.error;
+          throw new Error("Worker stopped before start");
+        }),
+      ]);
+      const runs = await runInTenant(b.tenantId, () => listAgentRunsByHeartbeat(pool, heartbeat.id));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({ status: "running", actorUserId: b.member.userId, parentRunId: null });
+      const second = await send(b.member, { method: "POST", path, body: {} });
+      expect(second.status).toBe(409);
+      const body: unknown = JSON.parse(second.text);
+      expect(body).toMatchObject({ error: { code: "heartbeat_running", details: { activeRun: { id: runs[0]?.id } } } });
+    } catch (error) {
+      failure = { error };
+    }
+    if (timer) clearTimeout(timer);
+    releaseRun();
+    const result = await worker;
+    if (!result.ok) {
+      if (failure)
+        throw new AggregateError([failure.error, result.error], "HTTP and worker failed", { cause: failure.error });
+      throw result.error;
+    }
+    if (failure) throw failure.error;
+    const runs = await runInTenant(b.tenantId, () => listAgentRunsByHeartbeat(pool, heartbeat.id));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ status: "done", parentRunId: null, actorUserId: b.member.userId });
   });
 
   it("validates notification preferences over HTTP without changing stored values", async () => {
