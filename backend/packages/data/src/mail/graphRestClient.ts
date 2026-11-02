@@ -432,7 +432,15 @@ export class GraphRestClient implements GraphMailClient {
     const sourceClosed = new Promise<void>((resolve) => source.once("close", resolve));
 
     let received = 0;
+    let started = false;
     const limiter = new Transform({
+      read(size) {
+        Transform.prototype._read.call(this, size);
+        if (!started) {
+          started = true;
+          source.pipe(this);
+        }
+      },
       transform(chunk: Buffer, _encoding, callback) {
         received += chunk.length;
         if (received > MAX_ATTACHMENT_BYTES) {
@@ -464,7 +472,6 @@ export class GraphRestClient implements GraphMailClient {
       observed.push(error);
       limiter.destroy(new Error("Graph sync provider response could not be read"));
     });
-    source.pipe(limiter);
     return limiter;
   }
 

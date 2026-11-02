@@ -537,10 +537,12 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
     "MS_GRAPH_OAUTH_CLIENT_ID",
     "MS_GRAPH_OAUTH_CLIENT_SECRET",
     "AI_GATEWAY_INTERNAL_TOKEN",
+    "MAIL_ATTACHMENTS_DIR",
   ] as const;
   let savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string>>;
   let runtime: ApiQueueRuntime | undefined;
   let restoreMailLog: (() => void) | undefined;
+  let attachmentDir: string | undefined;
 
   async function captureMailLog(): Promise<string[]> {
     const moduleUrl = new URL("../../../../packages/data/src/mail/logger.ts", import.meta.url).href;
@@ -644,12 +646,16 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
     // `createAiGatewayClientForApi` requires this to build the api runtime.
     process.env.AI_GATEWAY_INTERNAL_TOKEN = randomUUID();
     runtime = undefined;
+    attachmentDir = undefined;
   });
 
   afterEach(async () => {
     const failures: unknown[] = [];
     for (const cleanup of [
       async () => runtime?.stop(),
+      async () => {
+        if (attachmentDir) rmSync(attachmentDir, { recursive: true, force: true });
+      },
       async () => {
         restoreMailLog?.();
         restoreMailLog = undefined;
@@ -715,6 +721,52 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
         expect(logs.join("\n")).not.toContain(bearer);
       },
     );
+
+    it("keeps a lazy Gmail attachment failure private through the configured job", async () => {
+      const mailboxId = await createGmailMailbox("Private attachment");
+      const google = createFakeGoogle({ messages: [{ id: "m-private", subject: "Attachment" }] });
+      const original = new Error("GMAIL-LAZY-PRIVATE-SENTINEL");
+      let observed: unknown;
+      let bearer: string | null = null;
+      const fetchImpl: typeof fetch = async (input, init) => {
+        const href = hrefOf(input);
+        if (href === `${GMAIL_API_PREFIX}/messages/m-private?format=full`)
+          return Response.json({
+            id: "m-private",
+            threadId: "thread-private",
+            labelIds: ["INBOX"],
+            payload: {
+              mimeType: "multipart/mixed",
+              headers: [{ name: "Message-ID", value: "<private@gmail.test>" }],
+              parts: [
+                { mimeType: "application/pdf", filename: "document.pdf", body: { size: 3, attachmentId: "a-private" } },
+              ],
+            },
+          });
+        if (href === `${GMAIL_API_PREFIX}/messages/m-private/attachments/a-private`) {
+          bearer = new Headers(init?.headers).get("Authorization");
+          observed = original;
+          throw original;
+        }
+        return google.fetchImpl(input, init);
+      };
+      attachmentDir = mkdtempSync(join(tmpdir(), "semprec-gmail-privacy-"));
+      setEnv("MAIL_ATTACHMENTS_DIR", attachmentDir);
+      stubProviderFetch(fetchImpl, GOOGLE_HOSTS);
+      await startRuntimeWith({ gmail: true });
+      const logs = await captureMailLog();
+      await enqueueAccountSync(mailboxId);
+      await waitFor(async () => (await syncErrorOf(mailboxId)) !== null);
+      await waitFor(async () => (await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC)).length > 0);
+      const stored = await syncErrorOf(mailboxId);
+      const queued = await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC);
+      expect(observed).toBe(original);
+      expect(bearer).toMatch(/^Bearer ya29\.access-/);
+      expect(stored).toBe("Gmail sync provider request failed unexpectedly");
+      expect(queued.join("\n")).toContain(stored);
+      expect(`${stored} ${queued.join("\n")} ${logs.join("\n")}`).not.toContain("GMAIL-LAZY-PRIVATE-SENTINEL");
+      expect(`${stored} ${queued.join("\n")} ${logs.join("\n")}`).not.toContain(bearer);
+    });
 
     it("persists bulk indicators and Reply-To through the Gmail adapter and production sync", async () => {
       const mailboxId = await createGmailMailbox("Header sync");
@@ -863,6 +915,67 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
         expect(logs.join("\n")).not.toContain(bearer);
       },
     );
+
+    it("keeps a late Graph attachment stream failure private through the configured job", async () => {
+      const mailboxId = await createGraphMailbox("Private attachment");
+      const microsoft = createFakeMicrosoft();
+      const original = new Error("GRAPH-LAZY-PRIVATE-SENTINEL");
+      let observed: unknown;
+      let bearer: string | null = null;
+      let pulls = 0;
+      const fetchImpl: typeof fetch = async (input, init) => {
+        const href = hrefOf(input);
+        if (href.startsWith(`${GRAPH_API_PREFIX}/messages/delta?$select=`))
+          return Response.json({
+            value: [
+              {
+                id: "m-private",
+                parentFolderId: GRAPH_INBOX_ID,
+                internetMessageId: "<private@graph.test>",
+                subject: "Attachment",
+                hasAttachments: true,
+              },
+            ],
+            "@odata.deltaLink": DELTA_LINK_1,
+          });
+        if (href.startsWith(`${GRAPH_API_PREFIX}/messages/m-private/attachments?$select=`))
+          return Response.json({
+            value: [{ "@odata.type": "#microsoft.graph.fileAttachment", id: "a-private", name: "document.pdf" }],
+          });
+        if (href === `${GRAPH_API_PREFIX}/messages/m-private/attachments/a-private/$value`) {
+          bearer = new Headers(init?.headers).get("Authorization");
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              pull(controller) {
+                if (pulls++ === 0) controller.enqueue(new Uint8Array([1, 2, 3]));
+                else {
+                  observed = original;
+                  controller.error(original);
+                }
+              },
+            }),
+          );
+        }
+        return microsoft.fetchImpl(input, init);
+      };
+      attachmentDir = mkdtempSync(join(tmpdir(), "semprec-graph-privacy-"));
+      setEnv("MAIL_ATTACHMENTS_DIR", attachmentDir);
+      stubProviderFetch(fetchImpl, MICROSOFT_HOSTS);
+      await startRuntimeWith({ graph: true });
+      const logs = await captureMailLog();
+      await enqueueAccountSync(mailboxId);
+      await waitFor(async () => (await syncErrorOf(mailboxId)) !== null);
+      await waitFor(async () => (await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC)).length > 0);
+      const stored = await syncErrorOf(mailboxId);
+      const queued = await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC);
+      expect(observed).toBe(original);
+      expect(pulls).toBeGreaterThan(1);
+      expect(bearer).toMatch(/^Bearer eyJ-access-/);
+      expect(stored).toBe("Graph sync provider response could not be read");
+      expect(queued.join("\n")).toContain(stored);
+      expect(`${stored} ${queued.join("\n")} ${logs.join("\n")}`).not.toContain("GRAPH-LAZY-PRIVATE-SENTINEL");
+      expect(`${stored} ${queued.join("\n")} ${logs.join("\n")}`).not.toContain(bearer);
+    });
 
     it("persists bulk indicators and Reply-To through the Graph adapter and production sync", async () => {
       const mailboxId = await createGraphMailbox("Header sync");
