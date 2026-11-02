@@ -46,6 +46,20 @@ describe("Gmail sync provider privacy", () => {
     await expect(rejected.getCurrentHistoryId()).rejects.toBe(tokenError);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it("preserves a genuine 404 for missing messages and history invalidation", async () => {
+    const client = new GmailRestClient(
+      async () => "token",
+      async () => new Response(null, { status: 404 }),
+    );
+    await expect(client.fetchMessage("missing")).resolves.toBeNull();
+    await expect(client.listHistorySince("old")).resolves.toEqual({
+      invalidated: true,
+      newHistoryId: "old",
+      changedMessageIds: [],
+      removedMessageIds: [],
+    });
+  });
 });
 
 describe("Gmail label inventory validation", () => {

@@ -74,12 +74,61 @@ describe("Graph sync provider privacy", () => {
     await expect(tokenFailure.listFolders()).rejects.toBe(lookalike);
   });
 
+  it("never consumes a real prior HTTP error when it comes from the token source", async () => {
+    const source404 = await new GraphRestClient(
+      async () => "token",
+      async () => new Response(null, { status: 404 }),
+    )
+      .fetchDelta(null)
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    const source410 = await new GraphRestClient(
+      async () => "token",
+      async () => new Response(null, { status: 410 }),
+    )
+      .listFolders()
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect(source404).toMatchObject({ status: 404 });
+    expect(source410).toMatchObject({ status: 410 });
+    if (!(source404 instanceof Error) || !(source410 instanceof Error)) throw new Error("Missing Graph status errors");
+    await expect(
+      new GraphRestClient(async () => {
+        throw source404;
+      }).listFolders(),
+    ).rejects.toBe(source404);
+    await expect(
+      new GraphRestClient(async () => {
+        throw source410;
+      }).fetchDelta(null),
+    ).rejects.toBe(source410);
+  });
+
   it("preserves a genuine delta 410 as invalidation", async () => {
     const client = new GraphRestClient(
       async () => "token",
       async () => new Response(null, { status: 410 }),
     );
     await expect(client.fetchDelta(null)).resolves.toEqual({ invalidated: true, newDeltaLink: "", changes: [] });
+  });
+
+  it("treats real attachment metadata 404 as missing without misclassifying a thrown 410 lookalike", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ value: [{ id: "m", hasAttachments: true }], "@odata.deltaLink": "next" }))
+      .mockResolvedValueOnce(new Response(null, { status: 404 }));
+    const delta = await new GraphRestClient(async () => "token", fetchImpl).fetchDelta(null);
+    const change = delta.changes[0];
+    if (!change || change.removed || !change.message) throw new Error("Missing Graph message");
+    expect(change.message.attachments).toEqual([]);
+    const fake410 = vi.fn<typeof fetch>().mockRejectedValue({ status: 410 });
+    await expect(new GraphRestClient(async () => "token", fake410).fetchDelta(null)).rejects.toThrow(
+      "Graph sync provider request failed unexpectedly",
+    );
   });
 
   it("closes a failed lazy attachment stream and exposes only a fixed upstream error", async () => {
@@ -155,6 +204,40 @@ describe("Graph sync provider privacy", () => {
     expect(await error).toBe(downstream);
     await closed;
     expect(cancelled).toBe(true);
+  });
+
+  it("keeps a downstream failure primary when source cancellation also fails", async () => {
+    const cleanupError = new Error("GRAPH-PRIVATE-SENTINEL");
+    let observedCleanup: unknown;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array([1]));
+      },
+      cancel() {
+        observedCleanup = cleanupError;
+        return Promise.reject(cleanupError);
+      },
+    });
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ value: [{ id: "m", hasAttachments: true }], "@odata.deltaLink": "next" }))
+      .mockResolvedValueOnce(
+        Response.json({ value: [{ "@odata.type": "#microsoft.graph.fileAttachment", id: "a", name: "a.pdf" }] }),
+      )
+      .mockResolvedValueOnce(new Response(body));
+    const delta = await new GraphRestClient(async () => "token", fetchImpl).fetchDelta(null);
+    const change = delta.changes[0];
+    if (!change || change.removed || !change.message) throw new Error("Missing Graph message");
+    const attachment = change.message.attachments[0];
+    if (!attachment) throw new Error("Missing Graph attachment");
+    const stream = await attachment.openStream();
+    const downstream = new Error("storage failure identity");
+    const error = new Promise<unknown>((resolve) => stream.once("error", resolve));
+    const closed = new Promise<void>((resolve) => stream.once("close", resolve));
+    stream.destroy(downstream);
+    expect(await error).toBe(downstream);
+    await closed;
+    expect(observedCleanup).toBe(cleanupError);
   });
 });
 

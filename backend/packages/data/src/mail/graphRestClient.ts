@@ -223,17 +223,10 @@ export async function toFetchedGraphMessage(
   };
 }
 
-const graphResponseStatuses = new WeakMap<object, number>();
-
 class GraphApiError extends Error {
   constructor(public readonly status: number) {
     super(`Graph API request failed with status ${status}`);
-    graphResponseStatuses.set(this, status);
   }
-}
-
-function graphResponseStatus(error: unknown): number | undefined {
-  return typeof error === "object" && error !== null ? graphResponseStatuses.get(error) : undefined;
 }
 
 /** A Graph recipient in the `emailAddress` shape that `createDraft` takes. */
@@ -366,7 +359,9 @@ export class GraphRestClient implements GraphMailClient {
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
-  private async request<T>(url: string): Promise<T> {
+  private request<T>(url: string): Promise<T>;
+  private request<T>(url: string, tolerated: 404 | 410): Promise<T | null>;
+  private async request<T>(url: string, tolerated?: 404 | 410): Promise<T | null> {
     const token = await this.getAccessToken();
     let response: Response;
     try {
@@ -379,6 +374,7 @@ export class GraphRestClient implements GraphMailClient {
       // eslint-disable-next-line preserve-caught-error
       throw new Error("Graph sync provider request failed unexpectedly");
     }
+    if (response.status === tolerated) return null;
     if (!response.ok) throw new GraphApiError(response.status);
     let parsed: unknown;
     try {
@@ -393,19 +389,12 @@ export class GraphRestClient implements GraphMailClient {
   }
 
   private async listAttachmentMetadata(messageId: string): Promise<GraphAttachmentResource[]> {
-    try {
-      const page = await this.request<{ value: GraphAttachmentResource[] }>(
-        `${BASE_URL}/messages/${messageId}/attachments?$select=id,name,contentType,isInline,contentId`,
-      );
-      return page.value;
-    } catch (err) {
-      // The message can be deleted between the delta page that listed it and this follow-up
-      // fetch (a real race in a live mailbox) — a 404 here means "nothing to attach anymore,"
-      // not a sync failure; the message itself getting removed is handled separately, by a
-      // later delta page's own `@removed` entry.
-      if (graphResponseStatus(err) === 404) return [];
-      throw err;
-    }
+    // A real 404 means the message disappeared between delta and attachment lookup.
+    const page = await this.request<{ value: GraphAttachmentResource[] }>(
+      `${BASE_URL}/messages/${messageId}/attachments?$select=id,name,contentType,isInline,contentId`,
+      404,
+    );
+    return page?.value ?? [];
   }
 
   /**
@@ -457,7 +446,8 @@ export class GraphRestClient implements GraphMailClient {
           if (!source.destroyed) source.destroy();
         } catch (cleanupError) {
           observed.push(cleanupError);
-          callback(error ?? new Error("Graph sync provider stream could not be closed"));
+          // Do not report a terminal result before the owned source actually closes.
+          void sourceClosed.then(() => callback(error ?? new Error("Graph sync provider stream could not be closed")));
           return;
         }
         void sourceClosed.then(() => {
@@ -514,13 +504,8 @@ export class GraphRestClient implements GraphMailClient {
   async listFolders(): Promise<GraphFolderRef[]> {
     const wellKnownIds = new Map<string, string>();
     for (const name of WELL_KNOWN_FOLDERS) {
-      try {
-        const folder = await this.request<{ id: string }>(`${BASE_URL}/mailFolders/${name}`);
-        wellKnownIds.set(folder.id, name);
-      } catch (error) {
-        // Not every well-known folder exists for every account (e.g. no Archive).
-        if (graphResponseStatus(error) !== 404) throw error;
-      }
+      const folder = await this.request<{ id: string }>(`${BASE_URL}/mailFolders/${name}`, 404);
+      if (folder) wellKnownIds.set(folder.id, name);
     }
 
     return this.listFoldersUnder(
@@ -536,37 +521,27 @@ export class GraphRestClient implements GraphMailClient {
     const changes: GraphChangedMessage[] = [];
     let newDeltaLink = "";
 
-    try {
-      while (url) {
-        const page = await this.request<{
-          value: GraphMessageResource[];
-          ["@odata.nextLink"]?: string;
-          ["@odata.deltaLink"]?: string;
-        }>(url);
-        for (const resource of page.value) {
-          if (resource["@removed"]) {
-            changes.push({ id: resource.id, removed: true });
-          } else {
-            const message = await toFetchedGraphMessage(
-              resource,
-              (messageId) => this.listAttachmentMetadata(messageId),
-              (messageId, attachmentId) => this.fetchAttachmentStream(messageId, attachmentId),
-            );
-            changes.push({ id: resource.id, parentFolderId: resource.parentFolderId, removed: false, message });
-          }
+    while (url) {
+      const page = await this.request<{
+        value: GraphMessageResource[];
+        ["@odata.nextLink"]?: string;
+        ["@odata.deltaLink"]?: string;
+      }>(url, 410);
+      if (!page) return { invalidated: true, newDeltaLink: "", changes: [] };
+      for (const resource of page.value) {
+        if (resource["@removed"]) {
+          changes.push({ id: resource.id, removed: true });
+        } else {
+          const message = await toFetchedGraphMessage(
+            resource,
+            (messageId) => this.listAttachmentMetadata(messageId),
+            (messageId, attachmentId) => this.fetchAttachmentStream(messageId, attachmentId),
+          );
+          changes.push({ id: resource.id, parentFolderId: resource.parentFolderId, removed: false, message });
         }
-        if (page["@odata.deltaLink"]) newDeltaLink = page["@odata.deltaLink"];
-        url = page["@odata.nextLink"] ?? "";
       }
-    } catch (err) {
-      // 410 Gone is Graph's documented "deltaLink expired, resync required" response —
-      // matched on the actual HTTP status, not a substring of the error message, so an
-      // unrelated 4xx (a malformed query, throttling) surfaces as a real error instead of
-      // silently discarding the account's sync position.
-      if (graphResponseStatus(err) === 410) {
-        return { invalidated: true, newDeltaLink: "", changes: [] };
-      }
-      throw err;
+      if (page["@odata.deltaLink"]) newDeltaLink = page["@odata.deltaLink"];
+      url = page["@odata.nextLink"] ?? "";
     }
 
     return { invalidated: false, newDeltaLink, changes };
