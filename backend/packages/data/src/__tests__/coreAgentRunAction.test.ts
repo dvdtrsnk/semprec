@@ -11,7 +11,7 @@ import {
   type ActionContext,
 } from "../scheduler/actions.js";
 import { createHeartbeatFireAgentTask } from "../scheduler/sweep.js";
-import { getLatestRunOfOccurrence, listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
+import { createAgentRun, getLatestRunOfOccurrence, listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 
@@ -203,6 +203,50 @@ describe("coreAgentRunAction", () => {
     );
     return rows[0]!.id;
   }
+
+  it("selects the highest occurrence attempt and breaks ties by start time", async () => {
+    const { heartbeatId, projectItemId } = await createTestHeartbeat();
+    const occurrenceId = await createOccurrence(heartbeatId);
+    expect(await getLatestRunOfOccurrence(pool, occurrenceId)).toBeNull();
+    const first = await createAgentRun(pool, {
+      triggeredBy: "heartbeat",
+      task: "first",
+      projectItemId,
+      heartbeatId,
+      heartbeatOccurrenceId: occurrenceId,
+      attempt: 1,
+    });
+    const older = await createAgentRun(pool, {
+      triggeredBy: "heartbeat",
+      task: "older",
+      projectItemId,
+      heartbeatId,
+      heartbeatOccurrenceId: occurrenceId,
+      attempt: 2,
+    });
+    const newer = await createAgentRun(pool, {
+      triggeredBy: "heartbeat",
+      task: "newer",
+      projectItemId,
+      heartbeatId,
+      heartbeatOccurrenceId: occurrenceId,
+      attempt: 2,
+    });
+    // Set distinct timestamps explicitly to prove the tie-break without relying on clock timing.
+    await pool.query("UPDATE agent_runs SET started_at = $2::timestamptz WHERE id = $1", [
+      first.id,
+      "2026-01-03T00:00:00Z",
+    ]);
+    await pool.query("UPDATE agent_runs SET started_at = $2::timestamptz WHERE id = $1", [
+      older.id,
+      "2026-01-01T00:00:00Z",
+    ]);
+    await pool.query("UPDATE agent_runs SET started_at = $2::timestamptz WHERE id = $1", [
+      newer.id,
+      "2026-01-02T00:00:00Z",
+    ]);
+    expect((await getLatestRunOfOccurrence(pool, occurrenceId))?.id).toBe(newer.id);
+  });
 
   it("chains the attempts of one occurrence: fails twice, succeeds on the third", async () => {
     const { heartbeatId, projectItemId } = await createTestHeartbeat();
