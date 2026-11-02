@@ -14,6 +14,12 @@ describe("detectBulkMail", () => {
     expect(detectBulkMail({ precedence, senderAddress: "anna@example.com" })).toBe(true);
   });
 
+  it("flags present empty or whitespace list and automatic headers", () => {
+    expect(detectBulkMail({ listUnsubscribe: "" })).toBe(true);
+    expect(detectBulkMail({ listId: "  " })).toBe(true);
+    expect(detectBulkMail({ autoSubmitted: "" })).toBe(true);
+  });
+
   it("does not flag an unrelated Precedence value", () => {
     expect(detectBulkMail({ precedence: "first-class", senderAddress: "anna@example.com" })).toBe(false);
   });
@@ -45,7 +51,7 @@ describe("detectBulkMail", () => {
 
   it("does not flag an ordinary message and tolerates absent or malformed values", () => {
     expect(detectBulkMail({})).toBe(false);
-    expect(detectBulkMail({ listUnsubscribe: null, listId: "  ", precedence: null, senderAddress: null })).toBe(false);
+    expect(detectBulkMail({ listUnsubscribe: null, listId: null, precedence: null, senderAddress: null })).toBe(false);
     expect(
       detectBulkMail({
         listUnsubscribe: 5 as unknown as string,

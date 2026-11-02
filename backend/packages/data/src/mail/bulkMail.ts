@@ -13,23 +13,19 @@ export interface DetectBulkMailInput extends BulkMailHeaders {
 const BULK_PRECEDENCE_VALUES = new Set(["bulk", "list", "junk"]);
 const AUTOMATIC_SENDER_LOCAL_PART = /^(no-?reply|do-?not-?reply|mailer-daemon|notifications?)$/i;
 
-function isPresent(value: unknown): boolean {
-  return typeof value === "string" && value.trim() !== "";
-}
-
 /**
  * True when a message looks like bulk or automatic mail (newsletter, notification, auto-reply) rather
  * than mail from a person. Header values arrive from the outside world, so every input is treated as
  * untrusted: a missing or non-string value counts as absent, and nothing here throws.
  */
 export function detectBulkMail(input: DetectBulkMailInput): boolean {
-  if (isPresent(input.listUnsubscribe) || isPresent(input.listId)) return true;
+  if (typeof input.listUnsubscribe === "string" || typeof input.listId === "string") return true;
 
   if (typeof input.precedence === "string" && BULK_PRECEDENCE_VALUES.has(input.precedence.trim().toLowerCase())) {
     return true;
   }
 
-  if (isPresent(input.autoSubmitted) && (input.autoSubmitted as string).trim().toLowerCase() !== "no") return true;
+  if (typeof input.autoSubmitted === "string" && input.autoSubmitted.trim().toLowerCase() !== "no") return true;
 
   if (typeof input.senderAddress === "string") {
     const at = input.senderAddress.lastIndexOf("@");
