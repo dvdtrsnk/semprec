@@ -7,6 +7,157 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("Graph sync provider privacy", () => {
+  it.each([
+    ["undefined", undefined],
+    ["object", { token: "GRAPH-PRIVATE-SENTINEL" }],
+    ["aggregate", new AggregateError([new Error("GRAPH-PRIVATE-SENTINEL")], "GRAPH-PRIVATE-SENTINEL")],
+  ])("sanitizes an unknown %s fetch failure", async (_name, original) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(original);
+    const client = new GraphRestClient(async () => "GRAPH-PRIVATE-SENTINEL", fetchImpl);
+    const error = await client.fetchDelta(null).then(
+      () => null,
+      (value: unknown) => value,
+    );
+    expect(error).toBeInstanceOf(Error);
+    if (!(error instanceof Error)) throw new Error("Missing Graph failure");
+    expect(error.message).toBe("Graph sync provider request failed unexpectedly");
+    expect(error).not.toHaveProperty("cause");
+    expect(`${error.stack} ${JSON.stringify(error)}`).not.toContain("GRAPH-PRIVATE-SENTINEL");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("sanitizes a body failure while preserving the token source identity", async () => {
+    const original = new Error("GRAPH-PRIVATE-SENTINEL");
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(original);
+      },
+    });
+    const client = new GraphRestClient(
+      async () => "GRAPH-PRIVATE-SENTINEL",
+      async () => new Response(body),
+    );
+    const error = await client.fetchDelta(null).then(
+      () => null,
+      (value: unknown) => value,
+    );
+    expect(error).toMatchObject({ message: "Graph sync provider response could not be read" });
+    expect(JSON.stringify(error)).not.toContain("GRAPH-PRIVATE-SENTINEL");
+    const tokenError = new Error("token source identity");
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(
+      new GraphRestClient(async () => {
+        throw tokenError;
+      }, fetchImpl).fetchDelta(null),
+    ).rejects.toBe(tokenError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("continues only for a genuine missing well-known folder", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      return url.includes("?$top=") ? Response.json({ value: [] }) : new Response(null, { status: 404 });
+    });
+    await expect(new GraphRestClient(async () => "token", fetchImpl).listFolders()).resolves.toEqual([]);
+    const forbidden = new GraphRestClient(
+      async () => "token",
+      async () => new Response(null, { status: 403 }),
+    );
+    await expect(forbidden.listFolders()).rejects.toMatchObject({ status: 403 });
+    const lookalike = { status: 404 };
+    const tokenFailure = new GraphRestClient(async () => {
+      // Exercise an arbitrary non-Error token-source failure without reclassification.
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw lookalike;
+    }, fetchImpl);
+    await expect(tokenFailure.listFolders()).rejects.toBe(lookalike);
+  });
+
+  it("preserves a genuine delta 410 as invalidation", async () => {
+    const client = new GraphRestClient(
+      async () => "token",
+      async () => new Response(null, { status: 410 }),
+    );
+    await expect(client.fetchDelta(null)).resolves.toEqual({ invalidated: true, newDeltaLink: "", changes: [] });
+  });
+
+  it("closes a failed lazy attachment stream and exposes only a fixed upstream error", async () => {
+    const original = new Error("GRAPH-PRIVATE-SENTINEL");
+    let observed: unknown;
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulls++ === 0) controller.enqueue(new Uint8Array([1, 2, 3]));
+        else {
+          observed = original;
+          controller.error(original);
+        }
+      },
+    });
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ value: [{ id: "m", hasAttachments: true }], "@odata.deltaLink": "next" }))
+      .mockResolvedValueOnce(
+        Response.json({ value: [{ "@odata.type": "#microsoft.graph.fileAttachment", id: "a", name: "a.pdf" }] }),
+      )
+      .mockResolvedValueOnce(new Response(body));
+    const delta = await new GraphRestClient(async () => "GRAPH-PRIVATE-SENTINEL", fetchImpl).fetchDelta(null);
+    const change = delta.changes[0];
+    if (!change || change.removed || !change.message) throw new Error("Missing Graph message");
+    const attachment = change.message.attachments[0];
+    if (!attachment) throw new Error("Missing Graph attachment");
+    const stream = await attachment.openStream();
+    const closed = new Promise<void>((resolve) => stream.once("close", resolve));
+    let error: unknown;
+    try {
+      for await (const _chunk of stream) {
+        /* drain until the owned source rejects */
+      }
+    } catch (value) {
+      error = value;
+    }
+    await closed;
+    expect(observed).toBe(original);
+    expect(stream.closed).toBe(true);
+    expect(error).toMatchObject({ message: "Graph sync provider response could not be read" });
+    expect(error).not.toHaveProperty("cause");
+    expect(JSON.stringify(error)).not.toContain("GRAPH-PRIVATE-SENTINEL");
+  });
+
+  it("settles the owned source on consumer teardown without relabeling its error", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array([1]));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ value: [{ id: "m", hasAttachments: true }], "@odata.deltaLink": "next" }))
+      .mockResolvedValueOnce(
+        Response.json({ value: [{ "@odata.type": "#microsoft.graph.fileAttachment", id: "a", name: "a.pdf" }] }),
+      )
+      .mockResolvedValueOnce(new Response(body));
+    const delta = await new GraphRestClient(async () => "token", fetchImpl).fetchDelta(null);
+    const change = delta.changes[0];
+    if (!change || change.removed || !change.message) throw new Error("Missing Graph message");
+    const attachment = change.message.attachments[0];
+    if (!attachment) throw new Error("Missing Graph attachment");
+    const stream = await attachment.openStream();
+    const downstream = new Error("storage failure identity");
+    const error = new Promise<unknown>((resolve) => stream.once("error", resolve));
+    const closed = new Promise<void>((resolve) => stream.once("close", resolve));
+    stream.destroy(downstream);
+    expect(await error).toBe(downstream);
+    await closed;
+    expect(cancelled).toBe(true);
+  });
+});
+
 describe("Graph flag write-back", () => {
   it("patches the message resource with the requested flag state", async () => {
     const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));

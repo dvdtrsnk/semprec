@@ -223,10 +223,17 @@ export async function toFetchedGraphMessage(
   };
 }
 
+const graphResponseStatuses = new WeakMap<object, number>();
+
 class GraphApiError extends Error {
   constructor(public readonly status: number) {
     super(`Graph API request failed with status ${status}`);
+    graphResponseStatuses.set(this, status);
   }
+}
+
+function graphResponseStatus(error: unknown): number | undefined {
+  return typeof error === "object" && error !== null ? graphResponseStatuses.get(error) : undefined;
 }
 
 /** A Graph recipient in the `emailAddress` shape that `createDraft` takes. */
@@ -361,12 +368,27 @@ export class GraphRestClient implements GraphMailClient {
 
   private async request<T>(url: string): Promise<T> {
     const token = await this.getAccessToken();
-    const response = await this.fetchImpl(url, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(30_000),
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (error) {
+      void error;
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Graph sync provider request failed unexpectedly");
+    }
     if (!response.ok) throw new GraphApiError(response.status);
-    const body = assertJsonObject(await response.json(), `Graph API response from ${url}`);
+    let parsed: unknown;
+    try {
+      parsed = await response.json();
+    } catch (error) {
+      void error;
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Graph sync provider response could not be read");
+    }
+    const body = assertJsonObject(parsed, "Graph API response");
     return body as T;
   }
 
@@ -381,7 +403,7 @@ export class GraphRestClient implements GraphMailClient {
       // fetch (a real race in a live mailbox) — a 404 here means "nothing to attach anymore,"
       // not a sync failure; the message itself getting removed is handled separately, by a
       // later delta page's own `@removed` entry.
-      if (err instanceof GraphApiError && err.status === 404) return [];
+      if (graphResponseStatus(err) === 404) return [];
       throw err;
     }
   }
@@ -395,34 +417,63 @@ export class GraphRestClient implements GraphMailClient {
    */
   private async fetchAttachmentStream(messageId: string, attachmentId: string): Promise<Readable> {
     const token = await this.getAccessToken();
-    const response = await this.fetchImpl(`${BASE_URL}/messages/${messageId}/attachments/${attachmentId}/$value`, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(30_000),
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${BASE_URL}/messages/${messageId}/attachments/${attachmentId}/$value`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (error) {
+      void error;
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Graph sync provider request failed unexpectedly");
+    }
     if (!response.ok) throw new GraphApiError(response.status);
-    if (!response.body) throw new Error(`Graph attachment ${attachmentId} on message ${messageId} returned no body`);
+    let source: Readable;
+    try {
+      const body = response.body;
+      if (!body) throw new Error("Graph attachment response has no body");
+      source = Readable.fromWeb(body);
+    } catch (error) {
+      void error;
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Graph sync provider response could not be read");
+    }
+    const observed: unknown[] = [];
+    const sourceClosed = new Promise<void>((resolve) => source.once("close", resolve));
 
     let received = 0;
     const limiter = new Transform({
       transform(chunk: Buffer, _encoding, callback) {
         received += chunk.length;
         if (received > MAX_ATTACHMENT_BYTES) {
-          callback(
-            new Error(
-              `Graph attachment ${attachmentId} on message ${messageId} exceeded the ${MAX_ATTACHMENT_BYTES}-byte cap`,
-            ),
-          );
+          callback(new Error(`Graph attachment exceeded the ${MAX_ATTACHMENT_BYTES}-byte cap`));
           return;
         }
         callback(null, chunk);
       },
+      destroy(error, callback) {
+        try {
+          if (!source.destroyed) source.destroy();
+        } catch (cleanupError) {
+          observed.push(cleanupError);
+          callback(error ?? new Error("Graph sync provider stream could not be closed"));
+          return;
+        }
+        void sourceClosed.then(() => {
+          void observed;
+          callback(error);
+        });
+      },
     });
-    const source = Readable.fromWeb(response.body);
     // Plain `.pipe()` does not forward the source's own 'error' event to the destination — a
     // dropped connection mid-transfer would otherwise leave `limiter` (and whatever later
     // consumes it, e.g. blobStorage.ts's `pipeline()`) waiting forever instead of erroring out,
     // the same class of bug this codebase already documents for imapflow's own download() path.
-    source.on("error", (err) => limiter.destroy(err));
+    source.on("error", (error: unknown) => {
+      observed.push(error);
+      limiter.destroy(new Error("Graph sync provider response could not be read"));
+    });
     source.pipe(limiter);
     return limiter;
   }
@@ -435,8 +486,7 @@ export class GraphRestClient implements GraphMailClient {
    * node, not a limit expected to ever bind in practice.
    */
   private async listFoldersUnder(url: string, wellKnownIds: Map<string, string>, depth = 0): Promise<GraphFolderRef[]> {
-    if (depth > 50)
-      throw new Error(`Graph mailFolders tree exceeded depth 50 under ${url} — likely a malformed API response`);
+    if (depth > 50) throw new Error("Graph mailFolders tree exceeded depth 50");
     const folders: GraphFolderRef[] = [];
     let pageUrl = url;
     while (pageUrl) {
@@ -467,8 +517,9 @@ export class GraphRestClient implements GraphMailClient {
       try {
         const folder = await this.request<{ id: string }>(`${BASE_URL}/mailFolders/${name}`);
         wellKnownIds.set(folder.id, name);
-      } catch {
-        // Not every well-known folder exists for every account (e.g. no Archive) — skip.
+      } catch (error) {
+        // Not every well-known folder exists for every account (e.g. no Archive).
+        if (graphResponseStatus(error) !== 404) throw error;
       }
     }
 
@@ -512,7 +563,7 @@ export class GraphRestClient implements GraphMailClient {
       // matched on the actual HTTP status, not a substring of the error message, so an
       // unrelated 4xx (a malformed query, throttling) surfaces as a real error instead of
       // silently discarding the account's sync position.
-      if (err instanceof GraphApiError && err.status === 410) {
+      if (graphResponseStatus(err) === 410) {
         return { invalidated: true, newDeltaLink: "", changes: [] };
       }
       throw err;
