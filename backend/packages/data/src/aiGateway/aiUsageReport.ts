@@ -166,11 +166,11 @@ interface ByOperationRow {
 }
 
 /** Operations recorded under several keys that the report shows as one activity. */
-const MERGED_OPERATIONS: Readonly<Record<string, string>> = {
-  agent_behavior_drift: "agent_guidance_drift",
-  voice_transcribe_stream: "voice",
-  voice_synthesize: "voice",
-};
+const MERGED_OPERATIONS = new Map<string, string>([
+  ["agent_behavior_drift", "agent_guidance_drift"],
+  ["voice_transcribe_stream", "voice"],
+  ["voice_synthesize", "voice"],
+]);
 
 interface MonthlyRow {
   month: string;
@@ -298,7 +298,7 @@ export async function getAiUsageReport(client: Queryable, input: AiUsageReportIn
   );
   const mergedOperations = new Map<string, { costUsd: number; callCount: number }>();
   for (const row of operationRows) {
-    const key = MERGED_OPERATIONS[row.operation] ?? row.operation;
+    const key = MERGED_OPERATIONS.get(row.operation) ?? row.operation;
     const entry = mergedOperations.get(key) ?? { costUsd: 0, callCount: 0 };
     entry.costUsd += Number(row.cost_usd);
     entry.callCount += Number(row.call_count);

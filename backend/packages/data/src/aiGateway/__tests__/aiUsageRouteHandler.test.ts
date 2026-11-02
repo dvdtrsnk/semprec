@@ -680,4 +680,16 @@ describe("usage by operation (gh-1477)", () => {
       ["transcript_summary", 0],
     ]);
   });
+
+  it("preserves unknown operation keys that are object prototype names", async () => {
+    await record("constructor", 1);
+    await record("__proto__", 2);
+
+    const report = await getAiUsageReport(db, range);
+
+    expect(report.byOperation.map(({ operation, label }) => [operation, label])).toEqual([
+      ["__proto__", "__proto__"],
+      ["constructor", "constructor"],
+    ]);
+  });
 });
