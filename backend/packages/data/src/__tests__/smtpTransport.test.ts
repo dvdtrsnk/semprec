@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import tls from "node:tls";
 import type { Pool } from "pg";
+import { runInTenant } from "@semprec/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ValidationError } from "../errors.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
@@ -42,7 +43,13 @@ import {
   MailServerUnreachableError,
 } from "../mail/providerTypes.js";
 import { allowLoopbackOutboundForTests } from "../net/outboundAddressPolicy.js";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 import { stubDnsLookup, type DnsLookupStub } from "../testSupport/dnsLookupStub.js";
 
 // The fake SMTP server speaks implicit TLS on loopback, and its certificate is made with the openssl CLI at
@@ -383,7 +390,7 @@ describe("createSmtpMailTransport (issue #1634): raw submission over SMTP", () =
     expect(server.accepted[0]?.recipients).toEqual(["bob@mail.test"]);
   });
 
-  it("passes a temporary recipient refusal through unchanged, because it is not a permanent refusal", async () => {
+  it("keeps a temporary recipient refusal generic rather than treating it as permanent", async () => {
     useLoopbackPolicy();
     trustMailCertificate();
     stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
@@ -398,10 +405,12 @@ describe("createSmtpMailTransport (issue #1634): raw submission over SMTP", () =
     );
 
     expect(error).not.toBeInstanceOf(MailRecipientRejectedError);
-    expect(error).toMatchObject({ code: "EENVELOPE", command: "RCPT TO", responseCode: 451 });
+    if (!(error instanceof Error)) throw new Error("Missing SMTP failure");
+    expect(error.message).toBe("SMTP submission failed unexpectedly");
+    expect(error).not.toHaveProperty("cause");
   });
 
-  it("passes a refused sender through unchanged, because the refusal is of the sender, not of a recipient", async () => {
+  it("keeps a refused sender generic rather than treating it as a recipient refusal", async () => {
     useLoopbackPolicy();
     trustMailCertificate();
     stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
@@ -413,7 +422,9 @@ describe("createSmtpMailTransport (issue #1634): raw submission over SMTP", () =
     );
 
     expect(error).not.toBeInstanceOf(MailRecipientRejectedError);
-    expect(error).toMatchObject({ code: "EENVELOPE", command: "MAIL FROM" });
+    if (!(error instanceof Error)) throw new Error("Missing SMTP failure");
+    expect(error.message).toBe("SMTP submission failed unexpectedly");
+    expect(error).not.toHaveProperty("cause");
     expect(server.accepted).toHaveLength(0);
   });
 
@@ -500,6 +511,209 @@ describe("createSmtpMailTransport (issue #1634): raw submission over SMTP", () =
 describe("createSmtpMailTransport closes its transporter on every path out (issue #1634)", () => {
   const envelope = { from: "me@mail.test", recipients: ["bob@mail.test"] };
 
+  it.each([
+    ["undefined", undefined],
+    ["object", { secret: "SMTP-PRIVATE-SENTINEL" }],
+    ["nested aggregate", new AggregateError([new Error("SMTP-PRIVATE-SENTINEL")], "SMTP-PRIVATE-SENTINEL")],
+  ])("sanitizes an unknown %s opener failure", async (_name, original) => {
+    const opener = vi.fn((): MailSmtpTransporter => {
+      // Deliberately exercise non-Error and undefined rejection values.
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw original;
+    });
+    const transport = createSmtpMailTransport(mailboxItemId, settingsFor("mail.test", 465), credential, opener);
+    const error = await rejectionOf(transport.send({ raw: rawMessage, envelope }));
+    expect(opener).toHaveBeenCalledTimes(1);
+    if (!(error instanceof Error)) throw new Error("Missing SMTP failure");
+    expect(error.message).toBe("SMTP submission failed unexpectedly");
+    expect(error).not.toHaveProperty("cause");
+    expect(`${error.stack} ${JSON.stringify(error)}`).not.toContain("SMTP-PRIVATE-SENTINEL");
+    expect(error).not.toBeInstanceOf(MailSendAuthFailedError);
+    expect(error).not.toBeInstanceOf(MailRecipientRejectedError);
+    expect(error).not.toBeInstanceOf(MailServerUnreachableError);
+  });
+
+  it("keeps a secret-bearing send failure and close failure out of actual serialized diagnostics", async () => {
+    const secret = "SMTP-PRIVATE-SENTINEL";
+    const sendFailure = Object.assign(new Error(secret), { name: secret, code: secret });
+    const closeFailure = new AggregateError([sendFailure], secret);
+    const send = vi.fn(() => Promise.reject(sendFailure));
+    const close = vi.fn(() => {
+      throw closeFailure;
+    });
+    const transporter: MailSmtpTransporter = { verify: () => Promise.resolve(true), sendMail: send, close };
+    const stream = Object.getOwnPropertySymbols(logger).find((symbol) => symbol.description === "pino.stream");
+    if (!stream) throw new Error("Missing application log stream");
+    const previous: unknown = Reflect.get(logger, stream);
+    const previousLevel = logger.level;
+    const lines: string[] = [];
+    if (
+      !Reflect.set(logger, stream, {
+        write: (line: string) => {
+          lines.push(line);
+          return true;
+        },
+      })
+    ) {
+      throw new Error("Could not capture application log stream");
+    }
+    logger.level = "warn";
+    const failures: unknown[] = [];
+    try {
+      const transport = createSmtpMailTransport(
+        mailboxItemId,
+        settingsFor("mail.test", 465),
+        credential,
+        () => transporter,
+      );
+      const error = await rejectionOf(transport.send({ raw: rawMessage, envelope }));
+      if (!(error instanceof Error)) throw new Error("Missing SMTP failure");
+      expect(error.message).toBe("SMTP submission failed unexpectedly");
+      expect(error).not.toHaveProperty("cause");
+      expect(send).toHaveReturned();
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(lines).toHaveLength(2);
+      expect(lines.join("\n")).not.toContain(secret);
+      expect(lines.join("\n")).not.toContain(password);
+      expect(lines.join("\n")).not.toContain(rawMessage.toString());
+      expect(lines.map((line) => JSON.parse(line))).toEqual([
+        expect.objectContaining({ stage: "close" }),
+        expect.objectContaining({ stage: "send" }),
+      ]);
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      logger.level = previousLevel;
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      if (!Reflect.set(logger, stream, previous)) throw new Error("Could not restore application log stream");
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "SMTP diagnostic test and cleanup failed");
+  });
+
+  it("sanitizes an exception while inspecting a provider failure", async () => {
+    const providerFailure = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error("SMTP-PRIVATE-SENTINEL");
+        },
+      },
+    );
+    const close = vi.fn();
+    const transporter: MailSmtpTransporter = {
+      verify: () => Promise.resolve(true),
+      // Deliberately exercise a non-Error value whose classification itself throws.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      sendMail: () => Promise.reject(providerFailure),
+      close,
+    };
+    const transport = createSmtpMailTransport(
+      mailboxItemId,
+      settingsFor("mail.test", 465),
+      credential,
+      () => transporter,
+    );
+    const error = await rejectionOf(transport.send({ raw: rawMessage, envelope }));
+    if (!(error instanceof Error)) throw new Error("Missing SMTP failure");
+    expect(error.message).toBe("SMTP submission failed unexpectedly");
+    expect(error).not.toHaveProperty("cause");
+    expect(error.stack).not.toContain("SMTP-PRIVATE-SENTINEL");
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a fresh safe unreachable error when an existing typed error was modified", async () => {
+    const original = new MailServerUnreachableError();
+    original.message = "SMTP-PRIVATE-SENTINEL";
+    original.name = "SMTP-PRIVATE-SENTINEL";
+    const close = vi.fn();
+    const transporter: MailSmtpTransporter = {
+      verify: () => Promise.resolve(true),
+      sendMail: () => Promise.reject(original),
+      close,
+    };
+    const transport = createSmtpMailTransport(
+      mailboxItemId,
+      settingsFor("mail.test", 465),
+      credential,
+      () => transporter,
+    );
+    const error = await rejectionOf(transport.send({ raw: rawMessage, envelope }));
+    expect(error).toBeInstanceOf(MailServerUnreachableError);
+    expect(error).not.toBe(original);
+    expect(error).toMatchObject({ message: "The mail server could not be reached" });
+    expect(JSON.stringify(error)).not.toContain("SMTP-PRIVATE-SENTINEL");
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an accepted send successful when close, copy, and diagnostic publication fail", async () => {
+    const close = vi.fn(() => {
+      throw new Error("SMTP-PRIVATE-SENTINEL");
+    });
+    const copy = vi.fn(async () => {
+      throw new Error("SMTP-PRIVATE-SENTINEL");
+    });
+    vi.spyOn(logger, "warn").mockImplementation(() => {
+      throw new Error("SMTP-PRIVATE-SENTINEL");
+    });
+    const transporter: MailSmtpTransporter = {
+      verify: () => Promise.resolve(true),
+      sendMail: () => Promise.resolve({ refusedRecipientCount: 0 }),
+      close,
+    };
+    const transport = createSmtpMailTransport(
+      mailboxItemId,
+      settingsFor("mail.test", 465),
+      credential,
+      () => transporter,
+      copy,
+    );
+    await expect(transport.send({ raw: rawMessage, envelope })).resolves.toEqual({});
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(copy).toHaveBeenCalledTimes(1);
+  });
+
+  it("joins the owned send after the deadline closes the transporter", async () => {
+    vi.useFakeTimers();
+    let rejectSend!: (reason: unknown) => void;
+    const original = new Error("owned connection closed");
+    let observed: unknown;
+    const operation = new Promise<{ refusedRecipientCount: number }>((_resolve, reject) => {
+      rejectSend = reject;
+    });
+    const settled = operation.then(
+      () => {
+        throw new Error("Unexpected send success");
+      },
+      (error: unknown) => {
+        observed = error;
+      },
+    );
+    const close = vi.fn(() => rejectSend(original));
+    const transporter: MailSmtpTransporter = { verify: () => Promise.resolve(true), sendMail: () => operation, close };
+    const transport = createSmtpMailTransport(
+      mailboxItemId,
+      settingsFor("mail.test", 465),
+      credential,
+      () => transporter,
+    );
+    const result = transport.send({ raw: rawMessage, envelope }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await result).toBeInstanceOf(MailServerUnreachableError);
+    await settled;
+    expect(observed).toBe(original);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it("resolves the send when closing the transporter fails, because the send itself succeeded", async () => {
     const transporter: MailSmtpTransporter = {
       verify: () => Promise.resolve(true),
@@ -518,7 +732,7 @@ describe("createSmtpMailTransport closes its transporter on every path out (issu
     await expect(transport.send({ raw: rawMessage, envelope })).resolves.toEqual({});
   });
 
-  it("rejects with the send's own error, not the close failure, when both fail", async () => {
+  it("returns a safe unknown send failure when both send and close fail", async () => {
     const sendError = Object.assign(new Error("Mail server response was lost"), { code: "ESOCKET" });
     const transporter: MailSmtpTransporter = {
       verify: () => Promise.resolve(true),
@@ -534,7 +748,7 @@ describe("createSmtpMailTransport closes its transporter on every path out (issu
       () => transporter,
     );
 
-    await expect(transport.send({ raw: rawMessage, envelope })).rejects.toBe(sendError);
+    await expect(transport.send({ raw: rawMessage, envelope })).rejects.toThrow("SMTP submission failed unexpectedly");
   });
 
   it("closes the transporter after a successful send", async () => {
@@ -612,6 +826,46 @@ describe("createMailTransportFactory (issue #1634)", () => {
 
   afterAll(async () => {
     await pool.end();
+  });
+
+  it("allows the owning runtime tenant and refuses a foreign mailbox without reading its credential", async () => {
+    const owner = getTenantZeroId();
+    const other = await createTestTenant(pool);
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const failures: unknown[] = [];
+    try {
+      await runInTenant(owner, () =>
+        upsertMailServerSettings(runtime, mailboxId, { imap: null, smtp: smtpEndpoint, username }),
+      );
+      await runInTenant(owner, () =>
+        storeCredential(runtime, { itemId: mailboxId, credentialType: "app_password", plaintext: password }),
+      );
+      await expect(
+        runInTenant(owner, () => createMailTransportFactory(runtime).forMailbox(mailboxId, "imap")),
+      ).resolves.toHaveProperty("send");
+      const before = await pool.query<{ count: string }>(
+        "SELECT count(*) FROM credential_access_log WHERE item_id = $1",
+        [mailboxId],
+      );
+      await expect(
+        runInTenant(other, () => createMailTransportFactory(runtime).forMailbox(mailboxId, "imap")),
+      ).rejects.toBeInstanceOf(ValidationError);
+      const after = await pool.query<{ count: string }>(
+        "SELECT count(*) FROM credential_access_log WHERE item_id = $1",
+        [mailboxId],
+      );
+      expect(after.rows).toEqual(before.rows);
+      expect(after.rows).toEqual([{ count: "1" }]);
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await runtime.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "SMTP tenant test and cleanup failed");
   });
 
   it("decrypts the password for the smtp_send purpose and logs the access under that purpose", async () => {
@@ -864,7 +1118,7 @@ describe("Sent-folder copy of an accepted SMTP send (issue #1641)", () => {
     expect(imap.appends).toEqual([]);
   });
 
-  it("a copy the server refuses leaves the send successful, logs only the error's name, and closes the IMAP connection", async () => {
+  it("a copy the server refuses leaves the send successful, logs a fixed stage, and closes the IMAP connection", async () => {
     useLoopbackPolicy();
     trustMailCertificate();
     stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
@@ -886,8 +1140,8 @@ describe("Sent-folder copy of an accepted SMTP send (issue #1641)", () => {
     expect(server.accepted).toHaveLength(1);
     expect(events).toEqual(["imap-open", "imap-append", "imap-close"]);
     expect(warn).toHaveBeenCalledWith(
-      { mailboxItemId: mailboxId, errorName: "Error" },
-      "Keeping a copy of the sent message in the Sent folder failed",
+      { mailboxItemId: mailboxId, stage: "sent_copy" },
+      "SMTP operation reported a failure",
     );
     expect(JSON.stringify(warn.mock.calls)).not.toContain("quarterly numbers");
   });

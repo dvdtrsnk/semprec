@@ -25,7 +25,7 @@ import { IMAP_SEEN_FLAG } from "./messageFlags.js";
 import { logger } from "./logger.js";
 import { createGmailMailTransport } from "./gmailTransport.js";
 import { createGraphMailTransport } from "./graphTransport.js";
-import { MailRecipientRejectedError, MailSendAuthFailedError } from "./providerTypes.js";
+import { MailRecipientRejectedError, MailSendAuthFailedError, MailServerUnreachableError } from "./providerTypes.js";
 import { NodemailerSmtpClient, type RawMailEnvelope } from "./smtpClient.js";
 
 /**
@@ -67,10 +67,13 @@ function fieldOf(error: unknown, key: string): unknown {
 /**
  * Maps the two SMTP failures this transport names. nodemailer reports a failed login as `EAUTH` (a 535 among
  * other login failures), and a refusal of every recipient on `RCPT TO` as `EENVELOPE` with a 5xx response.
- * Any other error passes through unchanged, including the connect and timeout failures that
- * `createSmtpTransporter` and the send client have already mapped to `MailServerUnreachableError`.
+ * Already-classified connection failures remain unreachable. Unknown failures leave this
+ * boundary as a fixed generic error after the transport has been closed.
  */
-function mapSmtpSendFailure(error: unknown): unknown {
+function mapSmtpSendFailure(error: unknown): Error {
+  if (error instanceof MailServerUnreachableError) return new MailServerUnreachableError();
+  if (error instanceof MailSendAuthFailedError) return new MailSendAuthFailedError();
+  if (error instanceof MailRecipientRejectedError) return new MailRecipientRejectedError();
   if (fieldOf(error, "code") === "EAUTH") return new MailSendAuthFailedError();
   const responseCode = fieldOf(error, "responseCode");
   if (
@@ -82,11 +85,7 @@ function mapSmtpSendFailure(error: unknown): unknown {
   ) {
     return new MailRecipientRejectedError();
   }
-  return error;
-}
-
-function errorNameOf(error: unknown): string {
-  return error instanceof Error ? error.name : "NonError";
+  return new Error("SMTP submission failed unexpectedly");
 }
 
 /** Opens an SMTP transporter for one mailbox; `createSmtpTransporter` is the production opener. */
@@ -115,7 +114,7 @@ export type SentCopySaver = (raw: Buffer) => Promise<void>;
  * which inject `open` to observe the close; the production path is `createMailTransportFactory`.
  *
  * Once the server accepts the message, `saveSentCopy` keeps a copy in the Sent folder (IMAP servers do not file
- * sent mail by themselves). A failure there is logged by its error name and does not fail the send, because the
+ * sent mail by themselves). A failure there is logged with a fixed stage and does not fail the send, because the
  * message has been delivered. Omitted, the send keeps no copy; the production factory always supplies one.
  */
 export function createSmtpMailTransport(
@@ -127,32 +126,67 @@ export function createSmtpMailTransport(
 ): MailTransport {
   return {
     async send(message) {
-      const transporter = open(settings, credential);
+      let transporter: MailSmtpTransporter | undefined;
+      let primary: { value: unknown } | undefined;
+      let sendOutcome: Promise<{ ok: true } | { ok: false; value: unknown }> | undefined;
+      const secondary: unknown[] = [];
+      const diagnostic = (stage: "send" | "close" | "sent_copy") => {
+        try {
+          logger.warn({ mailboxItemId, stage }, "SMTP operation reported a failure");
+        } catch (error) {
+          secondary.push(error);
+        }
+      };
       try {
-        await new NodemailerSmtpClient(transporter).sendRaw({ raw: message.raw, envelope: message.envelope });
+        transporter = open(settings, credential);
+        const owned = transporter;
+        await new NodemailerSmtpClient({
+          sendMail(message) {
+            const operation = owned.sendMail(message);
+            sendOutcome = operation.then(
+              () => ({ ok: true as const }),
+              (value: unknown) => ({ ok: false as const, value }),
+            );
+            return operation;
+          },
+        }).sendRaw({ raw: message.raw, envelope: message.envelope });
       } catch (error) {
-        const mapped = mapSmtpSendFailure(error);
-        if (mapped !== error) logger.warn({ mailboxItemId, errorName: errorNameOf(mapped) }, "SMTP send was refused");
-        throw mapped;
-      } finally {
+        primary = { value: error };
+      }
+      if (transporter) {
         try {
           transporter.close();
         } catch (error) {
-          // The send's outcome is the error the caller needs; a failed close is logged and not rethrown.
-          logger.warn({ mailboxItemId, errorName: errorNameOf(error) }, "Closing the SMTP transporter failed");
+          secondary.push(error);
+          diagnostic("close");
         }
+      }
+      if (sendOutcome) {
+        const settled = await sendOutcome;
+        if (!settled.ok && (!primary || settled.value !== primary.value)) secondary.push(settled.value);
+      }
+      if (primary) {
+        let mapped: Error;
+        try {
+          mapped = mapSmtpSendFailure(primary.value);
+        } catch (classificationError) {
+          secondary.push(classificationError);
+          mapped = new Error("SMTP submission failed unexpectedly");
+        }
+        diagnostic("send");
+        // The original and all secondary values remain local through cleanup and diagnostics.
+        void secondary;
+        throw mapped;
       }
       if (saveSentCopy) {
         try {
           await saveSentCopy(message.raw);
         } catch (error) {
-          // The server accepted the message, so the send succeeded. Only the copy is lost, and the log names its error only.
-          logger.warn(
-            { mailboxItemId, errorName: errorNameOf(error) },
-            "Keeping a copy of the sent message in the Sent folder failed",
-          );
+          secondary.push(error);
+          diagnostic("sent_copy");
         }
       }
+      void secondary;
       return {};
     },
   };
