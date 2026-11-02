@@ -21,6 +21,7 @@ it("upgrades persisted mail metadata and retains the legacy insert default", asy
   let created = false;
   const failures: unknown[] = [];
   try {
+    // name is a fixed prefix followed only by hexadecimal UUID digits.
     await admin.query(`CREATE DATABASE "${name}"`);
     created = true;
     const scratchUrl = new URL(url);
@@ -78,6 +79,7 @@ it("upgrades persisted mail metadata and retains the legacy insert default", asy
   for (const cleanup of [
     async () => scratch?.end(),
     async () => {
+      // The same fixed-prefix, hexadecimal UUID identifier was created above.
       if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
     },
     async () => admin.end(),

@@ -316,6 +316,68 @@ describe("exchangeAuthorizationCode", () => {
     expect(await caught(exchangeAuthorizationCode(input))).toBeInstanceOf(MailAuthorizationCodeRejectedError);
   });
 
+  it.each([200, 400, 401])("bounds and cancels an oversized authorization response with status %s", async (status) => {
+    let cancelled = false;
+    let pulls = 0;
+    const bytes = new TextEncoder().encode("x".repeat(65_536));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              pull(controller) {
+                controller.enqueue(pulls++ === 0 ? bytes : new Uint8Array([1]));
+              },
+              cancel() {
+                cancelled = true;
+              },
+            }),
+            { status },
+          ),
+      ),
+    );
+    const error = await caught(exchangeAuthorizationCode(input));
+    expect(cancelled).toBe(true);
+    expect(pulls).toBeGreaterThanOrEqual(2);
+    if (status === 200) expect(error.message).toBe("OAuth code exchange response could not be read");
+    else expect(error).toBeInstanceOf(MailAuthorizationCodeRejectedError);
+    expectNoSecrets(error);
+  });
+
+  it("releases an unread non-classified error response without exposing cleanup failures", async () => {
+    const failure = new Error("SENTINEL-ACCESS");
+    let observed: unknown;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        cancel() {
+          observed = failure;
+          throw failure;
+        },
+      }),
+      { status: 503 },
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => response),
+    );
+    const error = await caught(exchangeAuthorizationCode(input));
+    expect(observed).toBe(failure);
+    expect(error.message).toBe("OAuth code exchange failed with status 503");
+    expectNoSecrets(error);
+  });
+
+  it("accepts an authorization response exactly at the byte limit", async () => {
+    const prefix = '{"access_token":"access","refresh_token":"refresh","expires_in":60,"padding":"';
+    const suffix = '"}';
+    const payload = prefix + "x".repeat(65_536 - prefix.length - suffix.length) + suffix;
+    mockFetch(200, payload);
+    await expect(exchangeAuthorizationCode(input)).resolves.toMatchObject({
+      accessToken: "access",
+      refreshToken: "refresh",
+    });
+  });
+
   it("settles an actual stalled authorization response at the 15-second deadline", async () => {
     const sockets = new Set<Socket>();
     const closed: Promise<void>[] = [];
@@ -343,7 +405,7 @@ describe("exchangeAuthorizationCode", () => {
       const error = await caught(
         exchangeAuthorizationCode({ ...input, tokenUrl: `http://127.0.0.1:${address.port}/token` }),
       );
-      expect(error.message).toBe("OAuth code exchange response is not valid JSON");
+      expect(error.message).toBe("OAuth code exchange response could not be read");
       expect(Date.now() - started).toBeGreaterThanOrEqual(14_000);
       expectNoSecrets(error);
       await Promise.all(closed);

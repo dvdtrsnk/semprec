@@ -172,6 +172,7 @@ it("upgrades populated legacy state before installing the alias table", async ()
   let created = false;
   const failures: unknown[] = [];
   try {
+    // name is a fixed prefix followed only by hexadecimal UUID digits.
     await admin.query(`CREATE DATABASE "${name}"`);
     created = true;
     const scratchUrl = new URL(url);
@@ -211,6 +212,7 @@ it("upgrades populated legacy state before installing the alias table", async ()
     failures.push(error);
   }
   try {
+    // The same fixed-prefix, hexadecimal UUID identifier was created above.
     if (created) await admin.query(`DROP DATABASE "${name}"`);
   } catch (error) {
     failures.push(error);

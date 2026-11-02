@@ -5608,6 +5608,7 @@ describe("queued sync status forward repair (issue #1497)", () => {
     let functionCreated = false;
     let triggerCreated = false;
     try {
+      // first comes exclusively from randomUUID() and contains only hexadecimal digits and hyphens.
       await pool.query(`CREATE FUNCTION test_sync_repair_barrier() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN IF NEW.item_id = '${first}'::uuid THEN PERFORM pg_advisory_xact_lock(421305122); END IF; RETURN NEW; END $$`);
       functionCreated = true;

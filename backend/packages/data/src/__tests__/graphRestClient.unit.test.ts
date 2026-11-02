@@ -360,6 +360,18 @@ describe("Graph non-file attachments (issue #203)", () => {
 describe("Graph Reply-To envelope", () => {
   const noAttachments = async () => [];
   const noStream = async () => Readable.from("");
+  const addresses = {
+    from: { emailAddress: { name: "Sender", address: "sender@example.test" } },
+    toRecipients: [{ emailAddress: { name: "To Person", address: "to@example.test" } }],
+    ccRecipients: [{ emailAddress: { name: "Cc Person", address: "cc@example.test" } }],
+    bccRecipients: [{ emailAddress: { name: "Bcc Person", address: "bcc@example.test" } }],
+  };
+  const expectedEnvelope = {
+    from: { name: "Sender", address: "sender@example.test" },
+    to: [{ name: "To Person", address: "to@example.test" }],
+    cc: [{ name: "Cc Person", address: "cc@example.test" }],
+    bcc: [{ name: "Bcc Person", address: "bcc@example.test" }],
+  };
 
   it("stores the replyTo recipients", async () => {
     const message = await toFetchedGraphMessage(
@@ -375,16 +387,25 @@ describe("Graph Reply-To envelope", () => {
 
   it("leaves replyTo absent when Graph supplies an empty address", async () => {
     const message = await toFetchedGraphMessage(
-      { id: "message-1", replyTo: [{ emailAddress: { address: "" } }] },
+      { id: "message-1", ...addresses, replyTo: [{ emailAddress: { address: "" } }] },
       noAttachments,
       noStream,
     );
-    expect(message.envelope).not.toHaveProperty("replyTo");
+    expect(message.envelope).toEqual(expectedEnvelope);
+  });
+
+  it("preserves the complete envelope when Graph omits replyTo", async () => {
+    const message = await toFetchedGraphMessage({ id: "message-1", ...addresses }, noAttachments, noStream);
+    expect(message.envelope).toEqual(expectedEnvelope);
   });
 
   it("leaves replyTo absent when Graph returns none", async () => {
-    const message = await toFetchedGraphMessage({ id: "message-1", replyTo: [] }, noAttachments, noStream);
-    expect(message.envelope).not.toHaveProperty("replyTo");
+    const message = await toFetchedGraphMessage(
+      { id: "message-1", ...addresses, replyTo: [] },
+      noAttachments,
+      noStream,
+    );
+    expect(message.envelope).toEqual(expectedEnvelope);
   });
 });
 

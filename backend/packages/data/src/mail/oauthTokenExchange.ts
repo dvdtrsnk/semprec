@@ -188,11 +188,49 @@ const PROVIDER_ERROR_CODES = new Set([
 ]);
 const ADMIN_CONSENT_MARKERS = ["AADSTS65001", "AADSTS90094"];
 
+const AUTHORIZATION_RESPONSE_LIMIT_BYTES = 64 * 1024;
+
+/** Reads a bounded authorization response before parsing it. */
+async function readAuthorizationBody(response: Response): Promise<string> {
+  const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = response.body?.getReader();
+  if (!reader) throw new Error("OAuth code exchange response has no body");
+  const chunks: Uint8Array[] = [];
+  const failures: unknown[] = [];
+  let length = 0;
+  try {
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      length += result.value.byteLength;
+      if (length > AUTHORIZATION_RESPONSE_LIMIT_BYTES)
+        throw new Error("OAuth code exchange response exceeds size limit");
+      chunks.push(result.value);
+    }
+  } catch (error) {
+    failures.push(error);
+    try {
+      await reader.cancel();
+    } catch (cleanupError) {
+      failures.push(cleanupError);
+    }
+  }
+  try {
+    reader.releaseLock();
+  } catch (cleanupError) {
+    failures.push(cleanupError);
+  }
+  if (failures.length) {
+    // Raw body and cleanup failures stay local to this privacy boundary.
+    throw new Error("OAuth code exchange response could not be read");
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 /** Reads only the provider's short `error` code and whether the description names an admin-consent AADSTS code. */
 async function readProviderError(response: Response): Promise<{ code: string | null; adminConsent: boolean }> {
   let parsed: unknown;
   try {
-    parsed = await response.json();
+    parsed = JSON.parse(await readAuthorizationBody(response));
   } catch {
     // A non-JSON error body only costs the classification detail; the status still decides the error.
     return { code: null, adminConsent: false };
@@ -256,11 +294,24 @@ export async function exchangeAuthorizationCode(
         code,
       );
     }
+    const cleanupFailures: unknown[] = [];
+    try {
+      await response.body?.cancel();
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
+    void cleanupFailures;
     throw new Error(`OAuth code exchange failed with status ${response.status}`);
+  }
+  let responseBody: string;
+  try {
+    responseBody = await readAuthorizationBody(response);
+  } catch {
+    throw new Error("OAuth code exchange response could not be read");
   }
   let parsed: unknown;
   try {
-    parsed = await response.json();
+    parsed = JSON.parse(responseBody);
   } catch {
     throw new Error("OAuth code exchange response is not valid JSON");
   }

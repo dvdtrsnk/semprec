@@ -341,6 +341,9 @@ describe("Gmail Reply-To envelope", () => {
               headers: [
                 { name: "Message-ID", value: "<gmail-message-1@example.test>" },
                 { name: "From", value: "Sender <sender@example.test>" },
+                { name: "To", value: "To Person <to@example.test>" },
+                { name: "Cc", value: "Cc Person <cc@example.test>" },
+                { name: "Bcc", value: "Bcc Person <bcc@example.test>" },
                 ...extra,
               ],
             },
@@ -364,14 +367,22 @@ describe("Gmail Reply-To envelope", () => {
 
   it("leaves replyTo absent when the header has no parseable address", async () => {
     const fetched = await fetchWithHeaders([{ name: "Reply-To", value: "<>" }]);
-    expect(fetched?.message.envelope).not.toHaveProperty("replyTo");
-    expect(fetched?.message.envelope.from).toEqual({ name: "Sender", address: "sender@example.test" });
+    expect(fetched?.message.envelope).toEqual({
+      from: { name: "Sender", address: "sender@example.test" },
+      to: [{ name: "To Person", address: "to@example.test" }],
+      cc: [{ name: "Cc Person", address: "cc@example.test" }],
+      bcc: [{ name: "Bcc Person", address: "bcc@example.test" }],
+    });
   });
 
   it("leaves replyTo absent without a Reply-To header", async () => {
     const fetched = await fetchWithHeaders([]);
-    expect(fetched?.message.envelope).not.toHaveProperty("replyTo");
-    expect(fetched?.message.envelope.from).toEqual({ name: "Sender", address: "sender@example.test" });
+    expect(fetched?.message.envelope).toEqual({
+      from: { name: "Sender", address: "sender@example.test" },
+      to: [{ name: "To Person", address: "to@example.test" }],
+      cc: [{ name: "Cc Person", address: "cc@example.test" }],
+      bcc: [{ name: "Bcc Person", address: "bcc@example.test" }],
+    });
   });
 });
 

@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runMigrations } from "../db/migrate.js";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -166,6 +166,42 @@ describe("mail drafts store (issue #1504)", () => {
     expect((error as MailDraftThreadConflictError).status).toBe(409);
   });
 
+  it("preserves a different unique violation and arbitrary thrown values without classifying them as thread conflicts", async () => {
+    const input = draftInput({ createdBy: "user" });
+    await insertMailDraft(pool, input);
+    const duplicate = await insertMailDraft(pool, input).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(duplicate).not.toBeInstanceOf(MailDraftThreadConflictError);
+    expect(duplicate).toBeInstanceOf(Error);
+    if (typeof duplicate !== "object" || duplicate === null) throw new Error("Missing database failure");
+    expect(Reflect.get(duplicate, "code")).toBe("23505");
+    expect(Reflect.get(duplicate, "constraint")).toBe("mail_drafts_pkey");
+
+    const original = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("classification trap");
+        },
+      },
+    );
+    for (const value of [original, undefined, "non-error", { code: "23505", constraint: "other_index" }]) {
+      const query = vi.spyOn(pool, "query").mockRejectedValueOnce(value);
+      try {
+        const failure = await insertMailDraft(pool, draftInput()).then(
+          () => null,
+          (error: unknown) => ({ value: error }),
+        );
+        expect(failure).not.toBeNull();
+        expect(failure?.value).toBe(value);
+      } finally {
+        query.mockRestore();
+      }
+    }
+  });
+
   it("does not limit user drafts or agent drafts without a thread", async () => {
     const threadId = randomUUID();
     await insertMailDraft(pool, draftInput({ threadId, createdBy: "user" }));
@@ -283,6 +319,7 @@ it("upgrades populated legacy state before installing the draft table", async ()
   let created = false;
   const failures: unknown[] = [];
   try {
+    // name is a fixed prefix followed only by hexadecimal UUID digits.
     await admin.query(`CREATE DATABASE "${name}"`);
     created = true;
     const scratchUrl = new URL(url);
@@ -325,6 +362,7 @@ it("upgrades populated legacy state before installing the draft table", async ()
     failures.push(error);
   }
   try {
+    // The same fixed-prefix, hexadecimal UUID identifier was created above.
     if (created) await admin.query(`DROP DATABASE "${name}"`);
   } catch (error) {
     failures.push(error);

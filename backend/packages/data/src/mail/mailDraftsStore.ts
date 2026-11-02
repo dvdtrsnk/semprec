@@ -143,8 +143,13 @@ function toDraft(row: DraftDbRow): MailDraft {
 }
 
 function isOnePerThreadViolation(error: unknown): boolean {
-  const e = error as { code?: unknown; constraint?: unknown } | null;
-  return e?.code === "23505" && e.constraint === ONE_PER_THREAD_INDEX;
+  if (typeof error !== "object" || error === null) return false;
+  try {
+    return Reflect.get(error, "code") === "23505" && Reflect.get(error, "constraint") === ONE_PER_THREAD_INDEX;
+  } catch {
+    // An arbitrary thrown value must not replace the original failure during classification.
+    return false;
+  }
 }
 
 export async function insertMailDraft(db: Queryable, input: InsertMailDraftInput): Promise<MailDraft> {
