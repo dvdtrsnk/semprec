@@ -166,6 +166,30 @@ function closeAfterFailedConnect(client: ImapFlow, host: string): void {
   }
 }
 
+function buildImapFlow(
+  settings: MailServerConnectionSettings,
+  credential: MailServerCredential,
+  options: MailServerConnectionOptions,
+  policy: OutboundAddressPolicy,
+  connectionTimeout: number,
+): ImapFlow {
+  const { endpoint, username } = settings;
+  return new ImapFlow({
+    host: endpoint.host,
+    port: endpoint.port,
+    secure: endpoint.security === "tls",
+    ...(endpoint.security === "starttls" ? { doSTARTTLS: true } : {}),
+    auth: { user: username, pass: credential.password },
+    tls: { servername: endpoint.host, lookup: createPolicyLookup(policy) },
+    connectionTimeout,
+    greetingTimeout: GREETING_TIMEOUT_MS,
+    ...(options.maxIdleTime !== undefined ? { maxIdleTime: options.maxIdleTime } : {}),
+    ...(options.socketTimeout !== undefined ? { socketTimeout: options.socketTimeout } : {}),
+    // ImapFlow's protocol logger can emit user content.
+    logger: false,
+  });
+}
+
 /**
  * The connect step of every IMAP connection to a tenant-chosen host
  * (docs/adr/2026-10-29-imap-idle-connections-through-the-shared-imap-connect-step.md). imapflow hands its TLS
@@ -179,24 +203,11 @@ export async function openImapFlow(
   credential: MailServerCredential,
   options: MailServerConnectionOptions = {},
 ): Promise<ImapFlow> {
-  const { endpoint, username } = settings;
+  const { endpoint } = settings;
   const policy = policyOf(options);
   const refusal = literalRefusal(endpoint.host, policy);
   if (refusal !== undefined) throw mapConnectionFailure(refusal, endpoint.host);
-  const client = new ImapFlow({
-    host: endpoint.host,
-    port: endpoint.port,
-    secure: endpoint.security === "tls",
-    ...(endpoint.security === "starttls" ? { doSTARTTLS: true } : {}),
-    auth: { user: username, pass: credential.password },
-    tls: { servername: endpoint.host, lookup: createPolicyLookup(policy) },
-    connectionTimeout: CONNECT_TIMEOUT_MS,
-    greetingTimeout: GREETING_TIMEOUT_MS,
-    ...(options.maxIdleTime !== undefined ? { maxIdleTime: options.maxIdleTime } : {}),
-    ...(options.socketTimeout !== undefined ? { socketTimeout: options.socketTimeout } : {}),
-    // imapflow's default logger writes the protocol traffic, server responses included, to the console; that traffic can carry folder names and message subjects.
-    logger: false,
-  });
+  const client = buildImapFlow(settings, credential, options, policy, CONNECT_TIMEOUT_MS);
   // imapflow throws from its event emitter when an error has no listener, and it can emit after connect() settles.
   client.on("error", (error: unknown) => {
     logger.warn({ host: endpoint.host, errorName: nameOf(error) }, "IMAP connection error");
