@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it as vitestIt, vi } from "vitest";
 import type { Pool } from "pg";
 import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
@@ -12,7 +12,7 @@ import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { createMailTransportFactory } from "../mail/mailTransport.js";
 import { MailReauthorizationRequiredError, MailRecipientRejectedError } from "../mail/providerTypes.js";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 
 // A fake Microsoft answers the token endpoint, Graph and the upload URLs through the `fetchImpl` seam. The token endpoint
 // accepts only the refresh token it currently holds and rotates it on every refresh, as Microsoft does, so a refresh that
@@ -225,6 +225,8 @@ function textMessageOfSize(bytes: number, messageIdLine: string | null): Buffer 
   return Buffer.concat([Buffer.from(headers), Buffer.alloc(bytes - headers.length, "x")]);
 }
 
+const it = (name: string, fn: () => Promise<void>) => vitestIt(name, () => inTenantZero(fn));
+
 describe("Graph mail transport (issue #1753)", () => {
   let pool: Pool;
   let mailboxId: string;
@@ -234,29 +236,31 @@ describe("Graph mail transport (issue #1753)", () => {
     pool = getTestPool();
   });
 
-  beforeEach(async () => {
-    await resetDatabase(pool);
-    await seedSystem(pool);
-    // `addresses` is system-owned, so it is written through the sanctioned writer rather than in the item create.
-    mailboxId = await withTransaction(pool, async (client) => {
-      const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
-      const mailbox = await createItemWithClient(client, {
-        databaseId: mailboxesDatabaseId,
-        properties: { name: "Outlook", provider: "outlook" },
+  beforeEach(() =>
+    inTenantZero(async () => {
+      await resetDatabase(pool);
+      await seedSystem(pool);
+      // `addresses` is system-owned, so it is written through the sanctioned writer rather than in the item create.
+      mailboxId = await withTransaction(pool, async (client) => {
+        const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
+        const mailbox = await createItemWithClient(client, {
+          databaseId: mailboxesDatabaseId,
+          properties: { name: "Outlook", provider: "outlook" },
+        });
+        await writeMailboxAddresses(client, {
+          mailboxesDatabaseId,
+          mailboxItemId: mailbox.id,
+          address: "me@graph.test",
+        });
+        return mailbox.id;
       });
-      await writeMailboxAddresses(client, {
-        mailboxesDatabaseId,
-        mailboxItemId: mailbox.id,
-        address: "me@graph.test",
+      await storeCredential(pool, {
+        itemId: mailboxId,
+        credentialType: "oauth2_refresh_token",
+        plaintext: STORED_REFRESH_TOKEN,
       });
-      return mailbox.id;
-    });
-    await storeCredential(pool, {
-      itemId: mailboxId,
-      credentialType: "oauth2_refresh_token",
-      plaintext: STORED_REFRESH_TOKEN,
-    });
-  });
+    }),
+  );
 
   afterEach(() => {
     vi.restoreAllMocks();
