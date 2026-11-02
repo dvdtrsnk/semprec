@@ -199,9 +199,12 @@ describe("scheduler", () => {
           actionConfig: { task: "retry" },
         }),
       );
-      await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
-        heartbeat.id,
-      ]);
+      // The test advances this heartbeat's schedule so the production sweep can enqueue it.
+      const due = await pool.query(
+        "UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1",
+        [heartbeat.id],
+      );
+      expect(due.rowCount).toBe(1);
       await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
       let calls = 0;
       const registry = createActionRegistry();
@@ -219,14 +222,18 @@ describe("scheduler", () => {
             "SELECT count(*)::int AS count FROM notifications WHERE kind = 'agent_run_error'",
           );
           expect(notifications.rows[0]?.count).toBe(0);
-          const { rows } = await pool.query<{ id: string }>(
-            "SELECT id::text FROM graphile_worker.jobs WHERE key LIKE $1",
+          const { rows } = await pool.query<{ id: string; attempts: number }>(
+            "SELECT id::text, attempts FROM graphile_worker.jobs WHERE key LIKE $1",
             [`heartbeat-fire:${heartbeat.id}:%`],
           );
           expect(rows).toHaveLength(1);
           const job = rows[0];
           if (!job) throw new Error("Expected queued retry");
-          await pool.query("SELECT * FROM graphile_worker.reschedule_jobs($1::bigint[], now())", [[job.id]]);
+          expect(job.attempts).toBe(attempt);
+          const rescheduled = await pool.query("SELECT * FROM graphile_worker.reschedule_jobs($1::bigint[], now())", [
+            [job.id],
+          ]);
+          expect(rescheduled.rowCount).toBe(1);
         }
       }
       const runs = (await listAgentRunsByHeartbeat(pool, heartbeat.id)).sort((a, b) => a.attempt - b.attempt);

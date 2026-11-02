@@ -239,18 +239,17 @@ describe("coreAgentRunAction", () => {
       attempt: 2,
     });
     // Set distinct timestamps explicitly to prove the tie-break without relying on clock timing.
-    await pool.query("UPDATE agent_runs SET started_at = $2::timestamptz WHERE id = $1", [
-      first.id,
-      "2026-01-03T00:00:00Z",
-    ]);
-    await pool.query("UPDATE agent_runs SET started_at = $2::timestamptz WHERE id = $1", [
-      older.id,
-      "2026-01-01T00:00:00Z",
-    ]);
-    await pool.query("UPDATE agent_runs SET started_at = $2::timestamptz WHERE id = $1", [
-      newer.id,
-      "2026-01-02T00:00:00Z",
-    ]);
+    for (const [id, startedAt] of [
+      [first.id, "2026-01-03T00:00:00Z"],
+      [older.id, "2026-01-01T00:00:00Z"],
+      [newer.id, "2026-01-02T00:00:00Z"],
+    ] as const) {
+      const result = await pool.query("UPDATE agent_runs SET started_at = $2::timestamptz WHERE id = $1", [
+        id,
+        startedAt,
+      ]);
+      expect(result.rowCount).toBe(1);
+    }
     expect((await getLatestRunOfOccurrence(pool, occurrenceId))?.id).toBe(newer.id);
   });
 
