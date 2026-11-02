@@ -1162,12 +1162,12 @@
       "sequence": 12,
       "status": "proposed",
       "title": "[backend-delivery 12/74] Implement data/aiGateway, data/scheduler, data/agentRuns changes",
-      "bodyCharacters": 59620,
-      "specSha256": "28909401fdcf4786072a388afe67718d5f5e764b17f85d8ece60b91948de6b72",
+      "bodyCharacters": 59764,
+      "specSha256": "6f372648a4c2f8e763fb039c900ab9a37f8f8acdbac05b3ebcf46d6c14cedbcd",
       "members": [
         {
           "id": "gh-1442",
-          "specSha256": "361413bb7a264e571fd2e5ddef98dd7d7477136066316bb8f5710afad30b10b1",
+          "specSha256": "94640f4eb30078fef345fa4b15245a8a6ac609718e12476cf5791b3f23d2276f",
           "parent": "gh-1310",
           "dependencies": [],
           "approval": "approved"
