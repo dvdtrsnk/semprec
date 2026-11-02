@@ -33,7 +33,7 @@ export interface RefreshedAccessToken {
  *
  * A new refresh token is written before the access token is returned; if that write fails the
  * transaction rolls back, the previous token stays stored, and the call throws. The provider may
- * already have retired the previous token, so the failure is logged. No log line or thrown message
+ * already have retired the previous token, so the code attempts to log the failure. No log line or thrown message
  * carries a token. A 400/401 from the provider throws `MailReauthorizationRequiredError`.
  */
 export async function refreshAndPersistAccessToken(
@@ -92,10 +92,16 @@ export async function refreshAndPersistAccessToken(
       } catch (err) {
         // The provider may already have invalidated the previous token, so this must be visible.
         // Error names and causes can themselves contain credential material.
-        logger.error(
-          { mailboxItemId: input.mailboxItemId, errorCategory: err instanceof Error ? "error" : "non_error" },
-          "Persisting a rotated OAuth refresh token failed; the mailbox may need reauthorization",
-        );
+        const observed: unknown[] = [err];
+        try {
+          logger.error(
+            { mailboxItemId: input.mailboxItemId, stage: "persist_refresh_token" },
+            "Persisting a rotated OAuth refresh token failed; the mailbox may need reauthorization",
+          );
+        } catch (diagnosticError) {
+          observed.push(diagnosticError);
+        }
+        void observed;
         // The raw cause can contain the newly rotated token and must not escape this boundary.
         // eslint-disable-next-line preserve-caught-error
         throw new Error(`Persisting the rotated OAuth refresh token failed for mailbox ${input.mailboxItemId}`);

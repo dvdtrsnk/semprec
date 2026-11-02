@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
 import type { Socket } from "node:net";
 import { exchangeAuthorizationCode, MICROSOFT_TOKEN_URL, refreshAccessToken } from "../mail/oauthTokenExchange.js";
-import { MailAdminConsentRequiredError, MailAuthorizationCodeRejectedError } from "../mail/providerTypes.js";
+import {
+  MailAdminConsentRequiredError,
+  MailAuthorizationCodeRejectedError,
+  MailReauthorizationRequiredError,
+} from "../mail/providerTypes.js";
+import { logger } from "../mail/logger.js";
 
 const SENTINELS = {
   code: "SENTINEL-CODE-1",
@@ -47,7 +52,110 @@ describe("refreshAccessToken bounds", () => {
     refreshToken: "refresh",
   };
 
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    ["undefined", undefined],
+    ["secret-bearing object", { secret: "OAUTH-PRIVATE-SENTINEL" }],
+  ])("keeps a %s request failure private when diagnostics fail", async (_name, original) => {
+    let observed: unknown;
+    const fetchImpl: typeof fetch = async () => {
+      observed = original;
+      // Deliberately exercise non-Error provider rejections.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      return Promise.reject(original);
+    };
+    const diagnostic = new Error("OAUTH-PRIVATE-SENTINEL");
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {
+      throw diagnostic;
+    });
+    const outcome = await caught(refreshAccessToken({ ...refreshInput, fetchImpl }));
+    expect(observed).toBe(original);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(outcome.message).toBe("OAuth token refresh request failed");
+    expect(outcome).not.toHaveProperty("cause");
+    expect(`${outcome.stack} ${JSON.stringify(outcome)}`).not.toContain("OAUTH-PRIVATE-SENTINEL");
+  });
+
+  it("keeps the reader failure primary when cancellation, release and diagnostics fail", async () => {
+    const response = new Response(new ReadableStream<Uint8Array>());
+    if (!response.body) throw new Error("Missing response body");
+    const reader = response.body.getReader();
+    const original = new Error("OAUTH-PRIMARY-PRIVATE-SENTINEL");
+    const cleanup = new Error("OAUTH-CLEANUP-PRIVATE-SENTINEL");
+    let read: unknown;
+    let cancelled: unknown;
+    let released: unknown;
+    vi.spyOn(reader, "read").mockImplementation(async () => {
+      read = original;
+      throw original;
+    });
+    vi.spyOn(reader, "cancel").mockImplementation(async () => {
+      cancelled = cleanup;
+      throw cleanup;
+    });
+    const release = reader.releaseLock.bind(reader);
+    vi.spyOn(reader, "releaseLock").mockImplementation(() => {
+      release();
+      released = cleanup;
+      throw cleanup;
+    });
+    vi.spyOn(response.body, "getReader").mockReturnValue(reader);
+    vi.spyOn(logger, "warn").mockImplementation(() => {
+      throw new Error("OAUTH-DIAGNOSTIC-PRIVATE-SENTINEL");
+    });
+    const outcome = await caught(refreshAccessToken({ ...refreshInput, fetchImpl: async () => response }));
+    expect(read).toBe(original);
+    expect(cancelled).toBe(cleanup);
+    expect(released).toBe(cleanup);
+    expect(outcome.message).toBe("OAuth token refresh response could not be read");
+    expect(outcome).not.toHaveProperty("cause");
+    expect(`${outcome.stack} ${JSON.stringify(outcome)}`).not.toContain("PRIVATE-SENTINEL");
+  });
+
+  it("keeps a genuine 401 classification when body cancellation and diagnostics fail", async () => {
+    const cleanup = new Error("OAUTH-CLEANUP-PRIVATE-SENTINEL");
+    let observed: unknown;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        cancel() {
+          observed = cleanup;
+          throw cleanup;
+        },
+      }),
+      { status: 401 },
+    );
+    vi.spyOn(logger, "warn").mockImplementation(() => {
+      throw new Error("OAUTH-DIAGNOSTIC-PRIVATE-SENTINEL");
+    });
+    const outcome = await caught(refreshAccessToken({ ...refreshInput, fetchImpl: async () => response }));
+    expect(observed).toBe(cleanup);
+    expect(outcome).toBeInstanceOf(MailReauthorizationRequiredError);
+    expect(`${outcome.stack} ${JSON.stringify(outcome)}`).not.toContain("PRIVATE-SENTINEL");
+  });
+
+  it("sanitizes release failure after a successful body read", async () => {
+    const response = new Response('{"access_token":"a","expires_in":60}');
+    if (!response.body) throw new Error("Missing response body");
+    const reader = response.body.getReader();
+    const release = reader.releaseLock.bind(reader);
+    const failure = new Error("OAUTH-RELEASE-PRIVATE-SENTINEL");
+    let observed: unknown;
+    vi.spyOn(reader, "releaseLock").mockImplementation(() => {
+      release();
+      observed = failure;
+      throw failure;
+    });
+    vi.spyOn(response.body, "getReader").mockReturnValue(reader);
+    const outcome = await caught(refreshAccessToken({ ...refreshInput, fetchImpl: async () => response }));
+    expect(observed).toBe(failure);
+    expect(outcome.message).toBe("OAuth token refresh response could not be released");
+    expect(outcome).not.toHaveProperty("cause");
+    expect(`${outcome.stack} ${JSON.stringify(outcome)}`).not.toContain("PRIVATE-SENTINEL");
+  });
 
   it("rejects a response larger than 64 KiB", async () => {
     const fetchImpl: typeof fetch = async () => new Response("x".repeat(65_537));

@@ -37,6 +37,14 @@ class OAuthRefreshBodyTooLargeError extends Error {
   }
 }
 
+function refreshDiagnostic(stage: "request" | "cleanup", observed: unknown[]): void {
+  try {
+    logger.warn({ stage }, "OAuth refresh reported a failure");
+  } catch (diagnosticError) {
+    observed.push(diagnosticError);
+  }
+}
+
 export async function refreshAccessToken(input: RefreshAccessTokenInput): Promise<AccessToken> {
   const body = new URLSearchParams({
     grant_type: "refresh_token",
@@ -59,7 +67,9 @@ export async function refreshAccessToken(input: RefreshAccessTokenInput): Promis
         signal: controller.signal,
       });
     } catch (error) {
-      logger.warn({ errorCategory: error instanceof Error ? "error" : "non_error" }, "OAuth refresh request failed");
+      const observed: unknown[] = [error];
+      refreshDiagnostic("request", observed);
+      void observed;
       // A provider error can contain credentials or response data.
       // eslint-disable-next-line preserve-caught-error
       throw new Error("OAuth token refresh request failed");
@@ -73,7 +83,9 @@ export async function refreshAccessToken(input: RefreshAccessTokenInput): Promis
       try {
         await response.body?.cancel();
       } catch (error) {
-        logger.warn({ errorCategory: error instanceof Error ? "error" : "non_error" }, "OAuth response cleanup failed");
+        const observed: unknown[] = [error];
+        refreshDiagnostic("cleanup", observed);
+        void observed;
       }
       if (response.status === 400 || response.status === 401) {
         throw new MailReauthorizationRequiredError(
@@ -86,31 +98,45 @@ export async function refreshAccessToken(input: RefreshAccessTokenInput): Promis
     if (!reader) throw new Error("OAuth token refresh response has no body");
     const chunks: Uint8Array[] = [];
     let length = 0;
+    const tooLarge = new OAuthRefreshBodyTooLargeError();
     try {
       for (;;) {
         const result = await reader.read();
         if (result.done) break;
         length += result.value.byteLength;
-        if (length > 64 * 1024) throw new OAuthRefreshBodyTooLargeError();
+        if (length > 64 * 1024) throw tooLarge;
         chunks.push(result.value);
       }
     } catch (error) {
+      const observed: unknown[] = [error];
       controller.abort();
       try {
         await reader.cancel();
       } catch (cleanupError) {
-        logger.warn(
-          { errorCategory: cleanupError instanceof Error ? "error" : "non_error" },
-          "OAuth response cleanup failed",
-        );
+        observed.push(cleanupError);
+        refreshDiagnostic("cleanup", observed);
       }
-      reader.releaseLock();
-      if (error instanceof OAuthRefreshBodyTooLargeError) throw error;
+      try {
+        reader.releaseLock();
+      } catch (cleanupError) {
+        observed.push(cleanupError);
+        refreshDiagnostic("cleanup", observed);
+      }
+      void observed;
+      if (error === tooLarge) throw error;
       // A stream error can contain the provider response or credentials.
       // eslint-disable-next-line preserve-caught-error
       throw new Error("OAuth token refresh response could not be read");
     }
-    reader.releaseLock();
+    try {
+      reader.releaseLock();
+    } catch (error) {
+      const observed: unknown[] = [error];
+      refreshDiagnostic("cleanup", observed);
+      void observed;
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("OAuth token refresh response could not be released");
+    }
     let parsed: unknown;
     try {
       parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));

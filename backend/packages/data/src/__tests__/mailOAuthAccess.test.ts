@@ -739,6 +739,28 @@ describe("refreshAndPersistAccessToken", () => {
     if (failures.length > 1) throw new AggregateError(failures, "OAuth rollback test and cleanup failed");
   });
 
+  it("retains persistence failure as the safe primary when its diagnostic throws", async () => {
+    const itemId = await seed("rt-old");
+    fakeProvider({ rotate: () => "rt-new-secret" });
+    failure.storeCredential = true;
+    const diagnostic = new Error("rt-new-secret csecret");
+    const log = vi.spyOn(logger, "error").mockImplementation(() => {
+      throw diagnostic;
+    });
+    const outcome = await refreshInTenant(pool, { ...INPUT, mailboxItemId: itemId }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(log).toHaveBeenCalledOnce();
+    expect(outcome).toBeInstanceOf(Error);
+    if (!(outcome instanceof Error)) throw new Error("Missing persistence failure");
+    expect(outcome.message).toContain("Persisting the rotated OAuth refresh token failed");
+    expect(outcome).not.toHaveProperty("cause");
+    expect(`${outcome.stack} ${JSON.stringify(outcome)}`).not.toContain("rt-new-secret");
+    expect(`${outcome.stack} ${JSON.stringify(outcome)}`).not.toContain("csecret");
+    expect(await stored(itemId)).toBe("rt-old");
+  });
+
   it("throws when persisting fails, keeps the old token, and leaks no token into the error or logs", async () => {
     const itemId = await seed("rt-old");
     fakeProvider({ rotate: () => "rt-new-secret" });
