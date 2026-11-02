@@ -1641,7 +1641,15 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     },
   );
 
-  it.each(["normal", "held-disposal", "failed-disposal", "observation-failure", "client-failure"] as const)(
+  it.each([
+    "normal",
+    "held-disposal",
+    "failed-disposal",
+    "observation-failure",
+    "client-failure",
+    "observation-primary",
+    "client-primary",
+  ] as const)(
     "publishes a linked REST relation invalidation with the authenticated actor and tenant (%s)",
     async (control) => {
       const { source, target, property } = await runInTenant(tenantA.tenantId, async () => {
@@ -1757,7 +1765,12 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
           cancelObservation?.();
           if (observationResult) {
             const outcome = await observationResult;
-            if (!outcome.ok && !observationConsumed && outcome.error !== observationCancelled)
+            if (
+              !outcome.ok &&
+              !observationConsumed &&
+              outcome.error !== observationCancelled &&
+              !(failure !== undefined && failure.error === outcome.error)
+            )
               cleanupErrors.push(outcome.error);
           }
           try {
@@ -1976,7 +1989,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         };
         const url = `${requestBase}/api/items/${source.id}/relations/${property.key}/${target.id}`;
         const headers = { Cookie: a1Cookie, Origin: requestBase, "x-test-owner": marker };
-        if (control === "observation-failure") {
+        if (control === "observation-failure" || control === "observation-primary") {
           releasePublication();
           await runInTenant(tenantA.tenantId, () =>
             pool.query<{ pg_notify: string }>("SELECT pg_notify($1, $2)", ["semprec_events", "{"]),
@@ -1985,6 +1998,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
           expect(outcome.ok).toBe(false);
           if (outcome.ok) throw new Error("Expected real observation failure");
           expect(outcome.error).toBeInstanceOf(SyntaxError);
+          if (control === "observation-primary") await observed;
           throw observationBodyFailure;
         }
         expect(await ownedPut(url, headers)).toBe(200);
@@ -2107,6 +2121,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         await causalBarrier(heldSource.id);
         querySpy.mockClear();
         const controller = new AbortController();
+        if (control === "client-primary") controller.abort();
         const heldRequest = ownedPut(
           `${requestBase}/api/items/${heldSource.id}/relations/${property.key}/${target.id}`,
           { ...headers, "x-test-gate": marker },
@@ -2164,7 +2179,11 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
           controller.abort();
           releaseGate();
           lateClientResult = await heldSettled;
-          if (!lateClientResult.ok && !heldConsumed) {
+          if (
+            !lateClientResult.ok &&
+            !heldConsumed &&
+            !(heldFailure !== undefined && heldFailure.error === lateClientResult.error)
+          ) {
             heldFailure = heldFailure
               ? {
                   error: new AggregateError(
@@ -2329,6 +2348,26 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         releasePublication();
         for (const release of releaseFailures) release();
         await dispose();
+      }
+      if (control === "client-primary") {
+        if (!lateClientResult || lateClientResult.ok) throw new Error("Expected primary client failure");
+        expect(lateClientResult.error).toMatchObject({ name: "AbortError" });
+        expect(failure).toBeDefined();
+        expect(failure?.error).toBe(lateClientResult.error);
+        expect(listener?.listenerCount("notification")).toBe(0);
+        expect(listenerOwner.hasOwnedClient()).toBe(false);
+        return;
+      }
+      if (control === "observation-primary") {
+        if (!observationResult) throw new Error("Missing observation result");
+        const outcome = await observationResult;
+        if (outcome.ok) throw new Error("Expected primary observation failure");
+        expect(outcome.error).toBeInstanceOf(SyntaxError);
+        expect(failure).toBeDefined();
+        expect(failure?.error).toBe(outcome.error);
+        expect(listener?.listenerCount("notification")).toBe(0);
+        expect(listenerOwner.hasOwnedClient()).toBe(false);
+        return;
       }
       if (control === "client-failure") {
         if (!lateClientResult || lateClientResult.ok) throw new Error("Expected late client failure");
