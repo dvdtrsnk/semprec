@@ -83,3 +83,46 @@ and independent error outcomes before review. Normal adapters remain unchanged.
 This adds only the new ADR to gh-1569 Touches; source/test paths already belong
 to section 2. Embedded requirements stay complete; the aggregate's redundant
 top-level Context alone is compressed to remain below its metadata size cap.
+
+## 4. Known cancellation primary and separate secondary diagnostics
+
+The parent inspected the five-stage development run: three cases pass; stalled
+LOGIN and post-STARTTLS cases retain the owned cancellation plus independent
+library errors in an AggregateError. These are development failures, not a
+passed gate or proof that cancellation caused every later error.
+
+Apply the existing error-handling rule that a cleanup observation does not
+replace an established primary failure. Only if the actual connect() rejection
+is the exact owned cancellation Error may this known deadline primary become
+the existing unreachable verification outcome, after actual operation/socket
+settlement. A timer flag, temporal proximity, authenticationFailed flag or
+generic error code is insufficient. If connect() rejects another value, this
+clarification grants no conversion of it to cancellation or authentication.
+
+Retain non-owner secondary observations separately with their original values,
+presence and observation order until settlement/diagnostic processing completes.
+Do not mark them as expected cancellation or infer their cause. Emit a fixed,
+safe structured application diagnostic recording their count, closed source
+and category tags, and observation order for this attempt. Do not publish raw
+exceptions, messages, causes, addresses, credential material or arbitrary name/
+code fields. Unexpected secondary observations remain observable; the outward
+known timeout does not become a false authentication refusal. This uses the
+existing logger and existing failure taxonomy, not a new public diagnostic API,
+persisted error store, broad exception filter or private library interception.
+
+Errors observed before owned cancellation, unsuccessful destruction, incomplete
+connect/socket settlement, and unknown actual connect rejections retain their
+failure behavior. Do not continue to another endpoint with work outstanding or
+let a later cancellation flag retroactively consume an earlier unknown error.
+Diagnostic emission must not be falsely reported as successful if it failed.
+
+Permanent finite controls must prove the exact real connect rejection identity,
+owner action and secondary observation ordering, actual socket closure and safe
+serialized diagnostic. Include a distinct unexpected secondary (including a
+non-Error value) retained by identity in the actual observation path, and an
+earlier unrelated connect failure that is not recategorized after timeout.
+Forwarding observation of the real producers can establish source identities;
+do not add a generic production test callback solely for introspection. Retain
+the two failed logs. All changes remain in the section-2/3 source/test scopes;
+this clarifies known-primary handling under their existing lifecycle/privacy
+decisions, without changing source requirements, approvals or default adapters.
