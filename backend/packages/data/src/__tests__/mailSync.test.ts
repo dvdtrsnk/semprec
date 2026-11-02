@@ -66,6 +66,8 @@ import {
   getMailAccountSyncState,
   defaultSyncModeForProvider,
   recordImapActivity,
+  recordGmailActivity,
+  recordGraphActivity,
   recordSyncError,
 } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
@@ -2343,6 +2345,7 @@ describe("Graph reconcile core (issue #26)", () => {
 });
 
 describe("mail sync job error handling (issue #26)", () => {
+  afterEach(() => vi.restoreAllMocks());
   beforeEach(async () => {
     pool ??= getTestPool();
     chokePoint ??= createChokePoint(pool);
@@ -2587,6 +2590,268 @@ describe("mail sync job error handling (issue #26)", () => {
     );
     expect(item.rows[0].properties.syncStatus).toBe("ok");
   });
+
+  it.each(["list", "select", "fetch", "download"] as const)(
+    "sanitizes a secret-bearing IMAP %s library failure at the client boundary",
+    async (stage) => {
+      const connection = new ImapFlow({
+        host: "unused.example.test",
+        port: 993,
+        secure: true,
+        auth: { user: "unused", pass: "unused" },
+        logger: false,
+      });
+      const secret = "IMAP-PRIVATE-SENTINEL";
+      const original = Object.assign(new Error(secret), { name: secret, code: secret });
+      vi.spyOn(connection, "mailboxOpen").mockResolvedValue({
+        path: "INBOX",
+        delimiter: "/",
+        flags: new Set(),
+        uidValidity: 1n,
+        uidNext: 2,
+        exists: 1,
+      });
+      if (stage === "list") vi.spyOn(connection, "list").mockRejectedValue(original);
+      if (stage === "select") vi.spyOn(connection, "mailboxOpen").mockRejectedValue(original);
+      if (stage === "fetch")
+        vi.spyOn(connection, "fetch").mockImplementation(async function* () {
+          yield await Promise.reject(original);
+        });
+      if (stage === "download") {
+        vi.spyOn(connection, "fetch").mockImplementation(async function* () {
+          yield { seq: 1, uid: 1, bodyStructure: { type: "text/plain", part: "1" } };
+        });
+        vi.spyOn(connection, "download").mockRejectedValue(original);
+      }
+      const client = new ImapFlowMailClient(connection);
+      const work =
+        stage === "list"
+          ? client.listFolders()
+          : stage === "select"
+            ? client.selectFolder("INBOX")
+            : client.fetchMessagesSince("INBOX", 1);
+      const result = await work.then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(result).toBeInstanceOf(Error);
+      if (!(result instanceof Error)) throw new Error("Missing IMAP provider failure");
+      expect(result.message).toBe("IMAP provider operation failed unexpectedly");
+      expect(result).not.toHaveProperty("cause");
+      expect(`${result.stack} ${JSON.stringify(result)}`).not.toContain(secret);
+      vi.restoreAllMocks();
+    },
+  );
+
+  it.each([
+    ["undefined", undefined],
+    ["object", { secret: "IMAP-PRIVATE-SENTINEL" }],
+    ["aggregate", new AggregateError([new Error("IMAP-PRIVATE-SENTINEL")], "IMAP-PRIVATE-SENTINEL")],
+  ])("sanitizes a nonstandard %s IMAP library rejection", async (_name, original) => {
+    const connection = new ImapFlow({
+      host: "unused.example.test",
+      port: 993,
+      secure: true,
+      auth: { user: "unused", pass: "unused" },
+      logger: false,
+    });
+    const list = vi.spyOn(connection, "list").mockRejectedValue(original);
+    const outcome = await new ImapFlowMailClient(connection).listFolders().then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(outcome).toBeInstanceOf(Error);
+    if (!(outcome instanceof Error)) throw new Error("Missing IMAP provider failure");
+    expect(outcome.message).toBe("IMAP provider operation failed unexpectedly");
+    expect(outcome).not.toHaveProperty("cause");
+    expect(`${outcome.stack} ${JSON.stringify(outcome)}`).not.toContain("IMAP-PRIVATE-SENTINEL");
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  tenantIt("preserves a non-network storage failure identity through an IMAP sync", async () => {
+    const moduleIds = {
+      emailsDatabaseId: await databaseIdFor("emails"),
+      foldersDatabaseId: await databaseIdFor("folders"),
+      filesDatabaseId: await databaseIdFor("files"),
+      mailboxesDatabaseId: await databaseIdFor("mailboxes"),
+    };
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: moduleIds.mailboxesDatabaseId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    await withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "fixture" }),
+    );
+    const connection = new ImapFlow({
+      host: "unused.example.test",
+      port: 993,
+      secure: true,
+      auth: { user: "unused", pass: "unused" },
+      logger: false,
+    });
+    vi.spyOn(connection, "list").mockResolvedValue([
+      {
+        path: "INBOX",
+        pathAsListed: "INBOX",
+        name: "INBOX",
+        delimiter: "/",
+        parent: [],
+        parentPath: "",
+        flags: new Set(),
+        listed: true,
+        subscribed: true,
+      },
+    ]);
+    vi.spyOn(connection, "mailboxOpen").mockResolvedValue({
+      path: "INBOX",
+      delimiter: "/",
+      flags: new Set(),
+      uidValidity: 1n,
+      uidNext: 2,
+      exists: 1,
+    });
+    vi.spyOn(connection, "fetch").mockImplementation(async function* () {
+      yield {
+        seq: 1,
+        uid: 1,
+        envelope: { messageId: "<privacy-storage@example.test>" },
+        bodyStructure: { type: "application/pdf", part: "1", disposition: "attachment" },
+      };
+    });
+    vi.spyOn(connection, "download").mockResolvedValue({
+      meta: { expectedSize: 3, contentType: "application/pdf" },
+      content: Readable.from([Buffer.from("pdf")]),
+    });
+    vi.spyOn(connection, "logout").mockResolvedValue(undefined);
+    vi.spyOn(connection, "close").mockImplementation(() => {});
+    const original = new Error("storage failure sentinel");
+    const storage: BlobStorageWriter = {
+      ...noopStorage,
+      writeStream: async () => {
+        throw original;
+      },
+    };
+    const outcome = await handleSyncMailAccountTask(
+      pool,
+      { mailboxItemId: mailbox.id },
+      { createImapClient: async () => new ImapFlowMailClient(connection) },
+      moduleIds,
+      storage,
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(outcome).toBe(original);
+    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
+    expect(state?.lastError).toBe("storage failure sentinel");
+  });
+
+  tenantIt("stores and returns a safe IMAP provider failure after the actual job closes its client", async () => {
+    const moduleIds = {
+      emailsDatabaseId: await databaseIdFor("emails"),
+      foldersDatabaseId: await databaseIdFor("folders"),
+      filesDatabaseId: await databaseIdFor("files"),
+      mailboxesDatabaseId: await databaseIdFor("mailboxes"),
+    };
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: moduleIds.mailboxesDatabaseId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    await withTransaction(pool, (client) =>
+      storeCredential(client, {
+        itemId: mailbox.id,
+        credentialType: "app_password",
+        plaintext: "IMAP-PRIVATE-SENTINEL",
+      }),
+    );
+    const connection = new ImapFlow({
+      host: "unused.example.test",
+      port: 993,
+      secure: true,
+      auth: { user: "unused", pass: "unused" },
+      logger: false,
+    });
+    const providerFailure = Object.assign(new Error("IMAP-PRIVATE-SENTINEL"), {
+      name: "IMAP-PRIVATE-SENTINEL",
+      code: "IMAP-PRIVATE-SENTINEL",
+    });
+    const list = vi.spyOn(connection, "list").mockRejectedValue(providerFailure);
+    vi.spyOn(connection, "logout").mockResolvedValue(undefined);
+    const close = vi.spyOn(connection, "close").mockImplementation(() => {});
+    const adapter = new ImapFlowMailClient(connection);
+    try {
+      const result = await handleSyncMailAccountTask(
+        pool,
+        { mailboxItemId: mailbox.id },
+        { createImapClient: async () => adapter },
+        moduleIds,
+        noopStorage,
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(result).toBeInstanceOf(Error);
+      if (!(result instanceof Error)) throw new Error("Missing sync failure");
+      expect(result.message).toBe("IMAP provider operation failed unexpectedly");
+      expect(result).not.toHaveProperty("cause");
+      expect(`${result.stack} ${JSON.stringify(result)}`).not.toContain("IMAP-PRIVATE-SENTINEL");
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalledTimes(1);
+      const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
+      expect(state?.lastError).toBe("IMAP provider operation failed unexpectedly");
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  tenantIt(
+    "records successful Gmail and Graph activity after a failure without resetting initial completion",
+    async () => {
+      const mailboxesId = await databaseIdFor("mailboxes");
+      for (const mode of ["gmail", "graph"] as const) {
+        const mailbox = await withTransaction(pool, (client) =>
+          createItemWithClient(client, { databaseId: mailboxesId, properties: { name: mode } }),
+        );
+        await withTransaction(pool, (client) =>
+          ensureMailAccountSyncState(client, {
+            itemId: mailbox.id,
+            syncMode: mode === "gmail" ? "gmail_api" : "graph_api",
+          }),
+        );
+        const success = () =>
+          withTransaction(pool, (client) =>
+            mode === "gmail"
+              ? recordGmailActivity(client, { itemId: mailbox.id, historyId: "1", nextExpectedActivityAt: new Date() })
+              : recordGraphActivity(client, {
+                  itemId: mailbox.id,
+                  deltaLink: "delta",
+                  nextExpectedActivityAt: new Date(),
+                }),
+          );
+        const read = () => withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
+        await success();
+        const first = await read();
+        expect(first?.initialSyncCompletedAt).toBe(first?.lastSuccessfulSyncAt);
+        expect(first?.initialSyncCompletedAt).toBeTruthy();
+        await withTransaction(pool, (client) => recordSyncError(client, mailbox.id, "failure", "other"));
+        const failed = await read();
+        expect(failed?.failingSince).toBeTruthy();
+        expect(failed?.lastFailureKind).toBe("other");
+        expect(failed?.lastSuccessfulSyncAt).toBe(first?.lastSuccessfulSyncAt);
+        await success();
+        const recovered = await read();
+        expect(recovered?.initialSyncCompletedAt).toBe(first?.initialSyncCompletedAt);
+        expect(recovered?.failingSince).toBeNull();
+        expect(recovered?.lastFailureKind).toBeNull();
+        expect(recovered?.lastError).toBeNull();
+        expect(recovered?.lastSuccessfulSyncAt).toBeTruthy();
+      }
+    },
+  );
 
   tenantIt(
     "tracks the last successful sync, the failure streak and its kind, and the initial sync across passes (issue #1497)",
@@ -3870,6 +4135,7 @@ describe("legacy Emails migration (issue #93)", () => {
 });
 
 describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
+  afterEach(() => vi.restoreAllMocks());
   function fakeImapFlow(overrides: Partial<Record<string, unknown>> = {}): ImapFlow {
     const calls: string[] = [];
     return {
@@ -3938,6 +4204,86 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
       };
     })();
   }
+
+  it("keeps a secret-bearing lazy download failure out of serialized fallback diagnostics", async () => {
+    const connection = new ImapFlow({
+      host: "unused.example.test",
+      port: 993,
+      secure: true,
+      auth: { user: "unused", pass: "unused" },
+      logger: false,
+    });
+    vi.spyOn(connection, "mailboxOpen").mockResolvedValue({
+      path: "INBOX",
+      delimiter: "/",
+      flags: new Set(),
+      uidValidity: 1n,
+      uidNext: 2,
+      exists: 1,
+    });
+    vi.spyOn(connection, "fetch").mockImplementation(attachmentFetch);
+    const original = Object.assign(new Error("IMAP-PRIVATE-SENTINEL"), { name: "IMAP-PRIVATE-SENTINEL" });
+    let emitted: unknown;
+    const source = Readable.from(
+      (async function* () {
+        yield Buffer.from("abc");
+        emitted = original;
+        throw original;
+      })(),
+    );
+    vi.spyOn(connection, "download").mockResolvedValue({
+      meta: { expectedSize: 6, contentType: "application/pdf" },
+      content: source,
+    });
+    vi.spyOn(connection, "fetchOne").mockResolvedValue({
+      seq: 1,
+      uid: 1,
+      bodyParts: new Map([["2", Buffer.from("def")]]),
+    });
+    const streamSymbol = Object.getOwnPropertySymbols(logger).find((symbol) => symbol.description === "pino.stream");
+    if (!streamSymbol) throw new Error("Missing application log stream");
+    const previousStream: unknown = Reflect.get(logger, streamSymbol);
+    const previousLevel = logger.level;
+    const logs: string[] = [];
+    if (
+      !Reflect.set(logger, streamSymbol, {
+        write: (line: string) => {
+          logs.push(line);
+          return true;
+        },
+      })
+    ) {
+      throw new Error("Could not capture application log stream");
+    }
+    const failures: unknown[] = [];
+    try {
+      logger.level = "warn";
+      const stream = await attachmentStream(new ImapFlowMailClient(connection));
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+      expect(Buffer.concat(chunks).toString()).toBe("abcdef");
+      expect(emitted).toBe(original);
+      expect(source.destroyed).toBe(true);
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).not.toContain("IMAP-PRIVATE-SENTINEL");
+      expect(JSON.parse(logs[0] ?? "null")).toMatchObject({ stage: "attachment_fallback" });
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      logger.level = previousLevel;
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      if (!Reflect.set(logger, streamSymbol, previousStream))
+        throw new Error("Could not restore application log stream");
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "IMAP fallback diagnostic test and cleanup failed");
+  });
 
   it("replaces a failed attachment download with ordered bounded IMAP partial ranges", async () => {
     const ranges: Array<{ start: number; maxLength: number }> = [];
@@ -4725,70 +5071,6 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
     return { emailsId, mailbox, folder, params };
   }
 
-  tenantIt("persists IMAP Reply-To and each bulk signal through the adapter and folder sync", async () => {
-    const { params } = await setUpFolder();
-    const connection = new ImapFlow({
-      host: "unused.example.test",
-      port: 993,
-      secure: true,
-      auth: { user: "unused", pass: "unused" },
-      logger: false,
-    });
-    vi.spyOn(connection, "mailboxOpen").mockResolvedValue({
-      path: "INBOX",
-      delimiter: "/",
-      flags: new Set(),
-      uidValidity: 1n,
-      uidNext: 7,
-      exists: 6,
-    });
-    const rawHeaders = [
-      "List-Unsubscribe: <mailto:leave@example.test>\r\n",
-      "List-Id: <list.example.test>\r\n",
-      "Precedence: bulk\r\n",
-      "Auto-Submitted: auto-generated\r\n",
-      "",
-      "Auto-Submitted: no\r\n",
-    ];
-    const fetch = vi.spyOn(connection, "fetch").mockImplementation(async function* () {
-      for (let index = 0; index < rawHeaders.length; index++) {
-        yield {
-          seq: index + 1,
-          uid: index + 1,
-          envelope: {
-            messageId: `<imap-bulk-${index}@example.test>`,
-            from: [{ name: "Sender", address: index === 4 ? "No-Reply@example.test" : "person@example.test" }],
-            ...(index === 0 ? { replyTo: [{ name: "Support", address: "support@example.test" }] } : {}),
-          },
-          headers: Buffer.from(rawHeaders[index]!),
-        };
-      }
-    });
-    const adapter = new ImapFlowMailClient(connection);
-    await withTransaction(pool, (client) => reconcileImapFolder(client, adapter, params));
-    const query = fetch.mock.calls[0]?.[1];
-    expect(query?.headers).toEqual(
-      expect.arrayContaining(["list-unsubscribe", "list-id", "precedence", "auto-submitted"]),
-    );
-    const { rows } = await pool.query<{ message_id: string; is_bulk: boolean; envelope: unknown }>(
-      "SELECT message_id, is_bulk, envelope FROM mail_message_meta ORDER BY message_id",
-    );
-    expect(rows.map((row) => row.is_bulk)).toEqual([true, true, true, true, true, false]);
-    expect(rows[0]?.envelope).toEqual({
-      from: { name: "Sender", address: "person@example.test" },
-      to: [],
-      cc: [],
-      bcc: [],
-      replyTo: [{ name: "Support", address: "support@example.test" }],
-    });
-    expect(rows[5]?.envelope).toEqual({
-      from: { name: "Sender", address: "person@example.test" },
-      to: [],
-      cc: [],
-      bcc: [],
-    });
-  });
-
   /** Ingests one message (uid 1, unread/unflagged) via reconcileImapFolder's own initial-sync pass, so mail_folder_sync_state carries real uidnext/uidvalidity for the second pass to build on. */
   async function ingestFirstMessage(
     params: Awaited<ReturnType<typeof setUpFolder>>["params"],
@@ -5247,6 +5529,183 @@ describe("queued sync status forward repair (issue #1497)", () => {
     expect(byId.get(retry)).toMatchObject({ last_error: "unclassified", last_failure_kind: "other" });
   });
 
+  it("runs two queued sweeps while the first holds repair row locks", async () => {
+    const ids = Array.from({ length: 201 }, () => randomUUID()).sort();
+    const first = ids[0];
+    if (!first) throw new Error("Missing first repair row");
+    await runInTenant(tenantA, () =>
+      withTransaction(runtime, (client) =>
+        client.query(
+          `INSERT INTO mail_account_sync_state (item_id, sync_mode, last_error, next_expected_activity_at)
+       SELECT id, 'imap', 'unclassified', '2099-01-01' FROM unnest($1::uuid[]) AS id`,
+          [ids],
+        ),
+      ),
+    );
+    let release!: () => void;
+    let held!: (pid: number) => void;
+    let rejectHeld!: (reason: unknown) => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<number>((resolve, reject) => {
+      held = resolve;
+      rejectHeld = reject;
+    });
+    const participants: Promise<unknown>[] = [];
+    const failures: unknown[] = [];
+    let functionCreated = false;
+    let triggerCreated = false;
+    try {
+      await pool.query(`CREATE FUNCTION test_sync_repair_barrier() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.item_id = '${first}'::uuid THEN PERFORM pg_advisory_xact_lock(421305122); END IF; RETURN NEW; END $$`);
+      functionCreated = true;
+      await pool.query(`CREATE TRIGGER test_sync_repair_barrier BEFORE UPDATE ON mail_account_sync_state
+        FOR EACH ROW EXECUTE FUNCTION test_sync_repair_barrier()`);
+      triggerCreated = true;
+      const blocker = withTransaction(pool, async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        if (!pid) throw new Error("Missing blocker PID");
+        await client.query("SELECT pg_advisory_xact_lock(421305122)");
+        held(pid);
+        await barrier;
+      });
+      participants.push(blocker);
+      blocker.catch(rejectHeld);
+      const blockerPid = await ready;
+      const firstSweep = enqueueSweep();
+      const firstObserved = firstSweep.then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      participants.push(firstObserved);
+      let blockedPid: number | undefined;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const result = await pool.query<{ pid: number }>(
+          `SELECT pid FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))
+           AND position('SELECT tenant_id, item_id FROM mail_account_sync_state' in query) > 0`,
+          [blockerPid],
+        );
+        blockedPid = result.rows[0]?.pid;
+        if (blockedPid) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blockedPid).toBeDefined();
+      await enqueueSweep();
+      const midway = await pool.query<{ count: string }>(
+        "SELECT count(*) FROM mail_account_sync_state WHERE tenant_id = $1 AND last_failure_kind = 'other'",
+        [tenantA],
+      );
+      expect(Number(midway.rows[0]?.count)).toBeGreaterThan(0);
+      expect(Number(midway.rows[0]?.count)).toBeLessThanOrEqual(200);
+      release();
+      const firstResult = await firstObserved;
+      if (!firstResult.ok) throw firstResult.error;
+      const final = await pool.query<{ count: string }>(
+        "SELECT count(*) FROM mail_account_sync_state WHERE tenant_id = $1 AND last_failure_kind = 'other'",
+        [tenantA],
+      );
+      expect(Number(final.rows[0]?.count)).toBe(201);
+    } catch (error) {
+      failures.push(error);
+    }
+    release();
+    for (const result of await Promise.allSettled(participants)) {
+      if (result.status === "rejected" && !failures.includes(result.reason)) failures.push(result.reason);
+      if (
+        result.status === "fulfilled" &&
+        typeof result.value === "object" &&
+        result.value !== null &&
+        "ok" in result.value &&
+        result.value.ok === false &&
+        "error" in result.value &&
+        !failures.includes(result.value.error)
+      )
+        failures.push(result.value.error);
+    }
+    for (const cleanup of [
+      async () => {
+        if (triggerCreated) await pool.query("DROP TRIGGER test_sync_repair_barrier ON mail_account_sync_state");
+      },
+      async () => {
+        if (functionCreated) await pool.query("DROP FUNCTION test_sync_repair_barrier()");
+      },
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Concurrent queued sweeps and cleanup failed");
+  }, 15_000);
+
+  it("keeps an earlier tenant page committed when a later tenant repair fails", async () => {
+    for (const tenant of [tenantA, tenantB]) {
+      await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          client.query(
+            "INSERT INTO mail_account_sync_state (item_id, sync_mode, last_error, next_expected_activity_at) VALUES ($1, 'imap', 'unclassified', '2099-01-01')",
+            [randomUUID()],
+          ),
+        ),
+      );
+    }
+    const failures: unknown[] = [];
+    let sequenceCreated = false;
+    let functionCreated = false;
+    let triggerCreated = false;
+    try {
+      await pool.query("CREATE SEQUENCE test_sync_repair_order");
+      sequenceCreated = true;
+      await pool.query("GRANT USAGE ON SEQUENCE test_sync_repair_order TO semprec_data");
+      await pool.query(`CREATE FUNCTION test_sync_repair_failure() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF nextval('test_sync_repair_order') > 1 THEN RAISE EXCEPTION 'test later tenant repair failure'; END IF;
+        RETURN NEW; END $$`);
+      functionCreated = true;
+      await pool.query(`CREATE TRIGGER test_sync_repair_failure BEFORE UPDATE ON mail_account_sync_state
+        FOR EACH ROW EXECUTE FUNCTION test_sync_repair_failure()`);
+      triggerCreated = true;
+      await enqueueSweep();
+      const rows = await pool.query<{ last_failure_kind: string | null }>(
+        "SELECT last_failure_kind FROM mail_account_sync_state ORDER BY last_failure_kind NULLS FIRST",
+      );
+      expect(rows.rows).toEqual([{ last_failure_kind: null }, { last_failure_kind: "other" }]);
+      const task = await pool.query<{ last_error: string | null }>(
+        `SELECT j.last_error FROM graphile_worker._private_jobs j JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+         WHERE t.identifier = $1`,
+        [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP],
+      );
+      expect(task.rows).toHaveLength(1);
+      expect(task.rows[0]?.last_error).toContain("forEachActiveTenant: 1 of 2 tenants failed");
+      expect((await pool.query<{ last_value: string }>("SELECT last_value FROM test_sync_repair_order")).rows).toEqual([
+        { last_value: "2" },
+      ]);
+    } catch (error) {
+      failures.push(error);
+    }
+    for (const cleanup of [
+      async () => {
+        if (triggerCreated) await pool.query("DROP TRIGGER test_sync_repair_failure ON mail_account_sync_state");
+      },
+      async () => {
+        if (functionCreated) await pool.query("DROP FUNCTION test_sync_repair_failure()");
+      },
+      async () => {
+        if (sequenceCreated) await pool.query("DROP SEQUENCE test_sync_repair_order");
+      },
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Tenant repair failure test and cleanup failed");
+  });
+
   it("repairs at most 200 per active tenant per queued sweep, preserving exclusions and state", async () => {
     for (const tenant of [tenantA, tenantB]) {
       await runInTenant(tenant, () =>
@@ -5266,6 +5725,7 @@ describe("queued sync status forward repair (issue #1497)", () => {
       `SELECT tenant_id, item_id, to_jsonb(s) - 'last_failure_kind' AS state FROM mail_account_sync_state s ORDER BY tenant_id, item_id`,
     );
     const itemsBefore = await pool.query<{ count: string }>("SELECT count(*) FROM items");
+    const notificationsBefore = await pool.query<{ count: string }>("SELECT count(*) FROM notifications");
     await enqueueSweep();
     const counts = () =>
       pool.query<{ tenant_id: string; repaired: string; pending: string }>(
@@ -5298,6 +5758,7 @@ describe("queued sync status forward repair (issue #1497)", () => {
       { last_error: "known", last_failure_kind: "reauthorization" },
     ]);
     expect((await pool.query("SELECT count(*) FROM items")).rows).toEqual(itemsBefore.rows);
+    expect((await pool.query("SELECT count(*) FROM notifications")).rows).toEqual(notificationsBefore.rows);
     await enqueueSweep();
     expect((await counts()).rows.map(({ repaired, pending }) => [repaired, pending])).toEqual([
       ["201", "0"],

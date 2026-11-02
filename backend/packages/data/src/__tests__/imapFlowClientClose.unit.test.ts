@@ -42,7 +42,7 @@ describe("ImapFlowMailClient.close (issue #1510)", () => {
     expect(calls).toEqual({ logout: 1, close: 1 });
   });
 
-  it("still closes the socket and resolves when LOGOUT fails, and logs only the error's name", async () => {
+  it("still closes the socket when LOGOUT fails and logs only a fixed stage", async () => {
     const warn = vi.spyOn(logger, "warn");
     const { client, calls } = clientWith({
       logout: async () => {
@@ -53,7 +53,7 @@ describe("ImapFlowMailClient.close (issue #1510)", () => {
     await expect(client.close()).resolves.toBeUndefined();
 
     expect(calls.close).toBe(1);
-    expect(warn).toHaveBeenCalledWith({ errorName: "Error" }, expect.any(String));
+    expect(warn).toHaveBeenCalledWith({ stage: "logout" }, expect.any(String));
     expect(JSON.stringify(warn.mock.calls)).not.toContain("app-password-leak-check");
   });
 
@@ -70,7 +70,7 @@ describe("ImapFlowMailClient.close (issue #1510)", () => {
     expect(calls.close).toBe(1);
   });
 
-  it("still resolves when closing the socket itself throws, and logs only the error's name", async () => {
+  it("still resolves when closing the socket throws and logs only a fixed stage", async () => {
     const warn = vi.spyOn(logger, "warn");
     const { client, calls } = clientWith({
       logout: async () => undefined,
@@ -82,6 +82,19 @@ describe("ImapFlowMailClient.close (issue #1510)", () => {
     await expect(client.close()).resolves.toBeUndefined();
 
     expect(calls.close).toBe(1);
-    expect(warn).toHaveBeenCalledWith({ errorName: "Error" }, expect.any(String));
+    expect(warn).toHaveBeenCalledWith({ stage: "close" }, expect.any(String));
+  });
+
+  it("still closes when the logout diagnostic itself fails", async () => {
+    vi.spyOn(logger, "warn").mockImplementation(() => {
+      throw new Error("password sentinel");
+    });
+    const { client, calls } = clientWith({
+      logout: async () => {
+        throw new Error("password sentinel");
+      },
+    });
+    await expect(client.close()).resolves.toBeUndefined();
+    expect(calls.close).toBe(1);
   });
 });

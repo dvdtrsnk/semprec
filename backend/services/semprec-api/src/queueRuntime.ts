@@ -36,9 +36,9 @@ export interface ApiQueueRuntime {
  * mail jobs resolve the mail databases' ids themselves, per job or per tenant pass, inside that
  * tenant's scope (`resolveMailModuleIds`): nothing is captured at boot, so this starts on a
  * database the mail module is not seeded in, and a tenant without those databases fails only the
- * job that needs them, naming the missing module ids and the seed CLI. Gmail-mode and Graph-mode mail
- * accounts sync through the transports `createMailSyncAdapters` builds from this process's environment
- * (#1505, #1508); the IMAP transport is not wired yet (#1510). The remaining adapters (an external
+ * job that needs them, naming the missing module ids and the seed CLI. Gmail, Graph and IMAP mail
+ * accounts sync through the transports `createMailSyncAdapters` builds (#1505, #1508, #1510).
+ * The remaining adapters (an external
  * library-metadata fetcher, mail blob storage, a legacy raw-MIME fetcher, push senders) still stay on
  * `createApiCoreTaskList`'s own defaults here — wiring one in is each adapter's own composition-root
  * concern once it exists.
@@ -59,7 +59,7 @@ export async function createApiQueueRuntime(
     pool,
     actionRegistry,
     undefined, // libraryMetadataFetcher
-    createMailSyncAdapters({ pool, env: process.env }), // mailSyncAdapters: Gmail and Graph; IMAP only after #1510
+    createMailSyncAdapters({ pool, env: process.env }), // mailSyncAdapters: Gmail, Graph and IMAP
     undefined, // mailBlobStorage
     undefined, // legacyRawMimeFetcher
     moduleRegistry,

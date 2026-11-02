@@ -10,6 +10,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { Pool } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import type { MailServerEndpoint, MailSyncAdapterFactory } from "@semprec/data";
+import * as data from "@semprec/data";
 import {
   createTenantZeroUser,
   ensureMailAccountSyncState,
@@ -539,6 +540,33 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
   ] as const;
   let savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string>>;
   let runtime: ApiQueueRuntime | undefined;
+  let restoreMailLog: (() => void) | undefined;
+
+  async function captureMailLog(): Promise<string[]> {
+    const moduleUrl = new URL("../../../../packages/data/src/mail/logger.ts", import.meta.url).href;
+    const loaded: unknown = await import(moduleUrl);
+    if (typeof loaded !== "object" || loaded === null) throw new Error("Missing application mail logger module");
+    const mailLogger: unknown = Reflect.get(loaded, "logger");
+    if (typeof mailLogger !== "object" || mailLogger === null) throw new Error("Missing application mail logger");
+    const stream = Object.getOwnPropertySymbols(mailLogger).find((symbol) => symbol.description === "pino.stream");
+    if (!stream) throw new Error("Missing application mail log stream");
+    const previous: unknown = Reflect.get(mailLogger, stream);
+    const lines: string[] = [];
+    if (
+      !Reflect.set(mailLogger, stream, {
+        write: (line: string) => {
+          lines.push(line);
+          return true;
+        },
+      })
+    ) {
+      throw new Error("Could not capture mail log stream");
+    }
+    restoreMailLog = () => {
+      if (!Reflect.set(mailLogger, stream, previous)) throw new Error("Could not restore mail log stream");
+    };
+    return lines;
+  }
 
   /** Routes the requests to the hosts of one provider to its fake and leaves every other request to the real `fetch`. */
   function stubProviderFetch(provider: typeof fetch, hosts: readonly string[]): void {
@@ -619,13 +647,75 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
   });
 
   afterEach(async () => {
-    await runtime?.stop();
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
-    for (const key of ENV_KEYS) setEnv(key, savedEnv[key]);
+    const failures: unknown[] = [];
+    for (const cleanup of [
+      async () => runtime?.stop(),
+      async () => {
+        restoreMailLog?.();
+        restoreMailLog = undefined;
+      },
+      async () => vi.unstubAllGlobals(),
+      async () => vi.restoreAllMocks(),
+      async () => {
+        for (const key of ENV_KEYS) setEnv(key, savedEnv[key]);
+      },
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Mail adapter test cleanup failed");
   });
 
   describe("Gmail-mode accounts (issue #1505)", () => {
+    it.each(["request", "body"] as const)(
+      "keeps a secret-bearing Gmail %s failure out of stored and queued errors",
+      async (stage) => {
+        const mailboxId = await createGmailMailbox("Private provider failure");
+        const google = createFakeGoogle();
+        let original: Error | undefined;
+        let bearer: string | null = null;
+        const fetchImpl: typeof fetch = async (input, init) => {
+          if (!hrefOf(input).startsWith(GMAIL_API_PREFIX)) return google.fetchImpl(input, init);
+          bearer = new Headers(init?.headers).get("Authorization");
+          original = new Error(`GMAIL-PRIVATE-SENTINEL ${bearer}`);
+          if (stage === "request") throw original;
+          const failure = original;
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.error(failure);
+              },
+            }),
+          );
+        };
+        stubProviderFetch(fetchImpl, GOOGLE_HOSTS);
+        await startRuntimeWith({ gmail: true });
+        const logs = await captureMailLog();
+        await enqueueAccountSync(mailboxId);
+        await waitFor(async () => (await syncErrorOf(mailboxId)) !== null);
+        await waitFor(async () => (await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC)).length > 0);
+        const stored = await syncErrorOf(mailboxId);
+        const queued = await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC);
+        expect(original).toBeInstanceOf(Error);
+        expect(bearer).toMatch(/^Bearer ya29\.access-/);
+        expect(stored).toBe(
+          stage === "request"
+            ? "Gmail sync provider request failed unexpectedly"
+            : "Gmail sync provider response could not be read",
+        );
+        expect(queued.join("\n")).toContain(stored);
+        expect(`${stored} ${queued.join("\n")}`).not.toContain("GMAIL-PRIVATE-SENTINEL");
+        expect(`${stored} ${queued.join("\n")}`).not.toContain(bearer);
+        expect(logs.some((line) => line.includes("Mail sync failed"))).toBe(true);
+        expect(logs.join("\n")).not.toContain("GMAIL-PRIVATE-SENTINEL");
+        expect(logs.join("\n")).not.toContain(bearer);
+      },
+    );
+
     it("persists bulk indicators and Reply-To through the Gmail adapter and production sync", async () => {
       const mailboxId = await createGmailMailbox("Header sync");
       const google = createFakeGoogle({
@@ -729,6 +819,51 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
   });
 
   describe("Graph-mode accounts (issue #1508)", () => {
+    it.each(["request", "body"] as const)(
+      "keeps a secret-bearing Graph %s failure out of stored and queued errors",
+      async (stage) => {
+        const mailboxId = await createGraphMailbox("Private provider failure");
+        const microsoft = createFakeMicrosoft();
+        let original: Error | undefined;
+        let bearer: string | null = null;
+        const fetchImpl: typeof fetch = async (input, init) => {
+          if (!hrefOf(input).startsWith(GRAPH_API_PREFIX)) return microsoft.fetchImpl(input, init);
+          bearer = new Headers(init?.headers).get("Authorization");
+          original = new Error(`GRAPH-PRIVATE-SENTINEL ${bearer}`);
+          if (stage === "request") throw original;
+          const failure = original;
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.error(failure);
+              },
+            }),
+          );
+        };
+        stubProviderFetch(fetchImpl, MICROSOFT_HOSTS);
+        await startRuntimeWith({ graph: true });
+        const logs = await captureMailLog();
+        await enqueueAccountSync(mailboxId);
+        await waitFor(async () => (await syncErrorOf(mailboxId)) !== null);
+        await waitFor(async () => (await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC)).length > 0);
+        const stored = await syncErrorOf(mailboxId);
+        const queued = await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC);
+        expect(original).toBeInstanceOf(Error);
+        expect(bearer).toMatch(/^Bearer eyJ-access-/);
+        expect(stored).toBe(
+          stage === "request"
+            ? "Graph sync provider request failed unexpectedly"
+            : "Graph sync provider response could not be read",
+        );
+        expect(queued.join("\n")).toContain(stored);
+        expect(`${stored} ${queued.join("\n")}`).not.toContain("GRAPH-PRIVATE-SENTINEL");
+        expect(`${stored} ${queued.join("\n")}`).not.toContain(bearer);
+        expect(logs.some((line) => line.includes("Mail sync failed"))).toBe(true);
+        expect(logs.join("\n")).not.toContain("GRAPH-PRIVATE-SENTINEL");
+        expect(logs.join("\n")).not.toContain(bearer);
+      },
+    );
+
     it("persists bulk indicators and Reply-To through the Graph adapter and production sync", async () => {
       const mailboxId = await createGraphMailbox("Header sync");
       const microsoft = createFakeMicrosoft({
@@ -1203,6 +1338,42 @@ describe("IMAP-mode accounts (issue #1510)", () => {
     if (!row) throw new Error(`fixture: no mail_account_sync_state row for ${mailboxItemId}`);
     return row.last_error;
   }
+
+  it.each([
+    ["undefined", undefined],
+    ["object", { secret: "IMAP-PRIVATE-SENTINEL" }],
+    ["nested aggregate", new AggregateError([new Error("IMAP-PRIVATE-SENTINEL")], "IMAP-PRIVATE-SENTINEL")],
+  ])("sanitizes an unknown %s connection failure without an incorrect classification", async (_name, failure) => {
+    const mailboxId = await createImapMailbox("Private failure");
+    const provider = vi.spyOn(data, "openImapConnection").mockRejectedValue(failure);
+    const adapters = createMailSyncAdapters({ pool, env: {} });
+    if (!adapters.createImapClient) throw new Error("Missing IMAP factory");
+    const result = await inTenantZero(() => rejectionOf(adapters.createImapClient!(mailboxId, IMAP_PASSWORD)));
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(result).toBeInstanceOf(Error);
+    if (!(result instanceof Error)) throw new Error("Missing IMAP failure");
+    expect(result.message).toBe("IMAP connection failed unexpectedly");
+    expect(result).not.toHaveProperty("cause");
+    expect(result).not.toBeInstanceOf(MailConnectionLimitError);
+    expect(result).not.toBeInstanceOf(MailReauthorizationRequiredError);
+    expect(result).not.toBeInstanceOf(MailServerUnreachableError);
+    expect(`${result.stack} ${JSON.stringify(result)}`).not.toContain("IMAP-PRIVATE-SENTINEL");
+  });
+
+  it("retains unreachable classification with a fresh safe error when the original was modified", async () => {
+    const mailboxId = await createImapMailbox("Private unreachable");
+    const original = new MailServerUnreachableError();
+    original.message = "IMAP-PRIVATE-SENTINEL";
+    original.name = "IMAP-PRIVATE-SENTINEL";
+    vi.spyOn(data, "openImapConnection").mockRejectedValue(original);
+    const adapters = createMailSyncAdapters({ pool, env: {} });
+    if (!adapters.createImapClient) throw new Error("Missing IMAP factory");
+    const result = await inTenantZero(() => rejectionOf(adapters.createImapClient!(mailboxId, IMAP_PASSWORD)));
+    expect(result).toBeInstanceOf(MailServerUnreachableError);
+    expect(result).not.toBe(original);
+    expect(result).toMatchObject({ message: "The mail server could not be reached" });
+    expect(JSON.stringify(result)).not.toContain("IMAP-PRIVATE-SENTINEL");
+  });
 
   it("a pass downloads the messages of an IMAP mailbox from its stored settings, then closes the socket", async () => {
     const server = await startFakeImapServer(imapCertificate);

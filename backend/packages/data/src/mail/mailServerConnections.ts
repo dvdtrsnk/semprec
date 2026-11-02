@@ -98,10 +98,6 @@ function codeOf(value: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-function nameOf(error: unknown): string {
-  return error instanceof Error ? error.name : "NonError";
-}
-
 /** The error and every error in its `cause` chain, outermost first, each object once. */
 function errorChain(error: unknown): unknown[] {
   const chain: unknown[] = [];
@@ -133,16 +129,22 @@ function isConnectionFailure(error: unknown): boolean {
 /**
  * Maps a connect, refusal or TLS failure to MailServerUnreachableError and returns every other error
  * unchanged. The mapped error has no cause and names no address, so a refused address cannot be told
- * apart from an unreachable server. The host name and the error's name and code are logged; the
- * resolved address is not.
+ * apart from an unreachable server. Diagnostics carry only a fixed stage.
  */
-function mapConnectionFailure(error: unknown, host: string): unknown {
+function mapConnectionFailure(error: unknown): unknown {
   if (isAuthenticationFailure(error) || !isConnectionFailure(error)) return error;
-  const reasonCode = errorChain(error)
-    .map(codeOf)
-    .find((code) => code !== undefined);
-  logger.warn({ host, errorName: nameOf(error), reasonCode }, "Mail server could not be reached");
+  const observed: unknown[] = [error];
+  connectionDiagnostic("connect", observed);
   return new MailServerUnreachableError();
+}
+
+function connectionDiagnostic(stage: "connect" | "connect_close" | "connect_event", observed: unknown[]): void {
+  try {
+    logger.warn({ stage }, "Mail connection reported a failure");
+  } catch (error) {
+    observed.push(error);
+    // A diagnostic failure cannot replace the owned connection outcome.
+  }
 }
 
 function policyOf(options: MailServerConnectionOptions): OutboundAddressPolicy {
@@ -158,12 +160,13 @@ function literalRefusal(host: string, policy: OutboundAddressPolicy): OutboundAd
   return isIP(host) !== 0 && !policy.allowsIpLiteral(host) ? new OutboundAddressNotAllowedError(host) : undefined;
 }
 
-function closeAfterFailedConnect(client: ImapFlow, host: string): void {
+function closeAfterFailedConnect(client: ImapFlow): void {
   try {
     client.close();
   } catch (error) {
     // The connect failure is the error the caller needs; a failed close is logged and not rethrown.
-    logger.warn({ host, errorName: nameOf(error) }, "Closing an IMAP connection after a failed connect failed");
+    const observed: unknown[] = [error];
+    connectionDiagnostic("connect_close", observed);
   }
 }
 
@@ -395,17 +398,18 @@ export async function openImapFlow(
   const { endpoint } = settings;
   const policy = policyOf(options);
   const refusal = literalRefusal(endpoint.host, policy);
-  if (refusal !== undefined) throw mapConnectionFailure(refusal, endpoint.host);
+  if (refusal !== undefined) throw mapConnectionFailure(refusal);
   const client = buildImapFlow(settings, credential, options, policy, CONNECT_TIMEOUT_MS);
   // imapflow throws from its event emitter when an error has no listener, and it can emit after connect() settles.
   client.on("error", (error: unknown) => {
-    logger.warn({ host: endpoint.host, errorName: nameOf(error) }, "IMAP connection error");
+    const observed: unknown[] = [error];
+    connectionDiagnostic("connect_event", observed);
   });
   try {
     await client.connect();
   } catch (error) {
-    closeAfterFailedConnect(client, endpoint.host);
-    throw mapConnectionFailure(error, endpoint.host);
+    closeAfterFailedConnect(client);
+    throw mapConnectionFailure(error);
   }
   return client;
 }
@@ -628,17 +632,16 @@ export function createSmtpTransporter(
   options: MailServerConnectionOptions = {},
 ): MailSmtpTransporter {
   const { transporter, openSockets } = buildSmtpTransporter(settings, credential, options);
-  const host = settings.endpoint.host;
   return {
     verify: () =>
       transporter.verify().catch((error: unknown) => {
-        throw mapConnectionFailure(error, host);
+        throw mapConnectionFailure(error);
       }),
     sendMail: (message: SendMailOptions) =>
       transporter.sendMail(message).then(
         (info) => ({ refusedRecipientCount: info.rejected.length }),
         (error: unknown) => {
-          throw mapConnectionFailure(error, host);
+          throw mapConnectionFailure(error);
         },
       ),
     close: () => {

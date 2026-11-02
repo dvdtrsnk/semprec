@@ -153,26 +153,87 @@ export function walkBodyStructure(root: MessageStructureObject): MimeTree {
 }
 
 /**
- * Real `ImapMailClient` (imapReconcile.ts) backed by `imapflow`. Not exercised by this
- * issue's test suite (no live IMAP server in CI) — `imapReconcile.ts`'s reconcile logic is
- * what is actually tested, against a fake client; this class is the composition-root piece a
- * real deployment supplies, the same relationship `LibraryMetadataFetcher`'s real
- * implementation would have to `noopLibraryMetadataFetcher` in issue #25.
+ * `ImapMailClient` (imapReconcile.ts) backed by `imapflow`; the production composition root
+ * supplies this client after opening a policy-checked connection.
  */
 export class ImapFlowMailClient implements ImapMailClient {
   constructor(private readonly client: ImapFlow) {}
+
+  private async providerCall<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      const observed: unknown[] = [error];
+      imapDiagnostic("operation", observed);
+      void observed;
+      // The private provider boundary cannot expose a secret-bearing cause.
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("IMAP provider operation failed unexpectedly");
+    }
+  }
+
+  private async *providerStream<T>(source: () => AsyncIterable<T>): AsyncGenerator<T> {
+    let iterator: AsyncIterator<T>;
+    const observed: unknown[] = [];
+    try {
+      iterator = source()[Symbol.asyncIterator]();
+    } catch (error) {
+      observed.push(error);
+      imapDiagnostic("operation", observed);
+      // The private provider boundary cannot expose a secret-bearing cause.
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("IMAP provider operation failed unexpectedly");
+    }
+    let primary: { value: unknown } | undefined;
+    let completed = false;
+    try {
+      for (;;) {
+        let step: IteratorResult<T>;
+        try {
+          step = await iterator.next();
+        } catch (error) {
+          observed.push(error);
+          imapDiagnostic("operation", observed);
+          // The original is retained until iterator cleanup; it cannot cross the privacy boundary.
+          // eslint-disable-next-line preserve-caught-error
+          throw new Error("IMAP provider operation failed unexpectedly");
+        }
+        if (step.done) {
+          completed = true;
+          return;
+        }
+        yield step.value;
+      }
+    } catch (error) {
+      primary = { value: error };
+      throw error;
+    } finally {
+      try {
+        if (!completed) await iterator.return?.();
+      } catch (cleanupError) {
+        observed.push(cleanupError);
+        imapDiagnostic("stream_close", observed);
+        if (!primary) {
+          // There is no primary to replace; cleanup failure is projected without its raw cause.
+          // eslint-disable-next-line no-unsafe-finally, preserve-caught-error
+          throw new Error("IMAP provider operation failed unexpectedly");
+        }
+      }
+      void observed;
+    }
+  }
 
   async getCapabilities(): Promise<Set<string>> {
     return new Set(this.client.capabilities.keys());
   }
 
   async listFolders(): Promise<ImapFolderRef[]> {
-    const list = await this.client.list();
+    const list = await this.providerCall(() => this.client.list());
     return list.map((f) => ({ path: f.path, specialUse: f.specialUse }));
   }
 
   async selectFolder(path: string): Promise<ImapFolderSelection> {
-    const mailbox = await this.client.mailboxOpen(path);
+    const mailbox = await this.providerCall(() => this.client.mailboxOpen(path));
     return {
       uidvalidity: Number(mailbox.uidValidity),
       uidnext: mailbox.uidNext,
@@ -182,9 +243,9 @@ export class ImapFlowMailClient implements ImapMailClient {
 
   /** Decoded (transfer-encoding + charset, per `download()`'s own pipeline) text content of one bounded body part — never the attachment path, so never subject to `MAX_ATTACHMENT_BYTES`. */
   private async downloadText(uid: number, part: string): Promise<string> {
-    const { content } = await this.client.download(String(uid), part, { uid: true });
+    const { content } = await this.providerCall(() => this.client.download(String(uid), part, { uid: true }));
     const chunks: Buffer[] = [];
-    for await (const chunk of content) chunks.push(chunk as Buffer);
+    for await (const chunk of this.providerStream(() => content)) chunks.push(chunk as Buffer);
     return Buffer.concat(chunks).toString("utf8");
   }
 
@@ -203,6 +264,8 @@ export class ImapFlowMailClient implements ImapMailClient {
     let completed = false;
     let content: Readable | undefined;
 
+    let primary: { value: unknown } | undefined;
+    const observed: unknown[] = [];
     try {
       const result = await this.client.download(String(uid), part, {
         uid: true,
@@ -217,20 +280,39 @@ export class ImapFlowMailClient implements ImapMailClient {
       completed = true;
       return;
     } catch (err) {
+      observed.push(err);
       // A cap violation is a policy decision already made by nextAttachmentOffset, not a
       // stream failure — rethrow it so it reaches the caller instead of being masked by the
       // fallback below, which would silently re-run into the very same cap.
-      if (err instanceof AttachmentCapExceededError) throw err;
+      let capExceeded = false;
+      try {
+        capExceeded = err instanceof AttachmentCapExceededError;
+      } catch (classificationError) {
+        observed.push(classificationError);
+        imapDiagnostic("operation", observed);
+      }
+      if (capExceeded) {
+        primary = { value: err };
+        throw err;
+      }
       // A replacement source below is the specified recovery path. The original stream is
       // destroyed in finally so a failed or abandoned download cannot keep its socket alive.
       // Logged here (not just swallowed) since this is the only place that ever sees the
       // original stream failure — the fallback path below has no way to report it itself.
-      logger.warn(
-        { uid, part, err: err instanceof Error ? err.message : String(err) },
-        "IMAP attachment stream failed before completing; falling back to bounded partial fetches",
-      );
+      imapDiagnostic("attachment_fallback", observed);
     } finally {
-      if (!completed && content !== undefined && !content.destroyed) content.destroy();
+      if (!completed && content !== undefined && !content.destroyed) {
+        try {
+          content.destroy();
+        } catch (error) {
+          observed.push(error);
+          imapDiagnostic("stream_close", observed);
+          // Only a cleanup failure with no primary becomes the fixed outward failure.
+          // eslint-disable-next-line no-unsafe-finally, preserve-caught-error
+          if (!primary) throw new Error("IMAP provider operation failed unexpectedly");
+        }
+      }
+      void observed;
     }
 
     yield* this.fetchAttachmentRanges(uid, part, offset);
@@ -251,7 +333,7 @@ export class ImapFlowMailClient implements ImapMailClient {
     let timer: NodeJS.Timeout | undefined;
     try {
       return await Promise.race([
-        this.client.fetchOne(...args),
+        this.providerCall(() => this.client.fetchOne(...args)),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error(`IMAP partial fetch timed out after ${IMAP_PARTIAL_FETCH_TIMEOUT_MS}ms`)),
@@ -374,7 +456,7 @@ export class ImapFlowMailClient implements ImapMailClient {
   }
 
   async fetchMessagesSince(path: string, sinceUid: number): Promise<ImapFetchedMessage[]> {
-    await this.client.mailboxOpen(path);
+    await this.providerCall(() => this.client.mailboxOpen(path));
     const raws: FetchMessageObject[] = [];
     // Deliberately no `source: true`: that field is a fully-materialized `Buffer` of the whole
     // raw message, attachments included — see walkBodyStructure's header note. BODYSTRUCTURE +
@@ -383,26 +465,28 @@ export class ImapFlowMailClient implements ImapMailClient {
     // a non-Gmail server (imapReconcile.ts's "Gmail in IMAP fallback mode" support) and costs
     // nothing extra on one that doesn't support X-GM-EXT-1. `delivered-to`/`x-original-to`/
     // `envelope-to` feed deliveredToAddress's precedence rule (mail/deliveredTo.ts, issue #93).
-    for await (const raw of this.client.fetch(
-      `${sinceUid}:*`,
-      {
-        uid: true,
-        envelope: true,
-        bodyStructure: true,
-        flags: true,
-        headers: [
-          "references",
-          "delivered-to",
-          "x-original-to",
-          "envelope-to",
-          "list-unsubscribe",
-          "list-id",
-          "precedence",
-          "auto-submitted",
-        ],
-        labels: true,
-      },
-      { uid: true },
+    for await (const raw of this.providerStream(() =>
+      this.client.fetch(
+        `${sinceUid}:*`,
+        {
+          uid: true,
+          envelope: true,
+          bodyStructure: true,
+          flags: true,
+          headers: [
+            "references",
+            "delivered-to",
+            "x-original-to",
+            "envelope-to",
+            "list-unsubscribe",
+            "list-id",
+            "precedence",
+            "auto-submitted",
+          ],
+          labels: true,
+        },
+        { uid: true },
+      ),
     )) {
       if (raw.uid < sinceUid) continue; // "*" in a range can include one message below sinceUid on an empty-range edge case
       raws.push(raw);
@@ -417,7 +501,7 @@ export class ImapFlowMailClient implements ImapMailClient {
 
   async fetchVanishedSince(path: string, sinceModSeq: number): Promise<number[] | null> {
     if (!this.client.capabilities.has("QRESYNC")) return null;
-    await this.client.mailboxOpen(path);
+    await this.providerCall(() => this.client.mailboxOpen(path));
     const vanished: number[] = [];
     const onExpunge = (event: { vanished: boolean; uid?: number }) => {
       if (event.vanished && event.uid !== undefined) vanished.push(event.uid);
@@ -428,10 +512,8 @@ export class ImapFlowMailClient implements ImapMailClient {
       // not as a return value — this drains that event stream for the duration of the call.
       // Flag changes on UIDs that didn't vanish are not picked up here; they are a known-UID
       // reconcile concern handled separately by fetchFlagsChangedSince below.
-      for await (const _raw of this.client.fetch(
-        "1:*",
-        { uid: true },
-        { uid: true, changedSince: BigInt(sinceModSeq) },
+      for await (const _raw of this.providerStream(() =>
+        this.client.fetch("1:*", { uid: true }, { uid: true, changedSince: BigInt(sinceModSeq) }),
       )) {
         // draining only — see fetchFlagsChangedSince for the flags themselves.
       }
@@ -442,8 +524,8 @@ export class ImapFlowMailClient implements ImapMailClient {
   }
 
   async fetchAllUids(path: string): Promise<number[]> {
-    await this.client.mailboxOpen(path);
-    const uids = await this.client.search({ all: true }, { uid: true });
+    await this.providerCall(() => this.client.mailboxOpen(path));
+    const uids = await this.providerCall(() => this.client.search({ all: true }, { uid: true }));
     return uids === false ? [] : uids;
   }
 
@@ -458,15 +540,16 @@ export class ImapFlowMailClient implements ImapMailClient {
     path: string,
     sinceModSeq: number | null,
   ): Promise<Array<{ uid: number; flags: string[] }>> {
-    await this.client.mailboxOpen(path);
+    await this.providerCall(() => this.client.mailboxOpen(path));
     const results: Array<{ uid: number; flags: string[] }> = [];
-    const iterator = this.client
-      .fetch(
+    const iterator = this.providerStream(() =>
+      this.client.fetch(
         "1:*",
         { uid: true, flags: true },
         sinceModSeq !== null ? { uid: true, changedSince: BigInt(sinceModSeq) } : { uid: true },
-      )
-      [Symbol.asyncIterator]();
+      ),
+    )[Symbol.asyncIterator]();
+    let primary: { value: unknown } | undefined;
     try {
       // A manual `.next()` loop, not `for await`, so a step that never resolves (a server
       // that stops responding mid-stream) can be raced against a timer the same way
@@ -489,17 +572,25 @@ export class ImapFlowMailClient implements ImapMailClient {
         }
         if (step.done) break;
         if (results.length >= MAX_FLAG_FETCH_RESULTS) {
-          throw new FlagFetchCapExceededError(
-            `IMAP flag fetch for ${path} exceeded the ${MAX_FLAG_FETCH_RESULTS}-message cap`,
-          );
+          throw new FlagFetchCapExceededError(`IMAP flag fetch exceeded the ${MAX_FLAG_FETCH_RESULTS}-message cap`);
         }
         results.push({ uid: step.value.uid, flags: step.value.flags ? [...step.value.flags] : [] });
       }
+    } catch (error) {
+      primary = { value: error };
+      throw error;
     } finally {
       // Best-effort close on the cap/timeout/error paths above — imapflow has no abort signal
       // for an in-flight fetch (see FetchOptions), so this only stops local consumption of
       // whatever the server keeps streaming, same limitation fetchOneWithTimeout has.
-      await iterator.return?.();
+      try {
+        await iterator.return?.(undefined);
+      } catch (error) {
+        // A cleanup-only failure is already sanitized by providerStream.
+        // eslint-disable-next-line no-unsafe-finally
+        if (!primary) throw error;
+        imapDiagnostic("stream_close");
+      }
     }
     return results;
   }
@@ -512,9 +603,9 @@ export class ImapFlowMailClient implements ImapMailClient {
    * (mail/messageFlags.ts).
    */
   async setMessageFlag(path: string, uid: number, flag: WritableImapFlag, value: boolean): Promise<void> {
-    await this.client.mailboxOpen(path);
-    if (value) await this.client.messageFlagsAdd(String(uid), [flag], { uid: true });
-    else await this.client.messageFlagsRemove(String(uid), [flag], { uid: true });
+    await this.providerCall(() => this.client.mailboxOpen(path));
+    if (value) await this.providerCall(() => this.client.messageFlagsAdd(String(uid), [flag], { uid: true }));
+    else await this.providerCall(() => this.client.messageFlagsRemove(String(uid), [flag], { uid: true }));
   }
 
   /**
@@ -527,7 +618,7 @@ export class ImapFlowMailClient implements ImapMailClient {
     let timer: NodeJS.Timeout | undefined;
     try {
       await Promise.race([
-        this.client.append(path, raw, [...flags]),
+        this.providerCall(() => this.client.append(path, raw, [...flags])),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error(`IMAP append timed out after ${IMAP_APPEND_TIMEOUT_MS}ms`)),
@@ -543,11 +634,12 @@ export class ImapFlowMailClient implements ImapMailClient {
   /**
    * Logs out, then releases the socket (issue #1510). It never rejects: the sync job calls it in a `finally`
    * after a pass that may already have failed, and a cleanup failure must not replace that error. A LOGOUT
-   * that fails or does not answer within IMAP_LOGOUT_TIMEOUT_MS is logged by error name only, and the socket
+   * that fails or does not answer within IMAP_LOGOUT_TIMEOUT_MS is logged with a fixed stage, and the socket
    * is closed regardless.
    */
   async close(): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
+    const observed: unknown[] = [];
     try {
       await Promise.race([
         this.client.logout(),
@@ -559,20 +651,31 @@ export class ImapFlowMailClient implements ImapMailClient {
         }),
       ]);
     } catch (error) {
-      logger.warn({ errorName: errorNameOf(error) }, "IMAP logout did not complete; closing the socket");
+      observed.push(error);
+      imapDiagnostic("logout", observed);
     } finally {
       clearTimeout(timer);
       try {
         this.client.close();
       } catch (error) {
-        logger.warn({ errorName: errorNameOf(error) }, "Closing an IMAP socket failed");
+        observed.push(error);
+        imapDiagnostic("close", observed);
       }
     }
+    void observed;
   }
 }
 
-function errorNameOf(error: unknown): string {
-  return error instanceof Error ? error.name : "NonError";
+function imapDiagnostic(
+  stage: "operation" | "attachment_fallback" | "stream_close" | "logout" | "close",
+  observed: unknown[] = [],
+): void {
+  try {
+    logger.warn({ stage }, "IMAP provider operation reported a failure");
+  } catch (error) {
+    observed.push(error);
+    // Diagnostic failure cannot change the provider operation or quiet cleanup outcome.
+  }
 }
 
 const CONNECTION_LIMIT_ERROR_CODES = new Set(["ClosedAfterConnectTLS", "ClosedAfterConnectText"]);
