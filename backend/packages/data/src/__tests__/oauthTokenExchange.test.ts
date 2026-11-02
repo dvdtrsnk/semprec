@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { exchangeAuthorizationCode, MICROSOFT_TOKEN_URL } from "../mail/oauthTokenExchange.js";
+import { exchangeAuthorizationCode, MICROSOFT_TOKEN_URL, refreshAccessToken } from "../mail/oauthTokenExchange.js";
 import { MailAdminConsentRequiredError, MailAuthorizationCodeRejectedError } from "../mail/providerTypes.js";
 
 const SENTINELS = {
@@ -35,6 +35,68 @@ function expectNoSecrets(error: Error) {
   expect(text).not.toContain("SENTINEL-ACCESS");
   expect(text).not.toContain("SENTINEL-REFRESH");
 }
+
+describe("refreshAccessToken bounds", () => {
+  const refreshInput = {
+    tokenUrl: "https://idp.example/token",
+    clientId: "client",
+    clientSecret: "secret",
+    refreshToken: "refresh",
+  };
+
+  afterEach(() => vi.useRealTimers());
+
+  it("rejects a response larger than 64 KiB", async () => {
+    const fetchImpl: typeof fetch = async () => new Response("x".repeat(65_537));
+    await expect(refreshAccessToken({ ...refreshInput, fetchImpl })).rejects.toThrow("exceeds the size limit");
+  });
+
+  it("accepts a JSON response exactly 64 KiB long", async () => {
+    const prefix = '{"access_token":"access","expires_in":60,"padding":"';
+    const suffix = '"}';
+    const payload = prefix + "x".repeat(65_536 - prefix.length - suffix.length) + suffix;
+    const fetchImpl: typeof fetch = async () => new Response(payload);
+    await expect(refreshAccessToken({ ...refreshInput, fetchImpl })).resolves.toMatchObject({ accessToken: "access" });
+  });
+
+  it("aborts an unfinished request at 15 seconds", async () => {
+    vi.useFakeTimers();
+    let aborted = false;
+    const fetchImpl: typeof fetch = async (_url, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(new Error("cancelled"));
+        });
+      });
+    const outcome = refreshAccessToken({ ...refreshInput, fetchImpl });
+    const assertion = expect(outcome).rejects.toThrow("OAuth token refresh request failed");
+    await vi.advanceTimersByTimeAsync(15_000);
+    await assertion;
+    expect(aborted).toBe(true);
+  });
+
+  it("aborts an unfinished response body at the same deadline", async () => {
+    vi.useFakeTimers();
+    let aborted = false;
+    const fetchImpl: typeof fetch = async (_url, init) =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            init?.signal?.addEventListener("abort", () => {
+              aborted = true;
+              controller.error(new Error("cancelled"));
+            });
+          },
+        }),
+      );
+    const outcome = refreshAccessToken({ ...refreshInput, fetchImpl });
+    const assertion = expect(outcome).rejects.toThrow("OAuth token refresh response could not be read");
+    await vi.advanceTimersByTimeAsync(15_000);
+    await assertion;
+    expect(aborted).toBe(true);
+  });
+});
 
 describe("exchangeAuthorizationCode", () => {
   afterEach(() => vi.unstubAllGlobals());

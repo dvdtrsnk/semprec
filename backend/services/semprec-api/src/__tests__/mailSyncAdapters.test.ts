@@ -438,20 +438,20 @@ describe("createMailSyncAdapters (issues #1505, #1508)", () => {
     vi.setSystemTime(T0);
 
     const client = createGmailClient(mailboxId, STALE_JOB_CREDENTIAL);
-    await client.listLabels();
-    await client.listLabels();
+    await inTenantZero(() => client.listLabels());
+    await inTenantZero(() => client.listLabels());
     // Two requests on one token: the second one used the kept token, not a new refresh.
     expect(google.calls.presentedRefreshTokens).toEqual([STORED_REFRESH_TOKEN]);
     expect(google.calls.authorizations).toEqual(["Bearer ya29.access-1", "Bearer ya29.access-1"]);
 
     // Thirty seconds before expiry is inside the margin: the refresh happens before this request.
     vi.setSystemTime(new Date(T0.getTime() + ONE_HOUR_MS - 30_000));
-    await client.listLabels();
+    await inTenantZero(() => client.listLabels());
     expect(google.calls.presentedRefreshTokens).toHaveLength(2);
     expect(google.calls.authorizations.at(-1)).toBe("Bearer ya29.access-2");
 
     // A second client starts with no token of its own.
-    await gmailClientFactory(adapters)(mailboxId, STALE_JOB_CREDENTIAL).listLabels();
+    await inTenantZero(() => gmailClientFactory(adapters)(mailboxId, STALE_JOB_CREDENTIAL).listLabels());
     expect(google.calls.presentedRefreshTokens).toHaveLength(3);
     expect(google.calls.authorizations.at(-1)).toBe("Bearer ya29.access-3");
   });
@@ -467,7 +467,9 @@ describe("createMailSyncAdapters (issues #1505, #1508)", () => {
       }),
     );
 
-    const failure = await rejectionOf(createGmailClient(mailboxId, STALE_JOB_CREDENTIAL).listLabels());
+    const failure = await rejectionOf(
+      inTenantZero(() => createGmailClient(mailboxId, STALE_JOB_CREDENTIAL).listLabels()),
+    );
 
     expect(failure.message).toBe("OAuth token refresh rejected the stored refresh token (status 401)");
     expect(failure.message).not.toContain(GMAIL_CLIENT_SECRET);
@@ -491,7 +493,7 @@ describe("createMailSyncAdapters (issues #1505, #1508)", () => {
       }),
     );
 
-    const folders = await createGraphClient(mailboxId, STALE_JOB_CREDENTIAL).listFolders();
+    const folders = await inTenantZero(() => createGraphClient(mailboxId, STALE_JOB_CREDENTIAL).listFolders());
 
     expect(folders).toEqual([{ id: GRAPH_INBOX_ID, displayName: "Inbox", wellKnownName: "inbox" }]);
     expect(microsoft.calls.presentedRefreshTokens).toEqual([STORED_MICROSOFT_REFRESH_TOKEN]);

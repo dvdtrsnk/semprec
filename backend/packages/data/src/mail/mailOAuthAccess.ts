@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
 import { getDecryptedCredential, storeCredential } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { logger } from "./logger.js";
@@ -39,7 +40,22 @@ export async function refreshAndPersistAccessToken(
   pool: Pool,
   input: RefreshAndPersistAccessTokenInput,
 ): Promise<RefreshedAccessToken> {
+  const scope = currentTenantScope();
+  if (scope?.kind !== "tenant") throw new TenantScopeMissingError("Mail OAuth refresh requires a tenant scope");
   return withTransaction(pool, async (client) => {
+    const { rows } = await client.query<{ isolation: string; tenant: string | null }>(
+      "SELECT current_setting('transaction_isolation') AS isolation, app_current_tenant()::text AS tenant",
+    );
+    if (rows[0]?.isolation !== "read committed" || rows[0].tenant !== scope.tenantId) {
+      throw new Error("Mail OAuth refresh requires a READ COMMITTED tenant transaction");
+    }
+    await client.query(`SELECT
+      set_config('lock_timeout', CASE WHEN current_setting('lock_timeout')::interval = interval '0'
+        OR current_setting('lock_timeout')::interval > interval '30 seconds' THEN '30s'
+        ELSE current_setting('lock_timeout') END, true),
+      set_config('statement_timeout', CASE WHEN current_setting('statement_timeout')::interval = interval '0'
+        OR current_setting('statement_timeout')::interval > interval '60 seconds' THEN '60s'
+        ELSE current_setting('statement_timeout') END, true)`);
     // Lock first; the decrypting read below then sees the committed token of the previous holder.
     const locked = await client.query<{ item_id: string }>(
       `SELECT item_id FROM external_credentials WHERE item_id = $1 FOR UPDATE`,
@@ -75,14 +91,14 @@ export async function refreshAndPersistAccessToken(
         });
       } catch (err) {
         // The provider may already have invalidated the previous token, so this must be visible.
-        // Only the error name is logged: its message could carry credential material.
+        // Error names and causes can themselves contain credential material.
         logger.error(
-          { mailboxItemId: input.mailboxItemId, errorName: err instanceof Error ? err.name : typeof err },
+          { mailboxItemId: input.mailboxItemId, errorCategory: err instanceof Error ? "error" : "non_error" },
           "Persisting a rotated OAuth refresh token failed; the mailbox may need reauthorization",
         );
-        throw new Error(`Persisting the rotated OAuth refresh token failed for mailbox ${input.mailboxItemId}`, {
-          cause: err,
-        });
+        // The raw cause can contain the newly rotated token and must not escape this boundary.
+        // eslint-disable-next-line preserve-caught-error
+        throw new Error(`Persisting the rotated OAuth refresh token failed for mailbox ${input.mailboxItemId}`);
       }
     }
     return { accessToken: refreshed.accessToken, expiresAt: refreshed.expiresAt };

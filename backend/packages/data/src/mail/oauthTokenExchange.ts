@@ -4,6 +4,7 @@ import {
   MailAuthorizationCodeRejectedError,
   MailReauthorizationRequiredError,
 } from "./providerTypes.js";
+import { logger } from "./logger.js";
 
 /**
  * Generic OAuth2 refresh-token -> access-token exchange (issue #26: "the access token is
@@ -30,6 +31,12 @@ export interface AccessToken {
   refreshToken?: string;
 }
 
+class OAuthRefreshBodyTooLargeError extends Error {
+  constructor() {
+    super("OAuth token refresh response exceeds the size limit");
+  }
+}
+
 export async function refreshAccessToken(input: RefreshAccessTokenInput): Promise<AccessToken> {
   const body = new URLSearchParams({
     grant_type: "refresh_token",
@@ -40,36 +47,92 @@ export async function refreshAccessToken(input: RefreshAccessTokenInput): Promis
   });
 
   const doFetch = input.fetchImpl ?? fetch;
-  const response = await doFetch(input.tokenUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!response.ok) {
-    // Never includes `body`/the refresh token itself in the thrown message — only the status.
-    // 400/401 is both Google's and Microsoft's documented status for a revoked/expired refresh
-    // token (`invalid_grant`) — a credential problem the user must fix, not a transient/network
-    // failure worth silently retrying (issue #26: `sync_status = 'needsReauthorization'`).
-    if (response.status === 400 || response.status === 401) {
-      throw new MailReauthorizationRequiredError(
-        `OAuth token refresh rejected the stored refresh token (status ${response.status})`,
-      );
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    let response: Response;
+    try {
+      response = await doFetch(input.tokenUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      logger.warn({ errorCategory: error instanceof Error ? "error" : "non_error" }, "OAuth refresh request failed");
+      // A provider error can contain credentials or response data.
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("OAuth token refresh request failed");
     }
-    throw new Error(`OAuth token refresh failed with status ${response.status}`);
+    if (!response.ok) {
+      // Never includes `body`/the refresh token itself in the thrown message — only the status.
+      // 400/401 is both Google's and Microsoft's documented status for a revoked/expired refresh
+      // token (`invalid_grant`) — a credential problem the user must fix, not a transient/network
+      // failure worth silently retrying (issue #26: `sync_status = 'needsReauthorization'`).
+      controller.abort();
+      try {
+        await response.body?.cancel();
+      } catch (error) {
+        logger.warn({ errorCategory: error instanceof Error ? "error" : "non_error" }, "OAuth response cleanup failed");
+      }
+      if (response.status === 400 || response.status === 401) {
+        throw new MailReauthorizationRequiredError(
+          `OAuth token refresh rejected the stored refresh token (status ${response.status})`,
+        );
+      }
+      throw new Error(`OAuth token refresh failed with status ${response.status}`);
+    }
+    const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = response.body?.getReader();
+    if (!reader) throw new Error("OAuth token refresh response has no body");
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    try {
+      for (;;) {
+        const result = await reader.read();
+        if (result.done) break;
+        length += result.value.byteLength;
+        if (length > 64 * 1024) throw new OAuthRefreshBodyTooLargeError();
+        chunks.push(result.value);
+      }
+    } catch (error) {
+      controller.abort();
+      try {
+        await reader.cancel();
+      } catch (cleanupError) {
+        logger.warn(
+          { errorCategory: cleanupError instanceof Error ? "error" : "non_error" },
+          "OAuth response cleanup failed",
+        );
+      }
+      reader.releaseLock();
+      if (error instanceof OAuthRefreshBodyTooLargeError) throw error;
+      // A stream error can contain the provider response or credentials.
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("OAuth token refresh response could not be read");
+    }
+    reader.releaseLock();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    } catch {
+      throw new Error("OAuth token refresh response is not valid JSON");
+    }
+    const json = assertJsonObject(parsed, "OAuth token refresh response");
+    if (typeof json.access_token !== "string" || !json.access_token) {
+      throw new Error("OAuth token refresh response is missing a string access_token");
+    }
+    if (typeof json.expires_in !== "number" || !Number.isFinite(json.expires_in)) {
+      throw new Error("OAuth token refresh response is missing a numeric expires_in");
+    }
+    const expiresAt = new Date(Date.now() + json.expires_in * 1000);
+    if (typeof json.refresh_token === "string" && json.refresh_token) {
+      return { accessToken: json.access_token, expiresAt, refreshToken: json.refresh_token };
+    }
+    return { accessToken: json.access_token, expiresAt };
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
   }
-  const json = assertJsonObject(await response.json(), `OAuth token refresh response from ${input.tokenUrl}`);
-  if (typeof json.access_token !== "string" || !json.access_token) {
-    throw new Error(`OAuth token refresh response from ${input.tokenUrl} is missing a string access_token`);
-  }
-  if (typeof json.expires_in !== "number" || !Number.isFinite(json.expires_in)) {
-    throw new Error(`OAuth token refresh response from ${input.tokenUrl} is missing a numeric expires_in`);
-  }
-  const expiresAt = new Date(Date.now() + json.expires_in * 1000);
-  if (typeof json.refresh_token === "string" && json.refresh_token) {
-    return { accessToken: json.access_token, expiresAt, refreshToken: json.refresh_token };
-  }
-  return { accessToken: json.access_token, expiresAt };
 }
 
 export interface ExchangeAuthorizationCodeInput {
