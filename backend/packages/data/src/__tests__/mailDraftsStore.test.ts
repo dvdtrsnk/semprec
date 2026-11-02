@@ -1,8 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { runInTenant } from "@semprec/shared";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createTestTenant, withTenantTransaction } from "../testSupport/tenantFixtures.js";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  withTenantTransaction,
+} from "../testSupport/tenantFixtures.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
@@ -169,6 +175,39 @@ describe("mail drafts store (issue #1504)", () => {
     await insertMailDraft(pool, draftInput({ threadId }));
     const other = await createTestTenant(pool);
     await withTenantTransaction(pool, other, (client) => insertMailDraft(client, draftInput({ threadId })));
+  });
+
+  it("isolates draft reads and writes through the runtime role while allowing the same thread in each tenant", async () => {
+    const other = await createTestTenant(pool);
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const threadId = randomUUID();
+    const first = draftInput({ threadId });
+    const second = draftInput({ threadId });
+    const run = <T>(tenant: string, fn: Parameters<typeof withTransaction<T>>[1]) =>
+      runInTenant(tenant, () => withTransaction(runtime, fn));
+    try {
+      await run(getTenantZeroId(), (client) => insertMailDraft(client, first));
+      await run(other, (client) => insertMailDraft(client, second));
+      const duplicate = draftInput({ threadId });
+      await expect(run(getTenantZeroId(), (client) => insertMailDraft(client, duplicate))).rejects.toBeInstanceOf(
+        MailDraftThreadConflictError,
+      );
+      expect(await run(getTenantZeroId(), (client) => getMailDraft(client, duplicate.emailItemId))).toBeNull();
+      expect(await run(other, (client) => getMailDraft(client, first.emailItemId))).toBeNull();
+      await expect(run(other, (client) => markMailDraftSent(client, first.emailItemId))).rejects.toMatchObject({
+        name: "NotFoundError",
+      });
+      expect(await run(getTenantZeroId(), (client) => getMailDraft(client, first.emailItemId))).toMatchObject({
+        emailItemId: first.emailItemId,
+        sentAt: null,
+      });
+      expect(await run(other, (client) => getMailDraft(client, second.emailItemId))).toMatchObject({
+        emailItemId: second.emailItemId,
+        sentAt: null,
+      });
+    } finally {
+      await runtime.end();
+    }
   });
 
   it("allows a new agent draft once the previous one is marked sent", async () => {
