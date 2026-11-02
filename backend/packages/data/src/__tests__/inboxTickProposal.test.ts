@@ -51,6 +51,14 @@ import { confirmProposalWithClient } from "../inbox/proposalActions.js";
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
 
+// pg 8.23.0 reports these two finite owned-release paths with plain, uncoded errors.
+function isOwnedPgClosure(
+  error: unknown,
+  message: "Connection terminated" | "Client was closed and is not queryable",
+): boolean {
+  return error instanceof Error && error.constructor === Error && !("code" in error) && error.message === message;
+}
+
 /** Owns only this overlap's runtime clients, gates and operations. */
 function ownOverlap(
   runtime: Pool,
@@ -2700,7 +2708,9 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     const cleanupError = new Error("cleanup failure");
     let ran = false;
     let settled = false;
-    runtime.options.verify = (_client, done) => {
+    let checkoutGeneration: object | undefined;
+    runtime.options.verify = (client, done) => {
+      checkoutGeneration = generations.get(client);
       deliver = () => queueMicrotask(() => done());
       ready();
     };
@@ -2729,11 +2739,15 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         settled = true;
       },
       (error: unknown) => {
-        operationFailure = { value: error };
+        operationFailure = {
+          value: error,
+          generation: checkoutGeneration,
+          cancelled: checkoutGeneration !== undefined && cancellationRequests.has(checkoutGeneration),
+        };
         settled = true;
       },
     );
-    let operationFailure: { value: unknown } | undefined;
+    let operationFailure: { value: unknown; generation: object | undefined; cancelled: boolean } | undefined;
     const observedDiagnostics: Array<{ error: Error; generation: object; cancelled: boolean; operation: "checkout" }> =
       [];
     const observing = new Map<PoolClient, (error: Error) => void>();
@@ -2785,7 +2799,12 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup aggregate");
     expect(operationFailure).toBeDefined();
     if (!operationFailure) throw new Error("Missing operation failure");
-    expect(operationFailure.value).toBeInstanceOf(Error);
+    expect(operationFailure.generation).toBeDefined();
+    expect(operationFailure.cancelled).toBe(true);
+    expect(isOwnedPgClosure(operationFailure.value, "Client was closed and is not queryable")).toBe(true);
+    expect(isOwnedPgClosure(new Error("unrelated post-cancel failure"), "Client was closed and is not queryable")).toBe(
+      false,
+    );
     for (const diagnostic of observedDiagnostics) {
       expect(diagnostic.cancelled).toBe(true);
       expect(diagnostic.operation).toBe("checkout");

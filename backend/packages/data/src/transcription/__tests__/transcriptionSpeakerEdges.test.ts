@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import "../../domainWriteHooks.js";
 import {
@@ -18,6 +18,7 @@ import { insertValueLink, listValueLinksByItemIds } from "../../chokePoint/value
 import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
 import { runInTenant } from "@semprec/shared";
 import { writeComputed } from "../../chokePoint/itemsStore.js";
+import * as itemsStore from "../../chokePoint/itemsStore.js";
 import { NotFoundError, ValidationError } from "../../errors.js";
 import { listTranscriptSpeakers } from "../transcriptionSpeakerEdges.js";
 import { createTranscriptSpeakersRouteHandler } from "../transcriptionRouteHandlers.js";
@@ -411,6 +412,8 @@ describe("Transcript speaker mappings (issue #185)", () => {
                 (error: unknown) => ({ ok: false as const, error }),
               );
             let failure: { error: unknown } | undefined;
+            let lateParticipant: Promise<unknown> | undefined;
+            let restoreAdmission = () => {};
             try {
               await bounded(ready);
               const lock = await pool.query<{ held: boolean }>(
@@ -457,13 +460,20 @@ describe("Transcript speaker mappings (issue #185)", () => {
                 },
               );
               if (control === "late" || control === "late-undefined") {
-                const contender = operations.run(async () => {
-                  await expectAttempt({ speaker: "SPEAKER_01" }, { status: 409, code: "value_link_busy" });
+                const actualLock = itemsStore.lockItemByIdNowait;
+                const lockSpy = vi.spyOn(itemsStore, "lockItemByIdNowait").mockImplementation(async (...args) => {
                   lateReached();
                   await bounded(lateGate);
-                  throwFailure(lateFailure);
+                  try {
+                    return await actualLock(...args);
+                  } catch (error) {
+                    expect(error).toMatchObject({ code: "55P03" });
+                    throwFailure(lateFailure);
+                  }
                 });
-                void contender.catch(() => {});
+                restoreAdmission = () => lockSpy.mockRestore();
+                lateParticipant = attempt({ speaker: "SPEAKER_01" });
+                void lateParticipant.catch(() => {});
                 await bounded(lateReady);
                 expect(holderPid).toBeTypeOf("number");
                 expect(contenderPid).toBeTypeOf("number");
@@ -521,8 +531,14 @@ describe("Transcript speaker mappings (issue #185)", () => {
             } catch (error) {
               failure = { error };
             } finally {
-              release();
               releaseLate();
+              if (lateParticipant)
+                await lateParticipant.then(
+                  () => {},
+                  () => {},
+                );
+              restoreAdmission();
+              release();
               try {
                 await operations.settle();
                 requireSuccessful(await bounded(holder));

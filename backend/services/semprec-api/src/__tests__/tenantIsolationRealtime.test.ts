@@ -407,7 +407,13 @@ function ownRealtimeListener(configure?: (owned: Pool, onCancel: (cancel: () => 
     } catch (error) {
       errors.push(error);
     }
-    if (opening) await opening.catch(() => {});
+    if (opening) {
+      const outcome = await opening.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      if ("error" in outcome) errors.push(outcome.error);
+    }
     if (client) {
       try {
         client.release(true);
@@ -423,7 +429,7 @@ function ownRealtimeListener(configure?: (owned: Pool, onCancel: (cancel: () => 
       errors.push(error);
     }
     errors.push(...clientErrors);
-    if (errors.length) throw new AggregateError(errors, "Listener cleanup failed");
+    if (errors.length) throw new AggregateError(errors, "Listener cleanup failed", { cause: errors[0] });
   };
   return { open, close, owned, hasOwnedClient: () => client !== undefined };
 }
@@ -478,21 +484,35 @@ async function reconnectAll(): Promise<void> {
   a1Cookie = sessionA1.cookie;
   a2SessionId = sessionA2.sessionId;
   const attempts = [connect(sessionA1.cookie), connect(sessionA2.cookie), connect(sessionB1.cookie)] as const;
+  [a1, a2, b1] = await joinSocketAttempts(attempts, ownedSockets);
+}
+
+async function joinSocketAttempts<T extends readonly Promise<TestSocket>[]>(
+  attempts: T,
+  owner: Set<TestSocket>,
+): Promise<{ -readonly [K in keyof T]: TestSocket }> {
+  let first: { index: number; error: unknown } | undefined;
+  attempts.forEach((attempt, index) => {
+    void attempt.catch((error: unknown) => {
+      first ??= { index, error };
+    });
+  });
   try {
-    [a1, a2, b1] = await Promise.all(attempts);
+    return await Promise.all(attempts);
   } catch (error) {
-    let cleanupError: unknown;
-    let cleanupFailed = false;
+    const failures: unknown[] = [];
     try {
-      await disposeSockets();
+      await disposeSockets(owner);
     } catch (cleanup) {
-      cleanupFailed = true;
-      cleanupError = cleanup;
+      failures.push(cleanup);
     }
-    await Promise.allSettled(attempts);
-    if (cleanupFailed)
-      throw new AggregateError([error, cleanupError], "Socket setup and cleanup failed", { cause: error });
-    // Preserve the original connection failure, including non-Error values.
+    const results = await Promise.allSettled(attempts);
+    if (!first || first.error !== error) throw new Error("Missing first socket failure", { cause: error });
+    results.forEach((result, index) => {
+      if (result.status === "rejected" && index !== first?.index) failures.push(result.reason);
+    });
+    if (failures.length)
+      throw new AggregateError([error, ...failures], "Socket setup and cleanup failed", { cause: error });
     throw error;
   }
 }
@@ -1047,7 +1067,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         socket.once("close", heldClosed);
         socket.resume();
         heldReady();
-      } else socket.destroy();
+      } else socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     });
     await new Promise<void>((resolve) => local.listen(0, "127.0.0.1", resolve));
     const address = local.address();
@@ -1056,6 +1076,9 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     const opened = TestSocket.connect(`${url}/open`, {}, sockets);
     const held = TestSocket.connect(`${url}/hold`, {}, sockets);
     const outcomes = [opened, held];
+    const consumed = new Set<Promise<TestSocket>>();
+    let joining: Promise<TestSocket[]> | undefined;
+    let joiningConsumed = false;
     void Promise.allSettled(outcomes);
     let failure: { error: unknown } | undefined;
     try {
@@ -1068,10 +1091,37 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
       ]);
       const refused = TestSocket.connect(`${url}/refuse`, {}, sockets);
       outcomes.push(refused);
-      await expect(refused).rejects.toBeInstanceOf(Error);
-      await disposeSockets(sockets);
+      joining = joinSocketAttempts([opened, held, refused], sockets);
+      const joined = joining.then(
+        () => ({ success: true as const }),
+        (error: unknown) => ({ success: false as const, error }),
+      );
+      const refusal = await refused.then(
+        () => {
+          throw new Error("Expected refused handshake");
+        },
+        (error: unknown) => error,
+      );
+      expect(refusal).toMatchObject({ message: "Unexpected server response: 403" });
+      const heldFailure = await held.then(
+        () => {
+          throw new Error("Expected held handshake cancellation");
+        },
+        (error: unknown) => error,
+      );
+      expect(heldFailure).toMatchObject({ message: "WebSocket was closed before the connection was established" });
+      const outcome = await joined;
+      expect(outcome.success).toBe(false);
+      if (outcome.success || !(outcome.error instanceof AggregateError))
+        throw new Error("Expected socket setup aggregate");
+      expect(outcome.error.cause).toBe(refusal);
+      expect(outcome.error.errors).toHaveLength(2);
+      expect(outcome.error.errors[0]).toBe(refusal);
+      expect(outcome.error.errors[1]).toBe(heldFailure);
+      consumed.add(refused);
+      consumed.add(held);
+      joiningConsumed = true;
       heldSocket?.destroy();
-      await Promise.allSettled(outcomes);
       await heldEnded;
       releaseUpgrade();
       expect(lateRejected).toBe(true);
@@ -1086,7 +1136,18 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
       } catch (error) {
         errors.push(error);
       }
-      await Promise.allSettled(outcomes);
+      const settled = await Promise.allSettled(outcomes);
+      settled.forEach((result, index) => {
+        const operation = outcomes[index];
+        if (result.status === "rejected" && operation && !consumed.has(operation)) errors.push(result.reason);
+      });
+      if (joining) {
+        const joined = await joining.then(
+          () => ({ success: true as const }),
+          (error: unknown) => ({ success: false as const, error }),
+        );
+        if (!joined.success && !joiningConsumed) errors.push(joined.error);
+      }
       local.closeAllConnections();
       try {
         await new Promise<void>((resolve, reject) => upgrades.close((error) => (error ? reject(error) : resolve())));
@@ -1129,6 +1190,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
       () => {},
     );
     let failure: { error: unknown } | undefined;
+    let cleanup: { error: unknown } | undefined;
     try {
       await Promise.race([
         verifying,
@@ -1142,19 +1204,91 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
       try {
         await owner.close();
       } catch (error) {
-        failure = failure
-          ? { error: new AggregateError([failure.error, error], "Listener control and cleanup failed") }
-          : { error };
+        cleanup = { error };
       }
       await settled;
     }
     if (failure) {
-      // Preserve the actual setup failure, including non-Error values from external code.
+      if (cleanup)
+        throw new AggregateError([failure.error, cleanup.error], "Listener control and cleanup failed", {
+          cause: failure.error,
+        });
       throw failure.error;
     }
-    await expect(opening).rejects.toThrow("Listener closed during acquisition");
+    const openingResult = await opening.then(
+      () => {
+        throw new Error("Expected listener rejection");
+      },
+      (error: unknown) => error,
+    );
+    expect(openingResult).toBeInstanceOf(Error);
+    expect(openingResult).toHaveProperty("message", "Listener closed during acquisition");
+    expect(cleanup?.error).toBeInstanceOf(AggregateError);
+    if (!(cleanup?.error instanceof AggregateError)) throw new Error("Expected listener cleanup failure");
+    expect(cleanup.error.errors).toHaveLength(1);
+    expect(cleanup.error.errors[0]).toBe(openingResult);
     expect(delivered).toBe(true);
     expect(owner.owned.totalCount).toBe(0);
+    expect(owner.hasOwnedClient()).toBe(false);
+  });
+
+  it("retains a late verification failure after the listener body fails", async () => {
+    const bodyError = new Error("listener observation failed");
+    const verificationError = new Error("listener verification failed");
+    let started = () => {};
+    const verifying = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const owner = ownRealtimeListener((owned, onCancel) => {
+      owned.options.verify = (_client, done) => {
+        onCancel(() => queueMicrotask(() => done(verificationError)));
+        started();
+      };
+    });
+    const opening = owner.open();
+    const result = opening.then(
+      () => ({ value: true }),
+      (error: unknown) => ({ error }),
+    );
+    let failure: { error: unknown } | undefined;
+    try {
+      await Promise.race([
+        verifying,
+        result.then(() => {
+          throw new Error("Opening settled before gate");
+        }),
+      ]);
+      throw bodyError;
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await owner.close();
+      } catch (error) {
+        failure = failure
+          ? {
+              error: new AggregateError([failure.error, error], "Listener body and cleanup failed", {
+                cause: failure.error,
+              }),
+            }
+          : { error };
+      }
+    }
+    const actual = await result;
+    expect(actual).toHaveProperty("error", verificationError);
+    expect(failure?.error).toBeInstanceOf(AggregateError);
+    if (!(failure?.error instanceof AggregateError)) throw new Error("Expected combined listener failure");
+    expect(failure.error.errors).toHaveLength(2);
+    expect(failure.error.errors[0]).toBe(bodyError);
+    expect(failure.error.cause).toBe(bodyError);
+    const cleanup = failure.error.errors[1];
+    expect(cleanup).toBeInstanceOf(AggregateError);
+    if (!(cleanup instanceof AggregateError)) throw new Error("Expected listener cleanup failure");
+    expect(cleanup.errors).toHaveLength(1);
+    expect(cleanup.errors[0]).toBe(verificationError);
+    expect(cleanup.cause).toBe(verificationError);
+    expect(owner.owned.totalCount).toBe(0);
+    expect(owner.owned.waitingCount).toBe(0);
     expect(owner.hasOwnedClient()).toBe(false);
   });
 

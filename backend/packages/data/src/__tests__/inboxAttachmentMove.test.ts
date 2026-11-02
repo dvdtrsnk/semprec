@@ -56,6 +56,16 @@ let projectsId: string;
 let taskType: ItemRow;
 
 /** Owns only this overlap's runtime clients, gates and operations. */
+// pg 8.23.0 emits this plain, uncoded error on this owned-release path.
+function isOwnedPgClosure(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.constructor === Error &&
+    !("code" in error) &&
+    error.message === "Connection terminated"
+  );
+}
+
 function ownOverlap(
   runtime: Pool,
   cancel: () => void,
@@ -245,7 +255,7 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 }
 
 async function jobExists(key: string): Promise<boolean> {
-  const { rows } = await pool.query(`SELECT 1 FROM graphile_worker.jobs WHERE key = $1`, [key]);
+  const { rows } = await pool.query<{ "?column?": number }>(`SELECT 1 FROM graphile_worker.jobs WHERE key = $1`, [key]);
   return rows.length > 0;
 }
 
@@ -1284,12 +1294,13 @@ describe("file from attachment on confirm (issue #1703)", () => {
   }, 20000);
 
   it.each([
-    [undefined, false],
-    [{ marker: "late participant" }, false],
-    [{ marker: "late participant" }, true],
+    [undefined, false, false],
+    [{ marker: "late participant" }, false, false],
+    [{ marker: "late participant" }, true, false],
+    [{ marker: "late participant" }, false, true],
   ] as const)(
     "settles blocked overlap participants on an injected body failure %#",
-    async (lateParticipant, injectPreCancel) => {
+    async (lateParticipant, injectPreCancel, injectPostCancel) => {
       const itemId = await plainInboxItem("cleanup source");
       const runtime = await createRuntimeRolePool(pool, "semprec_data");
       let release = () => {};
@@ -1310,6 +1321,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
       let contenderClient: PoolClient | undefined;
       let contenderGeneration: object | undefined;
       const preCancel = new Error("pre-cancellation diagnostic");
+      const postCancel = new Error("unrelated post-cancellation diagnostic");
       const owned = ownOverlap(
         runtime,
         () => {
@@ -1317,8 +1329,9 @@ describe("file from attachment on confirm (issue #1703)", () => {
           holderReady();
           contenderReady();
         },
-        (_client, generation) => {
+        (client, generation) => {
           cancellationRequests.add(generation);
+          if (injectPostCancel && client === holderClient) client.emit("error", postCancel);
         },
         (client, generation) => {
           generations.set(client, generation);
@@ -1358,7 +1371,6 @@ describe("file from attachment on confirm (issue #1703)", () => {
             value: unknown;
             generation: object | undefined;
             cancellationRequested: boolean;
-            classification: "unclassified";
           }
         | undefined;
       let contenderSettled = false;
@@ -1403,7 +1415,6 @@ describe("file from attachment on confirm (issue #1703)", () => {
               value: error,
               generation: contenderGeneration,
               cancellationRequested: contenderGeneration !== undefined && cancellationRequests.has(contenderGeneration),
-              classification: "unclassified",
             };
             contenderSettled = true;
           },
@@ -1452,8 +1463,14 @@ describe("file from attachment on confirm (issue #1703)", () => {
           expect(injectPreCancel).toBe(true);
           expect(diagnostic.cancelled).toBe(false);
           expect(diagnostic.operation).toBe("holder");
+        } else if (diagnostic.error === postCancel) {
+          expect(injectPostCancel).toBe(true);
+          expect(diagnostic.cancelled).toBe(true);
+          expect(diagnostic.operation).toBe("holder");
+          expect(isOwnedPgClosure(diagnostic.error)).toBe(false);
         } else {
           expect(diagnostic.cancelled).toBe(true);
+          expect(isOwnedPgClosure(diagnostic.error)).toBe(true);
           expect(["holder", "contender"]).toContain(diagnostic.operation);
           if (diagnostic.operation === "holder") expect(diagnostic.error).toBe(holderError.value);
           else expect(diagnostic.error).toBe(contenderError?.value);
@@ -1461,9 +1478,10 @@ describe("file from attachment on confirm (issue #1703)", () => {
       }
       if (!contenderError) throw new Error("Missing contender failure");
       expect(contenderError.generation).toBeDefined();
-      expect(contenderError.classification).toBe("unclassified");
+      expect(isOwnedPgClosure(contenderError.value)).toBe(true);
       expect(contenderError.cancellationRequested).toBe(true);
       expect(diagnostics.filter((entry) => entry.error === preCancel)).toHaveLength(injectPreCancel ? 1 : 0);
+      expect(diagnostics.filter((entry) => entry.error === postCancel)).toHaveLength(injectPostCancel ? 1 : 0);
       const expectedErrors = [...diagnostics.map((entry) => entry.error), holderError.value, contenderError.value];
       expect(combined.errors).toHaveLength(2);
       expect(cleanup.errors).toHaveLength(expectedErrors.length);

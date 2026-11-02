@@ -106,6 +106,7 @@ describe("adapter route (issue #238)", () => {
       release = resolve;
     });
     const completions: Promise<void>[] = [];
+    const requests: Promise<Response>[] = [];
     const actual = createAdapterRequestListener(pool, async (ctx) => {
       if (ctx.req.url === "/delayed") {
         entered();
@@ -122,13 +123,18 @@ describe("adapter route (issue #238)", () => {
     const address = observedServer.address();
     if (!address || typeof address === "string") throw new Error("Missing observed server address");
     const url = `http://127.0.0.1:${address.port}`;
-    const request = (path: string, body: string, token?: string) =>
-      fetch(url + path, {
+    const request = (path: string, body: string, token?: string) => {
+      const operation = fetch(url + path, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body,
         signal: AbortSignal.timeout(5000),
       });
+      requests.push(operation);
+      void operation.catch(() => {});
+      return operation;
+    };
+    let failure: { error: unknown } | undefined;
     try {
       expect((await request("/", "{}", undefined)).status).toBe(401);
       await completions[0];
@@ -170,12 +176,120 @@ describe("adapter route (issue #238)", () => {
         release();
         await settled;
       }
+    } catch (error) {
+      failure = { error };
     } finally {
       release();
       observedServer.closeAllConnections();
-      await Promise.allSettled(completions);
-      await new Promise<void>((resolve) => observedServer.close(() => resolve()));
+      const results = await Promise.allSettled([...completions, ...requests]);
+      const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+      try {
+        await new Promise<void>((resolve, reject) =>
+          observedServer.close((error) => (error ? reject(error) : resolve())),
+        );
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length) {
+        const all = failure ? [failure.error, ...errors] : errors;
+        failure = { error: new AggregateError(all, "Adapter control and cleanup failed", { cause: all[0] }) };
+      }
     }
+    if (failure) throw failure.error;
+  });
+
+  it("retains a delayed real fallback failure after an earlier observation failure", async () => {
+    const bodyError = new Error("adapter observation failed");
+    const firstWrite = new Error("initial write failed");
+    const fallbackError = new Error("fallback write failed");
+    let entered = () => {};
+    let release = () => {};
+    const admitted = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let received: Promise<void> | undefined;
+    const actual = createAdapterRequestListener(pool, async (ctx) => {
+      entered();
+      await gate;
+      return fixtureHandler(ctx);
+    });
+    const token = await tokenFor("delayed-fallback@example.com");
+    const observedServer = createServer((req, res) => {
+      let writes = 0;
+      vi.spyOn(res, "writeHead").mockImplementation(() => {
+        throw writes++ === 0 ? firstWrite : fallbackError;
+      });
+      received = actual(req, res);
+      void received.catch(() => {
+        res.destroy();
+      });
+    });
+    await new Promise<void>((resolve) => observedServer.listen(0, "127.0.0.1", resolve));
+    const address = observedServer.address();
+    if (!address || typeof address === "string") throw new Error("Missing observed server address");
+    const request = fetch(`http://127.0.0.1:${address.port}/`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "ok" }),
+      signal: AbortSignal.timeout(5000),
+    });
+    const clientResult = request.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    let failure: { error: unknown } | undefined;
+    let adapterResult: { value: void } | { error: unknown } | undefined;
+    try {
+      await Promise.race([
+        admitted,
+        clientResult.then(() => {
+          throw new Error("Client settled before handler admission");
+        }),
+      ]);
+      throw bodyError;
+    } catch (error) {
+      failure = { error };
+    } finally {
+      release();
+      if (received)
+        adapterResult = await received.then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        );
+      observedServer.closeAllConnections();
+      const client = await clientResult;
+      const errors: unknown[] = [];
+      if (adapterResult && "error" in adapterResult) errors.push(adapterResult.error);
+      if ("error" in client) errors.push(client.error);
+      try {
+        await new Promise<void>((resolve, reject) =>
+          observedServer.close((error) => (error ? reject(error) : resolve())),
+        );
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length) {
+        const all = failure ? [failure.error, ...errors] : errors;
+        failure = { error: new AggregateError(all, "Adapter control and cleanup failed", { cause: all[0] }) };
+      }
+    }
+    const client = await clientResult;
+    expect(adapterResult).toHaveProperty("error");
+    if (!adapterResult || !("error" in adapterResult)) throw new Error("Expected adapter failure");
+    expect(adapterResult.error).toBe(fallbackError);
+    expect("error" in client).toBe(true);
+    if (!("error" in client)) throw new Error("Expected client failure");
+    expect(client.error).toMatchObject({ name: "TypeError", message: "fetch failed" });
+    expect(failure?.error).toBeInstanceOf(AggregateError);
+    if (!(failure?.error instanceof AggregateError)) throw new Error("Expected combined adapter failure");
+    expect(failure.error.cause).toBe(bodyError);
+    expect(failure.error.errors).toHaveLength(3);
+    expect(failure.error.errors[0]).toBe(bodyError);
+    expect(failure.error.errors[1]).toBe(fallbackError);
+    expect(failure.error.errors[2]).toBe(client.error);
   });
 
   it("returns the original rejection if the fallback response itself throws", async () => {

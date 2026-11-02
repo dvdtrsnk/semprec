@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import type { PoolClient } from "pg";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { Client } from "pg";
 import {
   clearHooksForTests,
   hasItemPreWriteTransform,
@@ -13,8 +13,19 @@ import {
 import { ValidationError } from "../../errors.js";
 import { SYSTEM_WRITER } from "../writerKind.js";
 
+const offlineClient = Object.assign(new Client(), {
+  query: vi.fn(() => {
+    throw new Error("Offline fixture cannot query");
+  }),
+  release: vi.fn(),
+});
+afterAll(() => {
+  offlineClient.removeAllListeners();
+  vi.restoreAllMocks();
+});
+
 const CONTEXT: ItemUpdateHookContext = {
-  client: {} as PoolClient,
+  client: offlineClient,
   database: {
     id: "db",
     key: null,
@@ -80,7 +91,7 @@ describe("chokePoint/hooks item-update registry", () => {
 });
 
 const PRE_WRITE_CONTEXT: ItemPreWriteTransformContext = {
-  client: {} as PoolClient,
+  client: offlineClient,
   database: CONTEXT.database,
   stored: null,
   patch: { title: "a" },

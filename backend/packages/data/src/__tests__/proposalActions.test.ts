@@ -45,6 +45,14 @@ let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
 let docStore: DocStore;
 
+// pg 8.23.0 reports these two finite owned-release paths with plain, uncoded errors.
+function isOwnedPgClosure(
+  error: unknown,
+  message: "Connection terminated" | "Client was closed and is not queryable",
+): boolean {
+  return error instanceof Error && error.constructor === Error && !("code" in error) && error.message === message;
+}
+
 /** Owns only this overlap's runtime clients, gates and operations. */
 function ownOverlap(
   runtime: Pool,
@@ -600,7 +608,9 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     const cleanupError = new Error("cleanup failure");
     let ran = false;
     let settled = false;
-    runtime.options.verify = (_client, done) => {
+    let checkoutGeneration: object | undefined;
+    runtime.options.verify = (client, done) => {
+      checkoutGeneration = generations.get(client);
       deliver = () => queueMicrotask(() => done());
       ready();
     };
@@ -629,11 +639,15 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         settled = true;
       },
       (error: unknown) => {
-        operationFailure = { value: error };
+        operationFailure = {
+          value: error,
+          generation: checkoutGeneration,
+          cancelled: checkoutGeneration !== undefined && cancellationRequests.has(checkoutGeneration),
+        };
         settled = true;
       },
     );
-    let operationFailure: { value: unknown } | undefined;
+    let operationFailure: { value: unknown; generation: object | undefined; cancelled: boolean } | undefined;
     const observedDiagnostics: Array<{ error: Error; generation: object; cancelled: boolean; operation: "checkout" }> =
       [];
     const observing = new Map<PoolClient, (error: Error) => void>();
@@ -685,7 +699,12 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup aggregate");
     expect(operationFailure).toBeDefined();
     if (!operationFailure) throw new Error("Missing operation failure");
-    expect(operationFailure.value).toBeInstanceOf(Error);
+    expect(operationFailure.generation).toBeDefined();
+    expect(operationFailure.cancelled).toBe(true);
+    expect(isOwnedPgClosure(operationFailure.value, "Client was closed and is not queryable")).toBe(true);
+    expect(isOwnedPgClosure(new Error("unrelated post-cancel failure"), "Client was closed and is not queryable")).toBe(
+      false,
+    );
     for (const diagnostic of observedDiagnostics) {
       expect(diagnostic.cancelled).toBe(true);
       expect(diagnostic.operation).toBe("checkout");
@@ -1313,7 +1332,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       ).rows[0]!.n;
     const edgeExists = async (a: string, b: string) =>
       (
-        await pool.query(
+        await pool.query<{ "?column?": number }>(
           "SELECT 1 FROM item_relations WHERE (item_a = $1 AND item_b = $2) OR (item_a = $2 AND item_b = $1)",
           [a, b],
         )
@@ -1905,12 +1924,13 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     });
 
     it.each([
-      [undefined, false],
-      [{ marker: "late participant" }, false],
-      [{ marker: "late participant" }, true],
+      [undefined, false, false],
+      [{ marker: "late participant" }, false, false],
+      [{ marker: "late participant" }, true, false],
+      [{ marker: "late participant" }, false, true],
     ] as const)(
       "settles a blocked precondition contender after an owner failure %#",
-      async (lateParticipant, injectPreCancel) => {
+      async (lateParticipant, injectPreCancel, injectPostCancel) => {
         const task = await createIn("tasks", { name: "Before" });
         const tasksDb = await databaseIdFor("tasks");
         const [before] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [task]));
@@ -1933,11 +1953,13 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         let contenderClient: PoolClient | undefined;
         let contenderGeneration: object | undefined;
         const preCancel = new Error("pre-cancellation diagnostic");
+        const postCancel = new Error("unrelated post-cancellation diagnostic");
         const owned = ownOverlap(
           runtime,
           release,
-          (_client, generation) => {
+          (client, generation) => {
             cancellationRequests.add(generation);
+            if (injectPostCancel && client === holderClient) client.emit("error", postCancel);
           },
           (client, generation) => {
             generations.set(client, generation);
@@ -1977,7 +1999,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
               value: unknown;
               generation: object | undefined;
               cancellationRequested: boolean;
-              classification: "unclassified";
             }
           | undefined;
         let contenderSettled = false;
@@ -2036,7 +2057,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
                 generation: contenderGeneration,
                 cancellationRequested:
                   contenderGeneration !== undefined && cancellationRequests.has(contenderGeneration),
-                classification: "unclassified",
               };
               contenderSettled = true;
               contenderFailed = true;
@@ -2097,18 +2117,25 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
             expect(injectPreCancel).toBe(true);
             expect(diagnostic.cancelled).toBe(false);
             expect(diagnostic.operation).toBe("holder");
+          } else if (diagnostic.error === postCancel) {
+            expect(injectPostCancel).toBe(true);
+            expect(diagnostic.cancelled).toBe(true);
+            expect(diagnostic.operation).toBe("holder");
+            expect(isOwnedPgClosure(diagnostic.error, "Connection terminated")).toBe(false);
           } else {
             expect(diagnostic.cancelled).toBe(true);
             expect(["holder", "contender"]).toContain(diagnostic.operation);
+            expect(isOwnedPgClosure(diagnostic.error, "Connection terminated")).toBe(true);
             if (diagnostic.operation === "holder") expect(diagnostic.error).toBe(holderError.value);
             else expect(diagnostic.error).toBe(contenderError?.value);
           }
         }
         if (!contenderError) throw new Error("Missing contender failure");
         expect(contenderError.generation).toBeDefined();
-        expect(contenderError.classification).toBe("unclassified");
+        expect(isOwnedPgClosure(contenderError.value, "Connection terminated")).toBe(true);
         expect(contenderError.cancellationRequested).toBe(true);
         expect(diagnostics.filter((entry) => entry.error === preCancel)).toHaveLength(injectPreCancel ? 1 : 0);
+        expect(diagnostics.filter((entry) => entry.error === postCancel)).toHaveLength(injectPostCancel ? 1 : 0);
         const expectedErrors = [...diagnostics.map((entry) => entry.error), holderError.value, contenderError.value];
         expect(combined.errors).toHaveLength(2);
         expect(cleanup.errors).toHaveLength(expectedErrors.length);

@@ -897,13 +897,16 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
     const item = await chokePoint.createItem({ databaseId, properties: { title: "before" } });
     const lockSpy = vi.spyOn(itemsStore, "lockItemById");
 
-    await chokePoint.updateItem({ databaseId: eventsId, itemId: eventsItem.id, propertiesPatch: { name: "Daily" } });
-    expect(lockSpy).not.toHaveBeenCalled();
+    try {
+      await chokePoint.updateItem({ databaseId: eventsId, itemId: eventsItem.id, propertiesPatch: { name: "Daily" } });
+      expect(lockSpy).not.toHaveBeenCalled();
 
-    registerItemPreWriteTransform(PROBE_MODULE, async ({ patch }) => patch);
-    await chokePoint.updateItem({ databaseId, itemId: item.id, propertiesPatch: { title: "after" } });
-    expect(lockSpy).toHaveBeenCalledTimes(1);
-    lockSpy.mockRestore();
+      registerItemPreWriteTransform(PROBE_MODULE, async ({ patch }) => patch);
+      await chokePoint.updateItem({ databaseId, itemId: item.id, propertiesPatch: { title: "after" } });
+      expect(lockSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      lockSpy.mockRestore();
+    }
   });
 
   it("leaves Tasks time untouched on an update that names neither timeFrom nor timeTo", async () => {
