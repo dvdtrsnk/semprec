@@ -463,3 +463,124 @@ it("upgrades populated MCP and notification rows through the batch 08 migrations
   }
   if (failure) throw failure.error;
 }, 120_000);
+
+it("upgrades populated heartbeats and runs through origin and retry migrations", async () => {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("Missing test database URL");
+  // This identifier contains only the hexadecimal digits of a generated UUID.
+  const name = `batch12_upgrade_${randomUUID().replaceAll("-", "")}`;
+  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch12-upgrade-"));
+  const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+  let scratch: Pool | undefined;
+  let created = false;
+  let failure: { error: unknown } | undefined;
+  try {
+    await admin.query(`CREATE DATABASE "${name}"`);
+    created = true;
+    const scratchUrl = new URL(url);
+    scratchUrl.pathname = `/${name}`;
+    scratch = new Pool({
+      connectionString: scratchUrl.toString(),
+      connectionTimeoutMillis: 5000,
+      statement_timeout: 30000,
+    });
+    const db = scratch;
+    const files = (await readdir(migrations)).filter((file) => file.endsWith(".sql")).sort();
+    async function advance(through: string): Promise<void> {
+      for (const file of files.filter((entry) => entry <= through))
+        await copyFile(path.join(migrations, file), path.join(dir, file));
+      await runMigrations(db, dir);
+    }
+    await advance("0099_z.sql");
+    const tenantRow = await db.query<{ id: string }>("SELECT id FROM tenants");
+    const tenantId = tenantRow.rows[0]?.id;
+    if (!tenantId || tenantRow.rows.length !== 1) throw new Error("Expected the historical tenant");
+    const heartbeatId = randomUUID();
+    const runId = randomUUID();
+    // These rows use the schema before the three migrations under test.
+    await db.query(
+      `INSERT INTO project_heartbeats (id, project_item_id, name, rule, action_id, enabled, tenant_id)
+      VALUES ($1, $2, 'Legacy', '{"kind":"interval","minutes":5}', 'core.agentRun', false, $3)`,
+      [heartbeatId, randomUUID(), tenantId],
+    );
+    await db.query(
+      "INSERT INTO agent_runs (id, heartbeat_id, triggered_by, task, tenant_id) VALUES ($1, $2, 'heartbeat', 'legacy', $3)",
+      [runId, heartbeatId, tenantId],
+    );
+    await advance("0100_z.sql");
+    const heartbeat = await db.query<{ name: string; enabled: boolean; origin: string }>(
+      "SELECT name, enabled, origin FROM project_heartbeats WHERE id = $1",
+      [heartbeatId],
+    );
+    expect(heartbeat.rows).toEqual([{ name: "Legacy", enabled: false, origin: "system" }]);
+    const legacyHeartbeat = await db.query<{ origin: string }>(
+      `INSERT INTO project_heartbeats (project_item_id, name, rule, action_id, tenant_id)
+       VALUES ($1, 'Old writer', '{"kind":"interval","minutes":5}', 'core.agentRun', $2) RETURNING origin`,
+      [randomUUID(), tenantId],
+    );
+    expect(legacyHeartbeat.rows).toEqual([{ origin: "system" }]);
+    await expect(
+      db.query("UPDATE project_heartbeats SET origin = $2 WHERE id = $1", [heartbeatId, "invalid"]),
+    ).rejects.toMatchObject({ code: "23514" });
+    await advance("0106_z.sql");
+    const retry = await db.query<{ task: string; attempt: number; retry_of_run_id: string | null }>(
+      "SELECT task, attempt, retry_of_run_id FROM agent_runs WHERE id = $1",
+      [runId],
+    );
+    expect(retry.rows).toEqual([{ task: "legacy", attempt: 1, retry_of_run_id: null }]);
+    await db.query(
+      "INSERT INTO agent_runs (retry_of_run_id, attempt, triggered_by, task, tenant_id) VALUES ($1, 2, 'user', 'retry', $2)",
+      [runId, tenantId],
+    );
+    await expect(
+      db.query(
+        "INSERT INTO agent_runs (retry_of_run_id, triggered_by, task, tenant_id) VALUES ($1, 'user', 'duplicate', $2)",
+        [runId, tenantId],
+      ),
+    ).rejects.toMatchObject({ code: "23505" });
+    await expect(
+      db.query(
+        "INSERT INTO agent_runs (retry_of_run_id, triggered_by, task, tenant_id) VALUES ($1, 'user', 'missing', $2)",
+        [randomUUID(), tenantId],
+      ),
+    ).rejects.toMatchObject({ code: "23503" });
+    await expect(db.query("UPDATE agent_runs SET attempt = 0 WHERE id = $1", [runId])).rejects.toMatchObject({
+      code: "23514",
+    });
+    await advance("0109_z.sql");
+    const occurrence = await db.query<{ task: string; heartbeat_occurrence_id: string | null }>(
+      "SELECT task, heartbeat_occurrence_id FROM agent_runs WHERE id = $1",
+      [runId],
+    );
+    expect(occurrence.rows).toEqual([{ task: "legacy", heartbeat_occurrence_id: null }]);
+    await db.query("INSERT INTO agent_runs (triggered_by, task, tenant_id) VALUES ('user', 'legacy writer', $1)", [
+      tenantId,
+    ]);
+    await expect(
+      db.query("UPDATE agent_runs SET heartbeat_occurrence_id = $2 WHERE id = $1", [runId, randomUUID()]),
+    ).rejects.toMatchObject({ code: "23503" });
+  } catch (error) {
+    failure = { error };
+  }
+  const cleanupErrors: unknown[] = [];
+  for (const cleanup of [
+    async () => scratch?.end(),
+    async () => {
+      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+    },
+    async () => admin.end(),
+    async () => rm(dir, { recursive: true, force: true }),
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (cleanupErrors.length)
+    throw new AggregateError(failure ? [failure.error, ...cleanupErrors] : cleanupErrors, "Upgrade cleanup failed", {
+      cause: failure?.error,
+    });
+  if (failure) throw failure.error;
+}, 120_000);
