@@ -31,3 +31,35 @@ Gh-1569's verification-specific TLS classification, deadline and connection
 ownership seam is a separate pending adjudication. This section grants no
 change to mailServerConnections, default privacy mappings or helper lifecycle.
 Continue unaffected member work while that decision is prepared.
+
+## 2. Verification-owned mail connections and limited TLS diagnosis
+
+The parent inspected the installed nodemailer public socket seam and the shared
+policy factories. Gh-1569 cannot reconstruct certificate errors after they have
+been erased, nor cancel an IMAP client before the helper returns it. Adopt
+[[2026-11-02-mail-credential-verification-owns-bounded-policy-connections]]:
+one closed verification path in the existing helper owner, preserving normal
+sync/send/IDLE behavior and denied-address privacy. No new SMTP protocol,
+private-library interception, global TLS patch or plaintext authentication.
+
+This explicitly reconciles the original all-TLS-failures diagnosis: definite
+machine-readable TLS/upgrade refusals map to mail_tls_failed; ambiguous socket
+or TLS failures map to mail_server_unreachable. Both reject verification.
+Candidate exhaustion prioritizes observed authentication, then definite TLS,
+then unreachable. Real certificate/STARTTLS/timeout tests must assert the actual
+supported category, not manufacture a lower-level error the library does not
+provide. No claim of complete SMTP certificate diagnosis is accepted.
+
+The 15-second whole-attempt limit includes DNS through authentication. The
+helper owns cancellation, network teardown and guarded late completion. OS DNS
+work may outlive the deadline but must be unable to dial; finite injected DNS
+callbacks are settled before test seam restoration. A raced timeout without
+owned closure and terminal settlement does not satisfy this decision.
+
+Gh-1569 Touches adds mailServerConnections.ts and its existing test, providerTypes.ts
+only for safe verification categories, adapter errorContract unit tests, and
+publicSurface.test.ts only for deliberate new public verification/error exports.
+Do not change unrelated stored state, outbound policy/resolution rules, default
+timeouts or other adapter behavior. Original gh-1478 handover and accepted ADR
+bodies remain immutable. This scope supersedes section 1's temporary hold for
+these exact changes; all implementation/review/runtime gates remain required.
