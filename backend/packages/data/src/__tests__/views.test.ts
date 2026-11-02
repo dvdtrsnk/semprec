@@ -6,6 +6,9 @@ import { type Actor } from "../chokePoint/authorization.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { createViewTypeRegistry, registerViewType, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { ModuleRegistry } from "@semprec/module-registry";
+import { resolveProperty } from "../manifest/catalogResolution.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
@@ -821,6 +824,81 @@ describe("views", () => {
   });
 
   describe("queryView: filter/sort/visibility push-down", () => {
+    it("keeps a generic saved filter selecting the same items when stored option-label metadata changes", async () => {
+      const db = await chokePoint.createDatabase({ name: "Filter label fixture" });
+      const status = await chokePoint.createProperty({
+        databaseId: db.id,
+        key: "status",
+        name: "Status",
+        type: "select",
+        config: {
+          options: [
+            { key: "monitoring", label: "Sledování" },
+            { key: "resolved", label: "Resolved" },
+          ],
+        },
+      });
+      const selected = await chokePoint.createItem({ databaseId: db.id, properties: { status: "monitoring" } });
+      await chokePoint.createItem({ databaseId: db.id, properties: { status: "resolved" } });
+      const view = await chokePoint.createView({
+        databaseId: db.id,
+        type: "table",
+        name: "Monitoring",
+        config: { filter: { type: "in", property: "status", value: ["monitoring"] } },
+      });
+      const before = await chokePoint.queryView(view.id);
+      await chokePoint.updateProperty(status.id, {
+        config: {
+          options: [
+            { key: "monitoring", label: "Sleduje se" },
+            { key: "resolved", label: "Resolved" },
+          ],
+        },
+      });
+      const after = await chokePoint.queryView(view.id);
+      expect(before.items.map((item) => item.id)).toEqual([selected.id]);
+      expect(after.items).toEqual(before.items);
+      expect((await chokePoint.getItem(db.id, selected.id))?.properties.status).toBe("monitoring");
+    });
+
+    it("keeps a saved monitoring filter and seeded Health-record values unchanged across Czech catalog resolution", async () => {
+      await resetDatabase(pool);
+      await seedSystem(pool, viewTypeRegistry);
+      const db = (await chokePoint.listDatabases()).find((entry) => entry.key === "healthRecords");
+      if (!db) throw new Error("Missing seeded Health records");
+      const status = await chokePoint.getPropertyByKey(db.id, "status");
+      if (!status) throw new Error("Missing seeded Health records status");
+      const matching = await chokePoint.createItem({
+        databaseId: db.id,
+        properties: { name: "Monitor", status: "monitoring" },
+      });
+      const other = await chokePoint.createItem({
+        databaseId: db.id,
+        properties: { name: "Resolved", status: "resolved" },
+      });
+      const view = await chokePoint.createView({
+        databaseId: db.id,
+        type: "table",
+        name: "Monitoring",
+        config: { filter: { type: "in", property: "status", value: ["monitoring"] } },
+      });
+      const before = await chokePoint.queryView(view.id);
+      const storedProperty = await chokePoint.getPropertyByKey(db.id, "status");
+      const storedView = await chokePoint.getView(view.id);
+      const registry = new ModuleRegistry(() => new Set(["systemDatabases"]));
+      await registry.loadModule(new URL("../seed/systemDatabasesModuleManifest.js", import.meta.url).href);
+      const resolved = resolveProperty(status, "healthRecords", await registry.getCatalogs("systemDatabases"), "cs");
+      expect(resolved.options).toContainEqual({ key: "monitoring", label: "Sleduje se" });
+      const after = await chokePoint.queryView(view.id);
+      expect(before.items.map((item) => item.id)).toEqual([matching.id]);
+      expect(after.items.map((item) => item.id)).toEqual([matching.id]);
+      expect(after.items).toEqual(before.items);
+      expect(await chokePoint.getPropertyByKey(db.id, "status")).toEqual(storedProperty);
+      expect(await chokePoint.getView(view.id)).toEqual(storedView);
+      expect((await chokePoint.getItem(db.id, matching.id))?.properties.status).toBe("monitoring");
+      expect((await chokePoint.getItem(db.id, other.id))?.properties.status).toBe("resolved");
+    });
+
     async function seedTasks(db: { id: string }, chokePointRef: ChokePoint) {
       const done = await chokePointRef.createItem({
         databaseId: db.id,

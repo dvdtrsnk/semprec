@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
 import { runOnce, CORE_TASK_NAMES } from "@semprec/queue";
 import { runInTenant } from "@semprec/shared";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import {
   createRuntimeRolePool,
   getTenantZeroId,
@@ -55,6 +55,196 @@ let tasksId: string;
 let projectsId: string;
 let taskType: ItemRow;
 
+/** Owns only this overlap's runtime clients, gates and operations. */
+// pg 8.23.0 emits this plain, uncoded error on this owned-release path.
+function isOwnedPgClosure(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.constructor === Error &&
+    !("code" in error) &&
+    error.message === "Connection terminated"
+  );
+}
+
+function ownOverlap(
+  runtime: Pool,
+  cancel: () => void,
+  onCancellation?: (client: PoolClient, generation: object) => void,
+  onGeneration?: (client: PoolClient, generation: object) => void,
+  onReleased?: (client: PoolClient, generation: object) => void,
+) {
+  runtime.options.connectionTimeoutMillis = 2500;
+  runtime.options.statement_timeout = 5000;
+  const active = new Map<PoolClient, object>();
+  const destroyed = new Set<object>();
+  const retired = new Set<PoolClient>();
+  const tasks = new Set<Promise<void>>();
+  const outcomes: Array<{ error?: { value: unknown }; consumed: boolean }> = [];
+  const outcomeByOperation = new WeakMap<Promise<unknown>, (typeof outcomes)[number]>();
+  const errors: unknown[] = [];
+  let closing = false;
+  let expired = false;
+  let closingPromise: Promise<void> | undefined;
+  let settledCleanup = false;
+  const onClientError = (error: Error) => errors.push(error);
+  const destroy = (client: PoolClient, token: object) => {
+    if (active.get(client) !== token) return;
+    try {
+      onCancellation?.(client, token);
+      destroyed.add(token);
+      client.release(true);
+      onReleased?.(client, token);
+    } catch (error) {
+      errors.push(error);
+    }
+  };
+  const onAcquire = (client: PoolClient) => {
+    const token = {};
+    active.set(client, token);
+    onGeneration?.(client, token);
+    client.on("error", onClientError);
+    // pg-pool 3.14 assigns release after the acquire event.
+    if (closing) queueMicrotask(() => destroy(client, token));
+  };
+  const onRelease = (_error: Error | undefined, client: PoolClient) => {
+    const generation = active.get(client);
+    active.delete(client);
+    if (generation && destroyed.has(generation)) retired.add(client);
+    else client.removeListener("error", onClientError);
+  };
+  runtime.on("acquire", onAcquire);
+  runtime.on("release", onRelease);
+  const run = <T>(start: () => Promise<T>): Promise<T> => {
+    const operation = Promise.resolve().then(() => {
+      if (closing) throw new Error("Overlap is closing");
+      return start();
+    });
+    const outcome: { error?: { value: unknown }; consumed: boolean } = { consumed: false };
+    outcomes.push(outcome);
+    outcomeByOperation.set(operation, outcome);
+    const settled = operation.then(
+      () => {},
+      (error: unknown) => {
+        outcome.error = { value: error };
+      },
+    );
+    tasks.add(settled);
+    void settled.then(() => tasks.delete(settled));
+    return operation;
+  };
+  const wait = <T>(signal: Promise<T>, ...actors: Promise<unknown>[]): Promise<T> =>
+    overlapBounded(
+      Promise.race([
+        signal,
+        ...actors.map((actor) =>
+          actor.then(
+            () => {
+              throw new Error("Overlap participant completed before its barrier");
+            },
+            (error: unknown) => {
+              throw error;
+            },
+          ),
+        ),
+      ]),
+      5000,
+    );
+  const finish = (bodyFailed = false): Promise<void> => {
+    if (closingPromise) return closingPromise;
+    closing = true;
+    clearTimeout(timer);
+    const detach = () => {
+      runtime.removeListener("acquire", onAcquire);
+      runtime.removeListener("release", onRelease);
+      for (const client of retired) client.removeListener("error", onClientError);
+      retired.clear();
+      settledCleanup = true;
+    };
+    closingPromise = (async () => {
+      if (!bodyFailed) {
+        try {
+          const deadline = Date.now() + 3000;
+          while (tasks.size > 0 || active.size > 0 || runtime.waitingCount > 0) {
+            if (Date.now() >= deadline) throw new Error("Overlap returned with owned work pending");
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      try {
+        cancel();
+      } catch (error) {
+        errors.push(error);
+      }
+      for (const [client, token] of active) destroy(client, token);
+      const end = runtime.end();
+      const joined = (async () => {
+        const results = await Promise.allSettled([end, ...tasks]);
+        for (const result of results) if (result.status === "rejected") errors.push(result.reason);
+        while (tasks.size > 0) await Promise.all([...tasks]);
+        for (const outcome of outcomes) {
+          if (outcome.error !== undefined && !outcome.consumed) errors.push(outcome.error.value);
+        }
+        const deadline = Date.now() + 3000;
+        while (runtime.waitingCount > 0) {
+          if (Date.now() >= deadline) throw new Error("Overlap pool waiters did not settle");
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      })();
+      try {
+        await overlapBounded(joined, 8000);
+        detach();
+      } catch (error) {
+        errors.push(error);
+        // Only an unestablished driver/host stall reaches this failure fallback.
+        void joined.then(detach, detach);
+      }
+      if (expired) errors.unshift(new Error("Overlap timed out"));
+      if (errors.length) throw new AggregateError(errors, "Overlap cleanup failed", { cause: errors[0] });
+    })();
+    return closingPromise;
+  };
+  const timer = setTimeout(() => {
+    expired = true;
+    void finish(true).catch(() => {});
+  }, 8000);
+  const consume = (operation: Promise<unknown>, expected: unknown): void => {
+    const outcome = outcomeByOperation.get(operation);
+    if (!outcome?.error || outcome.error.value !== expected) throw new Error("Unexpected participant outcome");
+    outcome.consumed = true;
+  };
+  return { run, wait, finish, consume, isSettled: () => settledCleanup };
+}
+
+async function overlapBounded<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Overlap cleanup timed out")), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function combineOverlapFailure(body: { error: unknown } | undefined, cleanup: unknown): { error: unknown } {
+  return {
+    error:
+      body === undefined
+        ? cleanup
+        : new AggregateError([body.error, cleanup], "Overlap and cleanup failed", { cause: body.error }),
+  };
+}
+
+function rethrowOverlap(error: unknown): never {
+  // Preserve even non-Error thrown identities from the tested operation.
+  throw error;
+}
+
 async function bounded<T>(promise: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -76,22 +266,82 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 }
 
 async function jobExists(key: string): Promise<boolean> {
-  const { rows } = await pool.query(`SELECT 1 FROM graphile_worker.jobs WHERE key = $1`, [key]);
+  const { rows } = await pool.query<{ "?column?": number }>(`SELECT 1 FROM graphile_worker.jobs WHERE key = $1`, [key]);
   return rows.length > 0;
 }
 
-/** Polls until a confirm is blocked on the blob row lock (`SELECT ... FROM blobs ... FOR UPDATE`); fails after two seconds. */
-async function waitForBlobLockWait(holderPid: number, competitorPid: number): Promise<void> {
+/** Polls until the specified competitor is blocked by the specified holder. */
+async function waitForBlockingPid(holderPid: number, competitorPid: number, queryPool: Pool = pool): Promise<void> {
   const deadline = Date.now() + 2000;
   while (Date.now() < deadline) {
-    const { rows } = await pool.query<{ waiting: boolean }>(
-      `SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS waiting`,
-      [holderPid, competitorPid],
+    const { rows } = await runInTenant(getTenantZeroId(), () =>
+      queryPool.query<{ waiting: boolean }>(`SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS waiting`, [
+        holderPid,
+        competitorPid,
+      ]),
     );
     if (rows[0]?.waiting) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error("No transaction waited on the blob row lock");
+  throw new Error("No transaction waited on the expected holder");
+}
+
+type WaitResource = { kind: "blob" | "source"; id: string };
+
+function observeResourceAttempt(client: PoolClient, resource: WaitResource, record: () => void): () => void {
+  // The proxy forwards all production query calls unchanged, recording only the exact target row.
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  const original = client.query;
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  client.query = new Proxy(client.query, {
+    apply(target, receiver, args: unknown[]) {
+      const sql = typeof args[0] === "string" ? args[0] : "";
+      const params: unknown = args[1];
+      const matches =
+        resource.kind === "blob"
+          ? sql.includes("FROM blobs WHERE") && sql.includes("FOR UPDATE")
+          : sql.includes("FROM items i JOIN databases") && sql.includes("FOR UPDATE OF i");
+      if (matches && Array.isArray(params) && params[0] === resource.id) record();
+      return Reflect.apply(target, receiver, args);
+    },
+  });
+  return () => {
+    client.query = original;
+  };
+}
+
+async function assertResourceHeld(resource: WaitResource, holderPid: number, observer: Pool): Promise<void> {
+  // The interpolated identifier is chosen exclusively from these two fixed table names.
+  const table = resource.kind === "blob" ? "blobs" : "items";
+  const result = await withTenantTransaction(observer, getTenantZeroId(), (client) =>
+    client.query<{ held: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM ${table} target JOIN pg_locks l ON l.transactionid::text = target.xmax::text
+         WHERE target.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.granted) AS held`,
+      [resource.id, holderPid],
+    ),
+  );
+  expect(result.rows[0]?.held).toBe(true);
+}
+
+async function waitForResourceWait(
+  resource: WaitResource,
+  holderPid: number,
+  competitorPid: number,
+  observer: Pool,
+): Promise<void> {
+  const pattern =
+    resource.kind === "blob" ? "%FROM blobs WHERE%FOR UPDATE%" : "%FROM items i JOIN databases%FOR UPDATE OF i%";
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    const result = await observer.query<{ waiting: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $2 AND query LIKE $3
+       AND $1::int = ANY(pg_blocking_pids(pid))) AS waiting`,
+      [holderPid, competitorPid, pattern],
+    );
+    if (result.rows[0]?.waiting) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Expected ${resource.kind} statement to wait on the specified holder`);
 }
 
 /** A settled outcome instead of a promise, so a rejected concurrent confirm is never an unhandled rejection. */
@@ -101,6 +351,101 @@ function settle<T>(run: Promise<T>): Promise<Outcome<T>> {
     (value) => ({ value }),
     (error: unknown) => ({ error }),
   );
+}
+
+async function runHeldBlobOverlap<T>(
+  first: (client: PoolClient) => Promise<unknown>,
+  second: (client: PoolClient) => Promise<T>,
+  resource: WaitResource,
+  rollbackFirst = false,
+  assertCompetitor?: (result: Outcome<T>) => void,
+): Promise<Outcome<T>> {
+  const runtime = await createRuntimeRolePool(pool, "semprec_data");
+  let release = () => {};
+  let firstReady = (_pid: number) => {};
+  let secondReady = (_pid: number) => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const firstStarted = new Promise<number>((resolve) => {
+    firstReady = resolve;
+  });
+  const secondStarted = new Promise<number>((resolve) => {
+    secondReady = resolve;
+  });
+  const owned = ownOverlap(runtime, release);
+  const rollback = new Error("forced holder rollback");
+  let failure: { error: unknown } | undefined;
+  let result: Outcome<T> | undefined;
+  let attempted = false;
+  try {
+    const holder = owned.run(() =>
+      withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        if (pid === undefined) throw new Error("Missing holder PID");
+        await first(client);
+        firstReady(pid);
+        await gate;
+        if (rollbackFirst) throw rollback;
+      }),
+    );
+    const holderPid = await owned.wait(firstStarted, holder);
+    await owned.wait(
+      owned.run(() => assertResourceHeld(resource, holderPid, runtime)),
+      holder,
+    );
+    const competitor = owned.run(() =>
+      withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        if (pid === undefined) throw new Error("Missing competitor PID");
+        const restore = observeResourceAttempt(client, resource, () => {
+          attempted = true;
+        });
+        secondReady(pid);
+        try {
+          return await second(client);
+        } finally {
+          restore();
+        }
+      }),
+    );
+    const competitorPid = await owned.wait(secondStarted, holder, competitor);
+    await owned.wait(
+      owned.run(() => waitForBlockingPid(holderPid, competitorPid, runtime)),
+      holder,
+      competitor,
+    );
+    await owned.wait(
+      owned.run(() => waitForResourceWait(resource, holderPid, competitorPid, runtime)),
+      holder,
+      competitor,
+    );
+    expect(attempted).toBe(true);
+    release();
+    const holderResult = await settle(holder);
+    if (rollbackFirst) {
+      expect("error" in holderResult).toBe(true);
+      if (!("error" in holderResult)) throw new Error("Expected rollback");
+      expect(holderResult.error).toBe(rollback);
+      owned.consume(holder, rollback);
+    } else if ("error" in holderResult) throw holderResult.error;
+    result = await settle(competitor);
+    if (assertCompetitor) {
+      assertCompetitor(result);
+      if ("error" in result) owned.consume(competitor, result.error);
+    }
+  } catch (error) {
+    failure = { error };
+  } finally {
+    try {
+      await owned.finish(failure !== undefined);
+    } catch (error) {
+      failure = combineOverlapFailure(failure, error);
+    }
+  }
+  if (failure) rethrowOverlap(failure.error);
+  if (!result) throw new Error("Missing overlap result");
+  return result;
 }
 
 async function newBlob(mimeType: string): Promise<string> {
@@ -662,45 +1007,13 @@ describe("file from attachment on confirm (issue #1703)", () => {
     await storeSteps(first.cardId, [taskPrimary("First task"), fileStep(firstAttachment)]);
     await storeSteps(second.cardId, [taskPrimary("Second task"), fileStep(secondAttachment)]);
 
-    const holder = await pool.connect();
-    const competitor = await pool.connect();
-    let waiting: Promise<Outcome<ItemRow>> | undefined;
-    try {
-      await holder.query("BEGIN");
-      await confirmProposalWithClient(holder, { processingProposalsDatabaseId: proposalsId }, first.cardId);
-      await competitor.query("BEGIN");
-      const holderPid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-      const competitorPid = (await competitor.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-      if (!holderPid || !competitorPid) throw new Error("Missing backend PID");
-      waiting = settle(
-        (async () => {
-          try {
-            const result = await confirmProposalWithClient(
-              competitor,
-              { processingProposalsDatabaseId: proposalsId },
-              second.cardId,
-            );
-            await competitor.query("COMMIT");
-            return result;
-          } catch (error) {
-            await competitor.query("ROLLBACK");
-            throw error;
-          }
-        })(),
-      );
-      await waitForBlobLockWait(holderPid, competitorPid);
-      await holder.query("COMMIT");
-      const outcome = await waiting;
-      if (!("value" in outcome)) throw outcome.error;
-      expect(outcome.value.properties.status).toBe("confirmed");
-    } catch (error) {
-      await holder.query("ROLLBACK");
-      await waiting;
-      throw error;
-    } finally {
-      holder.release();
-      competitor.release(true);
-    }
+    const outcome = await runHeldBlobOverlap(
+      (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, first.cardId),
+      (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, second.cardId),
+      { kind: "blob", id: blobId },
+    );
+    if (!("value" in outcome)) throw outcome.error;
+    expect(outcome.value.properties.status).toBe("confirmed");
 
     const [fileItem] = await filesItemsFor(blobId);
     expect(await filesItemsFor(blobId)).toHaveLength(1);
@@ -716,40 +1029,14 @@ describe("file from attachment on confirm (issue #1703)", () => {
     const steps = [taskPrimary(), fileStep(attachmentId)];
     const options = { writer: { writerKind: "user" as const }, sourceInboxItemId: source };
 
-    const holder = await pool.connect();
-    const competitor = await pool.connect();
-    let waiting: Promise<Outcome<unknown>> | undefined;
-    try {
-      await holder.query("BEGIN");
-      await executeProposalSteps(holder, steps, options);
-      await competitor.query("BEGIN");
-      const holderPid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-      const competitorPid = (await competitor.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-      if (!holderPid || !competitorPid) throw new Error("Missing backend PID");
-      waiting = settle(
-        (async () => {
-          try {
-            const result = await executeProposalSteps(competitor, steps, options);
-            await competitor.query("COMMIT");
-            return result;
-          } catch (error) {
-            await competitor.query("ROLLBACK");
-            throw error;
-          }
-        })(),
-      );
-      await waitForBlobLockWait(holderPid, competitorPid);
-      await holder.query("COMMIT");
-      const outcome = await waiting;
-      expect(outcome).toMatchObject({ error: { status: 409, code: "version_conflict" } });
-    } catch (error) {
-      await holder.query("ROLLBACK");
-      await waiting;
-      throw error;
-    } finally {
-      holder.release();
-      competitor.release(true);
-    }
+    const outcome = await runHeldBlobOverlap(
+      (client) => executeProposalSteps(client, steps, options),
+      (client) => executeProposalSteps(client, steps, options),
+      { kind: "source", id: source },
+      false,
+      (result) => expect(result).toMatchObject({ error: { status: 409, code: "version_conflict" } }),
+    );
+    expect(outcome).toMatchObject({ error: { status: 409, code: "version_conflict" } });
 
     expect(await filesItemsFor(blobId)).toHaveLength(1);
     expect(await attachmentCount(source)).toBe(0);
@@ -763,45 +1050,14 @@ describe("file from attachment on confirm (issue #1703)", () => {
     const secondAttachment = await attach(second.inboxItemId, blobId);
     await storeSteps(first.cardId, [taskPrimary("First task"), fileStep(firstAttachment)]);
     await storeSteps(second.cardId, [taskPrimary("Second task"), fileStep(secondAttachment)]);
-    const holder = await pool.connect();
-    const competitor = await pool.connect();
-    let waiting: Promise<Outcome<ItemRow>> | undefined;
-    try {
-      await holder.query("BEGIN");
-      await holder.query("SET LOCAL statement_timeout = '5s'");
-      await confirmProposalWithClient(holder, { processingProposalsDatabaseId: proposalsId }, first.cardId);
-      await competitor.query("BEGIN");
-      await competitor.query("SET LOCAL statement_timeout = '5s'");
-      const holderPid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-      const competitorPid = (await competitor.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-      if (!holderPid || !competitorPid) throw new Error("Missing backend PID");
-      waiting = settle(
-        (async () => {
-          try {
-            const result = await confirmProposalWithClient(
-              competitor,
-              { processingProposalsDatabaseId: proposalsId },
-              second.cardId,
-            );
-            await competitor.query("COMMIT");
-            return result;
-          } catch (error) {
-            await competitor.query("ROLLBACK");
-            throw error;
-          }
-        })(),
-      );
-      await waitForBlobLockWait(holderPid, competitorPid);
-      await holder.query("ROLLBACK");
-      const outcome = await waiting;
-      if (!("value" in outcome)) throw outcome.error;
-      expect(outcome.value.properties.status).toBe("confirmed");
-    } finally {
-      await holder.query("ROLLBACK");
-      await waiting;
-      holder.release();
-      competitor.release(true);
-    }
+    const outcome = await runHeldBlobOverlap(
+      (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, first.cardId),
+      (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, second.cardId),
+      { kind: "blob", id: blobId },
+      true,
+    );
+    if (!("value" in outcome)) throw outcome.error;
+    expect(outcome.value.properties.status).toBe("confirmed");
     const files = await filesItemsFor(blobId);
     expect(files).toHaveLength(1);
     expect(await originRowsFor(files[0]!.id)).toEqual([
@@ -820,6 +1076,488 @@ describe("file from attachment on confirm (issue #1703)", () => {
     expect(firstCard?.properties.status).toBe("proposed");
   });
 
+  it.each([undefined, { marker: "late" }])(
+    "retains a late participant failure and consumes only the asserted participant %#",
+    async (late) => {
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      let release = () => {};
+      let started = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const ready = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const owned = ownOverlap(runtime, release);
+      const expected = { marker: "asserted" };
+      const body = new Error("forced observation failure");
+      let lateSettled = false;
+      let failure: { error: unknown } | undefined;
+      try {
+        const negative = owned.run(() =>
+          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+            await client.query<{ "?column?": number }>("SELECT 1");
+            rethrowOverlap(expected);
+          }),
+        );
+        await expect(negative).rejects.toBe(expected);
+        owned.consume(negative, expected);
+        const participant = owned.run(() =>
+          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+            const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            if (!pid) throw new Error("Missing owned PID");
+            started();
+            await gate;
+            rethrowOverlap(late);
+          }),
+        );
+        void participant.then(
+          () => {
+            lateSettled = true;
+          },
+          () => {
+            lateSettled = true;
+          },
+        );
+        await owned.wait(ready, participant);
+        throw body;
+      } catch (error) {
+        failure = { error };
+      } finally {
+        try {
+          await owned.finish(failure !== undefined);
+        } catch (error) {
+          failure = combineOverlapFailure(failure, error);
+        }
+      }
+      if (failure && (!(failure.error instanceof AggregateError) || failure.error.cause !== body)) {
+        rethrowOverlap(failure.error);
+      }
+      const combined = failure?.error;
+      expect(combined).toBeInstanceOf(AggregateError);
+      if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
+      expect(combined.cause).toBe(body);
+      expect(combined.errors[0]).toBe(body);
+      const cleanup: unknown = combined.errors[1];
+      expect(cleanup).toBeInstanceOf(AggregateError);
+      if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failure");
+      expect(combined.errors).toHaveLength(2);
+      expect(cleanup.errors).toHaveLength(1);
+      expect(cleanup.errors[0]).toBe(late);
+      expect(cleanup.cause).toBe(late);
+      expect(lateSettled).toBe(true);
+      expect(runtime.ended).toBe(true);
+      expect(runtime.totalCount).toBe(0);
+      expect(runtime.listenerCount("acquire")).toBe(0);
+      expect(runtime.listenerCount("release")).toBe(0);
+    },
+    20000,
+  );
+
+  it("settles ownership when the first participant has the wrong rejection", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const wrong = { marker: "wrong" };
+    const expected = { marker: "expected" };
+    const cleanupError = new Error("controlled cleanup failure");
+    const owned = ownOverlap(runtime, () => {
+      throw cleanupError;
+    });
+    let assertion: { error: unknown } | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      const negative = owned.run(() =>
+        withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+          await client.query<{ "?column?": number }>("SELECT 1");
+          rethrowOverlap(wrong);
+        }),
+      );
+      try {
+        await expect(negative).rejects.toBe(expected);
+      } catch (error) {
+        assertion = { error };
+        throw error;
+      }
+      owned.consume(negative, expected);
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await owned.finish(failure !== undefined);
+      } catch (error) {
+        failure = combineOverlapFailure(failure, error);
+      }
+    }
+    if (!assertion) throw new Error("Expected assertion failure");
+    const combined = failure?.error;
+    expect(combined).toBeInstanceOf(AggregateError);
+    if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
+    expect(combined.errors).toHaveLength(2);
+    expect(combined.errors[0]).toBe(assertion.error);
+    expect(combined.cause).toBe(assertion.error);
+    const cleanup: unknown = combined.errors[1];
+    expect(cleanup).toBeInstanceOf(AggregateError);
+    if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failure");
+    expect(cleanup.errors).toHaveLength(2);
+    expect(cleanup.errors[0]).toBe(cleanupError);
+    expect(cleanup.errors[1]).toBe(wrong);
+    expect(cleanup.cause).toBe(cleanupError);
+    expect(runtime.ended).toBe(true);
+    expect(runtime.totalCount).toBe(0);
+    expect(runtime.waitingCount).toBe(0);
+    expect(runtime.listenerCount("acquire")).toBe(0);
+    expect(runtime.listenerCount("release")).toBe(0);
+  }, 20000);
+
+  it("preserves an early checkout failure together with cleanup failure", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const actorError = new Error("pre-verify checkout failure");
+    const cleanupError = new Error("cleanup failure");
+    let release = () => {};
+    const signal = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    runtime.options.verify = (_client, done) => done(actorError);
+    const generations = new Map<PoolClient, object>();
+    const cancellationRequests = new Set<object>();
+    const owned = ownOverlap(
+      runtime,
+      () => {
+        release();
+        throw cleanupError;
+      },
+      (_client, generation) => {
+        cancellationRequests.add(generation);
+      },
+      (client, generation) => {
+        generations.set(client, generation);
+      },
+    );
+    let operationFailure: { value: unknown } | undefined;
+    const observedDiagnostics: Array<{ error: Error; generation: object; cancelled: boolean; operation: "checkout" }> =
+      [];
+    const observing = new Map<PoolClient, (error: Error) => void>();
+    const observeAcquire = (client: PoolClient) => {
+      const generation = generations.get(client);
+      if (!generation) throw new Error("Missing client generation");
+      const onError = (error: Error) =>
+        observedDiagnostics.push({
+          error,
+          generation,
+          cancelled: cancellationRequests.has(generation),
+          operation: "checkout",
+        });
+      observing.set(client, onError);
+      client.on("error", onError);
+    };
+    const observeRelease = (_reason: unknown, client: PoolClient) => {
+      const onError = observing.get(client);
+      const generation = generations.get(client);
+      if (generation && cancellationRequests.has(generation)) return;
+      if (onError) client.removeListener("error", onError);
+      observing.delete(client);
+      generations.delete(client);
+    };
+    runtime.on("acquire", observeAcquire);
+    runtime.on("release", observeRelease);
+    let failure: { error: unknown } | undefined;
+    try {
+      const actor = owned.run(() => withTenantTransaction(runtime, getTenantZeroId(), async () => {}));
+      void actor.catch((error: unknown) => {
+        operationFailure = { value: error };
+      });
+      await owned.wait(signal, actor);
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await owned.finish(failure !== undefined);
+      } catch (error) {
+        failure = combineOverlapFailure(failure, error);
+      }
+    }
+    if (!owned.isSettled()) {
+      if (failure) throw failure.error;
+      throw new Error("Owned overlap did not settle");
+    }
+    runtime.removeListener("acquire", observeAcquire);
+    runtime.removeListener("release", observeRelease);
+    for (const [client, onError] of observing) client.removeListener("error", onError);
+    observing.clear();
+    expect(observing.size).toBe(0);
+    const observed = failure?.error;
+    expect(observed).toBeInstanceOf(AggregateError);
+    if (!(observed instanceof AggregateError)) throw new Error("Expected combined error");
+    expect(observed.cause).toBe(actorError);
+    expect(observed.errors[0]).toBe(actorError);
+    expect(observed.errors).toHaveLength(2);
+    const cleanup: unknown = observed.errors[1];
+    expect(cleanup).toBeInstanceOf(AggregateError);
+    if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup aggregate");
+    expect(operationFailure).toBeDefined();
+    if (!operationFailure) throw new Error("Missing operation failure");
+    expect(operationFailure.value).toBe(actorError);
+    for (const diagnostic of observedDiagnostics) {
+      expect(diagnostic.cancelled).toBe(true);
+      expect(diagnostic.operation).toBe("checkout");
+      expect(diagnostic.error).toBe(operationFailure.value);
+    }
+    const expectedErrors = [cleanupError, ...observedDiagnostics.map((entry) => entry.error), operationFailure.value];
+    expect(cleanup.errors).toHaveLength(expectedErrors.length);
+    for (let i = 0; i < expectedErrors.length; i++) expect(cleanup.errors[i]).toBe(expectedErrors[i]);
+    expect(cleanup.cause).toBe(cleanupError);
+    expect(runtime.ended).toBe(true);
+    expect(runtime.totalCount).toBe(0);
+    expect(runtime.waitingCount).toBe(0);
+    expect(runtime.listenerCount("acquire")).toBe(0);
+    expect(runtime.listenerCount("release")).toBe(0);
+  }, 20000);
+
+  it.each([
+    [undefined, false, false],
+    [{ marker: "late participant" }, false, false],
+    [{ marker: "late participant" }, true, false],
+    [{ marker: "late participant" }, false, true],
+  ] as const)(
+    "settles blocked overlap participants on an injected body failure %#",
+    async (lateParticipant, injectPreCancel, injectPostCancel) => {
+      const itemId = await plainInboxItem("cleanup source");
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      let release = () => {};
+      let holderReady = () => {};
+      let contenderReady = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const holderStarted = new Promise<void>((resolve) => {
+        holderReady = resolve;
+      });
+      const contenderStarted = new Promise<void>((resolve) => {
+        contenderReady = resolve;
+      });
+      const generations = new Map<PoolClient, object>();
+      const cancellationRequests = new Set<object>();
+      const releaseCompletions = new Set<object>();
+      let holderClient: PoolClient | undefined;
+      let contenderClient: PoolClient | undefined;
+      let contenderGeneration: object | undefined;
+      const preCancel = new Error("pre-cancellation diagnostic");
+      const postCancel = new Error("unrelated post-cancellation diagnostic");
+      let releaseCallbackFailure: { value: unknown } | undefined;
+      const owned = ownOverlap(
+        runtime,
+        () => {
+          release();
+          holderReady();
+          contenderReady();
+        },
+        (_client, generation) => {
+          cancellationRequests.add(generation);
+        },
+        (client, generation) => {
+          generations.set(client, generation);
+        },
+        (client, generation) => {
+          releaseCompletions.add(generation);
+          if (injectPostCancel && client === holderClient) {
+            try {
+              client.emit("error", postCancel);
+            } catch (error) {
+              releaseCallbackFailure = { value: error };
+              throw error;
+            }
+          }
+        },
+      );
+      let holderPid: number | undefined;
+      let contenderPid: number | undefined;
+      let holderSettled = false;
+      type ObservedClient = { generation: object; onError: (error: Error) => void };
+      const observedClients = new Map<PoolClient, ObservedClient>();
+      const diagnostics: Array<{
+        error: Error;
+        generation: object;
+        cancelled: boolean;
+        released: boolean;
+        operation: string;
+      }> = [];
+      const observeAcquire = (client: PoolClient) => {
+        const generation = generations.get(client);
+        if (!generation) throw new Error("Missing client generation");
+        const onError = (error: Error) =>
+          diagnostics.push({
+            error,
+            generation,
+            cancelled: cancellationRequests.has(generation),
+            released: releaseCompletions.has(generation),
+            operation: client === holderClient ? "holder" : client === contenderClient ? "contender" : "other",
+          });
+        observedClients.set(client, { generation, onError });
+        client.on("error", onError);
+      };
+      const observeRelease = (_reason: unknown, client: PoolClient) => {
+        const owner = observedClients.get(client);
+        if (!owner) throw new Error("Unknown owned client release");
+        if (cancellationRequests.has(owner.generation)) return;
+        client.removeListener("error", owner.onError);
+        observedClients.delete(client);
+        generations.delete(client);
+      };
+      runtime.on("acquire", observeAcquire);
+      runtime.on("release", observeRelease);
+      let holderError: { value: unknown } | undefined;
+      let contenderError:
+        | {
+            value: unknown;
+            generation: object | undefined;
+            cancellationRequested: boolean;
+          }
+        | undefined;
+      let contenderSettled = false;
+      const bodyError = new Error("forced overlap body failure");
+      let failure: { error: unknown } | undefined;
+      try {
+        const holder = owned.run(() =>
+          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+            holderClient = client;
+            holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            await updateItemWithClient(client, { databaseId: inboxId, itemId, propertiesPatch: { text: "held" } });
+            holderReady();
+            await gate;
+            rethrowOverlap(lateParticipant);
+          }),
+        );
+        void holder.then(
+          () => {
+            holderSettled = true;
+          },
+          (error: unknown) => {
+            holderError = { value: error };
+            holderSettled = true;
+          },
+        );
+        await owned.wait(holderStarted, holder);
+        const contender = owned.run(() =>
+          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+            contenderClient = client;
+            contenderGeneration = generations.get(client);
+            contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            contenderReady();
+            await updateItemWithClient(client, { databaseId: inboxId, itemId, propertiesPatch: { text: "contender" } });
+          }),
+        );
+        void contender.then(
+          () => {
+            contenderSettled = true;
+          },
+          (error: unknown) => {
+            contenderError = {
+              value: error,
+              generation: contenderGeneration,
+              cancellationRequested: contenderGeneration !== undefined && cancellationRequests.has(contenderGeneration),
+            };
+            contenderSettled = true;
+          },
+        );
+        await owned.wait(contenderStarted, holder, contender);
+        if (!holderPid || !contenderPid) throw new Error("Missing participant PID");
+        const holderId = holderPid;
+        const contenderId = contenderPid;
+        await owned.wait(
+          owned.run(() => waitForBlockingPid(holderId, contenderId, runtime)),
+          holder,
+          contender,
+        );
+        if (injectPreCancel) {
+          if (!holderClient) throw new Error("Missing holder client");
+          holderClient.emit("error", preCancel);
+        }
+        throw bodyError;
+      } catch (error) {
+        failure = { error };
+      } finally {
+        try {
+          await owned.finish(failure !== undefined);
+        } catch (error) {
+          failure = combineOverlapFailure(failure, error);
+        } finally {
+          if (owned.isSettled()) {
+            runtime.removeListener("acquire", observeAcquire);
+            runtime.removeListener("release", observeRelease);
+          }
+        }
+      }
+      if (!owned.isSettled()) {
+        if (failure) throw failure.error;
+        throw new Error("Owned overlap did not settle");
+      }
+      for (const [client, owner] of observedClients) client.removeListener("error", owner.onError);
+      observedClients.clear();
+      const combined = failure?.error;
+      expect(combined).toBeInstanceOf(AggregateError);
+      if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
+      expect(combined.cause).toBe(bodyError);
+      expect(combined.errors[0]).toBe(bodyError);
+      const cleanup: unknown = combined.errors[1];
+      expect(cleanup).toBeInstanceOf(AggregateError);
+      if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failures");
+      expect(holderError).toBeDefined();
+      if (!holderError) throw new Error("Missing participant failure");
+      expect(holderError.value).toBe(lateParticipant);
+      expect(observedClients.size).toBe(0);
+      for (const diagnostic of diagnostics) {
+        expect(diagnostic.error).toBeInstanceOf(Error);
+        if (diagnostic.error === preCancel) {
+          expect(injectPreCancel).toBe(true);
+          expect(diagnostic.released).toBe(false);
+          expect(diagnostic.cancelled).toBe(false);
+          expect(diagnostic.operation).toBe("holder");
+        } else if (diagnostic.error === postCancel) {
+          expect(diagnostic.released).toBe(true);
+          expect(injectPostCancel).toBe(true);
+          expect(diagnostic.cancelled).toBe(true);
+          expect(diagnostic.operation).toBe("holder");
+          expect(isOwnedPgClosure(diagnostic.error)).toBe(false);
+        } else {
+          expect(diagnostic.cancelled).toBe(true);
+          expect(isOwnedPgClosure(diagnostic.error)).toBe(true);
+          expect(["holder", "contender"]).toContain(diagnostic.operation);
+          if (diagnostic.operation === "holder") expect(diagnostic.error).toBe(holderError.value);
+          else expect(diagnostic.error).toBe(contenderError?.value);
+        }
+      }
+      if (!contenderError) throw new Error("Missing contender failure");
+      expect(contenderError.generation).toBeDefined();
+      expect(isOwnedPgClosure(contenderError.value)).toBe(true);
+      expect(contenderError.cancellationRequested).toBe(true);
+      expect(diagnostics.filter((entry) => entry.error === preCancel)).toHaveLength(injectPreCancel ? 1 : 0);
+      expect(diagnostics.filter((entry) => entry.error === postCancel)).toHaveLength(injectPostCancel ? 1 : 0);
+      if (releaseCallbackFailure) expect(releaseCallbackFailure.value).toBe(postCancel);
+      const expectedErrors = [
+        ...diagnostics.flatMap((entry) =>
+          entry.error === postCancel && releaseCallbackFailure
+            ? [entry.error, releaseCallbackFailure.value]
+            : [entry.error],
+        ),
+        holderError.value,
+        contenderError.value,
+      ];
+      expect(combined.errors).toHaveLength(2);
+      expect(cleanup.errors).toHaveLength(expectedErrors.length);
+      for (let i = 0; i < expectedErrors.length; i++) expect(cleanup.errors[i]).toBe(expectedErrors[i]);
+      expect(cleanup.cause).toBe(expectedErrors[0]);
+
+      expect(holderSettled).toBe(true);
+      expect(contenderSettled).toBe(true);
+      expect(runtime.ended).toBe(true);
+      expect(runtime.totalCount).toBe(0);
+      expect(runtime.waitingCount).toBe(0);
+      expect(runtime.listenerCount("acquire")).toBe(0);
+      expect(runtime.listenerCount("release")).toBe(0);
+      expect((await createChokePoint(pool).getItem(inboxId, itemId))?.properties.text).toBe("cleanup source");
+    },
+    20000,
+  );
+
   it.each([false, true])(
     "settles confirm and a shared-blob purge in both orders, purge first: %s",
     async (purgeFirst) => {
@@ -833,6 +1571,8 @@ describe("file from attachment on confirm (issue #1703)", () => {
       const runtime = await createRuntimeRolePool(pool, "semprec_data");
       let purgePid: number | undefined;
       let confirmPid: number | undefined;
+      let purgeAttempted = false;
+      let confirmAttempted = false;
       let purgeReady = () => {};
       let confirmReady = () => {};
       let releasePurge = () => {};
@@ -848,6 +1588,12 @@ describe("file from attachment on confirm (issue #1703)", () => {
       });
       const confirmGate = new Promise<void>((resolve) => {
         releaseConfirm = resolve;
+      });
+      const owned = ownOverlap(runtime, () => {
+        releasePurge();
+        releaseConfirm();
+        purgeReady();
+        confirmReady();
       });
       const observed = new Proxy(runtime, {
         get(target, key, receiver) {
@@ -867,6 +1613,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
                   const sql = typeof args[0] === "string" ? args[0] : "";
                   const match = sql.includes("FROM blobs WHERE") && sql.includes("FOR UPDATE");
                   if (match) {
+                    if (Array.isArray(args[1]) && args[1][0] === blobId) purgeAttempted = true;
                     purgePid = (await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
                     if (!purgeFirst) purgeReady();
                   }
@@ -889,48 +1636,94 @@ describe("file from attachment on confirm (issue #1703)", () => {
         confirm?: Promise<ItemRow>;
       } = {};
       const startPurge = () => {
-        pending.purge = runInTenant(getTenantZeroId(), () =>
-          createChokePoint(observed).purgeExpiredTrashSubtree(trashed, new Date(Date.now() + 60_000)),
+        pending.purge = owned.run(() =>
+          runInTenant(getTenantZeroId(), () =>
+            createChokePoint(observed).purgeExpiredTrashSubtree(trashed, new Date(Date.now() + 60_000)),
+          ),
         );
         pending.purge.catch(() => {});
+        return pending.purge;
       };
       const startConfirm = () => {
-        pending.confirm = withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-          await client.query("SET LOCAL statement_timeout = '5s'");
-          confirmPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-          if (purgeFirst) confirmReady();
-          const result = await confirmProposalWithClient(
-            client,
-            { processingProposalsDatabaseId: proposalsId },
-            source.cardId,
-          );
-          if (!purgeFirst) {
-            confirmReady();
-            await confirmGate;
-          }
-          return result;
-        });
+        pending.confirm = owned.run(() =>
+          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+            await client.query("SET LOCAL statement_timeout = '5s'");
+            confirmPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            if (purgeFirst) confirmReady();
+            const restore = observeResourceAttempt(client, { kind: "blob", id: blobId }, () => {
+              confirmAttempted = true;
+            });
+            try {
+              const result = await confirmProposalWithClient(
+                client,
+                { processingProposalsDatabaseId: proposalsId },
+                source.cardId,
+              );
+              if (!purgeFirst) {
+                confirmReady();
+                await confirmGate;
+              }
+              return result;
+            } finally {
+              restore();
+            }
+          }),
+        );
         pending.confirm.catch(() => {});
+        return pending.confirm;
       };
+      let failure: { error: unknown } | undefined;
       try {
         if (purgeFirst) {
-          startPurge();
-          await bounded(purgeAtBlob);
-          startConfirm();
-          await bounded(confirmAtBlob);
+          const purge = startPurge();
+          await owned.wait(purgeAtBlob, purge);
+          const confirm = startConfirm();
+          await owned.wait(confirmAtBlob, purge, confirm);
         } else {
-          startConfirm();
-          await bounded(confirmAtBlob);
-          startPurge();
-          await bounded(purgeAtBlob);
+          const confirm = startConfirm();
+          await owned.wait(confirmAtBlob, confirm);
+          const purge = startPurge();
+          await owned.wait(purgeAtBlob, confirm, purge);
         }
         if (!purgePid || !confirmPid) throw new Error("Missing competing backend PID");
-        await waitForBlobLockWait(purgeFirst ? purgePid : confirmPid, purgeFirst ? confirmPid : purgePid);
-        releasePurge();
-        releaseConfirm();
+        const actualPurgePid = purgePid;
+        const actualConfirmPid = confirmPid;
         const purge = pending.purge;
         const confirmRun = pending.confirm;
         if (!purge || !confirmRun) throw new Error("Both operations must start");
+        await owned.wait(
+          owned.run(() =>
+            assertResourceHeld({ kind: "blob", id: blobId }, purgeFirst ? actualPurgePid : actualConfirmPid, runtime),
+          ),
+          purge,
+          confirmRun,
+        );
+        await owned.wait(
+          owned.run(() =>
+            waitForBlockingPid(
+              purgeFirst ? actualPurgePid : actualConfirmPid,
+              purgeFirst ? actualConfirmPid : actualPurgePid,
+              runtime,
+            ),
+          ),
+          purge,
+          confirmRun,
+        );
+        await owned.wait(
+          owned.run(() =>
+            waitForResourceWait(
+              { kind: "blob", id: blobId },
+              purgeFirst ? actualPurgePid : actualConfirmPid,
+              purgeFirst ? actualConfirmPid : actualPurgePid,
+              runtime,
+            ),
+          ),
+          purge,
+          confirmRun,
+        );
+        expect(purgeFirst ? confirmAttempted : purgeAttempted).toBe(true);
+        releasePurge();
+        releaseConfirm();
         const [purgeResult, confirmResult] = await bounded(Promise.all([purge, confirmRun]));
         expect(purgeResult.purgedItemIds).toContain(trashed);
         expect(purgeResult.blobStorageKeys).toEqual([]);
@@ -938,15 +1731,18 @@ describe("file from attachment on confirm (issue #1703)", () => {
         expect(await filesItemsFor(blobId)).toHaveLength(1);
         expect(await attachmentCount(source.inboxItemId)).toBe(0);
         expect(await withTransaction(pool, (client) => getBlob(client, blobId))).not.toBeNull();
+      } catch (error) {
+        failure = { error };
       } finally {
         releasePurge();
         releaseConfirm();
-        await Promise.allSettled([
-          ...(pending.purge ? [pending.purge] : []),
-          ...(pending.confirm ? [pending.confirm] : []),
-        ]);
-        await runtime.end();
+        try {
+          await owned.finish(failure !== undefined);
+        } catch (error) {
+          failure = combineOverlapFailure(failure, error);
+        }
       }
+      if (failure !== undefined) rethrowOverlap(failure.error);
     },
     20000,
   );

@@ -1,9 +1,15 @@
 import type { PoolClient } from "pg";
 import { NotFoundError } from "../errors.js";
+import { runValueLinkAdmissionLock } from "../chokePoint/valueLinkRelationAdmission.js";
 
 /** Lock the tenant's Inbox source in the caller's transaction, optionally including Trash. */
-export async function lockInboxSource(client: PoolClient, itemId: string, allowDeleted = false): Promise<void> {
-  if (!(await lockInboxSourceIfPresent(client, itemId, allowDeleted)))
+export async function lockInboxSource(
+  client: PoolClient,
+  itemId: string,
+  allowDeleted = false,
+  lockMode?: "nowait",
+): Promise<void> {
+  if (!(await lockInboxSourceIfPresent(client, itemId, allowDeleted, lockMode)))
     throw new NotFoundError("Inbox source not found", { resource: "item", itemId });
 }
 
@@ -12,12 +18,16 @@ export async function lockInboxSourceIfPresent(
   client: PoolClient,
   itemId: string,
   allowDeleted = false,
+  lockMode?: "nowait",
 ): Promise<boolean> {
-  const result = await client.query(
-    `SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id AND d.tenant_id = i.tenant_id
-     WHERE i.id = $1 AND d.owner_module_id = 'inbox' AND ($2::boolean OR i.deleted_at IS NULL) FOR UPDATE OF i`,
-    [itemId, allowDeleted],
-  );
+  // The interpolated suffix is either the fixed NOWAIT keyword or an empty string.
+  const query = () =>
+    client.query<{ id: string }>(
+      `SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id AND d.tenant_id = i.tenant_id
+     WHERE i.id = $1 AND d.owner_module_id = 'inbox' AND ($2::boolean OR i.deleted_at IS NULL) FOR UPDATE OF i${lockMode === "nowait" ? " NOWAIT" : ""}`,
+      [itemId, allowDeleted],
+    );
+  const result = lockMode === "nowait" ? await runValueLinkAdmissionLock(query) : await query();
   return result.rowCount === 1;
 }
 

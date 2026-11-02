@@ -110,5 +110,5 @@ export async function assertRelationValueLinkHandoff(
   callerItemId: string,
 ): Promise<void> {
   if (property.owner !== "user" || context?.ownerProcess !== VALUE_LINKS_OWNER_PROCESS) return;
-  await assertValueLinkHandoff(client, { itemId: callerItemId, propertyKey: property.key });
+  await assertValueLinkHandoff(client, { itemId: callerItemId, propertyKey: property.key, lockMode: "none" });
 }

@@ -125,6 +125,71 @@ describe("createSchemaRequestListener (issue #147)", () => {
     });
   });
 
+  it.each([
+    ["cs", "Oblast", "Termín"],
+    ["en", "Area", "Deadline"],
+  ])("returns the updated project labels through schema for %s", async (locale, area, date) => {
+    const response = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader(locale) });
+    expect(response.status).toBe(200);
+    const body: unknown = await response.json();
+    expect(body).toMatchObject({
+      databases: expect.arrayContaining([
+        expect.objectContaining({
+          key: "projects",
+          properties: expect.arrayContaining([
+            expect.objectContaining({ key: "area", name: area }),
+            expect.objectContaining({ key: "date", name: date }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  it("returns the updated Czech property and option labels through schema", async () => {
+    const response = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader("cs") });
+    expect(response.status).toBe(200);
+    const body: unknown = await response.json();
+    const property = (key: string, name: string) => expect.objectContaining({ key, name });
+    const option = (key: string, optionKey: string, label: string) =>
+      expect.objectContaining({
+        key,
+        options: expect.arrayContaining([expect.objectContaining({ key: optionKey, label })]),
+      });
+    expect(body).toMatchObject({
+      databases: expect.arrayContaining([
+        expect.objectContaining({
+          key: "areas",
+          properties: expect.arrayContaining([
+            property("company", "Firmy"),
+            property("healthRecord", "Zdravotní záznamy"),
+          ]),
+        }),
+        expect.objectContaining({
+          key: "people",
+          properties: expect.arrayContaining([option("relationship", "girlfriend", "Partnerka")]),
+        }),
+        expect.objectContaining({
+          key: "healthRecords",
+          properties: expect.arrayContaining([
+            property("subject", "Kdo"),
+            property("files", "Přílohy"),
+            option("status", "monitoring", "Sleduje se"),
+            option("type", "condition", "Stav"),
+            option("tags", "dentalHygiene", "Dentální hygiena"),
+          ]),
+        }),
+        expect.objectContaining({
+          key: "events",
+          properties: expect.arrayContaining([option("type", "event", "Událost")]),
+        }),
+        expect.objectContaining({
+          key: "journal",
+          properties: expect.arrayContaining([property("type", "Období"), option("type", "quarter", "Kvartál")]),
+        }),
+      ]),
+    });
+  });
+
   it("returns the tenant zone and its current day, and reflects a zone change on the next request", async () => {
     const headers = await authHeader("en");
     const fetchTenant = async () => {

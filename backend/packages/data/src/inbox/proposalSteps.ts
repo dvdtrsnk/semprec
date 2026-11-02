@@ -235,6 +235,7 @@ async function createEdges(
           { relationPropertyId, callerItemId: itemId, targetItemId },
           undefined,
           ctx.writer,
+          ctx.actingUserId,
         ),
       );
     }
@@ -261,6 +262,7 @@ async function moveEdges(
           { relationPropertyId, callerItemId: itemId, targetItemId },
           undefined,
           ctx.writer,
+          ctx.actingUserId,
         ),
       );
     }
@@ -271,6 +273,7 @@ async function moveEdges(
           { relationPropertyId, callerItemId: itemId, targetItemId },
           undefined,
           ctx.writer,
+          ctx.actingUserId,
         ),
       );
     }

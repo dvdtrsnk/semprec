@@ -178,9 +178,15 @@ export async function breakOnValueLinks(
 }
 
 /** Locks the `on` link of one item property against a concurrent break and reports whether it exists. */
-export async function lockOnValueLink(client: PoolClient, itemId: string, propertyKey: string): Promise<boolean> {
-  const { rows } = await client.query(
-    `SELECT 1 FROM value_links WHERE item_id = $1 AND property_key = $2 AND state = 'on' FOR SHARE`,
+export async function lockOnValueLink(
+  client: PoolClient,
+  itemId: string,
+  propertyKey: string,
+  lockMode?: "nowait" | "none",
+): Promise<boolean> {
+  // The SQL suffix is selected only from the three fixed lock clauses for this typed mode.
+  const { rows } = await client.query<{ "?column?": number }>(
+    `SELECT 1 FROM value_links WHERE item_id = $1 AND property_key = $2 AND state = 'on'${lockMode === "none" ? "" : lockMode === "nowait" ? " FOR SHARE NOWAIT" : " FOR SHARE"}`,
     [itemId, propertyKey],
   );
   return rows.length > 0;

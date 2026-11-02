@@ -38,6 +38,7 @@ import type { HeartbeatRule, HeartbeatRuleKindRegistry } from "../scheduler/rule
 import { computeNextFireAt } from "../scheduler/nextFireAt.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
+import type { InvalidationEvent } from "../realtimeHook.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -68,9 +69,15 @@ describe("scheduler", () => {
   });
 
   async function getSemprecProjectId(): Promise<string> {
-    const { rows } = await pool.query("SELECT id FROM databases WHERE owner_module_id = 'projects'");
-    const { rows: items } = await pool.query("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [rows[0].id]);
-    return items[0].id;
+    const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'");
+    const database = rows[0];
+    if (!database) throw new Error("Missing projects database");
+    const { rows: items } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [
+      database.id,
+    ]);
+    const item = items[0];
+    if (!item) throw new Error("Missing seeded project");
+    return item.id;
   }
 
   it("createHeartbeat computes next_fire_at deterministically at write time", async () => {
@@ -253,6 +260,70 @@ describe("scheduler", () => {
 
     const after = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id)))!.nextFireAt;
     expect(after).not.toBe(before);
+  });
+
+  it("recomputes for a transform-added timezone and rolls back an invalid one", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily transform",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+    const settingsId = await withTransaction(pool, (client) => getSystemSettingsItemId(client));
+    const settings = await pool.query<{ database_id: string }>("SELECT database_id FROM items WHERE id = $1", [
+      settingsId,
+    ]);
+    const databaseId = settings.rows[0]?.database_id;
+    if (!databaseId) throw new Error("Missing system settings database");
+    const before = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id)))?.nextFireAt;
+    vi.resetModules();
+    const hooks = await import("../chokePoint/hooks.js");
+    const search = await import("../search/itemSearchIndexer.js");
+    const searchUpdate = vi.spyOn(search, "itemSearchUpdateHook");
+    await import("../domainWriteHooks.js");
+    const isolated = await import("../chokePoint/chokePoint.js");
+    const isolatedRealtime = await import("../realtimeHook.js");
+    try {
+      hooks.registerItemPreWriteTransform("systemSettings", async ({ patch }) => ({
+        ...patch,
+        timezone: patch.name === "invalid" ? "Not/A_Zone" : "Pacific/Kiritimati",
+      }));
+      const cp = isolated.createChokePoint(pool);
+      const events: InvalidationEvent[] = [];
+      isolatedRealtime.setInvalidationHook((event) => events.push(event));
+      await cp.updateItem({ databaseId, itemId: settingsId, propertiesPatch: { name: "valid" } });
+      expect(searchUpdate).toHaveBeenCalledOnce();
+      expect(events).toMatchObject([{ scope: "item", itemId: settingsId, op: "update" }]);
+      events.length = 0;
+      const after = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id)))?.nextFireAt;
+      expect(after).not.toBe(before);
+      const persisted = await cp.getItem(databaseId, settingsId);
+      expect(persisted?.properties).toMatchObject({ name: "valid", timezone: "Pacific/Kiritimati" });
+      const readSearchIndex = () =>
+        pool.query<{ item_id: string; updated_at: Date; body: string | null; search_vector: string }>(
+          "SELECT item_id, updated_at, body, search_vector::text FROM item_search_index WHERE item_id = $1",
+          [settingsId],
+        );
+      const searchBefore = await readSearchIndex();
+      expect(searchBefore.rowCount).toBe(1);
+      await expect(
+        cp.updateItem({ databaseId, itemId: settingsId, propertiesPatch: { name: "invalid" } }),
+      ).rejects.toMatchObject({ status: 400, code: "validation_failed" });
+      expect((await cp.getItem(databaseId, settingsId))?.properties).toEqual(persisted?.properties);
+      expect((await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id)))?.nextFireAt).toBe(after);
+      expect(events).toEqual([]);
+      expect(searchUpdate).toHaveBeenCalledTimes(2);
+      const searchAfter = await readSearchIndex();
+      expect(searchAfter.rows).toEqual(searchBefore.rows);
+    } finally {
+      isolatedRealtime.setInvalidationHook(() => {});
+      hooks.clearHooksForTests();
+      searchUpdate.mockRestore();
+      vi.resetModules();
+    }
   });
 
   it("core.agentRun creates an agent_runs row, calls the injected runner, and records the delegation trail", async () => {

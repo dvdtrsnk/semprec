@@ -19,6 +19,9 @@ import {
   hashPassword,
   login,
   mintMcpRunCredential,
+  insertValueLink,
+  setInvalidationHook,
+  type InvalidationEvent,
   seedSystem,
   withTransaction,
   type ChokePoint,
@@ -384,6 +387,41 @@ describe("generic operation MCP contract (issue #220)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("attributes session MCP relation deletion to its authenticated user", async () => {
+    const fx = await buildFixtures();
+    await withTransaction(pool, (client) =>
+      insertValueLink(client, {
+        itemId: fx.itemA.id,
+        propertyKey: fx.relationProperty.key,
+        ruleKey: "test",
+        sources: [],
+      }),
+    );
+    const user = await createUser(pool, {
+      tenantId: await tenantForNextTestUser(pool),
+      email: `${randomUUID()}@example.com`,
+      passwordHash: await hashPassword(PASSWORD),
+    });
+    const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      const result = await rpc(baseUrl, { Authorization: `Bearer ${token}` }, "semprec.relation.delete", {
+        relationPropertyId: fx.relationProperty.id,
+        callerItemId: fx.itemA.id,
+        targetItemId: fx.targetItem.id,
+      });
+      expect(result.error).toBeUndefined();
+      expect(events.filter((event) => event.scope === "item" && event.itemId === fx.itemA.id)).toEqual([
+        expect.objectContaining({ userId: user.id }),
+      ]);
+    } finally {
+      setInvalidationHook(() => {});
+    }
   });
 
   it.each(["done", "archived"])("unpins Projects and refuses explicit terminal pins over MCP (%s)", async (status) => {

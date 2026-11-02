@@ -33,6 +33,8 @@ import {
   LocalFsBlobStorageWriter,
   login,
   seedSystem,
+  setInvalidationHook,
+  type InvalidationEvent,
   updateItemWithClient,
   withTransaction,
   type AuthenticatedIdentity,
@@ -161,6 +163,70 @@ describe("item routes (issue #241)", () => {
         expect(z.object({ properties: z.object({ rating: z.number() }) }).parse(body).properties.rating).toBe(rating);
       }
     }
+  });
+
+  it("validates Tasks schedule patches and replays a create through HTTP", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const database = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) => getDatabaseByModuleId(client, "tasks")),
+    );
+    if (!database) throw new Error("Missing Tasks database");
+    const task = await runInTenant(getTenantZeroId(), () =>
+      chokePoint.createItem({ databaseId: database.id, properties: { name: "Plan" } }),
+    );
+    for (const [properties, field] of [
+      [{ timeFrom: "10:00" }, "timeFrom"],
+      [{ name: "  " }, "name"],
+      [{ date: "2026-02-30" }, "date"],
+      [{ date: "2026-10-13", timeTo: "15:00" }, "timeTo"],
+      [{ date: "2026-10-13", timeFrom: "10:00", timeTo: "09:30" }, "timeTo"],
+      [{ date: "2026-10-13", timeFrom: "23:55", timeTo: "23:55" }, "timeTo"],
+    ] as const) {
+      const response = await fetch(`${baseUrl}/api/items/${task.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties, ifVersion: task.updatedAt }),
+      });
+      expect(response.status).toBe(400);
+      const body: unknown = await response.json();
+      expect(body).toMatchObject({ error: { code: "validation_failed", details: { field } } });
+      const unchanged = await runInTenant(getTenantZeroId(), () => chokePoint.getItem(database.id, task.id));
+      expect(unchanged?.properties).toEqual(task.properties);
+      expect(unchanged?.updatedAt).toBe(task.updatedAt);
+    }
+    const patch = async (properties: Record<string, unknown>, ifVersion: string) => {
+      const response = await fetch(`${baseUrl}/api/items/${task.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties, ifVersion }),
+      });
+      expect(response.status).toBe(200);
+      const body: unknown = await response.json();
+      return z.object({ updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) }).parse(body);
+    };
+    const normalized = await patch({ date: "2026-10-13", timeFrom: "9:00" }, task.updatedAt);
+    expect(normalized.properties).toMatchObject({ timeFrom: "09:00", time: "09:00" });
+    const late = await patch({ timeFrom: "23:55", timeTo: "24:00" }, normalized.updatedAt);
+    expect(late.properties).toMatchObject({ timeFrom: "23:55", timeTo: "24:00", time: "23:55–24:00" });
+    const cleared = await patch({ date: null }, late.updatedAt);
+    expect(cleared.properties).toMatchObject({ date: null, timeFrom: null, timeTo: null, time: null });
+    const replayHeaders = { ...headers, "Idempotency-Key": randomUUID() };
+    const request = () =>
+      fetch(`${baseUrl}/api/databases/${database.id}/items`, {
+        method: "POST",
+        headers: replayHeaders,
+        body: JSON.stringify({ properties: { name: "Replay", date: "2026-10-13", timeFrom: "9:00" } }),
+      });
+    const first = await request();
+    const second = await request();
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    const itemSchema = z.object({ id: z.string(), properties: z.object({ timeFrom: z.string(), time: z.string() }) });
+    const one: unknown = await first.json();
+    const two: unknown = await second.json();
+    expect(itemSchema.parse(two)).toEqual(itemSchema.parse(one));
+    expect(itemSchema.parse(two).properties).toEqual({ timeFrom: "09:00", time: "09:00" });
   });
 
   it("validates watchedWith ratings through the PUT HTTP response", async () => {
@@ -1416,6 +1482,33 @@ describe("item routes (issue #241)", () => {
       return { tasksDb, filesDb, task, other, file, plain };
     }
 
+    it("breaks a linked plain value through a user REST patch", async () => {
+      const { filesDb, file } = await makeLinkedFile();
+      await chokePoint.createProperty({ databaseId: filesDb.id, key: "note", name: "Note", type: "text" });
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: file.id,
+          propertyKey: "note",
+          ruleKey: "test",
+          sources: [],
+        }),
+      );
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const response = await fetch(`${baseUrl}/api/items/${file.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties: { note: "changed" }, ifVersion: file.updatedAt }),
+      });
+      expect(response.status).toBe(200);
+      const read = await fetch(`${baseUrl}/api/items/${file.id}?include=links`, { headers });
+      expect(read.status).toBe(200);
+      const body: unknown = await read.json();
+      expect(body).toMatchObject({
+        properties: { note: "changed" },
+        links: { note: { valueKind: "inheritedBroken", brokenBy: "user" } },
+      });
+    });
+
     it("returns links.projects with the inherited kind and the source including its title", async () => {
       const { file, task } = await makeLinkedFile();
       const headers = await authHeader();
@@ -1687,6 +1780,45 @@ describe("item routes (issue #241)", () => {
         expect(inverseBody.id).toBe(directBody.id);
         expect(inverseBody.itemA).toBe(task.id);
         expect(inverseBody.itemB).toBe(person.id);
+      });
+
+      it("attributes a linked relation invalidation to the authenticated REST user", async () => {
+        const { source, target, property } = await makePairedRelation();
+        const item = await chokePoint.createItem({ databaseId: source.id, properties: {} });
+        const other = await chokePoint.createItem({ databaseId: target.id, properties: {} });
+        await withTransaction(pool, (client) =>
+          insertValueLink(client, {
+            itemId: item.id,
+            propertyKey: property.key,
+            ruleKey: "test",
+            sources: [],
+          }),
+        );
+        const user = await createUser(pool, {
+          tenantId: await tenantForNextTestUser(pool),
+          email: `${randomUUID()}@example.com`,
+          passwordHash: await hashPassword(PASSWORD),
+        });
+        const { token } = await login(pool, {
+          email: user.email,
+          password: PASSWORD,
+          platform: "ios",
+          ip: "127.0.0.1",
+        });
+        const events: InvalidationEvent[] = [];
+        setInvalidationHook((event) => events.push(event));
+        try {
+          const response = await fetch(`${baseUrl}/api/items/${item.id}/relations/${property.key}/${other.id}`, {
+            method: "PUT",
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          expect(response.status).toBe(200);
+          expect(events.filter((event) => event.scope === "item" && event.itemId === item.id)).toEqual([
+            expect.objectContaining({ userId: user.id }),
+          ]);
+        } finally {
+          setInvalidationHook(() => {});
+        }
       });
 
       it("repeating PUT with different metadata replaces rather than merges", async () => {

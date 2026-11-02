@@ -377,7 +377,12 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
         const personId = body.personId === null ? null : assertUuid(body.personId, "personId");
         await runInTenant(identity.tenantId, () =>
           withTransaction(pool, (client) =>
-            setSelfPersonId(client, personId, { writerKind: "user", onBehalfOfUserId: identity.user.id }),
+            setSelfPersonId(
+              client,
+              personId,
+              { writerKind: "user", onBehalfOfUserId: identity.user.id },
+              identity.user.id,
+            ),
           ),
         );
         sendJson(res, 200, { personId });

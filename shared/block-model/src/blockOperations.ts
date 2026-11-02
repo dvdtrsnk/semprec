@@ -1,5 +1,5 @@
 import * as Y from "yjs";
-import { BLOCK_TYPE_RULES, MAX_INDENT, MIN_INDENT, type BlockType } from "./blockTypes.js";
+import { BLOCK_TYPE_RULES, MAX_INDENT, MIN_INDENT, isBlockType, type BlockType } from "./blockTypes.js";
 import {
   BlockInputError,
   getBlocksMap,
@@ -14,11 +14,13 @@ import {
 
 /**
  * Multi-block edits on the shared block model. Every function validates against the current
- * state first, so a refusal changes nothing, then performs all its changes in exactly one
- * `doc.transact` carrying the optional `origin`. Within that transaction `order` is tidied:
+ * state first, so a refusal changes nothing. Successful nonempty operations perform their changes
+ * in one `doc.transact` carrying the optional `origin`; empty operations do not write. Within that
+ * transaction `order` is tidied:
  * repeated ids keep their first occurrence, ids without a block are dropped and blocks missing
  * from `order` are appended in ascending id order, which is the order readers already see.
- * Nothing here touches the database; blocks of type `page` need database work and are refused.
+ * Nothing here touches the database. Page blocks can be inserted, moved and deleted; operations
+ * that convert, split, merge or duplicate a page block refuse it.
  */
 
 export type BlockOperationErrorCode =
@@ -48,6 +50,12 @@ export type NewBlockInput = Omit<BlockInput, "id"> & { id?: string };
 
 function newBlockId(): string {
   return crypto.randomUUID();
+}
+
+function assertNewBlockId(doc: Y.Doc, id: string, reserved: ReadonlySet<string> = new Set()): void {
+  if (getBlocksMap(doc).has(id) || reserved.has(id)) {
+    throw new BlockOperationError("duplicate_block_id", `Block ${id} already exists`);
+  }
 }
 
 /** The real blocks in normalized document order; empty for a document read as the synthetic block. */
@@ -167,7 +175,7 @@ export function insertBlocks(
 ): string[] {
   const current = currentBlocks(doc);
   requireAfterId(current, afterId);
-  const existing = new Set(current.map((block) => block.id));
+  const existing = new Set<string>();
   const prepared: BlockInput[] = [];
   for (const block of blocks) {
     const candidate =
@@ -177,9 +185,7 @@ export function insertBlocks(
       throw new BlockInputError(issues);
     }
     const input = candidate as BlockInput;
-    if (existing.has(input.id)) {
-      throw new BlockOperationError("duplicate_block_id", `Block ${input.id} already exists`);
-    }
+    assertNewBlockId(doc, input.id, existing);
     existing.add(input.id);
     prepared.push(input);
   }
@@ -211,6 +217,7 @@ export function splitBlock(doc: Y.Doc, id: string, offset: number, origin?: unkn
     throw new BlockOperationError("offset_out_of_range", `Offset ${offset} is outside 0..${length}`);
   }
   const newId = newBlockId();
+  assertNewBlockId(doc, newId);
   doc.transact(() => {
     tidyOrder(doc, current);
     const text = textOf(blockMap(doc, id));
@@ -278,6 +285,9 @@ export function moveBlocks(doc: Y.Doc, ids: readonly string[], afterId: string |
 
 /** Changes the type of each block and resets `done`; refuses any conversion from or to `page`. */
 export function setType(doc: Y.Doc, ids: readonly string[], type: BlockType, origin?: unknown): void {
+  if (!isBlockType(type)) {
+    throw new BlockInputError([{ path: "type", code: "unknown_type", message: "unknown block type" }]);
+  }
   const current = currentBlocks(doc);
   const selected = requireBlocks(current, ids);
   if (selected.size === 0) {
@@ -338,7 +348,13 @@ export function duplicateBlocks(doc: Y.Doc, ids: readonly string[], origin?: unk
   if (last === undefined) {
     return [];
   }
-  const copies = sources.map((block) => toInput(block, newBlockId()));
+  const reserved = new Set<string>();
+  const copies = sources.map((block) => {
+    const id = newBlockId();
+    assertNewBlockId(doc, id, reserved);
+    reserved.add(id);
+    return toInput(block, id);
+  });
   doc.transact(() => {
     tidyOrder(doc, current);
     getOrderArray(doc).insert(
@@ -359,6 +375,8 @@ export function deleteBlocks(doc: Y.Doc, ids: readonly string[], origin?: unknow
   if (selected.size === 0) {
     return;
   }
+  const emptyId = selected.size === current.length ? newBlockId() : undefined;
+  if (emptyId !== undefined) assertNewBlockId(doc, emptyId);
   doc.transact(() => {
     tidyOrder(doc, current);
     const blocks = getBlocksMap(doc);
@@ -366,8 +384,8 @@ export function deleteBlocks(doc: Y.Doc, ids: readonly string[], origin?: unknow
       blocks.delete(id);
     }
     removeEveryOccurrence(doc, selected);
-    if (selected.size === current.length) {
-      writeBlock(doc, { id: newBlockId(), type: "text" });
+    if (emptyId !== undefined) {
+      writeBlock(doc, { id: emptyId, type: "text" });
     }
   }, origin);
 }

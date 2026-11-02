@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import {
   createRuntimeRolePool,
@@ -21,6 +21,14 @@ import {
 } from "@semprec/data";
 import { createAdapterRequestListener, type AdapterHandler } from "../adapterRoute.js";
 import { requireJsonObjectBody, requireStringField } from "../requestValidation.js";
+
+function asVoid(
+  listener: ReturnType<typeof createAdapterRequestListener>,
+): (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void {
+  return (req, res) => {
+    void listener(req, res);
+  };
+}
 
 let pool: Pool;
 
@@ -73,7 +81,7 @@ describe("adapter route (issue #238)", () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
 
-    server = createServer(createAdapterRequestListener(pool, fixtureHandler));
+    server = createServer(asVoid(createAdapterRequestListener(pool, fixtureHandler)));
     await new Promise<void>((resolve) => server.listen(0, resolve));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
@@ -86,6 +94,249 @@ describe("adapter route (issue #238)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("returns the actual completion through authentication, body, delayed handler and errors", async () => {
+    let entered = () => {};
+    let release = () => {};
+    const admitted = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const completions: Promise<void>[] = [];
+    const requests: Promise<Response>[] = [];
+    const actual = createAdapterRequestListener(pool, async (ctx) => {
+      if (ctx.req.url === "/delayed") {
+        entered();
+        await gate;
+      }
+      return fixtureHandler(ctx);
+    });
+    const observedServer = createServer((req, res) => {
+      const completion = actual(req, res);
+      completions.push(completion);
+      void completion.catch(() => {});
+    });
+    await new Promise<void>((resolve) => observedServer.listen(0, "127.0.0.1", resolve));
+    const address = observedServer.address();
+    if (!address || typeof address === "string") throw new Error("Missing observed server address");
+    const url = `http://127.0.0.1:${address.port}`;
+    const request = (path: string, body: string, token?: string) => {
+      const operation = fetch(url + path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body,
+        signal: AbortSignal.timeout(5000),
+      });
+      requests.push(operation);
+      void operation.catch(() => {});
+      return operation;
+    };
+    let failure: { error: unknown } | undefined;
+    try {
+      expect((await request("/", "{}", undefined)).status).toBe(401);
+      await completions[0];
+      const token = await tokenFor("completion@example.com");
+      expect((await request("/", "{", token)).status).toBe(400);
+      await completions[1];
+      expect((await request("/", JSON.stringify({ title: "missing" }), token)).status).toBe(404);
+      await completions[2];
+      const pending = request("/delayed", JSON.stringify({ title: "ok" }), token);
+      const settled = pending.then(
+        () => {},
+        () => {},
+      );
+      try {
+        await Promise.race([
+          admitted,
+          pending.then(() => {
+            throw new Error("Request finished before admission");
+          }),
+        ]);
+        const completion = completions[3];
+        if (!completion) throw new Error("Missing adapter completion");
+        let completed = false;
+        void completion.then(
+          () => {
+            completed = true;
+          },
+          () => {
+            completed = true;
+          },
+        );
+        await Promise.resolve();
+        expect(completed).toBe(false);
+        release();
+        expect((await pending).status).toBe(200);
+        await completion;
+        expect(completed).toBe(true);
+      } finally {
+        release();
+        await settled;
+      }
+    } catch (error) {
+      failure = { error };
+    } finally {
+      release();
+      observedServer.closeAllConnections();
+      const results = await Promise.allSettled([...completions, ...requests]);
+      const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+      try {
+        await new Promise<void>((resolve, reject) =>
+          observedServer.close((error) => (error ? reject(error) : resolve())),
+        );
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length) {
+        const all = failure ? [failure.error, ...errors] : errors;
+        failure = { error: new AggregateError(all, "Adapter control and cleanup failed", { cause: all[0] }) };
+      }
+    }
+    if (failure) throw failure.error;
+  });
+
+  it("retains a delayed real fallback failure after an earlier observation failure", async () => {
+    const bodyError = new Error("adapter observation failed");
+    const firstWrite = new Error("initial write failed");
+    const fallbackError = new Error("fallback write failed");
+    let entered = () => {};
+    let release = () => {};
+    const admitted = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let received: Promise<void> | undefined;
+    const actual = createAdapterRequestListener(pool, async (ctx) => {
+      entered();
+      await gate;
+      return fixtureHandler(ctx);
+    });
+    const token = await tokenFor("delayed-fallback@example.com");
+    const observedServer = createServer((req, res) => {
+      let writes = 0;
+      vi.spyOn(res, "writeHead").mockImplementation(() => {
+        throw writes++ === 0 ? firstWrite : fallbackError;
+      });
+      received = actual(req, res);
+      void received.catch(() => {
+        res.destroy();
+      });
+    });
+    await new Promise<void>((resolve) => observedServer.listen(0, "127.0.0.1", resolve));
+    const address = observedServer.address();
+    if (!address || typeof address === "string") throw new Error("Missing observed server address");
+    const request = fetch(`http://127.0.0.1:${address.port}/`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "ok" }),
+      signal: AbortSignal.timeout(5000),
+    });
+    const clientResult = request.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    let failure: { error: unknown } | undefined;
+    let adapterResult: { value: void } | { error: unknown } | undefined;
+    try {
+      await Promise.race([
+        admitted,
+        clientResult.then(() => {
+          throw new Error("Client settled before handler admission");
+        }),
+      ]);
+      throw bodyError;
+    } catch (error) {
+      failure = { error };
+    } finally {
+      release();
+      if (received)
+        adapterResult = await received.then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        );
+      observedServer.closeAllConnections();
+      const client = await clientResult;
+      const errors: unknown[] = [];
+      if (adapterResult && "error" in adapterResult) errors.push(adapterResult.error);
+      if ("error" in client) errors.push(client.error);
+      try {
+        await new Promise<void>((resolve, reject) =>
+          observedServer.close((error) => (error ? reject(error) : resolve())),
+        );
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length) {
+        const all = failure ? [failure.error, ...errors] : errors;
+        failure = { error: new AggregateError(all, "Adapter control and cleanup failed", { cause: all[0] }) };
+      }
+    }
+    const client = await clientResult;
+    expect(adapterResult).toHaveProperty("error");
+    if (!adapterResult || !("error" in adapterResult)) throw new Error("Expected adapter failure");
+    expect(adapterResult.error).toBe(fallbackError);
+    expect("error" in client).toBe(true);
+    if (!("error" in client)) throw new Error("Expected client failure");
+    expect(client.error).toMatchObject({ name: "TypeError", message: "fetch failed" });
+    expect(failure?.error).toBeInstanceOf(AggregateError);
+    if (!(failure?.error instanceof AggregateError)) throw new Error("Expected combined adapter failure");
+    expect(failure.error.cause).toBe(bodyError);
+    expect(failure.error.errors).toHaveLength(3);
+    expect(failure.error.errors[0]).toBe(bodyError);
+    expect(failure.error.errors[1]).toBe(fallbackError);
+    expect(failure.error.errors[2]).toBe(client.error);
+  });
+
+  it("returns the original rejection if the fallback response itself throws", async () => {
+    const fallback = new Error("fallback write failed");
+    const first = new Error("initial write failed");
+    let resolveCompletion = (_error: unknown) => {};
+    const completion = new Promise<unknown>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    const actual = createAdapterRequestListener(pool, fixtureHandler);
+    const failingServer = createServer((req, res) => {
+      let calls = 0;
+      vi.spyOn(res, "writeHead").mockImplementation(() => {
+        throw calls++ === 0 ? first : fallback;
+      });
+      const work = actual(req, res);
+      void work.then(
+        () => resolveCompletion(new Error("Unexpected success")),
+        (error: unknown) => resolveCompletion(error),
+      );
+    });
+    await new Promise<void>((resolve) => failingServer.listen(0, "127.0.0.1", resolve));
+    const address = failingServer.address();
+    if (!address || typeof address === "string") throw new Error("Missing failing server address");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const request = fetch(`http://127.0.0.1:${address.port}`, { signal: controller.signal });
+    const settled = request.then(
+      () => {},
+      () => {},
+    );
+    try {
+      const error = await Promise.race([
+        completion,
+        request.then(() => {
+          throw new Error("Unexpected HTTP response");
+        }),
+      ]);
+      expect(error).toBe(fallback);
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+      failingServer.closeAllConnections();
+      await settled;
+      await new Promise<void>((resolve) => failingServer.close(() => resolve()));
+      vi.restoreAllMocks();
+    }
   });
 
   it("rejects an unauthenticated request before the handler runs", async () => {
@@ -102,10 +353,12 @@ describe("adapter route (issue #238)", () => {
   it("runs the handler inside the caller's tenant scope, and never runs it without credentials", async () => {
     const scopes: Array<TenantScope | undefined> = [];
     const scopedServer = createServer(
-      createAdapterRequestListener(pool, async () => {
-        scopes.push(currentTenantScope());
-        return { status: 200, body: { ok: true } };
-      }),
+      asVoid(
+        createAdapterRequestListener(pool, async () => {
+          scopes.push(currentTenantScope());
+          return { status: 200, body: { ok: true } };
+        }),
+      ),
     );
     await new Promise<void>((resolve) => scopedServer.listen(0, resolve));
     const address = scopedServer.address();
@@ -143,15 +396,17 @@ describe("adapter route (issue #238)", () => {
     const scopes: Array<TenantScope | undefined> = [];
     const counts: string[] = [];
     const adminServer = createServer(
-      createAdapterRequestListener(
-        pool,
-        async () => {
-          scopes.push(currentTenantScope());
-          const { rows } = await runtimePool.query<{ count: string }>("SELECT count(*)::text AS count FROM items");
-          counts.push(rows[0]?.count ?? "missing");
-          return { status: 200, body: { ok: true } };
-        },
-        { admin: true },
+      asVoid(
+        createAdapterRequestListener(
+          pool,
+          async () => {
+            scopes.push(currentTenantScope());
+            const { rows } = await runtimePool.query<{ count: string }>("SELECT count(*)::text AS count FROM items");
+            counts.push(rows[0]?.count ?? "missing");
+            return { status: 200, body: { ok: true } };
+          },
+          { admin: true },
+        ),
       ),
     );
     await new Promise<void>((resolve) => adminServer.listen(0, resolve));
@@ -182,9 +437,11 @@ describe("adapter route (issue #238)", () => {
 
   it("answers an unexpected handler error with the generic 500", async () => {
     const failing = createServer(
-      createAdapterRequestListener(pool, async () => {
-        throw new Error("boom");
-      }),
+      asVoid(
+        createAdapterRequestListener(pool, async () => {
+          throw new Error("boom");
+        }),
+      ),
     );
     await new Promise<void>((resolve) => failing.listen(0, resolve));
     const address = failing.address();

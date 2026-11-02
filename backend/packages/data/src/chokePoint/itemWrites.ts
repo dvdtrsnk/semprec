@@ -176,15 +176,18 @@ export async function prepareUserItemPatch(
   database: DatabaseRow,
   stored: ItemRow,
 ): Promise<{ patch: Record<string, unknown>; deferredKeys: string[] }> {
+  const callerKeys = Object.keys(values);
   assertUserItemPatchValid(properties, values, database.ownerModuleId);
   if (database.ownerModuleId === null) return { patch: values, deferredKeys: [] };
-  const result = await prepareItemPreWriteTransforms(database.ownerModuleId, { stored, patch: values });
+  const result = await prepareItemPreWriteTransforms(database.ownerModuleId, { stored, patch: { ...values } });
   if (!result)
     throw new ValidationError("The item's write transform cannot be safely prepared", { field: "properties" });
-  assertTransformAddedKeysWritable(properties, Object.keys(values), result.patch, database.ownerModuleId);
+  assertTransformAddedKeysWritable(properties, callerKeys, result.patch, database.ownerModuleId);
+  assertColorValues(properties, result.patch);
+  assertTitlePresent(properties, result.patch, database.ownerModuleId, { writerKind: "user" }, "patch");
   for (const key of result.deferredKeys) {
     const property = properties.find((candidate) => candidate.key === key);
-    if (!property || property.owner !== "user" || Object.hasOwn(values, key) || Object.hasOwn(result.patch, key)) {
+    if (!property || property.owner !== "user" || callerKeys.includes(key) || Object.hasOwn(result.patch, key)) {
       throw new ValidationError("The item's write transform declared an invalid deferred key", { field: key });
     }
   }
@@ -244,7 +247,7 @@ async function applyItemPreWriteTransforms(
   properties: PropertyRow[],
 ): Promise<Record<string, unknown>> {
   const callerKeys = Object.keys(context.patch);
-  const transformed = await runItemPreWriteTransforms(moduleId, context);
+  const transformed = await runItemPreWriteTransforms(moduleId, { ...context, patch: { ...context.patch } });
   assertTransformAddedKeysWritable(properties, callerKeys, transformed, moduleId);
   return transformed;
 }
@@ -364,6 +367,7 @@ export async function createItemWithClient(
           itemProperties[property.key] = value;
         }
       }
+      assertColorValues(properties, itemProperties);
       assertTitlePresent(properties, itemProperties, database.ownerModuleId, writer, "create");
       return itemProperties;
     },
@@ -457,32 +461,42 @@ export async function updateItemWithClient(
   const patchKeys = Object.keys(input.propertiesPatch);
   assertWritableProperties(properties, patchKeys, options);
   assertColorValues(properties, input.propertiesPatch);
-  // The declared handoff: the valueLinks process may write a user-owned value only while its link is on.
-  if (options.systemOwnerProcess === VALUE_LINKS_OWNER_PROCESS) {
-    for (const key of patchKeys) await assertValueLinkHandoff(client, { itemId: input.itemId, propertyKey: key });
-  }
-
   const database = await databasesStore.getDatabase(client, input.databaseId);
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
   const writer = options.writer ?? SYSTEM_WRITER;
   assertTitlePresent(properties, input.propertiesPatch, database.ownerModuleId, writer, "patch");
   let propertiesPatch = input.propertiesPatch;
   const moduleId = database.ownerModuleId;
-  if (moduleId !== null && hasItemPreWriteTransform(moduleId)) {
-    // The row lock is taken before the transforms read `stored`, so the decision is made on the row this
-    // update will replace; a database whose module has no transform takes no lock here.
-    const stored = await itemsStore.lockItemById(client, input.databaseId, input.itemId);
+  const valueLinksHandoff = options.systemOwnerProcess === VALUE_LINKS_OWNER_PROCESS;
+  const needsTransform = moduleId !== null && hasItemPreWriteTransform(moduleId);
+  let stored: Awaited<ReturnType<typeof itemsStore.lockItemById>> = null;
+  if (valueLinksHandoff || needsTransform) {
+    stored = await itemsStore.lockItemById(client, input.databaseId, input.itemId);
     if (!stored || stored.deletedAt) throw new NotFoundError(`Item ${input.itemId} not found`);
+  }
+  if (moduleId !== null && needsTransform && stored) {
+    // The transform reads the locked row that this update will replace.
     propertiesPatch = await applyItemPreWriteTransforms(
       moduleId,
       { client, database, stored, patch: input.propertiesPatch, humanWriterUserId: options.humanWriterUserId, writer },
       properties,
     );
+    assertColorValues(properties, propertiesPatch);
+    assertTitlePresent(properties, propertiesPatch, database.ownerModuleId, writer, "patch");
   }
   // Every key this update writes, including any a transform added. Value links, rollup dependencies
   // and the timezone check treat these like any other written key; `patchKeys` (the caller's keys)
   // stays the basis of the returned `previous`.
   const writtenKeys = Object.keys(propertiesPatch);
+  if (valueLinksHandoff) {
+    const userKeys = new Set(
+      properties.filter((property) => property.owner === "user").map((property) => property.key),
+    );
+    const handoffKeys = new Set([...patchKeys, ...writtenKeys.filter((key) => userKeys.has(key))]);
+    for (const key of [...handoffKeys].sort()) {
+      await assertValueLinkHandoff(client, { itemId: input.itemId, propertyKey: key });
+    }
+  }
 
   const { previous, ...item } = await itemsStore.updateItemProperties(client, {
     databaseId: input.databaseId,

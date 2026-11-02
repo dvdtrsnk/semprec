@@ -1,4 +1,4 @@
-import type { PoolClient } from "pg";
+import { DatabaseError, type PoolClient } from "pg";
 import { requireSingleRow } from "../db/pool.js";
 import { CardinalityViolationError, NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRelationRow, RelationDefinitionRow } from "../types.js";
@@ -9,7 +9,7 @@ import { visibleDatabaseIds } from "./itemsStore.js";
 const CARDINALITY_VIOLATION_ERRCODE = "SC001";
 
 function isCardinalityViolation(err: unknown): boolean {
-  return (err as { code?: string })?.code === CARDINALITY_VIOLATION_ERRCODE;
+  return err instanceof DatabaseError && err.code === CARDINALITY_VIOLATION_ERRCODE;
 }
 
 const CARDINALITIES: readonly RelationDefinitionRow["cardinality"][] = ["one_to_one", "one_to_many", "many_to_many"];
@@ -192,6 +192,27 @@ export async function getItemRelationByTuple(
     [relationDefinitionId, itemA, itemB],
   );
   return rows[0] ? mapItemRelationRow(rows[0]) : null;
+}
+
+export async function tryLockRelationDefinition(client: PoolClient, definitionId: string): Promise<boolean> {
+  const { rows } = await client.query<{ locked: boolean }>(
+    "SELECT pg_try_advisory_xact_lock(hashtextextended($1::text, 0)) AS locked",
+    [definitionId],
+  );
+  if (typeof rows[0]?.locked !== "boolean") throw new Error("Missing relation admission result");
+  return rows[0].locked;
+}
+
+export async function lockExistingRelationNowait(
+  client: PoolClient,
+  definitionId: string,
+  itemA: string,
+  itemB: string,
+): Promise<void> {
+  await client.query<{ id: string }>(
+    "SELECT id FROM item_relations WHERE relation_definition_id = $1 AND item_a = $2 AND item_b = $3 FOR UPDATE NOWAIT",
+    [definitionId, itemA, itemB],
+  );
 }
 
 export async function deleteItemRelation(

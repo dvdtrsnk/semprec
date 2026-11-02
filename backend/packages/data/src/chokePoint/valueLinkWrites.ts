@@ -42,9 +42,9 @@ export async function breakValueLinks(client: PoolClient, input: BreakValueLinks
 /** Rejects a `valueLinks` write to a user-owned property that has no `on` link row for this item. */
 export async function assertValueLinkHandoff(
   client: PoolClient,
-  input: { itemId: string; propertyKey: string },
+  input: { itemId: string; propertyKey: string; lockMode?: "nowait" | "none" },
 ): Promise<void> {
-  if (await lockOnValueLink(client, input.itemId, input.propertyKey)) return;
+  if (await lockOnValueLink(client, input.itemId, input.propertyKey, input.lockMode)) return;
   throw new ForbiddenError(
     `Property '${input.propertyKey}' is user-owned and has no active value link on this item`,
     { field: input.propertyKey },
@@ -61,12 +61,12 @@ export async function assertValueLinkHandoff(
  */
 export async function breakValueLinksForRelationEdge(
   client: PoolClient,
-  input: { reldef: RelationDefinitionRow; itemA: string; itemB: string; writerKind: WriterKind },
+  input: { reldef: RelationDefinitionRow; itemA: string; itemB: string; writerKind: WriterKind; actingUserId?: string },
 ): Promise<string[]> {
   if (input.writerKind === "system") return [];
   const sides = [{ propertyId: input.reldef.propertyIdA, itemId: input.itemA }];
   if (input.reldef.propertyIdB) sides.push({ propertyId: input.reldef.propertyIdB, itemId: input.itemB });
-  const announced: { itemId: string; databaseId: string; updatedAt: string }[] = [];
+  const announced = new Map<string, { itemId: string; databaseId: string; updatedAt: string }>();
   for (const side of sides) {
     const property = await propertiesStore.getProperty(client, side.propertyId);
     if (!property) continue;
@@ -77,15 +77,18 @@ export async function breakValueLinksForRelationEdge(
     });
     for (const itemId of changed) {
       const item = await itemsStore.getItemById(client, property.databaseId, itemId);
-      if (item) announced.push({ itemId, databaseId: property.databaseId, updatedAt: item.updatedAt });
+      if (item) {
+        const key = JSON.stringify([property.databaseId, itemId]);
+        announced.set(key, { itemId, databaseId: property.databaseId, updatedAt: item.updatedAt });
+      }
     }
   }
-  if (announced.length > 0) {
+  if (announced.size > 0) {
     runAfterCommit(client, () => {
-      for (const { itemId, databaseId, updatedAt } of announced) {
-        notifyInvalidation({ scope: "item", databaseId, itemId, op: "update", updatedAt });
+      for (const { itemId, databaseId, updatedAt } of announced.values()) {
+        notifyInvalidation({ scope: "item", databaseId, itemId, op: "update", updatedAt, userId: input.actingUserId });
       }
     });
   }
-  return announced.map((entry) => entry.itemId);
+  return [...announced.values()].map((entry) => entry.itemId);
 }

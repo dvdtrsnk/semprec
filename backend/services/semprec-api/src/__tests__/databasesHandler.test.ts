@@ -219,6 +219,100 @@ describe("database routes (issue #240)", () => {
     });
   });
 
+  it.each([
+    [
+      "cs",
+      "projects",
+      [
+        { key: "area", label: "Oblast" },
+        { key: "date", label: "Termín" },
+      ],
+    ],
+    [
+      "en",
+      "projects",
+      [
+        { key: "area", label: "Area" },
+        { key: "date", label: "Deadline" },
+      ],
+    ],
+    [
+      "cs",
+      "areas",
+      [
+        { key: "company", label: "Firmy" },
+        { key: "healthRecord", label: "Zdravotní záznamy" },
+      ],
+    ],
+    [
+      "en",
+      "areas",
+      [
+        { key: "company", label: "Companies" },
+        { key: "healthRecord", label: "Health records" },
+      ],
+    ],
+    [
+      "cs",
+      "healthRecords",
+      [
+        { key: "subject", label: "Kdo" },
+        { key: "files", label: "Přílohy" },
+        {
+          key: "status",
+          options: expect.arrayContaining([expect.objectContaining({ key: "monitoring", label: "Sleduje se" })]),
+        },
+        {
+          key: "type",
+          options: expect.arrayContaining([expect.objectContaining({ key: "condition", label: "Stav" })]),
+        },
+        {
+          key: "tags",
+          options: expect.arrayContaining([
+            expect.objectContaining({ key: "dentalHygiene", label: "Dentální hygiena" }),
+          ]),
+        },
+      ],
+    ],
+    [
+      "cs",
+      "people",
+      [
+        {
+          key: "relationship",
+          options: expect.arrayContaining([expect.objectContaining({ key: "girlfriend", label: "Partnerka" })]),
+        },
+      ],
+    ],
+    [
+      "cs",
+      "events",
+      [{ key: "type", options: expect.arrayContaining([expect.objectContaining({ key: "event", label: "Událost" })]) }],
+    ],
+    [
+      "cs",
+      "journal",
+      [
+        {
+          key: "type",
+          label: "Období",
+          options: expect.arrayContaining([expect.objectContaining({ key: "quarter", label: "Kvartál" })]),
+        },
+      ],
+    ],
+  ])("returns updated %s labels for %s through the property endpoint", async (locale, key, expected) => {
+    const database = (await chokePoint.listDatabases()).find((entry) => entry.key === key);
+    if (!database) throw new Error(`Missing seeded database ${key}`);
+    const response = await fetch(`${baseUrl}/api/databases/${database.id}/properties`, {
+      headers: await authHeader(locale),
+    });
+    expect(response.status).toBe(200);
+    const body: unknown = await response.json();
+    expect(body).toMatchObject({
+      properties: expect.arrayContaining(expected.map((property) => expect.objectContaining(property))),
+    });
+  });
+
   it("lets a property label override win and falls back to a raw key without a catalog", async () => {
     const movies = (await chokePoint.listDatabases()).find((database) => database.key === "movies");
     if (!movies) throw new Error("expected Movies database from seedSystem");

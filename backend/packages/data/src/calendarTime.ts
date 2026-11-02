@@ -22,7 +22,14 @@ const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 function zoned(zone: string, at?: Date): DateTime {
   assertValidTimezone(zone);
-  return (at ? DateTime.fromJSDate(at) : DateTime.now()).setZone(zone);
+  if (at !== undefined && !Number.isFinite(at.getTime())) {
+    throw new ValidationError("Invalid calendar instant", { field: "instant" });
+  }
+  const result = (at === undefined ? DateTime.now() : DateTime.fromJSDate(at)).setZone(zone);
+  if (!result.isValid || !Number.isFinite(result.toMillis())) {
+    throw new ValidationError("Invalid calendar instant", { field: "instant" });
+  }
+  return result;
 }
 
 function dayStart(date: string, zone: string): DateTime {
@@ -34,13 +41,17 @@ function dayStart(date: string, zone: string): DateTime {
 
 /** Current date in `zone` as `YYYY-MM-DD`. */
 export function today(zone: string, at?: Date): string {
-  return zoned(zone, at).toISODate() as string;
+  const date = zoned(zone, at).toISODate();
+  if (date === null) throw new ValidationError("Invalid calendar instant", { field: "instant" });
+  return date;
 }
 
 /** Current wall-clock date and time ("HH:MM") in `zone`. */
 export function now(zone: string, at?: Date): WallClock {
   const dt = zoned(zone, at);
-  return { date: dt.toISODate() as string, time: dt.toFormat("HH:mm") };
+  const date = dt.toISODate();
+  if (date === null) throw new ValidationError("Invalid calendar instant", { field: "instant" });
+  return { date, time: dt.toFormat("HH:mm") };
 }
 
 /** The day containing `date`: start of the day and the start of the next one. */
@@ -91,7 +102,12 @@ export function taskEffectiveEnd(task: CalendarTaskTimes, zone: string): DateTim
 
 /** True when `end` is at or before the clock. */
 export function isEnded(end: DateTime, zone: string, at?: Date): boolean {
-  return end.toMillis() <= zoned(zone, at).toMillis();
+  assertValidTimezone(zone);
+  const endMillis = end.toMillis();
+  if (!end.isValid || !Number.isFinite(endMillis)) {
+    throw new ValidationError("Invalid calendar end", { field: "end" });
+  }
+  return endMillis <= zoned(zone, at).toMillis();
 }
 
 export type CalendarClock = {

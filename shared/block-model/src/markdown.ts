@@ -6,15 +6,14 @@ import { BlockInputError, validateBlockInput, type BlockIssue, type TextRun } fr
  * One non-empty line is one block. The parser and serializer are pure and import nothing
  * but this module's own files, so the WebView editor runs the same code.
  *
- * Normalization on a round trip: leading and trailing whitespace of a block line is
- * dropped, and a number block is always written as `1.`.
+ * Raw outer line whitespace is normalized; canonical content whitespace is escaped.
+ * A number block is always written as `1.`.
  */
 
 const PAGE_LINK_PREFIX = "semprec://page/";
 const ITEM_LINK_PREFIX = "semprec://items/";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const COMMENT_PATTERN = /^<!-- semprec:block (.*) -->$/;
-const TYPE_KEY_PATTERN = /^[\w.:-]+$/;
 const LIST_TYPES: ReadonlySet<string> = new Set(["bullet", "number", "todo"]);
 const WORD_CHAR = /[\p{L}\p{N}]/u;
 const PUNCTUATION = /[!-/:-@[-`{-~]/;
@@ -95,7 +94,7 @@ function toPieces(runs: readonly TextRun[]): Piece[] {
       code: run.attributes?.code === true,
       href: run.attributes?.link?.href ? run.attributes.link.href : null,
     };
-    const segments = run.insert.replace(/\r\n?/g, "\n").split("\n");
+    const segments = run.insert.split("\n");
     segments.forEach((segment, index) => {
       if (segment !== "") {
         pieces.push({ kind: "text", text: segment, marks });
@@ -156,9 +155,18 @@ function markHtmlSpans(spans: Span[], pieces: readonly Piece[]): void {
 
 function escapePlain(text: string, offset: number, whole: string): string {
   let out = "";
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i] as string;
-    if (char === "\\" || char === "*" || char === "`" || char === "[" || char === "]" || char === "<") {
+  const leading = /^[^\S\n]*/u.exec(whole)?.[0].length ?? 0;
+  const trailing = whole.length - (/[^\S\n]*$/u.exec(whole)?.[0].length ?? 0);
+  for (let i = 0; i < text.length;) {
+    const point = text.codePointAt(i);
+    if (point === undefined) break;
+    const char = String.fromCodePoint(point);
+    const position = offset + i;
+    if (char !== "\n" && /\s/u.test(char) && (position < leading || position >= trailing)) {
+      out += `&#x${point.toString(16)};`;
+    } else if (char === "&" && whitespaceReference(whole.slice(position)) !== null) {
+      out += "\\&";
+    } else if (char === "\\" || char === "*" || char === "`" || char === "[" || char === "]" || char === "<") {
       out += `\\${char}`;
     } else if (char === "_") {
       const before = whole[offset + i - 1];
@@ -168,20 +176,54 @@ function escapePlain(text: string, offset: number, whole: string): string {
     } else {
       out += char;
     }
+    i += char.length;
   }
   return out;
+}
+
+/** Only the canonical numeric spelling of non-LF ECMAScript whitespace is recognized. */
+function whitespaceReference(source: string): { text: string; length: number } | null {
+  const match = /^&#x([1-9a-f][0-9a-f]*);/.exec(source);
+  if (!match || match[1] === undefined) return null;
+  const point = Number.parseInt(match[1], 16);
+  if (point > 0x10ffff) return null;
+  const text = String.fromCodePoint(point);
+  return text !== "\n" && /^\s$/u.test(text) ? { text, length: match[0].length } : null;
 }
 
 function codeSpan(text: string): string {
   const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
   const fence = "`".repeat(longest === 0 ? 1 : longest + 1);
-  const pad = text.startsWith("`") || text.endsWith("`") ? " " : "";
+  const pad =
+    text.startsWith("`") || text.endsWith("`") || (text.trim() !== "" && (text.startsWith(" ") || text.endsWith(" ")))
+      ? " "
+      : "";
   return `${fence}${pad}${text}${pad}${fence}`;
 }
 
+function encodePageId(pageId: string): string {
+  let encoded = "";
+  for (let index = 0; index < pageId.length; index += 1) {
+    const unit = pageId.charAt(index);
+    encoded += /^[A-Za-z0-9._~-]$/.test(unit)
+      ? unit
+      : `\\u${pageId.charCodeAt(index).toString(16).toUpperCase().padStart(4, "0")}`;
+  }
+  return encoded;
+}
+
+function decodeUtf16Escapes(encoded: string): string {
+  return encoded.replace(/\\u([0-9A-F]{4})/g, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
+}
+
 function linkDestination(href: string): string {
-  if (/[\s()<>\\]/.test(href)) {
-    return `<${href.replace(/[\\<>]/g, (char) => `\\${char}`)}>`;
+  if (href.startsWith(PAGE_LINK_PREFIX) || /[\s()<>\\]/.test(href)) {
+    const escaped = href.replace(/&#xa;|[\n\\<>]/g, (part) => {
+      if (part === "\n") return "&#xa;";
+      if (part === "&#xa;") return "\\&#xa;";
+      return `\\${part}`;
+    });
+    return `<${escaped}>`;
   }
   return href;
 }
@@ -239,7 +281,7 @@ function serializeInline(runs: readonly TextRun[]): string {
     const piece = pieces[index];
     if (piece === undefined) continue;
     if (piece.kind === "br") {
-      out += "<br>";
+      out += piece.marks.code ? "<code><br></code>" : "<br>";
     } else if (piece.marks.code) {
       out += codeSpan(piece.text);
     } else {
@@ -268,8 +310,15 @@ function withMarker(marker: string, content: string): string {
   return content === "" ? marker : `${marker} ${content}`;
 }
 
-function sanitizeKey(value: string): string {
-  return value.replace(/[^\w.:-]/g, "_");
+function encodeCommentField(value: string): string {
+  let encoded = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charAt(index);
+    encoded += /^[A-Za-z0-9._:~-]$/.test(unit)
+      ? unit
+      : `\\u${value.charCodeAt(index).toString(16).toUpperCase().padStart(4, "0")}`;
+  }
+  return encoded;
 }
 
 /** Canonical Markdown for `blocks`. Never mutates its input. */
@@ -295,7 +344,8 @@ export function serializeBlocks(blocks: readonly SerializableBlock[], options: S
     switch (type) {
       case "page": {
         const title = options.resolvePageTitle?.(block.pageId as string) ?? "";
-        line = `[${escapePlain(title, 0, title)}](${PAGE_LINK_PREFIX}${block.pageId as string})`;
+        const caption = serializeInline([{ insert: title }]);
+        line = `[${caption}](${PAGE_LINK_PREFIX}${encodePageId(block.pageId as string)})`;
         break;
       }
       case "h1":
@@ -327,8 +377,8 @@ export function serializeBlocks(blocks: readonly SerializableBlock[], options: S
       options.withIds === true || type === "unknown" || (!isList && indent !== 0) || (line === "" && type !== "page");
     const entry: string[] = [];
     if (needsComment) {
-      const typeKey = type === "unknown" ? sanitizeKey(block.type) : type;
-      entry.push(`<!-- semprec:block id=${sanitizeKey(block.id)} type=${typeKey} indent=${indent} -->`);
+      const typeKey = type === "unknown" ? (block.type === "" ? '""' : encodeCommentField(block.type)) : type;
+      entry.push(`<!-- semprec:block id=${encodeCommentField(block.id)} type=${typeKey} indent=${indent} -->`);
     }
     if (line !== "") {
       entry.push(line);
@@ -439,9 +489,16 @@ function parseDestination(source: string, index: number): { href: string; next: 
   if (source[cursor] === "<") {
     cursor += 1;
     while (cursor < source.length && source[cursor] !== ">") {
-      if (source[cursor] === "\\" && cursor + 1 < source.length) cursor += 1;
-      href += source[cursor];
-      cursor += 1;
+      if (source[cursor] === "\\" && cursor + 1 < source.length) {
+        href += source[cursor + 1];
+        cursor += 2;
+      } else if (source.startsWith("&#xa;", cursor)) {
+        href += "\n";
+        cursor += "&#xa;".length;
+      } else {
+        href += source[cursor];
+        cursor += 1;
+      }
     }
     if (source[cursor] !== ">") return null;
     cursor += 1;
@@ -488,6 +545,12 @@ function parseInlineInto(source: string, initial: InlineState, runs: TextRun[]):
       i += 2;
       continue;
     }
+    const reference = char === "&" ? whitespaceReference(source.slice(i)) : null;
+    if (reference !== null) {
+      buffer += reference.text;
+      i += reference.length;
+      continue;
+    }
     if (char === "`") {
       const end = codeSpanEnd(source, i);
       if (end === -1) {
@@ -507,6 +570,12 @@ function parseInlineInto(source: string, initial: InlineState, runs: TextRun[]):
       continue;
     }
     if (char === "<") {
+      if (source.startsWith("<code><br></code>", i)) {
+        flush();
+        runs.push(withAttributes("\n", runAttributes(state, true)));
+        i += "<code><br></code>".length;
+        continue;
+      }
       const tag = /^<(\/?)(strong|b|em|i)>/i.exec(source.slice(i));
       if (tag) {
         flush();
@@ -611,9 +680,12 @@ interface CommentAttributes {
 function parseComment(body: string): CommentAttributes {
   const attributes: CommentAttributes = {};
   for (const match of body.matchAll(/(\w+)=(\S+)/g)) {
-    const [, key, value] = match as unknown as [string, string, string];
-    if (key === "id") attributes.id = value;
-    if (key === "type" && TYPE_KEY_PATTERN.test(value)) attributes.type = value;
+    const [, key, value] = match;
+    if (key === undefined || value === undefined) continue;
+    if (key === "id") attributes.id = decodeUtf16Escapes(value);
+    if (key === "type" && (value === '""' || /^(?:[A-Za-z0-9._:~-]|\\u[0-9A-F]{4})+$/.test(value))) {
+      attributes.type = value === '""' ? "" : decodeUtf16Escapes(value);
+    }
     if (key === "indent" && /^\d+$/.test(value)) attributes.indent = clampIndent(Number(value));
   }
   return attributes;
@@ -632,27 +704,27 @@ function parseLine(raw: string): ParsedLine {
   const spaces = /^ */.exec(raw)?.[0].length ?? 0;
   const line = raw.trim();
   const page = /^\[(?:\\.|[^\]\\])*\]\(semprec:\/\/page\/([^)\s]+)\)$/.exec(line);
-  if (page) {
-    return { type: "page", lineIndent: null, pageId: page[1] as string };
+  if (page && page[1] !== undefined) {
+    return { type: "page", lineIndent: null, pageId: decodeUtf16Escapes(page[1]) };
   }
-  const heading = /^(#{1,3})(?: +(.*))?$/.exec(line);
+  const heading = /^(#{1,3})(?: +([\s\S]*))?$/.exec(line);
   if (heading) {
     return { type: `h${(heading[1] as string).length}`, lineIndent: null, text: parseInline(heading[2] ?? "") };
   }
   const listIndent = clampIndent(spaces / 2);
-  const todo = /^[-*] \[([ xX])\](?: +(.*))?$/.exec(line);
+  const todo = /^[-*] \[([ xX])\](?: +([\s\S]*))?$/.exec(line);
   if (todo) {
     return { type: "todo", lineIndent: listIndent, done: todo[1] !== " ", text: parseInline(todo[2] ?? "") };
   }
-  const bullet = /^[-*](?: +(.*))?$/.exec(line);
+  const bullet = /^[-*](?: +([\s\S]*))?$/.exec(line);
   if (bullet) {
     return { type: "bullet", lineIndent: listIndent, text: parseInline(bullet[1] ?? "") };
   }
-  const number = /^\d+\.(?: +(.*))?$/.exec(line);
+  const number = /^\d+\.(?: +([\s\S]*))?$/.exec(line);
   if (number) {
     return { type: "number", lineIndent: listIndent, text: parseInline(number[1] ?? "") };
   }
-  const quote = /^> ?(.*)$/.exec(line);
+  const quote = /^> ?([\s\S]*)$/.exec(line);
   if (quote) {
     return { type: "quote", lineIndent: null, text: parseInline((quote[1] as string).trim()) };
   }
@@ -785,14 +857,20 @@ export function parseMarkdown(markdown: string, options: ParseOptions = {}): Par
 
 /**
  * Plain text of `markdown` for subtitles and full-text indexing: markers, emphasis and link
- * syntax removed, soft breaks and block boundaries as one space, page links dropped, cut to
+ * syntax removed, soft breaks and block boundaries as one space, cut to
  * `maxChars` characters (code points).
  */
 export function stripMarkdown(markdown: string, maxChars: number): string {
   if (!(maxChars > 0)) {
     return "";
   }
-  const text = parseMarkdown(markdown)
+  // Parse page links as ordinary links here so their visible labels survive; page-model parsing
+  // deliberately discards those labels because the page title is resolved separately.
+  const withVisiblePageLabels = markdown.replace(
+    /^([ \t]*\[(?:\\.|[^\]\\])*\])\(semprec:\/\/page\/[^)\s]+\)([ \t]*\r?)$/gm,
+    "$1(https://example.invalid)$2",
+  );
+  const text = parseMarkdown(withVisiblePageLabels)
     .map((block) => (block.text ?? []).map((run) => run.insert).join(""))
     .join(" ")
     .replace(/\s+/g, " ")

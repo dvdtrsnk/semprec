@@ -4,7 +4,7 @@ import { lockInboxSource } from "./inboxSourceGuard.js";
 const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 
 async function lockTypeEdgeSource(
-  { client, edgeContext, callerItemId, targetItemId }: Parameters<RelationEdgeWriteHook>[0],
+  { client, edgeContext, callerItemId, targetItemId, lockMode }: Parameters<RelationEdgeWriteHook>[0],
   allowDeleted: boolean,
 ): Promise<void> {
   if (callerItemId === NIL_UUID || targetItemId === NIL_UUID) return;
@@ -16,7 +16,7 @@ async function lockTypeEdgeSource(
   const inboxDatabaseId = result.rows[0]?.database_id;
   if (!inboxDatabaseId) return;
   const sourceId = edgeContext.property.databaseId === inboxDatabaseId ? callerItemId : targetItemId;
-  await lockInboxSource(client, sourceId, allowDeleted);
+  await lockInboxSource(client, sourceId, allowDeleted, lockMode);
 }
 
 export const inboxTypeEdgeWriteHook: RelationEdgeWriteHook = (context) => lockTypeEdgeSource(context, false);

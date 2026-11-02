@@ -139,6 +139,7 @@ async function writeEnvelopeRelations(
   databaseId: string,
   itemId: string,
   relations: ProposalEnvelope["relations"],
+  actingUserId?: string,
 ): Promise<void> {
   for (const [key, targetItemIds] of Object.entries(relations ?? {})) {
     const relationPropertyId = await requireRelationPropertyId(client, databaseId, key);
@@ -149,6 +150,7 @@ async function writeEnvelopeRelations(
           { relationPropertyId, callerItemId: itemId, targetItemId },
           undefined,
           CONFIRMING_USER_WRITER,
+          actingUserId,
         );
       } catch (error) {
         if (!(error instanceof ChokePointError)) throw error;
@@ -423,11 +425,12 @@ export async function confirmProposalWithClient(
         },
         undefined,
         CONFIRMING_USER_WRITER,
+        actingUserId,
       );
     }
     // A multi-step envelope's relations live on its steps and were written by them.
     if (!envelope.operations) {
-      await writeEnvelopeRelations(client, envelope.target, created.id, envelope.relations);
+      await writeEnvelopeRelations(client, envelope.target, created.id, envelope.relations, actingUserId);
     }
   } else if (envelope.entityKind === "relation") {
     // `assertValidEnvelopeForCard` above only accepts a 'relation' envelope on a transcript
@@ -444,6 +447,7 @@ export async function confirmProposalWithClient(
       },
       undefined,
       CONFIRMING_USER_WRITER,
+      actingUserId,
     );
     const [linked] = await itemsStore.getItemsByIds(client, [envelope.target]);
     resultItemId = envelope.target;
