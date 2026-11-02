@@ -6,6 +6,7 @@ import {
   MICROSOFT_TOKEN_URL,
   MailConnectionLimitError,
   MailReauthorizationRequiredError,
+  MailServerUnreachableError,
   getMailServerSettings,
   isImapConnectionLimitError,
   openImapConnection,
@@ -125,7 +126,14 @@ async function openMailboxImapClient(pool: Pool, mailboxItemId: string, password
   try {
     return await openImapConnection({ endpoint, username: settings.username }, { password });
   } catch (error) {
-    throw classifyImapConnectError(error);
+    let safe: Error;
+    try {
+      safe = classifyImapConnectError(error);
+    } catch {
+      safe = new Error("IMAP connection failed unexpectedly");
+    }
+    // The original remains owned through the completed connection cleanup.
+    throw safe;
   }
 }
 
@@ -134,16 +142,23 @@ async function openMailboxImapClient(pool: Pool, mailboxItemId: string, password
  * connection for too many open sessions becomes `MailConnectionLimitError`, so the job backs off instead of
  * retrying at once (imapFlowClient.ts's `isImapConnectionLimitError`). A login the server rejects becomes
  * `MailReauthorizationRequiredError`, so the account reads as needing reauthorization. Every other error
- * passes through unchanged, so a failure is never reported as one it was not.
+ * becomes a fixed generic error without claiming a known failure kind.
  */
-function classifyImapConnectError(error: unknown): unknown {
+function classifyImapConnectError(error: unknown): Error {
+  if (error instanceof MailServerUnreachableError) return new MailServerUnreachableError();
+  if (error instanceof MailConnectionLimitError) {
+    return new MailConnectionLimitError("The IMAP server reports too many simultaneous connections for this account");
+  }
+  if (error instanceof MailReauthorizationRequiredError) {
+    return new MailReauthorizationRequiredError("The IMAP server rejected the stored login; reauthorize the mailbox");
+  }
   if (isImapConnectionLimitError(error)) {
     return new MailConnectionLimitError("The IMAP server reports too many simultaneous connections for this account");
   }
   if (isLoginRejection(error)) {
     return new MailReauthorizationRequiredError("The IMAP server rejected the stored login; reauthorize the mailbox");
   }
-  return error;
+  return new Error("IMAP connection failed unexpectedly");
 }
 
 /** imapflow sets `authenticationFailed` on a login the server rejected (imapflow's commands/login.js). */

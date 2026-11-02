@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
+import dns from "node:dns";
 import net from "node:net";
 import { Socket as NetSocket, createServer as createNetServer, type Server as NetServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -14,10 +15,14 @@ import {
   createSmtpTransporter,
   openImapConnection,
   openImapFlow,
+  verifyImapServerConnection,
+  verifySmtpServerConnection,
   type MailServerConnectionSettings,
   type MailServerCredential,
 } from "../mail/mailServerConnections.js";
-import { MailServerUnreachableError } from "../mail/providerTypes.js";
+import { MailAuthFailedError, MailServerUnreachableError } from "../mail/providerTypes.js";
+import { logger } from "../mail/logger.js";
+import { verifyMailCredentialsForTests } from "../mail/mailCredentialVerification.js";
 import { allowLoopbackOutboundForTests } from "../net/outboundAddressPolicy.js";
 import { stubDnsLookup, type DnsLookupStub } from "../testSupport/dnsLookupStub.js";
 
@@ -36,6 +41,7 @@ interface FakeServer {
   readonly connections: () => number;
   /** TLS handshakes that completed. */
   readonly secureConnections: () => number;
+  readonly closedConnections: () => number;
   /** Server names the clients sent in SNI, in order. */
   readonly serverNames: string[];
   close(): Promise<void>;
@@ -126,6 +132,7 @@ async function startFakeServer(session: (socket: Socket) => void, certificate?: 
   const serverNames: string[] = [];
   let connections = 0;
   let secureConnections = 0;
+  let closedConnections = 0;
   const server: NetServer = certificate
     ? tls.createServer(
         {
@@ -152,11 +159,17 @@ async function startFakeServer(session: (socket: Socket) => void, certificate?: 
       connections += 1;
     });
   }
+  server.on("connection", (socket) =>
+    socket.once("close", () => {
+      closedConnections += 1;
+    }),
+  );
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const fake: FakeServer = {
     port: portOf(server),
     connections: () => connections,
     secureConnections: () => secureConnections,
+    closedConnections: () => closedConnections,
     serverNames,
     close: () =>
       new Promise<void>((resolve) => {
@@ -178,7 +191,7 @@ async function closedPort(): Promise<number> {
 }
 
 /** A minimal IMAP4rev1 server: greets, answers CAPABILITY, and accepts LOGIN only with `password`. */
-function imapSession(password: string): (socket: Socket) => void {
+function imapSession(password: string, commands: string[] = [], holdLogin = false): (socket: Socket) => void {
   return (socket) => {
     socket.write("* OK fake IMAP server ready\r\n");
     let pending = "";
@@ -187,9 +200,10 @@ function imapSession(password: string): (socket: Socket) => void {
       let end = pending.indexOf("\r\n");
       while (end !== -1) {
         const line = pending.slice(0, end);
+        commands.push(line);
         pending = pending.slice(end + 2);
         end = pending.indexOf("\r\n");
-        socket.write(imapReply(line, password));
+        if (!(holdLogin && /\bLOGIN\b/i.test(line))) socket.write(imapReply(line, password));
       }
     });
   };
@@ -215,7 +229,7 @@ function imapReply(line: string, password: string): string {
  * A minimal SMTP server: greets, advertises AUTH PLAIN only, and accepts PLAIN logins with `password`.
  * It refuses STARTTLS, and records the verb of every command it receives in `received`.
  */
-function smtpSession(password: string, received: string[] = []): (socket: Socket) => void {
+function smtpSession(password: string, received: string[] = [], holdAuth = false): (socket: Socket) => void {
   return (socket) => {
     socket.write("220 mail.test ESMTP fake\r\n");
     let pending = "";
@@ -227,7 +241,7 @@ function smtpSession(password: string, received: string[] = []): (socket: Socket
         pending = pending.slice(end + 2);
         end = pending.indexOf("\r\n");
         received.push((line.split(" ")[0] ?? "").toUpperCase());
-        socket.write(smtpReply(line, password));
+        if (!(holdAuth && /^AUTH\b/i.test(line))) socket.write(smtpReply(line, password));
       }
     });
   };
@@ -258,6 +272,10 @@ function startTlsSession(
   protocol: "imap" | "smtp",
   certificate: TestCertificate,
   names: string[],
+  holdSecure = false,
+  commands: string[] = [],
+  holdHandshake = false,
+  onSecureData?: () => void,
 ): (socket: Socket) => void {
   return (socket) => {
     socket.write(protocol === "imap" ? "* OK fake IMAP server ready\r\n" : "220 mail.test ESMTP fake\r\n");
@@ -270,9 +288,14 @@ function startTlsSession(
         pending = pending.slice(end + 2);
         const words = line.split(" ");
         const command = (protocol === "imap" ? words[1] : words[0])?.toUpperCase();
+        commands.push(`plain:${command ?? ""}`);
         if (command === "STARTTLS") {
           socket.removeListener("data", onPlainData);
           socket.write(protocol === "imap" ? `${words[0]} OK Begin TLS\r\n` : "220 Ready for TLS\r\n", () => {
+            if (holdHandshake) {
+              socket.resume();
+              return;
+            }
             const secure = new tls.TLSSocket(socket, {
               isServer: true,
               secureContext: tls.createSecureContext({ key: certificate.key, cert: certificate.cert }),
@@ -284,11 +307,17 @@ function startTlsSession(
             secure.on("error", () => undefined);
             let securePending = "";
             secure.on("data", (data: Buffer) => {
+              if (holdSecure) {
+                onSecureData?.();
+                return;
+              }
               securePending += data.toString("utf8");
               let next = securePending.indexOf("\r\n");
               while (next !== -1) {
                 const secureLine = securePending.slice(0, next);
                 securePending = securePending.slice(next + 2);
+                const secureWords = secureLine.split(" ");
+                commands.push(`secure:${(protocol === "imap" ? secureWords[1] : secureWords[0])?.toUpperCase() ?? ""}`);
                 secure.write(
                   protocol === "imap"
                     ? imapReply(secureLine, credential.password)
@@ -323,6 +352,14 @@ function useLoopbackPolicy(): void {
   restorePolicy = allowLoopbackOutboundForTests();
 }
 
+async function expectServerSocketsClosed(server: FakeServer): Promise<void> {
+  for (let attempt = 0; attempt < 100 && server.closedConnections() < server.connections(); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  expect(server.connections()).toBeGreaterThan(0);
+  expect(server.closedConnections()).toBe(server.connections());
+}
+
 async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
   try {
     await promise;
@@ -344,6 +381,759 @@ function lookupThroughPolicy(options: tls.ConnectionOptions, hostname: string): 
 }
 
 describe("openImapConnection (issue #1478)", () => {
+  it("verifies both protocols through real helpers and falls back to STARTTLS", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const imapNames: string[] = [];
+    const smtpNames: string[] = [];
+    const imap = await startFakeServer(startTlsSession("imap", mailCertificate, imapNames));
+    const smtp = await startFakeServer(startTlsSession("smtp", mailCertificate, smtpNames));
+    const refused = await closedPort();
+    await expect(
+      verifyMailCredentialsForTests(
+        {
+          provider: "generic",
+          address: username,
+          username,
+          password: credential.password,
+          imapHost: "mail.test",
+          smtpHost: "mail.test",
+        },
+        {
+          ca: mailCertificate.cert,
+          deadlineMs: 1_000,
+          ports: { 993: refused, 143: imap.port, 465: refused, 587: smtp.port },
+        },
+      ),
+    ).resolves.toEqual({
+      imap: { host: "mail.test", port: 143, security: "starttls" },
+      smtp: { host: "mail.test", port: 587, security: "starttls" },
+    });
+    expect(imapNames).toEqual(["mail.test"]);
+    expect(smtpNames).toEqual(["mail.test"]);
+    await expectServerSocketsClosed(imap);
+    await expectServerSocketsClosed(smtp);
+  });
+
+  it("returns a safe authentication failure after both real IMAP candidates reject", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const imap = await startFakeServer(imapSession("correct-password"), mailCertificate);
+    const upgrade = await startFakeServer(startTlsSession("imap", mailCertificate, []));
+    const smtp = await startFakeServer(smtpSession(credential.password), mailCertificate);
+    const rejectedPassword = "SENTINEL-WRONG-PASSWORD";
+    const error = await rejectionOf(
+      verifyMailCredentialsForTests(
+        {
+          provider: "generic",
+          address: username,
+          username,
+          password: rejectedPassword,
+          imapHost: "mail.test",
+          smtpHost: "mail.test",
+        },
+        {
+          ca: mailCertificate.cert,
+          deadlineMs: 1_000,
+          ports: { 993: imap.port, 143: upgrade.port, 465: smtp.port, 587: smtp.port },
+        },
+      ),
+    );
+    expect(error).toBeInstanceOf(MailAuthFailedError);
+    if (!(error instanceof Error)) throw new Error("Missing authentication error");
+    expect(`${error.message} ${error.stack} ${JSON.stringify(error)}`).not.toContain(rejectedPassword);
+    expect(smtp.connections()).toBe(0);
+    await expectServerSocketsClosed(imap);
+    await expectServerSocketsClosed(upgrade);
+  });
+
+  it("returns unreachable after both real IMAP candidates expire and closes both sockets", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const stalledTls = await startFakeServer((socket) => socket.resume());
+    const stalledGreeting = await startFakeServer((socket) => socket.resume());
+    await expect(
+      verifyMailCredentialsForTests(
+        {
+          provider: "generic",
+          address: username,
+          username,
+          password: credential.password,
+          imapHost: "mail.test",
+          smtpHost: "mail.test",
+        },
+        { deadlineMs: 80, ports: { 993: stalledTls.port, 143: stalledGreeting.port } },
+      ),
+    ).rejects.toBeInstanceOf(MailServerUnreachableError);
+    await expectServerSocketsClosed(stalledTls);
+    await expectServerSocketsClosed(stalledGreeting);
+  });
+
+  it("enforces the production deadline for each real IMAP candidate", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const stalledTls = await startFakeServer((socket) => socket.resume());
+    const stalledGreeting = await startFakeServer((socket) => socket.resume());
+    const started = performance.now();
+    await expect(
+      verifyMailCredentialsForTests(
+        {
+          provider: "generic",
+          address: username,
+          username,
+          password: credential.password,
+          imapHost: "mail.test",
+          smtpHost: "mail.test",
+        },
+        { ports: { 993: stalledTls.port, 143: stalledGreeting.port } },
+      ),
+    ).rejects.toBeInstanceOf(MailServerUnreachableError);
+    expect(performance.now() - started).toBeGreaterThanOrEqual(29_000);
+    expect(stalledTls.connections()).toBe(1);
+    expect(stalledGreeting.connections()).toBe(1);
+    await expectServerSocketsClosed(stalledTls);
+    await expectServerSocketsClosed(stalledGreeting);
+  }, 40_000);
+
+  it("enforces the production deadline for each real SMTP candidate", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const imap = await startFakeServer(imapSession(credential.password), mailCertificate);
+    const stalledTls = await startFakeServer((socket) => socket.resume());
+    const stalledGreeting = await startFakeServer((socket) => socket.resume());
+    const started = performance.now();
+    await expect(
+      verifyMailCredentialsForTests(
+        {
+          provider: "generic",
+          address: username,
+          username,
+          password: credential.password,
+          imapHost: "mail.test",
+          smtpHost: "mail.test",
+        },
+        { ca: mailCertificate.cert, ports: { 993: imap.port, 465: stalledTls.port, 587: stalledGreeting.port } },
+      ),
+    ).rejects.toBeInstanceOf(MailServerUnreachableError);
+    expect(performance.now() - started).toBeGreaterThanOrEqual(29_000);
+    expect(stalledTls.connections()).toBe(1);
+    expect(stalledGreeting.connections()).toBe(1);
+    await expectServerSocketsClosed(imap);
+    await expectServerSocketsClosed(stalledTls);
+    await expectServerSocketsClosed(stalledGreeting);
+  }, 40_000);
+
+  it("verification classifies required STARTTLS refusal before login", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const commands: string[] = [];
+    const server = await startFakeServer(imapSession(credential.password, commands));
+    await expect(
+      verifyImapServerConnection(settingsFor("mail.test", server.port, "starttls"), credential),
+    ).resolves.toBe("tls");
+    expect(commands.some((line) => /\bLOGIN\b/i.test(line))).toBe(false);
+  });
+
+  it("serializes fixed connection diagnostics without an emitted error's secrets or host", async () => {
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const originalConnect: unknown = Object.getOwnPropertyDescriptor(ImapFlow.prototype, "connect")?.value;
+    if (typeof originalConnect !== "function") throw new Error("Missing ImapFlow connect method");
+    const original = Object.assign(new Error("IMAP-PRIVATE-SENTINEL"), {
+      name: "IMAP-PRIVATE-SENTINEL",
+      code: "IMAP-PRIVATE-SENTINEL",
+    });
+    let emitted: unknown;
+    vi.spyOn(ImapFlow.prototype, "connect").mockImplementation(function (this: ImapFlow) {
+      emitted = original;
+      this.emit("error", original);
+      const result: unknown = Reflect.apply(originalConnect, this, []);
+      if (!(result instanceof Promise)) throw new Error("Missing connect operation");
+      return result;
+    });
+    const stream = Object.getOwnPropertySymbols(logger).find((symbol) => symbol.description === "pino.stream");
+    if (!stream) throw new Error("Missing application log stream");
+    const previous: unknown = Reflect.get(logger, stream);
+    const previousLevel = logger.level;
+    const lines: string[] = [];
+    if (
+      !Reflect.set(logger, stream, {
+        write: (line: string) => {
+          lines.push(line);
+          return true;
+        },
+      })
+    ) {
+      throw new Error("Could not capture application log stream");
+    }
+    const failures: unknown[] = [];
+    try {
+      logger.level = "warn";
+      const result = await rejectionOf(openImapFlow(settingsFor("mail.test", 993), credential));
+      expect(result).toBeInstanceOf(MailServerUnreachableError);
+      expect(emitted).toBe(original);
+      expect(lines.some((line) => line.includes('"stage":"connect_event"'))).toBe(true);
+      expect(lines.join("\n")).not.toContain("IMAP-PRIVATE-SENTINEL");
+      expect(lines.join("\n")).not.toContain("mail.test");
+      expect(lines.join("\n")).not.toContain(credential.password);
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      logger.level = previousLevel;
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      if (!Reflect.set(logger, stream, previous)) throw new Error("Could not restore application log stream");
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "IMAP connection diagnostic test and cleanup failed");
+  });
+
+  it("verification refuses a policy-denied address without dialing", async () => {
+    stub = stubDnsLookup({ "internal.test": ["127.0.0.1"] });
+    const server = await startFakeServer(imapSession(credential.password));
+    await expect(verifyImapServerConnection(settingsFor("internal.test", server.port), credential)).resolves.toBe(
+      "unreachable",
+    );
+    expect(server.connections()).toBe(0);
+  });
+
+  it("verification authenticates over TLS and closes the connection", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const commands: string[] = [];
+    const server = await startFakeServer(imapSession(credential.password, commands), mailCertificate);
+    await expect(
+      verifyImapServerConnection(settingsFor("mail.test", server.port), credential, {}, { ca: mailCertificate.cert }),
+    ).resolves.toBe("success");
+    expect(server.secureConnections()).toBe(1);
+    expect(commands.some((line) => /\bLOGIN\b/i.test(line))).toBe(true);
+  });
+
+  it("does not claim successful verification when final client cleanup fails", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const server = await startFakeServer(imapSession(credential.password), mailCertificate);
+    const cleanupFailure = new Error("IMAP-CLEANUP-SENTINEL");
+    const originalClose: unknown = Object.getOwnPropertyDescriptor(ImapFlow.prototype, "close")?.value;
+    if (typeof originalClose !== "function") throw new Error("Missing ImapFlow close method");
+    let injected = 0;
+    const close = vi.spyOn(ImapFlow.prototype, "close").mockImplementation(function (this: ImapFlow) {
+      if (injected === 0) {
+        injected += 1;
+        throw cleanupFailure;
+      }
+      Reflect.apply(originalClose, this, []);
+    });
+    const result = await rejectionOf(
+      verifyImapServerConnection(settingsFor("mail.test", server.port), credential, {}, { ca: mailCertificate.cert }),
+    );
+    expect(result).toBe(cleanupFailure);
+    expect(close).toHaveBeenCalled();
+    expect(injected).toBe(1);
+    await expectServerSocketsClosed(server);
+  });
+
+  it("retains the actual connection rejection and an independent cleanup failure through settlement", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const commands: string[] = [];
+    const server = await startFakeServer(imapSession(credential.password, commands), otherCertificate);
+    const originalConnect: unknown = Object.getOwnPropertyDescriptor(ImapFlow.prototype, "connect")?.value;
+    const originalClose: unknown = Object.getOwnPropertyDescriptor(ImapFlow.prototype, "close")?.value;
+    if (typeof originalConnect !== "function" || typeof originalClose !== "function")
+      throw new Error("Missing ImapFlow methods");
+    let rejection: { value: unknown } | undefined;
+    const cleanup = new Error("independent cleanup sentinel");
+    let injected = false;
+    vi.spyOn(ImapFlow.prototype, "connect").mockImplementation(function (this: ImapFlow) {
+      const result: unknown = Reflect.apply(originalConnect, this, []);
+      if (!(result instanceof Promise)) throw new Error("Missing connect promise");
+      return result.then(
+        () => undefined,
+        (error: unknown) => {
+          rejection = { value: error };
+          throw error;
+        },
+      );
+    });
+    vi.spyOn(ImapFlow.prototype, "close").mockImplementation(function (this: ImapFlow) {
+      if (!injected) {
+        injected = true;
+        throw cleanup;
+      }
+      Reflect.apply(originalClose, this, []);
+    });
+    const outcome = await rejectionOf(
+      verifyImapServerConnection(settingsFor("mail.test", server.port), credential, {}, { ca: otherCertificate.cert }),
+    );
+    expect(rejection).toBeDefined();
+    expect(outcome).toBeInstanceOf(AggregateError);
+    if (!(outcome instanceof AggregateError) || !rejection) throw new Error("Missing combined failure");
+    expect(outcome.errors).toContain(rejection.value);
+    expect(outcome.errors).toContain(cleanup);
+    expect(commands).toEqual([]);
+    await expectServerSocketsClosed(server);
+  });
+
+  it("verification rejects an invalid certificate before login", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const commands: string[] = [];
+    const server = await startFakeServer(imapSession(credential.password, commands), otherCertificate);
+    await expect(
+      verifyImapServerConnection(settingsFor("mail.test", server.port), credential, {}, { ca: otherCertificate.cert }),
+    ).resolves.toBe("tls");
+    expect(server.secureConnections()).toBe(0);
+    expect(commands).toEqual([]);
+  });
+
+  it("verification identifies a rejected login after TLS", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const server = await startFakeServer(imapSession("another-password"), mailCertificate);
+    await expect(
+      verifyImapServerConnection(settingsFor("mail.test", server.port), credential, {}, { ca: mailCertificate.cert }),
+    ).resolves.toBe("authentication");
+  });
+
+  it("verification owns both sockets when STARTTLS replaces the initial socket", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const names: string[] = [];
+    const server = await startFakeServer(startTlsSession("imap", mailCertificate, names));
+    await expect(
+      verifyImapServerConnection(
+        settingsFor("mail.test", server.port, "starttls"),
+        credential,
+        {},
+        { ca: mailCertificate.cert },
+      ),
+    ).resolves.toBe("success");
+    expect(names).toEqual(["mail.test"]);
+    await expectServerSocketsClosed(server);
+  });
+
+  it("verification cancels a stalled initial TLS handshake and closes the socket", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const server = await startFakeServer((socket) => socket.resume());
+    await expect(
+      verifyImapServerConnection(settingsFor("mail.test", server.port), credential, {}, { deadlineMs: 80 }),
+    ).resolves.toBe("unreachable");
+    await expectServerSocketsClosed(server);
+  });
+
+  it("uses the production fifteen-second IMAP deadline and observes socket closure", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const server = await startFakeServer((socket) => socket.resume());
+    const started = performance.now();
+    await expect(verifyImapServerConnection(settingsFor("mail.test", server.port), credential)).resolves.toBe(
+      "unreachable",
+    );
+    const elapsed = performance.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(14_000);
+    expect(elapsed).toBeLessThan(25_000);
+    await expectServerSocketsClosed(server);
+  }, 30_000);
+
+  it("verification cancels a stalled greeting and closes the TLS socket", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const server = await startFakeServer(() => {}, mailCertificate);
+    await expect(
+      verifyImapServerConnection(
+        settingsFor("mail.test", server.port),
+        credential,
+        {},
+        { deadlineMs: 80, ca: mailCertificate.cert },
+      ),
+    ).resolves.toBe("unreachable");
+    expect(server.secureConnections()).toBe(1);
+    await expectServerSocketsClosed(server);
+  });
+
+  it("does not claim clean cancellation when destroying the owned socket fails", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const session = imapSession(credential.password, [], true);
+    const server = await startFakeServer((socket) => {
+      session(socket);
+      setTimeout(() => socket.destroy(), 250);
+    }, mailCertificate);
+    const originalConnect: unknown = Object.getOwnPropertyDescriptor(ImapFlow.prototype, "connect")?.value;
+    if (typeof originalConnect !== "function") throw new Error("Missing ImapFlow connect method");
+    const destroyFailure = new Error("owned destroy failed");
+    let injected = false;
+    let actualRejection: { value: unknown } | undefined;
+    vi.spyOn(ImapFlow.prototype, "connect").mockImplementation(function (this: ImapFlow) {
+      const operation: unknown = Reflect.apply(originalConnect, this, []);
+      if (!(operation instanceof Promise)) throw new Error("Missing connect promise");
+      const socket: unknown = Object.getOwnPropertyDescriptor(this, "socket")?.value;
+      if (!(socket instanceof NetSocket)) throw new Error("Missing owned socket");
+      const destroy = socket.destroy.bind(socket);
+      vi.spyOn(socket, "destroy").mockImplementation((error?: Error) => {
+        if (error && !injected) {
+          injected = true;
+          throw destroyFailure;
+        }
+        return destroy(error);
+      });
+      return operation.then(
+        () => undefined,
+        (error: unknown) => {
+          actualRejection = { value: error };
+          throw error;
+        },
+      );
+    });
+    const outcome = await rejectionOf(
+      verifyImapServerConnection(
+        settingsFor("mail.test", server.port),
+        credential,
+        {},
+        { deadlineMs: 80, ca: mailCertificate.cert },
+      ),
+    );
+    expect(injected).toBe(true);
+    expect(actualRejection).toBeDefined();
+    expect(outcome).toBeInstanceOf(AggregateError);
+    if (!(outcome instanceof AggregateError) || !actualRejection) throw new Error("Missing unsettled failure");
+    expect(outcome.errors).toContain(destroyFailure);
+    expect(outcome.errors).toContain(actualRejection.value);
+    await expectServerSocketsClosed(server);
+  });
+
+  it("verification cancels a stalled login and closes the TLS socket", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const commands: string[] = [];
+    const server = await startFakeServer(imapSession(credential.password, commands, true), mailCertificate);
+    await expect(
+      verifyImapServerConnection(
+        settingsFor("mail.test", server.port),
+        credential,
+        {},
+        { deadlineMs: 80, ca: mailCertificate.cert },
+      ),
+    ).resolves.toBe("unreachable");
+    expect(commands.some((line) => /\bLOGIN\b/i.test(line))).toBe(true);
+    await expectServerSocketsClosed(server);
+  });
+
+  it("preserves independently observed secondary values and logs only safe ordered diagnostics for an owned cancellation", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const server = await startFakeServer(imapSession(credential.password, [], true), mailCertificate);
+    const originalConnect: unknown = Object.getOwnPropertyDescriptor(ImapFlow.prototype, "connect")?.value;
+    if (typeof originalConnect !== "function") throw new Error("Missing ImapFlow connect method");
+    const secondary = new Error("SENTINEL-SECONDARY-SECRET");
+    let owner: Error | undefined;
+    let rejected: unknown;
+    let rejectionObserved = false;
+    const emitted: unknown[] = [];
+    const observeEmission = (value: unknown) => emitted.push(value);
+    const observedClients: ImapFlow[] = [];
+    const logged: string[] = [];
+    const streamSymbol = Object.getOwnPropertySymbols(logger).find((symbol) => symbol.description === "pino.stream");
+    if (!streamSymbol) throw new Error("Missing application logger stream");
+    const previousStream: unknown = Reflect.get(logger, streamSymbol);
+    if (
+      !Reflect.set(logger, streamSymbol, {
+        write: (line: string) => {
+          logged.push(line);
+          return true;
+        },
+      })
+    ) {
+      throw new Error("Could not capture application log stream");
+    }
+    vi.spyOn(ImapFlow.prototype, "connect").mockImplementation(function (this: ImapFlow) {
+      observedClients.push(this);
+      this.on("error", observeEmission);
+      const operation: unknown = Reflect.apply(originalConnect, this, []);
+      if (!(operation instanceof Promise)) throw new Error("ImapFlow connect did not return a promise");
+      const socket: unknown = Object.getOwnPropertyDescriptor(this, "socket")?.value;
+      if (!(socket instanceof NetSocket)) throw new Error("Missing operation socket");
+      const destroy = socket.destroy.bind(socket);
+      let injected = false;
+      vi.spyOn(socket, "destroy").mockImplementation((error?: Error) => {
+        if (error && !injected) {
+          injected = true;
+          owner = error;
+          this.emit("error", secondary);
+          this.emit("error", undefined);
+        }
+        return destroy(error);
+      });
+      return operation.then(
+        () => undefined,
+        (error: unknown) => {
+          rejectionObserved = true;
+          rejected = error;
+          throw error;
+        },
+      );
+    });
+    const failures: unknown[] = [];
+    try {
+      await expect(
+        verifyImapServerConnection(
+          settingsFor("mail.test", server.port),
+          credential,
+          {},
+          { deadlineMs: 80, ca: mailCertificate.cert },
+        ),
+      ).resolves.toBe("unreachable");
+      await expectServerSocketsClosed(server);
+      expect(rejectionObserved).toBe(true);
+      expect(rejected).toBe(owner);
+      expect(owner).toBeInstanceOf(Error);
+      expect(emitted).toHaveLength(3);
+      expect(emitted[0]).toBe(secondary);
+      expect(emitted[1]).toBeUndefined();
+      expect(emitted[2]).toBeInstanceOf(Error);
+      expect(emitted[2]).not.toBe(owner);
+      expect(logged).toHaveLength(1);
+      expect(logged[0]).not.toContain("SENTINEL-SECONDARY-SECRET");
+      expect(logged[0]).not.toContain(credential.password);
+      const record: unknown = JSON.parse(logged[0] ?? "null");
+      expect(record).toMatchObject({
+        count: 3,
+        observations: [
+          { order: 1, source: "client", category: "error" },
+          { order: 2, source: "client", category: "non_error" },
+          { order: 3, source: "client", category: "error" },
+        ],
+      });
+    } catch (error) {
+      failures.push(error);
+    }
+    for (const client of observedClients) client.removeListener("error", observeEmission);
+    vi.restoreAllMocks();
+    if (!Reflect.set(logger, streamSymbol, previousStream))
+      failures.push(new Error("Could not restore application log stream"));
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "IMAP verification test cleanup failed");
+  });
+
+  it("does not report a successful diagnostic when error logging is disabled", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const server = await startFakeServer(imapSession(credential.password, [], true), mailCertificate);
+    vi.spyOn(logger, "isLevelEnabled").mockReturnValue(false);
+    const failure = await rejectionOf(
+      verifyImapServerConnection(
+        settingsFor("mail.test", server.port),
+        credential,
+        {},
+        { deadlineMs: 80, ca: mailCertificate.cert },
+      ),
+    );
+    expect(failure).toBeInstanceOf(AggregateError);
+    if (!(failure instanceof AggregateError)) throw new Error("Missing diagnostic failure");
+    expect(failure.errors.length).toBeGreaterThanOrEqual(2);
+    await expectServerSocketsClosed(server);
+  });
+
+  it("verification cancels a stalled session after STARTTLS socket replacement", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const names: string[] = [];
+    const server = await startFakeServer(startTlsSession("imap", mailCertificate, names, true));
+    await expect(
+      verifyImapServerConnection(
+        settingsFor("mail.test", server.port, "starttls"),
+        credential,
+        {},
+        { deadlineMs: 80, ca: mailCertificate.cert },
+      ),
+    ).resolves.toBe("unreachable");
+    expect(names).toEqual(["mail.test"]);
+    await expectServerSocketsClosed(server);
+  });
+
+  it("does not claim clean STARTTLS teardown when the replacement socket destroy fails", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const failure = new Error("STARTTLS wrapper destroy failed");
+    const originalConnect: unknown = Object.getOwnPropertyDescriptor(ImapFlow.prototype, "connect")?.value;
+    if (typeof originalConnect !== "function") throw new Error("Missing ImapFlow connect method");
+    const clientRef: { current?: ImapFlow } = {};
+    let initial: NetSocket | undefined;
+    let initialClosed = false;
+    let replacement: tls.TLSSocket | undefined;
+    let injected = false;
+    let rejected: { value: unknown } | undefined;
+    vi.spyOn(ImapFlow.prototype, "connect").mockImplementation(function (this: ImapFlow) {
+      clientRef.current = this;
+      const operation: unknown = Reflect.apply(originalConnect, this, []);
+      if (!(operation instanceof Promise)) throw new Error("Missing connect promise");
+      const socket: unknown = Object.getOwnPropertyDescriptor(this, "socket")?.value;
+      if (!(socket instanceof NetSocket)) throw new Error("Missing initial socket");
+      initial = socket;
+      socket.once("close", () => {
+        initialClosed = true;
+      });
+      return operation.then(
+        () => undefined,
+        (error: unknown) => {
+          rejected = { value: error };
+          throw error;
+        },
+      );
+    });
+    const server = await startFakeServer((socket) => {
+      const session = startTlsSession("imap", mailCertificate, [], true, [], false, () => {
+        if (replacement || !clientRef.current) return;
+        const candidate: unknown = Object.getOwnPropertyDescriptor(clientRef.current, "socket")?.value;
+        if (!(candidate instanceof tls.TLSSocket) || candidate === initial) return;
+        replacement = candidate;
+        const destroy = candidate.destroy.bind(candidate);
+        vi.spyOn(candidate, "destroy").mockImplementation((error?: Error) => {
+          if (error && !injected) {
+            injected = true;
+            throw failure;
+          }
+          return destroy(error);
+        });
+        setTimeout(() => socket.destroy(), 250);
+      });
+      session(socket);
+    });
+    const outcome = await rejectionOf(
+      verifyImapServerConnection(
+        settingsFor("mail.test", server.port, "starttls"),
+        credential,
+        {},
+        { deadlineMs: 100, ca: mailCertificate.cert },
+      ),
+    );
+    expect(replacement).toBeInstanceOf(tls.TLSSocket);
+    expect(injected).toBe(true);
+    expect(initialClosed).toBe(true);
+    expect(rejected).toBeDefined();
+    expect(outcome).toBeInstanceOf(AggregateError);
+    if (!(outcome instanceof AggregateError) || !rejected) throw new Error("Missing STARTTLS teardown failure");
+    expect(outcome.errors).toContain(failure);
+    expect(outcome.errors).toContain(rejected.value);
+    await expectServerSocketsClosed(server);
+  });
+
+  it("verification rejects an invalid IMAP STARTTLS certificate before login", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const commands: string[] = [];
+    const server = await startFakeServer(startTlsSession("imap", otherCertificate, [], false, commands));
+    const originalConnect: unknown = Object.getOwnPropertyDescriptor(ImapFlow.prototype, "connect")?.value;
+    if (typeof originalConnect !== "function") throw new Error("Missing ImapFlow connect method");
+    let initial: NetSocket | undefined;
+    let replacement: unknown;
+    let initialCloseObserved = false;
+    vi.spyOn(ImapFlow.prototype, "connect").mockImplementation(function (this: ImapFlow) {
+      const operation: unknown = Reflect.apply(originalConnect, this, []);
+      if (!(operation instanceof Promise)) throw new Error("ImapFlow connect did not return a promise");
+      const socket: unknown = Object.getOwnPropertyDescriptor(this, "socket")?.value;
+      if (!(socket instanceof NetSocket)) throw new Error("Missing initial transport socket");
+      initial = socket;
+      socket.once("close", () => {
+        initialCloseObserved = true;
+      });
+      return operation.then(
+        () => undefined,
+        (error: unknown) => {
+          replacement = Object.getOwnPropertyDescriptor(this, "socket")?.value;
+          throw error;
+        },
+      );
+    });
+    await expect(
+      verifyImapServerConnection(
+        settingsFor("mail.test", server.port, "starttls"),
+        credential,
+        {},
+        { ca: otherCertificate.cert },
+      ),
+    ).resolves.toBe("tls");
+    expect(initialCloseObserved).toBe(true);
+    expect(replacement).toBeInstanceOf(tls.TLSSocket);
+    if (!(replacement instanceof tls.TLSSocket)) throw new Error("Missing STARTTLS wrapper");
+    expect(replacement).not.toBe(initial);
+    expect(replacement.closed).toBe(true);
+    expect(commands).toContain("plain:STARTTLS");
+    expect(commands).not.toContain("plain:LOGIN");
+    expect(commands).not.toContain("secure:LOGIN");
+    await expectServerSocketsClosed(server);
+  });
+
+  it("verification cancels a stalled IMAP STARTTLS handshake without login", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const commands: string[] = [];
+    const server = await startFakeServer(startTlsSession("imap", mailCertificate, [], false, commands, true));
+    await expect(
+      verifyImapServerConnection(settingsFor("mail.test", server.port, "starttls"), credential, {}, { deadlineMs: 80 }),
+    ).resolves.toBe("unreachable");
+    expect(commands).toContain("plain:STARTTLS");
+    expect(commands).not.toContain("plain:LOGIN");
+    expect(commands).not.toContain("secure:LOGIN");
+    await expectServerSocketsClosed(server);
+  });
+
+  it("verification settles the owned socket before discarding a late DNS result", async () => {
+    useLoopbackPolicy();
+    const server = await startFakeServer(imapSession(credential.password), mailCertificate);
+    const original = dns.lookup;
+    let finishLookup: (() => void) | undefined;
+    let signalLookup: () => void = () => {};
+    const entered = new Promise<void>((resolve) => (signalLookup = resolve));
+    const lookup = (host: string, ...args: unknown[]) => {
+      if (host !== "held.test") return Reflect.apply(original, dns, [host, ...args]);
+      const callback = args.at(-1);
+      if (typeof callback !== "function") throw new Error("Missing DNS callback");
+      finishLookup = () => {
+        Reflect.apply(callback, undefined, [null, [{ address: "127.0.0.1", family: 4 }]]);
+      };
+      signalLookup();
+    };
+    Object.defineProperty(dns, "lookup", { value: lookup, configurable: true, writable: true });
+    const work = verifyImapServerConnection(settingsFor("held.test", server.port), credential, {}, { deadlineMs: 80 });
+    try {
+      await entered;
+      await expect(work).resolves.toBe("unreachable");
+      if (!finishLookup) throw new Error("DNS callback was not captured");
+      finishLookup();
+      finishLookup = undefined;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(server.connections()).toBe(0);
+    } finally {
+      finishLookup?.();
+      await Promise.allSettled([work]);
+      Object.defineProperty(dns, "lookup", { value: original, configurable: true, writable: true });
+    }
+  });
+
+  it("preserves an unrelated actual connect failure that occurs before cancellation", async () => {
+    const original = dns.lookup;
+    const failure = Object.assign(new Error("Unrelated DNS failure"), { code: "EUNRELATED" });
+    const lookup = (host: string, ...args: unknown[]) => {
+      if (host !== "prior.test") return Reflect.apply(original, dns, [host, ...args]);
+      const callback = args.at(-1);
+      if (typeof callback !== "function") throw new Error("Missing DNS callback");
+      process.nextTick(() => Reflect.apply(callback, undefined, [failure, []]));
+    };
+    Object.defineProperty(dns, "lookup", { value: lookup, configurable: true, writable: true });
+    try {
+      const error = await rejectionOf(verifyImapServerConnection(settingsFor("prior.test", 993), credential));
+      expect(error).toBe(failure);
+    } finally {
+      Object.defineProperty(dns, "lookup", { value: original, configurable: true, writable: true });
+    }
+  });
   it.each(["127.0.0.1", "10.0.0.1", "169.254.169.254", "::1"])(
     "refuses a name that resolves to %s under the default policy, with the unreachable error",
     async (address) => {
@@ -588,6 +1378,193 @@ describe("openImapFlow (issue #1550)", () => {
 });
 
 describe("createSmtpTransporter (issue #1478)", () => {
+  it("verification authenticates through SMTP over implicit TLS", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const commands: string[] = [];
+    const server = await startFakeServer(smtpSession(credential.password, commands), mailCertificate);
+    await expect(
+      verifySmtpServerConnection(settingsFor("mail.test", server.port), credential, {}, { ca: mailCertificate.cert }),
+    ).resolves.toBe("success");
+    expect(commands).toContain("AUTH");
+    await expectServerSocketsClosed(server);
+  });
+
+  it("verification classifies SMTP authentication refusal", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const server = await startFakeServer(smtpSession("another-password"), mailCertificate);
+    await expect(
+      verifySmtpServerConnection(settingsFor("mail.test", server.port), credential, {}, { ca: mailCertificate.cert }),
+    ).resolves.toBe("authentication");
+    await expectServerSocketsClosed(server);
+  });
+
+  it("verification requires SMTP STARTTLS before authentication", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const commands: string[] = [];
+    const server = await startFakeServer(smtpSession(credential.password, commands));
+    await expect(
+      verifySmtpServerConnection(settingsFor("mail.test", server.port, "starttls"), credential),
+    ).resolves.toBe("tls");
+    expect(commands).not.toContain("AUTH");
+    await expectServerSocketsClosed(server);
+  });
+
+  it("verification completes SMTP STARTTLS before authentication", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const names: string[] = [];
+    const server = await startFakeServer(startTlsSession("smtp", mailCertificate, names));
+    await expect(
+      verifySmtpServerConnection(
+        settingsFor("mail.test", server.port, "starttls"),
+        credential,
+        {},
+        { ca: mailCertificate.cert },
+      ),
+    ).resolves.toBe("success");
+    expect(names).toEqual(["mail.test"]);
+    await expectServerSocketsClosed(server);
+  });
+
+  it("verification refuses a policy-denied SMTP address without dialing", async () => {
+    stub = stubDnsLookup({ "internal.test": ["127.0.0.1"] });
+    const server = await startFakeServer(smtpSession(credential.password));
+    await expect(verifySmtpServerConnection(settingsFor("internal.test", server.port), credential)).resolves.toBe(
+      "unreachable",
+    );
+    expect(server.connections()).toBe(0);
+  });
+
+  it("verification cancels a stalled SMTP greeting and closes its socket", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const server = await startFakeServer((socket) => socket.resume());
+    await expect(
+      verifySmtpServerConnection(settingsFor("mail.test", server.port, "starttls"), credential, {}, { deadlineMs: 80 }),
+    ).resolves.toBe("unreachable");
+    await expectServerSocketsClosed(server);
+  });
+
+  it("uses the production fifteen-second SMTP deadline and observes socket closure", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const server = await startFakeServer((socket) => socket.resume());
+    const started = performance.now();
+    await expect(
+      verifySmtpServerConnection(settingsFor("mail.test", server.port, "starttls"), credential),
+    ).resolves.toBe("unreachable");
+    const elapsed = performance.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(14_000);
+    expect(elapsed).toBeLessThan(25_000);
+    await expectServerSocketsClosed(server);
+  }, 30_000);
+
+  it("verification rejects an invalid SMTP certificate without attempting authentication", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const commands: string[] = [];
+    const server = await startFakeServer(smtpSession(credential.password, commands), otherCertificate);
+    await expect(
+      verifySmtpServerConnection(settingsFor("mail.test", server.port), credential, {}, { ca: otherCertificate.cert }),
+    ).resolves.toBe("unreachable");
+    expect(commands).not.toContain("AUTH");
+  });
+
+  it("verification rejects an invalid SMTP STARTTLS certificate before authentication", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const commands: string[] = [];
+    const server = await startFakeServer(startTlsSession("smtp", otherCertificate, [], false, commands));
+    await expect(
+      verifySmtpServerConnection(
+        settingsFor("mail.test", server.port, "starttls"),
+        credential,
+        {},
+        { ca: otherCertificate.cert },
+      ),
+    ).resolves.toBe("unreachable");
+    expect(commands).toContain("plain:STARTTLS");
+    expect(commands).not.toContain("plain:AUTH");
+    expect(commands).not.toContain("secure:AUTH");
+    await expectServerSocketsClosed(server);
+  });
+
+  it("verification cancels a stalled SMTP STARTTLS handshake without authenticating", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const commands: string[] = [];
+    const server = await startFakeServer(startTlsSession("smtp", mailCertificate, [], false, commands, true));
+    await expect(
+      verifySmtpServerConnection(settingsFor("mail.test", server.port, "starttls"), credential, {}, { deadlineMs: 80 }),
+    ).resolves.toBe("unreachable");
+    expect(commands).toContain("plain:STARTTLS");
+    expect(commands).not.toContain("plain:AUTH");
+    expect(commands).not.toContain("secure:AUTH");
+    await expectServerSocketsClosed(server);
+  });
+
+  it("verification cancels a stalled SMTP TLS handshake and closes its socket", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const server = await startFakeServer((socket) => socket.resume());
+    await expect(
+      verifySmtpServerConnection(settingsFor("mail.test", server.port), credential, {}, { deadlineMs: 80 }),
+    ).resolves.toBe("unreachable");
+    await expectServerSocketsClosed(server);
+  });
+
+  it("verification cancels stalled SMTP authentication and closes its socket", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const commands: string[] = [];
+    const server = await startFakeServer(smtpSession(credential.password, commands, true), mailCertificate);
+    await expect(
+      verifySmtpServerConnection(
+        settingsFor("mail.test", server.port),
+        credential,
+        {},
+        { deadlineMs: 80, ca: mailCertificate.cert },
+      ),
+    ).resolves.toBe("unreachable");
+    expect(commands).toContain("AUTH");
+    await expectServerSocketsClosed(server);
+  });
+
+  it("verification fences a late SMTP DNS result after its socket closes", async () => {
+    useLoopbackPolicy();
+    const server = await startFakeServer(smtpSession(credential.password), mailCertificate);
+    const original = dns.lookup;
+    let finishLookup: (() => void) | undefined;
+    let signalLookup: () => void = () => {};
+    const entered = new Promise<void>((resolve) => (signalLookup = resolve));
+    const lookup = (host: string, ...args: unknown[]) => {
+      if (host !== "held.test") return Reflect.apply(original, dns, [host, ...args]);
+      const callback = args.at(-1);
+      if (typeof callback !== "function") throw new Error("Missing DNS callback");
+      finishLookup = () => {
+        Reflect.apply(callback, undefined, [null, [{ address: "127.0.0.1", family: 4 }]]);
+      };
+      signalLookup();
+    };
+    Object.defineProperty(dns, "lookup", { value: lookup, configurable: true, writable: true });
+    const work = verifySmtpServerConnection(settingsFor("held.test", server.port), credential, {}, { deadlineMs: 80 });
+    try {
+      await entered;
+      await expect(work).resolves.toBe("unreachable");
+      if (!finishLookup) throw new Error("DNS callback was not captured");
+      finishLookup();
+      finishLookup = undefined;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(server.connections()).toBe(0);
+    } finally {
+      finishLookup?.();
+      await Promise.allSettled([work]);
+      Object.defineProperty(dns, "lookup", { value: original, configurable: true, writable: true });
+    }
+  });
   it.each(["tls", "starttls"] as const)(
     "invokes its public-address policy lookup during the %s connector attempt",
     async (security) => {

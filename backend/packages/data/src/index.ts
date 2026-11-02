@@ -280,11 +280,19 @@ export { imapConnectionLimitForProvider, sharedImapConnectionLimiter } from "./m
 export { getDecryptedCredential } from "./credentials/externalCredentialsStore.js";
 export {
   MailConnectionLimitError,
+  MailAppPasswordRequiredError,
+  MailAuthFailedError,
   MailReauthorizationRequiredError,
   MailRecipientRejectedError,
   MailSendAuthFailedError,
   MailServerUnreachableError,
+  MailTlsFailedError,
 } from "./mail/providerTypes.js";
+export {
+  verifyMailCredentials,
+  type VerifyMailCredentialsInput,
+  type VerifiedMailServerSettings,
+} from "./mail/mailCredentialVerification.js";
 export { isImapConnectionLimitError } from "./mail/imapFlowClient.js";
 export type { ImapMailClient } from "./mail/imapReconcile.js";
 export {

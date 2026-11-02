@@ -13,6 +13,7 @@ import { writeNotification } from "../notifications/notify.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
 import {
   getMailAccountSyncState,
+  classifyUnclassifiedMailSyncErrors,
   listAccountsDueForSync,
   recordConnectionLimitBackoff,
   recordSyncError,
@@ -89,6 +90,7 @@ export async function handleMailAccountSyncSweepTask(pool: Pool): Promise<void> 
     for (const account of due) {
       await enqueueMailAccountSync(pool, account.itemId);
     }
+    await withTransaction(pool, (client) => classifyUnclassifiedMailSyncErrors(client));
   });
 }
 

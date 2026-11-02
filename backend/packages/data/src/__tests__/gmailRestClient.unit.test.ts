@@ -1,6 +1,67 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GmailRestClient } from "../mail/gmailRestClient.js";
 
+describe("Gmail sync provider privacy", () => {
+  it.each([
+    ["undefined", undefined],
+    ["object", { token: "GMAIL-PRIVATE-SENTINEL" }],
+    ["aggregate", new AggregateError([new Error("GMAIL-PRIVATE-SENTINEL")], "GMAIL-PRIVATE-SENTINEL")],
+  ])("sanitizes an unknown %s fetch failure", async (_name, original) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(original);
+    const client = new GmailRestClient(async () => "GMAIL-PRIVATE-SENTINEL", fetchImpl);
+    const error = await client.getCurrentHistoryId().then(
+      () => null,
+      (value: unknown) => value,
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(error).toBeInstanceOf(Error);
+    if (!(error instanceof Error)) throw new Error("Missing Gmail failure");
+    expect(error.message).toBe("Gmail sync provider request failed unexpectedly");
+    expect(error).not.toHaveProperty("cause");
+    expect(`${error.stack} ${JSON.stringify(error)}`).not.toContain("GMAIL-PRIVATE-SENTINEL");
+  });
+
+  it("sanitizes a body-read rejection and leaves token acquisition failures untouched", async () => {
+    const original = new Error("GMAIL-PRIVATE-SENTINEL");
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(original);
+      },
+    });
+    const client = new GmailRestClient(
+      async () => "GMAIL-PRIVATE-SENTINEL",
+      async () => new Response(body),
+    );
+    const error = await client.getCurrentHistoryId().then(
+      () => null,
+      (value: unknown) => value,
+    );
+    expect(error).toMatchObject({ message: "Gmail sync provider response could not be read" });
+    expect(JSON.stringify(error)).not.toContain("GMAIL-PRIVATE-SENTINEL");
+    const tokenError = new Error("token source identity");
+    const fetchImpl = vi.fn<typeof fetch>();
+    const rejected = new GmailRestClient(async () => {
+      throw tokenError;
+    }, fetchImpl);
+    await expect(rejected.getCurrentHistoryId()).rejects.toBe(tokenError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("preserves a genuine 404 for missing messages and history invalidation", async () => {
+    const client = new GmailRestClient(
+      async () => "token",
+      async () => new Response(null, { status: 404 }),
+    );
+    await expect(client.fetchMessage("missing")).resolves.toBeNull();
+    await expect(client.listHistorySince("old")).resolves.toEqual({
+      invalidated: true,
+      newHistoryId: "old",
+      changedMessageIds: [],
+      removedMessageIds: [],
+    });
+  });
+});
+
 describe("Gmail label inventory validation", () => {
   it("accepts opaque user and system ids", async () => {
     const labels = [
@@ -52,6 +113,28 @@ function gmailMessage(payload: object): Response {
     { status: 200 },
   );
 }
+
+it("sanitizes a lazy Gmail attachment request failure", async () => {
+  const original = new Error("GMAIL-PRIVATE-SENTINEL");
+  const fetchImpl = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(
+      gmailMessage({ mimeType: "application/pdf", filename: "x.pdf", body: { attachmentId: "a" } }),
+    )
+    .mockRejectedValueOnce(original);
+  const client = new GmailRestClient(async () => "GMAIL-PRIVATE-SENTINEL", fetchImpl);
+  const message = await client.fetchMessage("message");
+  const attachment = message?.message.attachments[0];
+  if (!attachment) throw new Error("Missing Gmail attachment");
+  const error = await Promise.resolve(attachment.openStream()).then(
+    () => null,
+    (value: unknown) => value,
+  );
+  expect(error).toMatchObject({ message: "Gmail sync provider request failed unexpectedly" });
+  expect(error).not.toHaveProperty("cause");
+  expect(JSON.stringify(error)).not.toContain("GMAIL-PRIVATE-SENTINEL");
+  expect(fetchImpl).toHaveBeenCalledTimes(2);
+});
 
 async function fetchFixture(payload: object) {
   const fetchMock = vi.fn(async () => gmailMessage(payload));
@@ -258,6 +341,9 @@ describe("Gmail Reply-To envelope", () => {
               headers: [
                 { name: "Message-ID", value: "<gmail-message-1@example.test>" },
                 { name: "From", value: "Sender <sender@example.test>" },
+                { name: "To", value: "To Person <to@example.test>" },
+                { name: "Cc", value: "Cc Person <cc@example.test>" },
+                { name: "Bcc", value: "Bcc Person <bcc@example.test>" },
                 ...extra,
               ],
             },
@@ -279,10 +365,24 @@ describe("Gmail Reply-To envelope", () => {
     ]);
   });
 
+  it("leaves replyTo absent when the header has no parseable address", async () => {
+    const fetched = await fetchWithHeaders([{ name: "Reply-To", value: "<>" }]);
+    expect(fetched?.message.envelope).toEqual({
+      from: { name: "Sender", address: "sender@example.test" },
+      to: [{ name: "To Person", address: "to@example.test" }],
+      cc: [{ name: "Cc Person", address: "cc@example.test" }],
+      bcc: [{ name: "Bcc Person", address: "bcc@example.test" }],
+    });
+  });
+
   it("leaves replyTo absent without a Reply-To header", async () => {
     const fetched = await fetchWithHeaders([]);
-    expect(fetched?.message.envelope).not.toHaveProperty("replyTo");
-    expect(fetched?.message.envelope.from).toEqual({ name: "Sender", address: "sender@example.test" });
+    expect(fetched?.message.envelope).toEqual({
+      from: { name: "Sender", address: "sender@example.test" },
+      to: [{ name: "To Person", address: "to@example.test" }],
+      cc: [{ name: "Cc Person", address: "cc@example.test" }],
+      bcc: [{ name: "Bcc Person", address: "bcc@example.test" }],
+    });
   });
 });
 

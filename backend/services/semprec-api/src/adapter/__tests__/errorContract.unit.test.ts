@@ -15,6 +15,8 @@ import {
   type ItemRow,
 } from "@semprec/data";
 import {
+  ITEM_ERROR_CODES,
+  ITEM_ERROR_STATUS_BY_CODE,
   publicErrorDetails,
   statusForError,
   toErrorResponseBody,
@@ -92,6 +94,13 @@ const ACTIVE_RUN: ActiveHeartbeatRunSummary = {
 };
 
 describe("error contract (issue #238)", () => {
+  it.each(["mail_auth_failed", "mail_app_password_required", "mail_server_unreachable", "mail_tls_failed"] as const)(
+    "maps %s to HTTP 400",
+    (code) => {
+      expect(ITEM_ERROR_CODES).toContain(code);
+      expect(ITEM_ERROR_STATUS_BY_CODE[code]).toBe(400);
+    },
+  );
   for (const fixture of FIXTURES) {
     it(`maps ${fixture.code} to ${fixture.status} with the documented body`, () => {
       expect(statusForError(fixture.error)).toBe(fixture.status);

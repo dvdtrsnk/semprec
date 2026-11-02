@@ -23,6 +23,10 @@ export const ITEM_ERROR_CODES = [
   "heartbeat_running",
   "cardinality_violation",
   "database_archived",
+  "mail_auth_failed",
+  "mail_app_password_required",
+  "mail_server_unreachable",
+  "mail_tls_failed",
 ] as const;
 
 export type ItemErrorCode = (typeof ITEM_ERROR_CODES)[number];
@@ -50,6 +54,10 @@ export const ITEM_ERROR_STATUS_BY_CODE: Readonly<Record<ItemErrorCode, number>> 
   heartbeat_running: 409,
   cardinality_violation: 409,
   database_archived: 403,
+  mail_auth_failed: 400,
+  mail_app_password_required: 400,
+  mail_server_unreachable: 400,
+  mail_tls_failed: 400,
 };
 
 function isItemErrorCode(code: string): code is ItemErrorCode {

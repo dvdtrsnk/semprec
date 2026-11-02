@@ -322,13 +322,29 @@ export class GmailRestClient implements GmailMailClient {
 
   private async request<T>(path: string): Promise<{ status: number; json: T | null }> {
     const token = await this.getAccessToken();
-    const response = await this.fetchImpl(`${BASE_URL}${path}`, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(30_000),
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${BASE_URL}${path}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (error) {
+      // This boundary cannot expose a provider rejection that may contain bearer credentials.
+      void error;
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Gmail sync provider request failed unexpectedly");
+    }
     if (response.status === 404) return { status: 404, json: null };
-    if (!response.ok) throw new Error(`Gmail API request to ${path} failed with status ${response.status}`);
-    const body = assertJsonObject(await response.json(), `Gmail API response from ${path}`);
+    if (!response.ok) throw new Error(`Gmail API request failed with status ${response.status}`);
+    let parsed: unknown;
+    try {
+      parsed = await response.json();
+    } catch (error) {
+      void error;
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Gmail sync provider response could not be read");
+    }
+    const body = assertJsonObject(parsed, "Gmail API response");
     return { status: response.status, json: body as T };
   }
 
@@ -395,14 +411,12 @@ export class GmailRestClient implements GmailMailClient {
     const { json } = await this.request<{ size: number; data: string }>(
       `/messages/${gmailMessageId}/attachments/${attachmentId}`,
     );
-    if (!json) throw new Error(`Gmail attachment ${attachmentId} on message ${gmailMessageId} not found`);
+    if (!json) throw new Error("Gmail attachment not found");
     // Checked against the API's own reported size *before* decoding — Gmail's real limit is
     // 25MB, well under this, so this only ever binds against a malformed/rogue response, and
     // catching it pre-decode avoids materializing the oversized buffer at all.
     if (json.size > MAX_ATTACHMENT_BYTES) {
-      throw new Error(
-        `Gmail attachment ${attachmentId} on message ${gmailMessageId} is ${json.size} bytes, over the ${MAX_ATTACHMENT_BYTES}-byte cap`,
-      );
+      throw new Error(`Gmail attachment exceeds the ${MAX_ATTACHMENT_BYTES}-byte cap`);
     }
     return decodeBase64Url(json.data);
   }

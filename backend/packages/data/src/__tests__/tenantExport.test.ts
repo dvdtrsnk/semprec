@@ -21,6 +21,7 @@ import { withTransaction } from "../db/pool.js";
 import { insertItemOrigins } from "../inbox/itemOriginsStore.js";
 import { LocalFsBlobStorageWriter, MaxBytesExceededError, type BlobStorageWriter } from "../mail/blobStorage.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
+import { createMailThread, reassignThread } from "../mail/mailMessageMetaStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { logger } from "../tenancy/logger.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
@@ -379,6 +380,18 @@ describe("tenant data export (issue #1043)", () => {
   it("archives exactly tenant A's data, with every table counted and every blob byte-identical", async () => {
     const seededA = await seedTenant(tenantA);
     const seededB = await seedTenant(tenantB);
+    const aliasIds: string[] = [];
+    for (const tenant of [tenantA, tenantB]) {
+      const id = await runInTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const from = await createMailThread(client);
+          const to = await createMailThread(client);
+          await reassignThread(client, from.id, to.id);
+          return from.id;
+        }),
+      );
+      aliasIds.push(id);
+    }
     for (const [tenant, seeded] of [
       [tenantA, seededA],
       [tenantB, seededB],
@@ -409,6 +422,15 @@ describe("tenant data export (issue #1043)", () => {
     expect(row!.expires_at!.getTime() - row!.completed_at!.getTime()).toBe(7 * 24 * 60 * 60 * 1000);
 
     const entries = readZip(archiveBytes);
+    const aliasFile = entries.get("tables/mail_thread_aliases.jsonl");
+    if (!aliasFile) throw new Error("Missing mail thread aliases in export");
+    const exportedAliases = aliasFile
+      .toString("utf8")
+      .trim()
+      .split("\n")
+      .map((line): unknown => JSON.parse(line));
+    expect(exportedAliases).toHaveLength(1);
+    expect(exportedAliases[0]).toMatchObject({ from_thread_id: aliasIds[0], tenant_id: tenantA });
     const originFile = entries.get("tables/item_origins.jsonl");
     if (!originFile) throw new Error("Missing origin table in export");
     const exportedOrigin: unknown = JSON.parse(originFile.toString("utf8").trim());

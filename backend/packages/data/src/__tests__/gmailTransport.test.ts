@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it as vitestIt, vi } from "vitest";
 import type { Pool } from "pg";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
@@ -8,7 +8,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { GMAIL_SEND_PURPOSE } from "../mail/gmailTransport.js";
 import { createMailTransportFactory } from "../mail/mailTransport.js";
 import { MailReauthorizationRequiredError, MailRecipientRejectedError } from "../mail/providerTypes.js";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 
 // A fake Google answers the token endpoint and the send endpoint through the `fetchImpl` seam. The stored
 // refresh token is the only one it accepts, so a refresh that presents anything else is refused.
@@ -81,6 +81,8 @@ function decodeRaw(call: SendCall): string {
   return Buffer.from(call.body.raw, "base64url").toString("utf8");
 }
 
+const it = (name: string, fn: () => Promise<void>) => vitestIt(name, () => inTenantZero(fn));
+
 describe("Gmail API mail transport (issue #1637)", () => {
   let pool: Pool;
   let mailboxId: string;
@@ -90,31 +92,33 @@ describe("Gmail API mail transport (issue #1637)", () => {
     pool = getTestPool();
   });
 
-  beforeEach(async () => {
-    await resetDatabase(pool);
-    await seedSystem(pool);
-    const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [
-      "mailboxes",
-    ]);
-    const mailboxesId = rows[0]!.id;
-    mailboxId = await withTransaction(pool, async (client) => {
-      const mailbox = await createItemWithClient(client, {
-        databaseId: mailboxesId,
-        properties: { name: "Gmail", provider: "gmail" },
+  beforeEach(() =>
+    inTenantZero(async () => {
+      await resetDatabase(pool);
+      await seedSystem(pool);
+      const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [
+        "mailboxes",
+      ]);
+      const mailboxesId = rows[0]!.id;
+      mailboxId = await withTransaction(pool, async (client) => {
+        const mailbox = await createItemWithClient(client, {
+          databaseId: mailboxesId,
+          properties: { name: "Gmail", provider: "gmail" },
+        });
+        await writeMailboxAddresses(client, {
+          mailboxesDatabaseId: mailboxesId,
+          mailboxItemId: mailbox.id,
+          address: "me@gmail.test",
+        });
+        return mailbox.id;
       });
-      await writeMailboxAddresses(client, {
-        mailboxesDatabaseId: mailboxesId,
-        mailboxItemId: mailbox.id,
-        address: "me@gmail.test",
+      await storeCredential(pool, {
+        itemId: mailboxId,
+        credentialType: "oauth2_refresh_token",
+        plaintext: STORED_REFRESH_TOKEN,
       });
-      return mailbox.id;
-    });
-    await storeCredential(pool, {
-      itemId: mailboxId,
-      credentialType: "oauth2_refresh_token",
-      plaintext: STORED_REFRESH_TOKEN,
-    });
-  });
+    }),
+  );
 
   afterAll(async () => {
     await pool.end();
