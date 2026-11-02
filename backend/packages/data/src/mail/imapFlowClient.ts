@@ -612,7 +612,7 @@ export class ImapFlowMailClient implements ImapMailClient {
    * IMAP APPEND of one complete message with its flags (issue #1641): the copy of a sent message that mailTransport.ts
    * keeps in the Sent folder. The whole message travels in one command, so the call races a timer, the same way
    * `fetchOneWithTimeout` does. A timeout rejects while the command may still be in flight on the socket; the caller's
-   * `close()` ends it. A server refusal rejects with imapflow's own error.
+   * `close()` ends it. An unknown server refusal rejects with a fixed safe provider error.
    */
   async appendMessage(path: string, raw: Buffer, flags: readonly WritableImapFlag[]): Promise<void> {
     let timer: NodeJS.Timeout | undefined;

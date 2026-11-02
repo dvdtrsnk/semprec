@@ -1,4 +1,4 @@
-import type { ImapFlow } from "imapflow";
+import { ImapFlow } from "imapflow";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
 
@@ -10,14 +10,19 @@ const raw = Buffer.from("From: me@mail.test\r\nMessage-ID: <one@mail.test>\r\n\r
 /** An `ImapFlowMailClient` over a stub connection whose `append` records its arguments and answers as `append` does. */
 function clientWith(append: () => Promise<unknown>) {
   const calls: unknown[][] = [];
-  const connection = {
-    append: (...args: unknown[]) => {
-      calls.push(args);
-      return append();
-    },
-  };
-  // The stub implements only the one method appendMessage() uses, the same way the other unit tests of this client do.
-  return { client: new ImapFlowMailClient(connection as unknown as ImapFlow), calls };
+  const connection = new ImapFlow({
+    host: "unused.example.test",
+    port: 993,
+    secure: true,
+    auth: { user: "unused", pass: "unused" },
+    logger: false,
+  });
+  vi.spyOn(connection, "append").mockImplementation(async (...args) => {
+    calls.push(args);
+    await append();
+    return false;
+  });
+  return { client: new ImapFlowMailClient(connection), calls };
 }
 
 afterEach(() => {
@@ -38,13 +43,35 @@ describe("ImapFlowMailClient.appendMessage (issue #1641)", () => {
     expect(flags).toEqual(["\\Seen"]);
   });
 
-  it("rejects with the server's refusal itself, so a refused append is not reported as a success", async () => {
-    const refusal = Object.assign(new Error("Mailbox does not exist"), { responseStatus: "NO" });
-    const { client } = clientWith(async () => {
+  it("rejects a server refusal with a fixed safe provider error", async () => {
+    const secret = "APPEND-PRIVATE-SENTINEL";
+    const refusal = Object.assign(new Error(secret), {
+      name: secret,
+      code: secret,
+      responseStatus: "NO",
+      cause: new Error(secret),
+    });
+    let observed: unknown;
+    const { client, calls } = clientWith(async () => {
+      observed = refusal;
       throw refusal;
     });
-
-    await expect(client.appendMessage("Sent Items", raw, ["\\Seen"])).rejects.toBe(refusal);
+    const outcome = await client.appendMessage("Sent Items", raw, ["\\Seen"]).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(observed).toBe(refusal);
+    expect(calls).toHaveLength(1);
+    expect(outcome).toBeInstanceOf(Error);
+    if (!(outcome instanceof Error)) throw new Error("Missing APPEND refusal");
+    expect(outcome).not.toBe(refusal);
+    expect(outcome.name).toBe("Error");
+    expect(outcome.message).toBe("IMAP provider operation failed unexpectedly");
+    expect(outcome).not.toHaveProperty("cause");
+    expect(outcome).not.toHaveProperty("responseStatus");
+    expect(outcome).not.toHaveProperty("code");
+    expect(Object.keys(outcome)).toEqual([]);
+    expect(`${outcome.name} ${outcome.stack} ${JSON.stringify(outcome)}`).not.toContain(secret);
   });
 
   it("clears its deadline timer once the server has answered", async () => {
