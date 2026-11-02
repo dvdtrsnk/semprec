@@ -12,11 +12,13 @@ import { ValidationError } from "../errors.js";
 
 let admin: Pool;
 let runtime: Pool;
+let setupCleanupAttempted = false;
 beforeAll(async () => {
   admin = getTestPool();
   try {
     runtime = await createRuntimeRolePool(admin, "semprec_data");
   } catch (error) {
+    setupCleanupAttempted = true;
     let cleanupFailure: { error: unknown } | undefined;
     try {
       await admin.end();
@@ -32,6 +34,7 @@ beforeAll(async () => {
 });
 beforeEach(async () => resetDatabase(admin));
 afterAll(async () => {
+  if (setupCleanupAttempted) return;
   const results = await Promise.allSettled([runtime?.end(), admin?.end()]);
   const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
   if (errors.length) throw new AggregateError(errors, "Pool cleanup failed", { cause: errors[0] });

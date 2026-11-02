@@ -534,17 +534,28 @@ describe("gateway caps across tenants, through the semprec_side role", () => {
   let dataPool: Pool;
   let tenantA: string;
   let tenantB: string;
+  let setupCleanupAttempted = false;
 
   beforeAll(async () => {
     adminPool = getTestPool();
-    sidePool = await createRuntimeRolePool(adminPool, "semprec_side");
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    try {
+      sidePool = await createRuntimeRolePool(adminPool, "semprec_side");
+      dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    } catch (error) {
+      setupCleanupAttempted = true;
+      const results = await Promise.allSettled([sidePool?.end(), adminPool.end()]);
+      const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+      if (errors.length)
+        throw new AggregateError([error, ...errors], "Gateway pool setup and cleanup failed", { cause: error });
+      throw error;
+    }
   });
 
   afterAll(async () => {
-    await sidePool?.end();
-    await dataPool?.end();
-    await adminPool?.end();
+    if (setupCleanupAttempted) return;
+    const results = await Promise.allSettled([sidePool?.end(), dataPool?.end(), adminPool?.end()]);
+    const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (errors.length) throw new AggregateError(errors, "Gateway pool cleanup failed", { cause: errors[0] });
   });
 
   beforeEach(async () => {
