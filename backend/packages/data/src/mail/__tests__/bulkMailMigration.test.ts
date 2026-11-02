@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 import { runInTenant } from "@semprec/shared";
 import { Pool } from "pg";
 import { expect, it } from "vitest";
-import { runMigrations } from "../db/migrate.js";
-import { withTransaction } from "../db/pool.js";
+import { runMigrations } from "../../db/migrate.js";
+import { withTransaction } from "../../db/pool.js";
 
 it("upgrades persisted mail metadata and retains the legacy insert default", async () => {
   const url = process.env.TEST_DATABASE_URL;
@@ -15,7 +15,7 @@ it("upgrades persisted mail metadata and retains the legacy insert default", asy
   const name = `mail_bulk_upgrade_${randomUUID().replaceAll("-", "")}`;
   const admin = new Pool({ connectionString: url });
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-mail-bulk-upgrade-"));
-  const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+  const migrations = fileURLToPath(new URL("../../db/migrations/", import.meta.url));
   const target = "0103_mail_message_meta_is_bulk.sql";
   let scratch: Pool | undefined;
   let created = false;
