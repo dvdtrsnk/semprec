@@ -1102,6 +1102,80 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(confirmed.properties.status).toBe("confirmed");
     });
 
+    it("attributes a multi-step create edge to its actor and rolls it back atomically", async () => {
+      const project = await createIn("projects", { name: "Existing project" });
+      const projectDatabase = await databaseIdFor("projects");
+      const inverseKey = await withTransaction(pool, async (client) => {
+        const property = await propertiesStore.getPropertyByKey(client, tasksId, "project");
+        if (!property) throw new Error("Missing Tasks.project");
+        const definition = await relationsStore.getRelationDefinitionByPropertyId(client, property.id);
+        if (!definition?.propertyIdB) throw new Error("Missing inverse relation property");
+        const inverseId = definition.propertyIdA === property.id ? definition.propertyIdB : definition.propertyIdA;
+        const inverse = await propertiesStore.getProperty(client, inverseId);
+        if (!inverse || inverse.databaseId !== projectDatabase) throw new Error("Missing Projects inverse");
+        return inverse.key;
+      });
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: project,
+          propertyKey: inverseKey,
+          ruleKey: "test",
+          sources: [],
+        }),
+      );
+      const card = await cardWithSteps("tasks", [
+        {
+          ref: "task",
+          op: "create",
+          databaseKey: "tasks",
+          role: "primary",
+          properties: { name: "Linked task" },
+          relations: { project: [project] },
+        },
+      ]);
+      const actorId = randomUUID();
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        const failure = new Error("rollback multi-step creation");
+        await expect(
+          withTransaction(pool, async (client) => {
+            await confirmProposalWithClient(
+              client,
+              { processingProposalsDatabaseId: proposalsId },
+              card,
+              undefined,
+              actorId,
+            );
+            expect(events).toEqual([]);
+            throw failure;
+          }),
+        ).rejects.toBe(failure);
+        expect(events).toEqual([]);
+        expect(await countItems("tasks")).toBe(0);
+        expect(await cardStatus(card)).toBe("proposed");
+        expect((await withTransaction(pool, (client) => listValueLinksByItemIds(client, [project])))[0]?.state).toBe(
+          "on",
+        );
+        const result = await confirm(card, actorId);
+        const taskId = result.properties.resultItemId;
+        if (typeof taskId !== "string") throw new Error("Missing task result");
+        expect(await edgeExists(taskId, project)).toBe(true);
+        expect((await withTransaction(pool, (client) => listValueLinksByItemIds(client, [project])))[0]).toMatchObject({
+          state: "broken",
+          brokenBy: "user",
+        });
+        expect(events.filter((event) => event.scope === "item" && event.itemId === project)).toEqual([
+          expect.objectContaining({ userId: actorId }),
+        ]);
+        events.length = 0;
+        await confirm(card, actorId);
+        expect(events).toEqual([]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
+    });
+
     it("rolls back company and edge when the person fails, and the 400 names the person step", async () => {
       // A wrong value type passes envelope validation and fails only in the choke point's write.
       const failing = companyAndPerson();

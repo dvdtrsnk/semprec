@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import "../../domainWriteHooks.js";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
@@ -6,11 +7,15 @@ import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
+import { writeComputed } from "../../chokePoint/itemsStore.js";
 import { createRelationWithClient } from "../../chokePoint/relationOps.js";
+import { insertValueLink, listValueLinksByItemIds } from "../../chokePoint/valueLinksStore.js";
+import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
 import { appendHistoryEntry, type ProposalEnvelope } from "../../inbox/inboxTickAction.js";
 import { confirmProposalWithClient, reviseProposalWithClient } from "../../inbox/proposalActions.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcriptionJob.js";
 import { matchTranscriptToEvent } from "../transcriptEventMatch.js";
+import { proposeSpeakerMappings } from "../transcriptSpeakerSuggestion.js";
 
 let pool: Pool;
 
@@ -146,6 +151,144 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
   }
 
   describe("confirm", () => {
+    it.each(["create Event", "link existing Event"] as const)(
+      "attributes changed transcript event link during %s confirmation and rollback",
+      async (mode) => {
+        const { transcriptId, cardId } = await createTranscriptCard();
+        const existingId = mode === "link existing Event" ? await createItem(eventsId, "Planning") : undefined;
+        if (existingId) await revise(cardId, linkExisting(existingId));
+        await withTransaction(pool, (client) =>
+          insertValueLink(client, {
+            itemId: transcriptId,
+            propertyKey: "event",
+            ruleKey: "test",
+            sources: [],
+          }),
+        );
+        const actorId = randomUUID();
+        const events: InvalidationEvent[] = [];
+        setInvalidationHook((event) => events.push(event));
+        try {
+          const failure = new Error("rollback transcript confirmation");
+          await expect(
+            withTransaction(pool, async (client) => {
+              await confirmProposalWithClient(
+                client,
+                { processingProposalsDatabaseId: proposalsId },
+                cardId,
+                undefined,
+                actorId,
+              );
+              expect(events).toEqual([]);
+              throw failure;
+            }),
+          ).rejects.toBe(failure);
+          expect(events).toEqual([]);
+          expect(
+            (await withTransaction(pool, (client) => listValueLinksByItemIds(client, [transcriptId])))[0]?.state,
+          ).toBe("on");
+          expect(await transcriptEventEdges()).toEqual([]);
+          expect((await cardProperties(cardId)).status).toBe("proposed");
+          const confirmed = await withTransaction(pool, (client) =>
+            confirmProposalWithClient(
+              client,
+              { processingProposalsDatabaseId: proposalsId },
+              cardId,
+              undefined,
+              actorId,
+            ),
+          );
+          const eventId = confirmed.properties.resultItemId;
+          expect(typeof eventId).toBe("string");
+          expect(await transcriptEventEdges()).toEqual([{ transcriptId, eventId }]);
+          expect(
+            (await withTransaction(pool, (client) => listValueLinksByItemIds(client, [transcriptId])))[0],
+          ).toMatchObject({ state: "broken", brokenBy: "user" });
+          expect(events.filter((event) => event.scope === "item" && event.itemId === transcriptId)).toEqual([
+            expect.objectContaining({ userId: actorId }),
+          ]);
+          events.length = 0;
+          await confirm(cardId);
+          expect(events).toEqual([]);
+        } finally {
+          setInvalidationHook(() => {});
+        }
+      },
+    );
+
+    it("attributes a proposed speaker mapping and rolls back before commit", async () => {
+      const transcriptId = await createTranscript("Speaker fixture");
+      const peopleId = await databaseIdFor("people");
+      const personId = await createItem(peopleId, "Alice");
+      const eventId = await createItem(eventsId, "Meeting");
+      await withTransaction(pool, async (client) => {
+        await writeComputed(client, transcriptsId, transcriptId, "segments", [
+          { speaker: "SPEAKER_01", text: "Hello", startsAt: 0, endsAt: 1 },
+        ]);
+        await createRelationWithClient(client, {
+          relationPropertyId: await propertyIdFor(eventsId, "people"),
+          callerItemId: eventId,
+          targetItemId: personId,
+        });
+        await createRelationWithClient(client, {
+          relationPropertyId: await propertyIdFor(transcriptsId, "event"),
+          callerItemId: transcriptId,
+          targetItemId: eventId,
+        });
+        await proposeSpeakerMappings(client, { transcriptId, suggestions: [{ speaker: "SPEAKER_01", personId }] });
+        await insertValueLink(client, { itemId: transcriptId, propertyKey: "speakers", ruleKey: "test", sources: [] });
+      });
+      const cards = await pool.query<{ id: string }>(
+        "SELECT id FROM items WHERE database_id = $1 AND properties ->> 'kind' = 'transcript'",
+        [proposalsId],
+      );
+      if (cards.rows.length !== 1 || !cards.rows[0]) throw new Error("Missing speaker proposal");
+      const cardId = cards.rows[0].id;
+      const actorId = randomUUID();
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        const failure = new Error("rollback speaker confirmation");
+        await expect(
+          withTransaction(pool, async (client) => {
+            await confirmProposalWithClient(
+              client,
+              { processingProposalsDatabaseId: proposalsId },
+              cardId,
+              undefined,
+              actorId,
+            );
+            expect(events).toEqual([]);
+            throw failure;
+          }),
+        ).rejects.toBe(failure);
+        expect(events).toEqual([]);
+        expect(
+          (await withTransaction(pool, (client) => listValueLinksByItemIds(client, [transcriptId])))[0]?.state,
+        ).toBe("on");
+        expect((await cardProperties(cardId)).status).toBe("proposed");
+        await withTransaction(pool, (client) =>
+          confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, undefined, actorId),
+        );
+        const edges = await pool.query<{ metadata: unknown }>(
+          "SELECT metadata FROM item_relations WHERE $1 IN (item_a, item_b) AND $2 IN (item_a, item_b)",
+          [transcriptId, personId],
+        );
+        expect(edges.rows).toEqual([{ metadata: { speaker: "SPEAKER_01" } }]);
+        expect(
+          (await withTransaction(pool, (client) => listValueLinksByItemIds(client, [transcriptId])))[0],
+        ).toMatchObject({ state: "broken", brokenBy: "user" });
+        expect(events.filter((event) => event.scope === "item" && event.itemId === transcriptId)).toEqual([
+          expect.objectContaining({ userId: actorId }),
+        ]);
+        events.length = 0;
+        await confirm(cardId);
+        expect(events).toEqual([]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
+    });
+
     it("creates the Event and the Transcription<->Event edge for a create-Event card", async () => {
       const { transcriptId, cardId } = await createTranscriptCard();
 

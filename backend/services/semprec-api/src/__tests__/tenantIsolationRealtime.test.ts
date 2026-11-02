@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { WebSocket, type RawData } from "ws";
 import * as Y from "yjs";
 import {
@@ -316,6 +316,80 @@ async function buildTenantFixture(tenantId: string): Promise<TenantFixture> {
       runEventCount: 1,
     };
   });
+}
+
+/** Owns this test's one LISTEN checkout, including a checkout delivered after closing starts. */
+function ownRealtimeListener(configure?: (owned: Pool, onCancel: (cancel: () => void) => void) => void) {
+  const owned = new Pool({
+    ...adminPool.options,
+    max: 1,
+    connectionTimeoutMillis: 2500,
+    statement_timeout: 5000,
+    query_timeout: 7000,
+  });
+  let closing = false;
+  let cancelPending = () => {};
+  let client: PoolClient | undefined;
+  let opening: Promise<PoolClient> | undefined;
+  const clientErrors: Error[] = [];
+  const onError = (error: Error) => clientErrors.push(error);
+  configure?.(owned, (cancel) => {
+    cancelPending = cancel;
+  });
+  const open = (): Promise<PoolClient> => {
+    if (opening || closing) throw new Error("Listener admission closed");
+    opening = (async () => {
+      const acquired = await owned.connect();
+      client = acquired;
+      acquired.on("error", onError);
+      if (closing) throw new Error("Listener closed during acquisition");
+      await acquired.query("LISTEN semprec_events");
+      if (closing) throw new Error("Listener closed during setup");
+      return acquired;
+    })();
+    return opening;
+  };
+  const close = async (): Promise<void> => {
+    closing = true;
+    const errors: unknown[] = [];
+    try {
+      cancelPending();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (opening) await opening.catch(() => {});
+    if (client) {
+      try {
+        client.release(true);
+      } catch (error) {
+        errors.push(error);
+      }
+      client.removeListener("error", onError);
+      client = undefined;
+    }
+    try {
+      await owned.end();
+    } catch (error) {
+      errors.push(error);
+    }
+    errors.push(...clientErrors);
+    if (errors.length) throw new AggregateError(errors, "Listener cleanup failed");
+  };
+  return { open, close, owned, hasOwnedClient: () => client !== undefined };
+}
+
+/** Each request owns its abort timer and consumes the response before returning. */
+async function ownedPut(url: string, headers: Record<string, string>, timeoutMs = FRAME_TIMEOUT_MS): Promise<number> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { method: "PUT", headers, signal: controller.signal });
+    await response.arrayBuffer();
+    return response.status;
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
 }
 
 /** A fresh web session for `fixture`'s user, presented as the cookie the browser would send. */
@@ -862,6 +936,138 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     for (const socket of [a1, a2, b1]) socket?.close();
   });
 
+  it("settles a listener delivered after cleanup starts", async () => {
+    let started = () => {};
+    const verifying = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let delivered = false;
+    const owner = ownRealtimeListener((owned, onCancel) => {
+      owned.options.verify = (_client, done) => {
+        onCancel(() =>
+          queueMicrotask(() => {
+            delivered = true;
+            done();
+          }),
+        );
+        started();
+      };
+    });
+    const opening = owner.open();
+    const settled = opening.then(
+      () => {},
+      () => {},
+    );
+    let failure: { error: unknown } | undefined;
+    try {
+      await Promise.race([
+        verifying,
+        opening.then(() => {
+          throw new Error("Listener acquired before verify gate");
+        }),
+      ]);
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await owner.close();
+      } catch (error) {
+        failure = failure
+          ? { error: new AggregateError([failure.error, error], "Listener control and cleanup failed") }
+          : { error };
+      }
+      await settled;
+    }
+    if (failure) {
+      // Preserve the actual setup failure, including non-Error values from external code.
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw failure.error;
+    }
+    await expect(opening).rejects.toThrow("Listener closed during acquisition");
+    expect(delivered).toBe(true);
+    expect(owner.owned.totalCount).toBe(0);
+    expect(owner.hasOwnedClient()).toBe(false);
+  });
+
+  it("settles an owned listener and preserves simultaneous body and cleanup errors", async () => {
+    const bodyFailure = new Error("body failed");
+    const cleanupFailure = new Error("cancel failed");
+    const owner = ownRealtimeListener((_owned, onCancel) =>
+      onCancel(() => {
+        throw cleanupFailure;
+      }),
+    );
+    let failure: { error: unknown } | undefined;
+    try {
+      const listener = await owner.open();
+      const pid = await listener.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+      expect(pid.rows[0]?.pid).toBeGreaterThan(0);
+      throw bodyFailure;
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await owner.close();
+      } catch (error) {
+        failure = failure
+          ? { error: new AggregateError([failure.error, error], "Body and cleanup failed") }
+          : { error };
+      }
+    }
+    expect(failure?.error).toBeInstanceOf(AggregateError);
+    if (!(failure?.error instanceof AggregateError)) throw new Error("Expected combined failure");
+    expect(failure.error.errors[0]).toBe(bodyFailure);
+    expect(failure.error.errors[1]).toBeInstanceOf(AggregateError);
+    const cleanup: unknown = failure.error.errors[1];
+    if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failure");
+    expect(cleanup.errors).toEqual([cleanupFailure]);
+    expect(owner.hasOwnedClient()).toBe(false);
+    expect(owner.owned.totalCount).toBe(0);
+  });
+
+  it("aborts and settles its owned HTTP request when the response stalls", async () => {
+    let observedClose = () => {};
+    const closed = new Promise<void>((resolve) => {
+      observedClose = resolve;
+    });
+    const local = createServer((_req, res) => {
+      res.on("close", observedClose);
+    });
+    await new Promise<void>((resolve) => local.listen(0, "127.0.0.1", resolve));
+    let failure: { error: unknown } | undefined;
+    try {
+      const address = local.address();
+      if (!address || typeof address === "string") throw new Error("Missing control server address");
+      await expect(ownedPut(`http://127.0.0.1:${address.port}/`, {}, 100)).rejects.toMatchObject({
+        name: "AbortError",
+      });
+      await Promise.race([
+        closed,
+        new Promise<never>((_, reject) => {
+          const timeout = setTimeout(() => reject(new Error("Control connection did not close")), FRAME_TIMEOUT_MS);
+          void closed.finally(() => clearTimeout(timeout));
+        }),
+      ]);
+    } catch (error) {
+      failure = { error };
+    } finally {
+      observedClose();
+      local.closeAllConnections();
+      try {
+        await new Promise<void>((resolve, reject) => local.close((error) => (error ? reject(error) : resolve())));
+      } catch (error) {
+        failure = failure
+          ? { error: new AggregateError([failure.error, error], "HTTP control and cleanup failed") }
+          : { error };
+      }
+    }
+    if (failure) {
+      // Preserve both the original failure and any owned-server cleanup failure.
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw failure.error;
+    }
+  });
+
   it("publishes a linked REST relation invalidation with the authenticated actor and tenant", async () => {
     const { source, target, property } = await runInTenant(tenantA.tenantId, async () => {
       const source = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
@@ -880,13 +1086,16 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     });
     const setupSentinel = await publishSentinel(tenantA.tenantId);
     await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(setupSentinel))));
-    const listener = await adminPool.connect();
+    const listenerOwner = ownRealtimeListener();
+    let listener: PoolClient | undefined;
+    let failure: { error: unknown } | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let onNotification: ((message: { channel: string; payload?: string }) => void) | undefined;
     let cancelObservation: (() => void) | undefined;
     let observationSettled: Promise<void> | undefined;
     try {
-      await listener.query("LISTEN semprec_events");
+      listener = await listenerOwner.open();
+      const activeListener = listener;
       const observed = new Promise<unknown>((resolve, reject) => {
         cancelObservation = () => reject(new Error("Observation cancelled"));
         timer = setTimeout(() => reject(new Error("Timed out waiting for linked relation event")), FRAME_TIMEOUT_MS);
@@ -900,7 +1109,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
             reject(error instanceof Error ? error : new Error("Invalid notification"));
           }
         };
-        listener.on("notification", onNotification);
+        activeListener.on("notification", onNotification);
       });
       observationSettled = observed.then(
         () => {},
@@ -919,11 +1128,71 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         }
         return messages;
       };
-      const response = await fetch(`${baseUrl}/api/items/${source.id}/relations/${property.key}/${target.id}`, {
-        method: "PUT",
-        headers: { Cookie: a1Cookie, Origin: baseUrl },
-      });
-      expect(response.status).toBe(200);
+      const causalBarrier = async (itemId: string): Promise<void> => {
+        const publications: Promise<unknown>[] = [];
+        for (let index = 0; index < querySpy.mock.calls.length; index++) {
+          const args: readonly unknown[] = querySpy.mock.calls[index] ?? [];
+          if (typeof args[0] !== "string" || !args[0].includes("pg_notify")) continue;
+          const result: unknown = querySpy.mock.results[index]?.value;
+          if (!(result instanceof Promise)) throw new Error("Expected asynchronous publication");
+          publications.push(result);
+        }
+        await Promise.all(publications);
+        const marker = randomUUID();
+        let sentinelTimer: ReturnType<typeof setTimeout> | undefined;
+        const forbiddenEnvelopes: unknown[] = [];
+        let removeSentinel: (() => void) | undefined;
+        let cancelSentinel: (() => void) | undefined;
+        const seen = new Promise<void>((resolve, reject) => {
+          cancelSentinel = () => reject(new Error("Sentinel observation cancelled"));
+          sentinelTimer = setTimeout(() => reject(new Error("Sentinel observation timed out")), FRAME_TIMEOUT_MS);
+          const handler = (message: { channel: string; payload?: string }) => {
+            if (message.channel !== "semprec_events" || !message.payload) return;
+            try {
+              const envelope: unknown = JSON.parse(message.payload);
+              if (!isRecord(envelope) || !isRecord(envelope.message)) throw new Error("Invalid realtime envelope");
+              if (envelope.message.itemId === itemId && envelope.message.op === "update")
+                forbiddenEnvelopes.push(envelope);
+              if (envelope.message.databaseId === marker) resolve();
+            } catch (error) {
+              reject(error instanceof Error ? error : new Error("Invalid sentinel"));
+            }
+          };
+          activeListener.on("notification", handler);
+          removeSentinel = () => activeListener.removeListener("notification", handler);
+        });
+        const settled = seen.then(
+          () => {},
+          () => {},
+        );
+        try {
+          await runInTenant(tenantA.tenantId, () =>
+            publishRealtimeMessage(pool, { type: "invalidation", scope: "schema", databaseId: marker }),
+          );
+          await seen;
+          expect(forbiddenEnvelopes).toEqual([]);
+          const frames = await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(marker))));
+          for (const stream of frames) {
+            expect(
+              stream.filter(
+                (frame) =>
+                  frame.kind === "text" &&
+                  frame.type === "invalidate" &&
+                  frame.body.itemId === itemId &&
+                  frame.body.op === "update",
+              ),
+            ).toEqual([]);
+          }
+          await expectNothingReceived(b1, tenantB.tenantId);
+        } finally {
+          if (sentinelTimer) clearTimeout(sentinelTimer);
+          removeSentinel?.();
+          cancelSentinel?.();
+          await settled;
+        }
+      };
+      const url = `${baseUrl}/api/items/${source.id}/relations/${property.key}/${target.id}`;
+      expect(await ownedPut(url, { Cookie: a1Cookie, Origin: baseUrl })).toBe(200);
       expect(await observed).toMatchObject({
         tenantId: tenantA.tenantId,
         message: { type: "invalidation", scope: "item", itemId: source.id, userId: tenantA.userId },
@@ -931,11 +1200,8 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
       await expectInvalidationInA({ scope: "item", itemId: source.id, op: "update" });
       expect(itemPublications(source.id)).toEqual([expect.objectContaining({ userId: tenantA.userId })]);
       querySpy.mockClear();
-      const replay = await fetch(`${baseUrl}/api/items/${source.id}/relations/${property.key}/${target.id}`, {
-        method: "PUT",
-        headers: { Cookie: a1Cookie, Origin: baseUrl },
-      });
-      expect(replay.status).toBe(200);
+      expect(await ownedPut(url, { Cookie: a1Cookie, Origin: baseUrl })).toBe(200);
+      await causalBarrier(source.id);
       expect(itemPublications(source.id)).toEqual([]);
 
       const rollbackSource = await runInTenant(tenantA.tenantId, async () => {
@@ -955,6 +1221,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         );
         return item;
       });
+      await causalBarrier(rollbackSource.id);
       querySpy.mockClear();
       const failure = new Error("rollback relation invalidation");
       await expect(
@@ -975,27 +1242,102 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
           }),
         ),
       ).rejects.toBe(failure);
+      await causalBarrier(rollbackSource.id);
       expect(itemPublications(rollbackSource.id)).toEqual([]);
       expect(
         (await runInTenant(tenantA.tenantId, () => chokePoint.getValueLinksForItems([rollbackSource.id]))).get(
           rollbackSource.id,
         )?.[property.key],
       ).toMatchObject({ valueKind: "inherited", brokenBy: null });
+      const background = await runInTenant(tenantA.tenantId, async () => {
+        const item = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
+        await withTransaction(pool, (client) =>
+          insertValueLink(client, {
+            itemId: item.id,
+            propertyKey: property.key,
+            ruleKey: "test",
+            sources: [],
+          }),
+        );
+        return item;
+      });
+      await causalBarrier(background.id);
       querySpy.mockClear();
-      const background = await runInTenant(tenantA.tenantId, () =>
-        chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} }),
+      let backgroundTimer: ReturnType<typeof setTimeout> | undefined;
+      let backgroundHandler: ((message: { channel: string; payload?: string }) => void) | undefined;
+      let cancelBackground: (() => void) | undefined;
+      const backgroundEvent = new Promise<unknown>((resolve, reject) => {
+        cancelBackground = () => reject(new Error("Background observation cancelled"));
+        backgroundTimer = setTimeout(() => reject(new Error("Background observation timed out")), FRAME_TIMEOUT_MS);
+        backgroundHandler = (notification) => {
+          if (notification.channel !== "semprec_events" || !notification.payload) return;
+          try {
+            const envelope: unknown = JSON.parse(notification.payload);
+            if (isRecord(envelope) && isRecord(envelope.message) && envelope.message.itemId === background.id)
+              resolve(envelope);
+          } catch (error) {
+            reject(error instanceof Error ? error : new Error("Invalid background envelope"));
+          }
+        };
+        activeListener.on("notification", backgroundHandler);
+      });
+      const backgroundSettled = backgroundEvent.then(
+        () => {},
+        () => {},
       );
-      expect(itemPublications(background.id)).toEqual([
-        expect.objectContaining({ scope: "item", itemId: background.id, op: "create" }),
-      ]);
-      expect(itemPublications(background.id)[0]).not.toHaveProperty("userId");
-      await expectInvalidationInA({ scope: "item", itemId: background.id, op: "create" });
+      try {
+        await runInTenant(tenantA.tenantId, () =>
+          chokePoint.createRelation(
+            {
+              relationPropertyId: property.id,
+              callerItemId: background.id,
+              targetItemId: target.id,
+            },
+            { writerKind: "user" },
+          ),
+        );
+        expect(itemPublications(background.id)).toEqual([
+          expect.objectContaining({ scope: "item", itemId: background.id, op: "update" }),
+        ]);
+        expect(itemPublications(background.id)[0]).not.toHaveProperty("userId");
+        const envelope = await backgroundEvent;
+        expect(envelope).toMatchObject({
+          tenantId: tenantA.tenantId,
+          message: { itemId: background.id, op: "update" },
+        });
+        if (!isRecord(envelope) || !isRecord(envelope.message)) throw new Error("Invalid background envelope");
+        expect(envelope.message).not.toHaveProperty("userId");
+        expect(
+          (await runInTenant(tenantA.tenantId, () => chokePoint.getValueLinksForItems([background.id]))).get(
+            background.id,
+          )?.[property.key],
+        ).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user" });
+        await expectInvalidationInA({ scope: "item", itemId: background.id, op: "update" });
+      } finally {
+        if (backgroundTimer) clearTimeout(backgroundTimer);
+        if (backgroundHandler) activeListener.removeListener("notification", backgroundHandler);
+        cancelBackground?.();
+        await backgroundSettled;
+      }
+    } catch (error) {
+      failure = { error };
     } finally {
       if (timer) clearTimeout(timer);
-      if (onNotification) listener.removeListener("notification", onNotification);
+      if (onNotification) listener?.removeListener("notification", onNotification);
       cancelObservation?.();
       await observationSettled;
-      listener.release(true);
+      try {
+        await listenerOwner.close();
+      } catch (error) {
+        failure = failure
+          ? { error: new AggregateError([failure.error, error], "Realtime observation and cleanup failed") }
+          : { error };
+      }
+    }
+    if (failure) {
+      // Preserve the original failure rather than replacing it with a timeout wrapper.
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw failure.error;
     }
   });
 

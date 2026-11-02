@@ -907,7 +907,13 @@ describe("value link state on writes (issue #1516)", () => {
       }
 
       expect(events).toContainEqual(
-        expect.objectContaining({ scope: "item", databaseId: files.id, itemId: file.id, op: "update" }),
+        expect.objectContaining({
+          scope: "item",
+          databaseId: files.id,
+          itemId: file.id,
+          op: "update",
+          userId: undefined,
+        }),
       );
     });
 
