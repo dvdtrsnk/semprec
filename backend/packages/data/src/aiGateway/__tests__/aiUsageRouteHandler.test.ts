@@ -809,9 +809,9 @@ describe("AI usage call snapshot", () => {
             writePid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
             const call = await reserveGatewayCall(client, {
               provider: "anthropic",
-              model: "snapshot-model",
+              model: "second-model",
               estimatedCostUsd: 0.2,
-              operation: "agent_turn",
+              operation: "voice_synthesize",
             });
             // The production writer stamps now, so date this reservation into the prior month.
             requireAffectedRows(
@@ -851,9 +851,20 @@ describe("AI usage call snapshot", () => {
       expect(fresh.accountStartedAt).toBe(newAt);
       expect(fresh.totalCostUsd).toBe(0.3);
       expect(fresh.estimated).toBe(true);
-      expect(fresh.rows).toMatchObject([{ callCount: 2, costUsd: 0.3 }]);
-      expect(fresh.byModel).toMatchObject([{ callCount: 2, costUsd: 0.3 }]);
-      expect(fresh.byOperation).toMatchObject([{ callCount: 2, costUsd: 0.3, share: 1 }]);
+      expect(fresh.rows).toMatchObject([
+        { model: "second-model", callCount: 1, costUsd: 0.2 },
+        { model: "snapshot-model", callCount: 1, costUsd: 0.1 },
+      ]);
+      expect(fresh.byModel).toMatchObject([
+        { model: "second-model", callCount: 1, costUsd: 0.2 },
+        { model: "snapshot-model", callCount: 1, costUsd: 0.1 },
+      ]);
+      expect(fresh.byOperation).toMatchObject([
+        { operation: "voice", callCount: 1, costUsd: 0.2, share: 0.2 / 0.3 },
+        { operation: "agent_turn", callCount: 1, costUsd: 0.1, share: 0.1 / 0.3 },
+      ]);
+      // IEEE-754 binary addition differs from the independently converted SQL numeric total here.
+      expect(0.1 + 0.2).not.toBe(0.3);
       if (granularity === "month") {
         expect(old.monthlyCostUsd).toEqual([{ month: "2026-01", costUsd: 0.1 }]);
         expect(fresh.monthlyCostUsd).toEqual([

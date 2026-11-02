@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { logger } from "../logger.js";
-import type { Pool, PoolClient } from "pg";
+import { Pool, type PoolClient } from "pg";
 import {
   CAPABILITY_IDS,
   GENERIC_OPERATION_NAMES,
@@ -2213,6 +2213,13 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
         throw new AggregateError([failure, cleanupFailure.error], "Worker setup cleanup failed", { cause: failure });
       throw failure;
     }
+    const observer = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      max: 1,
+      connectionTimeoutMillis: 2000,
+      statement_timeout: 3000,
+      query_timeout: 4000,
+    });
     const invalidations: Array<{ tenantId: string; threadId: string }> = [];
     setSempThreadInvalidationHook((event) => invalidations.push(event));
     let runner: Awaited<ReturnType<typeof runWorker>> | undefined;
@@ -2232,19 +2239,20 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
         () => ({ ok: true as const }),
         (error: unknown) => ({ ok: false as const, error }),
       );
-      await Promise.race([
-        started,
+      const startOutcome = await Promise.race([
+        started.then(() => ({ kind: "started" as const })),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error("Worker did not start")), 5000);
         }),
-        running.then((result) => {
-          if (!result.ok) {
-            runningFailureObserved = true;
-            throw result.error;
-          }
-          throw new Error("Worker stopped before start");
-        }),
+        running.then((result) => ({ kind: "settled" as const, result })),
       ]);
+      if (startOutcome.kind === "settled") {
+        if (!startOutcome.result.ok) {
+          runningFailureObserved = true;
+          throw startOutcome.result.error;
+        }
+        throw new Error("Worker stopped before start");
+      }
       const runs = await runInTenant(b.tenantId, () => listAgentRunsByHeartbeat(pool, heartbeat.id));
       expect(runs).toHaveLength(1);
       expect(runs[0]).toMatchObject({ status: "running", actorUserId: b.member.userId, parentRunId: null });
@@ -2274,7 +2282,7 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     try {
       const deadline = Date.now() + 5000;
       for (;;) {
-        const job = await adminPool.query<{ count: number }>(
+        const job = await observer.query<{ count: number }>(
           "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE key = $1",
           [firstBody.jobKey],
         );
@@ -2298,6 +2306,11 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     }
     try {
       await workerPool.end();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      await observer.end();
     } catch (error) {
       cleanupErrors.push(error);
     }
@@ -2342,6 +2355,13 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     owned.options.connectionTimeoutMillis = 2000;
     owned.options.statement_timeout = 3000;
     owned.options.query_timeout = 4000;
+    const observer = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      max: 1,
+      connectionTimeoutMillis: 2000,
+      statement_timeout: 3000,
+      query_timeout: 4000,
+    });
     let signalFailure: () => void = () => {};
     const observed = new Promise<void>((resolve) => {
       signalFailure = resolve;
@@ -2395,7 +2415,7 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
       ]);
       const deadline = Date.now() + 5000;
       for (;;) {
-        const row = await adminPool.query<{ last_error: string | null }>(
+        const row = await observer.query<{ last_error: string | null }>(
           "SELECT last_error FROM graphile_worker.jobs WHERE key = $1",
           [body.jobKey],
         );
@@ -2424,6 +2444,11 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     } catch (error) {
       errors.push(error);
     }
+    try {
+      await observer.end();
+    } catch (error) {
+      errors.push(error);
+    }
     if (errors.length)
       throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Pre-action worker cleanup failed", {
         cause: failure?.error,
@@ -2436,6 +2461,84 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
       [body.jobKey],
     );
     expect(row.rows[0]?.last_error).toContain(injected.message);
+  });
+
+  it("bounds the owned job observer when its database read is blocked", async () => {
+    const observer = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      max: 2,
+      connectionTimeoutMillis: 1000,
+      statement_timeout: 400,
+      query_timeout: 1500,
+    });
+    let release: () => void = () => {};
+    let announce: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const locked = new Promise<void>((resolve) => {
+      announce = resolve;
+    });
+    const holder = runInTenant(b.tenantId, () =>
+      withTransaction(observer, async (client) => {
+        await client.query("LOCK TABLE graphile_worker._private_jobs IN ACCESS EXCLUSIVE MODE");
+        announce();
+        await gate;
+      }),
+    ).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    let failure: { error: unknown } | undefined;
+    let holderFailureObserved = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        locked.then(() => ({ kind: "locked" as const })),
+        holder.then((outcome) => ({ kind: "settled" as const, outcome })),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Observer lock did not start")), 2000);
+        }),
+      ]);
+      if (result.kind === "settled") {
+        if (!result.outcome.ok) {
+          holderFailureObserved = true;
+          throw result.outcome.error;
+        }
+        throw new Error("Observer lock ended too early");
+      }
+      let refusal: unknown;
+      try {
+        await observer.query("SELECT count(*) FROM graphile_worker.jobs");
+        throw new Error("Blocked observer unexpectedly completed");
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toMatchObject({ code: "57014" });
+    } catch (error) {
+      failure = { error };
+    }
+    if (timer) clearTimeout(timer);
+    release();
+    const held = await holder;
+    const errors: unknown[] = [];
+    if (!held.ok && !holderFailureObserved) errors.push(held.error);
+    try {
+      const result = await observer.query<{ count: number }>("SELECT count(*)::int AS count FROM graphile_worker.jobs");
+      expect(result.rows[0]?.count).toEqual(expect.any(Number));
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await observer.end();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length)
+      throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Observer cleanup failed", {
+        cause: failure?.error,
+      });
+    if (failure) throw failure.error;
   });
 
   it("refuses disabled and item-event automations over authenticated HTTP", async () => {

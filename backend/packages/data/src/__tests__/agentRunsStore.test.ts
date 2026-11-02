@@ -254,18 +254,20 @@ describe("agent run retry chain (issue #1448)", () => {
         }),
       ]);
     try {
-      const holderPid = await bounded(
+      const holderRace = await bounded(
         Promise.race([
-          holderStarted,
-          holder.then((outcome) => {
-            if ("error" in outcome) {
-              holderFailureObserved = true;
-              throw outcome.error;
-            }
-            throw new Error("Holder ended before overlap");
-          }),
+          holderStarted.then((pid) => ({ kind: "started" as const, pid })),
+          holder.then((outcome) => ({ kind: "settled" as const, outcome })),
         ]),
       );
+      if (holderRace.kind === "settled") {
+        if ("error" in holderRace.outcome) {
+          holderFailureObserved = true;
+          throw holderRace.outcome.error;
+        }
+        throw new Error("Holder ended before overlap");
+      }
+      const holderPid = holderRace.pid;
       contender = runInTenant(getTenantZeroId(), () =>
         withTransaction(owned, async (client) => {
           const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
@@ -277,18 +279,20 @@ describe("agent run retry chain (issue #1448)", () => {
         (value) => ({ value }),
         (error: unknown) => ({ error }),
       );
-      const contenderPid = await bounded(
+      const contenderRace = await bounded(
         Promise.race([
-          contenderStarted,
-          contender.then((outcome) => {
-            if ("error" in outcome) {
-              contenderFailureObserved = true;
-              throw outcome.error;
-            }
-            throw new Error("Contender ended before overlap");
-          }),
+          contenderStarted.then((pid) => ({ kind: "started" as const, pid })),
+          contender.then((outcome) => ({ kind: "settled" as const, outcome })),
         ]),
       );
+      if (contenderRace.kind === "settled") {
+        if ("error" in contenderRace.outcome) {
+          contenderFailureObserved = true;
+          throw contenderRace.outcome.error;
+        }
+        throw new Error("Contender ended before overlap");
+      }
+      const contenderPid = contenderRace.pid;
       const deadline = Date.now() + 2500;
       let blocked = false;
       while (!blocked && Date.now() < deadline) {
