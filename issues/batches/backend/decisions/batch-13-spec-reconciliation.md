@@ -281,3 +281,36 @@ development log remains development evidence, not a final candidate verdict;
 both complete affected files belong in the final named targets and independent
 binding review. No new architectural pattern or ADR is needed for using the
 already requested production test boundaries.
+
+## 11. APPEND test reconciliation after the frozen unit failure
+
+Actual full verify on ec404737 exited 1 in the unit tier: the existing
+imapFlowClientAppend.unit.test.ts expects the original refusal object, while
+section 8 deliberately changes unknown provider errors from the reused wrapper
+to a fixed safe error. Retain this privacy contract. The failure needs repair,
+not a local exception; earlier batch exceptions do not apply.
+
+Add backend/packages/data/src/**tests**/imapFlowClientAppend.unit.test.ts to
+gh-1510 and aggregate Touches solely for that reused-wrapper privacy contract.
+Observe the original refusal producer independently, assert the fixed generic
+failure and absence of raw cause/properties/secrets, and retain the existing
+bytes/flags/success/deadline assertions. The test is still a real invocation
+of ImapFlowMailClient.appendMessage; do not bypass it or relax the failure to
+mere rejection. Correct the now-false original-refusal docstring in the already
+scoped imapFlowClient.ts. Necessary typed fixture cleanup in this exact test
+helper belongs to this scope, without a protocol or Sent-copy lifecycle redesign.
+
+Preserve the full failed log and manifest evidence. The previous source review
+and named passes remain evidence for ec404737, not gates for the repaired SHA.
+Use the same reviewer for the focused actual delta and complete unchanged-byte
+ledger reconciliation, including the current approvals. Then rerun the complete
+named stages with this file included, STOP and separately run full verify on
+the new exact clean SHA. No test-filter or environment workaround.
+
+Do not run the skipped E2E tier on ec404737: this candidate already requires
+repair. The repaired final candidate must execute the actual
+vitest.e2e.config.ts tier before acceptance, normally through full verify. If
+that new full run stops before E2E, preserve its exact failure and request the
+parent's candidate-specific decision for a separate same-SHA E2E stage; neither
+old E2E nor named integration tests substitute. No merge/completion/acceptance
+or successor dispatch is authorized by this test-path reconciliation.
