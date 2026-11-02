@@ -1,7 +1,7 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import "../domainWriteHooks.js";
-import { runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -16,7 +16,7 @@ import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { withTransaction } from "../db/pool.js";
-import { runOnce } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob, ensureQueueSchema, grantQueueSchemaPrivileges, runOnce } from "@semprec/queue";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 import {
@@ -65,6 +65,8 @@ import {
   ensureMailAccountSyncState,
   getMailAccountSyncState,
   defaultSyncModeForProvider,
+  recordImapActivity,
+  recordSyncError,
 } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { mailProblemKey } from "../semp/sourceProblemKeys.js";
@@ -83,7 +85,7 @@ import {
 } from "../mail/imapFlowClient.js";
 import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, messageFlagProperties } from "../mail/messageFlags.js";
-import type { FetchMessageObject, ImapFlow, MessageStructureObject } from "imapflow";
+import { ImapFlow, type FetchMessageObject, type MessageStructureObject } from "imapflow";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { createUser } from "../auth/usersStore.js";
@@ -4723,6 +4725,70 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
     return { emailsId, mailbox, folder, params };
   }
 
+  tenantIt("persists IMAP Reply-To and each bulk signal through the adapter and folder sync", async () => {
+    const { params } = await setUpFolder();
+    const connection = new ImapFlow({
+      host: "unused.example.test",
+      port: 993,
+      secure: true,
+      auth: { user: "unused", pass: "unused" },
+      logger: false,
+    });
+    vi.spyOn(connection, "mailboxOpen").mockResolvedValue({
+      path: "INBOX",
+      delimiter: "/",
+      flags: new Set(),
+      uidValidity: 1n,
+      uidNext: 7,
+      exists: 6,
+    });
+    const rawHeaders = [
+      "List-Unsubscribe: <mailto:leave@example.test>\r\n",
+      "List-Id: <list.example.test>\r\n",
+      "Precedence: bulk\r\n",
+      "Auto-Submitted: auto-generated\r\n",
+      "",
+      "Auto-Submitted: no\r\n",
+    ];
+    const fetch = vi.spyOn(connection, "fetch").mockImplementation(async function* () {
+      for (let index = 0; index < rawHeaders.length; index++) {
+        yield {
+          seq: index + 1,
+          uid: index + 1,
+          envelope: {
+            messageId: `<imap-bulk-${index}@example.test>`,
+            from: [{ name: "Sender", address: index === 4 ? "No-Reply@example.test" : "person@example.test" }],
+            ...(index === 0 ? { replyTo: [{ name: "Support", address: "support@example.test" }] } : {}),
+          },
+          headers: Buffer.from(rawHeaders[index]!),
+        };
+      }
+    });
+    const adapter = new ImapFlowMailClient(connection);
+    await withTransaction(pool, (client) => reconcileImapFolder(client, adapter, params));
+    const query = fetch.mock.calls[0]?.[1];
+    expect(query?.headers).toEqual(
+      expect.arrayContaining(["list-unsubscribe", "list-id", "precedence", "auto-submitted"]),
+    );
+    const { rows } = await pool.query<{ message_id: string; is_bulk: boolean; envelope: unknown }>(
+      "SELECT message_id, is_bulk, envelope FROM mail_message_meta ORDER BY message_id",
+    );
+    expect(rows.map((row) => row.is_bulk)).toEqual([true, true, true, true, true, false]);
+    expect(rows[0]?.envelope).toEqual({
+      from: { name: "Sender", address: "person@example.test" },
+      to: [],
+      cc: [],
+      bcc: [],
+      replyTo: [{ name: "Support", address: "support@example.test" }],
+    });
+    expect(rows[5]?.envelope).toEqual({
+      from: { name: "Sender", address: "person@example.test" },
+      to: [],
+      cc: [],
+      bcc: [],
+    });
+  });
+
   /** Ingests one message (uid 1, unread/unflagged) via reconcileImapFolder's own initial-sync pass, so mail_folder_sync_state carries real uidnext/uidvalidity for the second pass to build on. */
   async function ingestFirstMessage(
     params: Awaited<ReturnType<typeof setUpFolder>>["params"],
@@ -5084,4 +5150,158 @@ describe("ImapFlowMailClient.fetchFlagsChangedSince (issue #681)", () => {
 
 afterAll(async () => {
   await pool?.end();
+});
+
+describe("queued sync status forward repair (issue #1497)", () => {
+  let runtime: Pool;
+  let tenantA: string;
+  let tenantB: string;
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    tenantA = getTenantZeroId();
+    tenantB = await createTestTenant(pool);
+    await ensureQueueSchema(pool);
+    await grantQueueSchemaPrivileges(pool);
+    runtime = await createRuntimeRolePool(pool, "semprec_data");
+  });
+  afterEach(async () => {
+    await runtime?.end();
+  });
+
+  async function enqueueSweep() {
+    await runAsSystem("test sweep", () => enqueueJob(pool, CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP, {}));
+    await runOnce({ pgPool: runtime, taskList: createCoreTaskList(runtime, new Map()) });
+  }
+
+  it("skips locked rows and never overwrites competing success or known failure", async () => {
+    const success = randomUUID();
+    const failed = randomUUID();
+    const retry = randomUUID();
+    await runInTenant(tenantA, () =>
+      withTransaction(runtime, (client) =>
+        client.query(
+          `INSERT INTO mail_account_sync_state (item_id, sync_mode, last_error, next_expected_activity_at)
+       SELECT id, 'imap', 'unclassified', '2099-01-01' FROM unnest($1::uuid[]) AS id`,
+          [[success, failed, retry]],
+        ),
+      ),
+    );
+    let locked!: () => void;
+    let failedBeforeLock!: (error: unknown) => void;
+    let release!: () => void;
+    const ready = new Promise<void>((resolve, reject) => {
+      locked = resolve;
+      failedBeforeLock = reject;
+    });
+    const proceed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holder = runInTenant(tenantA, () =>
+      withTransaction(runtime, async (client) => {
+        await client.query("SELECT item_id FROM mail_account_sync_state WHERE item_id = ANY($1::uuid[]) FOR UPDATE", [
+          [success, failed, retry],
+        ]);
+        locked();
+        await proceed;
+        await recordImapActivity(client, { itemId: success, nextExpectedActivityAt: new Date("2099-01-01") });
+        await recordSyncError(client, failed, "known failure", "reauthorization");
+      }),
+    );
+    const observedHolder = holder.then(
+      () => ({ ok: true as const }),
+      (error: unknown) => {
+        failedBeforeLock(error);
+        return { ok: false as const, error };
+      },
+    );
+    const failures: unknown[] = [];
+    try {
+      await ready;
+      await enqueueSweep();
+      const pending = await pool.query<{ last_failure_kind: string | null }>(
+        "SELECT last_failure_kind FROM mail_account_sync_state WHERE item_id = ANY($1::uuid[])",
+        [[success, failed, retry]],
+      );
+      expect(pending.rows).toEqual([
+        { last_failure_kind: null },
+        { last_failure_kind: null },
+        { last_failure_kind: null },
+      ]);
+    } catch (error) {
+      failures.push(error);
+    }
+    release();
+    const holderResult = await observedHolder;
+    if (!holderResult.ok && !failures.includes(holderResult.error)) failures.push(holderResult.error);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Sweep race and holder failed");
+    await enqueueSweep();
+    const rows = await pool.query<{ item_id: string; last_error: string | null; last_failure_kind: string | null }>(
+      "SELECT item_id, last_error, last_failure_kind FROM mail_account_sync_state WHERE item_id = ANY($1::uuid[])",
+      [[success, failed, retry]],
+    );
+    const byId = new Map(rows.rows.map((row) => [row.item_id, row]));
+    expect(byId.get(success)).toMatchObject({ last_error: null, last_failure_kind: null });
+    expect(byId.get(failed)).toMatchObject({ last_error: "known failure", last_failure_kind: "reauthorization" });
+    expect(byId.get(retry)).toMatchObject({ last_error: "unclassified", last_failure_kind: "other" });
+  });
+
+  it("repairs at most 200 per active tenant per queued sweep, preserving exclusions and state", async () => {
+    for (const tenant of [tenantA, tenantB]) {
+      await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          await client.query(`INSERT INTO mail_account_sync_state
+          (item_id, sync_mode, last_error, next_expected_activity_at)
+          SELECT gen_random_uuid(), 'imap', 'unclassified', '2099-01-01' FROM generate_series(1, 201)`);
+          await client.query(`INSERT INTO mail_account_sync_state
+          (item_id, sync_mode, last_error, last_activity_at, last_failure_kind, next_expected_activity_at)
+          VALUES (gen_random_uuid(), 'imap', 'known', NULL, 'reauthorization', '2099-01-01'),
+                 (gen_random_uuid(), 'imap', 'active', '2026-01-01', NULL, '2099-01-01'),
+                 (gen_random_uuid(), 'imap', NULL, NULL, NULL, '2099-01-01')`);
+        }),
+      );
+    }
+    const before = await pool.query<{ tenant_id: string; item_id: string; state: unknown }>(
+      `SELECT tenant_id, item_id, to_jsonb(s) - 'last_failure_kind' AS state FROM mail_account_sync_state s ORDER BY tenant_id, item_id`,
+    );
+    const itemsBefore = await pool.query<{ count: string }>("SELECT count(*) FROM items");
+    await enqueueSweep();
+    const counts = () =>
+      pool.query<{ tenant_id: string; repaired: string; pending: string }>(
+        `SELECT tenant_id, count(*) FILTER (WHERE last_error = 'unclassified' AND last_failure_kind = 'other') AS repaired,
+       count(*) FILTER (WHERE last_error = 'unclassified' AND last_failure_kind IS NULL) AS pending
+       FROM mail_account_sync_state GROUP BY tenant_id ORDER BY tenant_id`,
+      );
+    expect((await counts()).rows.map(({ repaired, pending }) => [repaired, pending])).toEqual([
+      ["200", "1"],
+      ["200", "1"],
+    ]);
+    await enqueueSweep();
+    expect((await counts()).rows.map(({ repaired, pending }) => [repaired, pending])).toEqual([
+      ["201", "0"],
+      ["201", "0"],
+    ]);
+    const after = await pool.query<{ tenant_id: string; item_id: string; state: unknown }>(
+      `SELECT tenant_id, item_id, to_jsonb(s) - 'last_failure_kind' AS state FROM mail_account_sync_state s ORDER BY tenant_id, item_id`,
+    );
+    expect(after.rows).toEqual(before.rows);
+    const exclusions = await pool.query<{ last_error: string | null; last_failure_kind: string | null }>(
+      "SELECT last_error, last_failure_kind FROM mail_account_sync_state WHERE last_error IS DISTINCT FROM 'unclassified' ORDER BY last_error NULLS FIRST, tenant_id",
+    );
+    expect(exclusions.rows).toEqual([
+      { last_error: null, last_failure_kind: null },
+      { last_error: null, last_failure_kind: null },
+      { last_error: "active", last_failure_kind: null },
+      { last_error: "active", last_failure_kind: null },
+      { last_error: "known", last_failure_kind: "reauthorization" },
+      { last_error: "known", last_failure_kind: "reauthorization" },
+    ]);
+    expect((await pool.query("SELECT count(*) FROM items")).rows).toEqual(itemsBefore.rows);
+    await enqueueSweep();
+    expect((await counts()).rows.map(({ repaired, pending }) => [repaired, pending])).toEqual([
+      ["201", "0"],
+      ["201", "0"],
+    ]);
+  });
 });

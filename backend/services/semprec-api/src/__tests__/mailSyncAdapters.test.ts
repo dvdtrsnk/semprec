@@ -66,6 +66,7 @@ interface FakeGoogleOptions {
   tokenStatus?: 200 | 401;
   /** Lifetime of each access token the token endpoint issues, in seconds. */
   expiresIn?: number;
+  messages?: FakeMessage[];
 }
 
 interface FakeGoogleCalls {
@@ -82,12 +83,20 @@ interface FakeGoogle {
   calls: FakeGoogleCalls;
 }
 
-const FAKE_MESSAGES = [
+interface FakeMessage {
+  id: string;
+  subject: string;
+  from?: string;
+  headers?: Array<{ name: string; value: string }>;
+  replyTo?: Array<{ name: string; address: string }>;
+}
+
+const FAKE_MESSAGES: FakeMessage[] = [
   { id: "m-1", subject: "First message" },
   { id: "m-2", subject: "Second message" },
 ];
 
-function gmailMessage(message: { id: string; subject: string }): unknown {
+function gmailMessage(message: FakeMessage): unknown {
   return {
     id: message.id,
     threadId: `thread-${message.id}`,
@@ -96,10 +105,11 @@ function gmailMessage(message: { id: string; subject: string }): unknown {
       mimeType: "text/plain",
       headers: [
         { name: "Message-ID", value: `<${message.id}@gmail.example.test>` },
-        { name: "From", value: "Ada <ada@example.test>" },
+        { name: "From", value: message.from ?? "Ada <ada@example.test>" },
         { name: "To", value: "owner@example.test" },
         { name: "Subject", value: message.subject },
         { name: "Date", value: "Mon, 05 Oct 2026 10:00:00 +0000" },
+        ...(message.headers ?? []),
       ],
       body: { size: 12, data: Buffer.from(`Body of ${message.id}`).toString("base64url") },
     },
@@ -118,6 +128,7 @@ function hrefOf(input: string | URL | Request): string {
  */
 function createFakeGoogle(options: FakeGoogleOptions = {}): FakeGoogle {
   const calls: FakeGoogleCalls = { presentedRefreshTokens: [], authorizations: [], gmailRoutes: [] };
+  const messages = options.messages ?? FAKE_MESSAGES;
   let issued = 0;
   const fetchImpl: typeof fetch = async (input, init) => {
     const href = hrefOf(input);
@@ -138,9 +149,8 @@ function createFakeGoogle(options: FakeGoogleOptions = {}): FakeGoogle {
       calls.authorizations.push(new Headers(init?.headers).get("Authorization") ?? "");
       if (route === "/profile") return Response.json({ historyId: "5000" });
       if (route === "/labels") return Response.json({ labels: [{ id: "INBOX", name: "INBOX", type: "system" }] });
-      if (route === "/messages?maxResults=500")
-        return Response.json({ messages: FAKE_MESSAGES.map(({ id }) => ({ id })) });
-      const fetched = FAKE_MESSAGES.find((message) => route === `/messages/${message.id}?format=full`);
+      if (route === "/messages?maxResults=500") return Response.json({ messages: messages.map(({ id }) => ({ id })) });
+      const fetched = messages.find((message) => route === `/messages/${message.id}?format=full`);
       if (fetched) return Response.json(gmailMessage(fetched));
       return new Response("not found", { status: 404 });
     }
@@ -154,6 +164,8 @@ interface FakeMicrosoftOptions {
   revoked?: boolean;
   /** Each refresh rotates the refresh token, as Microsoft does: the presented token is retired and a new one returned. */
   rotates?: boolean;
+  messages?: FakeMessage[];
+  deltaMessages?: FakeMessage[];
 }
 
 interface FakeMicrosoftCalls {
@@ -177,18 +189,19 @@ const GRAPH_MESSAGES = [
   { id: "g-2", subject: "Second Graph message" },
 ];
 
-function graphMessage(message: { id: string; subject: string }): unknown {
+function graphMessage(message: FakeMessage): unknown {
   return {
     id: message.id,
     parentFolderId: GRAPH_INBOX_ID,
     internetMessageId: `<${message.id}@graph.example.test>`,
     subject: message.subject,
-    from: { emailAddress: { name: "Ada", address: "ada@example.test" } },
+    from: { emailAddress: { name: "Ada", address: message.from ?? "ada@example.test" } },
     toRecipients: [{ emailAddress: { name: "Owner", address: "owner@example.test" } }],
     receivedDateTime: "2026-10-05T10:00:00Z",
     body: { contentType: "text", content: `Body of ${message.id}` },
     bodyPreview: `Body of ${message.id}`,
-    internetMessageHeaders: [],
+    internetMessageHeaders: message.headers ?? [],
+    ...(message.replyTo ? { replyTo: message.replyTo.map((emailAddress) => ({ emailAddress })) } : {}),
     hasAttachments: false,
     isRead: false,
     flag: { flagStatus: "notFlagged" },
@@ -242,8 +255,15 @@ function createFakeMicrosoft(options: FakeMicrosoftOptions = {}): FakeMicrosoft 
       if (route === "/mailFolders?$top=999&$select=id,displayName,childFolderCount")
         return Response.json({ value: [{ id: GRAPH_INBOX_ID, displayName: "Inbox", childFolderCount: 0 }] });
       if (route.startsWith("/messages/delta?$select="))
-        return Response.json({ value: GRAPH_MESSAGES.map(graphMessage), "@odata.deltaLink": DELTA_LINK_1 });
-      if (href === DELTA_LINK_1) return Response.json({ value: [], "@odata.deltaLink": DELTA_LINK_2 });
+        return Response.json({
+          value: (options.messages ?? GRAPH_MESSAGES).map(graphMessage),
+          "@odata.deltaLink": DELTA_LINK_1,
+        });
+      if (href === DELTA_LINK_1)
+        return Response.json({
+          value: (options.deltaMessages ?? []).map(graphMessage),
+          "@odata.deltaLink": DELTA_LINK_2,
+        });
       // Every well-known folder other than the inbox does not exist in this mailbox.
       if (route.startsWith("/mailFolders/")) return new Response("not found", { status: 404 });
     }
@@ -606,6 +626,46 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
   });
 
   describe("Gmail-mode accounts (issue #1505)", () => {
+    it("persists bulk indicators and Reply-To through the Gmail adapter and production sync", async () => {
+      const mailboxId = await createGmailMailbox("Header sync");
+      const google = createFakeGoogle({
+        messages: [
+          {
+            id: "unsubscribe",
+            subject: "Unsubscribe",
+            headers: [
+              { name: "List-Unsubscribe", value: "<mailto:u@example.test>" },
+              { name: "Reply-To", value: "Support <support@example.test>" },
+            ],
+          },
+          { id: "list", subject: "List", headers: [{ name: "List-Id", value: "<list.example.test>" }] },
+          { id: "precedence", subject: "Bulk", headers: [{ name: "Precedence", value: "bulk" }] },
+          { id: "auto", subject: "Auto", headers: [{ name: "Auto-Submitted", value: "auto-generated" }] },
+          { id: "sender", subject: "Sender", from: "No-Reply@example.test" },
+          { id: "person", subject: "Person", headers: [{ name: "Auto-Submitted", value: "no" }] },
+        ],
+      });
+      stubProviderFetch(google.fetchImpl, GOOGLE_HOSTS);
+      await startRuntimeWith({ gmail: true });
+      await enqueueAccountSync(mailboxId);
+      await waitFor(async () => (await syncStateOf(mailboxId)).gmail_history_id === "5000");
+      const { rows } = await pool.query<{ provider_message_id: string; is_bulk: boolean; envelope: unknown }>(
+        "SELECT provider_message_id, is_bulk, envelope FROM mail_message_meta ORDER BY provider_message_id",
+      );
+      expect(rows.map(({ provider_message_id, is_bulk }) => [provider_message_id, is_bulk])).toEqual([
+        ["auto", true],
+        ["list", true],
+        ["person", false],
+        ["precedence", true],
+        ["sender", true],
+        ["unsubscribe", true],
+      ]);
+      expect(rows.find((row) => row.provider_message_id === "unsubscribe")?.envelope).toMatchObject({
+        replyTo: [{ name: "Support", address: "support@example.test" }],
+      });
+      expect(rows.find((row) => row.provider_message_id === "person")?.envelope).not.toHaveProperty("replyTo");
+    });
+
     it("a Gmail-mode account's sync pass downloads its messages with one token for the whole pass", async () => {
       const mailboxId = await createGmailMailbox("Gmail sync");
       const google = createFakeGoogle();
@@ -669,6 +729,52 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
   });
 
   describe("Graph-mode accounts (issue #1508)", () => {
+    it("persists bulk indicators and Reply-To through the Graph adapter and production sync", async () => {
+      const mailboxId = await createGraphMailbox("Header sync");
+      const microsoft = createFakeMicrosoft({
+        deltaMessages: [{ id: "unsubscribe", subject: "Changed", headers: [{ name: "Auto-Submitted", value: "no" }] }],
+        messages: [
+          {
+            id: "unsubscribe",
+            subject: "Unsubscribe",
+            headers: [{ name: "List-Unsubscribe", value: "<mailto:u@example.test>" }],
+            replyTo: [{ name: "Support", address: "support@example.test" }],
+          },
+          { id: "list", subject: "List", headers: [{ name: "List-Id", value: "<list.example.test>" }] },
+          { id: "precedence", subject: "Bulk", headers: [{ name: "Precedence", value: "bulk" }] },
+          { id: "auto", subject: "Auto", headers: [{ name: "Auto-Submitted", value: "auto-generated" }] },
+          { id: "sender", subject: "Sender", from: "No-Reply@example.test" },
+          { id: "person", subject: "Person", headers: [{ name: "Auto-Submitted", value: "no" }] },
+        ],
+      });
+      stubProviderFetch(microsoft.fetchImpl, MICROSOFT_HOSTS);
+      await startRuntimeWith({ graph: true });
+      await enqueueAccountSync(mailboxId);
+      await waitFor(async () => (await graphDeltaLinkOf(mailboxId)) === DELTA_LINK_1);
+      const { rows } = await pool.query<{ provider_message_id: string; is_bulk: boolean; envelope: unknown }>(
+        "SELECT provider_message_id, is_bulk, envelope FROM mail_message_meta ORDER BY provider_message_id",
+      );
+      expect(rows.map(({ provider_message_id, is_bulk }) => [provider_message_id, is_bulk])).toEqual([
+        ["auto", true],
+        ["list", true],
+        ["person", false],
+        ["precedence", true],
+        ["sender", true],
+        ["unsubscribe", true],
+      ]);
+      expect(rows.find((row) => row.provider_message_id === "unsubscribe")?.envelope).toMatchObject({
+        replyTo: [{ name: "Support", address: "support@example.test" }],
+      });
+      expect(rows.find((row) => row.provider_message_id === "person")?.envelope).not.toHaveProperty("replyTo");
+      await enqueueAccountSync(mailboxId);
+      await waitFor(async () => (await graphDeltaLinkOf(mailboxId)) === DELTA_LINK_2);
+      const repeated = await pool.query<{ is_bulk: boolean }>(
+        "SELECT is_bulk FROM mail_message_meta WHERE provider_message_id = $1",
+        ["unsubscribe"],
+      );
+      expect(repeated.rows).toEqual([{ is_bulk: true }]);
+    });
+
     it("a Graph-mode account's sync pass downloads its messages through delta with one token for the whole pass", async () => {
       const mailboxId = await createGraphMailbox("Graph sync");
       const microsoft = createFakeMicrosoft();

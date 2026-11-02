@@ -452,6 +452,19 @@ export async function recordConnectionLimitBackoff(
   );
 }
 
+/** Repairs one bounded page of unclassified stored errors after the normal sweep enqueues. */
+export async function classifyUnclassifiedMailSyncErrors(client: Queryable): Promise<void> {
+  await client.query(`WITH page AS (
+    SELECT tenant_id, item_id FROM mail_account_sync_state
+    WHERE tenant_id = app_tenant_default() AND last_error IS NOT NULL
+      AND last_activity_at IS NULL AND last_failure_kind IS NULL
+    ORDER BY item_id LIMIT 200 FOR UPDATE SKIP LOCKED
+  )
+  UPDATE mail_account_sync_state AS state SET last_failure_kind = 'other'
+  FROM page WHERE state.tenant_id = page.tenant_id AND state.item_id = page.item_id
+    AND state.last_error IS NOT NULL AND state.last_activity_at IS NULL AND state.last_failure_kind IS NULL`);
+}
+
 /** Accounts due for another sync pass — consumed by the periodic sweep job, not the observability check (issue #39), which reads the same column but only to alert. */
 export async function listAccountsDueForSync(client: Queryable): Promise<MailAccountSyncStateRow[]> {
   const { rows } = await client.query<MailAccountSyncStateDbRow>(
