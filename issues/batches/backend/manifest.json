@@ -1372,8 +1372,8 @@
       "sequence": 14,
       "status": "proposed",
       "title": "[backend-delivery 14/74] Implement data/views, data/chokePoint, shared/genericOperations changes",
-      "bodyCharacters": 57910,
-      "specSha256": "d11c82903943e5ab5b8d8c4f71e6c98694c217598a1615c95c430ca50e20544e",
+      "bodyCharacters": 58972,
+      "specSha256": "0db639806d974478f84e1fbe66424a7a6c8aca38bf254dcf8f2fbc06c5894efa",
       "members": [
         {
           "id": "gh-1524",
@@ -1438,7 +1438,7 @@
         },
         {
           "id": "gh-1460",
-          "specSha256": "054e96f71f0fa245e3615fe5a71dd24146e16f7b01d0365ae39988e58ef5205f",
+          "specSha256": "163966ad0287a30de235f5404ece4508580331a1454d66fdab404a15aad1cc6f",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1456"
@@ -1447,14 +1447,14 @@
         },
         {
           "id": "gh-1359",
-          "specSha256": "8b1981bde5c822bb40c57f65dc2654898c9df18a26049dd44eb9dd9435a86b13",
+          "specSha256": "d5d3195c14925b7e542ca5eba900962b1b4da37e837d3b15a96b36cdb5579898",
           "parent": "gh-1297",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1433",
-          "specSha256": "94109f2e62ad48133c213f00c1558173c35201067920b44db2179ba5c1e16de9",
+          "specSha256": "235156b36e2238040664e251f004d570120d6676c328f9a76acd6f819e4fc145",
           "parent": "gh-1315",
           "dependencies": [],
           "approval": "approved"
