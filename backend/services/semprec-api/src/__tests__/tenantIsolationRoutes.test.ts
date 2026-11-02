@@ -44,6 +44,7 @@ import {
   recordTokenGatewayCall,
   reserveGatewayCall,
   settleAudioGatewayCall,
+  setSempThreadInvalidationHook,
   revokeInvite,
   setProjectMcpGrantForAgentPage,
   upsertMcpToolRegistration,
@@ -2196,6 +2197,8 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     );
     const task = createCoreTaskList(pool, registry)[AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT];
     if (!task) throw new Error("Missing heartbeat worker task");
+    const invalidations: Array<{ tenantId: string; threadId: string }> = [];
+    setSempThreadInvalidationHook((event) => invalidations.push(event));
     const worker = runOnce({ pgPool: pool, taskList: { [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: task } }).then(
       () => ({ ok: true as const }),
       (error: unknown) => ({ ok: false as const, error }),
@@ -2216,6 +2219,7 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
       const runs = await runInTenant(b.tenantId, () => listAgentRunsByHeartbeat(pool, heartbeat.id));
       expect(runs).toHaveLength(1);
       expect(runs[0]).toMatchObject({ status: "running", actorUserId: b.member.userId, parentRunId: null });
+      expect(invalidations).toEqual([{ tenantId: b.tenantId, threadId: runs[0]?.threadId }]);
       const second = await send(b.member, { method: "POST", path, body: {} });
       expect(second.status).toBe(409);
       const body: unknown = JSON.parse(second.text);
@@ -2238,6 +2242,7 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     if (timer) clearTimeout(timer);
     releaseRun();
     const result = await worker;
+    setSempThreadInvalidationHook(() => {});
     if (!result.ok) {
       if (failure)
         throw new AggregateError([failure.error, result.error], "HTTP and worker failed", { cause: failure.error });
