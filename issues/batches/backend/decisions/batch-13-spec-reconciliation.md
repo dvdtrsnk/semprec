@@ -263,3 +263,21 @@ IMAP and verification decisions do not acquire broader scope by analogy.
 Prove all actual failure surfaces, unknown identity retention before the public
 boundary, safe stored/serialized errors, genuine status/refresh positives and
 non-network identity negatives before independent review or gates.
+
+## 10. Alias export and purge test harnesses
+
+Gh-1493 Task 4 already requires tenant export and purge of mail_thread_aliases.
+Authorize the existing tenantExport.test.ts and tenantPurge.test.ts harnesses
+solely for alias fixtures and assertions through their actual production export
+and purge paths. The current additions create aliases through createMailThread
+and reassignThread for two tenants, check exported tenant-local alias rows,
+and include aliases in the real purge/retained-tenant assertions. Keep existing
+archive/purge behavior and unrelated assertions intact; no production export,
+purge or table-discovery redesign is authorized.
+
+Add these two exact data-package test paths to gh-1493 and the aggregate Touches.
+The original Task/AC and immutable handover do not change. The existing passing
+development log remains development evidence, not a final candidate verdict;
+both complete affected files belong in the final named targets and independent
+binding review. No new architectural pattern or ADR is needed for using the
+already requested production test boundaries.
