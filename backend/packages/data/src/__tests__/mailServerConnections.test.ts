@@ -753,6 +753,57 @@ describe("openImapConnection (issue #1478)", () => {
     await expectServerSocketsClosed(server);
   });
 
+  it("does not claim clean cancellation when destroying the owned socket fails", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const session = imapSession(credential.password, [], true);
+    const server = await startFakeServer((socket) => {
+      session(socket);
+      setTimeout(() => socket.destroy(), 250);
+    }, mailCertificate);
+    const originalConnect: unknown = Object.getOwnPropertyDescriptor(ImapFlow.prototype, "connect")?.value;
+    if (typeof originalConnect !== "function") throw new Error("Missing ImapFlow connect method");
+    const destroyFailure = new Error("owned destroy failed");
+    let injected = false;
+    let actualRejection: { value: unknown } | undefined;
+    vi.spyOn(ImapFlow.prototype, "connect").mockImplementation(function (this: ImapFlow) {
+      const operation: unknown = Reflect.apply(originalConnect, this, []);
+      if (!(operation instanceof Promise)) throw new Error("Missing connect promise");
+      const socket: unknown = Object.getOwnPropertyDescriptor(this, "socket")?.value;
+      if (!(socket instanceof NetSocket)) throw new Error("Missing owned socket");
+      const destroy = socket.destroy.bind(socket);
+      vi.spyOn(socket, "destroy").mockImplementation((error?: Error) => {
+        if (error && !injected) {
+          injected = true;
+          throw destroyFailure;
+        }
+        return destroy(error);
+      });
+      return operation.then(
+        () => undefined,
+        (error: unknown) => {
+          actualRejection = { value: error };
+          throw error;
+        },
+      );
+    });
+    const outcome = await rejectionOf(
+      verifyImapServerConnection(
+        settingsFor("mail.test", server.port),
+        credential,
+        {},
+        { deadlineMs: 80, ca: mailCertificate.cert },
+      ),
+    );
+    expect(injected).toBe(true);
+    expect(actualRejection).toBeDefined();
+    expect(outcome).toBeInstanceOf(AggregateError);
+    if (!(outcome instanceof AggregateError) || !actualRejection) throw new Error("Missing unsettled failure");
+    expect(outcome.errors).toContain(destroyFailure);
+    expect(outcome.errors).toContain(actualRejection.value);
+    await expectServerSocketsClosed(server);
+  });
+
   it("verification cancels a stalled login and closes the TLS socket", async () => {
     useLoopbackPolicy();
     stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
