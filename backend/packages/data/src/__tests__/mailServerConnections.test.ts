@@ -633,6 +633,48 @@ describe("openImapConnection (issue #1478)", () => {
     await expectServerSocketsClosed(server);
   });
 
+  it("retains the actual connection rejection and an independent cleanup failure through settlement", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const commands: string[] = [];
+    const server = await startFakeServer(imapSession(credential.password, commands), otherCertificate);
+    const originalConnect: unknown = Object.getOwnPropertyDescriptor(ImapFlow.prototype, "connect")?.value;
+    const originalClose: unknown = Object.getOwnPropertyDescriptor(ImapFlow.prototype, "close")?.value;
+    if (typeof originalConnect !== "function" || typeof originalClose !== "function")
+      throw new Error("Missing ImapFlow methods");
+    let rejection: { value: unknown } | undefined;
+    const cleanup = new Error("independent cleanup sentinel");
+    let injected = false;
+    vi.spyOn(ImapFlow.prototype, "connect").mockImplementation(function (this: ImapFlow) {
+      const result: unknown = Reflect.apply(originalConnect, this, []);
+      if (!(result instanceof Promise)) throw new Error("Missing connect promise");
+      return result.then(
+        () => undefined,
+        (error: unknown) => {
+          rejection = { value: error };
+          throw error;
+        },
+      );
+    });
+    vi.spyOn(ImapFlow.prototype, "close").mockImplementation(function (this: ImapFlow) {
+      if (!injected) {
+        injected = true;
+        throw cleanup;
+      }
+      Reflect.apply(originalClose, this, []);
+    });
+    const outcome = await rejectionOf(
+      verifyImapServerConnection(settingsFor("mail.test", server.port), credential, {}, { ca: otherCertificate.cert }),
+    );
+    expect(rejection).toBeDefined();
+    expect(outcome).toBeInstanceOf(AggregateError);
+    if (!(outcome instanceof AggregateError) || !rejection) throw new Error("Missing combined failure");
+    expect(outcome.errors).toContain(rejection.value);
+    expect(outcome.errors).toContain(cleanup);
+    expect(commands).toEqual([]);
+    await expectServerSocketsClosed(server);
+  });
+
   it("verification rejects an invalid certificate before login", async () => {
     useLoopbackPolicy();
     stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
