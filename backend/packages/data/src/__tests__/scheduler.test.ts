@@ -162,6 +162,66 @@ describe("scheduler", () => {
     expect(fired2).toHaveLength(0);
   });
 
+  it.each([false, true])(
+    "chains scheduled retries through the queue worker (final failure: %s)",
+    async (finalFailure) => {
+      const projectItemId = await getSemprecProjectId();
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(client, {
+          projectItemId,
+          name: "Retry chain",
+          rule: { kind: "interval", minutes: 1 },
+          actionId: CORE_AGENT_RUN_ACTION_ID,
+          actionConfig: { task: "retry" },
+        }),
+      );
+      await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+        heartbeat.id,
+      ]);
+      await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+      let calls = 0;
+      const registry = createActionRegistry();
+      registry.set(
+        CORE_AGENT_RUN_ACTION_ID,
+        coreAgentRunAction(pool, async () => {
+          calls += 1;
+          if (calls < 3 || finalFailure) throw new Error("retry test failure");
+        }),
+      );
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        await drainQueue(registry);
+        if (attempt < 3) {
+          const notifications = await pool.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM notifications WHERE kind = 'agent_run_error'",
+          );
+          expect(notifications.rows[0]?.count).toBe(0);
+          const { rows } = await pool.query<{ id: string }>(
+            "SELECT id::text FROM graphile_worker.jobs WHERE key LIKE $1",
+            [`heartbeat-fire:${heartbeat.id}:%`],
+          );
+          expect(rows).toHaveLength(1);
+          const job = rows[0];
+          if (!job) throw new Error("Expected queued retry");
+          await pool.query("SELECT * FROM graphile_worker.reschedule_jobs($1::bigint[], now())", [[job.id]]);
+        }
+      }
+      const runs = (await listAgentRunsByHeartbeat(pool, heartbeat.id)).sort((a, b) => a.attempt - b.attempt);
+      expect(runs.map((run) => run.attempt)).toEqual([1, 2, 3]);
+      expect(runs.map((run) => run.status)).toEqual(["error", "error", finalFailure ? "error" : "done"]);
+      expect(runs[0]?.heartbeatOccurrenceId).toBeTruthy();
+      expect(runs.map((run) => run.heartbeatOccurrenceId)).toEqual([
+        runs[0]?.heartbeatOccurrenceId,
+        runs[0]?.heartbeatOccurrenceId,
+        runs[0]?.heartbeatOccurrenceId,
+      ]);
+      expect(runs.map((run) => run.retryOfRunId)).toEqual([null, runs[0]?.id, runs[1]?.id]);
+      const notifications = await pool.query<{ source_id: string }>(
+        "SELECT source_id FROM notifications WHERE kind = 'agent_run_error'",
+      );
+      expect(notifications.rows).toEqual(finalFailure ? [{ source_id: runs[2]?.id }] : []);
+    },
+  );
+
   it("a floating (interval/everyNDays) heartbeat leaves next_fire_at and last_fired_at unset at sweep time, and schedules its next occurrence from the first attempt's actual start, not enqueue time", async () => {
     const projectItemId = await getSemprecProjectId();
     const registry = createActionRegistry();
