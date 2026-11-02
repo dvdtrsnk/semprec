@@ -426,6 +426,101 @@ describe("exchangeAuthorizationCode", () => {
     if (failures.length > 1) throw new AggregateError(failures, "OAuth diagnostic test and cleanup failed");
   });
 
+  it.each([false, true])(
+    "retains ordered read, cancel and release failures when the first diagnostic fails: %s",
+    async (failFirstDiagnostic) => {
+      const response = new Response(new ReadableStream<Uint8Array>());
+      if (!response.body) throw new Error("Missing response body");
+      const reader = response.body.getReader();
+      const primary = new Error("AUTH-READ-PRIVATE");
+      const cancelFailure = new Error("AUTH-CANCEL-PRIVATE");
+      const releaseFailure = new Error("AUTH-RELEASE-PRIVATE");
+      const diagnosticFailure = new Error("AUTH-DIAGNOSTIC-PRIVATE");
+      const observed: Array<{ stage: string; value: unknown }> = [];
+      vi.spyOn(reader, "read").mockImplementation(async () => {
+        observed.push({ stage: "read", value: primary });
+        throw primary;
+      });
+      vi.spyOn(reader, "cancel").mockImplementation(async () => {
+        observed.push({ stage: "cancel", value: cancelFailure });
+        throw cancelFailure;
+      });
+      const release = reader.releaseLock.bind(reader);
+      vi.spyOn(reader, "releaseLock").mockImplementation(() => {
+        release();
+        observed.push({ stage: "release", value: releaseFailure });
+        throw releaseFailure;
+      });
+      vi.spyOn(response.body, "getReader").mockReturnValue(reader);
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => response),
+      );
+      if (failFirstDiagnostic)
+        vi.spyOn(logger, "error").mockImplementationOnce(() => {
+          observed.push({ stage: "diagnostic", value: diagnosticFailure });
+          throw diagnosticFailure;
+        });
+      const streamSymbol = Object.getOwnPropertySymbols(logger).find((symbol) => symbol.description === "pino.stream");
+      if (!streamSymbol) throw new Error("Missing application logger stream");
+      const previous: unknown = Reflect.get(logger, streamSymbol);
+      const logs: string[] = [];
+      if (
+        !Reflect.set(logger, streamSymbol, {
+          write: (line: string) => {
+            logs.push(line);
+            return true;
+          },
+        })
+      )
+        throw new Error("Could not capture application log stream");
+      const failures: unknown[] = [];
+      try {
+        const outcome = await caught(exchangeAuthorizationCode(input));
+        expect(outcome.message).toBe("OAuth code exchange response could not be read");
+        expect(outcome).not.toHaveProperty("cause");
+        const expected = failFirstDiagnostic
+          ? [
+              { stage: "read", value: primary },
+              { stage: "cancel", value: cancelFailure },
+              { stage: "diagnostic", value: diagnosticFailure },
+              { stage: "release", value: releaseFailure },
+            ]
+          : [
+              { stage: "read", value: primary },
+              { stage: "cancel", value: cancelFailure },
+              { stage: "release", value: releaseFailure },
+            ];
+        expect(observed.map((entry) => entry.stage)).toEqual(expected.map((entry) => entry.stage));
+        for (let index = 0; index < expected.length; index++)
+          expect(observed[index]?.value).toBe(expected[index]?.value);
+        const records: unknown[] = logs.map((line): unknown => JSON.parse(line));
+        expect(records).toHaveLength(failFirstDiagnostic ? 1 : 2);
+        expect(records).toEqual(
+          failFirstDiagnostic
+            ? [expect.objectContaining({ stage: "reader_release" })]
+            : [
+                expect.objectContaining({ stage: "reader_cancel" }),
+                expect.objectContaining({ stage: "reader_release" }),
+              ],
+        );
+        expect(`${outcome.stack} ${JSON.stringify(outcome)} ${logs.join("")}`).not.toContain("AUTH-READ-PRIVATE");
+        expect(logs.join("")).not.toContain("AUTH-CANCEL-PRIVATE");
+        expect(logs.join("")).not.toContain("AUTH-RELEASE-PRIVATE");
+        expect(logs.join("")).not.toContain("AUTH-DIAGNOSTIC-PRIVATE");
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        if (!Reflect.set(logger, streamSymbol, previous)) throw new Error("Could not restore application log stream");
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "OAuth combined diagnostic test and cleanup failed");
+    },
+  );
+
   it("retains the typed rejection when cleanup and diagnostic publication both fail", async () => {
     const cleanup = new Error("SENTINEL-CLEANUP-PRIVATE");
     const diagnostic = new Error("SENTINEL-DIAGNOSTIC-PRIVATE");
