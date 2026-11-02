@@ -42,6 +42,8 @@ import {
   LocalFsBlobStorageWriter,
   provisionTenant,
   recordTokenGatewayCall,
+  reserveGatewayCall,
+  settleAudioGatewayCall,
   revokeInvite,
   setProjectMcpGrantForAgentPage,
   upsertMcpToolRegistration,
@@ -2058,6 +2060,105 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     expect(readIdArray(notifications, "notifications")).toEqual([a.notificationId]);
   });
 
+  it("returns localized model and operation breakdowns over authenticated HTTP", async () => {
+    for (const [locale, expectedModel, expectedOperation] of [
+      ["cs", "Diarizace", "Rozpoznání mluvčích"],
+      ["en", "Diarization", "Speaker recognition"],
+    ] as const) {
+      const tenantId = await createTestTenant(adminPool);
+      const email = `${randomUUID()}@example.test`;
+      const password = `pw-${randomUUID()}`;
+      const passwordHash = await hashPassword(password);
+      await runAsSystem("usage-http-fixture", () => createUser(adminPool, { tenantId, email, passwordHash, locale }));
+      const caller = await signIn(email, password, "ios");
+      await runInTenant(tenantId, async () => {
+        const invocation = await createAgentRun(pool, { triggeredBy: "user", task: "usage", unit: "invocation" });
+        const session = await createAgentRun(pool, { triggeredBy: "user", task: "usage", unit: "session" });
+        for (const run of [invocation, session]) {
+          await recordTokenGatewayCall(pool, {
+            provider: "anthropic",
+            model: "claude-sonnet-5",
+            inputTokens: 10,
+            outputTokens: 5,
+            costUsd: 1,
+            agentRunId: run.id,
+            operation: "agent_turn",
+          });
+        }
+        const audio = await reserveGatewayCall(pool, {
+          provider: "pyannoteai",
+          model: "pyannote-3",
+          estimatedCostUsd: 1,
+          operation: "transcription_diarize",
+        });
+        await settleAudioGatewayCall(pool, audio.id, { audioSeconds: 60, costUsd: 1 });
+      });
+      const clock = await adminPool.query<{ now: Date }>("SELECT now() AS now");
+      const instant = clock.rows[0]?.now.getTime();
+      if (instant === undefined) throw new Error("Missing database time");
+      const range = new URLSearchParams({
+        from: new Date(instant - 86_400_000).toISOString(),
+        to: new Date(instant + 86_400_000).toISOString(),
+      });
+      const answer = await send(caller, { method: "GET", path: `/api/ai-usage?${range.toString()}` });
+      expect(answer.status).toBe(200);
+      const body: unknown = JSON.parse(answer.text);
+      if (
+        !isRecord(body) ||
+        !Array.isArray(body.byModel) ||
+        !Array.isArray(body.byOperation) ||
+        !Array.isArray(body.rows)
+      )
+        throw new Error("Invalid usage response");
+      expect(body).toMatchObject({ totalCostUsd: 3, estimated: false });
+      expect(body.byModel).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            provider: "anthropic",
+            model: "claude-sonnet-5",
+            displayName: "Claude Sonnet",
+            callCount: 2,
+            inputTokens: 20,
+            outputTokens: 10,
+            audioSeconds: null,
+            costUsd: 2,
+            operations: ["agent_turn"],
+          }),
+          expect.objectContaining({
+            provider: "pyannoteai",
+            model: "pyannote-3",
+            displayName: expectedModel,
+            callCount: 1,
+            inputTokens: null,
+            outputTokens: null,
+            audioSeconds: 60,
+            costUsd: 1,
+            operations: ["transcription_diarize"],
+          }),
+        ]),
+      );
+      expect(body.byModel).toHaveLength(2);
+      expect(body.byModel.every((entry: unknown) => isRecord(entry) && !("runUnit" in entry))).toBe(true);
+      expect(body.byOperation).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            operation: "transcription_diarize",
+            label: expectedOperation,
+            costUsd: 1,
+            callCount: 1,
+          }),
+        ]),
+      );
+      expect(body.rows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ model: "claude-sonnet-5", runUnit: "invocation", callCount: 1 }),
+          expect.objectContaining({ model: "claude-sonnet-5", runUnit: "session", callCount: 1 }),
+          expect.objectContaining({ model: "pyannote-3", nativeUnit: "audio_seconds", audioSeconds: 60 }),
+        ]),
+      );
+    }
+  });
+
   it("triggers an automation over authenticated HTTP and rejects a second request while its worker runs", async () => {
     const heartbeat = await runInTenant(b.tenantId, () =>
       withTransaction(pool, (client) =>
@@ -2118,7 +2219,19 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
       const second = await send(b.member, { method: "POST", path, body: {} });
       expect(second.status).toBe(409);
       const body: unknown = JSON.parse(second.text);
-      expect(body).toMatchObject({ error: { code: "heartbeat_running", details: { activeRun: { id: runs[0]?.id } } } });
+      expect(body).toMatchObject({
+        error: {
+          code: "heartbeat_running",
+          details: {
+            activeRun: {
+              id: runs[0]?.id,
+              status: "running",
+              triggeredBy: "heartbeat",
+              threadId: runs[0]?.threadId,
+            },
+          },
+        },
+      });
     } catch (error) {
       failure = { error };
     }
