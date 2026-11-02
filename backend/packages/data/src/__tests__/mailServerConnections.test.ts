@@ -275,6 +275,7 @@ function startTlsSession(
   holdSecure = false,
   commands: string[] = [],
   holdHandshake = false,
+  onSecureData?: () => void,
 ): (socket: Socket) => void {
   return (socket) => {
     socket.write(protocol === "imap" ? "* OK fake IMAP server ready\r\n" : "220 mail.test ESMTP fake\r\n");
@@ -306,7 +307,10 @@ function startTlsSession(
             secure.on("error", () => undefined);
             let securePending = "";
             secure.on("data", (data: Buffer) => {
-              if (holdSecure) return;
+              if (holdSecure) {
+                onSecureData?.();
+                return;
+              }
               securePending += data.toString("utf8");
               let next = securePending.indexOf("\r\n");
               while (next !== -1) {
@@ -950,6 +954,73 @@ describe("openImapConnection (issue #1478)", () => {
       ),
     ).resolves.toBe("unreachable");
     expect(names).toEqual(["mail.test"]);
+    await expectServerSocketsClosed(server);
+  });
+
+  it("does not claim clean STARTTLS teardown when the replacement socket destroy fails", async () => {
+    useLoopbackPolicy();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    const failure = new Error("STARTTLS wrapper destroy failed");
+    const originalConnect: unknown = Object.getOwnPropertyDescriptor(ImapFlow.prototype, "connect")?.value;
+    if (typeof originalConnect !== "function") throw new Error("Missing ImapFlow connect method");
+    let client: ImapFlow | undefined;
+    let initial: NetSocket | undefined;
+    let initialClosed = false;
+    let replacement: tls.TLSSocket | undefined;
+    let injected = false;
+    let rejected: { value: unknown } | undefined;
+    vi.spyOn(ImapFlow.prototype, "connect").mockImplementation(function (this: ImapFlow) {
+      client = this;
+      const operation: unknown = Reflect.apply(originalConnect, this, []);
+      if (!(operation instanceof Promise)) throw new Error("Missing connect promise");
+      const socket: unknown = Object.getOwnPropertyDescriptor(this, "socket")?.value;
+      if (!(socket instanceof NetSocket)) throw new Error("Missing initial socket");
+      initial = socket;
+      socket.once("close", () => {
+        initialClosed = true;
+      });
+      return operation.then(
+        () => undefined,
+        (error: unknown) => {
+          rejected = { value: error };
+          throw error;
+        },
+      );
+    });
+    const server = await startFakeServer((socket) => {
+      const session = startTlsSession("imap", mailCertificate, [], true, [], false, () => {
+        if (replacement || !client) return;
+        const candidate: unknown = Object.getOwnPropertyDescriptor(client, "socket")?.value;
+        if (!(candidate instanceof tls.TLSSocket) || candidate === initial) return;
+        replacement = candidate;
+        const destroy = candidate.destroy.bind(candidate);
+        vi.spyOn(candidate, "destroy").mockImplementation((error?: Error) => {
+          if (error && !injected) {
+            injected = true;
+            throw failure;
+          }
+          return destroy(error);
+        });
+        setTimeout(() => socket.destroy(), 250);
+      });
+      session(socket);
+    });
+    const outcome = await rejectionOf(
+      verifyImapServerConnection(
+        settingsFor("mail.test", server.port, "starttls"),
+        credential,
+        {},
+        { deadlineMs: 100, ca: mailCertificate.cert },
+      ),
+    );
+    expect(replacement).toBeInstanceOf(tls.TLSSocket);
+    expect(injected).toBe(true);
+    expect(initialClosed).toBe(true);
+    expect(rejected).toBeDefined();
+    expect(outcome).toBeInstanceOf(AggregateError);
+    if (!(outcome instanceof AggregateError) || !rejected) throw new Error("Missing STARTTLS teardown failure");
+    expect(outcome.errors).toContain(failure);
+    expect(outcome.errors).toContain(rejected.value);
     await expectServerSocketsClosed(server);
   });
 
