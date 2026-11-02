@@ -2136,6 +2136,47 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     expect(runs[0]).toMatchObject({ status: "done", parentRunId: null, actorUserId: b.member.userId });
   });
 
+  it("refuses disabled and item-event automations over authenticated HTTP", async () => {
+    const heartbeats = await runInTenant(b.tenantId, () =>
+      withTransaction(pool, async (client) => {
+        const disabled = await createHeartbeat(client, {
+          projectItemId: b.projectItemId,
+          name: "Disabled manual evidence",
+          rule: { kind: "interval", minutes: 5 },
+          actionId: CORE_AGENT_RUN_ACTION_ID,
+          enabled: false,
+        });
+        const event = await createHeartbeat(client, {
+          projectItemId: b.projectItemId,
+          name: "Event manual evidence",
+          rule: { kind: "onItemEvent", databaseId: b.databaseId, event: "create" },
+          actionId: CORE_AGENT_RUN_ACTION_ID,
+        });
+        return { disabled, event };
+      }),
+    );
+    for (const [heartbeat, code] of [
+      [heartbeats.disabled, "heartbeat_disabled"],
+      [heartbeats.event, "heartbeat_event_triggered"],
+    ] as const) {
+      const answer = await send(b.member, {
+        method: "POST",
+        path: `/api/heartbeats/${heartbeat.id}/trigger`,
+        body: {},
+      });
+      expect(answer.status).toBe(409);
+      const body: unknown = JSON.parse(answer.text);
+      expect(body).toMatchObject({ error: { code } });
+      expect(await runInTenant(b.tenantId, () => listAgentRunsByHeartbeat(pool, heartbeat.id))).toEqual([]);
+      const jobs = await runInTenant(b.tenantId, () =>
+        pool.query<{ count: number }>("SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE key = $1", [
+          `heartbeat-fire:manual:${heartbeat.id}`,
+        ]),
+      );
+      expect(jobs.rows[0]?.count).toBe(0);
+    }
+  });
+
   it("validates notification preferences over HTTP without changing stored values", async () => {
     const path = "/api/notification-preferences";
     const beforeText = await sendOk(a.member, { method: "GET", path });
