@@ -10,14 +10,19 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createRuntimeRolePool, createTestTenant, getTenantZeroId } from "../testSupport/tenantFixtures.js";
 import { withTransaction } from "../db/pool.js";
 
-const failure = vi.hoisted(() => ({ storeCredential: false }));
+const failure = vi.hoisted(() => ({ storeCredential: false, remainingWrites: 0 }));
 
 vi.mock("../credentials/externalCredentialsStore.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../credentials/externalCredentialsStore.js")>();
   return {
     ...actual,
     storeCredential: (...args: Parameters<typeof actual.storeCredential>) => {
-      if (failure.storeCredential) return Promise.reject(new Error("boom: write failed"));
+      if (failure.storeCredential || failure.remainingWrites > 0) {
+        if (failure.remainingWrites > 0) failure.remainingWrites -= 1;
+        const error = new Error("rt-new-secret csecret");
+        error.name = "rt-old";
+        return Promise.reject(error);
+      }
       return actual.storeCredential(...args);
     },
   };
@@ -94,6 +99,7 @@ describe("refreshAndPersistAccessToken", () => {
   beforeEach(async () => {
     await resetDatabase(pool);
     failure.storeCredential = false;
+    failure.remainingWrites = 0;
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -196,6 +202,18 @@ describe("refreshAndPersistAccessToken", () => {
 
   it.each(["A", "B"])("waits on the actual credential lock with caller %s starting first", async (firstLabel) => {
     const itemId = await seed("generation-1");
+    const independentItem = await seed("independent-mailbox");
+    const otherTenant = await createTestTenant(pool);
+    const otherTenantItem = randomUUID();
+    await runInTenant(otherTenant, () =>
+      withTransaction(pool, (client) =>
+        storeCredential(client, {
+          itemId: otherTenantItem,
+          credentialType: "oauth2_refresh_token",
+          plaintext: "other-tenant",
+        }),
+      ),
+    );
     const operationPool = new Pool({
       connectionString: process.env.TEST_DATABASE_URL,
       options: "-c role=semprec_data",
@@ -276,6 +294,27 @@ describe("refreshAndPersistAccessToken", () => {
       }
       expect(blocked).toBe(true);
       expect(presented).toEqual(["generation-1"]);
+      const independentFetch: typeof fetch = async (_url, init) => {
+        if (!(init?.body instanceof URLSearchParams)) throw new Error("Unexpected request body");
+        return Response.json({ access_token: `access-${init.body.get("refresh_token")}`, expires_in: 60 });
+      };
+      const independent = await runInTenant(getTenantZeroId(), () =>
+        refreshAndPersistAccessToken(operationPool, {
+          ...INPUT,
+          mailboxItemId: independentItem,
+          fetchImpl: independentFetch,
+        }),
+      );
+      const other = await runInTenant(otherTenant, () =>
+        refreshAndPersistAccessToken(operationPool, {
+          ...INPUT,
+          mailboxItemId: otherTenantItem,
+          fetchImpl: independentFetch,
+        }),
+      );
+      expect(independent.accessToken).toBe("access-independent-mailbox");
+      expect(other.accessToken).toBe("access-other-tenant");
+      expect(presented).toEqual(["generation-1"]);
       releaseProvider();
       await expect(Promise.all(participants)).resolves.toHaveLength(2);
       await outcomes;
@@ -336,23 +375,256 @@ describe("refreshAndPersistAccessToken", () => {
     }
   });
 
+  it("does not return an access token while the actual commit is blocked", async () => {
+    const itemId = await seed("before-commit");
+    const operationPool = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: "-c role=semprec_data",
+    });
+    const pidResults: Promise<{ pid: number } | { error: unknown }>[] = [];
+    operationPool.on("acquire", (client) => {
+      pidResults.push(
+        client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid").then(
+          (result) => result.rows[0] ?? { error: new Error("Missing operation backend PID") },
+          (error: unknown) => ({ error }),
+        ),
+      );
+    });
+    let unblock: () => void = () => {};
+    let notifyHeld: (pid: number) => void = () => {};
+    const held = new Promise<number>((resolve) => (notifyHeld = resolve));
+    const release = new Promise<void>((resolve) => (unblock = resolve));
+    const participants: Promise<unknown>[] = [];
+    let functionCreated = false;
+    let triggerCreated = false;
+    const failures: unknown[] = [];
+    try {
+      // A deferred trigger holds the real COMMIT; no production writer exposes this test barrier.
+      await pool.query(`CREATE FUNCTION test_mail_oauth_commit_wait() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN PERFORM pg_advisory_xact_lock(421305121); RETURN NEW; END $$`);
+      functionCreated = true;
+      await pool.query(`CREATE CONSTRAINT TRIGGER test_mail_oauth_commit_wait AFTER UPDATE ON external_credentials
+        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION test_mail_oauth_commit_wait()`);
+      triggerCreated = true;
+      const blocker = withTransaction(pool, async (client) => {
+        const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+        const row = rows[0];
+        if (!row) throw new Error("Missing blocker PID");
+        await client.query("SELECT pg_advisory_xact_lock(421305121)");
+        notifyHeld(row.pid);
+        await release;
+      });
+      participants.push(blocker);
+      const blockerPid = await Promise.race([
+        held,
+        blocker.then(() => {
+          throw new Error("Blocker exited early");
+        }),
+      ]);
+      const fetchImpl: typeof fetch = async () =>
+        Response.json({ access_token: "new-access", refresh_token: "after-commit", expires_in: 60 });
+      const operation = runInTenant(getTenantZeroId(), () =>
+        refreshAndPersistAccessToken(operationPool, { ...INPUT, mailboxItemId: itemId, fetchImpl }),
+      );
+      participants.push(operation);
+      let returned = false;
+      const operationObserved = operation.then(
+        (value) => {
+          returned = true;
+          return { value };
+        },
+        (error: unknown) => ({ error }),
+      );
+      let blocked = false;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (pidResults[0]) {
+          const observedPid = await pidResults[0];
+          if ("error" in observedPid) throw observedPid.error;
+          const state = await pool.query<{ blocked: boolean }>(
+            "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+            [blockerPid, observedPid.pid],
+          );
+          if (state.rows[0]?.blocked) {
+            blocked = true;
+            break;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked).toBe(true);
+      expect(returned).toBe(false);
+      expect(await stored(itemId)).toBe("before-commit");
+      unblock();
+      const result = await operationObserved;
+      if ("error" in result) throw result.error;
+      expect(result.value.accessToken).toBe("new-access");
+      expect(await stored(itemId)).toBe("after-commit");
+    } catch (error) {
+      failures.push(error);
+    }
+    unblock();
+    const settled = await Promise.allSettled(participants);
+    for (const outcome of settled) if (outcome.status === "rejected") failures.push(outcome.reason);
+    for (const pid of await Promise.all(pidResults)) if ("error" in pid) failures.push(pid.error);
+    for (const cleanup of [
+      async () => operationPool.end(),
+      async () => {
+        if (triggerCreated) await pool.query("DROP TRIGGER test_mail_oauth_commit_wait ON external_credentials");
+      },
+      async () => {
+        if (functionCreated) await pool.query("DROP FUNCTION test_mail_oauth_commit_wait()");
+      },
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    const distinct = [...new Set(failures)];
+    if (distinct.length === 1) throw distinct[0];
+    if (distinct.length > 1) throw new AggregateError(distinct, "OAuth commit test had multiple failures");
+  });
+
+  it("rolls back a failed rotation and releases the credential lock to a waiting refresh", async () => {
+    const itemId = await seed("rollback-generation");
+    const operationPool = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: "-c role=semprec_data",
+    });
+    const pids: Promise<{ pid: number } | { error: unknown }>[] = [];
+    operationPool.on("acquire", (client) => {
+      pids.push(
+        client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid").then(
+          (result) => result.rows[0] ?? { error: new Error("Missing operation PID") },
+          (error: unknown) => ({ error }),
+        ),
+      );
+    });
+    let releaseProvider: () => void = () => {};
+    let notifyEntered: () => void = () => {};
+    const entered = new Promise<void>((resolve) => (notifyEntered = resolve));
+    const held = new Promise<void>((resolve) => (releaseProvider = resolve));
+    const presented: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      if (!(init?.body instanceof URLSearchParams)) throw new Error("Unexpected request body");
+      const token = init.body.get("refresh_token");
+      if (token === null) throw new Error("Missing refresh token");
+      presented.push(token);
+      if (presented.length === 1) {
+        notifyEntered();
+        await held;
+      }
+      return Response.json({ access_token: "access", refresh_token: "replacement", expires_in: 60 });
+    };
+    const start = () =>
+      runInTenant(getTenantZeroId(), () =>
+        refreshAndPersistAccessToken(operationPool, { ...INPUT, mailboxItemId: itemId, fetchImpl }),
+      );
+    const participants: Promise<unknown>[] = [];
+    const failures: unknown[] = [];
+    try {
+      failure.remainingWrites = 1;
+      const first = start();
+      const observedFirst = first.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      participants.push(observedFirst);
+      await Promise.race([
+        entered,
+        observedFirst.then(() => {
+          throw new Error("First refresh exited before barrier");
+        }),
+      ]);
+      const second = start();
+      const observedSecond = second.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      participants.push(observedSecond);
+      let blocked = false;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (pids.length >= 2) {
+          const [holder, waiter] = await Promise.all([pids[0], pids[1]]);
+          if (!holder || !waiter) throw new Error("Missing operation PID");
+          if ("error" in holder) throw holder.error;
+          if ("error" in waiter) throw waiter.error;
+          const state = await pool.query<{ blocked: boolean }>(
+            "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+            [holder.pid, waiter.pid],
+          );
+          if (state.rows[0]?.blocked) {
+            blocked = true;
+            break;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked).toBe(true);
+      releaseProvider();
+      const firstResult = await observedFirst;
+      const secondResult = await observedSecond;
+      expect(firstResult).toHaveProperty("error");
+      expect(firstResult).not.toHaveProperty("value");
+      expect(secondResult).toMatchObject({ value: { accessToken: "access" } });
+      expect(presented).toEqual(["rollback-generation", "rollback-generation"]);
+      expect(await stored(itemId)).toBe("replacement");
+    } catch (error) {
+      failures.push(error);
+    }
+    releaseProvider();
+    for (const result of await Promise.allSettled(participants))
+      if (result.status === "rejected") failures.push(result.reason);
+    for (const result of await Promise.all(pids)) if ("error" in result) failures.push(result.error);
+    try {
+      await operationPool.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "OAuth rollback test and cleanup failed");
+  });
+
   it("throws when persisting fails, keeps the old token, and leaks no token into the error or logs", async () => {
     const itemId = await seed("rt-old");
     fakeProvider({ rotate: () => "rt-new-secret" });
     failure.storeCredential = true;
     const logged: string[] = [];
-    vi.spyOn(logger, "error").mockImplementation((...args: unknown[]) => {
-      logged.push(JSON.stringify(args));
-    });
-
-    const err: unknown = await refreshInTenant(pool, { ...INPUT, mailboxItemId: itemId }).catch((e: unknown) => e);
+    const streamSymbol = Object.getOwnPropertySymbols(logger).find((symbol) => symbol.description === "pino.stream");
+    if (!streamSymbol) throw new Error("Missing application logger stream");
+    const originalStream: unknown = Reflect.get(logger, streamSymbol);
+    if (
+      !Reflect.set(logger, streamSymbol, {
+        write: (line: string) => {
+          logged.push(line);
+          return true;
+        },
+      })
+    ) {
+      throw new Error("Could not capture application log stream");
+    }
+    let err: unknown;
+    let restored: boolean;
+    try {
+      err = await refreshInTenant(pool, { ...INPUT, mailboxItemId: itemId }).catch((e: unknown) => e);
+    } finally {
+      restored = Reflect.set(logger, streamSymbol, originalStream);
+    }
+    if (!restored) throw new Error("Could not restore application log stream");
     expect(err).toBeInstanceOf(Error);
-    const message = err instanceof Error ? err.message : "";
+    const message = err instanceof Error ? `${err.message} ${err.stack} ${JSON.stringify(err)}` : "";
     for (const secret of ["rt-old", "rt-new-secret", "access-for-rt-old", "csecret"]) {
       expect(message).not.toContain(secret);
       expect(logged.join("")).not.toContain(secret);
     }
     expect(logged).toHaveLength(1);
+    const record: unknown = JSON.parse(logged[0] ?? "null");
+    expect(record).toMatchObject({ msg: expect.stringContaining("Persisting") });
     expect(await stored(itemId)).toBe("rt-old");
+    failure.storeCredential = false;
+    const retry = await refreshInTenant(pool, { ...INPUT, mailboxItemId: itemId });
+    expect(retry.accessToken).toBe("access-for-rt-old");
+    expect(await stored(itemId)).toBe("rt-new-secret");
   });
 });
