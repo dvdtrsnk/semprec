@@ -1236,498 +1236,627 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     }
   });
 
-  it("publishes a linked REST relation invalidation with the authenticated actor and tenant", async () => {
-    const { source, target, property } = await runInTenant(tenantA.tenantId, async () => {
-      const source = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
-      const target = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
-      const { property } = await chokePoint.createRelationProperty({
-        sourceDatabaseId: tenantA.databaseId,
-        targetDatabaseId: tenantA.databaseId,
-        key: `linked${randomUUID().replace(/-/g, "").slice(0, 8)}`,
-        name: "Linked",
-        cardinality: "many_to_many",
+  it.each(["normal", "held-disposal", "failed-disposal"] as const)(
+    "publishes a linked REST relation invalidation with the authenticated actor and tenant (%s)",
+    async (control) => {
+      const { source, target, property } = await runInTenant(tenantA.tenantId, async () => {
+        const source = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
+        const target = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
+        const { property } = await chokePoint.createRelationProperty({
+          sourceDatabaseId: tenantA.databaseId,
+          targetDatabaseId: tenantA.databaseId,
+          key: `linked${randomUUID().replace(/-/g, "").slice(0, 8)}`,
+          name: "Linked",
+          cardinality: "many_to_many",
+        });
+        await withTransaction(pool, (client) =>
+          insertValueLink(client, { itemId: source.id, propertyKey: property.key, ruleKey: "test", sources: [] }),
+        );
+        return { source, target, property };
       });
-      await withTransaction(pool, (client) =>
-        insertValueLink(client, { itemId: source.id, propertyKey: property.key, ruleKey: "test", sources: [] }),
-      );
-      return { source, target, property };
-    });
-    const setupSentinel = await publishSentinel(tenantA.tenantId);
-    await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(setupSentinel))));
-    const listenerOwner = ownRealtimeListener();
-    let listener: PoolClient | undefined;
-    let failure: { error: unknown } | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let onNotification: ((message: { channel: string; payload?: string }) => void) | undefined;
-    let cancelObservation: (() => void) | undefined;
-    let observationSettled: Promise<void> | undefined;
-    let requestServer: Server | undefined;
-    const marker = randomUUID();
-    const requests: Array<{ task?: Promise<void> }> = [];
-    let gateEntered = () => {};
-    let releaseGate = () => {};
-    const admitted = new Promise<void>((resolve) => {
-      gateEntered = resolve;
-    });
-    const gate = new Promise<void>((resolve) => {
-      releaseGate = resolve;
-    });
-    let releasePublication = () => {};
-    const publicationGate = new Promise<void>((resolve) => {
-      releasePublication = resolve;
-    });
-    let holdFirstPublication = true;
-    let settlePublications = async () => {};
-    let publicationProbe: Promise<void> | undefined;
-    try {
-      const actualAdapter = adapterRouteModule.createAdapterRequestListener;
-      vi.spyOn(adapterRouteModule, "createAdapterRequestListener").mockImplementation((...args) => {
-        const actual = actualAdapter(...args);
-        return (req, res) => {
-          if (req.headers["x-test-owner"] !== marker) return actual(req, res);
-          const entry: { task?: Promise<void> } = {};
-          requests.push(entry);
-          const task = actual(req, res);
-          entry.task = task;
-          void task.catch(() => {});
-          return task;
-        };
+      const setupSentinel = await publishSentinel(tenantA.tenantId);
+      await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(setupSentinel))));
+      const listenerOwner = ownRealtimeListener();
+      let listener: PoolClient | undefined;
+      let failure: { error: unknown } | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let onNotification: ((message: { channel: string; payload?: string }) => void) | undefined;
+      let cancelObservation: (() => void) | undefined;
+      let observationSettled: Promise<void> | undefined;
+      let requestServer: Server | undefined;
+      const marker = randomUUID();
+      const requests: Array<{ task?: Promise<void> }> = [];
+      let gateEntered = () => {};
+      let releaseGate = () => {};
+      const admitted = new Promise<void>((resolve) => {
+        gateEntered = resolve;
       });
-      const actualItems = itemRoutesModule.createItemRoutes;
-      vi.spyOn(itemRoutesModule, "createItemRoutes").mockImplementation((...args) =>
-        actualItems(...args).map((route) => {
-          if (route.method !== "PUT" || route.path !== "/api/items/:id/relations/:propertyKey/:targetItemId")
-            return route;
-          const actual = route.handler;
-          return {
-            ...route,
-            handler: async (context) => {
-              if (context.req.headers["x-test-gate"] === marker) {
-                gateEntered();
-                await gate;
-              }
-              return actual(context);
-            },
-          };
-        }),
-      );
-      const dispatcher = await createDispatcher(pool, {
-        passwordResetMailer: noopMailer,
-        appBaseUrl: "http://localhost",
-        setupToken: "unused-setup-token",
-        moduleRegistry,
-        blobStorage: new LocalFsBlobStorageWriter(blobDir ?? ""),
-        maxFileSizeBytes: 10 * 1024 * 1024,
+      const gate = new Promise<void>((resolve) => {
+        releaseGate = resolve;
       });
-      requestServer = createServer(dispatcher);
-      await new Promise<void>((resolve) => requestServer?.listen(0, "127.0.0.1", resolve));
-      const requestAddress = requestServer.address();
-      if (!requestAddress || typeof requestAddress === "string") throw new Error("Missing owned request server");
-      const requestBase = `http://127.0.0.1:${requestAddress.port}`;
-      listener = await listenerOwner.open();
-      const activeListener = listener;
-      const observed = new Promise<unknown>((resolve, reject) => {
-        cancelObservation = () => reject(new Error("Observation cancelled"));
-        timer = setTimeout(() => reject(new Error("Timed out waiting for linked relation event")), FRAME_TIMEOUT_MS);
-        onNotification = (notification) => {
-          if (notification.channel !== "semprec_events" || !notification.payload) return;
+      let releasePublication = () => {};
+      const publicationGate = new Promise<void>((resolve) => {
+        releasePublication = resolve;
+      });
+      let holdFirstPublication = true;
+      const failedIds = [randomUUID(), randomUUID()];
+      const injectedFailures = [new Error("first publication"), new Error("second publication")];
+      const releaseFailures: Array<() => void> = [];
+      const failureGates = failedIds.map(() => new Promise<void>((resolve) => releaseFailures.push(resolve)));
+      const enteredFailures: Array<() => void> = [];
+      const entered = failedIds.map(() => new Promise<void>((resolve) => enteredFailures.push(resolve)));
+      let settlePublications = async () => {};
+      let publicationProbe: Promise<void> | undefined;
+      let disposalReachedPublications = () => {};
+      const disposalAtPublications = new Promise<void>((resolve) => {
+        disposalReachedPublications = resolve;
+      });
+      const boundedSignal = async (signal: Promise<unknown>): Promise<void> => {
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            signal,
+            new Promise<never>((_, reject) => {
+              timeout = setTimeout(() => reject(new Error("Publication control timed out")), FRAME_TIMEOUT_MS);
+            }),
+          ]);
+        } finally {
+          if (timeout) clearTimeout(timeout);
+        }
+      };
+      let disposal: Promise<void> | undefined;
+      const dispose = (): Promise<void> => {
+        if (disposal) return disposal;
+        disposal = (async () => {
+          releaseGate();
+          const cleanupErrors: unknown[] = [];
           try {
-            const payload: unknown = JSON.parse(notification.payload);
-            if (!isRecord(payload) || !isRecord(payload.message) || payload.message.itemId !== source.id) return;
-            resolve(payload);
+            if (requestServer) {
+              requestServer.closeIdleConnections();
+              await new Promise<void>((resolve, reject) =>
+                requestServer?.close((error) => (error ? reject(error) : resolve())),
+              );
+            }
           } catch (error) {
-            reject(error instanceof Error ? error : new Error("Invalid notification"));
+            cleanupErrors.push(error);
           }
-        };
-        activeListener.on("notification", onNotification);
-      });
-      observationSettled = observed.then(
-        () => {},
-        () => {},
-      );
-      const querySpy = vi.spyOn(pool, "query");
-      const publications: Array<Promise<{ ok: true } | { ok: false; error: unknown }>> = [];
-      let settledPublicationCount = 0;
-      // The proxy forwards the original receiver to preserve the pool method's binding.
-      // eslint-disable-next-line @typescript-eslint/unbound-method
-      pool.query = new Proxy(pool.query, {
-        apply(target, receiver, args: unknown[]) {
-          const result: unknown = Reflect.apply(target, receiver, args);
-          if (typeof args[0] === "string" && args[0].includes("pg_notify")) {
-            if (!(result instanceof Promise)) throw new Error("Expected asynchronous publication");
-            const forwarded = holdFirstPublication
-              ? result.then(async (value: unknown) => {
-                  await publicationGate;
-                  return value;
-                })
-              : result;
-            holdFirstPublication = false;
-            publications.push(
-              forwarded.then(
-                () => ({ ok: true as const }),
-                (error: unknown) => ({ ok: false as const, error }),
-              ),
-            );
-            return forwarded;
-          }
-          return result;
-        },
-      });
-      const itemPublications = (itemId: string): Record<string, unknown>[] => {
-        const messages: Record<string, unknown>[] = [];
-        for (const call of querySpy.mock.calls) {
-          const args: readonly unknown[] = call;
-          if (typeof args[0] !== "string" || !args[0].includes("pg_notify") || !Array.isArray(args[1])) continue;
-          const values: unknown[] = args[1];
-          if (values[0] !== "semprec_events" || typeof values[1] !== "string") continue;
-          const value: unknown = JSON.parse(values[1]);
-          if (isRecord(value) && value.type === "invalidation" && value.itemId === itemId) messages.push(value);
-        }
-        return messages;
-      };
-      settlePublications = async () => {
-        const errors: unknown[] = [];
-        while (settledPublicationCount < publications.length) {
-          const end = publications.length;
-          const outcomes = await Promise.all(publications.slice(settledPublicationCount, end));
-          settledPublicationCount = end;
-          for (const outcome of outcomes) if (!outcome.ok) errors.push(outcome.error);
-        }
-        if (errors.length) throw new AggregateError(errors, "Publication failed", { cause: errors[0] });
-      };
-      const causalBarrier = async (itemId: string): Promise<void> => {
-        await settlePublications();
-        const marker = randomUUID();
-        let sentinelTimer: ReturnType<typeof setTimeout> | undefined;
-        const forbiddenEnvelopes: unknown[] = [];
-        let removeSentinel: (() => void) | undefined;
-        let cancelSentinel: (() => void) | undefined;
-        const seen = new Promise<void>((resolve, reject) => {
-          cancelSentinel = () => reject(new Error("Sentinel observation cancelled"));
-          sentinelTimer = setTimeout(() => reject(new Error("Sentinel observation timed out")), FRAME_TIMEOUT_MS);
-          const handler = (message: { channel: string; payload?: string }) => {
-            if (message.channel !== "semprec_events" || !message.payload) return;
+          for (const request of requests) {
             try {
-              const envelope: unknown = JSON.parse(message.payload);
-              if (!isRecord(envelope) || !isRecord(envelope.message)) throw new Error("Invalid realtime envelope");
-              if (envelope.message.itemId === itemId && envelope.message.op === "update")
-                forbiddenEnvelopes.push(envelope);
-              if (envelope.message.databaseId === marker) resolve();
+              if (!request.task) {
+                cleanupErrors.push(new Error("Owned request was not started"));
+                continue;
+              }
+              await request.task;
             } catch (error) {
-              reject(error instanceof Error ? error : new Error("Invalid sentinel"));
+              cleanupErrors.push(error);
+            }
+          }
+          try {
+            await publicationProbe;
+          } catch (error) {
+            cleanupErrors.push(error);
+          }
+          try {
+            disposalReachedPublications();
+            await settlePublications();
+          } catch (error) {
+            cleanupErrors.push(error);
+          }
+          if (timer) clearTimeout(timer);
+          if (onNotification) listener?.removeListener("notification", onNotification);
+          cancelObservation?.();
+          await observationSettled;
+          try {
+            await listenerOwner.close();
+          } catch (error) {
+            cleanupErrors.push(error);
+          }
+          if (cleanupErrors.length) {
+            const errors = failure ? [failure.error, ...cleanupErrors] : cleanupErrors;
+            failure = {
+              error: new AggregateError(errors, "Realtime observation and cleanup failed", { cause: errors[0] }),
+            };
+          }
+        })();
+        return disposal;
+      };
+      try {
+        const actualAdapter = adapterRouteModule.createAdapterRequestListener;
+        vi.spyOn(adapterRouteModule, "createAdapterRequestListener").mockImplementation((...args) => {
+          const actual = actualAdapter(...args);
+          return (req, res) => {
+            if (req.headers["x-test-owner"] !== marker) return actual(req, res);
+            const entry: { task?: Promise<void> } = {};
+            requests.push(entry);
+            const task = actual(req, res);
+            entry.task = task;
+            void task.catch(() => {});
+            return task;
+          };
+        });
+        const actualItems = itemRoutesModule.createItemRoutes;
+        vi.spyOn(itemRoutesModule, "createItemRoutes").mockImplementation((...args) =>
+          actualItems(...args).map((route) => {
+            if (route.method !== "PUT" || route.path !== "/api/items/:id/relations/:propertyKey/:targetItemId")
+              return route;
+            const actual = route.handler;
+            return {
+              ...route,
+              handler: async (context) => {
+                if (context.req.headers["x-test-gate"] === marker) {
+                  gateEntered();
+                  await gate;
+                }
+                return actual(context);
+              },
+            };
+          }),
+        );
+        const dispatcher = await createDispatcher(pool, {
+          passwordResetMailer: noopMailer,
+          appBaseUrl: "http://localhost",
+          setupToken: "unused-setup-token",
+          moduleRegistry,
+          blobStorage: new LocalFsBlobStorageWriter(blobDir ?? ""),
+          maxFileSizeBytes: 10 * 1024 * 1024,
+        });
+        requestServer = createServer(dispatcher);
+        await new Promise<void>((resolve) => requestServer?.listen(0, "127.0.0.1", resolve));
+        const requestAddress = requestServer.address();
+        if (!requestAddress || typeof requestAddress === "string") throw new Error("Missing owned request server");
+        const requestBase = `http://127.0.0.1:${requestAddress.port}`;
+        listener = await listenerOwner.open();
+        const activeListener = listener;
+        const observed = new Promise<unknown>((resolve, reject) => {
+          cancelObservation = () => reject(new Error("Observation cancelled"));
+          timer = setTimeout(() => reject(new Error("Timed out waiting for linked relation event")), FRAME_TIMEOUT_MS);
+          onNotification = (notification) => {
+            if (notification.channel !== "semprec_events" || !notification.payload) return;
+            try {
+              const payload: unknown = JSON.parse(notification.payload);
+              if (!isRecord(payload) || !isRecord(payload.message) || payload.message.itemId !== source.id) return;
+              resolve(payload);
+            } catch (error) {
+              reject(error instanceof Error ? error : new Error("Invalid notification"));
             }
           };
-          activeListener.on("notification", handler);
-          removeSentinel = () => activeListener.removeListener("notification", handler);
+          activeListener.on("notification", onNotification);
         });
-        const settled = seen.then(
+        observationSettled = observed.then(
+          () => {},
+          () => {},
+        );
+        const querySpy = vi.spyOn(pool, "query");
+        const publications: Array<Promise<{ ok: true } | { ok: false; error: unknown }>> = [];
+        let settledPublicationCount = 0;
+        // The proxy forwards the original receiver to preserve the pool method's binding.
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        pool.query = new Proxy(pool.query, {
+          apply(target, receiver, args: unknown[]) {
+            const result: unknown = Reflect.apply(target, receiver, args);
+            if (typeof args[0] === "string" && args[0].includes("pg_notify")) {
+              if (!(result instanceof Promise)) throw new Error("Expected asynchronous publication");
+              const values: unknown = args[1];
+              const payload = Array.isArray(values) && typeof values[1] === "string" ? values[1] : "";
+              const failingIndex =
+                control === "failed-disposal" ? failedIds.findIndex((id) => payload.includes(id)) : -1;
+              const forwarded =
+                failingIndex >= 0
+                  ? result.then(async () => {
+                      enteredFailures[failingIndex]?.();
+                      await failureGates[failingIndex];
+                      const injected = injectedFailures[failingIndex];
+                      if (!injected) throw new Error("Missing injected publication failure");
+                      throw injected;
+                    })
+                  : holdFirstPublication
+                    ? result.then(async (value: unknown) => {
+                        await publicationGate;
+                        return value;
+                      })
+                    : result;
+              holdFirstPublication = false;
+              publications.push(
+                forwarded.then(
+                  () => ({ ok: true as const }),
+                  (error: unknown) => ({ ok: false as const, error }),
+                ),
+              );
+              return forwarded;
+            }
+            return result;
+          },
+        });
+        const itemPublications = (itemId: string): Record<string, unknown>[] => {
+          const messages: Record<string, unknown>[] = [];
+          for (const call of querySpy.mock.calls) {
+            const args: readonly unknown[] = call;
+            if (typeof args[0] !== "string" || !args[0].includes("pg_notify") || !Array.isArray(args[1])) continue;
+            const values: unknown[] = args[1];
+            if (values[0] !== "semprec_events" || typeof values[1] !== "string") continue;
+            const value: unknown = JSON.parse(values[1]);
+            if (isRecord(value) && value.type === "invalidation" && value.itemId === itemId) messages.push(value);
+          }
+          return messages;
+        };
+        settlePublications = async () => {
+          const errors: unknown[] = [];
+          while (settledPublicationCount < publications.length) {
+            const end = publications.length;
+            const outcomes = await Promise.all(publications.slice(settledPublicationCount, end));
+            settledPublicationCount = end;
+            for (const outcome of outcomes) if (!outcome.ok) errors.push(outcome.error);
+          }
+          if (errors.length) throw new AggregateError(errors, "Publication failed", { cause: errors[0] });
+        };
+        const causalBarrier = async (itemId: string): Promise<void> => {
+          await settlePublications();
+          const marker = randomUUID();
+          let sentinelTimer: ReturnType<typeof setTimeout> | undefined;
+          const forbiddenEnvelopes: unknown[] = [];
+          let removeSentinel: (() => void) | undefined;
+          let cancelSentinel: (() => void) | undefined;
+          const seen = new Promise<void>((resolve, reject) => {
+            cancelSentinel = () => reject(new Error("Sentinel observation cancelled"));
+            sentinelTimer = setTimeout(() => reject(new Error("Sentinel observation timed out")), FRAME_TIMEOUT_MS);
+            const handler = (message: { channel: string; payload?: string }) => {
+              if (message.channel !== "semprec_events" || !message.payload) return;
+              try {
+                const envelope: unknown = JSON.parse(message.payload);
+                if (!isRecord(envelope) || !isRecord(envelope.message)) throw new Error("Invalid realtime envelope");
+                if (envelope.message.itemId === itemId && envelope.message.op === "update")
+                  forbiddenEnvelopes.push(envelope);
+                if (envelope.message.databaseId === marker) resolve();
+              } catch (error) {
+                reject(error instanceof Error ? error : new Error("Invalid sentinel"));
+              }
+            };
+            activeListener.on("notification", handler);
+            removeSentinel = () => activeListener.removeListener("notification", handler);
+          });
+          const settled = seen.then(
+            () => {},
+            () => {},
+          );
+          try {
+            await runInTenant(tenantA.tenantId, () =>
+              publishRealtimeMessage(pool, { type: "invalidation", scope: "schema", databaseId: marker }),
+            );
+            await seen;
+            expect(forbiddenEnvelopes).toEqual([]);
+            const frames = await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(marker))));
+            for (const stream of frames) {
+              expect(
+                stream.filter(
+                  (frame) =>
+                    frame.kind === "text" &&
+                    frame.type === "invalidate" &&
+                    frame.body.itemId === itemId &&
+                    frame.body.op === "update",
+                ),
+              ).toEqual([]);
+            }
+            await expectNothingReceived(b1, tenantB.tenantId);
+          } finally {
+            if (sentinelTimer) clearTimeout(sentinelTimer);
+            removeSentinel?.();
+            cancelSentinel?.();
+            await settled;
+          }
+        };
+        const url = `${requestBase}/api/items/${source.id}/relations/${property.key}/${target.id}`;
+        const headers = { Cookie: a1Cookie, Origin: requestBase, "x-test-owner": marker };
+        expect(await ownedPut(url, headers)).toBe(200);
+        expect(requests).toHaveLength(1);
+        await requests[0]?.task;
+        expect(await observed).toMatchObject({
+          tenantId: tenantA.tenantId,
+          message: { type: "invalidation", scope: "item", itemId: source.id, userId: tenantA.userId },
+        });
+        expect(itemPublications(source.id)).toEqual([expect.objectContaining({ userId: tenantA.userId })]);
+        querySpy.mockClear();
+        if (control === "held-disposal") {
+          let finished = false;
+          const disposing = dispose().then(() => {
+            finished = true;
+          });
+          void disposing.catch(() => {});
+          try {
+            await boundedSignal(disposalAtPublications);
+            expect(finished).toBe(false);
+            expect(activeListener.listenerCount("notification")).toBeGreaterThan(0);
+          } finally {
+            releasePublication();
+            await disposing;
+          }
+          expect(finished).toBe(true);
+          if (failure) throw failure.error;
+          return;
+        }
+        if (control === "failed-disposal") {
+          releasePublication();
+          const publishFailure = (databaseId: string) =>
+            runInTenant(tenantA.tenantId, () =>
+              publishRealtimeMessage(pool, { type: "invalidation", scope: "schema", databaseId }),
+            ).then(
+              () => ({ ok: true as const }),
+              (error: unknown) => ({ ok: false as const, error }),
+            );
+          const [firstId, secondId] = failedIds;
+          const [firstEntered, secondEntered] = entered;
+          if (!firstId || !secondId || !firstEntered || !secondEntered) throw new Error("Missing publication control");
+          const attempts = [publishFailure(firstId)];
+          let disposing: Promise<void> | undefined;
+          try {
+            await boundedSignal(firstEntered);
+            attempts.push(publishFailure(secondId));
+            await boundedSignal(secondEntered);
+            disposing = dispose();
+            void disposing.catch(() => {});
+            await boundedSignal(disposalAtPublications);
+            releaseFailures[0]?.();
+            const first = await attempts[0];
+            expect(first?.ok).toBe(false);
+            if (first && !first.ok) expect(first.error).toBe(injectedFailures[0]);
+            let finished = false;
+            void disposing.then(() => {
+              finished = true;
+            });
+            await Promise.resolve();
+            expect(finished).toBe(false);
+            expect(activeListener.listenerCount("notification")).toBeGreaterThan(0);
+          } finally {
+            for (const release of releaseFailures) release();
+            await Promise.all(attempts);
+            await disposing;
+          }
+          const error = failure?.error;
+          expect(error).toBeInstanceOf(AggregateError);
+          if (!(error instanceof AggregateError)) throw new Error("Expected cleanup failure");
+          const publicationsError: unknown = error.errors[0];
+          expect(publicationsError).toBeInstanceOf(AggregateError);
+          if (!(publicationsError instanceof AggregateError)) throw new Error("Expected publication failures");
+          expect(error.cause).toBe(publicationsError);
+          expect(publicationsError.errors).toHaveLength(2);
+          expect(publicationsError.errors[0]).toBe(injectedFailures[0]);
+          expect(publicationsError.errors[1]).toBe(injectedFailures[1]);
+          expect(publicationsError.cause).toBe(injectedFailures[0]);
+          const second = await attempts[1];
+          expect(second?.ok).toBe(false);
+          if (second && !second.ok) expect(second.error).toBe(injectedFailures[1]);
+          expect(activeListener.listenerCount("notification")).toBe(0);
+          failure = undefined;
+          return;
+        }
+        let publicationSettled = false;
+        const waitingPublication = settlePublications().then(() => {
+          publicationSettled = true;
+        });
+        publicationProbe = waitingPublication;
+        void waitingPublication.catch(() => {});
+        await Promise.resolve();
+        expect(publicationSettled).toBe(false);
+        expect(activeListener.listenerCount("notification")).toBeGreaterThan(0);
+        releasePublication();
+        try {
+          await waitingPublication;
+        } finally {
+          publicationProbe = undefined;
+        }
+        await expectInvalidationInA({ scope: "item", itemId: source.id, op: "update" });
+        expect(await ownedPut(url, headers)).toBe(200);
+        expect(requests).toHaveLength(2);
+        await requests[1]?.task;
+        await causalBarrier(source.id);
+        expect(itemPublications(source.id)).toEqual([]);
+
+        const heldSource = await runInTenant(tenantA.tenantId, async () => {
+          const item = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
+          await withTransaction(pool, (client) =>
+            insertValueLink(client, {
+              itemId: item.id,
+              propertyKey: property.key,
+              ruleKey: "test",
+              sources: [],
+            }),
+          );
+          return item;
+        });
+        await causalBarrier(heldSource.id);
+        querySpy.mockClear();
+        const controller = new AbortController();
+        const heldRequest = ownedPut(
+          `${requestBase}/api/items/${heldSource.id}/relations/${property.key}/${target.id}`,
+          { ...headers, "x-test-gate": marker },
+          FRAME_TIMEOUT_MS,
+          controller,
+        );
+        const heldSettled = heldRequest.then(
+          () => {},
+          () => {},
+        );
+        try {
+          await Promise.race([
+            admitted,
+            heldRequest.then(() => {
+              throw new Error("Request finished before admission");
+            }),
+          ]);
+          expect(requests).toHaveLength(3);
+          const serverTask = requests[2]?.task;
+          if (!serverTask) throw new Error("Missing owned server completion");
+          controller.abort();
+          await expect(heldRequest).rejects.toMatchObject({ name: "AbortError" });
+          let completed = false;
+          void serverTask.then(
+            () => {
+              completed = true;
+            },
+            () => {
+              completed = true;
+            },
+          );
+          await Promise.resolve();
+          expect(completed).toBe(false);
+          releaseGate();
+          await serverTask;
+          await settlePublications();
+          expect(completed).toBe(true);
+          expect(
+            (await runInTenant(tenantA.tenantId, () => chokePoint.getValueLinksForItems([heldSource.id]))).get(
+              heldSource.id,
+            )?.[property.key],
+          ).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user" });
+          expect(itemPublications(heldSource.id)).toEqual([expect.objectContaining({ userId: tenantA.userId })]);
+          await expectInvalidationInA({ scope: "item", itemId: heldSource.id, op: "update" });
+        } finally {
+          controller.abort();
+          releaseGate();
+          await heldSettled;
+        }
+        const unauthorized = await ownedPut(`${requestBase}/api/items/${randomUUID()}/relations/x/${randomUUID()}`, {
+          Origin: requestBase,
+          "x-test-owner": marker,
+        });
+        expect(unauthorized).toBe(401);
+        expect(requests).toHaveLength(4);
+        await requests[3]?.task;
+
+        const rollbackSource = await runInTenant(tenantA.tenantId, async () => {
+          const item = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
+          await chokePoint.createRelation({
+            relationPropertyId: property.id,
+            callerItemId: item.id,
+            targetItemId: target.id,
+          });
+          await withTransaction(pool, (client) =>
+            insertValueLink(client, {
+              itemId: item.id,
+              propertyKey: property.key,
+              ruleKey: "test",
+              sources: [],
+            }),
+          );
+          return item;
+        });
+        await causalBarrier(rollbackSource.id);
+        querySpy.mockClear();
+        const rollbackFailure = new Error("rollback relation invalidation");
+        await expect(
+          runInTenant(tenantA.tenantId, () =>
+            withTransaction(pool, async (client) => {
+              await deleteRelationWithClient(
+                client,
+                {
+                  relationPropertyId: property.id,
+                  callerItemId: rollbackSource.id,
+                  targetItemId: target.id,
+                },
+                undefined,
+                { writerKind: "user" },
+                tenantA.userId,
+              );
+              throw rollbackFailure;
+            }),
+          ),
+        ).rejects.toBe(rollbackFailure);
+        await causalBarrier(rollbackSource.id);
+        expect(itemPublications(rollbackSource.id)).toEqual([]);
+        expect(
+          (await runInTenant(tenantA.tenantId, () => chokePoint.getValueLinksForItems([rollbackSource.id]))).get(
+            rollbackSource.id,
+          )?.[property.key],
+        ).toMatchObject({ valueKind: "inherited", brokenBy: null });
+        const background = await runInTenant(tenantA.tenantId, async () => {
+          const item = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
+          await withTransaction(pool, (client) =>
+            insertValueLink(client, {
+              itemId: item.id,
+              propertyKey: property.key,
+              ruleKey: "test",
+              sources: [],
+            }),
+          );
+          return item;
+        });
+        await causalBarrier(background.id);
+        querySpy.mockClear();
+        let backgroundTimer: ReturnType<typeof setTimeout> | undefined;
+        let backgroundHandler: ((message: { channel: string; payload?: string }) => void) | undefined;
+        let cancelBackground: (() => void) | undefined;
+        const backgroundEvent = new Promise<unknown>((resolve, reject) => {
+          cancelBackground = () => reject(new Error("Background observation cancelled"));
+          backgroundTimer = setTimeout(() => reject(new Error("Background observation timed out")), FRAME_TIMEOUT_MS);
+          backgroundHandler = (notification) => {
+            if (notification.channel !== "semprec_events" || !notification.payload) return;
+            try {
+              const envelope: unknown = JSON.parse(notification.payload);
+              if (isRecord(envelope) && isRecord(envelope.message) && envelope.message.itemId === background.id)
+                resolve(envelope);
+            } catch (error) {
+              reject(error instanceof Error ? error : new Error("Invalid background envelope"));
+            }
+          };
+          activeListener.on("notification", backgroundHandler);
+        });
+        const backgroundSettled = backgroundEvent.then(
           () => {},
           () => {},
         );
         try {
           await runInTenant(tenantA.tenantId, () =>
-            publishRealtimeMessage(pool, { type: "invalidation", scope: "schema", databaseId: marker }),
-          );
-          await seen;
-          expect(forbiddenEnvelopes).toEqual([]);
-          const frames = await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(marker))));
-          for (const stream of frames) {
-            expect(
-              stream.filter(
-                (frame) =>
-                  frame.kind === "text" &&
-                  frame.type === "invalidate" &&
-                  frame.body.itemId === itemId &&
-                  frame.body.op === "update",
-              ),
-            ).toEqual([]);
-          }
-          await expectNothingReceived(b1, tenantB.tenantId);
-        } finally {
-          if (sentinelTimer) clearTimeout(sentinelTimer);
-          removeSentinel?.();
-          cancelSentinel?.();
-          await settled;
-        }
-      };
-      const url = `${requestBase}/api/items/${source.id}/relations/${property.key}/${target.id}`;
-      const headers = { Cookie: a1Cookie, Origin: requestBase, "x-test-owner": marker };
-      expect(await ownedPut(url, headers)).toBe(200);
-      expect(requests).toHaveLength(1);
-      await requests[0]?.task;
-      expect(await observed).toMatchObject({
-        tenantId: tenantA.tenantId,
-        message: { type: "invalidation", scope: "item", itemId: source.id, userId: tenantA.userId },
-      });
-      expect(itemPublications(source.id)).toEqual([expect.objectContaining({ userId: tenantA.userId })]);
-      querySpy.mockClear();
-      let publicationSettled = false;
-      const waitingPublication = settlePublications().then(() => {
-        publicationSettled = true;
-      });
-      publicationProbe = waitingPublication;
-      void waitingPublication.catch(() => {});
-      await Promise.resolve();
-      expect(publicationSettled).toBe(false);
-      expect(activeListener.listenerCount("notification")).toBeGreaterThan(0);
-      releasePublication();
-      try {
-        await waitingPublication;
-      } finally {
-        publicationProbe = undefined;
-      }
-      await expectInvalidationInA({ scope: "item", itemId: source.id, op: "update" });
-      expect(await ownedPut(url, headers)).toBe(200);
-      expect(requests).toHaveLength(2);
-      await requests[1]?.task;
-      await causalBarrier(source.id);
-      expect(itemPublications(source.id)).toEqual([]);
-
-      const heldSource = await runInTenant(tenantA.tenantId, async () => {
-        const item = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
-        await withTransaction(pool, (client) =>
-          insertValueLink(client, {
-            itemId: item.id,
-            propertyKey: property.key,
-            ruleKey: "test",
-            sources: [],
-          }),
-        );
-        return item;
-      });
-      await causalBarrier(heldSource.id);
-      querySpy.mockClear();
-      const controller = new AbortController();
-      const heldRequest = ownedPut(
-        `${requestBase}/api/items/${heldSource.id}/relations/${property.key}/${target.id}`,
-        { ...headers, "x-test-gate": marker },
-        FRAME_TIMEOUT_MS,
-        controller,
-      );
-      const heldSettled = heldRequest.then(
-        () => {},
-        () => {},
-      );
-      try {
-        await Promise.race([
-          admitted,
-          heldRequest.then(() => {
-            throw new Error("Request finished before admission");
-          }),
-        ]);
-        expect(requests).toHaveLength(3);
-        const serverTask = requests[2]?.task;
-        if (!serverTask) throw new Error("Missing owned server completion");
-        controller.abort();
-        await expect(heldRequest).rejects.toMatchObject({ name: "AbortError" });
-        let completed = false;
-        void serverTask.then(
-          () => {
-            completed = true;
-          },
-          () => {
-            completed = true;
-          },
-        );
-        await Promise.resolve();
-        expect(completed).toBe(false);
-        releaseGate();
-        await serverTask;
-        await settlePublications();
-        expect(completed).toBe(true);
-        expect(
-          (await runInTenant(tenantA.tenantId, () => chokePoint.getValueLinksForItems([heldSource.id]))).get(
-            heldSource.id,
-          )?.[property.key],
-        ).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user" });
-        expect(itemPublications(heldSource.id)).toEqual([expect.objectContaining({ userId: tenantA.userId })]);
-        await expectInvalidationInA({ scope: "item", itemId: heldSource.id, op: "update" });
-      } finally {
-        controller.abort();
-        releaseGate();
-        await heldSettled;
-      }
-      const unauthorized = await ownedPut(`${requestBase}/api/items/${randomUUID()}/relations/x/${randomUUID()}`, {
-        Origin: requestBase,
-        "x-test-owner": marker,
-      });
-      expect(unauthorized).toBe(401);
-      expect(requests).toHaveLength(4);
-      await requests[3]?.task;
-
-      const rollbackSource = await runInTenant(tenantA.tenantId, async () => {
-        const item = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
-        await chokePoint.createRelation({
-          relationPropertyId: property.id,
-          callerItemId: item.id,
-          targetItemId: target.id,
-        });
-        await withTransaction(pool, (client) =>
-          insertValueLink(client, {
-            itemId: item.id,
-            propertyKey: property.key,
-            ruleKey: "test",
-            sources: [],
-          }),
-        );
-        return item;
-      });
-      await causalBarrier(rollbackSource.id);
-      querySpy.mockClear();
-      const failure = new Error("rollback relation invalidation");
-      await expect(
-        runInTenant(tenantA.tenantId, () =>
-          withTransaction(pool, async (client) => {
-            await deleteRelationWithClient(
-              client,
+            chokePoint.createRelation(
               {
                 relationPropertyId: property.id,
-                callerItemId: rollbackSource.id,
+                callerItemId: background.id,
                 targetItemId: target.id,
               },
-              undefined,
               { writerKind: "user" },
-              tenantA.userId,
-            );
-            throw failure;
-          }),
-        ),
-      ).rejects.toBe(failure);
-      await causalBarrier(rollbackSource.id);
-      expect(itemPublications(rollbackSource.id)).toEqual([]);
-      expect(
-        (await runInTenant(tenantA.tenantId, () => chokePoint.getValueLinksForItems([rollbackSource.id]))).get(
-          rollbackSource.id,
-        )?.[property.key],
-      ).toMatchObject({ valueKind: "inherited", brokenBy: null });
-      const background = await runInTenant(tenantA.tenantId, async () => {
-        const item = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
-        await withTransaction(pool, (client) =>
-          insertValueLink(client, {
-            itemId: item.id,
-            propertyKey: property.key,
-            ruleKey: "test",
-            sources: [],
-          }),
-        );
-        return item;
-      });
-      await causalBarrier(background.id);
-      querySpy.mockClear();
-      let backgroundTimer: ReturnType<typeof setTimeout> | undefined;
-      let backgroundHandler: ((message: { channel: string; payload?: string }) => void) | undefined;
-      let cancelBackground: (() => void) | undefined;
-      const backgroundEvent = new Promise<unknown>((resolve, reject) => {
-        cancelBackground = () => reject(new Error("Background observation cancelled"));
-        backgroundTimer = setTimeout(() => reject(new Error("Background observation timed out")), FRAME_TIMEOUT_MS);
-        backgroundHandler = (notification) => {
-          if (notification.channel !== "semprec_events" || !notification.payload) return;
-          try {
-            const envelope: unknown = JSON.parse(notification.payload);
-            if (isRecord(envelope) && isRecord(envelope.message) && envelope.message.itemId === background.id)
-              resolve(envelope);
-          } catch (error) {
-            reject(error instanceof Error ? error : new Error("Invalid background envelope"));
-          }
-        };
-        activeListener.on("notification", backgroundHandler);
-      });
-      const backgroundSettled = backgroundEvent.then(
-        () => {},
-        () => {},
-      );
-      try {
-        await runInTenant(tenantA.tenantId, () =>
-          chokePoint.createRelation(
-            {
-              relationPropertyId: property.id,
-              callerItemId: background.id,
-              targetItemId: target.id,
-            },
-            { writerKind: "user" },
-          ),
-        );
-        expect(itemPublications(background.id)).toEqual([
-          expect.objectContaining({ scope: "item", itemId: background.id, op: "update" }),
-        ]);
-        expect(itemPublications(background.id)[0]).not.toHaveProperty("userId");
-        const envelope = await backgroundEvent;
-        expect(envelope).toMatchObject({
-          tenantId: tenantA.tenantId,
-          message: { itemId: background.id, op: "update" },
-        });
-        if (!isRecord(envelope) || !isRecord(envelope.message)) throw new Error("Invalid background envelope");
-        expect(envelope.message).not.toHaveProperty("userId");
-        expect(
-          (await runInTenant(tenantA.tenantId, () => chokePoint.getValueLinksForItems([background.id]))).get(
-            background.id,
-          )?.[property.key],
-        ).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user" });
-        await expectInvalidationInA({ scope: "item", itemId: background.id, op: "update" });
-      } finally {
-        if (backgroundTimer) clearTimeout(backgroundTimer);
-        if (backgroundHandler) activeListener.removeListener("notification", backgroundHandler);
-        cancelBackground?.();
-        await backgroundSettled;
-      }
-    } catch (error) {
-      failure = { error };
-    } finally {
-      releaseGate();
-      releasePublication();
-      const cleanupErrors: unknown[] = [];
-      try {
-        if (requestServer) {
-          requestServer.closeIdleConnections();
-          await new Promise<void>((resolve, reject) =>
-            requestServer?.close((error) => (error ? reject(error) : resolve())),
+            ),
           );
+          expect(itemPublications(background.id)).toEqual([
+            expect.objectContaining({ scope: "item", itemId: background.id, op: "update" }),
+          ]);
+          expect(itemPublications(background.id)[0]).not.toHaveProperty("userId");
+          const envelope = await backgroundEvent;
+          expect(envelope).toMatchObject({
+            tenantId: tenantA.tenantId,
+            message: { itemId: background.id, op: "update" },
+          });
+          if (!isRecord(envelope) || !isRecord(envelope.message)) throw new Error("Invalid background envelope");
+          expect(envelope.message).not.toHaveProperty("userId");
+          expect(
+            (await runInTenant(tenantA.tenantId, () => chokePoint.getValueLinksForItems([background.id]))).get(
+              background.id,
+            )?.[property.key],
+          ).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user" });
+          await expectInvalidationInA({ scope: "item", itemId: background.id, op: "update" });
+        } finally {
+          if (backgroundTimer) clearTimeout(backgroundTimer);
+          if (backgroundHandler) activeListener.removeListener("notification", backgroundHandler);
+          cancelBackground?.();
+          await backgroundSettled;
         }
       } catch (error) {
-        cleanupErrors.push(error);
+        failure =
+          failure && failure.error !== error
+            ? {
+                error: new AggregateError([error, failure.error], "Realtime observation and cleanup failed", {
+                  cause: error,
+                }),
+              }
+            : { error };
+      } finally {
+        releasePublication();
+        for (const release of releaseFailures) release();
+        await dispose();
       }
-      for (const request of requests) {
-        try {
-          if (!request.task) {
-            cleanupErrors.push(new Error("Owned request was not started"));
-            continue;
-          }
-          await request.task;
-        } catch (error) {
-          cleanupErrors.push(error);
-        }
+      if (failure) {
+        // Preserve the original failure rather than replacing it with a timeout wrapper.
+        throw failure.error;
       }
-      try {
-        await publicationProbe;
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-      try {
-        await settlePublications();
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-      if (timer) clearTimeout(timer);
-      if (onNotification) listener?.removeListener("notification", onNotification);
-      cancelObservation?.();
-      await observationSettled;
-      try {
-        await listenerOwner.close();
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-      if (cleanupErrors.length) {
-        const errors = failure ? [failure.error, ...cleanupErrors] : cleanupErrors;
-        failure = {
-          error: new AggregateError(errors, "Realtime observation and cleanup failed", { cause: errors[0] }),
-        };
-      }
-    }
-    if (failure) {
-      // Preserve the original failure rather than replacing it with a timeout wrapper.
-      throw failure.error;
-    }
-  });
+    },
+  );
 
   it("delivers committed approval resolution to its user's sockets, with no replay or rollback event", async () => {
     async function createApprovalNotification(): Promise<{ requestId: string; notificationId: string }> {

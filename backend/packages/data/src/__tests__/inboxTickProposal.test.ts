@@ -57,6 +57,8 @@ function ownOverlap(runtime: Pool, cancel: () => void) {
   runtime.options.statement_timeout = 5000;
   const active = new Map<PoolClient, object>();
   const tasks = new Set<Promise<void>>();
+  const outcomes: Array<{ error?: { value: unknown }; consumed: boolean }> = [];
+  const outcomeByOperation = new WeakMap<Promise<unknown>, (typeof outcomes)[number]>();
   const errors: unknown[] = [];
   let closing = false;
   let expired = false;
@@ -88,9 +90,14 @@ function ownOverlap(runtime: Pool, cancel: () => void) {
       if (closing) throw new Error("Overlap is closing");
       return start();
     });
+    const outcome: { error?: { value: unknown }; consumed: boolean } = { consumed: false };
+    outcomes.push(outcome);
+    outcomeByOperation.set(operation, outcome);
     const settled = operation.then(
       () => {},
-      () => {},
+      (error: unknown) => {
+        outcome.error = { value: error };
+      },
     );
     tasks.add(settled);
     void settled.then(() => tasks.delete(settled));
@@ -144,6 +151,9 @@ function ownOverlap(runtime: Pool, cancel: () => void) {
         const results = await Promise.allSettled([end, ...tasks]);
         for (const result of results) if (result.status === "rejected") errors.push(result.reason);
         while (tasks.size > 0) await Promise.all([...tasks]);
+        for (const outcome of outcomes) {
+          if (outcome.error !== undefined && !outcome.consumed) errors.push(outcome.error.value);
+        }
         const deadline = Date.now() + 3000;
         while (runtime.waitingCount > 0) {
           if (Date.now() >= deadline) throw new Error("Overlap pool waiters did not settle");
@@ -167,7 +177,12 @@ function ownOverlap(runtime: Pool, cancel: () => void) {
     expired = true;
     void finish(true).catch(() => {});
   }, 8000);
-  return { run, wait, finish };
+  const consume = (operation: Promise<unknown>, expected: unknown): void => {
+    const outcome = outcomeByOperation.get(operation);
+    if (!outcome?.error || outcome.error.value !== expected) throw new Error("Unexpected participant outcome");
+    outcome.consumed = true;
+  };
+  return { run, wait, finish, consume };
 }
 
 async function overlapBounded<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
@@ -2357,6 +2372,129 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     });
   });
 
+  it.each([undefined, { marker: "late" }])(
+    "retains a late participant failure and consumes only the asserted participant %#",
+    async (late) => {
+      const { item } = await createTypedItem("Tracked overlap");
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      let release = () => {};
+      let started = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const ready = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const owned = ownOverlap(runtime, release);
+      const expected = { marker: "asserted" };
+      const body = new Error("forced observation failure");
+      let lateSettled = false;
+      let holderPid: number | undefined;
+      let competitorPid: number | undefined;
+      let competitorError: { value: unknown } | undefined;
+      let competitorStarted = () => {};
+      const competing = new Promise<void>((resolve) => {
+        competitorStarted = resolve;
+      });
+      const negative = owned.run(() =>
+        withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+          await client.query<{ "?column?": number }>("SELECT 1");
+          rethrowOverlap(expected);
+        }),
+      );
+      await expect(negative).rejects.toBe(expected);
+      owned.consume(negative, expected);
+      const participant = owned.run(() =>
+        withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          if (!pid) throw new Error("Missing owned PID");
+          holderPid = pid;
+          await updateItemWithClient(client, {
+            databaseId: inboxId,
+            itemId: item.id,
+            propertiesPatch: { text: "Held" },
+          });
+          started();
+          await gate;
+          rethrowOverlap(late);
+        }),
+      );
+      void participant.then(
+        () => {
+          lateSettled = true;
+        },
+        () => {
+          lateSettled = true;
+        },
+      );
+      let failure: { error: unknown } | undefined;
+      try {
+        await owned.wait(ready, participant);
+        const competitor = owned.run(() =>
+          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+            competitorPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            competitorStarted();
+            await updateItemWithClient(client, {
+              databaseId: inboxId,
+              itemId: item.id,
+              propertiesPatch: { text: "Competing" },
+            });
+          }),
+        );
+        void competitor.catch((error: unknown) => {
+          competitorError = { value: error };
+        });
+        await owned.wait(competing, participant, competitor);
+        if (!holderPid || !competitorPid) throw new Error("Missing participant PID");
+        await owned.wait(
+          owned.run(() =>
+            expect
+              .poll(
+                async () => {
+                  const rows = await pool.query<{ blocked: boolean }>(
+                    "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+                    [holderPid, competitorPid],
+                  );
+                  return rows.rows[0]?.blocked;
+                },
+                { timeout: 5000 },
+              )
+              .toBe(true),
+          ),
+          participant,
+          competitor,
+        );
+        throw body;
+      } catch (error) {
+        failure = { error };
+      } finally {
+        try {
+          await owned.finish(failure !== undefined);
+        } catch (error) {
+          failure = combineOverlapFailure(failure, error);
+        }
+      }
+      const combined = failure?.error;
+      expect(combined).toBeInstanceOf(AggregateError);
+      if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
+      expect(combined.cause).toBe(body);
+      expect(combined.errors[0]).toBe(body);
+      const cleanup: unknown = combined.errors[1];
+      expect(cleanup).toBeInstanceOf(AggregateError);
+      if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failure");
+      expect(cleanup.errors).toContain(late);
+      expect(competitorError).toBeDefined();
+      if (competitorError) expect(cleanup.errors).toContain(competitorError.value);
+      expect(cleanup.errors).not.toContain(expected);
+      expect(lateSettled).toBe(true);
+      expect(runtime.ended).toBe(true);
+      expect(runtime.totalCount).toBe(0);
+      expect(runtime.listenerCount("acquire")).toBe(0);
+      expect(runtime.listenerCount("release")).toBe(0);
+    },
+    20000,
+  );
+
   it("preserves an early checkout failure together with cleanup failure", async () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     const actorError = new Error("pre-verify checkout failure");
@@ -2741,6 +2879,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         expect(blocked).toBe(true);
         releaseWriter();
         expect(await writerOutcome).toBe(rollback ? rollbackMarker : null);
+        if (rollback) owned.consume(writer, rollbackMarker);
         await tick;
         const card = await boundedBarrier(
           owned.run(() => runInTenant(getTenantZeroId(), () => findProposalForItem(runtime, proposalsId, item.id))),
