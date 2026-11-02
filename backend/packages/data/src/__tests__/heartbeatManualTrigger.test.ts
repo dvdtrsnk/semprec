@@ -20,7 +20,7 @@ import {
   setHeartbeatEnabled,
 } from "../scheduler/schedulerStore.js";
 import { createHeartbeatFireAgentTask } from "../scheduler/sweep.js";
-import { createHeartbeatTriggerTool } from "../scheduler/heartbeatAgentTools.js";
+import { createHeartbeatTriggerTool, enqueueManualHeartbeatFire } from "../scheduler/heartbeatAgentTools.js";
 import { createTriggerHeartbeatRouteHandler } from "../scheduler/triggerHeartbeatRoute.js";
 import {
   HeartbeatDisabledError,
@@ -230,6 +230,92 @@ describe("manual heartbeat trigger over HTTP (issue #1453)", () => {
     expect(refusal).toBeInstanceOf(HeartbeatRunningError);
     expect(refusal).toMatchObject({ code: "heartbeat_running", details: { activeRun: null } });
     expect(await jobsByKey(key)).toEqual(before);
+  });
+
+  it("serializes overlapping manual enqueue checks and leaves one job", async () => {
+    const heartbeatId = await createAgentHeartbeat();
+    const first = await pool.connect();
+    let second;
+    try {
+      second = await pool.connect();
+    } catch (error) {
+      let releaseFailure: { error: unknown } | undefined;
+      try {
+        first.release();
+      } catch (cleanup) {
+        releaseFailure = { error: cleanup };
+      }
+      if (releaseFailure)
+        throw new AggregateError([error, releaseFailure.error], "Enqueue setup cleanup failed", { cause: error });
+      throw error;
+    }
+    let pending: Promise<{ value: unknown } | { error: unknown }> | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      await first.query("BEGIN");
+      await second.query("BEGIN");
+      await first.query("SET LOCAL statement_timeout = '5s'");
+      await second.query("SET LOCAL statement_timeout = '5s'");
+      const holderPid = (await first.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+      const contenderPid = (await second.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+      if (holderPid === undefined || contenderPid === undefined) throw new Error("Missing backend PID");
+      const request = {
+        heartbeatId,
+        projectItemId: null,
+        trigger: { triggeredByUserId: person },
+        refuseWhileActive: true,
+      };
+      await enqueueManualHeartbeatFire(first, request);
+      pending = enqueueManualHeartbeatFire(second, request).then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      const deadline = Date.now() + 3000;
+      let blocked = false;
+      while (!blocked && Date.now() < deadline) {
+        const result = await pool.query<{ blocked: boolean }>(
+          "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+          [holderPid, contenderPid],
+        );
+        blocked = result.rows[0]?.blocked === true;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(blocked).toBe(true);
+      await first.query("COMMIT");
+      const outcome = await pending;
+      pending = undefined;
+      if (!("error" in outcome)) throw new Error("Second enqueue unexpectedly succeeded");
+      expect(outcome.error).toBeInstanceOf(HeartbeatRunningError);
+      expect(outcome.error).toMatchObject({ details: { activeRun: null } });
+      await second.query("ROLLBACK");
+    } catch (error) {
+      failure = { error };
+    }
+    const errors: unknown[] = [];
+    for (const client of [first, second]) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (pending) {
+      const outcome = await pending;
+      if ("error" in outcome) errors.push(outcome.error);
+    }
+    for (const client of [first, second]) {
+      try {
+        client.release();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length)
+      throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Enqueue overlap cleanup failed", {
+        cause: failure?.error,
+      });
+    if (failure) throw failure.error;
+    expect(await jobsByKey(manualHeartbeatFireJobKey(heartbeatId))).toHaveLength(1);
   });
 
   it("a waiting job whose attempts are exhausted does not block a new trigger, and the new trigger revives it", async () => {
