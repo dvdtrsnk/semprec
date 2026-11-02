@@ -69,9 +69,15 @@ describe("scheduler", () => {
   });
 
   async function getSemprecProjectId(): Promise<string> {
-    const { rows } = await pool.query("SELECT id FROM databases WHERE owner_module_id = 'projects'");
-    const { rows: items } = await pool.query("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [rows[0].id]);
-    return items[0].id;
+    const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'");
+    const database = rows[0];
+    if (!database) throw new Error("Missing projects database");
+    const { rows: items } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [
+      database.id,
+    ]);
+    const item = items[0];
+    if (!item) throw new Error("Missing seeded project");
+    return item.id;
   }
 
   it("createHeartbeat computes next_fire_at deterministically at write time", async () => {

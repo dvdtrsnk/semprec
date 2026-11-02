@@ -1416,8 +1416,11 @@ describe("value link state on writes (issue #1516)", () => {
         ),
       ).rejects.toMatchObject({ code: "owner_violation" });
 
-      const { rows } = await pool.query("SELECT properties->>'name' AS name FROM items WHERE id = $1", [file.id]);
-      expect(rows[0].name).toBe("a.pdf");
+      const { rows } = await pool.query<{ name: string | null }>(
+        "SELECT properties->>'name' AS name FROM items WHERE id = $1",
+        [file.id],
+      );
+      expect(rows).toEqual([{ name: "a.pdf" }]);
     });
 
     it("writes a plain property with an on row and leaves the state on", async () => {
@@ -1433,8 +1436,11 @@ describe("value link state on writes (issue #1516)", () => {
       );
 
       expect(await linkOf(file.id, "name")).toMatchObject({ state: "on" });
-      const { rows } = await pool.query("SELECT properties->>'name' AS name FROM items WHERE id = $1", [file.id]);
-      expect(rows[0].name).toBe("z.pdf");
+      const { rows } = await pool.query<{ name: string | null }>(
+        "SELECT properties->>'name' AS name FROM items WHERE id = $1",
+        [file.id],
+      );
+      expect(rows).toEqual([{ name: "z.pdf" }]);
     });
   });
 
