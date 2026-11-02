@@ -49,6 +49,59 @@ function expectCode(action: () => unknown, code: string): void {
   throw new Error(`expected ${code}`);
 }
 
+describe("page references in generic operations", () => {
+  it("inserts, moves, indents and deletes existing page references without changing their identity", () => {
+    const doc = docWith({ id: "a", type: "text", text: "Alpha" }, { id: "b", type: "todo", text: "Beta", done: true });
+    insertBlocks(doc, "a", [
+      { id: "p", type: "page", pageId: "existing-page", indent: 1 },
+      { id: "q", type: "page", pageId: "other-page", indent: 2 },
+    ]);
+    expect(ids(doc)).toEqual(["a", "p", "q", "b"]);
+    const page = getBlocksMap(doc).get("p");
+    const other = getBlocksMap(doc).get("q");
+    expect(readPageBlocks(doc)).toMatchObject([
+      { id: "a", type: "text" },
+      { id: "p", type: "page", pageId: "existing-page", indent: 1, done: false, text: [] },
+      { id: "q", type: "page", pageId: "other-page", indent: 2, done: false, text: [] },
+      { id: "b", type: "todo", done: true },
+    ]);
+    moveBlocks(doc, ["p"], "b");
+    expect(ids(doc)).toEqual(["a", "q", "b", "p"]);
+    expect(getBlocksMap(doc).get("p")).toBe(page);
+    setIndent(doc, ["p"], 2);
+    expect(readPageBlocks(doc).find((block) => block.id === "p")).toMatchObject({
+      id: "p",
+      type: "page",
+      pageId: "existing-page",
+      indent: 3,
+      done: false,
+      text: [],
+    });
+    expect(readPageBlocks(doc).find((block) => block.id === "q")).toMatchObject({
+      id: "q",
+      type: "page",
+      pageId: "other-page",
+      indent: 2,
+      done: false,
+      text: [],
+    });
+    expect(getBlocksMap(doc).get("q")).toBe(other);
+    deleteBlocks(doc, ["p"]);
+    expect(ids(doc)).toEqual(["a", "q", "b"]);
+    expect(getBlocksMap(doc).has("p")).toBe(false);
+    expect(getBlocksMap(doc).get("q")).toBe(other);
+    expect(readPageBlocks(doc)[2]).toMatchObject({ id: "b", type: "todo", done: true });
+  });
+
+  it("leaves one empty text block when the last page reference is deleted", () => {
+    const doc = docWith({ id: "p", type: "page", pageId: "existing-page" });
+    deleteBlocks(doc, ["p"]);
+    expect(readPageBlocks(doc)).toHaveLength(1);
+    expect(readPageBlocks(doc)[0]).toMatchObject({ type: "text", text: [], indent: 0, done: false, pageId: null });
+    expect(getBlocksMap(doc).has("p")).toBe(false);
+  });
+});
+
 describe("insertBlocks", () => {
   it("inserts in order after the block, assigns ids and runs in one transaction", () => {
     const doc = docWith({ id: "a", type: "text" }, { id: "b", type: "text" });

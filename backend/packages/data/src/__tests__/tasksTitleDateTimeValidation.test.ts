@@ -283,7 +283,7 @@ describe("Tasks title, date and time rules (issue gh-1536)", () => {
           propertiesPatch: { timeFrom: "10:00", timeTo: "09:30" },
         }),
       ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field: "timeTo" } });
-      // The task was created without time keys, so a refused write leaves them absent rather than null.
+      // The input omitted the time fields; the transform derives time as null.
       const stored = (await chokePoint.getItem(tasksDatabaseId, task.id))!.properties;
       expect(stored.timeFrom ?? null).toBeNull();
       expect(stored.timeTo ?? null).toBeNull();
