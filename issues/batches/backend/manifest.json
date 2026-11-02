@@ -1162,8 +1162,8 @@
       "sequence": 12,
       "status": "proposed",
       "title": "[backend-delivery 12/74] Implement data/aiGateway, data/scheduler, data/agentRuns changes",
-      "bodyCharacters": 59764,
-      "specSha256": "6f372648a4c2f8e763fb039c900ab9a37f8f8acdbac05b3ebcf46d6c14cedbcd",
+      "bodyCharacters": 59904,
+      "specSha256": "050c316388d86e916ca949ccd4fc91938a6581157e8f23a3b1c16888d459fb07",
       "members": [
         {
           "id": "gh-1442",
@@ -1183,7 +1183,7 @@
         },
         {
           "id": "gh-1472",
-          "specSha256": "4a49afb49169bc615ebc21610f67f401afedc3c9754f0dc9f832f6fd7ac3e897",
+          "specSha256": "b34d12d441d6cf55f150171252d687819f953c263c69703c3ffa057aa3001c18",
           "parent": "gh-1310",
           "dependencies": [
             "gh-1442",
@@ -1193,7 +1193,7 @@
         },
         {
           "id": "gh-1477",
-          "specSha256": "09eeadfa497d0884a861ffb5d1a1e0a91162cc570acfa297cee1562ad005a0aa",
+          "specSha256": "619a5190568c7d354bff44a019dae50973002f20ee3dcd27d401dd1413de2615",
           "parent": "gh-1310",
           "dependencies": [
             "gh-1472"
