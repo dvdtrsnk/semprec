@@ -26,3 +26,7 @@ The additive ADR is
 historical ADR bodies, all original handovers and worker's unrelated dirty AI
 usage implementation are unchanged. No missing implemented endpoint is
 represented as passing. Batch-12 implementation/review/runtime gates remain.
+
+## 2. Actual automatic retry evidence
+
+Gh-1458 explicitly includes the existing `backend/packages/data/src/__tests__/scheduler.test.ts` harness for actual sweep-to-queue-to-worker automatic attempt chains. Direct action calls with synthetic attempts are supporting tests, not that composed execution. Preserve real attempt counters and final-notification rules; public rescheduling may accelerate only the owned job. No production scheduler, queue retry policy or unrelated test cleanup is added by this path reconciliation.
