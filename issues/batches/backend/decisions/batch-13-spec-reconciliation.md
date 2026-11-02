@@ -126,3 +126,55 @@ do not add a generic production test callback solely for introspection. Retain
 the two failed logs. All changes remain in the section-2/3 source/test scopes;
 this clarifies known-primary handling under their existing lifecycle/privacy
 decisions, without changing source requirements, approvals or default adapters.
+
+## 5. Fast STARTTLS terminal-state proof
+
+Adopt [[2026-11-02-imap-starttls-cleanup-proves-the-underlying-transport-closed]].
+The actual initial TCP close event plus the checked same-attempt STARTTLS
+wrapper's terminal state and settled operation/cleanup can prove teardown even
+if the wrapper's own historical close event was missed. Socket.closed alone is
+not sufficient on the installed Node. Do not claim that the missed event was
+observed, add constructor interception/polling or loosen certificate checks.
+Retain actual failures and prove both complete and incomplete terminal-state
+branches. The existing source/test scope is unchanged; only the new ADR is added.
+
+## 6. Forward repair for null-activity mail sync errors
+
+The real pre-0115 upgrade test reproduces a permitted row with last_error set
+and last_activity_at NULL whose failure kind remains NULL after 0115. Retain
+0115 byte-for-byte: changing an applied filename would not repair existing
+databases. Do not infer historical provenance that the stored state lacks.
+
+Authorize a narrow idempotent data repair through the already queued
+MAIL_ACCOUNT_SYNC_SWEEP, after its existing due-account enqueues. Per active
+tenant and sweep, repair at most 200 rows where last_error IS NOT NULL,
+last_activity_at IS NULL and last_failure_kind IS NULL, using one row-locked
+withTransaction page and rechecking that predicate at the write. Set only
+last_failure_kind to other. Preserve every timestamp, cursor, scheduling field
+and item. Do not invent failing_since, last success or initial-completion time.
+Rows with known kinds, non-null activity or no error are outside this repair.
+No new DDL, task name, crontab, job registry or migration progress table.
+
+This also labels indistinguishable current invalidation-only rows meeting that
+predicate as other, meaning an unclassified stored error, not proof of a failed
+sync pass or its onset. Existing invalidation writers are unchanged. Repair is
+eventual over successful sweep executions; contention-skipped rows retry in a
+later sweep. It does not promise that SQL migration alone repairs all records,
+that inactive tenants are processed, or that a release has run this repair.
+
+Use the existing tenant fanout, public queue/runtime handler and retry behavior.
+Keep the mail state store as writer; no item update, notification or provider
+I/O belongs in the repair. Recheck row predicates under actual row locks so a
+new success/known failure cannot be overwritten. Already committed pages remain
+committed if a later sweep fails. The predicate makes repeated and concurrent
+runs idempotent without a persistent cursor; each completed repair drops out of
+the next page. This follows the existing forward-only, separate data-backfill
+and bounded-sweep decisions instead of adding another deploy cutover.
+
+Gh-1497 Touches explicitly includes existing mailSync.test.ts and the prepared
+mailSyncStatusMigration.test.ts for actual historical upgrade plus queued repair,
+runtime-role two-tenant/exclusion, repeated runs, multi-page bound and competing
+state-write controls. The old mailSyncJob.test.ts path is corrected to the real
+mailSync.test.ts harness. Existing store/job paths suffice for implementation;
+no broad migration or scheduler scope expansion. The original failing upgrade
+log remains evidence of the old gap. All final review and runtime gates remain.
