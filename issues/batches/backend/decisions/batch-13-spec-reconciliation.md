@@ -314,3 +314,47 @@ that new full run stops before E2E, preserve its exact failure and request the
 parent's candidate-specific decision for a separate same-SHA E2E stage; neither
 old E2E nor named integration tests substitute. No merge/completion/acceptance
 or successor dispatch is authorized by this test-path reconciliation.
+
+## 12. OAuth caller-fixture scope after the integration gate
+
+Full verify on e7e6c8a8 exited 1: its unit and block-model tiers passed, then
+integration reported 23 Gmail/Graph transport fixture failures, one historical
+alias-upgrade timeout and one MCP inherited-name mismatch. Keep this exact FAIL.
+The Gmail/Graph refusals originate at the required fail-closed OAuth tenant
+guard; weakening that production guard or send behavior is not a repair.
+
+Add backend/packages/data/src/**tests**/gmailTransport.test.ts and
+backend/packages/data/src/**tests**/graphTransport.test.ts to gh-1481 and the
+aggregate Touches solely for caller-fixture compatibility with that guard.
+Run the existing asynchronous test operations and necessary setup/queries in
+their actual test-tenant scope, using the existing runInTenant/inTenantZero
+helpers. Scoping factory creation alone does not scope a later send/refresh:
+the complete awaited operation must remain in its tenant. Keep all original
+send/MIME/recipient, rotation, credential-purpose and refusal assertions.
+No global/default production tenant, guard bypass, changed provider behavior,
+relaxed assertion or new production send scope is authorized. Existing runtime
+OAuth isolation controls remain; no additional owner/foreign transport test is
+required merely for these fixture corrections.
+
+The one authorized complete unfiltered alias-file diagnostic on unchanged
+e7e6c8a8 passed 6/6 at default timeouts, including the historical upgrade. Parent
+verified its result/log hashes and matching root manifests. This establishes
+only that run and its passed-path cleanup; the earlier timeout's cause and
+post-deadline settlement are not established. Do not change the alias test,
+timeouts or migration behavior on this evidence, label the failure flaky or
+repeat diagnostics. Preserve the earlier failed gate and the later diagnostic
+separately; include the complete alias file in the repaired candidate's fresh
+named and full stages. Any recurring frozen failure needs its own diagnosis.
+
+No exception is granted for the extra __CF_USER_TEXT_ENCODING MCP name. Do not
+change that test, environment inheritance or subprocess configuration. Any later
+candidate-specific local exception requires the exact new full-gate result and
+supporting context, not this older occurrence or a previous batch waiver.
+
+After fixture repair, use the same independent reviewer for the actual scoped
+delta, current approvals and complete unchanged-byte 48/55 reconciliation.
+Rerun fresh exact-SHA named stages/STOP and a separate actual full verify.
+Do not run skipped E2E on e7e6c8a8, which already needs repair; the repaired final
+candidate must execute the real vitest.e2e.config.ts tier under section 11.
+No final gate, acceptance, merge/completion or successor dispatch is authorized
+by this compatibility scope decision. No new ADR or source Task/AC change.
