@@ -178,3 +178,22 @@ state-write controls. The old mailSyncJob.test.ts path is corrected to the real
 mailSync.test.ts harness. Existing store/job paths suffice for implementation;
 no broad migration or scheduler scope expansion. The original failing upgrade
 log remains evidence of the old gap. All final review and runtime gates remain.
+
+## 7. Unknown verification failures at the privacy boundary
+
+Adopt [[2026-11-02-mail-verification-sanitizes-unknown-failures-at-its-public-boundary]].
+Unknown failures remain failures, with exact original primary/secondary values,
+presence and order retained internally through actual settlement and diagnostic
+processing. They do not retain identity across verifyMailCredentials's outward
+privacy boundary: throw a fixed generic Error without raw cause/properties or
+aggregate members, stop candidate traversal, and emit only closed safe metadata
+through the existing logger. An unknown error is never authentication, TLS or
+unreachable merely because it occurred during verification. A diagnostic failure
+also remains a safe outward failure, without a claim of successful logging.
+
+The existing typed sanitized helper outcomes and section 4's exact-owner
+cancellation precondition stay intact. Existing source/test paths suffice;
+only this additive ADR is added to gh-1569 Touches. Forwarding observations of
+real producers must prove internal identity and complete cleanup separately
+from outward sanitization, including undefined/non-Error, combined cleanup and
+secret-bearing nested failures. No public raw-error seam or durable store.
