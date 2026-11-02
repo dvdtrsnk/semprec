@@ -83,7 +83,7 @@ async function bounded<T>(promise: Promise<T>): Promise<T> {
 }
 
 /** Captures the backend on the very client that issues the matched production statement. */
-function observeStatementPid(runtime: Pool, statement: RegExp) {
+function observeStatementPid(runtime: Pool, statement: RegExp, onCaptured?: (client: PoolClient) => void) {
   let resolvePid!: (pid: number) => void;
   const pid = new Promise<number>((resolve) => {
     resolvePid = resolve;
@@ -101,6 +101,7 @@ function observeStatementPid(runtime: Pool, statement: RegExp) {
           return Reflect.apply(target, receiver, args);
         }
         captured = true;
+        onCaptured?.(client);
         return (async () => {
           const result = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
           const actual = result.rows[0]?.pid;
@@ -122,7 +123,12 @@ function observeStatementPid(runtime: Pool, statement: RegExp) {
 }
 
 /** Owns only this overlap's runtime clients, gates and operations. */
-function ownOverlap(runtime: Pool, cancel: () => void) {
+function ownOverlap(
+  runtime: Pool,
+  cancel: () => void,
+  onCancellation?: (client: PoolClient, generation: object) => void,
+  onGeneration?: (client: PoolClient, generation: object) => void,
+) {
   runtime.options.connectionTimeoutMillis = 2500;
   runtime.options.statement_timeout = 5000;
   runtime.options.query_timeout = 7000;
@@ -138,6 +144,7 @@ function ownOverlap(runtime: Pool, cancel: () => void) {
   const destroy = (client: PoolClient, token: object) => {
     if (active.get(client) !== token) return;
     try {
+      onCancellation?.(client, token);
       client.release(true);
     } catch (error) {
       errors.push(error);
@@ -146,6 +153,7 @@ function ownOverlap(runtime: Pool, cancel: () => void) {
   const onAcquire = (client: PoolClient) => {
     const token = {};
     active.set(client, token);
+    onGeneration?.(client, token);
     client.on("error", onClientError);
     // pg-pool 3.14 assigns release after the acquire event.
     if (closing) queueMicrotask(() => destroy(client, token));
@@ -539,13 +547,52 @@ describe("ingestUploadedFile (issue #670)", () => {
       release = resolve;
     });
     runtime.options.verify = (_client, done) => done(actorError);
-    const owned = ownOverlap(runtime, () => {
-      release();
-      throw cleanupError;
-    });
+    const generations = new Map<PoolClient, object>();
+    const cancellationRequests = new Set<object>();
+    const owned = ownOverlap(
+      runtime,
+      () => {
+        release();
+        throw cleanupError;
+      },
+      (_client, generation) => {
+        cancellationRequests.add(generation);
+      },
+      (client, generation) => {
+        generations.set(client, generation);
+      },
+    );
+    let operationFailure: { value: unknown } | undefined;
+    const observedDiagnostics: Array<{ error: Error; generation: object; cancelled: boolean; operation: "checkout" }> =
+      [];
+    const observing = new Map<PoolClient, (error: Error) => void>();
+    const observeAcquire = (client: PoolClient) => {
+      const generation = generations.get(client);
+      if (!generation) throw new Error("Missing client generation");
+      const onError = (error: Error) =>
+        observedDiagnostics.push({
+          error,
+          generation,
+          cancelled: cancellationRequests.has(generation),
+          operation: "checkout",
+        });
+      observing.set(client, onError);
+      client.on("error", onError);
+    };
+    const observeRelease = (_reason: unknown, client: PoolClient) => {
+      const onError = observing.get(client);
+      if (onError) client.removeListener("error", onError);
+      observing.delete(client);
+      generations.delete(client);
+    };
+    runtime.on("acquire", observeAcquire);
+    runtime.on("release", observeRelease);
     let failure: { error: unknown } | undefined;
     try {
       const actor = owned.run(() => withTenantTransaction(runtime, getTenantZeroId(), async () => {}));
+      void actor.catch((error: unknown) => {
+        operationFailure = { value: error };
+      });
       await owned.wait(signal, actor);
     } catch (error) {
       failure = { error };
@@ -556,13 +603,30 @@ describe("ingestUploadedFile (issue #670)", () => {
         failure = combineOverlapFailure(failure, error);
       }
     }
+    runtime.removeListener("acquire", observeAcquire);
+    runtime.removeListener("release", observeRelease);
+    expect(observing.size).toBe(0);
     const observed = failure?.error;
     expect(observed).toBeInstanceOf(AggregateError);
     if (!(observed instanceof AggregateError)) throw new Error("Expected combined error");
     expect(observed.cause).toBe(actorError);
     expect(observed.errors[0]).toBe(actorError);
-    expect(observed.errors[1]).toBeInstanceOf(AggregateError);
-    expect(observed.errors[1] instanceof AggregateError && observed.errors[1].errors).toContain(cleanupError);
+    expect(observed.errors).toHaveLength(2);
+    const cleanup: unknown = observed.errors[1];
+    expect(cleanup).toBeInstanceOf(AggregateError);
+    if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup aggregate");
+    expect(operationFailure).toBeDefined();
+    if (!operationFailure) throw new Error("Missing operation failure");
+    expect(operationFailure.value).toBe(actorError);
+    for (const diagnostic of observedDiagnostics) {
+      expect(diagnostic.cancelled).toBe(true);
+      expect(diagnostic.operation).toBe("checkout");
+      expect(diagnostic.error).toBe(operationFailure.value);
+    }
+    const expectedErrors = [cleanupError, ...observedDiagnostics.map((entry) => entry.error), operationFailure.value];
+    expect(cleanup.errors).toHaveLength(expectedErrors.length);
+    for (let i = 0; i < expectedErrors.length; i++) expect(cleanup.errors[i]).toBe(expectedErrors[i]);
+    expect(cleanup.cause).toBe(cleanupError);
     expect(runtime.ended).toBe(true);
     expect(runtime.totalCount).toBe(0);
     expect(runtime.waitingCount).toBe(0);
@@ -585,10 +649,21 @@ describe("ingestUploadedFile (issue #670)", () => {
       deliver = () => queueMicrotask(() => done());
       ready();
     };
-    const owned = ownOverlap(runtime, () => {
-      deliver();
-      throw cleanupError;
-    });
+    const generations = new Map<PoolClient, object>();
+    const cancellationRequests = new Set<object>();
+    const owned = ownOverlap(
+      runtime,
+      () => {
+        deliver();
+        throw cleanupError;
+      },
+      (_client, generation) => {
+        cancellationRequests.add(generation);
+      },
+      (client, generation) => {
+        generations.set(client, generation);
+      },
+    );
     const operation = owned.run(() =>
       withTenantTransaction(runtime, getTenantZeroId(), async () => {
         ran = true;
@@ -598,10 +673,36 @@ describe("ingestUploadedFile (issue #670)", () => {
       () => {
         settled = true;
       },
-      () => {
+      (error: unknown) => {
+        operationFailure = { value: error };
         settled = true;
       },
     );
+    let operationFailure: { value: unknown } | undefined;
+    const observedDiagnostics: Array<{ error: Error; generation: object; cancelled: boolean; operation: "checkout" }> =
+      [];
+    const observing = new Map<PoolClient, (error: Error) => void>();
+    const observeAcquire = (client: PoolClient) => {
+      const generation = generations.get(client);
+      if (!generation) throw new Error("Missing client generation");
+      const onError = (error: Error) =>
+        observedDiagnostics.push({
+          error,
+          generation,
+          cancelled: cancellationRequests.has(generation),
+          operation: "checkout",
+        });
+      observing.set(client, onError);
+      client.on("error", onError);
+    };
+    const observeRelease = (_reason: unknown, client: PoolClient) => {
+      const onError = observing.get(client);
+      if (onError) client.removeListener("error", onError);
+      observing.delete(client);
+      generations.delete(client);
+    };
+    runtime.on("acquire", observeAcquire);
+    runtime.on("release", observeRelease);
     let failure: { error: unknown } | undefined;
     try {
       await owned.wait(verifying, operation);
@@ -615,13 +716,30 @@ describe("ingestUploadedFile (issue #670)", () => {
         failure = combineOverlapFailure(failure, error);
       }
     }
+    runtime.removeListener("acquire", observeAcquire);
+    runtime.removeListener("release", observeRelease);
+    expect(observing.size).toBe(0);
     const observed = failure?.error;
     expect(observed).toBeInstanceOf(AggregateError);
     if (!(observed instanceof AggregateError)) throw new Error("Expected combined failure");
     expect(observed.cause).toBe(bodyError);
     expect(observed.errors[0]).toBe(bodyError);
-    expect(observed.errors[1]).toBeInstanceOf(AggregateError);
-    expect(observed.errors[1] instanceof AggregateError && observed.errors[1].errors).toContain(cleanupError);
+    expect(observed.errors).toHaveLength(2);
+    const cleanup: unknown = observed.errors[1];
+    expect(cleanup).toBeInstanceOf(AggregateError);
+    if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup aggregate");
+    expect(operationFailure).toBeDefined();
+    if (!operationFailure) throw new Error("Missing operation failure");
+    expect(operationFailure.value).toBeInstanceOf(Error);
+    for (const diagnostic of observedDiagnostics) {
+      expect(diagnostic.cancelled).toBe(true);
+      expect(diagnostic.operation).toBe("checkout");
+      expect(diagnostic.error).toBe(operationFailure.value);
+    }
+    const expectedErrors = [cleanupError, ...observedDiagnostics.map((entry) => entry.error), operationFailure.value];
+    expect(cleanup.errors).toHaveLength(expectedErrors.length);
+    for (let i = 0; i < expectedErrors.length; i++) expect(cleanup.errors[i]).toBe(expectedErrors[i]);
+    expect(cleanup.cause).toBe(cleanupError);
     expect(ran).toBe(false);
     expect(settled).toBe(true);
     expect(runtime.ended).toBe(true);
@@ -631,9 +749,13 @@ describe("ingestUploadedFile (issue #670)", () => {
     expect(runtime.listenerCount("release")).toBe(0);
   }, 20000);
 
-  it.each([undefined, { marker: "late participant" }])(
+  it.each([
+    [undefined, false],
+    [{ marker: "late participant" }, false],
+    [{ marker: "late participant" }, true],
+  ] as const)(
     "settles a blocked filing operation when its owner fails %#",
-    async (lateParticipant) => {
+    async (lateParticipant, injectPreCancel) => {
       const filesId = await filesDatabaseId();
       const storage = new FakeBlobStorageWriter();
       const bytes = Buffer.from("cancel blocked filing");
@@ -652,35 +774,66 @@ describe("ingestUploadedFile (issue #670)", () => {
       const started = new Promise<number>((resolve) => {
         ready = resolve;
       });
-      const owned = ownOverlap(runtime, release);
+      const generations = new Map<PoolClient, object>();
+      const cancellationRequests = new Set<object>();
+      let holderClient: PoolClient | undefined;
+      let contenderClient: PoolClient | undefined;
+      let contenderGeneration: object | undefined;
+      const preCancel = new Error("pre-cancellation diagnostic");
+      const owned = ownOverlap(
+        runtime,
+        release,
+        (_client, generation) => {
+          cancellationRequests.add(generation);
+        },
+        (client, generation) => {
+          generations.set(client, generation);
+        },
+      );
       const bodyError = new Error("forced blocked filing failure");
       let failure: { error: unknown } | undefined;
       let observer: ReturnType<typeof observeStatementPid> | undefined;
       let holderSettled = false;
-      type ObservedClient = { cancelled: boolean; onError: (error: Error) => void };
+      type ObservedClient = { generation: object; onError: (error: Error) => void };
       const observedClients = new Map<PoolClient, ObservedClient>();
-      const diagnostics: Array<{ error: Error; owner: ObservedClient }> = [];
+      const diagnostics: Array<{ error: Error; generation: object; cancelled: boolean; operation: string }> = [];
       const observeAcquire = (client: PoolClient) => {
-        const owner: ObservedClient = { cancelled: false, onError: (error) => diagnostics.push({ error, owner }) };
-        observedClients.set(client, owner);
-        client.on("error", owner.onError);
+        const generation = generations.get(client);
+        if (!generation) throw new Error("Missing client generation");
+        const onError = (error: Error) =>
+          diagnostics.push({
+            error,
+            generation,
+            cancelled: cancellationRequests.has(generation),
+            operation: client === holderClient ? "holder" : client === contenderClient ? "contender" : "other",
+          });
+        observedClients.set(client, { generation, onError });
+        client.on("error", onError);
       };
-      const observeRelease = (reason: unknown, client: PoolClient) => {
+      const observeRelease = (_reason: unknown, client: PoolClient) => {
         const owner = observedClients.get(client);
         if (!owner) throw new Error("Unknown owned client release");
-        owner.cancelled = reason === true;
         client.removeListener("error", owner.onError);
         observedClients.delete(client);
+        generations.delete(client);
       };
       runtime.on("acquire", observeAcquire);
       runtime.on("release", observeRelease);
       let holderError: { value: unknown } | undefined;
-      let contenderError: { value: unknown } | undefined;
+      let contenderError:
+        | {
+            value: unknown;
+            generation: object | undefined;
+            cancellationRequested: boolean;
+            classification: "unclassified";
+          }
+        | undefined;
       let contenderSettled = false;
       let contenderFailed = false;
       try {
         const holder = owned.run(() =>
           withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+            holderClient = client;
             const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
             if (pid === undefined) throw new Error("Missing holder PID");
             await client.query<{ id: string }>("SELECT id FROM blobs WHERE id = $1 FOR UPDATE", [standalone.blob.id]);
@@ -699,7 +852,10 @@ describe("ingestUploadedFile (issue #670)", () => {
           },
         );
         const holderPid = await owned.wait(started, holder);
-        observer = observeStatementPid(runtime, /FROM blobs\b[\s\S]*FOR UPDATE/i);
+        observer = observeStatementPid(runtime, /FROM blobs\b[\s\S]*FOR UPDATE/i, (client) => {
+          contenderClient = client;
+          contenderGeneration = generations.get(client);
+        });
         const contender = owned.run(() =>
           runInTenant(getTenantZeroId(), () =>
             uploadBytes(storage, filesId, bytes, "image/png", "blocked.bin", runtime),
@@ -710,7 +866,12 @@ describe("ingestUploadedFile (issue #670)", () => {
             contenderSettled = true;
           },
           (error: unknown) => {
-            contenderError = { value: error };
+            contenderError = {
+              value: error,
+              generation: contenderGeneration,
+              cancellationRequested: contenderGeneration !== undefined && cancellationRequests.has(contenderGeneration),
+              classification: "unclassified",
+            };
             contenderSettled = true;
             contenderFailed = true;
           },
@@ -734,6 +895,10 @@ describe("ingestUploadedFile (issue #670)", () => {
           holder,
           contender,
         );
+        if (injectPreCancel) {
+          if (!holderClient) throw new Error("Missing holder client");
+          holderClient.emit("error", preCancel);
+        }
         throw bodyError;
       } catch (error) {
         failure = { error };
@@ -761,9 +926,22 @@ describe("ingestUploadedFile (issue #670)", () => {
       expect(observedClients.size).toBe(0);
       for (const diagnostic of diagnostics) {
         expect(diagnostic.error).toBeInstanceOf(Error);
-        expect(diagnostic.owner.cancelled).toBe(true);
+        if (diagnostic.error === preCancel) {
+          expect(injectPreCancel).toBe(true);
+          expect(diagnostic.cancelled).toBe(false);
+          expect(diagnostic.operation).toBe("holder");
+        } else {
+          expect(diagnostic.cancelled).toBe(true);
+          expect(["holder", "contender"]).toContain(diagnostic.operation);
+          if (diagnostic.operation === "holder") expect(diagnostic.error).toBe(holderError.value);
+          else expect(diagnostic.error).toBe(contenderError?.value);
+        }
       }
       if (!contenderError) throw new Error("Missing contender failure");
+      expect(contenderError.generation).toBeDefined();
+      expect(contenderError.classification).toBe("unclassified");
+      expect(contenderError.cancellationRequested).toBe(true);
+      expect(diagnostics.filter((entry) => entry.error === preCancel)).toHaveLength(injectPreCancel ? 1 : 0);
       const expectedErrors = [...diagnostics.map((entry) => entry.error), holderError.value, contenderError.value];
       expect(combined.errors).toHaveLength(2);
       expect(cleanup.errors).toHaveLength(expectedErrors.length);

@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DateTime } from "luxon";
+import { Pool } from "pg";
 import {
   dayBounds,
   eventEnd,
@@ -13,7 +14,6 @@ import {
   weekBounds,
 } from "../calendarTime.js";
 import { ValidationError } from "../errors.js";
-import type { Queryable } from "../db/pool.js";
 
 const PRAGUE = "Europe/Prague";
 
@@ -217,12 +217,16 @@ describe("calendarTime", () => {
 
 async function calendarFixture() {
   let calls = 0;
-  const client = {
-    query: async (sql: string) => {
+  const client = Object.assign(new Pool(), {
+    query: vi.fn(async (sql: string) => {
       calls += 1;
       if (sql.includes("FROM databases")) return { rows: [{ id: "db1" }] };
       return { rows: [{ properties: { timezone: "America/New_York" } }] };
-    },
-  } as unknown as Queryable;
-  return { clock: await getCalendarClock(client), calls: () => calls };
+    }),
+  });
+  try {
+    return { clock: await getCalendarClock(client), calls: () => calls };
+  } finally {
+    await client.end();
+  }
 }

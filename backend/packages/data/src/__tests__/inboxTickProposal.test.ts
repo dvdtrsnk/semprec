@@ -52,7 +52,12 @@ let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
 
 /** Owns only this overlap's runtime clients, gates and operations. */
-function ownOverlap(runtime: Pool, cancel: () => void) {
+function ownOverlap(
+  runtime: Pool,
+  cancel: () => void,
+  onCancellation?: (client: PoolClient, generation: object) => void,
+  onGeneration?: (client: PoolClient, generation: object) => void,
+) {
   runtime.options.connectionTimeoutMillis = 2500;
   runtime.options.statement_timeout = 5000;
   const active = new Map<PoolClient, object>();
@@ -67,6 +72,7 @@ function ownOverlap(runtime: Pool, cancel: () => void) {
   const destroy = (client: PoolClient, token: object) => {
     if (active.get(client) !== token) return;
     try {
+      onCancellation?.(client, token);
       client.release(true);
     } catch (error) {
       errors.push(error);
@@ -75,6 +81,7 @@ function ownOverlap(runtime: Pool, cancel: () => void) {
   const onAcquire = (client: PoolClient) => {
     const token = {};
     active.set(client, token);
+    onGeneration?.(client, token);
     client.on("error", onClientError);
     // pg-pool 3.14 assigns release after the acquire event.
     if (closing) queueMicrotask(() => destroy(client, token));
@@ -2568,13 +2575,52 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       release = resolve;
     });
     runtime.options.verify = (_client, done) => done(actorError);
-    const owned = ownOverlap(runtime, () => {
-      release();
-      throw cleanupError;
-    });
+    const generations = new Map<PoolClient, object>();
+    const cancellationRequests = new Set<object>();
+    const owned = ownOverlap(
+      runtime,
+      () => {
+        release();
+        throw cleanupError;
+      },
+      (_client, generation) => {
+        cancellationRequests.add(generation);
+      },
+      (client, generation) => {
+        generations.set(client, generation);
+      },
+    );
+    let operationFailure: { value: unknown } | undefined;
+    const observedDiagnostics: Array<{ error: Error; generation: object; cancelled: boolean; operation: "checkout" }> =
+      [];
+    const observing = new Map<PoolClient, (error: Error) => void>();
+    const observeAcquire = (client: PoolClient) => {
+      const generation = generations.get(client);
+      if (!generation) throw new Error("Missing client generation");
+      const onError = (error: Error) =>
+        observedDiagnostics.push({
+          error,
+          generation,
+          cancelled: cancellationRequests.has(generation),
+          operation: "checkout",
+        });
+      observing.set(client, onError);
+      client.on("error", onError);
+    };
+    const observeRelease = (_reason: unknown, client: PoolClient) => {
+      const onError = observing.get(client);
+      if (onError) client.removeListener("error", onError);
+      observing.delete(client);
+      generations.delete(client);
+    };
+    runtime.on("acquire", observeAcquire);
+    runtime.on("release", observeRelease);
     let failure: { error: unknown } | undefined;
     try {
       const actor = owned.run(() => withTenantTransaction(runtime, getTenantZeroId(), async () => {}));
+      void actor.catch((error: unknown) => {
+        operationFailure = { value: error };
+      });
       await owned.wait(signal, actor);
     } catch (error) {
       failure = { error };
@@ -2585,13 +2631,30 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         failure = combineOverlapFailure(failure, error);
       }
     }
+    runtime.removeListener("acquire", observeAcquire);
+    runtime.removeListener("release", observeRelease);
+    expect(observing.size).toBe(0);
     const observed = failure?.error;
     expect(observed).toBeInstanceOf(AggregateError);
     if (!(observed instanceof AggregateError)) throw new Error("Expected combined error");
     expect(observed.cause).toBe(actorError);
     expect(observed.errors[0]).toBe(actorError);
-    expect(observed.errors[1]).toBeInstanceOf(AggregateError);
-    expect(observed.errors[1] instanceof AggregateError && observed.errors[1].errors).toContain(cleanupError);
+    expect(observed.errors).toHaveLength(2);
+    const cleanup: unknown = observed.errors[1];
+    expect(cleanup).toBeInstanceOf(AggregateError);
+    if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup aggregate");
+    expect(operationFailure).toBeDefined();
+    if (!operationFailure) throw new Error("Missing operation failure");
+    expect(operationFailure.value).toBe(actorError);
+    for (const diagnostic of observedDiagnostics) {
+      expect(diagnostic.cancelled).toBe(true);
+      expect(diagnostic.operation).toBe("checkout");
+      expect(diagnostic.error).toBe(operationFailure.value);
+    }
+    const expectedErrors = [cleanupError, ...observedDiagnostics.map((entry) => entry.error), operationFailure.value];
+    expect(cleanup.errors).toHaveLength(expectedErrors.length);
+    for (let i = 0; i < expectedErrors.length; i++) expect(cleanup.errors[i]).toBe(expectedErrors[i]);
+    expect(cleanup.cause).toBe(cleanupError);
     expect(runtime.ended).toBe(true);
     expect(runtime.totalCount).toBe(0);
     expect(runtime.waitingCount).toBe(0);
@@ -2641,10 +2704,21 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       deliver = () => queueMicrotask(() => done());
       ready();
     };
-    const owned = ownOverlap(runtime, () => {
-      deliver();
-      throw cleanupError;
-    });
+    const generations = new Map<PoolClient, object>();
+    const cancellationRequests = new Set<object>();
+    const owned = ownOverlap(
+      runtime,
+      () => {
+        deliver();
+        throw cleanupError;
+      },
+      (_client, generation) => {
+        cancellationRequests.add(generation);
+      },
+      (client, generation) => {
+        generations.set(client, generation);
+      },
+    );
     const operation = owned.run(() =>
       withTenantTransaction(runtime, getTenantZeroId(), async () => {
         ran = true;
@@ -2654,10 +2728,36 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       () => {
         settled = true;
       },
-      () => {
+      (error: unknown) => {
+        operationFailure = { value: error };
         settled = true;
       },
     );
+    let operationFailure: { value: unknown } | undefined;
+    const observedDiagnostics: Array<{ error: Error; generation: object; cancelled: boolean; operation: "checkout" }> =
+      [];
+    const observing = new Map<PoolClient, (error: Error) => void>();
+    const observeAcquire = (client: PoolClient) => {
+      const generation = generations.get(client);
+      if (!generation) throw new Error("Missing client generation");
+      const onError = (error: Error) =>
+        observedDiagnostics.push({
+          error,
+          generation,
+          cancelled: cancellationRequests.has(generation),
+          operation: "checkout",
+        });
+      observing.set(client, onError);
+      client.on("error", onError);
+    };
+    const observeRelease = (_reason: unknown, client: PoolClient) => {
+      const onError = observing.get(client);
+      if (onError) client.removeListener("error", onError);
+      observing.delete(client);
+      generations.delete(client);
+    };
+    runtime.on("acquire", observeAcquire);
+    runtime.on("release", observeRelease);
     let failure: { error: unknown } | undefined;
     try {
       await owned.wait(verifying, operation);
@@ -2671,13 +2771,30 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         failure = combineOverlapFailure(failure, error);
       }
     }
+    runtime.removeListener("acquire", observeAcquire);
+    runtime.removeListener("release", observeRelease);
+    expect(observing.size).toBe(0);
     const observed = failure?.error;
     expect(observed).toBeInstanceOf(AggregateError);
     if (!(observed instanceof AggregateError)) throw new Error("Expected combined failure");
     expect(observed.cause).toBe(bodyError);
     expect(observed.errors[0]).toBe(bodyError);
-    expect(observed.errors[1]).toBeInstanceOf(AggregateError);
-    expect(observed.errors[1] instanceof AggregateError && observed.errors[1].errors).toContain(cleanupError);
+    expect(observed.errors).toHaveLength(2);
+    const cleanup: unknown = observed.errors[1];
+    expect(cleanup).toBeInstanceOf(AggregateError);
+    if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup aggregate");
+    expect(operationFailure).toBeDefined();
+    if (!operationFailure) throw new Error("Missing operation failure");
+    expect(operationFailure.value).toBeInstanceOf(Error);
+    for (const diagnostic of observedDiagnostics) {
+      expect(diagnostic.cancelled).toBe(true);
+      expect(diagnostic.operation).toBe("checkout");
+      expect(diagnostic.error).toBe(operationFailure.value);
+    }
+    const expectedErrors = [cleanupError, ...observedDiagnostics.map((entry) => entry.error), operationFailure.value];
+    expect(cleanup.errors).toHaveLength(expectedErrors.length);
+    for (let i = 0; i < expectedErrors.length; i++) expect(cleanup.errors[i]).toBe(expectedErrors[i]);
+    expect(cleanup.cause).toBe(cleanupError);
     expect(ran).toBe(false);
     expect(settled).toBe(true);
     expect(runtime.ended).toBe(true);

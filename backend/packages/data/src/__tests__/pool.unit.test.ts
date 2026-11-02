@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DatabaseError, type Pool, type PoolClient } from "pg";
+import { Client, DatabaseError, Pool, type PoolClient } from "pg";
 import {
   createPool,
   markManagedTransactionRollbackOnly,
@@ -100,6 +100,13 @@ describe("withClient", () => {
 });
 
 describe("withTransaction", () => {
+  const offlinePools: Pool[] = [];
+  const offlineClients: Client[] = [];
+  afterEach(async () => {
+    for (const pool of offlinePools.splice(0)) await pool.end();
+    for (const client of offlineClients.splice(0)) client.removeAllListeners();
+  });
+
   function fakeClient(failOn: Partial<Record<"COMMIT" | "ROLLBACK", unknown>>) {
     const release = vi.fn();
     const query = vi.fn(
@@ -109,8 +116,10 @@ describe("withTransaction", () => {
         return { rows: [], rowCount: 0 };
       },
     );
-    const client = { query, release } as unknown as PoolClient;
-    const pool = { connect: vi.fn().mockResolvedValue(client) } as unknown as Pool;
+    const client = Object.assign(new Client(), { query, release });
+    const pool = Object.assign(new Pool(), { connect: vi.fn().mockResolvedValue(client) });
+    offlineClients.push(client);
+    offlinePools.push(pool);
     return { client, pool, query, release };
   }
 

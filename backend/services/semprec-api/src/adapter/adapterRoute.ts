@@ -115,9 +115,8 @@ export function createAdapterRequestListener(
     }
   }
 
-  // Same shape as authHandler.ts's own listener wrapper: keeps an unhandled rejection out of
-  // `http.createServer`, which discards an async listener's return value and would otherwise
-  // crash the process on any rejection escaping the try/catch above.
+  // Return the request completion and attempt a fallback for an escaping error.
+  // The fallback itself can reject, and HTTP listeners may ignore the returned promise.
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return handleRequest(req, res).catch((err: unknown) => {
       logger.error({ err }, "Unhandled error in the request listener");

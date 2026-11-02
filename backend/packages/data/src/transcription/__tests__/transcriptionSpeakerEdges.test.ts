@@ -61,6 +61,7 @@ interface RuntimeOperations {
   run<T>(start: () => Promise<T>): Promise<T>;
   settle(): Promise<void>;
   onCancel(cancel: () => void): void;
+  consume(operation: Promise<unknown>, expected: unknown): void;
 }
 
 // Local to these serial fixtures: every barrier is released if any owning pool closes early.
@@ -98,15 +99,22 @@ async function withRuntimePool<T>(body: (runtime: Pool, operations: RuntimeOpera
   runtime.on("acquire", onAcquire);
   runtime.on("release", onRelease);
   const pending = new Set<Promise<void>>();
+  const outcomes: Array<{ error?: { value: unknown }; consumed: boolean }> = [];
+  const outcomeByOperation = new WeakMap<Promise<unknown>, (typeof outcomes)[number]>();
   const operations: RuntimeOperations = {
     run: <U>(start: () => Promise<U>): Promise<U> => {
       const started = Promise.resolve().then(() => {
         if (closing) throw new Error("Runtime fixture is closing");
         return start();
       });
+      const entry: { error?: { value: unknown }; consumed: boolean } = { consumed: false };
+      outcomes.push(entry);
+      outcomeByOperation.set(started, entry);
       const settled = started.then(
         () => {},
-        () => {},
+        (error: unknown) => {
+          entry.error = { value: error };
+        },
       );
       pending.add(settled);
       void settled.then(() => pending.delete(settled));
@@ -118,6 +126,11 @@ async function withRuntimePool<T>(body: (runtime: Pool, operations: RuntimeOpera
     onCancel: (cancel) => {
       if (closing) cancel();
       else cancellations.add(cancel);
+    },
+    consume: (operation, expected) => {
+      const entry = outcomeByOperation.get(operation);
+      if (!entry?.error || entry.error.value !== expected) throw new Error("Unexpected participant outcome");
+      entry.consumed = true;
     },
   };
   const work = Promise.resolve()
@@ -164,6 +177,9 @@ async function withRuntimePool<T>(body: (runtime: Pool, operations: RuntimeOpera
     const finished = await work;
     if ("error" in finished && (!("error" in outcome) || finished.error !== outcome.error)) {
       clientErrors.push(finished.error);
+    }
+    for (const entry of outcomes) {
+      if (entry.error !== undefined && !entry.consumed) clientErrors.push(entry.error.value);
     }
     removeListeners();
   } catch (error) {
@@ -330,11 +346,13 @@ describe("Transcript speaker mappings (issue #185)", () => {
   });
 
   describe("writing through the generic relation operation", () => {
-    it.each(["normal", "undefined", "combined"] as const)(
+    it.each(["normal", "undefined", "combined", "late", "late-undefined"] as const)(
       "validates protected speaker metadata before refusing a busy transcript lock (%s)",
       async (control) => {
         const original = { marker: "observation" };
         const cleanup = { marker: "cleanup" };
+        const late = { marker: "late contender" };
+        const lateFailure = control === "late-undefined" ? undefined : late;
         const runControl = async () => {
           const transcriptId = await createTranscript();
           const personId = await createPerson("Alice");
@@ -349,7 +367,16 @@ describe("Transcript speaker mappings (issue #185)", () => {
             const gate = new Promise<void>((resolve) => {
               release = resolve;
             });
+            let releaseLate = () => {};
+            let lateReached = () => {};
+            const lateGate = new Promise<void>((resolve) => {
+              releaseLate = resolve;
+            });
+            const lateReady = new Promise<void>((resolve) => {
+              lateReached = resolve;
+            });
             operations.onCancel(release);
+            operations.onCancel(releaseLate);
             let holderPid: number | undefined;
             let contenderPid: number | undefined;
             await withTenantTransaction(runtime, tenant, (client) =>
@@ -393,31 +420,55 @@ describe("Transcript speaker mappings (issue #185)", () => {
               );
               expect(lock.rows[0]?.held).toBe(true);
               const attempt = (metadata: Record<string, unknown>, target = personId) =>
-                bounded(
-                  operations.run(() =>
-                    runInTenant(tenant, () =>
-                      withTransaction(runtime, async (client) => {
-                        contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
-                          ?.pid;
-                        return createRelationWithClient(
-                          client,
-                          {
-                            relationPropertyId: speakersPropertyId,
-                            callerItemId: transcriptId,
-                            targetItemId: target,
-                            metadata,
-                          },
-                          { ownerProcess: "valueLinks" },
-                        );
-                      }),
-                    ),
+                operations.run(() =>
+                  runInTenant(tenant, () =>
+                    withTransaction(runtime, async (client) => {
+                      contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
+                        ?.pid;
+                      return createRelationWithClient(
+                        client,
+                        {
+                          relationPropertyId: speakersPropertyId,
+                          callerItemId: transcriptId,
+                          targetItemId: target,
+                          metadata,
+                        },
+                        { ownerProcess: "valueLinks" },
+                      );
+                    }),
                   ),
                 );
-              await expect(attempt({})).rejects.toMatchObject({ status: 400, code: "validation_failed" });
-              await expect(attempt({ speaker: "SPEAKER_01" })).rejects.toMatchObject({
-                status: 409,
-                code: "value_link_busy",
-              });
+              const expectAttempt = async (metadata: Record<string, unknown>, expected: unknown, target = personId) => {
+                const operation = attempt(metadata, target);
+                const outcome = await bounded(operation).then(
+                  (value) => ({ value }),
+                  (error: unknown) => ({ error }),
+                );
+                expect(outcome).toMatchObject({ error: expected });
+                if (!("error" in outcome)) throw new Error("Expected participant rejection");
+                operations.consume(operation, outcome.error);
+              };
+              await expectAttempt({}, { status: 400, code: "validation_failed" });
+              await expectAttempt(
+                { speaker: "SPEAKER_01" },
+                {
+                  status: 409,
+                  code: "value_link_busy",
+                },
+              );
+              if (control === "late" || control === "late-undefined") {
+                const contender = operations.run(async () => {
+                  await expectAttempt({ speaker: "SPEAKER_01" }, { status: 409, code: "value_link_busy" });
+                  lateReached();
+                  await bounded(lateGate);
+                  throwFailure(lateFailure);
+                });
+                void contender.catch(() => {});
+                await bounded(lateReady);
+                expect(holderPid).toBeTypeOf("number");
+                expect(contenderPid).toBeTypeOf("number");
+                throwFailure(original);
+              }
               if (control === "undefined") throwFailure(undefined);
               if (control === "combined") throwFailure(original);
               expect(holderPid).toBeTypeOf("number");
@@ -435,7 +486,7 @@ describe("Transcript speaker mappings (issue #185)", () => {
               release();
               requireSuccessful(await bounded(holder));
               events.length = 0;
-              const edge = await attempt({ speaker: "SPEAKER_01" });
+              const edge = await bounded(attempt({ speaker: "SPEAKER_01" }));
               expect(edge.metadata).toEqual({ speaker: "SPEAKER_01" });
               expect((await speakers(transcriptId))[0]?.person?.id).toBe(personId);
               expect(
@@ -444,16 +495,24 @@ describe("Transcript speaker mappings (issue #185)", () => {
                 ),
               ).toEqual(beforeLinks);
               expect(events).toEqual([]);
-              await expect(attempt({ speaker: "SPEAKER_99" }, otherPersonId)).rejects.toMatchObject({
-                status: 400,
-                code: "validation_failed",
-                details: { reason: "unknownSpeaker" },
-              });
-              await expect(attempt({ speaker: "SPEAKER_01" }, otherPersonId)).rejects.toMatchObject({
-                status: 400,
-                code: "validation_failed",
-                details: { reason: "speakerAlreadyMapped" },
-              });
+              await expectAttempt(
+                { speaker: "SPEAKER_99" },
+                {
+                  status: 400,
+                  code: "validation_failed",
+                  details: { reason: "unknownSpeaker" },
+                },
+                otherPersonId,
+              );
+              await expectAttempt(
+                { speaker: "SPEAKER_01" },
+                {
+                  status: 400,
+                  code: "validation_failed",
+                  details: { reason: "speakerAlreadyMapped" },
+                },
+                otherPersonId,
+              );
               expect((await speakers(transcriptId))[0]?.person?.id).toBe(personId);
               expect(
                 (await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")).rows,
@@ -463,6 +522,7 @@ describe("Transcript speaker mappings (issue #185)", () => {
               failure = { error };
             } finally {
               release();
+              releaseLate();
               try {
                 await operations.settle();
                 requireSuccessful(await bounded(holder));
@@ -488,7 +548,9 @@ describe("Transcript speaker mappings (issue #185)", () => {
           if (!(result.error instanceof AggregateError)) throw new Error("Expected combined failure");
           expect(result.error.errors).toHaveLength(2);
           expect(result.error.errors[0]).toBe(original);
-          expect(result.error.errors[1]).toBe(cleanup);
+          expect(result.error.errors[1]).toBe(
+            control === "late" || control === "late-undefined" ? lateFailure : cleanup,
+          );
           expect(result.error.cause).toBe(original);
         }
       },
