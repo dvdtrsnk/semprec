@@ -362,6 +362,12 @@ describe("Gmail Reply-To envelope", () => {
     ]);
   });
 
+  it("leaves replyTo absent when the header has no parseable address", async () => {
+    const fetched = await fetchWithHeaders([{ name: "Reply-To", value: "<>" }]);
+    expect(fetched?.message.envelope).not.toHaveProperty("replyTo");
+    expect(fetched?.message.envelope.from).toEqual({ name: "Sender", address: "sender@example.test" });
+  });
+
   it("leaves replyTo absent without a Reply-To header", async () => {
     const fetched = await fetchWithHeaders([]);
     expect(fetched?.message.envelope).not.toHaveProperty("replyTo");

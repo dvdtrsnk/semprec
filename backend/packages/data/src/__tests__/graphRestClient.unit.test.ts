@@ -373,6 +373,15 @@ describe("Graph Reply-To envelope", () => {
     expect(message.envelope.replyTo).toEqual([{ name: "Support", address: "support@example.test" }]);
   });
 
+  it("leaves replyTo absent when Graph supplies an empty address", async () => {
+    const message = await toFetchedGraphMessage(
+      { id: "message-1", replyTo: [{ emailAddress: { address: "" } }] },
+      noAttachments,
+      noStream,
+    );
+    expect(message.envelope).not.toHaveProperty("replyTo");
+  });
+
   it("leaves replyTo absent when Graph returns none", async () => {
     const message = await toFetchedGraphMessage({ id: "message-1", replyTo: [] }, noAttachments, noStream);
     expect(message.envelope).not.toHaveProperty("replyTo");

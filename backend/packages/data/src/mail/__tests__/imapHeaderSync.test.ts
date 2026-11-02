@@ -112,6 +112,7 @@ it("persists IMAP Reply-To and each bulk signal through the adapter and folder s
             messageId: `<imap-bulk-${index}@example.test>`,
             from: [{ name: "Sender", address: index === 4 ? "No-Reply@example.test" : "person@example.test" }],
             ...(index === 0 ? { replyTo: [{ name: "Support", address: "support@example.test" }] } : {}),
+            ...(index === 5 ? { replyTo: [{ address: "" }] } : {}),
           },
           headers: Buffer.from(rawHeaders[index]!),
         };
@@ -134,6 +135,7 @@ it("persists IMAP Reply-To and each bulk signal through the adapter and folder s
       bcc: [],
       replyTo: [{ name: "Support", address: "support@example.test" }],
     });
+    expect(rows[3]?.envelope).not.toHaveProperty("replyTo");
     expect(rows[5]?.envelope).toEqual({
       from: { name: "Sender", address: "person@example.test" },
       to: [],
