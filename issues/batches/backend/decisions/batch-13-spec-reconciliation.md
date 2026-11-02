@@ -63,3 +63,23 @@ Do not change unrelated stored state, outbound policy/resolution rules, default
 timeouts or other adapter behavior. Original gh-1478 handover and accepted ADR
 bodies remain immutable. This scope supersedes section 1's temporary hold for
 these exact changes; all implementation/review/runtime gates remain required.
+
+## 3. ImapFlow pre-connect cancellation ownership
+
+The parent verified ImapFlow 1.7.6 clears its timer in close() before it has an
+initialReject callback during pre-connect. Adopt the additive compatibility
+decision [[2026-11-02-mail-verification-cancels-imap-through-owned-sockets]].
+One checked read-only socket accessor, local to the existing verification
+helper, captures actual Socket identities and terminal events. Cancellation
+destroys that socket with a fixed owner error while library handlers remain,
+awaits actual connect settlement and then performs final public close. Neither
+an earlier inner timer nor ImapFlow's synchronous close event proves settlement.
+No private-field writes, dependency patch, SMTP interception or new transport.
+
+The parent library-only held-DNS diagnostic in private evidence is supporting
+design evidence, not a production test or gate. Its delayed callback returns no
+network address. The worker must exercise actual helper phases, late completion
+and independent error outcomes before review. Normal adapters remain unchanged.
+This adds only the new ADR to gh-1569 Touches; source/test paths already belong
+to section 2. Embedded requirements stay complete; the aggregate's redundant
+top-level Context alone is compressed to remain below its metadata size cap.
