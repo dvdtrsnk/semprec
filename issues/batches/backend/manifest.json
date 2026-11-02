@@ -1264,8 +1264,8 @@
       "sequence": 13,
       "status": "proposed",
       "title": "[backend-delivery 13/74] Implement data/mail, semprec-api/adapter changes",
-      "bodyCharacters": 59359,
-      "specSha256": "5e964b1d475b051960d37e53f3e53d3c1bde68f71268cc06a83c357fb42360d3",
+      "bodyCharacters": 59617,
+      "specSha256": "4d94cb4716575ded6c7961c466463fd07f04c46df063977ddb084988b203f500",
       "members": [
         {
           "id": "gh-1497",
@@ -1301,7 +1301,7 @@
         },
         {
           "id": "gh-1505",
-          "specSha256": "0c19100a538925bf2b4bab927e6a8e5dbd95e47d872bc9c02bfa404481e68a46",
+          "specSha256": "d688f490d72d7dcb12b0529478e7e66d0a1b0bf53f79b8f005ea6414b2be1dbd",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1481"
@@ -1310,7 +1310,7 @@
         },
         {
           "id": "gh-1508",
-          "specSha256": "4459ca22744fb7cd403266d9c8f0df1710d7f72636408cad953e20a012e4b431",
+          "specSha256": "fcc10ce60d46ad9d80ed2d7bdfcd75e5697ed232fab371a35e8ab1118489a099",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1505"

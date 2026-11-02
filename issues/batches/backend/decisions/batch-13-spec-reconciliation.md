@@ -233,3 +233,33 @@ Prove secret-bearing arbitrary failures, genuine known outcomes, actual cleanup,
 accepted-send behavior, stored last_error and serialized logs independently.
 Non-network failure identity is a required negative control. Development passes
 that omit these branches are not evidence for the new privacy contract.
+
+## 9. Gmail and Graph sync bearer failures
+
+Adopt [[2026-11-02-bearer-sync-failures-stay-private]] for gh-1505/gh-1508.
+After token acquisition, narrowly isolate sync fetch/body failures and Graph's
+lazy attachment source failures before they reach the job's last_error writer
+or queue. Keep exact original values internally through owned cleanup and safe
+diagnostic processing, then expose fixed generic errors without raw cause or
+properties. Unknown is not auth/unreachable. Do not wrap token acquisition,
+SQL/domain/storage or the entire reconcile/job; preserve their identities and
+existing transaction/refresh behavior.
+
+Preserve genuine Gmail 404/history and Graph typed 404/410/cap semantics. Graph
+well-known-folder discovery may swallow only an actual typed 404, not arbitrary
+provider/body/token failure or another status. This explicit behavior correction
+prevents privacy conversion from becoming silent success. Request/attachment
+error contexts must not echo URLs/cursors/IDs that can contain provider data.
+Graph stream failure and consumer teardown must settle the owned source and
+transform without replacing independent downstream errors or buffering the body.
+
+Expand each existing REST source Touches from injectable-fetch-only to these
+finite sync privacy sites, plus its existing corresponding REST unit test.
+Existing mailSyncAdapters.test.ts supplies composed job/stored-error evidence.
+No production mailSyncJob rewrite or new public types/utility framework. Gmail
+modify/send and Graph patch/write/send/draft/upload/delete remain outside this
+decision; their separate delivery/flag semantics are unchanged. Earlier SMTP,
+IMAP and verification decisions do not acquire broader scope by analogy.
+Prove all actual failure surfaces, unknown identity retention before the public
+boundary, safe stored/serialized errors, genuine status/refresh positives and
+non-network identity negatives before independent review or gates.
