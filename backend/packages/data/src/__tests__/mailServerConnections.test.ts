@@ -963,14 +963,14 @@ describe("openImapConnection (issue #1478)", () => {
     const failure = new Error("STARTTLS wrapper destroy failed");
     const originalConnect: unknown = Object.getOwnPropertyDescriptor(ImapFlow.prototype, "connect")?.value;
     if (typeof originalConnect !== "function") throw new Error("Missing ImapFlow connect method");
-    let client: ImapFlow | undefined;
+    const clientRef: { current?: ImapFlow } = {};
     let initial: NetSocket | undefined;
     let initialClosed = false;
     let replacement: tls.TLSSocket | undefined;
     let injected = false;
     let rejected: { value: unknown } | undefined;
     vi.spyOn(ImapFlow.prototype, "connect").mockImplementation(function (this: ImapFlow) {
-      client = this;
+      clientRef.current = this;
       const operation: unknown = Reflect.apply(originalConnect, this, []);
       if (!(operation instanceof Promise)) throw new Error("Missing connect promise");
       const socket: unknown = Object.getOwnPropertyDescriptor(this, "socket")?.value;
@@ -989,8 +989,8 @@ describe("openImapConnection (issue #1478)", () => {
     });
     const server = await startFakeServer((socket) => {
       const session = startTlsSession("imap", mailCertificate, [], true, [], false, () => {
-        if (replacement || !client) return;
-        const candidate: unknown = Object.getOwnPropertyDescriptor(client, "socket")?.value;
+        if (replacement || !clientRef.current) return;
+        const candidate: unknown = Object.getOwnPropertyDescriptor(clientRef.current, "socket")?.value;
         if (!(candidate instanceof tls.TLSSocket) || candidate === initial) return;
         replacement = candidate;
         const destroy = candidate.destroy.bind(candidate);
