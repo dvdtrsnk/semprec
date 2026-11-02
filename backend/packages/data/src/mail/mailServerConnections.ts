@@ -1,4 +1,5 @@
-import { connect, isIP, type LookupFunction, type Socket } from "node:net";
+import { connect, isIP, Socket, type LookupFunction } from "node:net";
+import { TLSSocket } from "node:tls";
 import { ImapFlow } from "imapflow";
 import { createTransport, type SendMailOptions } from "nodemailer";
 import {
@@ -172,22 +173,210 @@ function buildImapFlow(
   options: MailServerConnectionOptions,
   policy: OutboundAddressPolicy,
   connectionTimeout: number,
+  verification = false,
+  testCa?: string,
+  testPort?: number,
 ): ImapFlow {
   const { endpoint, username } = settings;
   return new ImapFlow({
     host: endpoint.host,
-    port: endpoint.port,
+    port: testPort ?? endpoint.port,
     secure: endpoint.security === "tls",
     ...(endpoint.security === "starttls" ? { doSTARTTLS: true } : {}),
     auth: { user: username, pass: credential.password },
-    tls: { servername: endpoint.host, lookup: createPolicyLookup(policy) },
+    tls: { servername: endpoint.host, lookup: createPolicyLookup(policy), ...(testCa ? { ca: testCa } : {}) },
     connectionTimeout,
     greetingTimeout: GREETING_TIMEOUT_MS,
+    ...(verification ? { disableCompression: true } : {}),
     ...(options.maxIdleTime !== undefined ? { maxIdleTime: options.maxIdleTime } : {}),
     ...(options.socketTimeout !== undefined ? { socketTimeout: options.socketTimeout } : {}),
     // ImapFlow's protocol logger can emit user content.
     logger: false,
   });
+}
+
+type VerificationAttempt = "success" | "authentication" | "tls" | "unreachable";
+
+export interface VerificationTestOptions {
+  deadlineMs?: number;
+  ca?: string;
+  ports?: Readonly<Record<number, number>>;
+}
+
+/** ImapFlow 1.7.6 sets an own `socket` during connect and replaces it for STARTTLS. */
+function verificationImapSocket(client: ImapFlow): Socket {
+  const value: unknown = Object.getOwnPropertyDescriptor(client, "socket")?.value;
+  if (!(value instanceof Socket)) throw new Error("IMAP verification could not observe its owned socket");
+  return value;
+}
+
+/** Verifies a single IMAP endpoint without returning the library client. */
+export async function verifyImapServerConnection(
+  settings: MailServerConnectionSettings,
+  credential: MailServerCredential,
+  options: MailServerConnectionOptions = {},
+  testOptions?: VerificationTestOptions,
+): Promise<VerificationAttempt> {
+  if (testOptions && process.env.NODE_ENV !== "test") throw new Error("Verification test options require test mode");
+  const policy = policyOf(options);
+  if (literalRefusal(settings.endpoint.host, policy)) return "unreachable";
+  const client = buildImapFlow(
+    settings,
+    credential,
+    options,
+    policy,
+    CONNECT_TIMEOUT_MS,
+    true,
+    testOptions?.ca,
+    testOptions?.ports?.[settings.endpoint.port],
+  );
+  const observations: Array<{ source: "client" | "socket"; value: unknown; beforeOwner: boolean }> = [];
+  let ownerAction = false;
+  const observe = (source: "client" | "socket", value: unknown) =>
+    observations.push({ source, value, beforeOwner: !ownerAction });
+  const clientError = (error: unknown) => observe("client", error);
+  client.on("error", clientError);
+  const observed = new Map<Socket, { closed: Promise<void>; listener: (error: Error) => void }>();
+  let initialSocket: Socket | undefined;
+  let alreadyClosedWrapper: TLSSocket | undefined;
+  const capture = (): Socket => {
+    const socket = verificationImapSocket(client);
+    if (!observed.has(socket)) {
+      if (socket.closed) {
+        // ImapFlow 1.7.6 wraps this attempt's original TCP socket for STARTTLS, without a second dial.
+        // Its actual close event is still required below; `closed` alone is not transport proof.
+        if (settings.endpoint.security !== "starttls" || !initialSocket || !(socket instanceof TLSSocket)) {
+          throw new Error("IMAP verification missed the owned socket close event");
+        }
+        alreadyClosedWrapper = socket;
+        return socket;
+      }
+      initialSocket ??= socket;
+      const listener = (error: Error) => observe("socket", error);
+      socket.on("error", listener);
+      const closed = new Promise<void>((resolve) => socket.once("close", resolve));
+      observed.set(socket, { closed, listener });
+    }
+    return socket;
+  };
+  const ownerCancellation = new Error("IMAP verification attempt expired");
+  let expired = false;
+  let cancellationFailure: { error: unknown } | undefined;
+  const deadline = setTimeout(() => {
+    expired = true;
+    try {
+      const socket = capture();
+      ownerAction = true;
+      socket.destroy(ownerCancellation);
+    } catch (error) {
+      cancellationFailure = { error };
+    }
+  }, testOptions?.deadlineMs ?? 15_000);
+  const operation = client.connect().then(
+    () => ({ ok: true as const }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  let initialFailure: { error: unknown } | undefined;
+  try {
+    capture();
+  } catch (error) {
+    initialFailure = { error };
+  }
+  const result = await operation;
+  clearTimeout(deadline);
+  const failures: unknown[] = [];
+  if (initialFailure) failures.push(initialFailure.error);
+  if (cancellationFailure) failures.push(cancellationFailure.error);
+  try {
+    capture();
+  } catch (error) {
+    failures.push(error);
+  }
+  if (!result.ok && result.error === ownerCancellation) {
+    await Promise.all([...observed.values()].map((entry) => entry.closed));
+  }
+  try {
+    client.close();
+  } catch (error) {
+    failures.push(error);
+    for (const socket of observed.keys()) {
+      try {
+        if (!socket.destroyed) socket.destroy();
+      } catch (destroyError) {
+        failures.push(destroyError);
+      }
+    }
+  }
+  await Promise.all([...observed.values()].map((entry) => entry.closed));
+  if (alreadyClosedWrapper && !alreadyClosedWrapper.closed) {
+    failures.push(new Error("IMAP verification TLS wrapper did not reach terminal state"));
+  }
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  client.removeListener("error", clientError);
+  for (const [socket, entry] of observed) {
+    socket.removeListener("error", entry.listener);
+  }
+  const secondary = observations.filter(
+    (entry) => entry.value !== ownerCancellation && (result.ok || entry.value !== result.error),
+  );
+  const prior = secondary.filter((entry) => entry.beforeOwner);
+  failures.push(...prior.map((entry) => entry.value));
+  if (failures.length) {
+    const distinct = [...new Set(result.ok ? failures : [result.error, ...failures])];
+    if (distinct.length === 1) throw distinct[0];
+    throw new AggregateError(distinct, "IMAP verification had multiple failures");
+  }
+  if (!result.ok && result.error === ownerCancellation) {
+    const later = secondary.filter((entry) => !entry.beforeOwner);
+    if (later.length) {
+      try {
+        if (!logger.isLevelEnabled("error")) throw new Error("IMAP verification diagnostic is disabled");
+        logger.error(
+          {
+            count: later.length,
+            observations: later.map((entry, index) => ({
+              order: index + 1,
+              source: entry.source,
+              category: entry.value instanceof Error ? "error" : "non_error",
+            })),
+          },
+          "IMAP verification observed secondary failures after cancellation",
+        );
+      } catch (diagnosticError) {
+        // The ordered members retain the primary, observations, and diagnostic failure.
+        // eslint-disable-next-line preserve-caught-error
+        throw new AggregateError(
+          [result.error, ...later.map((entry) => entry.value), diagnosticError],
+          "IMAP verification diagnostic could not be emitted",
+        );
+      }
+    }
+    return "unreachable";
+  }
+  if (secondary.length) {
+    const distinct = [
+      ...new Set(
+        result.ok ? secondary.map((entry) => entry.value) : [result.error, ...secondary.map((entry) => entry.value)],
+      ),
+    ];
+    if (distinct.length === 1) throw distinct[0];
+    throw new AggregateError(distinct, "IMAP verification had multiple failures");
+  }
+  if (result.ok) {
+    if (expired) throw new Error("IMAP verification completed after its deadline");
+    return "success";
+  }
+  if (ownerAction) throw result.error;
+  if (isAuthenticationFailure(result.error)) return "authentication";
+  if (isOutboundAddressNotAllowed(result.error)) return "unreachable";
+  if (
+    errorChain(result.error).some(
+      (error) => propertyOf(error, "tlsFailed") === true || TLS_FAILURE_CODES.has(codeOf(error) ?? ""),
+    )
+  )
+    return "tls";
+  if (isConnectionFailure(result.error)) return "unreachable";
+  throw result.error;
 }
 
 /**
@@ -260,9 +449,23 @@ function connectPinned(
   lookup: LookupFunction,
   callback: SocketCallback,
   openSockets: Set<Socket>,
+  onSocket?: (socket: Socket) => void,
 ): void {
   const socket = connect({ host, port, lookup });
   openSockets.add(socket);
+  try {
+    onSocket?.(socket);
+  } catch (error) {
+    openSockets.delete(socket);
+    try {
+      socket.destroy();
+    } catch (cleanupError) {
+      // The aggregate retains both values; its cause remains the primary setup failure.
+      // eslint-disable-next-line preserve-caught-error
+      throw new AggregateError([error, cleanupError], "SMTP socket setup and cleanup failed", { cause: error });
+    }
+    throw error;
+  }
   let connected = false;
   let settled = false;
   // The socket reports an error and then closes, so the callback is settled once, by whichever comes first.
@@ -299,11 +502,14 @@ function connectPinned(
  * `security: starttls` requires STARTTLS. Every connection is opened through `connectPinned`. The
  * transport's connect and send failures pass through `mapConnectionFailure`, as the IMAP factory's do.
  */
-export function createSmtpTransporter(
+function buildSmtpTransporter(
   settings: MailServerConnectionSettings,
   credential: MailServerCredential,
-  options: MailServerConnectionOptions = {},
-): MailSmtpTransporter {
+  options: MailServerConnectionOptions,
+  onSocket?: (socket: Socket) => void,
+  testCa?: string,
+  testPort?: number,
+) {
   const { endpoint, username } = settings;
   const host = endpoint.host;
   const policy = policyOf(options);
@@ -313,11 +519,11 @@ export function createSmtpTransporter(
   const openSockets = new Set<Socket>();
   const transporter = createTransport({
     host,
-    port: endpoint.port,
+    port: testPort ?? endpoint.port,
     secure: endpoint.security === "tls",
     requireTLS: endpoint.security === "starttls",
     auth: { user: username, pass: credential.password },
-    tls: { servername: host },
+    tls: { servername: host, ...(testCa ? { ca: testCa } : {}) },
     connectionTimeout: CONNECT_TIMEOUT_MS,
     greetingTimeout: GREETING_TIMEOUT_MS,
     getSocket: (_socketOptions: unknown, callback: SocketCallback) => {
@@ -326,9 +532,103 @@ export function createSmtpTransporter(
         callback(refusal);
         return;
       }
-      connectPinned(host, endpoint.port, lookup, callback, openSockets);
+      connectPinned(host, testPort ?? endpoint.port, lookup, callback, openSockets, onSocket);
     },
   });
+  return { transporter, openSockets };
+}
+
+/** Verifies one SMTP endpoint while retaining ownership of the policy-checked TCP socket. */
+export async function verifySmtpServerConnection(
+  settings: MailServerConnectionSettings,
+  credential: MailServerCredential,
+  options: MailServerConnectionOptions = {},
+  testOptions?: VerificationTestOptions,
+): Promise<VerificationAttempt> {
+  if (testOptions && process.env.NODE_ENV !== "test") throw new Error("Verification test options require test mode");
+  const owned = new Map<Socket, { closed: Promise<void>; errors: unknown[]; listener: (error: Error) => void }>();
+  const observeSocket = (socket: Socket) => {
+    const errors: unknown[] = [];
+    const listener = (error: Error) => errors.push(error);
+    socket.on("error", listener);
+    owned.set(socket, { closed: new Promise<void>((resolve) => socket.once("close", resolve)), errors, listener });
+  };
+  const { transporter, openSockets } = buildSmtpTransporter(
+    settings,
+    credential,
+    options,
+    observeSocket,
+    testOptions?.ca,
+    testOptions?.ports?.[settings.endpoint.port],
+  );
+  const ownerCancellation = new Error("SMTP verification attempt expired");
+  let expired = false;
+  const cancellationFailures: unknown[] = [];
+  const deadline = setTimeout(() => {
+    expired = true;
+    for (const socket of openSockets) {
+      try {
+        socket.destroy(ownerCancellation);
+      } catch (error) {
+        cancellationFailures.push(error);
+      }
+    }
+  }, testOptions?.deadlineMs ?? 15_000);
+  const result = await Promise.resolve()
+    .then(() => transporter.verify())
+    .then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+  clearTimeout(deadline);
+  try {
+    transporter.close();
+  } catch (error) {
+    cancellationFailures.push(error);
+  }
+  for (const socket of openSockets) {
+    try {
+      socket.destroy();
+    } catch (error) {
+      cancellationFailures.push(error);
+    }
+  }
+  await Promise.all([...owned.values()].map((entry) => entry.closed));
+  for (const [socket, entry] of owned) socket.removeListener("error", entry.listener);
+  const secondary = [...owned.values()]
+    .flatMap((entry) => entry.errors)
+    .filter((error) => error !== ownerCancellation && (result.ok || error !== result.error));
+  const failures = [...cancellationFailures, ...secondary];
+  if (failures.length) {
+    const distinct = [...new Set(result.ok ? failures : [result.error, ...failures])];
+    if (distinct.length === 1) throw distinct[0];
+    throw new AggregateError(distinct, "SMTP verification had multiple failures");
+  }
+  if (result.ok) {
+    if (expired) throw new Error("SMTP verification completed after its deadline");
+    return "success";
+  }
+  if (result.error === ownerCancellation) return "unreachable";
+  if (expired) throw result.error;
+  if (isAuthenticationFailure(result.error)) return "authentication";
+  if (isOutboundAddressNotAllowed(result.error)) return "unreachable";
+  if (
+    errorChain(result.error).some(
+      (error) => propertyOf(error, "tlsFailed") === true || TLS_FAILURE_CODES.has(codeOf(error) ?? ""),
+    )
+  )
+    return "tls";
+  if (isConnectionFailure(result.error)) return "unreachable";
+  throw result.error;
+}
+
+export function createSmtpTransporter(
+  settings: MailServerConnectionSettings,
+  credential: MailServerCredential,
+  options: MailServerConnectionOptions = {},
+): MailSmtpTransporter {
+  const { transporter, openSockets } = buildSmtpTransporter(settings, credential, options);
+  const host = settings.endpoint.host;
   return {
     verify: () =>
       transporter.verify().catch((error: unknown) => {

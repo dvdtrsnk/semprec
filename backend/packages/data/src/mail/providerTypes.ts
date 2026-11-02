@@ -70,6 +70,33 @@ export class MailServerUnreachableError extends Error {
   }
 }
 
+/** A generic mailbox's credentials were rejected during verification. */
+export class MailAuthFailedError extends Error {
+  readonly code = "mail_auth_failed";
+  constructor() {
+    super("The mail server rejected the login");
+    this.name = "MailAuthFailedError";
+  }
+}
+
+/** iCloud requires an app-specific password when login fails. */
+export class MailAppPasswordRequiredError extends Error {
+  readonly code = "mail_app_password_required";
+  constructor() {
+    super("An app-specific password is required");
+    this.name = "MailAppPasswordRequiredError";
+  }
+}
+
+/** Verification observed an unambiguous TLS or required-upgrade failure. */
+export class MailTlsFailedError extends Error {
+  readonly code = "mail_tls_failed";
+  constructor() {
+    super("The mail server could not establish TLS");
+    this.name = "MailTlsFailedError";
+  }
+}
+
 /**
  * Thrown by a mail transport when the outgoing server rejects the login: a 535 reply, or another login failure
  * nodemailer reports as `EAUTH`. The message names neither the server's response nor the credential.
