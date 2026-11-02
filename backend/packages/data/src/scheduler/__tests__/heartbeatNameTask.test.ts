@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { runInTenant } from "@semprec/shared";
 import {
   createRuntimeRolePool,
+  createTestProjectItem,
   createTestTenant,
   getTestPool,
   resetDatabase,
@@ -17,9 +19,15 @@ let pool: Pool;
 let runtimePool: Pool;
 
 async function getProjectItemId(): Promise<string> {
-  const { rows } = await pool.query("SELECT id FROM databases WHERE owner_module_id = 'projects'");
-  const { rows: items } = await pool.query("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [rows[0].id]);
-  return items[0].id;
+  const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'");
+  const database = rows[0];
+  if (!database) throw new Error("Missing projects database");
+  const { rows: items } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [
+    database.id,
+  ]);
+  const item = items[0];
+  if (!item) throw new Error("Missing project item");
+  return item.id;
 }
 
 async function makeHeartbeat(actionId: string, actionConfig: Record<string, unknown>) {
@@ -108,9 +116,23 @@ describe("updateHeartbeatName / updateHeartbeatTask (issue #1435)", () => {
   it("does not find another tenant's heartbeat", async () => {
     const hb = await makeHeartbeat(CORE_AGENT_RUN_ACTION_ID, { task: "old" });
     const otherTenant = await createTestTenant(pool);
+    const projectItemId = await runInTenant(otherTenant, () => createTestProjectItem(runtimePool));
+    const own = await runInTenant(otherTenant, () =>
+      withTransaction(runtimePool, (client) =>
+        createHeartbeat(client, {
+          projectItemId,
+          name: "Own",
+          rule: { kind: "interval", minutes: 60 },
+          actionId: CORE_AGENT_RUN_ACTION_ID,
+          actionConfig: { task: "before" },
+        }),
+      ),
+    );
     await withTenantTransaction(runtimePool, otherTenant, async (client) => {
       expect(await updateHeartbeatName(client, hb.id, "hijack")).toBeNull();
       expect(await updateHeartbeatTask(client, hb.id, "hijack")).toBeNull();
+      expect((await updateHeartbeatName(client, own.id, "Allowed"))?.name).toBe("Allowed");
+      expect((await updateHeartbeatTask(client, own.id, "after"))?.actionConfig).toEqual({ task: "after" });
     });
     const after = await reload(hb.id);
     expect(after?.name).toBe("Original");
