@@ -2668,6 +2668,57 @@ describe("mail sync job error handling (issue #26)", () => {
     expect(list).toHaveBeenCalledTimes(1);
   });
 
+  it("retains a failed IMAP fetch and its independent iterator cleanup failure without exposing either", async () => {
+    const connection = new ImapFlow({
+      host: "unused.example.test",
+      port: 993,
+      secure: true,
+      auth: { user: "unused", pass: "unused" },
+      logger: false,
+    });
+    vi.spyOn(connection, "mailboxOpen").mockResolvedValue({
+      path: "INBOX",
+      delimiter: "/",
+      flags: new Set(),
+      uidValidity: 1n,
+      uidNext: 2,
+      exists: 1,
+    });
+    const primary = new Error("IMAP-PRIMARY-PRIVATE-SENTINEL");
+    const cleanup = new Error("IMAP-CLEANUP-PRIVATE-SENTINEL");
+    const iterator = (async function* (): AsyncGenerator<FetchMessageObject, void, unknown> {})();
+    let observedPrimary: unknown;
+    let observedCleanup: unknown;
+    const next = vi.spyOn(iterator, "next").mockImplementation(async () => {
+      observedPrimary = primary;
+      throw primary;
+    });
+    const close = vi.spyOn(iterator, "return").mockImplementation(async () => {
+      observedCleanup = cleanup;
+      throw cleanup;
+    });
+    vi.spyOn(connection, "fetch").mockReturnValue(iterator);
+    const warn = vi.spyOn(logger, "warn");
+    const outcome = await new ImapFlowMailClient(connection).fetchMessagesSince("INBOX", 1).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(observedPrimary).toBe(primary);
+    expect(observedCleanup).toBe(cleanup);
+    expect(next).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(outcome).toBeInstanceOf(Error);
+    if (!(outcome instanceof Error)) throw new Error("Missing IMAP provider failure");
+    expect(outcome.message).toBe("IMAP provider operation failed unexpectedly");
+    expect(outcome).not.toHaveProperty("cause");
+    expect(`${outcome.stack} ${JSON.stringify(warn.mock.calls)}`).not.toContain("PRIVATE-SENTINEL");
+    expect(
+      warn.mock.calls.some(
+        ([fields]) => typeof fields === "object" && fields !== null && Reflect.get(fields, "stage") === "stream_close",
+      ),
+    ).toBe(true);
+  });
+
   tenantIt("preserves a non-network storage failure identity through an IMAP sync", async () => {
     const moduleIds = {
       emailsDatabaseId: await databaseIdFor("emails"),
