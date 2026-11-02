@@ -157,6 +157,7 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
         const { transcriptId, cardId } = await createTranscriptCard();
         const existingId = mode === "link existing Event" ? await createItem(eventsId, "Planning") : undefined;
         if (existingId) await revise(cardId, linkExisting(existingId));
+        const eventsBefore = await eventIds();
         await withTransaction(pool, (client) =>
           insertValueLink(client, {
             itemId: transcriptId,
@@ -188,6 +189,7 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
             (await withTransaction(pool, (client) => listValueLinksByItemIds(client, [transcriptId])))[0]?.state,
           ).toBe("on");
           expect(await transcriptEventEdges()).toEqual([]);
+          expect(await eventIds()).toEqual(eventsBefore);
           expect((await cardProperties(cardId)).status).toBe("proposed");
           const confirmed = await withTransaction(pool, (client) =>
             confirmProposalWithClient(
@@ -199,7 +201,14 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
             ),
           );
           const eventId = confirmed.properties.resultItemId;
-          expect(typeof eventId).toBe("string");
+          if (typeof eventId !== "string") throw new Error("Missing confirmed Event ID");
+          if (existingId) {
+            expect(eventId).toBe(existingId);
+            expect(await eventIds()).toEqual(eventsBefore);
+          } else {
+            expect(await eventIds()).toEqual([...eventsBefore, eventId].sort());
+          }
+          expect((await cardProperties(cardId)).status).toBe("confirmed");
           expect(await transcriptEventEdges()).toEqual([{ transcriptId, eventId }]);
           expect(
             (await withTransaction(pool, (client) => listValueLinksByItemIds(client, [transcriptId])))[0],

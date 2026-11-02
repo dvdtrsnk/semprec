@@ -145,8 +145,18 @@ async function linkOf(itemId: string, propertyKey: string): Promise<ValueLinkRow
 }
 
 function throwFailure(error: unknown): never {
-  if (error instanceof Error) throw error;
-  throw new Error("Non-error test failure", { cause: error });
+  // Re-throw the exact value, including undefined, from a test-owned operation.
+  throw error;
+}
+
+function combineFailure(
+  failure: { error: unknown } | undefined,
+  errors: unknown[],
+  message: string,
+): { error: unknown } {
+  if (failure) return { error: new AggregateError([failure.error, ...errors], message, { cause: failure.error }) };
+  if (errors.length === 1) return { error: errors[0] };
+  return { error: new AggregateError(errors, message) };
 }
 
 function requireSuccessful(outcome: { ok: true } | { ok: false; error: unknown }): void {
@@ -350,6 +360,33 @@ describe("value link state on writes (issue #1516)", () => {
 
   beforeEach(async () => {
     await resetDatabase(pool);
+  });
+
+  it.each([undefined, { marker: "non-error" }])("preserves owned participant failure identity %#", async (original) => {
+    let settled = false;
+    let runtimePool: Pool | undefined;
+    const operation = withRuntimePool(async (runtime, operations) => {
+      runtimePool = runtime;
+      await operations.run(() =>
+        withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+          await client.query("SELECT 1");
+          settled = true;
+        }),
+      );
+      await operations.settle();
+      throwFailure(original);
+    });
+    await expect(operation).rejects.toBe(original);
+    expect(settled).toBe(true);
+    if (!runtimePool) throw new Error("Missing runtime fixture");
+    expect(runtimePool.totalCount).toBe(0);
+    const cleanup = { marker: "cleanup" };
+    const combined = combineFailure({ error: original }, [cleanup], "combined").error;
+    expect(combined).toBeInstanceOf(AggregateError);
+    if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
+    expect(combined.errors[0]).toBe(original);
+    expect(combined.errors[1]).toBe(cleanup);
+    expect(combined.cause).toBe(original);
   });
 
   it("settles a client delivered after pool cleanup starts without running its transaction", async () => {
@@ -1588,7 +1625,7 @@ describe("value link state on writes (issue #1516)", () => {
             () => ({ ok: true as const }),
             (error: unknown) => ({ ok: false as const, error }),
           );
-          let failure: unknown;
+          let failure: { error: unknown } | undefined;
           try {
             await bounded(held.promise);
             const lock = await pool.query<{ held: boolean }>(
@@ -1616,19 +1653,18 @@ describe("value link state on writes (issue #1516)", () => {
               ),
             ).toEqual(beforeEdges);
           } catch (error) {
-            failure = error;
+            failure = { error };
           } finally {
             release.resolve();
             try {
               requireSuccessful(await settleOwned(holder, () => holderPid));
             } catch (error) {
-              failure =
-                failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
+              failure = combineFailure(failure, [error], "Test and holder cleanup failed");
             } finally {
               setInvalidationHook(() => {});
             }
           }
-          if (failure !== undefined) throwFailure(failure);
+          if (failure !== undefined) throwFailure(failure.error);
           const links = await withTenantTransaction(holderPool, tenant, (client) =>
             listValueLinksByItemIds(client, [fixture.item.id]),
           );
@@ -1826,7 +1862,7 @@ describe("value link state on writes (issue #1516)", () => {
           () => ({ ok: true as const }),
           (error: unknown) => ({ ok: false as const, error }),
         );
-        let failure: unknown;
+        let failure: { error: unknown } | undefined;
         try {
           await bounded(held.promise);
           await expect(
@@ -1849,17 +1885,16 @@ describe("value link state on writes (issue #1516)", () => {
           expect(holderPid).toBeTypeOf("number");
           expect(contenderPid).toBeTypeOf("number");
         } catch (error) {
-          failure = error;
+          failure = { error };
         } finally {
           release.resolve();
           try {
             requireSuccessful(await settleOwned(holder, () => holderPid));
           } catch (error) {
-            failure =
-              failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
+            failure = combineFailure(failure, [error], "Test and holder cleanup failed");
           }
         }
-        if (failure !== undefined) throwFailure(failure);
+        if (failure !== undefined) throwFailure(failure.error);
       });
     });
 
@@ -1889,7 +1924,7 @@ describe("value link state on writes (issue #1516)", () => {
             () => ({ ok: true as const }),
             (error: unknown) => ({ ok: false as const, error }),
           );
-          let failure: unknown;
+          let failure: { error: unknown } | undefined;
           try {
             await bounded(held.promise);
             await expect(
@@ -1911,17 +1946,16 @@ describe("value link state on writes (issue #1516)", () => {
               [],
             );
           } catch (error) {
-            failure = error;
+            failure = { error };
           } finally {
             release.resolve();
             try {
               requireSuccessful(await settleOwned(holder, () => holderPid));
             } catch (error) {
-              failure =
-                failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
+              failure = combineFailure(failure, [error], "Test and holder cleanup failed");
             }
           }
-          if (failure !== undefined) throwFailure(failure);
+          if (failure !== undefined) throwFailure(failure.error);
           const links = await withTenantTransaction(holderPool, tenant, (client) =>
             listValueLinksByItemIds(client, [fx.file.id]),
           );
@@ -1947,7 +1981,7 @@ describe("value link state on writes (issue #1516)", () => {
           const spy = vi.spyOn(valueLinksStore, "lockOnValueLink");
           let participant: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
           let participantPid: number | undefined;
-          let failure: unknown;
+          let failure: { error: unknown } | undefined;
           try {
             await runInTenant(tenant, () =>
               withTransaction(validationPool, async (client) => {
@@ -1974,21 +2008,18 @@ describe("value link state on writes (issue #1516)", () => {
               ),
             ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
           } catch (error) {
-            failure = error;
+            failure = { error };
           } finally {
             if (participant) {
               try {
                 requireSuccessful(await settleOwned(participant, () => participantPid));
               } catch (error) {
-                failure =
-                  failure === undefined
-                    ? error
-                    : new AggregateError([failure, error], "Validation and participant cleanup failed");
+                failure = combineFailure(failure, [error], "Validation and participant cleanup failed");
               }
             }
             spy.mockRestore();
           }
-          if (failure !== undefined) throwFailure(failure);
+          if (failure !== undefined) throwFailure(failure.error);
         }),
       );
     });
@@ -2151,7 +2182,7 @@ describe("value link state on writes (issue #1516)", () => {
               () => ({ ok: true as const }),
               (error: unknown) => ({ ok: false as const, error }),
             );
-            let failure: unknown;
+            let failure: { error: unknown } | undefined;
             try {
               await bounded(held.promise);
               const edgeLock = await pool.query<{ held: boolean }>(
@@ -2222,7 +2253,7 @@ describe("value link state on writes (issue #1516)", () => {
                 ),
               ).toEqual(beforeEdges);
             } catch (error) {
-              failure = error;
+              failure = { error };
             } finally {
               release.resolve();
               try {
@@ -2231,15 +2262,12 @@ describe("value link state on writes (issue #1516)", () => {
                 if (outcome === "rollback") expect(result).toEqual({ ok: false, error: rollback });
                 else requireSuccessful(result);
               } catch (error) {
-                failure =
-                  failure === undefined
-                    ? error
-                    : new AggregateError([failure, error], "Test and proposal cleanup failed");
+                failure = combineFailure(failure, [error], "Test and proposal cleanup failed");
               } finally {
                 setInvalidationHook(() => {});
               }
             }
-            if (failure !== undefined) throwFailure(failure);
+            if (failure !== undefined) throwFailure(failure.error);
             await runInTenant(tenant, () =>
               withTransaction(contenderPool, (client) =>
                 operation === "update"
@@ -2311,7 +2339,7 @@ describe("value link state on writes (issue #1516)", () => {
             () => ({ ok: true as const }),
             (error: unknown) => ({ ok: false as const, error }),
           );
-          let failure: unknown;
+          let failure: { error: unknown } | undefined;
           try {
             await bounded(held.promise);
             const definition = await withTenantTransaction(contenderPool, tenant, (client) =>
@@ -2353,22 +2381,19 @@ describe("value link state on writes (issue #1516)", () => {
               ),
             ).toEqual(beforeEdges);
           } catch (error) {
-            failure = error;
+            failure = { error };
           } finally {
             release.resolve();
             try {
               const result = await settleOwned(holder, () => holderPid);
               requireSuccessful(result);
             } catch (error) {
-              failure =
-                failure === undefined
-                  ? error
-                  : new AggregateError([failure, error], "Test and proposal cleanup failed");
+              failure = combineFailure(failure, [error], "Test and proposal cleanup failed");
             } finally {
               setInvalidationHook(() => {});
             }
           }
-          if (failure !== undefined) throwFailure(failure);
+          if (failure !== undefined) throwFailure(failure.error);
           const links = await withTenantTransaction(holderPool, tenant, (client) =>
             listValueLinksByItemIds(client, [fx.file.id]),
           );
@@ -2424,7 +2449,7 @@ describe("value link state on writes (issue #1516)", () => {
             () => ({ ok: true as const }),
             (error: unknown) => ({ ok: false as const, error }),
           );
-          let failure: unknown;
+          let failure: { error: unknown } | undefined;
           try {
             await bounded(admitted.promise);
             await runInTenant(tenant, () =>
@@ -2446,19 +2471,18 @@ describe("value link state on writes (issue #1516)", () => {
             );
             expect(events.filter((event) => event.scope === "item" && event.itemId === fx.file.id)).toHaveLength(1);
           } catch (error) {
-            failure = error;
+            failure = { error };
           } finally {
             release.resolve();
             try {
               await settleOwned(system, () => systemPid);
             } catch (error) {
-              failure =
-                failure === undefined ? error : new AggregateError([failure, error], "Test and system cleanup failed");
+              failure = combineFailure(failure, [error], "Test and system cleanup failed");
             }
             spy.mockRestore();
             setInvalidationHook(() => {});
           }
-          if (failure !== undefined) throwFailure(failure);
+          if (failure !== undefined) throwFailure(failure.error);
         }),
       );
     }, 30000);
@@ -2519,7 +2543,7 @@ describe("value link state on writes (issue #1516)", () => {
               () => ({ ok: true as const }),
               (error: unknown) => ({ ok: false as const, error }),
             );
-            let failure: unknown;
+            let failure: { error: unknown } | undefined;
             try {
               await bounded(held.promise);
               const edgeLock = await pool.query<{ held: boolean }>(
@@ -2565,7 +2589,7 @@ describe("value link state on writes (issue #1516)", () => {
                   .rows[0]?.count,
               ).toBe(jobsBefore);
             } catch (error) {
-              failure = error;
+              failure = { error };
             } finally {
               release.resolve();
               try {
@@ -2573,14 +2597,11 @@ describe("value link state on writes (issue #1516)", () => {
                 const outcome = await settleOwned(holder, () => holderPid);
                 requireSuccessful(outcome);
               } catch (error) {
-                failure =
-                  failure === undefined
-                    ? error
-                    : new AggregateError([failure, error], "Test and holder cleanup failed");
+                failure = combineFailure(failure, [error], "Test and holder cleanup failed");
               }
               setInvalidationHook(() => {});
             }
-            if (failure !== undefined) throwFailure(failure);
+            if (failure !== undefined) throwFailure(failure.error);
             const edges = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
             expect(edges?.[0]?.metadata).toEqual({ holder: true });
             const links = await withTenantTransaction(holderPool, tenant, (client) =>
@@ -2741,7 +2762,7 @@ describe("value link state on writes (issue #1516)", () => {
         const hook = vi.fn(async () => {});
         const body = vi.fn(async () => {});
         const lock = vi.spyOn(relationsStore, "tryLockRelationDefinition");
-        let failure: unknown;
+        let failure: { error: unknown } | undefined;
         try {
           await runInTenant(tenant, () =>
             withTransaction(runtime, async (client) => {
@@ -2787,22 +2808,22 @@ describe("value link state on writes (issue #1516)", () => {
           );
           expect(await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id))).toEqual([]);
         } catch (error) {
-          failure = error;
+          failure = { error };
         } finally {
           release.resolve();
           try {
             await operations.settle();
           } catch (error) {
-            failure = failure === undefined ? error : new AggregateError([failure, error], "Body and cleanup failed");
+            failure = combineFailure(failure, [error], "Body and cleanup failed");
           }
           lock.mockRestore();
           try {
             foreign.release();
           } catch (error) {
-            failure = failure === undefined ? error : new AggregateError([failure, error], "Body and release failed");
+            failure = combineFailure(failure, [error], "Body and release failed");
           }
         }
-        if (failure !== undefined) throwFailure(failure);
+        if (failure !== undefined) throwFailure(failure.error);
       });
     }, 30000);
 
@@ -2867,7 +2888,7 @@ describe("value link state on writes (issue #1516)", () => {
             () => ({ ok: true as const }),
             (error: unknown) => ({ ok: false as const, error }),
           );
-          let failure: unknown;
+          let failure: { error: unknown } | undefined;
           try {
             await bounded(held.promise);
             const linkLock = await pool.query<{ held: boolean }>(
@@ -2950,7 +2971,7 @@ describe("value link state on writes (issue #1516)", () => {
               }),
             );
           } catch (error) {
-            failure = error;
+            failure = { error };
           } finally {
             release.resolve();
             try {
@@ -2958,12 +2979,11 @@ describe("value link state on writes (issue #1516)", () => {
               const result = await settleOwned(holder, () => holderPid);
               requireSuccessful(result);
             } catch (error) {
-              failure =
-                failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
+              failure = combineFailure(failure, [error], "Test and holder cleanup failed");
             }
             setInvalidationHook(() => {});
           }
-          if (failure !== undefined) throwFailure(failure);
+          if (failure !== undefined) throwFailure(failure.error);
         }),
       );
     }, 30000);
@@ -3037,7 +3057,7 @@ describe("value link state on writes (issue #1516)", () => {
             () => ({ ok: true as const }),
             (error: unknown) => ({ ok: false as const, error }),
           );
-          let failure: unknown;
+          let failure: { error: unknown } | undefined;
           try {
             await bounded(held.promise);
             await expect(
@@ -3090,7 +3110,7 @@ describe("value link state on writes (issue #1516)", () => {
             expect(callback).not.toHaveBeenCalled();
             expect(await jobCount()).toBe("0");
           } catch (error) {
-            failure = error;
+            failure = { error };
           } finally {
             release.resolve();
             try {
@@ -3098,13 +3118,12 @@ describe("value link state on writes (issue #1516)", () => {
               const result = await settleOwned(settledHolder, () => holderPid);
               requireSuccessful(result);
             } catch (error) {
-              failure =
-                failure === undefined ? error : new AggregateError([failure, error], "Test and holder cleanup failed");
+              failure = combineFailure(failure, [error], "Test and holder cleanup failed");
             } finally {
               setInvalidationHook(() => {});
             }
           }
-          if (failure !== undefined) throwFailure(failure);
+          if (failure !== undefined) throwFailure(failure.error);
         }),
       );
     }, 30000);
@@ -3232,7 +3251,7 @@ describe("value link state on writes (issue #1516)", () => {
             );
           let user: Promise<Outcome> | undefined;
           let system: Promise<Outcome> | undefined;
-          let failure: unknown;
+          let failure: { error: unknown } | undefined;
           const events: InvalidationEvent[] = [];
           setInvalidationHook((event) => events.push(event));
           try {
@@ -3271,7 +3290,7 @@ describe("value link state on writes (issue #1516)", () => {
             );
             expect(afterJob.rows[0]?.count).toBe("1");
           } catch (error) {
-            failure = error;
+            failure = { error };
           } finally {
             releaseJob.resolve();
             releaseLink.resolve();
@@ -3283,13 +3302,9 @@ describe("value link state on writes (issue #1516)", () => {
             );
             linkSpy.mockRestore();
             setInvalidationHook(() => {});
-            if (errors.length)
-              failure = new AggregateError(
-                failure === undefined ? errors : [failure, ...errors],
-                "Rollup diagnostic cleanup failed",
-              );
+            if (errors.length) failure = combineFailure(failure, errors, "Rollup diagnostic cleanup failed");
           }
-          if (failure !== undefined) throwFailure(failure);
+          if (failure !== undefined) throwFailure(failure.error);
         }),
       );
     }, 30000);
@@ -3376,7 +3391,7 @@ describe("value link state on writes (issue #1516)", () => {
               );
             let user: Promise<Outcome> | undefined;
             let system: Promise<Outcome> | undefined;
-            let failure: unknown;
+            let failure: { error: unknown } | undefined;
             const events: InvalidationEvent[] = [];
             setInvalidationHook((event) => events.push(event));
             try {
@@ -3414,7 +3429,7 @@ describe("value link state on writes (issue #1516)", () => {
               const edges = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
               expect(edges).toHaveLength(order === "system-first" ? 2 : 1);
             } catch (error) {
-              failure = error;
+              failure = { error };
             } finally {
               releaseEdge.resolve();
               releaseLink.resolve();
@@ -3427,13 +3442,9 @@ describe("value link state on writes (issue #1516)", () => {
               edgeSpy.mockRestore();
               linkSpy.mockRestore();
               setInvalidationHook(() => {});
-              if (errors.length)
-                failure = new AggregateError(
-                  failure === undefined ? errors : [failure, ...errors],
-                  "Relation diagnostic cleanup failed",
-                );
+              if (errors.length) failure = combineFailure(failure, errors, "Relation diagnostic cleanup failed");
             }
-            if (failure !== undefined) throwFailure(failure);
+            if (failure !== undefined) throwFailure(failure.error);
           }),
         );
       },
@@ -3564,7 +3575,7 @@ describe("value link state on writes (issue #1516)", () => {
               );
             let user: Promise<Outcome> | undefined;
             let system: Promise<Outcome> | undefined;
-            let failure: unknown;
+            let failure: { error: unknown } | undefined;
             const events: InvalidationEvent[] = [];
             setInvalidationHook((event) => events.push(event));
             try {
@@ -3623,7 +3634,7 @@ describe("value link state on writes (issue #1516)", () => {
               const edges = await runInTenant(tenant, () => cp.listItemRelations(fixture.item.id, property.id));
               expect(edges).toHaveLength(order === "system-first" ? 2 : 1);
             } catch (error) {
-              failure = error;
+              failure = { error };
             } finally {
               releaseSource.resolve();
               releaseLink.resolve();
@@ -3636,13 +3647,9 @@ describe("value link state on writes (issue #1516)", () => {
               sourceSpy.mockRestore();
               linkSpy.mockRestore();
               setInvalidationHook(() => {});
-              if (errors.length)
-                failure = new AggregateError(
-                  failure === undefined ? errors : [failure, ...errors],
-                  "Relation diagnostic cleanup failed",
-                );
+              if (errors.length) failure = combineFailure(failure, errors, "Relation diagnostic cleanup failed");
             }
-            if (failure !== undefined) throwFailure(failure);
+            if (failure !== undefined) throwFailure(failure.error);
           }),
         );
       },
@@ -3895,7 +3902,7 @@ describe("value link state on writes (issue #1516)", () => {
               );
             let user: Promise<Outcome> | undefined;
             let system: Promise<Outcome> | undefined;
-            let failure: unknown;
+            let failure: { error: unknown } | undefined;
             const events: InvalidationEvent[] = [];
             setInvalidationHook((event) => events.push(event));
             try {
@@ -3991,7 +3998,7 @@ describe("value link state on writes (issue #1516)", () => {
                 expect(links[0]).toMatchObject({ state: "broken", brokenBy: "user" });
               }
             } catch (error) {
-              failure = error;
+              failure = { error };
             } finally {
               releaseUser.resolve();
               releaseSystem.resolve();
@@ -4007,13 +4014,10 @@ describe("value link state on writes (issue #1516)", () => {
               lockSpy.mockRestore();
               setInvalidationHook(() => {});
               if (cleanupErrors.length) {
-                failure = new AggregateError(
-                  failure === undefined ? cleanupErrors : [failure, ...cleanupErrors],
-                  "Diagnostic and cleanup failed",
-                );
+                failure = combineFailure(failure, cleanupErrors, "Diagnostic and cleanup failed");
               }
             }
-            if (failure !== undefined) throwFailure(failure);
+            if (failure !== undefined) throwFailure(failure.error);
           }),
         );
       },

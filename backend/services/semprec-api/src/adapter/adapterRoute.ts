@@ -80,7 +80,7 @@ export function createAdapterRequestListener(
   pool: Pool,
   handler: AdapterHandler,
   options: AdapterRequestListenerOptions = {},
-): (req: IncomingMessage, res: ServerResponse) => void {
+): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const identity = await requireAuthenticatedIdentity(pool, req);
@@ -118,8 +118,8 @@ export function createAdapterRequestListener(
   // Same shape as authHandler.ts's own listener wrapper: keeps an unhandled rejection out of
   // `http.createServer`, which discards an async listener's return value and would otherwise
   // crash the process on any rejection escaping the try/catch above.
-  return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
-    handleRequest(req, res).catch((err: unknown) => {
+  return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    return handleRequest(req, res).catch((err: unknown) => {
       logger.error({ err }, "Unhandled error in the request listener");
       if (res.headersSent) {
         res.end();

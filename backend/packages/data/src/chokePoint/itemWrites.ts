@@ -176,17 +176,18 @@ export async function prepareUserItemPatch(
   database: DatabaseRow,
   stored: ItemRow,
 ): Promise<{ patch: Record<string, unknown>; deferredKeys: string[] }> {
+  const callerKeys = Object.keys(values);
   assertUserItemPatchValid(properties, values, database.ownerModuleId);
   if (database.ownerModuleId === null) return { patch: values, deferredKeys: [] };
-  const result = await prepareItemPreWriteTransforms(database.ownerModuleId, { stored, patch: values });
+  const result = await prepareItemPreWriteTransforms(database.ownerModuleId, { stored, patch: { ...values } });
   if (!result)
     throw new ValidationError("The item's write transform cannot be safely prepared", { field: "properties" });
-  assertTransformAddedKeysWritable(properties, Object.keys(values), result.patch, database.ownerModuleId);
+  assertTransformAddedKeysWritable(properties, callerKeys, result.patch, database.ownerModuleId);
   assertColorValues(properties, result.patch);
   assertTitlePresent(properties, result.patch, database.ownerModuleId, { writerKind: "user" }, "patch");
   for (const key of result.deferredKeys) {
     const property = properties.find((candidate) => candidate.key === key);
-    if (!property || property.owner !== "user" || Object.hasOwn(values, key) || Object.hasOwn(result.patch, key)) {
+    if (!property || property.owner !== "user" || callerKeys.includes(key) || Object.hasOwn(result.patch, key)) {
       throw new ValidationError("The item's write transform declared an invalid deferred key", { field: key });
     }
   }
@@ -246,7 +247,7 @@ async function applyItemPreWriteTransforms(
   properties: PropertyRow[],
 ): Promise<Record<string, unknown>> {
   const callerKeys = Object.keys(context.patch);
-  const transformed = await runItemPreWriteTransforms(moduleId, context);
+  const transformed = await runItemPreWriteTransforms(moduleId, { ...context, patch: { ...context.patch } });
   assertTransformAddedKeysWritable(properties, callerKeys, transformed, moduleId);
   return transformed;
 }

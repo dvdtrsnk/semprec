@@ -901,10 +901,18 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       withTransaction(pool, (client) =>
         confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposalId),
       );
-    const countTasks = async () =>
-      (await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [tasksId])).rows[0].n as number;
-    const countEdges = async () =>
-      (await pool.query("SELECT count(*)::int AS n FROM item_relations")).rows[0].n as number;
+    const countTasks = async () => {
+      const result = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+        tasksId,
+      ]);
+      if (!result.rows[0]) throw new Error("Missing task count");
+      return result.rows[0].n;
+    };
+    const countEdges = async () => {
+      const result = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM item_relations");
+      if (!result.rows[0]) throw new Error("Missing edge count");
+      return result.rows[0].n;
+    };
 
     it("writes the task and its project edge in one transaction, once even when confirmed again", async () => {
       const project = await createProject("Home");
@@ -1402,6 +1410,22 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       await withTransaction(pool, (client) =>
         insertValueLink(client, { itemId: project, propertyKey: "area", ruleKey: "test", sources: [] }),
       );
+      const inverseKey = await withTransaction(pool, async (client) => {
+        const definition = await relationsStore.getRelationDefinitionByPropertyId(client, property.id);
+        if (!definition?.propertyIdB) throw new Error("Missing inverse relation property");
+        const inverseId = definition.propertyIdA === property.id ? definition.propertyIdB : definition.propertyIdA;
+        const inverse = await propertiesStore.getProperty(client, inverseId);
+        if (!inverse) throw new Error("Missing inverse property");
+        return inverse.key;
+      });
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: newArea,
+          propertyKey: inverseKey,
+          ruleKey: "test",
+          sources: [],
+        }),
+      );
       const actorId = randomUUID();
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
@@ -1424,7 +1448,17 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         expect((await withTransaction(pool, (client) => listValueLinksByItemIds(client, [project])))[0]?.state).toBe(
           "on",
         );
+        expect((await withTransaction(pool, (client) => listValueLinksByItemIds(client, [newArea])))[0]?.state).toBe(
+          "on",
+        );
         await confirm(card, actorId);
+        expect((await withTransaction(pool, (client) => listValueLinksByItemIds(client, [newArea])))[0]).toMatchObject({
+          state: "broken",
+          brokenBy: "user",
+        });
+        expect(events.filter((event) => event.scope === "item" && event.itemId === newArea)).toEqual([
+          expect.objectContaining({ userId: actorId }),
+        ]);
         expect(events.filter((event) => event.scope === "item" && event.itemId === project)).toContainEqual(
           expect.objectContaining({ userId: actorId }),
         );

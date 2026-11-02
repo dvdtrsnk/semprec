@@ -184,8 +184,8 @@ function escapePlain(text: string, offset: number, whole: string): string {
 /** Only the canonical numeric spelling of non-LF ECMAScript whitespace is recognized. */
 function whitespaceReference(source: string): { text: string; length: number } | null {
   const match = /^&#x([1-9a-f][0-9a-f]*);/.exec(source);
-  if (!match) return null;
-  const point = Number.parseInt(match[1] as string, 16);
+  if (!match || match[1] === undefined) return null;
+  const point = Number.parseInt(match[1], 16);
   if (point > 0x10ffff) return null;
   const text = String.fromCodePoint(point);
   return text !== "\n" && /^\s$/u.test(text) ? { text, length: match[0].length } : null;
@@ -680,7 +680,8 @@ interface CommentAttributes {
 function parseComment(body: string): CommentAttributes {
   const attributes: CommentAttributes = {};
   for (const match of body.matchAll(/(\w+)=(\S+)/g)) {
-    const [, key, value] = match as unknown as [string, string, string];
+    const [, key, value] = match;
+    if (key === undefined || value === undefined) continue;
     if (key === "id") attributes.id = decodeUtf16Escapes(value);
     if (key === "type" && (value === '""' || /^(?:[A-Za-z0-9._:~-]|\\u[0-9A-F]{4})+$/.test(value))) {
       attributes.type = value === '""' ? "" : decodeUtf16Escapes(value);
@@ -703,8 +704,8 @@ function parseLine(raw: string): ParsedLine {
   const spaces = /^ */.exec(raw)?.[0].length ?? 0;
   const line = raw.trim();
   const page = /^\[(?:\\.|[^\]\\])*\]\(semprec:\/\/page\/([^)\s]+)\)$/.exec(line);
-  if (page) {
-    return { type: "page", lineIndent: null, pageId: decodeUtf16Escapes(page[1] as string) };
+  if (page && page[1] !== undefined) {
+    return { type: "page", lineIndent: null, pageId: decodeUtf16Escapes(page[1]) };
   }
   const heading = /^(#{1,3})(?: +([\s\S]*))?$/.exec(line);
   if (heading) {

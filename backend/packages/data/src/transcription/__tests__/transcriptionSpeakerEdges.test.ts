@@ -25,8 +25,18 @@ import { createTranscriptSpeakersRouteHandler } from "../transcriptionRouteHandl
 let pool: Pool;
 
 function throwFailure(error: unknown): never {
-  if (error instanceof Error) throw error;
-  throw new Error("Non-error test failure", { cause: error });
+  // Re-throw the exact value, including undefined, from a test-owned operation.
+  throw error;
+}
+
+function combineFailure(
+  failure: { error: unknown } | undefined,
+  errors: unknown[],
+  message: string,
+): { error: unknown } {
+  if (failure) return { error: new AggregateError([failure.error, ...errors], message, { cause: failure.error }) };
+  if (errors.length === 1) return { error: errors[0] };
+  return { error: new AggregateError(errors, message) };
 }
 
 function requireSuccessful(outcome: { ok: true } | { ok: false; error: unknown }): void {
@@ -248,6 +258,33 @@ describe("Transcript speaker mappings (issue #185)", () => {
     return rows[0]?.segments;
   }
 
+  it.each([undefined, { marker: "non-error" }])("preserves owned participant failure identity %#", async (original) => {
+    let settled = false;
+    let runtimePool: Pool | undefined;
+    const operation = withRuntimePool(async (runtime, operations) => {
+      runtimePool = runtime;
+      await operations.run(() =>
+        withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+          await client.query("SELECT 1");
+          settled = true;
+        }),
+      );
+      await operations.settle();
+      throwFailure(original);
+    });
+    await expect(operation).rejects.toBe(original);
+    expect(settled).toBe(true);
+    if (!runtimePool) throw new Error("Missing runtime fixture");
+    expect(runtimePool.totalCount).toBe(0);
+    const cleanup = { marker: "cleanup" };
+    const combined = combineFailure({ error: original }, [cleanup], "combined").error;
+    expect(combined).toBeInstanceOf(AggregateError);
+    if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
+    expect(combined.errors[0]).toBe(original);
+    expect(combined.errors[1]).toBe(cleanup);
+    expect(combined.cause).toBe(original);
+  });
+
   describe("rendering", () => {
     it("lists every speaker key unmapped, numbered by first appearance", async () => {
       const transcriptId = await createTranscript();
@@ -341,7 +378,7 @@ describe("Transcript speaker mappings (issue #185)", () => {
             () => ({ ok: true as const }),
             (error: unknown) => ({ ok: false as const, error }),
           );
-        let failure: unknown;
+        let failure: { error: unknown } | undefined;
         try {
           await bounded(ready);
           const lock = await pool.query<{ held: boolean }>(
@@ -411,21 +448,18 @@ describe("Transcript speaker mappings (issue #185)", () => {
           ).toEqual(beforeJobs.rows);
           expect(events).toEqual([]);
         } catch (error) {
-          failure = error;
+          failure = { error };
         } finally {
           release();
           try {
             await operations.settle();
             requireSuccessful(await bounded(holder));
           } catch (error) {
-            failure =
-              failure === undefined
-                ? error
-                : new AggregateError([failure, error], "Test and participant cleanup failed");
+            failure = combineFailure(failure, [error], "Test and participant cleanup failed");
           }
           setInvalidationHook(() => {});
         }
-        if (failure !== undefined) throwFailure(failure);
+        if (failure !== undefined) throwFailure(failure.error);
       });
     });
 

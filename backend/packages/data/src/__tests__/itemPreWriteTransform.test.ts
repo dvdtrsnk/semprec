@@ -722,6 +722,93 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
     }
   });
 
+  it.each([
+    ["ghost", "boo", 400, "validation_failed"],
+    ["tasks", [], 400, "validation_failed"],
+    ["count", 5, 403, "computed_readonly"],
+    ["link", "https://example.test", 403, "owner_violation"],
+  ] as const)(
+    "refuses in-place transform-added %s during preparation and update",
+    async (field, value, status, code) => {
+      const databaseId = await makeProbeDatabase();
+      const target = await chokePoint.createDatabase({ name: "Target" });
+      const { property: relation } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: databaseId,
+        key: "tasks",
+        name: "Tasks",
+        targetDatabaseId: target.id,
+      });
+      await chokePoint.createProperty({
+        databaseId,
+        key: "count",
+        name: "Count",
+        type: "rollup",
+        config: { relationPropertyKey: relation.key, aggregation: "count" },
+      });
+      const item = await chokePoint.createItem({ databaseId, properties: { title: "Before" } });
+      const database = (await chokePoint.listDatabases()).find((entry) => entry.id === databaseId);
+      if (!database) throw new Error("Missing probe database");
+      const properties = await chokePoint.listProperties(databaseId);
+      const transform = vi.fn(async ({ patch }: { patch: Record<string, unknown> }) => {
+        patch[field] = value;
+        return patch;
+      });
+      const prepare = vi.fn(async ({ patch }: { patch: Record<string, unknown> }) => {
+        patch[field] = value;
+        return { patch, deferredKeys: [] };
+      });
+      registerItemPreWriteTransform(PROBE_MODULE, transform, prepare);
+      const snapshot = () =>
+        pool.query<{ properties: string; computed: string; updated_at: string }>(
+          "SELECT properties::text, computed::text, updated_at::text FROM items WHERE database_id = $1 AND id = $2",
+          [databaseId, item.id],
+        );
+      const before = (await snapshot()).rows;
+      const linksBefore = await chokePoint.getValueLinksForItems([item.id]);
+      const jobsBefore = (
+        await pool.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST")
+      ).rows;
+      expect(before).toHaveLength(1);
+      const events: InvalidationEvent[] = [];
+      const heartbeat = vi.spyOn(schedulerStore, "triggerOnItemEventHeartbeats");
+      setInvalidationHook((event) => events.push(event));
+      try {
+        const patch = { title: "Changed" };
+        await expect(prepareUserItemPatch(properties, patch, database, item)).rejects.toMatchObject({
+          status,
+          code,
+          details: { field },
+        });
+        expect(prepare).toHaveBeenCalledOnce();
+        expect(patch).toEqual({ title: "Changed" });
+        expect(await chokePoint.getValueLinksForItems([item.id])).toEqual(linksBefore);
+        expect(
+          (await pool.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST"))
+            .rows,
+        ).toEqual(jobsBefore);
+        expect((await snapshot()).rows).toEqual(before);
+        expect(events).toEqual([]);
+        expect(heartbeat).not.toHaveBeenCalled();
+        await expect(
+          chokePoint.updateItem({ databaseId, itemId: item.id, propertiesPatch: patch }),
+        ).rejects.toMatchObject({ status, code, details: { field } });
+        expect(transform).toHaveBeenCalledOnce();
+        expect(patch).toEqual({ title: "Changed" });
+        expect(await chokePoint.getValueLinksForItems([item.id])).toEqual(linksBefore);
+        expect(
+          (await pool.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST"))
+            .rows,
+        ).toEqual(jobsBefore);
+        expect((await snapshot()).rows).toEqual(before);
+        expect(events).toEqual([]);
+        expect(heartbeat).not.toHaveBeenCalled();
+      } finally {
+        heartbeat.mockRestore();
+        setInvalidationHook(() => {});
+      }
+    },
+  );
+
   it("accepts own and unowned system outputs during preparation and update", async () => {
     const databaseId = await makeProbeDatabase();
     const item = await chokePoint.createItem({ databaseId, properties: { title: "Before" } });
@@ -740,6 +827,38 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
     });
     expect(await chokePoint.getItem(databaseId, item.id)).toEqual(before);
     const result = await chokePoint.updateItem({ databaseId, itemId: item.id, propertiesPatch: patch });
+    expect(result.properties).toMatchObject({ title: "Changed", derived: "d", stamp: "s" });
+    expect((await chokePoint.getItem(databaseId, item.id))?.properties).toEqual(result.properties);
+  });
+
+  it("accepts in-place own and unowned outputs without mutating caller input", async () => {
+    const databaseId = await makeProbeDatabase();
+    const item = await chokePoint.createItem({ databaseId, properties: { title: "Before" } });
+    const database = (await chokePoint.listDatabases()).find((entry) => entry.id === databaseId);
+    if (!database) throw new Error("Missing probe database");
+    registerItemPreWriteTransform(
+      PROBE_MODULE,
+      async ({ patch }) => {
+        patch.derived = "d";
+        patch.stamp = "s";
+        return patch;
+      },
+      async ({ patch }) => {
+        patch.derived = "d";
+        patch.stamp = "s";
+        return { patch, deferredKeys: [] };
+      },
+    );
+    const patch = { title: "Changed" };
+    const before = await chokePoint.getItem(databaseId, item.id);
+    expect(await prepareUserItemPatch(await chokePoint.listProperties(databaseId), patch, database, item)).toEqual({
+      patch: { title: "Changed", derived: "d", stamp: "s" },
+      deferredKeys: [],
+    });
+    expect(patch).toEqual({ title: "Changed" });
+    expect(await chokePoint.getItem(databaseId, item.id)).toEqual(before);
+    const result = await chokePoint.updateItem({ databaseId, itemId: item.id, propertiesPatch: patch });
+    expect(patch).toEqual({ title: "Changed" });
     expect(result.properties).toMatchObject({ title: "Changed", derived: "d", stamp: "s" });
     expect((await chokePoint.getItem(databaseId, item.id))?.properties).toEqual(result.properties);
   });

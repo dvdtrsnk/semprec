@@ -153,7 +153,14 @@ describe("approved destructive operations write as the requesting agent (issue #
       const itemA = await chokePoint.createItem({ databaseId: a.id, properties: {} });
       const itemB = await chokePoint.createItem({ databaseId: b.id, properties: {} });
       const input = { relationPropertyId: property.id, callerItemId: itemA.id, targetItemId: itemB.id };
-      await chokePoint.createRelation(input);
+      const edge = await chokePoint.createRelation({ ...input, metadata: { note: "original" } });
+      const readEdge = () =>
+        pool.query<{ id: string; item_a: string; item_b: string; metadata: unknown }>(
+          "SELECT id, item_a, item_b, metadata FROM item_relations WHERE id = $1",
+          [edge.id],
+        );
+      const beforeEdge = (await readEdge()).rows;
+      expect(beforeEdge).toEqual([expect.objectContaining({ id: edge.id, metadata: { note: "original" } })]);
       await withTransaction(pool, (client) =>
         insertValueLink(client, {
           itemId: itemA.id,
@@ -180,6 +187,7 @@ describe("approved destructive operations write as the requesting agent (issue #
       try {
         await expect(replayApprovedGenericOperation(pool, genericRequest)).rejects.toBe(failure);
         expect(events.filter((event) => event.scope === "item" && event.itemId === itemA.id)).toEqual([]);
+        expect((await readEdge()).rows).toEqual(beforeEdge);
         expect((await chokePoint.getValueLinksForItems([itemA.id])).get(itemA.id)?.bs).toMatchObject({
           valueKind: "inherited",
           brokenBy: null,

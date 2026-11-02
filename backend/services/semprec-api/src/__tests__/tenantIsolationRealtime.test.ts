@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool, type PoolClient } from "pg";
-import { WebSocket, type RawData } from "ws";
+import { WebSocket, WebSocketServer, type RawData } from "ws";
 import * as Y from "yjs";
 import {
   createAgentRun,
@@ -54,6 +54,8 @@ import {
 } from "@semprec/realtime";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createDispatcher } from "../app.js";
+import * as adapterRouteModule from "../adapter/adapterRoute.js";
+import * as itemRoutesModule from "../itemsHandler.js";
 import { SESSION_COOKIE_NAME } from "../authHandler.js";
 import { createSyncUpgradeHandler } from "../syncHandler.js";
 
@@ -132,14 +134,23 @@ function parseFrame(data: RawData, isBinary: boolean): Frame {
   return type === undefined ? { kind: "invalid", raw: text } : { kind: "text", type, body: json };
 }
 
+const ownedSockets = new Set<TestSocket>();
+
 /** A WebSocket that queues every frame it receives so a test consumes them in arrival order. */
 class TestSocket {
   private readonly queue: Frame[] = [];
   private wake: (() => void) | null = null;
+  private disposing = false;
+  private handshakeComplete = false;
+  private readonly errors: Error[] = [];
+  private readonly onError = (error: Error) => {
+    if (this.handshakeComplete && !this.disposing) this.errors.push(error);
+  };
   closeCode: number | undefined;
   readonly closed: Promise<number>;
 
   private constructor(private readonly ws: WebSocket) {
+    ws.on("error", this.onError);
     ws.on("message", (data: RawData, isBinary: boolean) => {
       this.queue.push(parseFrame(data, isBinary));
       this.wake?.();
@@ -153,14 +164,53 @@ class TestSocket {
     });
   }
 
-  static async connect(url: string, headers: Record<string, string>): Promise<TestSocket> {
+  static async connect(url: string, headers: Record<string, string>, owner = ownedSockets): Promise<TestSocket> {
     const ws = new WebSocket(url, { headers });
     const socket = new TestSocket(ws);
-    await new Promise<void>((resolve, reject) => {
-      ws.once("open", () => resolve());
-      ws.once("error", reject);
-    });
-    return socket;
+    owner.add(socket);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onOpen = () => {
+          clearTimeout(timer);
+          ws.removeListener("error", onError);
+          resolve();
+        };
+        const onError = (error: Error) => {
+          clearTimeout(timer);
+          ws.removeListener("open", onOpen);
+          reject(error);
+        };
+        ws.once("open", onOpen);
+        ws.once("error", onError);
+        timer = setTimeout(() => ws.terminate(), FRAME_TIMEOUT_MS);
+      });
+      socket.handshakeComplete = true;
+      return socket;
+    } catch (error) {
+      let cleanupFailure: { error: unknown } | undefined;
+      try {
+        await socket.dispose();
+      } catch (cleanup) {
+        cleanupFailure = { error: cleanup };
+      } finally {
+        owner.delete(socket);
+      }
+      if (cleanupFailure) {
+        throw new AggregateError([error, cleanupFailure.error], "Socket open and cleanup failed", { cause: error });
+      }
+      throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  async dispose(): Promise<void> {
+    this.disposing = true;
+    if (this.ws.readyState !== WebSocket.CLOSED) this.ws.terminate();
+    await this.closed;
+    this.ws.removeListener("error", this.onError);
+    if (this.errors.length) throw new AggregateError(this.errors, "Owned socket failed");
   }
 
   get isOpen(): boolean {
@@ -379,8 +429,12 @@ function ownRealtimeListener(configure?: (owned: Pool, onCancel: (cancel: () => 
 }
 
 /** Each request owns its abort timer and consumes the response before returning. */
-async function ownedPut(url: string, headers: Record<string, string>, timeoutMs = FRAME_TIMEOUT_MS): Promise<number> {
-  const controller = new AbortController();
+async function ownedPut(
+  url: string,
+  headers: Record<string, string>,
+  timeoutMs = FRAME_TIMEOUT_MS,
+  controller = new AbortController(),
+): Promise<number> {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, { method: "PUT", headers, signal: controller.signal });
@@ -405,9 +459,17 @@ async function connect(cookie: string): Promise<TestSocket> {
   return TestSocket.connect(wsUrl, { Cookie: cookie, Origin: baseUrl });
 }
 
+async function disposeSockets(owner = ownedSockets): Promise<void> {
+  const sockets = [...owner];
+  const results = await Promise.allSettled(sockets.map((socket) => socket.dispose()));
+  for (const socket of sockets) owner.delete(socket);
+  const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+  if (errors.length) throw new AggregateError(errors, "Socket cleanup failed");
+}
+
 /** Closes the current sockets and opens A's two sessions and B's one anew, each with a fresh queue. */
 async function reconnectAll(): Promise<void> {
-  for (const socket of [a1, a2, b1]) socket?.close();
+  await disposeSockets();
   const [sessionA1, sessionA2, sessionB1] = await Promise.all([
     openSession(tenantA),
     openSession(tenantA),
@@ -415,7 +477,24 @@ async function reconnectAll(): Promise<void> {
   ]);
   a1Cookie = sessionA1.cookie;
   a2SessionId = sessionA2.sessionId;
-  [a1, a2, b1] = await Promise.all([connect(sessionA1.cookie), connect(sessionA2.cookie), connect(sessionB1.cookie)]);
+  const attempts = [connect(sessionA1.cookie), connect(sessionA2.cookie), connect(sessionB1.cookie)] as const;
+  try {
+    [a1, a2, b1] = await Promise.all(attempts);
+  } catch (error) {
+    let cleanupError: unknown;
+    let cleanupFailed = false;
+    try {
+      await disposeSockets();
+    } catch (cleanup) {
+      cleanupFailed = true;
+      cleanupError = cleanup;
+    }
+    await Promise.allSettled(attempts);
+    if (cleanupFailed)
+      throw new AggregateError([error, cleanupError], "Socket setup and cleanup failed", { cause: error });
+    // Preserve the original connection failure, including non-Error values.
+    throw error;
+  }
 }
 
 async function restPost(cookie: string, path: string, body: unknown): Promise<Response> {
@@ -931,9 +1010,100 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     await reconnectAll();
   });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
-    for (const socket of [a1, a2, b1]) socket?.close();
+  afterEach(async () => {
+    try {
+      await disposeSockets();
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("settles partial socket success, refused and held upgrades before disposal", async () => {
+    const sockets = new Set<TestSocket>();
+    const local = createServer();
+    const upgrades = new WebSocketServer({ noServer: true });
+    let heldSocket: import("node:stream").Duplex | undefined;
+    let lateRejected = false;
+    let releaseUpgrade = () => {};
+    let heldReady = () => {};
+    const heldAccepted = new Promise<void>((resolve) => {
+      heldReady = resolve;
+    });
+    let heldClosed = () => {};
+    const heldEnded = new Promise<void>((resolve) => {
+      heldClosed = resolve;
+    });
+    local.on("upgrade", (req, socket, head) => {
+      if (req.url === "/open") upgrades.handleUpgrade(req, socket, head, () => {});
+      else if (req.url === "/hold") {
+        heldSocket = socket;
+        releaseUpgrade = () => {
+          if (socket.destroyed) {
+            lateRejected = true;
+            return;
+          }
+          upgrades.handleUpgrade(req, socket, head, () => {});
+        };
+        socket.once("close", heldClosed);
+        socket.resume();
+        heldReady();
+      } else socket.destroy();
+    });
+    await new Promise<void>((resolve) => local.listen(0, "127.0.0.1", resolve));
+    const address = local.address();
+    if (!address || typeof address === "string") throw new Error("Missing upgrade server address");
+    const url = `ws://127.0.0.1:${address.port}`;
+    const opened = TestSocket.connect(`${url}/open`, {}, sockets);
+    const held = TestSocket.connect(`${url}/hold`, {}, sockets);
+    const outcomes = [opened, held];
+    void Promise.allSettled(outcomes);
+    let failure: { error: unknown } | undefined;
+    try {
+      await opened;
+      await Promise.race([
+        heldAccepted,
+        held.then(() => {
+          throw new Error("Held upgrade opened unexpectedly");
+        }),
+      ]);
+      const refused = TestSocket.connect(`${url}/refuse`, {}, sockets);
+      outcomes.push(refused);
+      await expect(refused).rejects.toBeInstanceOf(Error);
+      await disposeSockets(sockets);
+      heldSocket?.destroy();
+      await Promise.allSettled(outcomes);
+      await heldEnded;
+      releaseUpgrade();
+      expect(lateRejected).toBe(true);
+      expect(sockets.size).toBe(0);
+    } catch (error) {
+      failure = { error };
+    } finally {
+      const errors: unknown[] = [];
+      heldSocket?.destroy();
+      try {
+        await disposeSockets(sockets);
+      } catch (error) {
+        errors.push(error);
+      }
+      await Promise.allSettled(outcomes);
+      local.closeAllConnections();
+      try {
+        await new Promise<void>((resolve, reject) => upgrades.close((error) => (error ? reject(error) : resolve())));
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await new Promise<void>((resolve, reject) => local.close((error) => (error ? reject(error) : resolve())));
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length) {
+        const all = failure ? [failure.error, ...errors] : errors;
+        failure = { error: new AggregateError(all, "Socket control and cleanup failed", { cause: all[0] }) };
+      }
+    }
+    if (failure) throw failure.error;
   });
 
   it("settles a listener delivered after cleanup starts", async () => {
@@ -980,7 +1150,6 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     }
     if (failure) {
       // Preserve the actual setup failure, including non-Error values from external code.
-      // eslint-disable-next-line @typescript-eslint/only-throw-error
       throw failure.error;
     }
     await expect(opening).rejects.toThrow("Listener closed during acquisition");
@@ -1063,7 +1232,6 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     }
     if (failure) {
       // Preserve both the original failure and any owned-server cleanup failure.
-      // eslint-disable-next-line @typescript-eslint/only-throw-error
       throw failure.error;
     }
   });
@@ -1093,7 +1261,63 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     let onNotification: ((message: { channel: string; payload?: string }) => void) | undefined;
     let cancelObservation: (() => void) | undefined;
     let observationSettled: Promise<void> | undefined;
+    let requestServer: Server | undefined;
+    const marker = randomUUID();
+    const requests: Array<{ task?: Promise<void> }> = [];
+    let gateEntered = () => {};
+    let releaseGate = () => {};
+    const admitted = new Promise<void>((resolve) => {
+      gateEntered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    let settlePublications = async () => {};
     try {
+      const actualAdapter = adapterRouteModule.createAdapterRequestListener;
+      vi.spyOn(adapterRouteModule, "createAdapterRequestListener").mockImplementation((...args) => {
+        const actual = actualAdapter(...args);
+        return (req, res) => {
+          if (req.headers["x-test-owner"] !== marker) return actual(req, res);
+          const entry: { task?: Promise<void> } = {};
+          requests.push(entry);
+          const task = actual(req, res);
+          entry.task = task;
+          void task.catch(() => {});
+          return task;
+        };
+      });
+      const actualItems = itemRoutesModule.createItemRoutes;
+      vi.spyOn(itemRoutesModule, "createItemRoutes").mockImplementation((...args) =>
+        actualItems(...args).map((route) => {
+          if (route.method !== "PUT" || route.path !== "/api/items/:id/relations/:propertyKey/:targetItemId")
+            return route;
+          const actual = route.handler;
+          return {
+            ...route,
+            handler: async (context) => {
+              if (context.req.headers["x-test-gate"] === marker) {
+                gateEntered();
+                await gate;
+              }
+              return actual(context);
+            },
+          };
+        }),
+      );
+      const dispatcher = await createDispatcher(pool, {
+        passwordResetMailer: noopMailer,
+        appBaseUrl: "http://localhost",
+        setupToken: "unused-setup-token",
+        moduleRegistry,
+        blobStorage: new LocalFsBlobStorageWriter(blobDir ?? ""),
+        maxFileSizeBytes: 10 * 1024 * 1024,
+      });
+      requestServer = createServer(dispatcher);
+      await new Promise<void>((resolve) => requestServer?.listen(0, "127.0.0.1", resolve));
+      const requestAddress = requestServer.address();
+      if (!requestAddress || typeof requestAddress === "string") throw new Error("Missing owned request server");
+      const requestBase = `http://127.0.0.1:${requestAddress.port}`;
       listener = await listenerOwner.open();
       const activeListener = listener;
       const observed = new Promise<unknown>((resolve, reject) => {
@@ -1128,7 +1352,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         }
         return messages;
       };
-      const causalBarrier = async (itemId: string): Promise<void> => {
+      settlePublications = async () => {
         const publications: Promise<unknown>[] = [];
         for (let index = 0; index < querySpy.mock.calls.length; index++) {
           const args: readonly unknown[] = querySpy.mock.calls[index] ?? [];
@@ -1138,6 +1362,9 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
           publications.push(result);
         }
         await Promise.all(publications);
+      };
+      const causalBarrier = async (itemId: string): Promise<void> => {
+        await settlePublications();
         const marker = randomUUID();
         let sentinelTimer: ReturnType<typeof setTimeout> | undefined;
         const forbiddenEnvelopes: unknown[] = [];
@@ -1191,8 +1418,11 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
           await settled;
         }
       };
-      const url = `${baseUrl}/api/items/${source.id}/relations/${property.key}/${target.id}`;
-      expect(await ownedPut(url, { Cookie: a1Cookie, Origin: baseUrl })).toBe(200);
+      const url = `${requestBase}/api/items/${source.id}/relations/${property.key}/${target.id}`;
+      const headers = { Cookie: a1Cookie, Origin: requestBase, "x-test-owner": marker };
+      expect(await ownedPut(url, headers)).toBe(200);
+      expect(requests).toHaveLength(1);
+      await requests[0]?.task;
       expect(await observed).toMatchObject({
         tenantId: tenantA.tenantId,
         message: { type: "invalidation", scope: "item", itemId: source.id, userId: tenantA.userId },
@@ -1200,9 +1430,83 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
       await expectInvalidationInA({ scope: "item", itemId: source.id, op: "update" });
       expect(itemPublications(source.id)).toEqual([expect.objectContaining({ userId: tenantA.userId })]);
       querySpy.mockClear();
-      expect(await ownedPut(url, { Cookie: a1Cookie, Origin: baseUrl })).toBe(200);
+      expect(await ownedPut(url, headers)).toBe(200);
+      expect(requests).toHaveLength(2);
+      await requests[1]?.task;
       await causalBarrier(source.id);
       expect(itemPublications(source.id)).toEqual([]);
+
+      const heldSource = await runInTenant(tenantA.tenantId, async () => {
+        const item = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
+        await withTransaction(pool, (client) =>
+          insertValueLink(client, {
+            itemId: item.id,
+            propertyKey: property.key,
+            ruleKey: "test",
+            sources: [],
+          }),
+        );
+        return item;
+      });
+      await causalBarrier(heldSource.id);
+      querySpy.mockClear();
+      const controller = new AbortController();
+      const heldRequest = ownedPut(
+        `${requestBase}/api/items/${heldSource.id}/relations/${property.key}/${target.id}`,
+        { ...headers, "x-test-gate": marker },
+        FRAME_TIMEOUT_MS,
+        controller,
+      );
+      const heldSettled = heldRequest.then(
+        () => {},
+        () => {},
+      );
+      try {
+        await Promise.race([
+          admitted,
+          heldRequest.then(() => {
+            throw new Error("Request finished before admission");
+          }),
+        ]);
+        expect(requests).toHaveLength(3);
+        const serverTask = requests[2]?.task;
+        if (!serverTask) throw new Error("Missing owned server completion");
+        controller.abort();
+        await expect(heldRequest).rejects.toMatchObject({ name: "AbortError" });
+        let completed = false;
+        void serverTask.then(
+          () => {
+            completed = true;
+          },
+          () => {
+            completed = true;
+          },
+        );
+        await Promise.resolve();
+        expect(completed).toBe(false);
+        releaseGate();
+        await serverTask;
+        await settlePublications();
+        expect(completed).toBe(true);
+        expect(
+          (await runInTenant(tenantA.tenantId, () => chokePoint.getValueLinksForItems([heldSource.id]))).get(
+            heldSource.id,
+          )?.[property.key],
+        ).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user" });
+        expect(itemPublications(heldSource.id)).toEqual([expect.objectContaining({ userId: tenantA.userId })]);
+        await expectInvalidationInA({ scope: "item", itemId: heldSource.id, op: "update" });
+      } finally {
+        controller.abort();
+        releaseGate();
+        await heldSettled;
+      }
+      const unauthorized = await ownedPut(`${requestBase}/api/items/${randomUUID()}/relations/x/${randomUUID()}`, {
+        Origin: requestBase,
+        "x-test-owner": marker,
+      });
+      expect(unauthorized).toBe(401);
+      expect(requests).toHaveLength(4);
+      await requests[3]?.task;
 
       const rollbackSource = await runInTenant(tenantA.tenantId, async () => {
         const item = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
@@ -1322,6 +1626,34 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     } catch (error) {
       failure = { error };
     } finally {
+      releaseGate();
+      const cleanupErrors: unknown[] = [];
+      try {
+        if (requestServer) {
+          requestServer.closeIdleConnections();
+          await new Promise<void>((resolve, reject) =>
+            requestServer?.close((error) => (error ? reject(error) : resolve())),
+          );
+        }
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      for (const request of requests) {
+        try {
+          if (!request.task) {
+            cleanupErrors.push(new Error("Owned request was not started"));
+            continue;
+          }
+          await request.task;
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      try {
+        await settlePublications();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
       if (timer) clearTimeout(timer);
       if (onNotification) listener?.removeListener("notification", onNotification);
       cancelObservation?.();
@@ -1329,14 +1661,17 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
       try {
         await listenerOwner.close();
       } catch (error) {
-        failure = failure
-          ? { error: new AggregateError([failure.error, error], "Realtime observation and cleanup failed") }
-          : { error };
+        cleanupErrors.push(error);
+      }
+      if (cleanupErrors.length) {
+        const errors = failure ? [failure.error, ...cleanupErrors] : cleanupErrors;
+        failure = {
+          error: new AggregateError(errors, "Realtime observation and cleanup failed", { cause: errors[0] }),
+        };
       }
     }
     if (failure) {
       // Preserve the original failure rather than replacing it with a timeout wrapper.
-      // eslint-disable-next-line @typescript-eslint/only-throw-error
       throw failure.error;
     }
   });

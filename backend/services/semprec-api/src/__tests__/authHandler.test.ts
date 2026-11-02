@@ -1243,6 +1243,50 @@ describe("self person HTTP contract", () => {
       setInvalidationHook(() => {});
     }
   });
+  it("attributes removal of an existing linked self-person edge to the authenticated user", async () => {
+    expect((await put({ personId: ownId })).status).toBe(200);
+    const singletonId = await runInTenant(tenantId, async () => {
+      const result = await runtime.query<{ id: string }>(
+        `SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id
+         WHERE d.owner_module_id = 'systemSettings' AND d.system = true AND i.deleted_at IS NULL`,
+      );
+      if (result.rows.length !== 1 || !result.rows[0]) throw new Error("Missing settings singleton");
+      const id = result.rows[0].id;
+      await withTransaction(runtime, (client) =>
+        insertValueLink(client, {
+          itemId: id,
+          propertyKey: "selfPerson",
+          ruleKey: "test",
+          sources: [],
+        }),
+      );
+      return id;
+    });
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      expect((await put({ personId: null })).status).toBe(200);
+      expect(await personId()).toBeNull();
+      const edges = await runInTenant(tenantId, () =>
+        runtime.query<{ id: string }>(
+          `SELECT edge.id FROM item_relations edge JOIN relation_definitions rd ON rd.id = edge.relation_definition_id
+         JOIN properties p ON p.id = rd.property_id_a WHERE p.key = 'selfPerson' AND edge.item_a = $1 AND edge.item_b = $2`,
+          [singletonId, ownId],
+        ),
+      );
+      expect(edges.rows).toEqual([]);
+      const links = await runInTenant(tenantId, () => createChokePoint(runtime).getValueLinksForItems([singletonId]));
+      expect(links.get(singletonId)?.selfPerson).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user" });
+      expect(events.filter((event) => event.scope === "item" && event.itemId === singletonId)).toEqual([
+        expect.objectContaining({ userId: actorId }),
+      ]);
+      events.length = 0;
+      expect((await put({ personId: null })).status).toBe(200);
+      expect(events).toEqual([]);
+    } finally {
+      setInvalidationHook(() => {});
+    }
+  });
   it("reads a trashed or purged person as unset and rejects linking a trashed person", async () => {
     expect((await put({ personId: ownId })).status).toBe(200);
     await runInTenant(tenantId, () => createChokePoint(runtime).softDeleteItem(peopleId, ownId));
