@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createServer } from "node:http";
+import type { Socket } from "node:net";
 import { exchangeAuthorizationCode, MICROSOFT_TOKEN_URL, refreshAccessToken } from "../mail/oauthTokenExchange.js";
 import { MailAdminConsentRequiredError, MailAuthorizationCodeRejectedError } from "../mail/providerTypes.js";
 
@@ -96,6 +98,43 @@ describe("refreshAccessToken bounds", () => {
     await assertion;
     expect(aborted).toBe(true);
   });
+
+  it("closes an actual stalled HTTP response when the whole-request deadline expires", async () => {
+    const sockets = new Set<Socket>();
+    const socketClosures: Promise<void>[] = [];
+    let resolveClosed: () => void = () => {};
+    const closed = new Promise<void>((resolve) => (resolveClosed = resolve));
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.write('{"access_token":');
+      response.on("close", resolveClosed);
+    });
+    server.on("connection", (socket) => {
+      sockets.add(socket);
+      socketClosures.push(
+        new Promise<void>((resolve) =>
+          socket.on("close", () => {
+            sockets.delete(socket);
+            resolve();
+          }),
+        ),
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing test server port");
+      await expect(
+        refreshAccessToken({ ...refreshInput, tokenUrl: `http://127.0.0.1:${address.port}/token` }),
+      ).rejects.toThrow("OAuth token refresh response could not be read");
+      await closed;
+      await Promise.all(socketClosures);
+      expect(sockets.size).toBe(0);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  }, 20_000);
 });
 
 describe("exchangeAuthorizationCode", () => {
