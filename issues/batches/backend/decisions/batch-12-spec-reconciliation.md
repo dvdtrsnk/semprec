@@ -38,3 +38,7 @@ Gh-1448, gh-1458 and gh-1438 explicitly include the existing `backend/packages/d
 ## 4. Pure catalog test tier
 
 Gh-1442 and gh-1477 name the pure model/operation label suite as `backend/packages/data/src/aiGateway/__tests__/modelDisplayNames.unit.test.ts`, conforming to the existing filename-selected unit tier. Rename the recovered `.test.ts` file, preserving all model/operation/catalog assertions and no-DB imports; do not leave a duplicate integration suite or modify tier configuration. Actual usage-route integration tests remain required. This corrects the path to the already specified no-database test behavior, not its functional scope.
+
+## 5. Summary and gateway budget composition
+
+Gh-1456 explicitly includes `backend/packages/ai-gateway/src/__tests__/gateway.test.ts` only for its combined summary/accounting/refusal criteria. This existing harness uses actual PostgreSQL accounting with local fake providers, not mocked stores. Use explicitly scoped runtime roles: real reservations at the tenant daily cap must appear in the summary with the required reset and cause the next gateway call to be refused without invoking its provider. Prove operator-only global-cap refusal while the visible tenant summary remains unexhausted, with an admitted positive and no operator-cap disclosure. Preserve existing data summary tests, tenant isolation and budget semantics; no production gateway/accounting change, extra dependency, live call or generic test framework is authorized by this path addition. Other findings still require their actual Task scope.
