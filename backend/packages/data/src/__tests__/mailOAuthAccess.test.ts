@@ -375,6 +375,111 @@ describe("refreshAndPersistAccessToken", () => {
     }
   });
 
+  it("releases the actual credential lock to a waiter after the refresh deadline", async () => {
+    const itemId = await seed("before-timeout");
+    const operationPool = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: "-c role=semprec_data",
+    });
+    const pids: Promise<number>[] = [];
+    operationPool.on("acquire", (client) => {
+      pids.push(
+        client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid").then((result) => {
+          const pid = result.rows[0]?.pid;
+          if (!pid) throw new Error("Missing operation PID");
+          return pid;
+        }),
+      );
+    });
+    let entered!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let aborted = false;
+    const heldFetch: typeof fetch = async (_url, init) => {
+      const signal = init?.signal;
+      if (!signal) throw new Error("Missing refresh abort signal");
+      entered();
+      return new Promise<Response>((_resolve, reject) =>
+        signal.addEventListener(
+          "abort",
+          () => {
+            aborted = true;
+            reject(new Error("fixture refresh aborted"));
+          },
+          { once: true },
+        ),
+      );
+    };
+    const succeedingFetch: typeof fetch = async () => Response.json({ access_token: "after-timeout", expires_in: 60 });
+    const run = (fetchImpl: typeof fetch) =>
+      runInTenant(getTenantZeroId(), () =>
+        refreshAndPersistAccessToken(operationPool, { ...INPUT, mailboxItemId: itemId, fetchImpl }),
+      );
+    const first = run(heldFetch).then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    let second:
+      | Promise<
+          { ok: true; value: Awaited<ReturnType<typeof refreshAndPersistAccessToken>> } | { ok: false; error: unknown }
+        >
+      | undefined;
+    const failures: unknown[] = [];
+    try {
+      await Promise.race([
+        ready,
+        first.then(() => {
+          throw new Error("First refresh exited before provider barrier");
+        }),
+      ]);
+      second = run(succeedingFetch).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      let blocked = false;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (pids.length >= 2) {
+          const [holder, waiter] = await Promise.all([pids[0], pids[1]]);
+          const state = await pool.query<{ blocked: boolean }>(
+            "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+            [holder, waiter],
+          );
+          if (state.rows[0]?.blocked) {
+            blocked = true;
+            break;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked).toBe(true);
+      const firstResult = await first;
+      expect(firstResult.ok).toBe(false);
+      expect(aborted).toBe(true);
+      const secondResult = await second;
+      if (!secondResult.ok) throw secondResult.error;
+      expect(secondResult.value.accessToken).toBe("after-timeout");
+      expect(await stored(itemId)).toBe("before-timeout");
+    } catch (error) {
+      failures.push(error);
+    }
+    await first;
+    if (second) {
+      const result = await second;
+      if (!result.ok && !failures.includes(result.error)) failures.push(result.error);
+    }
+    for (const result of await Promise.allSettled(pids)) {
+      if (result.status === "rejected" && !failures.includes(result.reason)) failures.push(result.reason);
+    }
+    try {
+      await operationPool.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "OAuth timeout waiter test and cleanup failed");
+  }, 25_000);
+
   it("does not return an access token while the actual commit is blocked", async () => {
     const itemId = await seed("before-commit");
     const operationPool = new Pool({
