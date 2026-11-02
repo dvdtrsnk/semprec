@@ -375,7 +375,7 @@ describe("value link state on writes (issue #1516)", () => {
       runtimePool = runtime;
       await operations.run(() =>
         withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-          await client.query("SELECT 1");
+          await client.query<{ "?column?": number }>("SELECT 1");
           settled = true;
         }),
       );
@@ -492,7 +492,7 @@ describe("value link state on writes (issue #1516)", () => {
             withTransaction(runtime, async (client) => {
               started.resolve();
               await bounded(release.promise);
-              await client.query("SELECT pg_backend_pid()");
+              await client.query<{ pg_backend_pid: number }>("SELECT pg_backend_pid()");
               ranAfterPid = true;
             }),
           ),
@@ -2272,8 +2272,10 @@ describe("value link state on writes (issue #1516)", () => {
                 try {
                   await operations.settle();
                   const result = await settleOwned(holder, () => holderPid);
-                  if (outcome === "rollback") expect(result).toEqual({ ok: false, error: rollback });
-                  else requireSuccessful(result);
+                  if (outcome === "rollback") {
+                    expect(result.ok).toBe(false);
+                    if (!result.ok) expect(result.error).toBe(rollback);
+                  } else requireSuccessful(result);
                   if (control === "combined") throwFailure(cleanup);
                 } catch (error) {
                   failure = combineFailure(failure, [error], "Test and proposal cleanup failed");
@@ -2312,7 +2314,9 @@ describe("value link state on writes (issue #1516)", () => {
         else {
           expect(result.error).toBeInstanceOf(AggregateError);
           if (!(result.error instanceof AggregateError)) throw new Error("Expected combined failure");
-          expect(result.error.errors).toEqual([original, cleanup]);
+          expect(result.error.errors).toHaveLength(2);
+          expect(result.error.errors[0]).toBe(original);
+          expect(result.error.errors[1]).toBe(cleanup);
           expect(result.error.cause).toBe(original);
         }
       },
@@ -3887,6 +3891,7 @@ describe("value link state on writes (issue #1516)", () => {
             const userStarted = barrier();
             const systemStarted = barrier();
             const bodyError = new Error("forced observation failure");
+            const rollbackError = new Error("forced rollback");
             const secondary = { marker: "late participant" };
             let userClient: PoolClient | undefined;
             let systemClient: PoolClient | undefined;
@@ -3948,7 +3953,7 @@ describe("value link state on writes (issue #1516)", () => {
                     );
                     if (actor === "system" && control === "late-undefined") throwFailure(undefined);
                     if (actor === "system" && control === "late-object") throwFailure(secondary);
-                    if (actor === "system" && order === "system-rollback") throw new Error("forced rollback");
+                    if (actor === "system" && order === "system-rollback") throw rollbackError;
                     return result;
                   }),
                 ),
@@ -4025,7 +4030,9 @@ describe("value link state on writes (issue #1516)", () => {
               if (order === "user-first") {
                 expect(results[1]).toMatchObject({ ok: false, error: { status: 403, code: "owner_violation" } });
               } else if (order === "system-rollback") {
-                expect(results[1]).toMatchObject({ ok: false, error: { message: "forced rollback" } });
+                expect(results[1]?.ok).toBe(false);
+                if (!results[1] || results[1].ok) throw new Error("Expected rollback");
+                expect(results[1].error).toBe(rollbackError);
               } else {
                 expect(results[1]).toEqual({ ok: true });
               }
@@ -4078,7 +4085,9 @@ describe("value link state on writes (issue #1516)", () => {
               const error = failure?.error;
               expect(error).toBeInstanceOf(AggregateError);
               if (!(error instanceof AggregateError)) throw new Error("Expected combined failure");
-              expect(error.errors).toEqual([bodyError, control === "late-undefined" ? undefined : secondary]);
+              expect(error.errors).toHaveLength(2);
+              expect(error.errors[0]).toBe(bodyError);
+              expect(error.errors[1]).toBe(control === "late-undefined" ? undefined : secondary);
               expect(error.cause).toBe(bodyError);
               return;
             }

@@ -265,7 +265,7 @@ describe("Transcript speaker mappings (issue #185)", () => {
       runtimePool = runtime;
       await operations.run(() =>
         withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-          await client.query("SELECT 1");
+          await client.query<{ "?column?": number }>("SELECT 1");
           settled = true;
         }),
       );
@@ -486,7 +486,9 @@ describe("Transcript speaker mappings (issue #185)", () => {
         else {
           expect(result.error).toBeInstanceOf(AggregateError);
           if (!(result.error instanceof AggregateError)) throw new Error("Expected combined failure");
-          expect(result.error.errors).toEqual([original, cleanup]);
+          expect(result.error.errors).toHaveLength(2);
+          expect(result.error.errors[0]).toBe(original);
+          expect(result.error.errors[1]).toBe(cleanup);
           expect(result.error.cause).toBe(original);
         }
       },

@@ -379,8 +379,11 @@ async function runHeldBlobOverlap<T>(
     expect(attempted).toBe(true);
     release();
     const holderResult = await settle(holder);
-    if (rollbackFirst) expect(holderResult).toEqual({ error: rollback });
-    else if ("error" in holderResult) throw holderResult.error;
+    if (rollbackFirst) {
+      expect("error" in holderResult).toBe(true);
+      if (!("error" in holderResult)) throw new Error("Expected rollback");
+      expect(holderResult.error).toBe(rollback);
+    } else if ("error" in holderResult) throw holderResult.error;
     result = await settle(competitor);
   } catch (error) {
     failure = { error };

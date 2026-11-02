@@ -209,7 +209,7 @@ export async function lockExistingRelationNowait(
   itemA: string,
   itemB: string,
 ): Promise<void> {
-  await client.query(
+  await client.query<{ id: string }>(
     "SELECT id FROM item_relations WHERE relation_definition_id = $1 AND item_a = $2 AND item_b = $3 FOR UPDATE NOWAIT",
     [definitionId, itemA, itemB],
   );

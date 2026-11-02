@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import "../../domainWriteHooks.js";
-import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import { getTestPool, getTenantZeroId, resetDatabase, withTenantTransaction } from "../../testSupport/testDb.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
@@ -254,10 +254,10 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
       if (cards.rows.length !== 1 || !cards.rows[0]) throw new Error("Missing speaker proposal");
       const cardId = cards.rows[0].id;
       const speakerEdges = () =>
-        withTransaction(pool, (client) =>
+        withTenantTransaction(pool, getTenantZeroId(), (client) =>
           client.query<{ metadata: unknown }>(
-            "SELECT metadata FROM item_relations WHERE $1 IN (item_a, item_b) AND $2 IN (item_a, item_b)",
-            [transcriptId, personId],
+            "SELECT metadata FROM item_relations WHERE $1 IN (item_a, item_b) AND $2 IN (item_a, item_b) AND tenant_id = $3",
+            [transcriptId, personId, getTenantZeroId()],
           ),
         );
       const beforeEdges = (await speakerEdges()).rows;

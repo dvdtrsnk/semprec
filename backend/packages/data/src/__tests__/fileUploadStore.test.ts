@@ -515,7 +515,7 @@ describe("ingestUploadedFile (issue #670)", () => {
         withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
           const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
           if (pid === undefined) throw new Error("Missing holder PID");
-          await client.query("SELECT id FROM blobs WHERE id = $1 FOR UPDATE", [standalone.blob.id]);
+          await client.query<{ id: string }>("SELECT id FROM blobs WHERE id = $1 FOR UPDATE", [standalone.blob.id]);
           ready(pid);
           await gate;
         }),
