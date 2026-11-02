@@ -71,10 +71,13 @@ function ownOverlap(
   cancel: () => void,
   onCancellation?: (client: PoolClient, generation: object) => void,
   onGeneration?: (client: PoolClient, generation: object) => void,
+  onReleased?: (client: PoolClient, generation: object) => void,
 ) {
   runtime.options.connectionTimeoutMillis = 2500;
   runtime.options.statement_timeout = 5000;
   const active = new Map<PoolClient, object>();
+  const destroyed = new Set<object>();
+  const retired = new Set<PoolClient>();
   const tasks = new Set<Promise<void>>();
   const outcomes: Array<{ error?: { value: unknown }; consumed: boolean }> = [];
   const outcomeByOperation = new WeakMap<Promise<unknown>, (typeof outcomes)[number]>();
@@ -82,12 +85,15 @@ function ownOverlap(
   let closing = false;
   let expired = false;
   let closingPromise: Promise<void> | undefined;
+  let settledCleanup = false;
   const onClientError = (error: Error) => errors.push(error);
   const destroy = (client: PoolClient, token: object) => {
     if (active.get(client) !== token) return;
     try {
       onCancellation?.(client, token);
+      destroyed.add(token);
       client.release(true);
+      onReleased?.(client, token);
     } catch (error) {
       errors.push(error);
     }
@@ -101,8 +107,10 @@ function ownOverlap(
     if (closing) queueMicrotask(() => destroy(client, token));
   };
   const onRelease = (_error: Error | undefined, client: PoolClient) => {
+    const generation = active.get(client);
     active.delete(client);
-    client.removeListener("error", onClientError);
+    if (generation && destroyed.has(generation)) retired.add(client);
+    else client.removeListener("error", onClientError);
   };
   runtime.on("acquire", onAcquire);
   runtime.on("release", onRelease);
@@ -148,6 +156,9 @@ function ownOverlap(
     const detach = () => {
       runtime.removeListener("acquire", onAcquire);
       runtime.removeListener("release", onRelease);
+      for (const client of retired) client.removeListener("error", onClientError);
+      retired.clear();
+      settledCleanup = true;
     };
     closingPromise = (async () => {
       if (!bodyFailed) {
@@ -203,7 +214,7 @@ function ownOverlap(
     if (!outcome?.error || outcome.error.value !== expected) throw new Error("Unexpected participant outcome");
     outcome.consumed = true;
   };
-  return { run, wait, finish, consume };
+  return { run, wait, finish, consume, isSettled: () => settledCleanup };
 }
 
 async function overlapBounded<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
@@ -1240,6 +1251,8 @@ describe("file from attachment on confirm (issue #1703)", () => {
     };
     const observeRelease = (_reason: unknown, client: PoolClient) => {
       const onError = observing.get(client);
+      const generation = generations.get(client);
+      if (generation && cancellationRequests.has(generation)) return;
       if (onError) client.removeListener("error", onError);
       observing.delete(client);
       generations.delete(client);
@@ -1262,8 +1275,14 @@ describe("file from attachment on confirm (issue #1703)", () => {
         failure = combineOverlapFailure(failure, error);
       }
     }
+    if (!owned.isSettled()) {
+      if (failure) throw failure.error;
+      throw new Error("Owned overlap did not settle");
+    }
     runtime.removeListener("acquire", observeAcquire);
     runtime.removeListener("release", observeRelease);
+    for (const [client, onError] of observing) client.removeListener("error", onError);
+    observing.clear();
     expect(observing.size).toBe(0);
     const observed = failure?.error;
     expect(observed).toBeInstanceOf(AggregateError);
@@ -1317,11 +1336,13 @@ describe("file from attachment on confirm (issue #1703)", () => {
       });
       const generations = new Map<PoolClient, object>();
       const cancellationRequests = new Set<object>();
+      const releaseCompletions = new Set<object>();
       let holderClient: PoolClient | undefined;
       let contenderClient: PoolClient | undefined;
       let contenderGeneration: object | undefined;
       const preCancel = new Error("pre-cancellation diagnostic");
       const postCancel = new Error("unrelated post-cancellation diagnostic");
+      let releaseCallbackFailure: { value: unknown } | undefined;
       const owned = ownOverlap(
         runtime,
         () => {
@@ -1329,12 +1350,22 @@ describe("file from attachment on confirm (issue #1703)", () => {
           holderReady();
           contenderReady();
         },
-        (client, generation) => {
+        (_client, generation) => {
           cancellationRequests.add(generation);
-          if (injectPostCancel && client === holderClient) client.emit("error", postCancel);
         },
         (client, generation) => {
           generations.set(client, generation);
+        },
+        (client, generation) => {
+          releaseCompletions.add(generation);
+          if (injectPostCancel && client === holderClient) {
+            try {
+              client.emit("error", postCancel);
+            } catch (error) {
+              releaseCallbackFailure = { value: error };
+              throw error;
+            }
+          }
         },
       );
       let holderPid: number | undefined;
@@ -1342,7 +1373,13 @@ describe("file from attachment on confirm (issue #1703)", () => {
       let holderSettled = false;
       type ObservedClient = { generation: object; onError: (error: Error) => void };
       const observedClients = new Map<PoolClient, ObservedClient>();
-      const diagnostics: Array<{ error: Error; generation: object; cancelled: boolean; operation: string }> = [];
+      const diagnostics: Array<{
+        error: Error;
+        generation: object;
+        cancelled: boolean;
+        released: boolean;
+        operation: string;
+      }> = [];
       const observeAcquire = (client: PoolClient) => {
         const generation = generations.get(client);
         if (!generation) throw new Error("Missing client generation");
@@ -1351,6 +1388,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
             error,
             generation,
             cancelled: cancellationRequests.has(generation),
+            released: releaseCompletions.has(generation),
             operation: client === holderClient ? "holder" : client === contenderClient ? "contender" : "other",
           });
         observedClients.set(client, { generation, onError });
@@ -1359,6 +1397,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
       const observeRelease = (_reason: unknown, client: PoolClient) => {
         const owner = observedClients.get(client);
         if (!owner) throw new Error("Unknown owned client release");
+        if (cancellationRequests.has(owner.generation)) return;
         client.removeListener("error", owner.onError);
         observedClients.delete(client);
         generations.delete(client);
@@ -1441,10 +1480,18 @@ describe("file from attachment on confirm (issue #1703)", () => {
         } catch (error) {
           failure = combineOverlapFailure(failure, error);
         } finally {
-          runtime.removeListener("acquire", observeAcquire);
-          runtime.removeListener("release", observeRelease);
+          if (owned.isSettled()) {
+            runtime.removeListener("acquire", observeAcquire);
+            runtime.removeListener("release", observeRelease);
+          }
         }
       }
+      if (!owned.isSettled()) {
+        if (failure) throw failure.error;
+        throw new Error("Owned overlap did not settle");
+      }
+      for (const [client, owner] of observedClients) client.removeListener("error", owner.onError);
+      observedClients.clear();
       const combined = failure?.error;
       expect(combined).toBeInstanceOf(AggregateError);
       if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
@@ -1461,9 +1508,11 @@ describe("file from attachment on confirm (issue #1703)", () => {
         expect(diagnostic.error).toBeInstanceOf(Error);
         if (diagnostic.error === preCancel) {
           expect(injectPreCancel).toBe(true);
+          expect(diagnostic.released).toBe(false);
           expect(diagnostic.cancelled).toBe(false);
           expect(diagnostic.operation).toBe("holder");
         } else if (diagnostic.error === postCancel) {
+          expect(diagnostic.released).toBe(true);
           expect(injectPostCancel).toBe(true);
           expect(diagnostic.cancelled).toBe(true);
           expect(diagnostic.operation).toBe("holder");
@@ -1482,7 +1531,16 @@ describe("file from attachment on confirm (issue #1703)", () => {
       expect(contenderError.cancellationRequested).toBe(true);
       expect(diagnostics.filter((entry) => entry.error === preCancel)).toHaveLength(injectPreCancel ? 1 : 0);
       expect(diagnostics.filter((entry) => entry.error === postCancel)).toHaveLength(injectPostCancel ? 1 : 0);
-      const expectedErrors = [...diagnostics.map((entry) => entry.error), holderError.value, contenderError.value];
+      if (releaseCallbackFailure) expect(releaseCallbackFailure.value).toBe(postCancel);
+      const expectedErrors = [
+        ...diagnostics.flatMap((entry) =>
+          entry.error === postCancel && releaseCallbackFailure
+            ? [entry.error, releaseCallbackFailure.value]
+            : [entry.error],
+        ),
+        holderError.value,
+        contenderError.value,
+      ];
       expect(combined.errors).toHaveLength(2);
       expect(cleanup.errors).toHaveLength(expectedErrors.length);
       for (let i = 0; i < expectedErrors.length; i++) expect(cleanup.errors[i]).toBe(expectedErrors[i]);

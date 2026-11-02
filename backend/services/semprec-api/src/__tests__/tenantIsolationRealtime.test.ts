@@ -140,11 +140,9 @@ const ownedSockets = new Set<TestSocket>();
 class TestSocket {
   private readonly queue: Frame[] = [];
   private wake: (() => void) | null = null;
-  private disposing = false;
-  private handshakeComplete = false;
   private readonly errors: Error[] = [];
   private readonly onError = (error: Error) => {
-    if (this.handshakeComplete && !this.disposing) this.errors.push(error);
+    this.errors.push(error);
   };
   closeCode: number | undefined;
   readonly closed: Promise<number>;
@@ -164,11 +162,17 @@ class TestSocket {
     });
   }
 
-  static async connect(url: string, headers: Record<string, string>, owner = ownedSockets): Promise<TestSocket> {
+  static async connect(
+    url: string,
+    headers: Record<string, string>,
+    owner = ownedSockets,
+    afterTerminate?: (socket: WebSocket) => void,
+  ): Promise<TestSocket> {
     const ws = new WebSocket(url, { headers });
     const socket = new TestSocket(ws);
     owner.add(socket);
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let handshakeFailure: Error | undefined;
     try {
       await new Promise<void>((resolve, reject) => {
         const onOpen = () => {
@@ -177,6 +181,7 @@ class TestSocket {
           resolve();
         };
         const onError = (error: Error) => {
+          handshakeFailure = error;
           clearTimeout(timer);
           ws.removeListener("open", onOpen);
           reject(error);
@@ -185,19 +190,24 @@ class TestSocket {
         ws.once("error", onError);
         timer = setTimeout(() => ws.terminate(), FRAME_TIMEOUT_MS);
       });
-      socket.handshakeComplete = true;
       return socket;
     } catch (error) {
-      let cleanupFailure: { error: unknown } | undefined;
+      const cleanupFailures: unknown[] = [];
+      // The exact handshake event is carried as the rejected connect outcome.
+      if (handshakeFailure && handshakeFailure === error) {
+        const index = socket.errors.indexOf(handshakeFailure);
+        if (index < 0) cleanupFailures.push(new Error("Missing observed handshake failure", { cause: error }));
+        else socket.errors.splice(index, 1);
+      }
       try {
-        await socket.dispose();
+        await socket.dispose(afterTerminate);
       } catch (cleanup) {
-        cleanupFailure = { error: cleanup };
+        cleanupFailures.push(cleanup);
       } finally {
         owner.delete(socket);
       }
-      if (cleanupFailure) {
-        throw new AggregateError([error, cleanupFailure.error], "Socket open and cleanup failed", { cause: error });
+      if (cleanupFailures.length) {
+        throw new AggregateError([error, ...cleanupFailures], "Socket open and cleanup failed", { cause: error });
       }
       throw error;
     } finally {
@@ -205,12 +215,19 @@ class TestSocket {
     }
   }
 
-  async dispose(): Promise<void> {
-    this.disposing = true;
+  async dispose(afterTerminate?: (socket: WebSocket) => void): Promise<void> {
     if (this.ws.readyState !== WebSocket.CLOSED) this.ws.terminate();
+    let callbackFailure: { error: unknown } | undefined;
+    try {
+      afterTerminate?.(this.ws);
+    } catch (error) {
+      callbackFailure = { error };
+    }
     await this.closed;
     this.ws.removeListener("error", this.onError);
-    if (this.errors.length) throw new AggregateError(this.errors, "Owned socket failed");
+    const errors: unknown[] = [...this.errors];
+    if (callbackFailure) errors.push(callbackFailure.error);
+    if (errors.length) throw new AggregateError(errors, "Owned socket failed", { cause: errors[0] });
   }
 
   get isOpen(): boolean {
@@ -473,13 +490,46 @@ async function disposeSockets(owner = ownedSockets): Promise<void> {
   if (errors.length) throw new AggregateError(errors, "Socket cleanup failed");
 }
 
+async function joinSessionAttempts(
+  starts: readonly [
+    () => Promise<{ cookie: string; sessionId: string }>,
+    () => Promise<{ cookie: string; sessionId: string }>,
+    () => Promise<{ cookie: string; sessionId: string }>,
+  ],
+): Promise<
+  [{ cookie: string; sessionId: string }, { cookie: string; sessionId: string }, { cookie: string; sessionId: string }]
+> {
+  const attempts = starts.map((start) => Promise.resolve().then(start));
+  let first: { index: number; error: unknown } | undefined;
+  attempts.forEach((attempt, index) => {
+    void attempt.catch((error: unknown) => {
+      first ??= { index, error };
+    });
+  });
+  try {
+    const sessions = await Promise.all(attempts);
+    if (sessions.length !== 3) throw new Error("Expected three owned sessions");
+    const [a, b, c] = sessions;
+    if (!a || !b || !c) throw new Error("Missing owned session");
+    return [a, b, c];
+  } catch (error) {
+    const outcomes = await Promise.allSettled(attempts);
+    if (!first || first.error !== error) throw new Error("Missing first session failure", { cause: error });
+    const later = outcomes.flatMap((outcome, index) =>
+      outcome.status === "rejected" && index !== first?.index ? [outcome.reason] : [],
+    );
+    if (later.length) throw new AggregateError([error, ...later], "Session setup failed", { cause: error });
+    throw error;
+  }
+}
+
 /** Closes the current sockets and opens A's two sessions and B's one anew, each with a fresh queue. */
 async function reconnectAll(): Promise<void> {
   await disposeSockets();
-  const [sessionA1, sessionA2, sessionB1] = await Promise.all([
-    openSession(tenantA),
-    openSession(tenantA),
-    openSession(tenantB),
+  const [sessionA1, sessionA2, sessionB1] = await joinSessionAttempts([
+    () => openSession(tenantA),
+    () => openSession(tenantA),
+    () => openSession(tenantB),
   ]);
   a1Cookie = sessionA1.cookie;
   a2SessionId = sessionA2.sessionId;
@@ -1038,6 +1088,113 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     }
   });
 
+  it("joins actual concurrent logins after an early failure and retains a later failure", async () => {
+    const lateError = new Error("late held login failure");
+    let release = () => {};
+    let reached = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    // Forward the real database query and delay its completion within the actual login call.
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    const original = adminPool.query;
+    let intercepted = false;
+    adminPool.query = new Proxy(original, {
+      apply(target, receiver, args: unknown[]) {
+        const result: unknown = Reflect.apply(target, receiver, args);
+        if (
+          !intercepted &&
+          typeof args[0] === "string" &&
+          args[0].includes("FROM login_attempts") &&
+          Array.isArray(args[1]) &&
+          args[1][0] === tenantA.email
+        ) {
+          intercepted = true;
+          if (!(result instanceof Promise)) throw new Error("Expected real login query promise");
+          return result.then(async () => {
+            reached();
+            await gate;
+            throw lateError;
+          });
+        }
+        return result;
+      },
+    });
+    const invalid = () =>
+      runAsSystem("test:invalid-login", async () => {
+        await login(adminPool, {
+          email: `missing-${randomUUID()}@example.com`,
+          password: PASSWORD,
+          platform: "web",
+          ip: "127.0.0.1",
+        });
+        throw new Error("Unexpected successful login");
+      });
+    let recordFirst = (_result: { error: unknown }) => {};
+    const firstResult = new Promise<{ error: unknown }>((resolve) => {
+      recordFirst = resolve;
+    });
+    const joining = joinSessionAttempts([
+      () => {
+        const operation = invalid();
+        void operation.catch((error: unknown) => {
+          recordFirst({ error });
+        });
+        return operation;
+      },
+      () => openSession(tenantA),
+      () => openSession(tenantB),
+    ]);
+    const joined = joining.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    let failure: { error: unknown } | undefined;
+    let result: Awaited<typeof joined> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        held,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Held login did not reach its query")), FRAME_TIMEOUT_MS);
+        }),
+      ]);
+      const initial = await firstResult;
+      expect(initial.error).toMatchObject({ status: 401 });
+      let finished = false;
+      void joined.then(() => {
+        finished = true;
+      });
+      await Promise.resolve();
+      expect(finished).toBe(false);
+    } catch (error) {
+      failure = { error };
+    } finally {
+      if (timer) clearTimeout(timer);
+      release();
+      result = await joined;
+      adminPool.query = original;
+      if (failure && "error" in result)
+        failure = {
+          error: new AggregateError([failure.error, result.error], "Login control and cleanup failed", {
+            cause: failure.error,
+          }),
+        };
+    }
+    if (failure) throw failure.error;
+    const initial = await firstResult;
+    if (!result || !("error" in result) || !(result.error instanceof AggregateError))
+      throw new Error("Expected session failures");
+    expect(result.error.cause).toBe(initial.error);
+    expect(result.error.errors).toHaveLength(2);
+    expect(result.error.errors[0]).toBe(initial.error);
+    expect(result.error.errors[1]).toBe(lateError);
+    expect(intercepted).toBe(true);
+  });
+
   it("settles partial socket success, refused and held upgrades before disposal", async () => {
     const sockets = new Set<TestSocket>();
     const local = createServer();
@@ -1165,6 +1322,98 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
       }
     }
     if (failure) throw failure.error;
+  });
+
+  it("retains a distinct socket error emitted after termination and settles its close", async () => {
+    const sockets = new Set<TestSocket>();
+    const bodyError = new Error("socket body failed");
+    const lateError = new Error("late owned socket diagnostic");
+    const socket = await TestSocket.connect(wsUrl, { Cookie: a1Cookie, Origin: baseUrl }, sockets);
+    let failure: { error: unknown } | undefined;
+    try {
+      throw bodyError;
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await socket.dispose((owned) => {
+          owned.emit("error", lateError);
+        });
+      } catch (error) {
+        failure = failure
+          ? {
+              error: new AggregateError([failure.error, error], "Socket body and disposal failed", {
+                cause: failure.error,
+              }),
+            }
+          : { error };
+      } finally {
+        sockets.delete(socket);
+        await disposeSockets(sockets);
+      }
+    }
+    expect(failure?.error).toBeInstanceOf(AggregateError);
+    if (!(failure?.error instanceof AggregateError)) throw new Error("Expected socket combined failure");
+    expect(failure.error.cause).toBe(bodyError);
+    expect(failure.error.errors).toHaveLength(2);
+    expect(failure.error.errors[0]).toBe(bodyError);
+    const cleanup: unknown = failure.error.errors[1];
+    expect(cleanup).toBeInstanceOf(AggregateError);
+    if (!(cleanup instanceof AggregateError)) throw new Error("Expected socket cleanup failure");
+    expect(cleanup.cause).toBe(lateError);
+    expect(cleanup.errors).toHaveLength(1);
+    expect(cleanup.errors[0]).toBe(lateError);
+    expect(socket.closeCode).toBeDefined();
+    expect(sockets.size).toBe(0);
+  });
+
+  it("retains an independent socket error during a refused handshake cleanup", async () => {
+    const sockets = new Set<TestSocket>();
+    const local = createServer();
+    local.on("upgrade", (_request, socket) => socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"));
+    await new Promise<void>((resolve) => local.listen(0, "127.0.0.1", resolve));
+    const address = local.address();
+    if (!address || typeof address === "string") throw new Error("Missing upgrade server address");
+    const lateError = new Error("late handshake cleanup diagnostic");
+    let failure: { error: unknown } | undefined;
+    try {
+      await TestSocket.connect(`ws://127.0.0.1:${address.port}/`, {}, sockets, (owned) => {
+        owned.emit("error", lateError);
+      });
+      throw new Error("Expected refused handshake");
+    } catch (error) {
+      failure = { error };
+    } finally {
+      const errors: unknown[] = [];
+      try {
+        await disposeSockets(sockets);
+      } catch (error) {
+        errors.push(error);
+      }
+      local.closeAllConnections();
+      try {
+        await new Promise<void>((resolve, reject) => local.close((error) => (error ? reject(error) : resolve())));
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length) {
+        const all = failure ? [failure.error, ...errors] : errors;
+        failure = { error: new AggregateError(all, "Handshake control cleanup failed", { cause: all[0] }) };
+      }
+    }
+    expect(failure?.error).toBeInstanceOf(AggregateError);
+    if (!(failure?.error instanceof AggregateError)) throw new Error("Expected handshake and cleanup failure");
+    expect(failure.error.errors).toHaveLength(2);
+    const handshake: unknown = failure.error.errors[0];
+    expect(handshake).toMatchObject({ message: "Unexpected server response: 403" });
+    expect(failure.error.cause).toBe(handshake);
+    const cleanup: unknown = failure.error.errors[1];
+    expect(cleanup).toBeInstanceOf(AggregateError);
+    if (!(cleanup instanceof AggregateError)) throw new Error("Expected handshake cleanup failure");
+    expect(cleanup.cause).toBe(lateError);
+    expect(cleanup.errors).toHaveLength(1);
+    expect(cleanup.errors[0]).toBe(lateError);
+    expect(sockets.size).toBe(0);
   });
 
   it("settles a listener delivered after cleanup starts", async () => {
@@ -1313,64 +1562,86 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         await owner.close();
       } catch (error) {
         failure = failure
-          ? { error: new AggregateError([failure.error, error], "Body and cleanup failed") }
+          ? { error: new AggregateError([failure.error, error], "Body and cleanup failed", { cause: failure.error }) }
           : { error };
       }
     }
     expect(failure?.error).toBeInstanceOf(AggregateError);
     if (!(failure?.error instanceof AggregateError)) throw new Error("Expected combined failure");
+    expect(failure.error.errors).toHaveLength(2);
+    expect(failure.error.cause).toBe(bodyFailure);
     expect(failure.error.errors[0]).toBe(bodyFailure);
     expect(failure.error.errors[1]).toBeInstanceOf(AggregateError);
     const cleanup: unknown = failure.error.errors[1];
     if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failure");
-    expect(cleanup.errors).toEqual([cleanupFailure]);
+    expect(cleanup.errors).toHaveLength(1);
+    expect(cleanup.errors[0]).toBe(cleanupFailure);
+    expect(cleanup.cause).toBe(cleanupFailure);
     expect(owner.hasOwnedClient()).toBe(false);
     expect(owner.owned.totalCount).toBe(0);
   });
 
-  it("aborts and settles its owned HTTP request when the response stalls", async () => {
-    let observedClose = () => {};
-    const closed = new Promise<void>((resolve) => {
-      observedClose = resolve;
-    });
-    const local = createServer((_req, res) => {
-      res.on("close", observedClose);
-    });
-    await new Promise<void>((resolve) => local.listen(0, "127.0.0.1", resolve));
-    let failure: { error: unknown } | undefined;
-    try {
-      const address = local.address();
-      if (!address || typeof address === "string") throw new Error("Missing control server address");
-      await expect(ownedPut(`http://127.0.0.1:${address.port}/`, {}, 100)).rejects.toMatchObject({
-        name: "AbortError",
+  it.each([false, true])(
+    "aborts and settles its owned HTTP request when the response stalls (cleanup failure %s)",
+    async (injectCleanup) => {
+      const bodyError = new Error("HTTP control body failed");
+      const cleanupError = new Error("HTTP control cleanup failed");
+      let observedClose = () => {};
+      const closed = new Promise<void>((resolve) => {
+        observedClose = resolve;
       });
-      await Promise.race([
-        closed,
-        new Promise<never>((_, reject) => {
-          const timeout = setTimeout(() => reject(new Error("Control connection did not close")), FRAME_TIMEOUT_MS);
-          void closed.finally(() => clearTimeout(timeout));
-        }),
-      ]);
-    } catch (error) {
-      failure = { error };
-    } finally {
-      observedClose();
-      local.closeAllConnections();
+      const local = createServer((_req, res) => {
+        res.on("close", observedClose);
+      });
+      await new Promise<void>((resolve) => local.listen(0, "127.0.0.1", resolve));
+      let failure: { error: unknown } | undefined;
       try {
-        await new Promise<void>((resolve, reject) => local.close((error) => (error ? reject(error) : resolve())));
+        const address = local.address();
+        if (!address || typeof address === "string") throw new Error("Missing control server address");
+        await expect(ownedPut(`http://127.0.0.1:${address.port}/`, {}, 100)).rejects.toMatchObject({
+          name: "AbortError",
+        });
+        await Promise.race([
+          closed,
+          new Promise<never>((_, reject) => {
+            const timeout = setTimeout(() => reject(new Error("Control connection did not close")), FRAME_TIMEOUT_MS);
+            void closed.finally(() => clearTimeout(timeout));
+          }),
+        ]);
+        if (injectCleanup) throw bodyError;
       } catch (error) {
-        failure = failure
-          ? { error: new AggregateError([failure.error, error], "HTTP control and cleanup failed") }
-          : { error };
+        failure = { error };
+      } finally {
+        observedClose();
+        local.closeAllConnections();
+        try {
+          await new Promise<void>((resolve, reject) => local.close((error) => (error ? reject(error) : resolve())));
+          if (injectCleanup) await Promise.reject(cleanupError);
+        } catch (error) {
+          failure = failure
+            ? {
+                error: new AggregateError([failure.error, error], "HTTP control and cleanup failed", {
+                  cause: failure.error,
+                }),
+              }
+            : { error };
+        }
       }
-    }
-    if (failure) {
-      // Preserve both the original failure and any owned-server cleanup failure.
-      throw failure.error;
-    }
-  });
+      if (injectCleanup) {
+        expect(failure?.error).toBeInstanceOf(AggregateError);
+        if (!(failure?.error instanceof AggregateError)) throw new Error("Expected HTTP cleanup failure");
+        expect(failure.error.cause).toBe(bodyError);
+        expect(failure.error.errors).toHaveLength(2);
+        expect(failure.error.errors[0]).toBe(bodyError);
+        expect(failure.error.errors[1]).toBe(cleanupError);
+      } else if (failure) {
+        // Preserve both the original failure and any owned-server cleanup failure.
+        throw failure.error;
+      }
+    },
+  );
 
-  it.each(["normal", "held-disposal", "failed-disposal"] as const)(
+  it.each(["normal", "held-disposal", "failed-disposal", "observation-failure", "client-failure"] as const)(
     "publishes a linked REST relation invalidation with the authenticated actor and tenant (%s)",
     async (control) => {
       const { source, target, property } = await runInTenant(tenantA.tenantId, async () => {
@@ -1396,7 +1667,12 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let onNotification: ((message: { channel: string; payload?: string }) => void) | undefined;
       let cancelObservation: (() => void) | undefined;
-      let observationSettled: Promise<void> | undefined;
+      const observationCancelled = new Error("Observation cancelled");
+      const observationBodyFailure = new Error("Observation body failed");
+      const clientBodyFailure = new Error("HTTP observation body failed");
+      let lateClientResult: { ok: true; value: number } | { ok: false; error: unknown } | undefined;
+      let observationResult: Promise<{ ok: true; value: unknown } | { ok: false; error: unknown }> | undefined;
+      let observationConsumed = false;
       let requestServer: Server | undefined;
       const marker = randomUUID();
       const requests: Array<{ task?: Promise<void> }> = [];
@@ -1479,7 +1755,11 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
           if (timer) clearTimeout(timer);
           if (onNotification) listener?.removeListener("notification", onNotification);
           cancelObservation?.();
-          await observationSettled;
+          if (observationResult) {
+            const outcome = await observationResult;
+            if (!outcome.ok && !observationConsumed && outcome.error !== observationCancelled)
+              cleanupErrors.push(outcome.error);
+          }
           try {
             await listenerOwner.close();
           } catch (error) {
@@ -1542,7 +1822,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         listener = await listenerOwner.open();
         const activeListener = listener;
         const observed = new Promise<unknown>((resolve, reject) => {
-          cancelObservation = () => reject(new Error("Observation cancelled"));
+          cancelObservation = () => reject(observationCancelled);
           timer = setTimeout(() => reject(new Error("Timed out waiting for linked relation event")), FRAME_TIMEOUT_MS);
           onNotification = (notification) => {
             if (notification.channel !== "semprec_events" || !notification.payload) return;
@@ -1556,9 +1836,9 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
           };
           activeListener.on("notification", onNotification);
         });
-        observationSettled = observed.then(
-          () => {},
-          () => {},
+        observationResult = observed.then(
+          (value) => ({ ok: true as const, value }),
+          (error: unknown) => ({ ok: false as const, error }),
         );
         const querySpy = vi.spyOn(pool, "query");
         const publications: Array<Promise<{ ok: true } | { ok: false; error: unknown }>> = [];
@@ -1630,8 +1910,10 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
           const forbiddenEnvelopes: unknown[] = [];
           let removeSentinel: (() => void) | undefined;
           let cancelSentinel: (() => void) | undefined;
+          const sentinelCancelled = new Error("Sentinel observation cancelled");
+          let sentinelFailure: { error: unknown } | undefined;
           const seen = new Promise<void>((resolve, reject) => {
-            cancelSentinel = () => reject(new Error("Sentinel observation cancelled"));
+            cancelSentinel = () => reject(sentinelCancelled);
             sentinelTimer = setTimeout(() => reject(new Error("Sentinel observation timed out")), FRAME_TIMEOUT_MS);
             const handler = (message: { channel: string; payload?: string }) => {
               if (message.channel !== "semprec_events" || !message.payload) return;
@@ -1649,8 +1931,8 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
             removeSentinel = () => activeListener.removeListener("notification", handler);
           });
           const settled = seen.then(
-            () => {},
-            () => {},
+            () => ({ ok: true as const }),
+            (error: unknown) => ({ ok: false as const, error }),
           );
           try {
             await runInTenant(tenantA.tenantId, () =>
@@ -1671,15 +1953,40 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
               ).toEqual([]);
             }
             await expectNothingReceived(b1, tenantB.tenantId);
+          } catch (error) {
+            sentinelFailure = { error };
           } finally {
             if (sentinelTimer) clearTimeout(sentinelTimer);
             removeSentinel?.();
             cancelSentinel?.();
-            await settled;
+            const outcome = await settled;
+            if (!outcome.ok && outcome.error !== sentinelCancelled && outcome.error !== sentinelFailure?.error) {
+              sentinelFailure = sentinelFailure
+                ? {
+                    error: new AggregateError(
+                      [sentinelFailure.error, outcome.error],
+                      "Sentinel body and observation failed",
+                      { cause: sentinelFailure.error },
+                    ),
+                  }
+                : { error: outcome.error };
+            }
           }
+          if (sentinelFailure) throw sentinelFailure.error;
         };
         const url = `${requestBase}/api/items/${source.id}/relations/${property.key}/${target.id}`;
         const headers = { Cookie: a1Cookie, Origin: requestBase, "x-test-owner": marker };
+        if (control === "observation-failure") {
+          releasePublication();
+          await runInTenant(tenantA.tenantId, () =>
+            pool.query<{ pg_notify: string }>("SELECT pg_notify($1, $2)", ["semprec_events", "{"]),
+          );
+          const outcome = await observationResult;
+          expect(outcome.ok).toBe(false);
+          if (outcome.ok) throw new Error("Expected real observation failure");
+          expect(outcome.error).toBeInstanceOf(SyntaxError);
+          throw observationBodyFailure;
+        }
         expect(await ownedPut(url, headers)).toBe(200);
         expect(requests).toHaveLength(1);
         await requests[0]?.task;
@@ -1687,6 +1994,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
           tenantId: tenantA.tenantId,
           message: { type: "invalidation", scope: "item", itemId: source.id, userId: tenantA.userId },
         });
+        observationConsumed = true;
         expect(itemPublications(source.id)).toEqual([expect.objectContaining({ userId: tenantA.userId })]);
         querySpy.mockClear();
         if (control === "held-disposal") {
@@ -1806,9 +2114,11 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
           controller,
         );
         const heldSettled = heldRequest.then(
-          () => {},
-          () => {},
+          (value) => ({ ok: true as const, value }),
+          (error: unknown) => ({ ok: false as const, error }),
         );
+        let heldFailure: { error: unknown } | undefined;
+        let heldConsumed = false;
         try {
           await Promise.race([
             admitted,
@@ -1819,8 +2129,13 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
           expect(requests).toHaveLength(3);
           const serverTask = requests[2]?.task;
           if (!serverTask) throw new Error("Missing owned server completion");
+          if (control === "client-failure") throw clientBodyFailure;
           controller.abort();
-          await expect(heldRequest).rejects.toMatchObject({ name: "AbortError" });
+          const expected = await heldSettled;
+          expect(expected.ok).toBe(false);
+          if (expected.ok) throw new Error("Expected aborted client request");
+          expect(expected.error).toMatchObject({ name: "AbortError" });
+          heldConsumed = true;
           let completed = false;
           void serverTask.then(
             () => {
@@ -1843,11 +2158,25 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
           ).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user" });
           expect(itemPublications(heldSource.id)).toEqual([expect.objectContaining({ userId: tenantA.userId })]);
           await expectInvalidationInA({ scope: "item", itemId: heldSource.id, op: "update" });
+        } catch (error) {
+          heldFailure = { error };
         } finally {
           controller.abort();
           releaseGate();
-          await heldSettled;
+          lateClientResult = await heldSettled;
+          if (!lateClientResult.ok && !heldConsumed) {
+            heldFailure = heldFailure
+              ? {
+                  error: new AggregateError(
+                    [heldFailure.error, lateClientResult.error],
+                    "HTTP body and client failed",
+                    { cause: heldFailure.error },
+                  ),
+                }
+              : { error: lateClientResult.error };
+          }
         }
+        if (heldFailure) throw heldFailure.error;
         const unauthorized = await ownedPut(`${requestBase}/api/items/${randomUUID()}/relations/x/${randomUUID()}`, {
           Origin: requestBase,
           "x-test-owner": marker,
@@ -1918,8 +2247,10 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         let backgroundTimer: ReturnType<typeof setTimeout> | undefined;
         let backgroundHandler: ((message: { channel: string; payload?: string }) => void) | undefined;
         let cancelBackground: (() => void) | undefined;
+        const backgroundCancelled = new Error("Background observation cancelled");
+        let backgroundFailure: { error: unknown } | undefined;
         const backgroundEvent = new Promise<unknown>((resolve, reject) => {
-          cancelBackground = () => reject(new Error("Background observation cancelled"));
+          cancelBackground = () => reject(backgroundCancelled);
           backgroundTimer = setTimeout(() => reject(new Error("Background observation timed out")), FRAME_TIMEOUT_MS);
           backgroundHandler = (notification) => {
             if (notification.channel !== "semprec_events" || !notification.payload) return;
@@ -1934,8 +2265,8 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
           activeListener.on("notification", backgroundHandler);
         });
         const backgroundSettled = backgroundEvent.then(
-          () => {},
-          () => {},
+          () => ({ ok: true as const }),
+          (error: unknown) => ({ ok: false as const, error }),
         );
         try {
           await runInTenant(tenantA.tenantId, () =>
@@ -1965,12 +2296,26 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
             )?.[property.key],
           ).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user" });
           await expectInvalidationInA({ scope: "item", itemId: background.id, op: "update" });
+        } catch (error) {
+          backgroundFailure = { error };
         } finally {
           if (backgroundTimer) clearTimeout(backgroundTimer);
           if (backgroundHandler) activeListener.removeListener("notification", backgroundHandler);
           cancelBackground?.();
-          await backgroundSettled;
+          const outcome = await backgroundSettled;
+          if (!outcome.ok && outcome.error !== backgroundCancelled && outcome.error !== backgroundFailure?.error) {
+            backgroundFailure = backgroundFailure
+              ? {
+                  error: new AggregateError(
+                    [backgroundFailure.error, outcome.error],
+                    "Background body and observation failed",
+                    { cause: backgroundFailure.error },
+                  ),
+                }
+              : { error: outcome.error };
+          }
         }
+        if (backgroundFailure) throw backgroundFailure.error;
       } catch (error) {
         failure =
           failure && failure.error !== error
@@ -1984,6 +2329,35 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         releasePublication();
         for (const release of releaseFailures) release();
         await dispose();
+      }
+      if (control === "client-failure") {
+        if (!lateClientResult || lateClientResult.ok) throw new Error("Expected late client failure");
+        expect(lateClientResult.error).toMatchObject({ name: "AbortError" });
+        expect(failure?.error).toBeInstanceOf(AggregateError);
+        if (!(failure?.error instanceof AggregateError)) throw new Error("Expected client cleanup failure");
+        expect(failure.error.cause).toBe(clientBodyFailure);
+        expect(failure.error.errors).toHaveLength(2);
+        expect(failure.error.errors[0]).toBe(clientBodyFailure);
+        expect(failure.error.errors[1]).toBe(lateClientResult.error);
+        expect(listener?.listenerCount("notification")).toBe(0);
+        expect(listenerOwner.hasOwnedClient()).toBe(false);
+        return;
+      }
+      if (control === "observation-failure") {
+        if (!observationResult) throw new Error("Missing observation result");
+        const outcome = await observationResult;
+        expect(outcome.ok).toBe(false);
+        if (outcome.ok) throw new Error("Expected real observation failure");
+        expect(outcome.error).toBeInstanceOf(SyntaxError);
+        expect(failure?.error).toBeInstanceOf(AggregateError);
+        if (!(failure?.error instanceof AggregateError)) throw new Error("Expected observation cleanup failure");
+        expect(failure.error.cause).toBe(observationBodyFailure);
+        expect(failure.error.errors).toHaveLength(2);
+        expect(failure.error.errors[0]).toBe(observationBodyFailure);
+        expect(failure.error.errors[1]).toBe(outcome.error);
+        expect(listener?.listenerCount("notification")).toBe(0);
+        expect(listenerOwner.hasOwnedClient()).toBe(false);
+        return;
       }
       if (failure) {
         // Preserve the original failure rather than replacing it with a timeout wrapper.
