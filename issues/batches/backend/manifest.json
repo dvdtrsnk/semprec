@@ -1881,40 +1881,48 @@
       "sequence": 19,
       "status": "proposed",
       "title": "[backend-delivery 19/74] Verify security readiness under parent supervision",
-      "bodyCharacters": 27363,
-      "specSha256": "9a98aca597b54ae88b6b30735d4de941c1ff172d60fe2d53fc80002fd0ea014e",
+      "bodyCharacters": 32270,
+      "specSha256": "9909c9e52aa77196b7c8c659d019b7e98471c12c38d739490cc5a6a9a4f9b1ba",
       "members": [
         {
           "id": "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a",
-          "specSha256": "151b937e6061d6bead13ade1cbb3485fb70f5d243d711d5cdc284010ecf14161",
+          "specSha256": "2862274795b7ef4a5264cc0d2de4d4142759b8b042e21e012006d0bfde849be2",
           "parent": "gh-961",
           "dependencies": [],
-          "approval": "unapproved"
-        },
-        {
-          "id": "sp-a0f046dd-8781-4141-bc04-5dad0b725faf",
-          "specSha256": "b4477a04f16399f900bb423a6287cb000de7be7985cc4e1af6ee625669a0f104",
-          "parent": "gh-961",
-          "dependencies": [],
-          "approval": "unapproved"
+          "approval": "repository-approved"
         },
         {
           "id": "sp-94a5c71d-4663-4014-9256-db63e179346e",
-          "specSha256": "c746d92079db88e6726cac6df96aa0f262f0b5c30491d6e07ee746952dbc63bf",
+          "specSha256": "1fbee1d65f6925d58b07752b1fbcb83230b5912395a34388c77e4755955f9303",
           "parent": "gh-961",
-          "dependencies": [],
-          "approval": "unapproved"
+          "dependencies": [
+            "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a"
+          ],
+          "approval": "repository-approved"
         },
         {
           "id": "sp-dd171464-d76c-45f9-b113-73d81b38aad4",
-          "specSha256": "9aedebcda37a77e87ec9f009e0ad0c1ef711cade5d6e5f5ece3ec3d71b7e5a01",
+          "specSha256": "21f87c129aac19725dcb7f400a7363f754bff90001f3be2ce261a0cb1622ee4d",
           "parent": "gh-961",
-          "dependencies": [],
-          "approval": "unapproved"
+          "dependencies": [
+            "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a",
+            "sp-94a5c71d-4663-4014-9256-db63e179346e"
+          ],
+          "approval": "repository-approved"
+        },
+        {
+          "id": "sp-a0f046dd-8781-4141-bc04-5dad0b725faf",
+          "specSha256": "258b55dbc9151bb919bc7b9462f180e8ec62b4dc78b6f28e0fecbc3825af2942",
+          "parent": "gh-961",
+          "dependencies": [
+            "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a",
+            "sp-dd171464-d76c-45f9-b113-73d81b38aad4"
+          ],
+          "approval": "repository-approved"
         },
         {
           "id": "gh-1086",
-          "specSha256": "ec64a54e01534dec504a48aea3a8f619d36b2eb927c29097c8b32dba9b15b5b4",
+          "specSha256": "bc270280e733725519967175b68fcdb1b7ab52b8b5a467aca9e626102539ccaf",
           "parent": "gh-961",
           "dependencies": [
             "gh-1000",
@@ -1939,10 +1947,10 @@
             "gh-1080",
             "gh-1085",
             "gh-1068",
-            "sp-a0f046dd-8781-4141-bc04-5dad0b725faf",
+            "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a",
             "sp-94a5c71d-4663-4014-9256-db63e179346e",
             "sp-dd171464-d76c-45f9-b113-73d81b38aad4",
-            "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a"
+            "sp-a0f046dd-8781-4141-bc04-5dad0b725faf"
           ],
           "approval": "repository-approved"
         }
