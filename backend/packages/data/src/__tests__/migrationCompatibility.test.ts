@@ -30,11 +30,12 @@ it("upgrades populated approvals and notifications through the batch 15 additive
   const admin = new Pool({ connectionString: url });
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch15-upgrade-"));
   const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
-  const files = (await readdir(migrations)).filter((file) => file.endsWith(".sql")).sort();
+  let files: string[] = [];
   let scratch: Pool | undefined;
   let created = false;
   let failure: { error: unknown } | undefined;
   try {
+    files = (await readdir(migrations)).filter((file) => file.endsWith(".sql")).sort();
     await admin.query(`CREATE DATABASE "${name}"`);
     created = true;
     const scratchUrl = new URL(url);
@@ -83,6 +84,14 @@ it("upgrades populated approvals and notifications through the batch 15 additive
         [notificationId, tenantId, userId],
       );
     });
+    const originalApproval = (
+      await db.query<{ row: unknown }>("SELECT to_jsonb(a) AS row FROM approval_requests a WHERE id = $1", [requestId])
+    ).rows[0]?.row;
+    const originalNotification = (
+      await db.query<{ row: unknown }>("SELECT to_jsonb(n) AS row FROM notifications n WHERE id = $1", [notificationId])
+    ).rows[0]?.row;
+    expect(originalApproval).toBeDefined();
+    expect(originalNotification).toBeDefined();
     await migrateThrough("0116_approval_requests_tool_call_id.sql");
     const afterId = await db.query<{ tool_name: string; tool_call_id: string | null }>(
       "SELECT tool_name, tool_call_id FROM approval_requests WHERE id = $1",
@@ -115,6 +124,32 @@ it("upgrades populated approvals and notifications through the batch 15 additive
       ),
     ).rejects.toMatchObject({ code: "23505" });
     await migrateThrough("0117_approval_requests_description.sql");
+    expect(
+      (
+        await db.query<{ row: unknown }>(
+          "SELECT to_jsonb(a) - 'tool_call_id' - 'description' AS row FROM approval_requests a WHERE id = $1",
+          [requestId],
+        )
+      ).rows[0]?.row,
+    ).toEqual(originalApproval);
+    await withTransaction(db, (client) =>
+      client.query(
+        "INSERT INTO approval_requests (tenant_id, agent_run_id, tool_name, risk_class, payload, resource_snapshot) VALUES ($1, $2, 'post_0117_writer', 'unclassified', $3::jsonb, $4::jsonb)",
+        [
+          tenantId,
+          runId,
+          JSON.stringify({ mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} }),
+          JSON.stringify({ kind: "test", resourceId: "legacy", sha256: null }),
+        ],
+      ),
+    );
+    expect(
+      (
+        await db.query<{ tool_call_id: string | null; description: unknown }>(
+          "SELECT tool_call_id, description FROM approval_requests WHERE tool_name = 'post_0117_writer'",
+        )
+      ).rows,
+    ).toEqual([{ tool_call_id: null, description: null }]);
     const description = await db.query<{ description: unknown }>(
       "SELECT description FROM approval_requests WHERE id = $1",
       [requestId],
@@ -128,6 +163,13 @@ it("upgrades populated approvals and notifications through the batch 15 additive
       description: null,
     });
     await migrateThrough("0122_notifications_body.sql");
+    expect(
+      (
+        await db.query<{ row: unknown }>("SELECT to_jsonb(n) - 'body' AS row FROM notifications n WHERE id = $1", [
+          notificationId,
+        ])
+      ).rows[0]?.row,
+    ).toEqual(originalNotification);
     const notification = await db.query<{ title: string; body: string | null }>(
       "SELECT title, body FROM notifications WHERE id = $1",
       [notificationId],

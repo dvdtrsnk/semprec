@@ -32,8 +32,14 @@ import type { ApprovalDescription } from "./approvalRequestsStore.js";
 
 type DescriptionParams = ApprovalDescription["params"];
 
-function nameOf(properties: Record<string, unknown>): string | null {
-  return typeof properties.name === "string" ? properties.name : null;
+async function nameOf(
+  client: PoolClient,
+  item: { databaseId: string; properties: Record<string, unknown> },
+): Promise<string | null> {
+  const [label] = await databasesStore.listDatabaseLabelsByIds(client, [item.databaseId]);
+  const title = label?.titlePropertyKey ? item.properties[label.titlePropertyKey] : undefined;
+  if (typeof title === "string") return title;
+  return typeof item.properties.name === "string" ? item.properties.name : null;
 }
 
 async function requireDatabase(client: PoolClient, id: string) {
@@ -79,7 +85,7 @@ export async function buildDestructiveApprovalDescription(
       return {
         key: "approval.pageRestore",
         params: {
-          itemName: nameOf(item.properties),
+          itemName: await nameOf(client, item),
           databaseKey: database.key,
           databaseName: databaseDisplayName(database),
         },
@@ -89,7 +95,7 @@ export async function buildDestructiveApprovalDescription(
       const item = await requireItem(client, check.input.itemId);
       const database = await requireDatabase(client, item.databaseId);
       const params: DescriptionParams = {
-        itemName: nameOf(item.properties),
+        itemName: await nameOf(client, item),
         databaseKey: database.key,
         databaseName: databaseDisplayName(database),
         linkedCount: new Set(
@@ -101,7 +107,7 @@ export async function buildDestructiveApprovalDescription(
       };
       if (database.ownerProjectItemId) {
         const [project] = await itemsStore.getItemsByIds(client, [database.ownerProjectItemId]);
-        const projectName = project ? nameOf(project.properties) : null;
+        const projectName = project ? await nameOf(client, project) : null;
         if (projectName !== null) params.projectName = projectName;
       }
       return { key: "approval.itemDelete", params };
@@ -149,9 +155,9 @@ export async function buildDestructiveApprovalDescription(
       return {
         key: "approval.relationDelete",
         params: {
-          fromItemName: nameOf(from.properties),
+          fromItemName: await nameOf(client, from),
           fromDatabaseKey: fromDatabase.key,
-          toItemName: nameOf(to.properties),
+          toItemName: await nameOf(client, to),
           toDatabaseKey: toDatabase.key,
         },
       };

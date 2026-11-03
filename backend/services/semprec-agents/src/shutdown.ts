@@ -5,6 +5,12 @@ import { logger } from "./logger.js";
 export const POOL_END_TIMEOUT_MS = 5_000;
 export const LISTENER_CLOSE_TIMEOUT_MS = 5_000;
 
+function errorCategory(error: unknown): string {
+  if (error instanceof AggregateError) return "aggregate_error";
+  if (error instanceof Error) return "error";
+  return typeof error;
+}
+
 export interface QueueRuntimeHandle {
   stop(): Promise<void>;
 }
@@ -43,12 +49,15 @@ function endPool(pool: Pool, logger: Logger, signal: string): Promise<void> {
       },
       (err: unknown) => {
         if (settled) {
-          logger.error({ err, signal }, "pool.end() rejected after POOL_END_TIMEOUT_MS had already elapsed");
+          logger.error(
+            { errorCategory: errorCategory(err), signal },
+            "pool.end() rejected after POOL_END_TIMEOUT_MS had already elapsed",
+          );
           return;
         }
         settled = true;
         clearTimeout(boundTimer);
-        logger.error({ err, signal }, "pool.end() failed");
+        logger.error({ errorCategory: errorCategory(err), signal }, "pool.end() failed");
         resolve();
       },
     );
@@ -78,7 +87,7 @@ async function closeListener(
         .catch((err: unknown) => {
           // Keep observing close after the deadline: a late rejection must still be reported.
           logger.error(
-            { errorName: err instanceof Error ? err.name : typeof err, signal },
+            { errorCategory: errorCategory(err), signal },
             timedOut
               ? "tenantDeactivationListener.close() rejected after LISTENER_CLOSE_TIMEOUT_MS had already elapsed"
               : "tenantDeactivationListener.close() failed",
@@ -113,7 +122,7 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
     try {
       await queueRuntime.stop();
     } catch (err) {
-      logger.error({ err, signal }, "queueRuntime.stop() failed");
+      logger.error({ errorCategory: errorCategory(err), signal }, "queueRuntime.stop() failed");
     }
 
     // After the queue stopped, so no turn is still being written; before the pool ends. A failure
@@ -122,7 +131,7 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
       const { closedRunIds } = await closeIdleThreadSessions(pool);
       logger.info({ signal, closedIdleSessionCount: closedRunIds.length }, "Closed idle thread sessions");
     } catch (err) {
-      logger.error({ err, signal }, "closeIdleThreadSessions() failed");
+      logger.error({ errorCategory: errorCategory(err), signal }, "closeIdleThreadSessions() failed");
     }
 
     await endPool(pool, logger, signal);
@@ -149,7 +158,7 @@ export function registerShutdownSignals(shutdown: (signal: string) => Promise<vo
           process.exit(0);
         })
         .catch((err: unknown) => {
-          logger.fatal({ err, signal }, "shutdown() rejected unexpectedly");
+          logger.fatal({ errorCategory: errorCategory(err), signal }, "shutdown() rejected unexpectedly");
           process.exit(1);
         });
     });

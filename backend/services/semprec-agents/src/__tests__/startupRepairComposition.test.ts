@@ -1,12 +1,19 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
 import type { Pool } from "pg";
-import { createReconstructConversationHistory, repairInterruptedRuns } from "@semprec/agent-runtime";
+import {
+  closeIdleThreadSessions,
+  createReconstructConversationHistory,
+  repairInterruptedRuns,
+} from "@semprec/agent-runtime";
 import { fauxProvider } from "@earendil-works/pi-ai";
-import { createAgentRun, createUser, hashPassword, insertAgentRunEvent } from "@semprec/data";
-import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createAgentRun, createUser, hashPassword, insertAgentRunEvent, withTransaction } from "@semprec/data";
+import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { runInTenant, type Logger } from "@semprec/shared";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
 import { toPiMessages } from "../piConversationHistory.js";
+import { createGracefulShutdown } from "../shutdown.js";
 
 let pool: Pool;
 let runtime: AgentsQueueRuntime | undefined;
@@ -27,6 +34,84 @@ describe("semprec-agents startup repair (issue #642)", () => {
 
   afterAll(async () => {
     await pool.end();
+  });
+
+  it("composes graceful shutdown with the real idle sweep before ending its runtime pool", async () => {
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    let ended = false;
+    let failure: { error: unknown } | undefined;
+    const order: string[] = [];
+    const originalEnd = runtimePool.end.bind(runtimePool);
+    const endDescriptor = Object.getOwnPropertyDescriptor(runtimePool, "end");
+    Object.defineProperty(runtimePool, "end", {
+      configurable: true,
+      value: () => {
+        order.push("end");
+        return originalEnd().then(() => {
+          ended = true;
+        });
+      },
+    });
+    try {
+      const thread = await runInTenant(getTenantZeroId(), () =>
+        withTransaction(runtimePool, (client) =>
+          client.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id"),
+        ),
+      );
+      const run = await runInTenant(getTenantZeroId(), () =>
+        createAgentRun(runtimePool, {
+          triggeredBy: "user",
+          unit: "session",
+          task: "idle",
+          threadId: thread.rows[0]!.id,
+        }),
+      );
+      await runInTenant(getTenantZeroId(), () =>
+        insertAgentRunEvent(runtimePool, run.id, "turn_end", { kind: "turn_end" }),
+      );
+      const logger = { info: () => {}, error: () => {} } as unknown as Logger;
+      const shutdown = createGracefulShutdown({
+        pool: runtimePool,
+        logger,
+        queueRuntime: {
+          stop: async () => {
+            order.push("queue");
+          },
+        },
+        tenantDeactivationListener: {
+          close: async () => {
+            order.push("listener");
+          },
+        },
+        closeIdleThreadSessions: async (client) => {
+          const result = await closeIdleThreadSessions(client);
+          order.push("sweep");
+          return result;
+        },
+      });
+      await shutdown("SIGTERM");
+      expect(order).toEqual(["listener", "queue", "sweep", "end"]);
+      const rows = await pool.query<{ status: string; notifications: string }>(
+        "SELECT status, (SELECT count(*)::text FROM notifications WHERE source_id = $1::text AND kind = 'agent_run_error') AS notifications FROM agent_runs WHERE id = $1::uuid",
+        [run.id],
+      );
+      expect(rows.rows).toEqual([{ status: "done", notifications: "0" }]);
+      const source = await readFile(new URL("../serve.ts", import.meta.url), "utf8");
+      expect(source).toMatch(/createGracefulShutdown\(\{[\s\S]*?\bcloseIdleThreadSessions\s*[,}]/);
+    } catch (error) {
+      failure = { error };
+    }
+    if (endDescriptor) Object.defineProperty(runtimePool, "end", endDescriptor);
+    else Reflect.deleteProperty(runtimePool, "end");
+    if (!ended) {
+      try {
+        await originalEnd();
+      } catch (error) {
+        if (failure) throw new AggregateError([failure.error, error], "Shutdown test cleanup failed", { cause: error });
+        throw error;
+      }
+    }
+    if (failure) throw failure.error;
   });
 
   it("repairs orphaned runs, skips mcp-credential runs, and creates the queue runtime", async () => {

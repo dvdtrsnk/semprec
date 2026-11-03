@@ -66,7 +66,61 @@ describe("semprec-agents graceful shutdown", () => {
       "closeIdleThreadSessions",
       "pool.end",
     ]);
-    expect(errors).toEqual([{ obj: { err: failure, signal: "SIGTERM" }, msg: "closeIdleThreadSessions() failed" }]);
+    expect(errors).toEqual([
+      { obj: { errorCategory: "error", signal: "SIGTERM" }, msg: "closeIdleThreadSessions() failed" },
+    ]);
+  });
+
+  it("does not serialize nested tenant errors or arbitrary error names", async () => {
+    const { calls, errors, deps } = createFakes();
+    const secret = "tenant-content-sentinel";
+    const inner = new Error(secret);
+    inner.name = secret;
+    const failure = new AggregateError([new AggregateError([inner], secret)], secret, { cause: inner });
+    failure.name = secret;
+    await createGracefulShutdown({
+      ...deps,
+      closeIdleThreadSessions: async () => {
+        throw failure;
+      },
+    })("SIGTERM");
+    expect(calls).toContain("pool.end");
+    expect(errors).toEqual([
+      { obj: { errorCategory: "aggregate_error", signal: "SIGTERM" }, msg: "closeIdleThreadSessions() failed" },
+    ]);
+    expect(JSON.stringify(errors)).not.toContain(secret);
+  });
+
+  it("sanitizes queue and pool failures while continuing shutdown", async () => {
+    const { calls, errors, deps } = createFakes();
+    const secret = "tenant-queue-pool-secret";
+    const failure = new Error(secret);
+    failure.name = secret;
+    const pool = {
+      end: () => {
+        calls.push("pool.end");
+        return Promise.reject(failure);
+      },
+    } as unknown as Pool;
+    const queueRuntime = {
+      stop: () => {
+        calls.push("queueRuntime.stop");
+        return Promise.reject(failure);
+      },
+    };
+    await createGracefulShutdown({ ...deps, pool, queueRuntime })("SIGTERM");
+    expect(calls).toEqual([
+      "tenantDeactivationListener.close:start",
+      "tenantDeactivationListener.close:done",
+      "queueRuntime.stop",
+      "closeIdleThreadSessions",
+      "pool.end",
+    ]);
+    expect(errors).toEqual([
+      { obj: { errorCategory: "error", signal: "SIGTERM" }, msg: "queueRuntime.stop() failed" },
+      { obj: { errorCategory: "error", signal: "SIGTERM" }, msg: "pool.end() failed" },
+    ]);
+    expect(JSON.stringify(errors)).not.toContain(secret);
   });
 
   it("awaits the listener close before stopping the queue runtime, then ends the pool", async () => {
@@ -94,7 +148,7 @@ describe("semprec-agents graceful shutdown", () => {
   });
 
   it.each([
-    { error: new TypeError("close failed with private detail"), errorName: "TypeError" },
+    { error: new TypeError("close failed with private detail"), errorName: "error" },
     { error: "private detail", errorName: "string" },
   ])("logs a rejecting listener close ($errorName) and continues shutdown", async ({ error, errorName }) => {
     vi.useFakeTimers();
@@ -116,7 +170,7 @@ describe("semprec-agents graceful shutdown", () => {
     ]);
     expect(errors).toEqual([
       {
-        obj: { errorName, signal: "SIGTERM" },
+        obj: { errorCategory: errorName, signal: "SIGTERM" },
         msg: "tenantDeactivationListener.close() failed",
       },
     ]);
@@ -151,7 +205,7 @@ describe("semprec-agents graceful shutdown", () => {
 
   it.each([
     { outcome: "resolve", error: undefined, errorName: undefined },
-    { outcome: "reject", error: new TypeError("late private detail"), errorName: "TypeError" },
+    { outcome: "reject", error: new TypeError("late private detail"), errorName: "error" },
     { outcome: "reject", error: "late private detail", errorName: "string" },
   ])(
     "observes a late listener $outcome ($errorName) without repeating teardown",
@@ -198,7 +252,7 @@ describe("semprec-agents graceful shutdown", () => {
           ? []
           : [
               {
-                obj: { errorName, signal: "SIGTERM" },
+                obj: { errorCategory: errorName, signal: "SIGTERM" },
                 msg: "tenantDeactivationListener.close() rejected after LISTENER_CLOSE_TIMEOUT_MS had already elapsed",
               },
             ]),

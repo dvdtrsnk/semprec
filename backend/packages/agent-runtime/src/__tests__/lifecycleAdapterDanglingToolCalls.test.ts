@@ -140,13 +140,13 @@ describe("runAgentSession pairs dangling tool calls when a turn fails", () => {
     expect(rows[0]!.payload.result.content[0]!.text).toContain("failed");
   });
 
-  it("rolls back the failure close when pairing fails and allows later startup repair", async () => {
+  it("rolls back pairing when terminalization fails and allows later startup repair", async () => {
     const failure = new Error("turn failed");
     const createAgentSession = sessionThen([toolUse("call-1")], () => Promise.reject(failure));
     let testFailure: { error: unknown } | undefined;
     try {
       await pool.query(`CREATE FUNCTION batch15_reject_tool_result() RETURNS trigger LANGUAGE plpgsql AS $$
-        BEGIN IF NEW.kind = 'tool_result' THEN RAISE EXCEPTION 'pairing rejected'; END IF; RETURN NEW; END $$`);
+        BEGIN IF NEW.kind = 'run_status' AND NEW.payload->>'status' = 'error' THEN RAISE EXCEPTION 'terminal status rejected'; END IF; RETURN NEW; END $$`);
       await pool.query(`CREATE TRIGGER batch15_reject_tool_result BEFORE INSERT ON agent_run_events
         FOR EACH ROW EXECUTE FUNCTION batch15_reject_tool_result()`);
       const result: unknown = await runAgentSession(pool, {

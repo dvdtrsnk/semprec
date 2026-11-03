@@ -72,7 +72,7 @@ describe("choke-point itemWrites", () => {
     const result = await chokePoint.updateItem({
       databaseId: db.id,
       itemId: item.id,
-      propertiesPatch: { body: "new", title: "after" },
+      propertiesPatch: { body: "<p>safe</p><script>remove-me</script>", title: "after" },
     });
     expect(readItemPatchChangeMetadata(result)).toEqual(
       new Map([
@@ -87,7 +87,10 @@ describe("choke-point itemWrites", () => {
         ["title", true],
       ]),
     );
-    expect(JSON.parse(JSON.stringify(projected))).toEqual(JSON.parse(JSON.stringify(result)));
+    expect(projected.properties.body).toContain("safe");
+    expect(projected.properties.body).not.toContain("remove-me");
+    expect(JSON.stringify(projected)).not.toContain("itemPatchChangeMetadata");
+    expect(JSON.stringify(result)).not.toContain("itemPatchChangeMetadata");
   });
 
   it("rejects writing an owner:'system' property from the generic path", async () => {

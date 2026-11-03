@@ -21,6 +21,7 @@ import {
 } from "../sempConversation.js";
 import { logger } from "../logger.js";
 import { repairInterruptedRuns } from "../startupRepair.js";
+import { AgentRunCancelledError } from "../lifecycleAdapter.js";
 import type { CompactionAdapter } from "../compaction.js";
 import type {
   AgentMessage,
@@ -171,64 +172,82 @@ describe("SempConversation", () => {
     if (failure) throw failure.error;
   });
 
-  it("wakes after a mid-tool failure using the immediately paired persisted history", async () => {
-    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
-    const compaction: CompactionAdapter = {
-      estimateContextTokens: (messages) => messages.length,
-      shouldCompact: () => false,
-      prepareCompaction: (entries) => entries,
-      compact: (entries) => entries as ConversationEntry[],
-      contextWindow: 1_000_000,
-      settings: {},
-    };
-    const next = scriptedSession([
-      { kind: "turn_start" },
-      { kind: "message", text: "recovered" },
-      { kind: "turn_end" },
-    ]);
-    const turnFailure = new Error("tool interrupted");
-    let wakes = 0;
-    const conversation = new SempConversation(runtimePool, {
-      createAgentSessionForRun: async () => {
-        if (wakes++ > 0) return next.createAgentSession;
-        return () => ({
-          async *messages() {
-            yield { kind: "turn_start" };
-            yield { kind: "tool_use", toolCallId: "call-1", name: "search", arguments: {} };
-            throw turnFailure;
+  it.each(["failure", "cancellation"] as const)(
+    "wakes after mid-tool %s using the immediately paired persisted history",
+    async (kind) => {
+      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const compaction: CompactionAdapter = {
+        estimateContextTokens: (messages) => messages.length,
+        shouldCompact: () => false,
+        prepareCompaction: (entries) => entries,
+        compact: (entries) => entries as ConversationEntry[],
+        contextWindow: 1_000_000,
+        settings: {},
+      };
+      const next = scriptedSession([
+        { kind: "turn_start" },
+        { kind: "message", text: "recovered" },
+        { kind: "turn_end" },
+      ]);
+      const turnFailure = new Error("tool interrupted");
+      const controller = new AbortController();
+      let wakes = 0;
+      const conversation = new SempConversation(runtimePool, {
+        createAgentSessionForRun: async () => {
+          if (wakes++ > 0) return next.createAgentSession;
+          return () => ({
+            async *messages() {
+              yield { kind: "turn_start" };
+              yield { kind: "tool_use", toolCallId: "call-1", name: "search", arguments: {} };
+              if (kind === "cancellation") {
+                controller.abort();
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                return;
+              }
+              throw turnFailure;
+            },
+          });
+        },
+        resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+        reconstructHistory: createReconstructConversationHistory(compaction),
+      });
+      let failure: { error: unknown } | undefined;
+      try {
+        const first = runInTenant(tenantZero, () =>
+          conversation.send("first", chatThread, { signal: controller.signal }),
+        );
+        if (kind === "cancellation") await expect(first).rejects.toBeInstanceOf(AgentRunCancelledError);
+        else await expect(first).rejects.toBe(turnFailure);
+        expect(await sendInTenantZero(conversation, "next")).toEqual({ ok: true, message: "recovered" });
+        const messages = next.initialStates[0]?.messages;
+        expect(messages?.map((entry) => entry.message.kind)).toEqual(["turn_start", "tool_use", "tool_result"]);
+        expect(messages?.[2]?.message).toMatchObject({
+          kind: "tool_result",
+          toolCallId: "call-1",
+          name: "search",
+          isError: true,
+          result: {
+            content: [
+              { type: "text", text: expect.stringContaining(kind === "cancellation" ? "cancelled" : "failed") },
+            ],
+            details: { error: true },
           },
         });
-      },
-      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
-      reconstructHistory: createReconstructConversationHistory(compaction),
-    });
-    let failure: { error: unknown } | undefined;
-    try {
-      await expect(sendInTenantZero(conversation, "first")).rejects.toBe(turnFailure);
-      expect(await sendInTenantZero(conversation, "next")).toEqual({ ok: true, message: "recovered" });
-      const messages = next.initialStates[0]?.messages;
-      expect(messages?.map((entry) => entry.message.kind)).toEqual(["turn_start", "tool_use", "tool_result"]);
-      expect(messages?.[2]?.message).toMatchObject({
-        kind: "tool_result",
-        toolCallId: "call-1",
-        name: "search",
-        isError: true,
-        result: { content: [{ type: "text", text: expect.stringContaining("failed") }], details: { error: true } },
-      });
-    } catch (error) {
-      failure = { error };
-    } finally {
-      conversation.clear();
-    }
-    try {
-      await runtimePool.end();
-    } catch (error) {
-      if (failure)
-        throw new AggregateError([failure.error, error], "Wake test and pool cleanup failed", { cause: error });
-      throw error;
-    }
-    if (failure) throw failure.error;
-  });
+      } catch (error) {
+        failure = { error };
+      } finally {
+        conversation.clear();
+      }
+      try {
+        await runtimePool.end();
+      } catch (error) {
+        if (failure)
+          throw new AggregateError([failure.error, error], "Wake test and pool cleanup failed", { cause: error });
+        throw error;
+      }
+      if (failure) throw failure.error;
+    },
+  );
 
   it("leaves failed pairing repairable and wakes the thread after startup repair", async () => {
     const runtimePool = await createRuntimeRolePool(pool, "semprec_data");

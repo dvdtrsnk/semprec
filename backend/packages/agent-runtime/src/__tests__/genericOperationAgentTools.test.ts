@@ -6,9 +6,11 @@ import type { Pool } from "pg";
 import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createAgentRun,
+  createItemWithClient,
   createChokePoint,
   createViewTypeRegistry,
   loadFullModuleRegistry,
+  getDatabaseByModuleId,
   seedSystem,
   withTransaction,
   type ChokePoint,
@@ -160,6 +162,32 @@ describe("generic operation AgentTools (issue #220)", () => {
   });
 
   describe("item.patch changes", () => {
+    it("preserves write classification through the actual registered email projection", async () => {
+      const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "emails"));
+      if (!database) throw new Error("Emails not seeded");
+      const item = await withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          {
+            databaseId: database.id,
+            properties: { body: "<p>safe</p><script>projection-sentinel</script>", read: false },
+          },
+          { allowedSystemKeys: ["body"] },
+        ),
+      );
+      const projectItemId = await createProjectItem();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "patch" });
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+      const outcome = await tools["item.patch"](run.id, {
+        itemId: item.id,
+        properties: { read: true },
+        ifVersion: item.updatedAt,
+      });
+      expect(outcome.error).toBe(false);
+      expect(outcome.result).toContain("safe");
+      expect(outcome.result).not.toContain("projection-sentinel");
+      expect(outcome.changes).toEqual([{ key: "read", before: false, after: true }]);
+    });
     async function patchFixture() {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "patch" });

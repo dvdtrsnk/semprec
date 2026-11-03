@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import {
   createAgentRun,
   createChokePoint,
@@ -10,6 +11,8 @@ import {
   createUser,
   finishAgentRunWithErrorNotification,
   insertAndNotifyAgentRunEvent,
+  insertAgentRunEvent,
+  loadFullModuleRegistry,
   publishSempThreadInvalidation,
   seedSystem,
   withTransaction,
@@ -30,6 +33,8 @@ import {
   type SyncServer,
 } from "@semprec/realtime";
 import { runInTenant } from "@semprec/shared";
+import { createAgentRunTask } from "../agentRunTasks.js";
+import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 
 let adminPool: Pool;
 let agentsPool: Pool;
@@ -179,10 +184,13 @@ describe("semprec-agents realtime wiring (issue #1383)", () => {
     let other: WebSocket | undefined;
     let failure: { error: unknown } | undefined;
     try {
+      const ownerUser = await runInTenant(tenantId, () =>
+        createUser(runtimePool, { email: "socket-owner@example.test", passwordHash: "unused", tenantId }),
+      );
       sync = await createSyncServer(runtimePool, {
         authenticate: async (req) => {
           const token = new URL(req.url ?? "/", "http://localhost").searchParams.get("token");
-          if (token === "owner") return { tenantId, userId: randomUUID(), sessionId: "owner" };
+          if (token === "owner") return { tenantId, userId: ownerUser.id, sessionId: "owner" };
           if (token === "other") return { tenantId: otherTenantId, userId: randomUUID(), sessionId: "other" };
           return null;
         },
@@ -253,19 +261,124 @@ describe("semprec-agents realtime wiring (issue #1383)", () => {
         }
       });
       wireRealtimeHooks(runtimePool);
-      const databases = await runInTenant(tenantId, () =>
-        runtimePool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'"),
+      const cp = createChokePoint(runtimePool);
+      const database = await runInTenant(tenantId, () => cp.createDatabase({ name: "Agent socket evidence" }));
+      await runInTenant(tenantId, () =>
+        cp.createProperty({ databaseId: database.id, key: "name", name: "Name", type: "text" }),
       );
-      expect(databases.rows).toHaveLength(1);
-      const item = await runInTenant(tenantId, () =>
-        createChokePoint(runtimePool).createItem({
-          databaseId: databases.rows[0]!.id,
-          properties: {},
+      const target = await runInTenant(tenantId, () =>
+        cp.createItem({ databaseId: database.id, properties: { name: "approval target" } }),
+      );
+      const projects = await runInTenant(tenantId, () =>
+        withTransaction(runtimePool, (client) =>
+          client.query<{ id: string }>("SELECT id FROM items WHERE properties->>'name' = 'Semprec'"),
+        ),
+      );
+      if (projects.rows.length !== 1) throw new Error("Missing Semprec project");
+      const run = await runInTenant(tenantId, () =>
+        createAgentRun(runtimePool, {
+          projectItemId: projects.rows[0]!.id,
+          triggeredBy: "user",
+          task: "socket evidence",
         }),
       );
+      await runInTenant(tenantId, () => insertAgentRunEvent(runtimePool, run.id, "turn_start", { kind: "turn_start" }));
+      owner.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+      await waitUntil(() =>
+        ownFrames.some(
+          (frame) => typeof frame === "object" && frame !== null && "type" in frame && frame.type === "agent:event",
+        ),
+      );
+      const faux = fauxProvider();
+      faux.setResponses([
+        fauxAssistantMessage(
+          [
+            fauxToolCall(
+              "item_create",
+              { databaseId: database.id, properties: { name: "socket-created" } },
+              { id: "create-call" },
+            ),
+          ],
+          { stopReason: "toolUse" },
+        ),
+        fauxAssistantMessage([fauxToolCall("item_delete", { itemId: target.id }, { id: "delete-call" })], {
+          stopReason: "toolUse",
+        }),
+        fauxAssistantMessage("done"),
+      ]);
+      const gateway = {
+        model: faux.getModel(),
+        streamFn: faux.provider.streamSimple.bind(faux.provider),
+        isBudgetRefusal: () => false,
+      };
+      const registry = await loadFullModuleRegistry();
+      await runInTenant(tenantId, () =>
+        createAgentRunTask(
+          runtimePool,
+          registry,
+          gateway,
+          createInFlightAgentRuns(),
+        )({ agentRunId: run.id }, { job: { id: "socket" } }),
+      );
+      const created = await runInTenant(tenantId, () =>
+        withTransaction(runtimePool, (client) =>
+          client.query<{ id: string }>(
+            "SELECT id FROM items WHERE database_id = $1 AND properties->>'name' = 'socket-created'",
+            [database.id],
+          ),
+        ),
+      );
+      expect(created.rows).toHaveLength(1);
+      const item = created.rows[0]!;
+      const requests = await runInTenant(tenantId, () =>
+        withTransaction(runtimePool, (client) =>
+          client.query<{ id: string }>(
+            "SELECT id FROM approval_requests WHERE agent_run_id = $1 AND tool_call_id = 'delete-call'",
+            [run.id],
+          ),
+        ),
+      );
+      expect(requests.rows).toHaveLength(1);
+      const requestId = requests.rows[0]!.id;
       await waitUntil(() =>
         ownFrames.some(
           (frame) => typeof frame === "object" && frame !== null && "itemId" in frame && frame.itemId === item.id,
+        ),
+      );
+      await waitUntil(() =>
+        ownFrames.some(
+          (frame) =>
+            typeof frame === "object" &&
+            frame !== null &&
+            "type" in frame &&
+            frame.type === "notification" &&
+            "notification" in frame &&
+            typeof frame.notification === "object" &&
+            frame.notification !== null &&
+            "sourceId" in frame.notification &&
+            frame.notification.sourceId === requestId,
+        ),
+      );
+      expect(
+        ownFrames.filter(
+          (frame) => typeof frame === "object" && frame !== null && "type" in frame && frame.type === "agent:event",
+        ).length,
+      ).toBeGreaterThan(1);
+      await waitUntil(() =>
+        ownFrames.some(
+          (frame) =>
+            typeof frame === "object" &&
+            frame !== null &&
+            "type" in frame &&
+            frame.type === "agent:event" &&
+            "event" in frame &&
+            typeof frame.event === "object" &&
+            frame.event !== null &&
+            "payload" in frame.event &&
+            typeof frame.event.payload === "object" &&
+            frame.event.payload !== null &&
+            "toolCallId" in frame.event.payload &&
+            frame.event.payload.toolCallId === "delete-call",
         ),
       );
       const sentinel = randomUUID();

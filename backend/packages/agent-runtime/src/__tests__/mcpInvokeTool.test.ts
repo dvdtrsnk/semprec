@@ -601,6 +601,53 @@ describe("MCP invoke adapter (issue #128)", () => {
       const { rows } = await pool.query(`SELECT count(*)::int AS count FROM approval_requests`);
       expect(rows[0].count).toBe(0);
     });
+
+    it("refuses a foreign registration like a missing one without approval side effects", async () => {
+      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      let failure: { error: unknown } | undefined;
+      try {
+        const tenantB = await createTestTenant(pool);
+        await runInTenant(tenantB, () =>
+          createUser(pool, { email: `${randomUUID()}@example.test`, passwordHash: "x", tenantId: tenantB }),
+        );
+        const contractServer = startStdioContractServer([SEARCH_TOOL]);
+        servers.push(contractServer);
+        const { registration } = await createGrantedTool(contractServer.connectionConfig);
+        const projectItemId = randomUUID();
+        const run = await runInTenant(tenantB, () =>
+          createAgentRun(runtimePool, { projectItemId, triggeredBy: "user", task: "foreign" }),
+        );
+        const snapshot = async () =>
+          (
+            await pool.query<{ requests: string; notifications: string; registration: unknown }>(
+              "SELECT (SELECT count(*)::text FROM approval_requests) requests, (SELECT count(*)::text FROM notifications) notifications, (SELECT to_jsonb(r) FROM mcp_tool_registrations r WHERE id = $1) registration",
+              [registration.id],
+            )
+          ).rows[0];
+        const before = await snapshot();
+        expect(before?.registration).toBeTruthy();
+        const invoke = (id: string) =>
+          runInTenant(tenantB, () =>
+            createApprovalGatedMcpInvokeTool(runtimePool, run.id, projectItemId, id)({ query: "test" }),
+          );
+        const foreign = await invoke(registration.id);
+        const missing = await invoke(randomUUID());
+        expect(foreign.error).toBe(true);
+        expect(foreign).toEqual(missing);
+        expect(await snapshot()).toEqual(before);
+        expect(contractServer.getHandshakeCount()).toBe(0);
+      } catch (error) {
+        failure = { error };
+      }
+      try {
+        await runtimePool.end();
+      } catch (error) {
+        if (failure)
+          throw new AggregateError([failure.error, error], "Foreign registration cleanup failed", { cause: error });
+        throw error;
+      }
+      if (failure) throw failure.error;
+    });
   });
 
   describe("schema compile caching (issue #696)", () => {

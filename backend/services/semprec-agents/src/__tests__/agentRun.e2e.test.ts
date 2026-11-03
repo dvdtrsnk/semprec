@@ -116,6 +116,12 @@ async function runEvents(id: string): Promise<{ kind: string; payload: Record<st
   });
 }
 
+function resultDetails(payload: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!payload || !isRecord(payload.result) || !isRecord(payload.result.details))
+    throw new Error("Missing tool result details");
+  return payload.result.details;
+}
+
 function tcpPort(server: Server): number {
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Expected a TCP server address");
@@ -651,6 +657,9 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
         toolCallId: "mcp-call-1",
         result: { details: { approvalRequestId: rows[0]!.id } },
       });
+      const details = resultDetails((await runEvents(run.id)).find((event) => event.kind === "tool_result")?.payload);
+      expect(details.error).toBe(false);
+      expect(Object.hasOwn(details, "changes")).toBe(false);
       expect(request?.payload).toMatchObject({ args: { query: "test" } });
       expect(JSON.stringify(request?.payload)).not.toContain("semprecReason");
       expect(server.getHandshakeCount()).toBe(0);
@@ -749,6 +758,9 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
       toolCallId: "call-1",
       result: { details: { approvalRequestId: rows[0]!.id } },
     });
+    const details = resultDetails((await runEvents(run.id)).find((event) => event.kind === "tool_result")?.payload);
+    expect(details.error).toBe(false);
+    expect(Object.hasOwn(details, "changes")).toBe(false);
     expect(request?.payload).toMatchObject({ canonicalInput: { itemId: item.id } });
     expect(JSON.stringify(request?.payload)).not.toContain("reason-sentinel");
     expect(JSON.stringify(request?.resourceSnapshot)).not.toContain("reason-sentinel");
@@ -759,10 +771,11 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     const chokePoint = createChokePoint(pool);
     const database = await chokePoint.createDatabase({ name: "Patch event" });
     await chokePoint.createProperty({ databaseId: database.id, key: "due", name: "Due", type: "text" });
+    await chokePoint.createProperty({ databaseId: database.id, key: "body", name: "Body", type: "longText" });
     const item = await inTenantZero(() =>
       chokePoint.createItem({
         databaseId: database.id,
-        properties: { due: "2026-10-21T14:00" },
+        properties: { due: "2026-10-21T14:00", body: "old-private-body" },
       }),
     );
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "test" });
@@ -773,7 +786,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
             "item_patch",
             {
               itemId: item.id,
-              properties: { due: "2026-10-22T09:00" },
+              properties: { due: "2026-10-22T09:00", body: "new-private-body" },
               ifVersion: item.updatedAt,
             },
             { id: "patch-call-1" },
@@ -788,10 +801,47 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     expect((await runEvents(run.id)).find((event) => event.kind === "tool_result")?.payload).toMatchObject({
       toolCallId: "patch-call-1",
       result: {
-        details: { error: false, changes: [{ key: "due", before: "2026-10-21T14:00", after: "2026-10-22T09:00" }] },
+        details: {
+          error: false,
+          changes: [{ key: "due", before: "2026-10-21T14:00", after: "2026-10-22T09:00" }, { key: "body" }],
+        },
       },
     });
+    const details = resultDetails((await runEvents(run.id)).find((event) => event.kind === "tool_result")?.payload);
+    expect(JSON.stringify(details)).not.toContain("private-body");
   });
+
+  it.each(["success", "failure"] as const)(
+    "persists %s non-patch details without approval or changes",
+    async (outcome) => {
+      const projectItemId = await seededSemprecProjectItemId();
+      const cp = createChokePoint(pool);
+      const database = await cp.createDatabase({ name: "Read event" });
+      const item = await cp.createItem({ databaseId: database.id, properties: {} });
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "read" });
+      faux.setResponses([
+        fauxAssistantMessage(
+          [fauxToolCall("item_get", { itemId: outcome === "success" ? item.id : randomUUID() }, { id: "read-call" })],
+          { stopReason: "toolUse" },
+        ),
+        fauxAssistantMessage("done"),
+      ]);
+      await runInTenant(getTenantZeroId(), () =>
+        createAgentRunTask(
+          pool,
+          registry,
+          fauxGateway,
+          createInFlightAgentRuns(),
+        )({ agentRunId: run.id }, { job: { id: "1" } }),
+      );
+      const payload = (await runEvents(run.id)).find((event) => event.kind === "tool_result")?.payload;
+      expect(payload?.toolCallId).toBe("read-call");
+      const details = resultDetails(payload);
+      expect(details.error).toBe(outcome === "failure");
+      expect(Object.hasOwn(details, "approvalRequestId")).toBe(false);
+      expect(Object.hasOwn(details, "changes")).toBe(false);
+    },
+  );
 
   it("keeps a reason out of logs when approval insertion fails", async () => {
     logger.error("log-capture-failed-insert-marker");
