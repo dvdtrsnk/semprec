@@ -1001,6 +1001,7 @@ describe("SempConversation across tenants", () => {
       });
 
       const inFlight = sendThread(tenantA, conversation, "slow one", threadOne);
+      const settledInFlight = Promise.allSettled([inFlight]);
       let failure: { error: unknown } | undefined;
       let settledFailure: { error: unknown } | undefined;
       try {
@@ -1025,7 +1026,7 @@ describe("SempConversation across tenants", () => {
         failure = { error };
       } finally {
         release();
-        const [settled] = await Promise.allSettled([inFlight]);
+        const [settled] = await settledInFlight;
         conversation.clear();
         if (settled?.status === "rejected") settledFailure = { error: settled.reason };
       }
