@@ -9,6 +9,7 @@ import {
   setSempThreadInvalidationHook,
 } from "@semprec/data";
 import { publishRealtimeMessage } from "./pgNotifyPublisher.js";
+import { runInTenant } from "@semprec/shared";
 import { logger } from "./logger.js";
 
 /**
@@ -62,7 +63,7 @@ export function wireRealtimeHooks(pool: Pool): void {
   });
   setSempThreadInvalidationHook((event) => {
     const message = { type: "invalidation", scope: "sempThread", threadId: event.threadId } as const;
-    publishRealtimeMessage(pool, message, event.tenantId).catch((err: unknown) => {
+    runInTenant(event.tenantId, () => publishRealtimeMessage(pool, message)).catch((err: unknown) => {
       logger.error({ err }, "Failed to publish sempThread invalidation realtime message");
     });
   });

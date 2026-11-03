@@ -108,9 +108,9 @@ const NATIVE_DEVICE_KINDS: Record<"ios" | "macos", readonly SessionDeviceKind[]>
   macos: ["mac"],
 };
 
-/** An optional trimmed string field of `1..maxLength` characters; absent (`undefined`/`null`) yields `null`. */
+/** An optional trimmed string field of `1..maxLength` characters; an absent field yields `null`. */
 function optionalDeviceString(value: unknown, field: string, maxLength: number): string | null {
-  if (value === undefined || value === null) return null;
+  if (value === undefined) return null;
   const trimmed = typeof value === "string" ? value.trim() : "";
   if (trimmed.length === 0 || trimmed.length > maxLength) {
     throw new ValidationError(`'${field}' must be a string of 1-${maxLength} characters`, { field });
@@ -139,14 +139,14 @@ function parseLoginDevice(
     };
   }
   let deviceId: string | null = null;
-  if (raw.deviceId !== undefined && raw.deviceId !== null) {
+  if (raw.deviceId !== undefined) {
     if (typeof raw.deviceId !== "string") {
       throw new ValidationError("'deviceId' must be a UUID string", { field: "deviceId" });
     }
     deviceId = assertUuid(raw.deviceId, "deviceId");
   }
   let deviceKind: SessionDeviceKind | null = null;
-  if (raw.deviceKind !== undefined && raw.deviceKind !== null) {
+  if (raw.deviceKind !== undefined) {
     const allowed = NATIVE_DEVICE_KINDS[platform];
     const kind = allowed.find((candidate) => candidate === raw.deviceKind);
     if (!kind) {

@@ -382,10 +382,8 @@ describe("semprec-agents realtime wiring (issue #1383)", () => {
         ),
       );
       const sentinel = randomUUID();
-      await publishRealtimeMessage(
-        runtimePool,
-        { type: "invalidation", scope: "schema", databaseId: sentinel },
-        otherTenantId,
+      await runInTenant(otherTenantId, () =>
+        publishRealtimeMessage(runtimePool, { type: "invalidation", scope: "schema", databaseId: sentinel }),
       );
       await waitUntil(() =>
         otherFrames.some(

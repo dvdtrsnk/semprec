@@ -1,5 +1,6 @@
 import type { CollectionMetadataResolver } from "@semprec/data";
 import { createServer, type Server } from "node:http";
+import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
@@ -201,8 +202,8 @@ describe("createMcpRequestListener (issue #220)", () => {
             (SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id), '[]'::jsonb) FROM properties p) AS properties,
             (SELECT coalesce(jsonb_agg(to_jsonb(u) - 'password_hash' ORDER BY u.id), '[]'::jsonb) FROM users u) AS users,
             (SELECT coalesce(jsonb_agg(to_jsonb(r) ORDER BY r.id), '[]'::jsonb) FROM agent_runs r) AS runs,
-            (SELECT coalesce(jsonb_agg(to_jsonb(c) - 'token_hash' ORDER BY c.id), '[]'::jsonb) FROM agent_run_mcp_credentials c) AS credentials,
-            (SELECT coalesce(jsonb_agg(to_jsonb(s) - 'token_hash' ORDER BY s.id), '[]'::jsonb) FROM sessions s) AS sessions
+            (SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY c.id), '[]'::jsonb) FROM agent_run_mcp_credentials c) AS credentials,
+            (SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY s.id), '[]'::jsonb) FROM sessions s) AS sessions
         `);
         if (!rows[0]) throw new Error("Missing persistence snapshot");
         return rows[0];
@@ -227,7 +228,7 @@ describe("createMcpRequestListener (issue #220)", () => {
       expect(afterHuman.properties).toEqual(before.properties);
       expect(afterHuman.users).toEqual(before.users);
       expect(afterHuman.runs).toEqual(before.runs);
-      expect(afterHuman.credentials).toEqual(before.credentials);
+      expect(JSON.stringify(afterHuman.credentials) === JSON.stringify(before.credentials)).toBe(true);
       // Authentication is allowed to touch the caller's session timestamps and no other fields.
       const stableSessions = (value: unknown): unknown => {
         if (!Array.isArray(value)) throw new Error("Expected session snapshot array");
@@ -239,8 +240,10 @@ describe("createMcpRequestListener (issue #220)", () => {
             : row;
         });
       };
-      expect(stableSessions(afterHuman.sessions)).toEqual(stableSessions(before.sessions));
-      expect(afterRun).toEqual(afterHuman);
+      expect(
+        JSON.stringify(stableSessions(afterHuman.sessions)) === JSON.stringify(stableSessions(before.sessions)),
+      ).toBe(true);
+      expect(JSON.stringify(afterRun) === JSON.stringify(afterHuman)).toBe(true);
     });
 
     it.each(["2025-06-18", "2025-03-26", "2024-11-05"])("echoes the supported version %s", async (version) => {
@@ -248,6 +251,15 @@ describe("createMcpRequestListener (issue #220)", () => {
       servers.push(server);
 
       const res = await rpc(baseUrl, await authHeader(), initialize(version));
+      const manifest: unknown = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8"));
+      if (
+        typeof manifest !== "object" ||
+        manifest === null ||
+        !("version" in manifest) ||
+        typeof manifest.version !== "string"
+      ) {
+        throw new Error("API package version is missing");
+      }
 
       expect(res.status).toBe(200);
       const body = (await res.json()) as JsonRpcResponse;
@@ -255,7 +267,7 @@ describe("createMcpRequestListener (issue #220)", () => {
       expect(body.result).toMatchObject({
         protocolVersion: version,
         capabilities: { tools: {} },
-        serverInfo: { name: "semprec", version: expect.any(String) },
+        serverInfo: { name: "semprec", version: manifest.version },
       });
     });
 

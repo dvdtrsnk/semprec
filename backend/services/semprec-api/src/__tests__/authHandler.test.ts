@@ -337,6 +337,11 @@ describe("createAuthRequestListener", () => {
         ["an iphone deviceKind on macos", { platform: "macos", deviceKind: "iphone" }, "deviceKind"],
         ["a non-UUID deviceId", { platform: "ios", deviceId: "not-a-uuid" }, "deviceId"],
         ["a non-string deviceId", { platform: "ios", deviceId: 7 }, "deviceId"],
+        ["a null deviceId", { platform: "ios", deviceId: null }, "deviceId"],
+        ["a null deviceKind", { platform: "ios", deviceKind: null }, "deviceKind"],
+        ["a null deviceName", { platform: "ios", deviceName: null }, "deviceName"],
+        ["a null osVersion", { platform: "ios", osVersion: null }, "osVersion"],
+        ["a null appVersion", { platform: "ios", appVersion: null }, "appVersion"],
         ["an empty deviceName", { platform: "ios", deviceName: "   " }, "deviceName"],
         ["a 101-character deviceName", { platform: "ios", deviceName: "a".repeat(101) }, "deviceName"],
         ["a non-string osVersion", { platform: "macos", osVersion: 26 }, "osVersion"],
@@ -449,7 +454,7 @@ describe("createAuthRequestListener", () => {
       if (typeof body !== "object" || body === null || !("token" in body) || typeof body.token !== "string") {
         throw new Error("Native login did not return a token");
       }
-      // Production login cannot create an aged session; preserve a still-valid legacy session here.
+      // Synthetic age: production login cannot create an already-aged session.
       await withTransaction(pool, (client) =>
         client.query(
           "UPDATE sessions SET created_at = now() - interval '364 days', expires_at = now() + interval '1 hour' WHERE user_id = $1",
@@ -466,6 +471,40 @@ describe("createAuthRequestListener", () => {
       );
       expect(result.rows).toEqual([{ capped: true }]);
     });
+
+    it.each([
+      [300, false],
+      [340, true],
+    ] as const)(
+      "applies the web idle window and ceiling to an active %i-day-old session through HTTP",
+      async (ageDays, capped) => {
+        const user = await makeUser();
+        const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "web" }),
+        });
+        expect(loginResponse.status).toBe(200);
+        const cookie = sessionCookieFrom(loginResponse);
+        // Synthetic age: the login API cannot backdate a still-active session.
+        await withTransaction(pool, (client) =>
+          client.query(
+            "UPDATE sessions SET created_at = now() - make_interval(days => $2::int), expires_at = now() + interval '1 hour' WHERE user_id = $1",
+            [user.id, ageDays],
+          ),
+        );
+        const response = await fetch(`${baseUrl}/api/auth/session`, {
+          headers: { Cookie: `${SESSION_COOKIE_NAME}=${cookie}` },
+        });
+        expect(response.status).toBe(200);
+        const { rows } = await pool.query<{ capped: boolean; idle_seconds: number }>(
+          "SELECT expires_at = created_at + interval '365 days' AS capped, extract(epoch FROM (expires_at - now()))::double precision AS idle_seconds FROM sessions WHERE user_id = $1",
+          [user.id],
+        );
+        expect(rows[0]?.capped).toBe(capped);
+        expect(Math.abs((rows[0]?.idle_seconds ?? 0) - (capped ? 25 : 30) * 86400)).toBeLessThan(60);
+      },
+    );
 
     it("rejects an expired web session over HTTP without renewing it", async () => {
       const user = await makeUser();

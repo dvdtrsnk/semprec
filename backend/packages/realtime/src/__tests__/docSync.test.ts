@@ -2,8 +2,8 @@ import * as Y from "yjs";
 import * as encoding from "lib0/encoding";
 import * as decoding from "lib0/decoding";
 import * as syncProtocol from "y-protocols/sync.js";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Pool, PoolClient } from "pg";
 import {
   createChokePoint,
   createDocStore,
@@ -496,7 +496,7 @@ describe("createDocSyncRegistry doc:ack (issue #1362)", () => {
   let tenantB: string;
   let docId: string;
 
-  /** Records, at the instant each ack is sent, how many rows `doc_updates` holds for the doc. */
+  /** Starts persistence reads when each ack is sent. */
   class AckSocket extends FakeSocket {
     readonly rowsAtAck: Promise<number>[] = [];
     readonly textAtAck: Promise<string>[] = [];
@@ -588,6 +588,100 @@ describe("createDocSyncRegistry doc:ack (issue #1362)", () => {
     expect(decoding.readVarUint(decoder)).toBe(syncProtocol.messageYjsUpdate);
     expect(acks(peer)).toEqual([]);
   });
+
+  it("does not acknowledge before the update transaction commits", async () => {
+    const socket = new FakeSocket();
+    const peer = new FakeSocket();
+    await registry.handleOpen(socket as unknown as never, tenantA, docId);
+    await registry.handleOpen(peer as unknown as never, tenantA, docId);
+    let blocker: PoolClient | undefined;
+    let locked = false;
+    let discardBlocker = false;
+    let triggerCreated = false;
+    let operation: Promise<PromiseSettledResult<void>> | undefined;
+    let failure: { error: unknown } | undefined;
+    const cleanupErrors: unknown[] = [];
+    try {
+      // A deferred trigger blocks the actual COMMIT after the valid update has been inserted.
+      await withTransaction(pool, async (client) => {
+        await client.query(`CREATE FUNCTION batch16_hold_doc_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN PERFORM set_config('lock_timeout', '10s', true);
+          PERFORM pg_advisory_xact_lock(hashtextextended(NEW.doc_id::text, 1602)); RETURN NEW; END $$`);
+        await client.query(`CREATE CONSTRAINT TRIGGER batch16_hold_doc_commit AFTER INSERT ON doc_updates
+          DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION batch16_hold_doc_commit()`);
+      });
+      triggerCreated = true;
+      blocker = await pool.connect();
+      const pid = await blocker.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+      const blockerPid = pid.rows[0]?.pid;
+      if (blockerPid === undefined) throw new Error("Missing gate connection PID");
+      await blocker.query("SELECT pg_advisory_lock(hashtextextended($1::text, 1602))", [docId]);
+      locked = true;
+      operation = registry
+        .handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(updateBytes("gated"), "gate-id"))
+        .then<PromiseSettledResult<void>, PromiseSettledResult<void>>(
+          () => ({ status: "fulfilled", value: undefined }),
+          (reason: unknown) => ({ status: "rejected", reason }),
+        );
+      await vi.waitFor(
+        async () => {
+          const waiting = await pool.query<{ waiting: boolean }>(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))) AS waiting",
+            [blockerPid],
+          );
+          expect(waiting.rows[0]?.waiting).toBe(true);
+        },
+        { timeout: 5000, interval: 25 },
+      );
+      expect(acks(socket)).toEqual([]);
+      expect(acks(peer)).toEqual([]);
+    } catch (error) {
+      failure = { error };
+    }
+    if (locked && blocker) {
+      try {
+        const unlocked = await blocker.query<{ unlocked: boolean }>(
+          "SELECT pg_advisory_unlock(hashtextextended($1::text, 1602)) AS unlocked",
+          [docId],
+        );
+        if (!unlocked.rows[0]?.unlocked) throw new Error("The gate lock was not held");
+      } catch (error) {
+        discardBlocker = true;
+        cleanupErrors.push(error);
+      }
+    }
+    const settled = operation ? await operation : undefined;
+    if (settled?.status === "rejected") cleanupErrors.push(settled.reason);
+    if (blocker) {
+      try {
+        blocker.release(discardBlocker);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (triggerCreated) {
+      try {
+        await withTransaction(pool, async (client) => {
+          await client.query("DROP TRIGGER batch16_hold_doc_commit ON doc_updates");
+          await client.query("DROP FUNCTION batch16_hold_doc_commit()");
+        });
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+        "Gate test cleanup failed",
+        { cause: failure?.error },
+      );
+    if (failure) throw failure.error;
+    expect(settled?.status).toBe("fulfilled");
+    expect(acks(socket)).toEqual([{ type: "doc:ack", docId, clientUpdateId: "gate-id" }]);
+    expect(acks(peer)).toEqual([]);
+    const persisted = await runInTenant(tenantA, () => loadYDoc(runtimePool, docId));
+    expect(persisted.getText("body").toJSON()).toBe("gated");
+  }, 20_000);
 
   it("acknowledges a SyncStep2 message that carries an id", async () => {
     const socket = new FakeSocket();
