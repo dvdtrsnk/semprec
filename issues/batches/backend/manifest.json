@@ -1789,8 +1789,8 @@
       "sequence": 18,
       "status": "proposed",
       "title": "[backend-delivery 18/74] Implement data/mail, data/observability, data/docs changes",
-      "bodyCharacters": 51252,
-      "specSha256": "947b6b18c17c0bb026da28c063f836d6bdf87292dab85125a43af651154c3efd",
+      "bodyCharacters": 51889,
+      "specSha256": "bfbc80d36fcd37f6ebb69e4df8ca342b7dd423911587298af4f17d4e4d8d0b5c",
       "members": [
         {
           "id": "gh-1658",
@@ -1824,7 +1824,7 @@
         },
         {
           "id": "gh-1746",
-          "specSha256": "f7fd0e70f2eb3870d728a9340a6a95188a6ab2a5003fbb97041c1f09733d8b49",
+          "specSha256": "8808aa529043103a8572ba562a84e4922caab7e12a8bf08156c8a3a34b18aab3",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1510"
