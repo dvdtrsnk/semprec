@@ -1961,8 +1961,8 @@
       "sequence": 20,
       "status": "proposed",
       "title": "[backend-delivery 20/74] Implement data/tenancy, data/auth, data/inbox changes",
-      "bodyCharacters": 59893,
-      "specSha256": "21eb55543872e5cd8fd2f3e51606fc314c991796ed249893f232edab1a44b62a",
+      "bodyCharacters": 55757,
+      "specSha256": "cc46422dd1174fec2d7986eb78b76f85cad39e5555fd5a5bfe4b15fad45ed006",
       "members": [
         {
           "id": "gh-1087",
