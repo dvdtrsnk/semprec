@@ -23,3 +23,11 @@ Authorize the existing data migrationCompatibility.test.ts harness for actual st
 ## 5. Persisted production-session composition (gh-1527, gh-1618)
 
 Authorize the existing agents agentRun.e2e.test.ts harness solely to connect the real composed generic and MCP adapters through pi event emission and the agent_run_events writer. Assert each created approval id and execute toolCallId against its actual persisted row/event, and actual successful item.patch changes against the transaction-derived pre-image. Use the existing fake provider and local controlled MCP seam; no live model or server is authorized. Existing adapter/unit tests remain useful segment evidence but do not independently prove the persisted composed path. Run this file under the actual E2E config; a named-file pass is distinct from the complete E2E tier. These additions do not alter production protocols or reset the finite review budget.
+
+## 6. Activity field versus future list (gh-1728), and flag correction
+
+The current backend has no Semp thread-list reader. gh-1728 explicitly excludes that endpoint and assigns it to gh-1729, whose Task introduces lastActivityAt projection and ordering. The final AC is reconciled to the persisted tick thread last_activity_at now; actual list behavior remains deferred, not PASS. Use the real tick-thread creation seam and both current approval producers. Add the existing genericOperationGateway.test.ts and mcpInvokeTool.test.ts test paths solely for producer activity assertions, preserving existing approval and notification behavior. Other no-thread, rollback, delegated and monotonic timestamp requirements remain unchanged.
+
+Correction to the reported premise behind §2: both actual pendingApprovalResult implementations currently return error:false, not error:true. Preserve that flag and text. Approval deferral remains distinct from ordinary failure and successful non-patch execution; its approvalRequestId is required. The earlier worker report and parent handoff claiming true were mistaken and do not authorize changing it.
+
+Repeated upgrade/session Touches descriptions were shortened with explicit references to §§4–5 to keep the aggregate below the issue body cap; paths and limits remain unchanged.
