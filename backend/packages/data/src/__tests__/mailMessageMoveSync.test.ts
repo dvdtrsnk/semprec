@@ -12,7 +12,12 @@ import { GraphRestClient } from "../mail/graphRestClient.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
 import { LocalFsBlobStorageWriter } from "../mail/blobStorage.js";
 import { getMailMessageMetaByItemId, upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
-import { executeImapMoveStep, selectImapMoveProtocol } from "../mail/mailMoveProviderAdapters.js";
+import {
+  executeImapMoveStep,
+  prepareGmailMove,
+  prepareGraphMove,
+  selectImapMoveProtocol,
+} from "../mail/mailMoveProviderAdapters.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
@@ -69,6 +74,120 @@ async function fixture(
 }
 
 describe("mail move intent store", () => {
+  it("prepares one-use Gmail and Graph commands without a second token lookup", async () => {
+    const tokens = vi.fn(async () => "fake-token");
+    const gmailFetch = vi.fn(async () => Response.json({ id: "g", labelIds: ["TRASH"] }));
+    const graphFetch = vi.fn(async () => Response.json({ id: "new-graph-id" }));
+    const gmail = new GmailRestClient(tokens, gmailFetch);
+    const graph = new GraphRestClient(tokens, graphFetch);
+    const gmailCommand = await prepareGmailMove(gmail, "g", "trash");
+    const graphCommand = await prepareGraphMove(graph, "graph-id", "archive");
+    expect(tokens).toHaveBeenCalledTimes(2);
+    expect(gmailFetch).not.toHaveBeenCalled();
+    expect(graphFetch).not.toHaveBeenCalled();
+    expect(await gmailCommand()).toMatchObject({ kind: "acknowledged" });
+    expect(await graphCommand()).toEqual({ kind: "moved", id: "new-graph-id" });
+    expect(() => gmailCommand()).toThrow("already used");
+    expect(() => graphCommand()).toThrow("already used");
+    expect(tokens).toHaveBeenCalledTimes(2);
+    expect(gmailFetch).toHaveBeenCalledTimes(1);
+    expect(graphFetch).toHaveBeenCalledTimes(1);
+  });
+  it("closes a timed-out IMAP preparation, joins its late result, and never starts SEARCH", async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: (value: { uidValidity: bigint }) => void;
+      const open = vi.fn(
+        () =>
+          new Promise<{ uidValidity: bigint }>((resolve) => {
+            release = resolve;
+          }),
+      );
+      const search = vi.fn();
+      const close = vi.fn();
+      const raw = { mailboxOpen: open, search, close, capabilities: new Map() };
+      const client = new ImapFlowMailClient(raw as unknown as import("imapflow").ImapFlow);
+      let settled = false;
+      const pending = client.prepareMove("INBOX", 10).then((value) => {
+        settled = true;
+        return value;
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+      release({ uidValidity: 2n });
+      await expect(pending).resolves.toBeNull();
+      expect(search).not.toHaveBeenCalled();
+      await client.close();
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a late IMAP MOVE acknowledgement uncertain and forbids a second step", async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: (value: unknown) => void;
+      const move = vi.fn(
+        () =>
+          new Promise<unknown>((resolve) => {
+            release = resolve;
+          }),
+      );
+      const close = vi.fn();
+      const raw = {
+        mailbox: { path: "INBOX", uidValidity: 2n },
+        capabilities: new Map([["MOVE", true]]),
+        messageMove: move,
+        close,
+      };
+      const client = new ImapFlowMailClient(raw as unknown as import("imapflow").ImapFlow);
+      let settled = false;
+      const pending = client.executeMoveStep("move", "INBOX", 10, "2", "Archive").then((value) => {
+        settled = true;
+        return value;
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+      release({ path: "INBOX", destination: "Archive", uidMap: new Map([[10, 20]]), uidValidity: 3n });
+      await expect(pending).resolves.toEqual({ kind: "uncertain" });
+      await expect(client.executeMoveStep("move", "INBOX", 10, "2", "Archive")).resolves.toEqual({ kind: "uncertain" });
+      expect(move).toHaveBeenCalledTimes(1);
+      await client.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a timed-out IMAP operation and close failure private through actual settlement", async () => {
+    vi.useFakeTimers();
+    const warning = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      let rejectOperation!: (error: unknown) => void;
+      const raw = {
+        mailboxOpen: () =>
+          new Promise((_resolve, reject) => {
+            rejectOperation = reject;
+          }),
+        close: () => {
+          throw new Error("private close failure");
+        },
+        capabilities: new Map(),
+      };
+      const client = new ImapFlowMailClient(raw as unknown as import("imapflow").ImapFlow);
+      const pending = client.prepareMove("private-folder", 10);
+      await vi.advanceTimersByTimeAsync(30_000);
+      rejectOperation(undefined);
+      await expect(pending).resolves.toBeNull();
+      await expect(client.close()).rejects.toThrow("IMAP move provider cleanup failed unexpectedly");
+      expect(JSON.stringify(warning.mock.calls)).not.toContain("private");
+    } finally {
+      warning.mockRestore();
+      vi.useRealTimers();
+    }
+  });
   it.each([
     [["MOVE", "UIDPLUS"], "move"],
     [["MOVE"], "move"],
@@ -553,6 +672,25 @@ describe("mail move intent store", () => {
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ id: evidence.messageId, labelIds: ["INBOX"] }), { status: 200 }),
       );
+    const tokenFailure = new Error("private token acquisition failure");
+    const before = await runInTenant(a, () =>
+      withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId)),
+    );
+    await expect(
+      runInTenant(a, () =>
+        drainGmailMoves(
+          pool,
+          own.mailboxItemId,
+          new GmailRestClient(async () => {
+            throw tokenFailure;
+          }, request),
+        ),
+      ),
+    ).rejects.toBe(tokenFailure);
+    expect(request).not.toHaveBeenCalled();
+    expect(
+      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId))),
+    ).toEqual(before);
     await runInTenant(a, () =>
       drainGmailMoves(pool, own.mailboxItemId, new GmailRestClient(async () => "fake-token", request)),
     );
@@ -595,6 +733,27 @@ describe("mail move intent store", () => {
         recordDesiredMailMessageMove(client, { ...own, source, desiredPurpose: purpose }),
       ),
     );
+    if (purpose === "archive") {
+      const tokenFailure = new Error("private Graph token failure");
+      let tokenCalls = 0;
+      const observation = vi.fn(async () =>
+        Response.json({ id: source.providerMessageId, parentFolderId: "old-folder-id" }),
+      );
+      const graph = new GraphRestClient(async () => {
+        if (++tokenCalls === 2) throw tokenFailure;
+        return "fake-token";
+      }, observation);
+      const before = await runInTenant(a, () =>
+        withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId)),
+      );
+      await expect(
+        runInTenant(a, () => drainGraphMoves(pool, own.mailboxItemId, graph, target.databaseId, target.propertyId)),
+      ).rejects.toBe(tokenFailure);
+      expect(observation).toHaveBeenCalledTimes(1);
+      expect(
+        await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId))),
+      ).toEqual(before);
+    }
     const assertNoMoveTransaction = async () => {
       const activity = await admin.query<{ pid: number; xact_start: Date | null }>(
         "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'semprec_data'",

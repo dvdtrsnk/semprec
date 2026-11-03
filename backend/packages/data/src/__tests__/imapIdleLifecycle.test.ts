@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -104,6 +104,10 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  afterAll(async () => {
+    await pool?.end();
   });
 
   it("enqueues an immediate reconcile on start, then again (deduplicated by jobKey) when a folder signals EXISTS/EXPUNGE/flags", async () => {
@@ -301,5 +305,182 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     release([{ path: "INBOX" }]);
     await Promise.all([starting, stopping]);
     expect(connectAttempts.size).toBe(0);
+  });
+
+  it.each(["credential", "folders", "limit", "connect"] as const)(
+    "retains an owned %s rejection that settles after stop begins",
+    async (stage) => {
+      let entered!: () => void;
+      let reject!: (error: unknown) => void;
+      const ready = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const pending = new Promise<never>((_resolve, rejectPending) => {
+        reject = rejectPending;
+      });
+      const failAtStage = () => {
+        entered();
+        return pending;
+      };
+      const errors: unknown[] = [];
+      const { transport } = createFakeTransport();
+      if (stage === "folders") transport.resolveFolders = failAtStage;
+      if (stage === "connect") transport.connect = failAtStage;
+      const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
+        getCredential: () => (stage === "credential" ? failAtStage() : Promise.resolve("password")),
+        getConnectionLimit: () => (stage === "limit" ? failAtStage() : 1),
+        onError: (_id, _folder, error) => errors.push(error),
+      })({ mailboxItemId: `stop-${stage}`, syncMode: "imap" });
+      await lifecycle.start();
+      await ready;
+      const stopping = lifecycle.stop();
+      reject(undefined);
+      await expect(stopping).rejects.toThrow("IMAP IDLE lifecycle failed unexpectedly");
+      expect(errors).toEqual([undefined]);
+    },
+  );
+
+  it("retains the ended connection error before a later cleanup failure", async () => {
+    const original = new Error("private connection failure");
+    const cleanup = new Error("private cleanup failure");
+    const errors: unknown[] = [];
+    const { transport, connections } = createFakeTransport();
+    const connect = transport.connect.bind(transport);
+    transport.connect = async (...args) => {
+      const connection = await connect(...args);
+      connection.close = async () => {
+        throw cleanup;
+      };
+      return connection;
+    };
+    const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
+      getCredential: async () => "password",
+      getConnectionLimit: () => 1,
+      onError: (_id, _folder, error) => errors.push(error),
+    })({ mailboxItemId: "connection-and-cleanup", syncMode: "imap" });
+    await lifecycle.start();
+    await vi.waitFor(() => expect(connections.get("INBOX")?.length).toBe(1));
+    connections.get("INBOX")?.[0]?.fail(original);
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(errors[0]).toBeInstanceOf(AggregateError);
+    if (!(errors[0] instanceof AggregateError)) throw new Error("expected combined failure");
+    expect(errors[0].errors).toEqual([original, cleanup]);
+    await expect(lifecycle.stop()).rejects.toThrow("IMAP IDLE lifecycle failed unexpectedly");
+  });
+
+  it("retains a connection failure when stop begins during its successful cleanup", async () => {
+    const original = new Error("private connection failure");
+    const errors: unknown[] = [];
+    let closeEntered!: () => void;
+    let releaseClose!: () => void;
+    const closing = new Promise<void>((resolve) => {
+      closeEntered = resolve;
+    });
+    const closeGate = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+    const { transport, connections } = createFakeTransport();
+    const connect = transport.connect.bind(transport);
+    transport.connect = async (...args) => {
+      const connection = await connect(...args);
+      const close = connection.close.bind(connection);
+      connection.close = async () => {
+        closeEntered();
+        await closeGate;
+        await close();
+      };
+      return connection;
+    };
+    const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
+      getCredential: async () => "password",
+      getConnectionLimit: () => 1,
+      onError: (_id, _folder, error) => errors.push(error),
+    })({ mailboxItemId: "stop-during-cleanup", syncMode: "imap" });
+    await lifecycle.start();
+    await vi.waitFor(() => expect(connections.get("INBOX")?.length).toBe(1));
+    connections.get("INBOX")?.[0]?.fail(original);
+    await closing;
+    const stopping = lifecycle.stop();
+    releaseClose();
+    await expect(stopping).rejects.toThrow("IMAP IDLE lifecycle failed unexpectedly");
+    expect(errors).toEqual([original]);
+  });
+
+  it("retains a connection failure observed after stop wins the round but before cleanup finishes", async () => {
+    const original = new Error("private late connection failure");
+    const errors: unknown[] = [];
+    let closeEntered!: () => void;
+    let releaseClose!: () => void;
+    const closing = new Promise<void>((resolve) => {
+      closeEntered = resolve;
+    });
+    const closeGate = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+    const { transport, connections } = createFakeTransport();
+    const connect = transport.connect.bind(transport);
+    transport.connect = async (...args) => {
+      const connection = await connect(...args);
+      const close = connection.close.bind(connection);
+      connection.close = async () => {
+        closeEntered();
+        await closeGate;
+        await close();
+      };
+      return connection;
+    };
+    const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
+      getCredential: async () => "password",
+      getConnectionLimit: () => 1,
+      onError: (_id, _folder, error) => errors.push(error),
+    })({ mailboxItemId: "end-during-stop-cleanup", syncMode: "imap" });
+    await lifecycle.start();
+    await vi.waitFor(() => expect(connections.get("INBOX")?.length).toBe(1));
+    const stopping = lifecycle.stop();
+    await closing;
+    connections.get("INBOX")?.[0]?.fail(original);
+    releaseClose();
+    await expect(stopping).rejects.toThrow("IMAP IDLE lifecycle failed unexpectedly");
+    expect(errors).toEqual([original]);
+  });
+
+  it("retains a late end rejection carrying undefined while stop owns cleanup", async () => {
+    const errors: unknown[] = [];
+    let rejectEnd!: (error: unknown) => void;
+    let closeEntered!: () => void;
+    let releaseClose!: () => void;
+    const end = new Promise<unknown>((_resolve, reject) => {
+      rejectEnd = reject;
+    });
+    const closing = new Promise<void>((resolve) => {
+      closeEntered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+    const { transport, connections } = createFakeTransport();
+    const connect = transport.connect.bind(transport);
+    transport.connect = async (...args) => {
+      const connection = await connect(...args);
+      connection.waitForEnd = () => end;
+      connection.close = async () => {
+        closeEntered();
+        await gate;
+      };
+      return connection;
+    };
+    const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
+      getCredential: async () => "password",
+      getConnectionLimit: () => 1,
+      onError: (_id, _folder, error) => errors.push(error),
+    })({ mailboxItemId: "late-undefined", syncMode: "imap" });
+    await lifecycle.start();
+    await vi.waitFor(() => expect(connections.get("INBOX")?.length).toBe(1));
+    const stopping = lifecycle.stop();
+    await closing;
+    rejectEnd(undefined);
+    releaseClose();
+    await expect(stopping).rejects.toThrow("IMAP IDLE lifecycle failed unexpectedly");
+    expect(errors).toEqual([undefined]);
   });
 });

@@ -1,4 +1,9 @@
-import { graphMoveRequest, type GraphMoveResult } from "./mailMoveProviderAdapters.js";
+import {
+  prepareGraphMove,
+  registerGraphMovePreparer,
+  graphMoveRequest,
+  type GraphMoveResult,
+} from "./mailMoveProviderAdapters.js";
 import { privateSendOperation, readSendBody, reportSendCleanupFailure } from "./mailSendPrivacy.js";
 import { Readable, Transform } from "node:stream";
 import type { ClassifiedAttachment } from "./attachments.js";
@@ -338,7 +343,9 @@ export class GraphRestClient implements GraphMailClient {
   constructor(
     private readonly getAccessToken: () => Promise<string>,
     private readonly fetchImpl: typeof fetch = fetch,
-  ) {}
+  ) {
+    registerGraphMovePreparer(this, (id, destination) => this.prepareMoveMessage(id, destination));
+  }
 
   async observeMoveMessage(messageId: string): Promise<GraphMoveResult> {
     const token = await this.getAccessToken();
@@ -349,8 +356,23 @@ export class GraphRestClient implements GraphMailClient {
     messageId: string,
     destination: "archive" | "deleteditems" | "inbox" | "sentitems",
   ): Promise<GraphMoveResult> {
+    return (await prepareGraphMove(this, messageId, destination))();
+  }
+
+  private async prepareMoveMessage(
+    messageId: string,
+    destination: "archive" | "deleteditems" | "inbox" | "sentitems",
+  ): Promise<() => Promise<GraphMoveResult>> {
+    if (!messageId || messageId.length > 1024) throw new Error("Invalid Graph message identity");
+    if (!["archive", "deleteditems", "inbox", "sentitems"].includes(destination))
+      throw new Error("Invalid Graph move destination");
     const token = await this.getAccessToken();
-    return graphMoveRequest(this.fetchImpl, token, messageId, destination);
+    let used = false;
+    return () => {
+      if (used) throw new Error("Graph move command already used");
+      used = true;
+      return graphMoveRequest(this.fetchImpl, token, messageId, destination);
+    };
   }
 
   private request<T>(url: string): Promise<T>;

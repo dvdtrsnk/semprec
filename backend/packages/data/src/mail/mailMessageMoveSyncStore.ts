@@ -3,6 +3,7 @@ import { updateRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import type { PoolClient } from "pg";
 import { z } from "zod";
+import { currentTenantScope } from "@semprec/shared";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 
 export const MAIL_MOVE_PURPOSES = ["archive", "trash", "inbox", "sent"] as const;
@@ -81,6 +82,62 @@ const rowSchema = z.object({
 export type MailMessageMoveSyncRow = z.infer<typeof rowSchema>;
 const COLUMNS = `message_item_id, mailbox_item_id, desired_purpose, source_evidence, current_purpose, desired_revision,
   operation_token, captured_revision, captured_purpose, operation_phase, operation_step, operation_evidence, attempts, status, failure_reason`;
+
+const baselineRow = z.object({
+  message_item_id: z.uuid(),
+  mailbox_item_id: z.uuid(),
+  desired_revision: z.string().regex(/^[1-9]\d*$/),
+  status: z.enum(["pending", "done", "failed"]),
+  operation_token: z.uuid().nullable(),
+});
+type BaselineRow = z.infer<typeof baselineRow>;
+export type MailMoveBaseline = { tenantId: string; mailboxItemId: string; rows: ReadonlyMap<string, BaselineRow> };
+
+export async function captureMailMoveBaseline(client: PoolClient, mailboxItemId: string): Promise<MailMoveBaseline> {
+  const mailbox = z.uuid().parse(mailboxItemId);
+  const scope = currentTenantScope();
+  const tenant = await client.query<{ tenant_id: unknown }>("SELECT app_tenant_default()::text AS tenant_id");
+  const tenantId = z.uuid().parse(tenant.rows[0]?.tenant_id);
+  if (scope?.kind === "tenant" && tenantId !== scope.tenantId) throw new Error("Invalid mail move baseline scope");
+  const result = await client.query<Record<string, unknown>>(
+    `SELECT message_item_id, mailbox_item_id, desired_revision, status, operation_token
+       FROM mail_message_move_sync_state WHERE tenant_id = app_tenant_default() AND mailbox_item_id = $1`,
+    [mailbox],
+  );
+  const rows = result.rows.map((row) => baselineRow.parse(row));
+  if (rows.some((row) => row.mailbox_item_id !== mailbox)) throw new Error("Invalid mail move baseline mailbox");
+  return { tenantId, mailboxItemId: mailbox, rows: new Map(rows.map((row) => [row.message_item_id, row])) };
+}
+
+/** Called after acquiring the existing thread guard and before provider observations. */
+export async function protectedMailMovesForPass(
+  client: PoolClient,
+  mailboxItemId: string,
+  baseline?: MailMoveBaseline,
+  existing?: ReadonlySet<string>,
+): Promise<Set<string>> {
+  const current = await captureMailMoveBaseline(client, mailboxItemId);
+  const initial = baseline ?? current;
+  if (initial.tenantId !== current.tenantId || initial.mailboxItemId !== current.mailboxItemId)
+    throw new Error("Invalid mail move baseline scope");
+  const protectedIds = new Set(existing);
+  for (const [id, row] of initial.rows) {
+    if (row.status !== "done" || row.operation_token !== null) protectedIds.add(id);
+  }
+  for (const [id, row] of current.rows) {
+    const before = initial.rows.get(id);
+    if (
+      row.status !== "done" ||
+      row.operation_token !== null ||
+      !before ||
+      before.desired_revision !== row.desired_revision ||
+      before.status !== row.status ||
+      before.operation_token !== row.operation_token
+    )
+      protectedIds.add(id);
+  }
+  return protectedIds;
+}
 
 /** Records a new desire without releasing an outstanding provider operation. */
 export async function recordDesiredMailMessageMove(

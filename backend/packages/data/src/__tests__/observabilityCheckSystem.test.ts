@@ -283,6 +283,10 @@ describe("observability.checkSystem (issue #169)", () => {
       [erroredMailbox],
     );
 
+    const limitedMailbox = randomUUID();
+    await ensureMailAccountSyncState(pool, { itemId: limitedMailbox, syncMode: "imap" });
+    await recordSyncError(pool, limitedMailbox, "private provider detail", "connectionLimit");
+
     const healthyMailbox = randomUUID();
     await ensureMailAccountSyncState(pool, { itemId: healthyMailbox, syncMode: "imap" });
     await pool.query(
@@ -315,6 +319,14 @@ describe("observability.checkSystem (issue #169)", () => {
     );
     expect(erroredPayload.rows[0]?.payload).toEqual({ mailboxItemId: erroredMailbox, reason: "reauthorization" });
     expect(JSON.stringify(erroredPayload.rows[0]?.payload)).not.toContain("boom");
+
+    const limitedCheck = await getTenantCheck(`mail:${limitedMailbox}`);
+    expect(limitedCheck?.status).toBe("alerting");
+    const limitedPayload = await pool.query<{ payload: unknown }>(
+      `SELECT payload FROM notifications WHERE source_id = $1`,
+      [limitedCheck!.id],
+    );
+    expect(limitedPayload.rows[0]?.payload).toEqual({ mailboxItemId: limitedMailbox, reason: "connectionLimit" });
 
     const healthyCheck = await getTenantCheck(`mail:${healthyMailbox}`);
     expect(healthyCheck?.status).toBe("ok");
@@ -778,7 +790,9 @@ describe("observability.checkSystem (issue #169)", () => {
             second = order === "failure-first" ? settled(runCheck("racing-check", runtime)) : settled(failing());
             const secondPid = await waitBlocked(firstPid);
             expect(secondPid).not.toBe(firstPid);
-            process.stdout.write(`batch18 mailbox transition order=${order} gate=${controlPid} first=${firstPid} second=${secondPid}\n`);
+            process.stdout.write(
+              `batch18 mailbox transition order=${order} gate=${controlPid} first=${firstPid} second=${secondPid}\n`,
+            );
             await control.query("SELECT pg_advisory_unlock(18001506)");
             locked = false;
             const firstResult = await first;

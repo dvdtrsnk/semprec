@@ -1,5 +1,5 @@
 import type { GmailMoveResult } from "./mailMoveProviderAdapters.js";
-import { hasUnsettledMailMove } from "./mailMessageMoveSyncStore.js";
+import { hasUnsettledMailMove, protectedMailMovesForPass, type MailMoveBaseline } from "./mailMessageMoveSyncStore.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import type { PoolClient } from "pg";
 import { currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
@@ -92,6 +92,7 @@ function isFolderLabel(label: GmailLabelRef): boolean {
 export interface ReconcileGmailAccountParams {
   mailboxItemId: string;
   protectedMoveMessageIds?: ReadonlySet<string>;
+  moveBaseline?: MailMoveBaseline;
   emailsDatabaseId: string;
   filesDatabaseId: string;
   foldersDatabaseId: string;
@@ -124,6 +125,12 @@ export async function reconcileGmailAccount(
   params: ReconcileGmailAccountParams,
 ): Promise<void> {
   await lockMailThreadMutation(dbClient);
+  const protectedMoveMessageIds = await protectedMailMovesForPass(
+    dbClient,
+    params.mailboxItemId,
+    params.moveBaseline,
+    params.protectedMoveMessageIds,
+  );
   await lockGmailFolderState(dbClient, params.mailboxItemId);
   const relationDefinition = await getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId);
   if (!relationDefinition)
@@ -205,7 +212,7 @@ export async function reconcileGmailAccount(
         attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
         folderItemId,
         mailboxItemId: params.mailboxItemId,
-        protectedMoveMessageIds: params.protectedMoveMessageIds,
+        protectedMoveMessageIds: protectedMoveMessageIds,
         providerMessageId: fetched.id,
         providerThreadId: fetched.threadId,
         storage: params.storage,
@@ -225,7 +232,7 @@ export async function reconcileGmailAccount(
     }
 
     // Drop any folder edge for a label this message no longer carries.
-    if (itemId && !params.protectedMoveMessageIds?.has(itemId) && !(await hasUnsettledMailMove(dbClient, itemId))) {
+    if (itemId && !protectedMoveMessageIds?.has(itemId) && !(await hasUnsettledMailMove(dbClient, itemId))) {
       const currentEdges = await listRelationsForItem(dbClient, relationDefinition.id, itemId);
       const mappedSet = new Set(mappedFolderIds);
       for (const edge of currentEdges) {
@@ -243,11 +250,7 @@ export async function reconcileGmailAccount(
 
   for (const id of removedIds) {
     const meta = await getMailMessageMetaByProviderMessageId(dbClient, id);
-    if (
-      !meta ||
-      params.protectedMoveMessageIds?.has(meta.itemId) ||
-      (await hasUnsettledMailMove(dbClient, meta.itemId))
-    )
+    if (!meta || protectedMoveMessageIds?.has(meta.itemId) || (await hasUnsettledMailMove(dbClient, meta.itemId)))
       continue;
     const currentEdges = await listRelationsForItem(dbClient, relationDefinition.id, meta.itemId);
     for (const edge of currentEdges) {
@@ -273,7 +276,7 @@ export async function reconcileGmailAccount(
     mailboxItemId: params.mailboxItemId,
   })) {
     if (
-      params.protectedMoveMessageIds?.has(pending.messageItemId) ||
+      protectedMoveMessageIds?.has(pending.messageItemId) ||
       (await hasUnsettledMailMove(dbClient, pending.messageItemId))
     )
       continue;

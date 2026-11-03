@@ -172,16 +172,30 @@ export function createBoundedImapIdleLifecycleFactory(
         // a signal can never race ahead of it into a second, parallel ingestion path.
         if (stopped) return;
         const task = enqueueMailAccountSync(pool, account.mailboxItemId)
-          .catch((err: unknown) => report(folderPath, err))
+          .catch((err: unknown) => {
+            if (stopped) ownedFailures.push(err);
+            report(folderPath, err);
+          })
           .finally(() => signals.delete(task));
         signals.add(task);
       });
       let timer: ReturnType<typeof setTimeout> | undefined;
       let outcome: { kind: "stop" } | { kind: "recycled" } | { kind: "ended"; err: unknown } | undefined;
       let primary: { value: unknown } | undefined;
+      let ended: { value: unknown } | undefined;
+      let endFailure: { value: unknown } | undefined;
       try {
         outcome = await Promise.race([
-          connection.waitForEnd().then((err): { kind: "ended"; err: unknown } => ({ kind: "ended", err })),
+          connection.waitForEnd().then(
+            (err): { kind: "ended"; err: unknown } => {
+              ended = { value: err };
+              return { kind: "ended", err };
+            },
+            (error: unknown): never => {
+              endFailure = { value: error };
+              throw error;
+            },
+          ),
           new Promise<{ kind: "recycled" }>((resolve) => {
             timer = setTimeout(() => resolve({ kind: "recycled" }), hardCycleDeadlineMs);
           }),
@@ -195,18 +209,25 @@ export function createBoundedImapIdleLifecycleFactory(
       try {
         await connection.close();
       } catch (error) {
-        ownedFailures.push(error);
-        report(folderPath, error);
-        if (primary)
-          // The first failure remains the cause, with the cleanup failure retained second.
-          throw new AggregateError([primary.value, error], "IMAP IDLE round and cleanup failed", {
-            // eslint-disable-next-line preserve-caught-error
-            cause: primary.value,
-          });
-        throw error;
+        const original = primary ?? endFailure ?? (ended?.value !== undefined ? ended : undefined);
+        const failure = original
+          ? new AggregateError([original.value, error], "IMAP IDLE round and cleanup failed", {
+              cause: original.value,
+            })
+          : error;
+        ownedFailures.push(failure);
+        throw failure;
       }
       if (primary) throw primary.value;
       if (!outcome) throw new Error("IMAP IDLE round ended without an outcome");
+      if (endFailure) {
+        if (stopped) ownedFailures.push(endFailure.value);
+        report(folderPath, endFailure.value);
+      }
+      if (outcome.kind !== "ended" && ended?.value !== undefined) {
+        if (stopped) ownedFailures.push(ended.value);
+        report(folderPath, ended.value);
+      }
       return outcome;
     }
 
@@ -221,8 +242,9 @@ export function createBoundedImapIdleLifecycleFactory(
             stopped ? Promise.resolve({ kind: "stop" as const }) : runOneIdleRound(folderPath, credential),
           );
         } catch (err) {
-          if (stopped) return;
+          if (stopped) ownedFailures.push(err);
           report(folderPath, err);
+          if (stopped) return;
           if (ownedFailures.length > 0) return;
           attempt++;
           if (await backoffOrStop(attempt)) return;
@@ -237,6 +259,7 @@ export function createBoundedImapIdleLifecycleFactory(
 
         attempt = 0; // a round that actually opened a connection clears any prior connect-failure streak.
         if (result.err !== undefined) {
+          if (stopped) ownedFailures.push(result.err);
           report(folderPath, result.err);
           if (await backoffOrStop(1)) return;
         }
@@ -268,8 +291,9 @@ export function createBoundedImapIdleLifecycleFactory(
               );
               return;
             } catch (err) {
-              if (stopped) return;
+              if (stopped) ownedFailures.push(err);
               report("", err);
+              if (stopped) return;
               if (ownedFailures.length > 0) return;
               attempt++;
               if (await backoffOrStop(attempt)) return;

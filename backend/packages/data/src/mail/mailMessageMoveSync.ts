@@ -4,7 +4,13 @@ import { logger } from "./logger.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import { withTransaction } from "../db/pool.js";
 import type { ImapMailClient } from "./imapReconcile.js";
-import { selectImapMoveProtocol } from "./mailMoveProviderAdapters.js";
+import {
+  hasGmailMovePreparer,
+  hasGraphMovePreparer,
+  prepareGmailMove,
+  prepareGraphMove,
+  selectImapMoveProtocol,
+} from "./mailMoveProviderAdapters.js";
 import type { GmailMailClient } from "./gmailReconcile.js";
 import type { GmailMoveResult } from "./mailMoveProviderAdapters.js";
 import {
@@ -53,12 +59,12 @@ function gmailEvidence(
 export async function drainGmailMoves(pool: Pool, mailboxItemId: string, gmail: GmailMailClient): Promise<void> {
   const rows = await withTransaction(pool, (client) => listPendingMoves(client, mailboxItemId));
   if (rows.length === 0) return;
-  if (!gmail.observeMoveMessage || !gmail.applyMoveStep) throw new Error("Gmail move adapter is unavailable");
+  if (!gmail.observeMoveMessage || !hasGmailMovePreparer(gmail)) throw new Error("Gmail move adapter is unavailable");
   for (const row of rows) await drainGmailMove(pool, gmail, row);
 }
 
 async function drainGmailMove(pool: Pool, gmail: GmailMailClient, row: MailMessageMoveSyncRow): Promise<void> {
-  if (row.source_evidence.provider !== "gmail" || !gmail.observeMoveMessage || !gmail.applyMoveStep) return;
+  if (row.source_evidence.provider !== "gmail" || !gmail.observeMoveMessage || !hasGmailMovePreparer(gmail)) return;
   const sourceId = row.source_evidence.providerMessageId;
   if (row.operation_phase === "in_flight" || row.operation_phase === "uncertain") return;
   let token = row.operation_token;
@@ -107,16 +113,6 @@ async function drainGmailMove(pool: Pool, gmail: GmailMailClient, row: MailMessa
           : "modify_labels";
   }
   if (!token || !revision || !purpose || evidence.provider !== "gmail") return;
-  const claimed = await withTransaction(pool, (client) =>
-    claimMailMoveStep(client, {
-      messageItemId: row.message_item_id,
-      revision,
-      token,
-      step,
-      evidence,
-    }),
-  );
-  if (!claimed) return;
   const command =
     step === "trash"
       ? "trash"
@@ -127,11 +123,19 @@ async function drainGmailMove(pool: Pool, gmail: GmailMailClient, row: MailMessa
           : step === "modify_labels" && purpose === "inbox"
             ? "add_inbox"
             : null;
-  if (!command) {
-    await withTransaction(pool, (client) => markMailMoveUncertain(client, row.message_item_id, token));
-    return;
-  }
-  const result = await gmail.applyMoveStep(evidence.messageId, command);
+  if (!command) throw new Error("Invalid Gmail move step");
+  const dispatch = await prepareGmailMove(gmail, evidence.messageId, command);
+  const claimed = await withTransaction(pool, (client) =>
+    claimMailMoveStep(client, {
+      messageItemId: row.message_item_id,
+      revision,
+      token,
+      step,
+      evidence,
+    }),
+  );
+  if (!claimed) return;
+  const result = await dispatch();
   if (result.kind !== "acknowledged") {
     await withTransaction(pool, (client) => markMailMoveUncertain(client, row.message_item_id, token));
     return;
@@ -177,7 +181,7 @@ export async function drainGraphMoves(
 ): Promise<void> {
   const rows = await withTransaction(pool, (client) => listPendingMoves(client, mailboxItemId));
   if (rows.length === 0) return;
-  if (!graph.observeMoveMessage || !graph.moveMessage) throw new Error("Graph move adapter is unavailable");
+  if (!graph.observeMoveMessage || !hasGraphMovePreparer(graph)) throw new Error("Graph move adapter is unavailable");
   const destinations = { archive: "archive", trash: "deleteditems", inbox: "inbox", sent: "sentitems" } as const;
   for (const row of rows) {
     if (row.source_evidence.provider !== "graph" || row.operation_token !== null) continue;
@@ -222,6 +226,7 @@ export async function drainGraphMoves(
     }
     const token = randomUUID();
     const evidence: MailMoveEvidence = { provider: "graph", sourceId, targetFolderId: target };
+    const dispatch = await prepareGraphMove(graph, sourceId, destinations[row.desired_purpose]);
     const claimed = await withTransaction(pool, async (client) => {
       const current = await graphTarget(
         client,
@@ -241,7 +246,7 @@ export async function drainGraphMoves(
       });
     });
     if (!claimed) continue;
-    const result = await graph.moveMessage(sourceId, destinations[row.desired_purpose]);
+    const result = await dispatch();
     if (result.kind !== "moved") {
       await withTransaction(pool, (client) => markMailMoveUncertain(client, row.message_item_id, token));
       continue;

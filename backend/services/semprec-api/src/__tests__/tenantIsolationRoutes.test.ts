@@ -2085,6 +2085,19 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     const [owner, foreign] = fixtures;
     if (!owner || !foreign) throw new Error("Expected two mailbox fixtures");
     const marker = `synthetic-provider-error-${randomUUID()}`;
+    for (const fixture of fixtures) {
+      await inTenantTransaction(fixture.tenantId, (client) =>
+        writeNotification(client, {
+          userId: fixture.member.userId,
+          kind: "mail_sync_stalled",
+          linkHref: null,
+          sourceTable: "tenant_observability_checks",
+          sourceId: randomUUID(),
+          transitionInstance: "legacy",
+          payload: { mailboxItemId: fixture.mailboxItemId, lastError: marker },
+        }),
+      );
+    }
     const tasks = createCoreTaskList(pool, createActionRegistry(), undefined, {
       createImapClient: async () => {
         throw new Error(marker);
@@ -2121,6 +2134,12 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
           }),
         ]),
       });
+      const storedLegacy = await inTenantTransaction(fixture.tenantId, (client) =>
+        client.query<{ payload: unknown }>(
+          "SELECT payload FROM notifications WHERE kind = 'mail_sync_stalled' AND transition_instance = 'legacy'",
+        ),
+      );
+      expect(storedLegacy.rows).toEqual([{ payload: { mailboxItemId: fixture.mailboxItemId, lastError: marker } }]);
     }
   }, 120_000);
 

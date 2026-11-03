@@ -1,4 +1,4 @@
-import { listPendingMoves } from "./mailMessageMoveSyncStore.js";
+import { captureMailMoveBaseline, listPendingMoves } from "./mailMessageMoveSyncStore.js";
 import { drainGmailMoves, drainGraphMoves, drainImapMoves } from "./mailMessageMoveSync.js";
 import { enqueueMailAccountSync } from "./mailSyncEnqueue.js";
 export { enqueueMailAccountSync, mailAccountSyncJobKey } from "./mailSyncEnqueue.js";
@@ -260,11 +260,13 @@ export async function handleSyncMailAccountTask(
 
     logger.info({ mailboxItemId: payload.mailboxItemId, syncMode: state.syncMode }, "Mail sync starting");
 
-    const movesAtStart = await withTransaction(pool, (client) => listPendingMoves(client, payload.mailboxItemId));
-    const protectedMoveMessageIds = new Set(movesAtStart.map((move) => move.message_item_id));
+    const { moveBaseline, movesAtStart } = await withTransaction(pool, async (client) => ({
+      moveBaseline: await captureMailMoveBaseline(client, payload.mailboxItemId),
+      movesAtStart: await listPendingMoves(client, payload.mailboxItemId),
+    }));
     const shared = {
       mailboxItemId: payload.mailboxItemId,
-      protectedMoveMessageIds,
+      moveBaseline,
       emailsDatabaseId: moduleIds.emailsDatabaseId,
       filesDatabaseId: moduleIds.filesDatabaseId,
       foldersDatabaseId: moduleIds.foldersDatabaseId,

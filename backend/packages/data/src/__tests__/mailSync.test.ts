@@ -1,3 +1,6 @@
+import { registerGmailMovePreparer } from "../mail/mailMoveProviderAdapters.js";
+import { drainGmailMoves } from "../mail/mailMessageMoveSync.js";
+import { GmailRestClient } from "../mail/gmailRestClient.js";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import "../domainWriteHooks.js";
@@ -2354,105 +2357,203 @@ describe("mail sync job error handling (issue #26)", () => {
     await seedSystem(pool);
   });
 
-  tenantIt("runs the real Gmail move phase outside transactions before reconcile", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
-    try {
-      const moduleIds = {
-        emailsDatabaseId: await databaseIdFor("emails"),
-        filesDatabaseId: await databaseIdFor("files"),
-        foldersDatabaseId: await databaseIdFor("folders"),
-        mailboxesDatabaseId: await databaseIdFor("mailboxes"),
-      };
-      const fixture = await withTransaction(runtime, async (client) => {
-        const mailbox = await createItemWithClient(client, {
-          databaseId: moduleIds.mailboxesDatabaseId,
-          properties: { name: "Mailbox" },
+  for (const scenario of [
+    "existing",
+    "inserted-after-baseline",
+    "competing-completion",
+    "completed-before-baseline",
+  ] as const)
+    tenantIt(`runs the real Gmail move phase outside transactions before reconcile: ${scenario}`, async () => {
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const moduleIds = {
+          emailsDatabaseId: await databaseIdFor("emails"),
+          filesDatabaseId: await databaseIdFor("files"),
+          foldersDatabaseId: await databaseIdFor("folders"),
+          mailboxesDatabaseId: await databaseIdFor("mailboxes"),
+        };
+        const fixture = await withTransaction(runtime, async (client) => {
+          const mailbox = await createItemWithClient(client, {
+            databaseId: moduleIds.mailboxesDatabaseId,
+            properties: { name: "Mailbox" },
+          });
+          const message = await createItemWithClient(
+            client,
+            { databaseId: moduleIds.emailsDatabaseId, properties: { name: "Message" } },
+            { allowedSystemKeys: ["name"] },
+          );
+          await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
+          await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "fake" });
+          await upsertMailMessageMeta(client, {
+            itemId: message.id,
+            mailboxItemId: mailbox.id,
+            messageId: "<move-job@example.test>",
+            providerMessageId: "fake-provider-id",
+            envelope: {},
+          });
+          if (scenario === "existing" || scenario === "completed-before-baseline")
+            await recordDesiredMailMessageMove(client, {
+              messageItemId: message.id,
+              mailboxItemId: mailbox.id,
+              desiredPurpose: "archive",
+              source: { provider: "gmail", providerMessageId: "fake-provider-id" },
+            });
+          return { mailbox: mailbox.id, message: message.id };
         });
-        const message = await createItemWithClient(
-          client,
-          { databaseId: moduleIds.emailsDatabaseId, properties: { name: "Message" } },
-          { allowedSystemKeys: ["name"] },
-        );
-        await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
-        await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "fake" });
-        await upsertMailMessageMeta(client, {
-          itemId: message.id,
-          mailboxItemId: mailbox.id,
-          messageId: "<move-job@example.test>",
-          providerMessageId: "fake-provider-id",
-          envelope: {},
-        });
-        await recordDesiredMailMessageMove(client, {
-          messageItemId: message.id,
-          mailboxItemId: mailbox.id,
-          desiredPurpose: "archive",
-          source: { provider: "gmail", providerMessageId: "fake-provider-id" },
-        });
-        return { mailbox: mailbox.id, message: message.id };
-      });
-      const calls: string[] = [];
-      const assertNoTransaction = async () => {
-        const result = await pool.query<{ pid: number; xact_start: Date | null }>(
-          "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'semprec_data'",
-        );
-        expect(result.rows.length).toBeGreaterThan(0);
-        expect(result.rows.every((row) => row.xact_start === null)).toBe(true);
-      };
-      const gmail: GmailMailClient = {
-        observeMoveMessage: async () => {
-          calls.push("observe");
-          await assertNoTransaction();
-          return { kind: "found", inTrash: false, inInbox: true, inSent: false };
-        },
-        applyMoveStep: async () => {
+        if (scenario === "completed-before-baseline") {
+          const fetchProvider: typeof fetch = vi
+            .fn()
+            .mockResolvedValueOnce(Response.json({ id: "fake-provider-id", labelIds: ["INBOX"] }))
+            .mockResolvedValueOnce(Response.json({ id: "fake-provider-id", labelIds: [] }));
+          await drainGmailMoves(runtime, fixture.mailbox, new GmailRestClient(async () => "fake-token", fetchProvider));
+          expect(fetchProvider).toHaveBeenCalledTimes(2);
+        }
+        const calls: string[] = [];
+        const assertNoTransaction = async () => {
+          const result = await pool.query<{ pid: number; xact_start: Date | null }>(
+            "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'semprec_data'",
+          );
+          expect(result.rows.length).toBeGreaterThan(0);
+          expect(result.rows.every((row) => row.xact_start === null)).toBe(true);
+        };
+        const gmail: GmailMailClient = {
+          observeMoveMessage: async () => {
+            calls.push("observe");
+            await assertNoTransaction();
+            return { kind: "found", inTrash: false, inInbox: true, inSent: false };
+          },
+          getCurrentHistoryId: async () => {
+            calls.push("reconcile");
+            return "1";
+          },
+          listHistorySince: async () => ({
+            invalidated: false,
+            newHistoryId: "1",
+            changedMessageIds: [],
+            removedMessageIds: [],
+          }),
+          listAllMessageIds: async () => ["fake-provider-id"],
+          fetchMessage: async () => ({
+            id: "fake-provider-id",
+            threadId: "fake-thread",
+            labelIds: ["INBOX"],
+            message: { messageId: "<move-job@example.test>", envelope: {}, attachments: [], flags: [IMAP_SEEN_FLAG] },
+          }),
+          listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
+          modifyMessageLabels: async () => {},
+        };
+        registerGmailMovePreparer(gmail, async () => async () => {
           calls.push("move");
           await assertNoTransaction();
           const state = await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox));
           expect(state[0]).toMatchObject({ operation_phase: "in_flight", operation_step: "modify_labels" });
           return { kind: "acknowledged", inTrash: false, inInbox: false, inSent: false };
-        },
-        getCurrentHistoryId: async () => {
-          calls.push("reconcile");
-          return "1";
-        },
-        listHistorySince: async () => ({
-          invalidated: false,
-          newHistoryId: "1",
-          changedMessageIds: [],
-          removedMessageIds: [],
-        }),
-        listAllMessageIds: async () => ["fake-provider-id"],
-        fetchMessage: async () => ({
-          id: "fake-provider-id",
-          threadId: "fake-thread",
-          labelIds: ["INBOX"],
-          message: { messageId: "<move-job@example.test>", envelope: {}, attachments: [] },
-        }),
-        listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
-        modifyMessageLabels: async () => {},
-      };
-      await handleSyncMailAccountTask(
-        runtime,
-        { mailboxItemId: fixture.mailbox },
-        { createGmailClient: () => gmail },
-        moduleIds,
-        noopStorage,
-      );
-      expect(calls).toEqual(["observe", "move", "reconcile"]);
-      expect(await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox))).toEqual([]);
-      const oldEdges = await withTransaction(runtime, (client) =>
-        client.query<{ count: string }>(
-          `SELECT count(*)::text AS count FROM item_relations edge JOIN items folder ON
+        });
+        let releaseBaseline!: () => void;
+        let baselineReady!: (pid: number) => void;
+        const baselineReached = new Promise<number>((resolve) => {
+          baselineReady = resolve;
+        });
+        const baselineGate = new Promise<void>((resolve) => {
+          releaseBaseline = resolve;
+        });
+        let held = false;
+        const wrapped = new WeakSet<object>();
+        if (scenario === "inserted-after-baseline" || scenario === "competing-completion")
+          runtime.on("acquire", (client) => {
+            if (wrapped.has(client)) return;
+            wrapped.add(client);
+            client.query = new Proxy(client.query.bind(client), {
+              apply(target, thisArg, args: unknown[]) {
+                const result: unknown = Reflect.apply(target, thisArg, args);
+                if (
+                  !held &&
+                  typeof args[0] === "string" &&
+                  args[0].includes(
+                    "SELECT message_item_id, mailbox_item_id, desired_revision, status, operation_token",
+                  ) &&
+                  result instanceof Promise
+                ) {
+                  held = true;
+                  return result.then(async (value: unknown) => {
+                    const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+                    if (!pid.rows[0]) throw new Error("Missing baseline backend pid");
+                    baselineReady(pid.rows[0].pid);
+                    await baselineGate;
+                    return value;
+                  });
+                }
+                return result;
+              },
+            });
+          });
+        const job = handleSyncMailAccountTask(
+          runtime,
+          { mailboxItemId: fixture.mailbox },
+          { createGmailClient: () => gmail },
+          moduleIds,
+          noopStorage,
+        );
+        if (scenario === "inserted-after-baseline" || scenario === "competing-completion") {
+          const baselinePid = await baselineReached;
+          try {
+            const insertPid = await withTransaction(runtime, async (client) => {
+              const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+              await recordDesiredMailMessageMove(client, {
+                messageItemId: fixture.message,
+                mailboxItemId: fixture.mailbox,
+                desiredPurpose: "archive",
+                source: { provider: "gmail", providerMessageId: "fake-provider-id" },
+              });
+              return pid.rows[0]?.pid;
+            });
+            expect(insertPid).toBeTypeOf("number");
+            expect(insertPid).not.toBe(baselinePid);
+            process.stdout.write(`batch18 move overlap baseline=${baselinePid} inserted=${insertPid}\n`);
+            if (scenario === "competing-completion") {
+              const fetchProvider: typeof fetch = vi
+                .fn()
+                .mockResolvedValueOnce(Response.json({ id: "fake-provider-id", labelIds: ["INBOX"] }))
+                .mockResolvedValueOnce(Response.json({ id: "fake-provider-id", labelIds: [] }));
+              await drainGmailMoves(
+                runtime,
+                fixture.mailbox,
+                new GmailRestClient(async () => "fake-token", fetchProvider),
+              );
+              expect(fetchProvider).toHaveBeenCalledTimes(2);
+              expect(await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox))).toEqual([]);
+            }
+          } finally {
+            releaseBaseline();
+          }
+        }
+        await job;
+        expect(calls).toEqual(
+          scenario === "competing-completion" || scenario === "completed-before-baseline"
+            ? ["reconcile"]
+            : ["observe", "move", "reconcile"],
+        );
+        expect(await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox))).toEqual([]);
+        const oldEdges = await withTransaction(runtime, (client) =>
+          client.query<{ count: string }>(
+            `SELECT count(*)::text AS count FROM item_relations edge JOIN items folder ON
          (folder.id = edge.item_a OR folder.id = edge.item_b)
          WHERE (edge.item_a = $1 OR edge.item_b = $1) AND folder.properties ->> 'providerId' = 'INBOX'`,
-          [fixture.message],
-        ),
-      );
-      expect(oldEdges.rows[0]?.count).toBe("0");
-    } finally {
-      await runtime.end();
-    }
-  });
+            [fixture.message],
+          ),
+        );
+        expect(oldEdges.rows[0]?.count).toBe(scenario === "completed-before-baseline" ? "1" : "0");
+        const observed = await withTransaction(runtime, (client) =>
+          client.query<{ read: string | null }>("SELECT properties ->> 'read' AS read FROM items WHERE id = $1", [
+            fixture.message,
+          ]),
+        );
+        if (scenario === "completed-before-baseline") expect(observed.rows[0]?.read).toBe("true");
+        else expect(observed.rows[0]?.read).not.toBe("true");
+      } finally {
+        await runtime.end();
+      }
+    });
 
   tenantIt(
     "persists last_error and pushes out next_expected_activity_at when a sync pass throws, surviving the aborted transaction's rollback",

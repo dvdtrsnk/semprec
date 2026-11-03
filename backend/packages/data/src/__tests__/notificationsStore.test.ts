@@ -72,6 +72,80 @@ describe("notificationsStore (issue #152)", () => {
   }
 
   describe("listUnreadNotificationsForUser", () => {
+    it("projects legacy and current mail stalls safely without rewriting stored payloads or other kinds", async () => {
+      const userId = await createTestUser();
+      const mailboxItemId = randomUUID();
+      const marker = "synthetic provider secret";
+      const payloads = [
+        { mailboxItemId, lastError: marker },
+        { mailboxItemId, reason: "connectionLimit", lastError: marker, extra: marker },
+        { mailboxItemId, reason: marker },
+      ];
+      const ids: string[] = [];
+      for (const [index, payload] of payloads.entries()) {
+        ids.push(
+          await inTenantZero(() =>
+            withTransaction(pool, (client) =>
+              writeNotification(client, {
+                userId,
+                kind: "mail_sync_stalled",
+                linkHref: null,
+                sourceTable: "tenant_observability_checks",
+                sourceId: randomUUID(),
+                transitionInstance: `legacy-${index}`,
+                payload,
+              }),
+            ),
+          ),
+        );
+      }
+      const otherId = await inTenantZero(() =>
+        withTransaction(pool, (client) =>
+          writeNotification(client, {
+            userId,
+            kind: "heartbeat_error",
+            titleParams: { name: "fixture" },
+            linkHref: null,
+            sourceTable: "project_heartbeats",
+            sourceId: randomUUID(),
+            transitionInstance: "other",
+            payload: { lastError: marker },
+          }),
+        ),
+      );
+      for (const [index, id] of ids.entries()) {
+        expect((await getNotificationById(pool, id))?.payload).toEqual({
+          mailboxItemId,
+          reason: index === 1 ? "connectionLimit" : "other",
+        });
+        const stored = await pool.query<{ payload: unknown }>("SELECT payload FROM notifications WHERE id = $1", [id]);
+        expect(stored.rows[0]?.payload).toEqual(payloads[index]);
+      }
+      expect((await getNotificationById(pool, otherId))?.payload).toEqual({ lastError: marker });
+      expect(
+        (await listUnreadNotificationsForUser(pool, userId)).filter((row) => row.kind === "mail_sync_stalled"),
+      ).toHaveLength(3);
+    });
+
+    it("rejects an invalid mailbox id without echoing its value", async () => {
+      const userId = await createTestUser();
+      const secret = "invalid-private-mailbox-value";
+      const id = await inTenantZero(() =>
+        withTransaction(pool, (client) =>
+          writeNotification(client, {
+            userId,
+            kind: "mail_sync_stalled",
+            linkHref: null,
+            sourceTable: "tenant_observability_checks",
+            sourceId: randomUUID(),
+            transitionInstance: "invalid",
+            payload: { mailboxItemId: secret },
+          }),
+        ),
+      );
+      await expect(getNotificationById(pool, id)).rejects.toThrow("Invalid mail sync notification mailbox id");
+      await expect(getNotificationById(pool, id)).rejects.not.toThrow(secret);
+    });
     it.each([[null], [[]], ["invalid"], [1]])("refuses a malformed stored payload %j", async (payload) => {
       const userId = await createTestUser();
       await writeTestNotification(userId, "payload-test");

@@ -159,17 +159,56 @@ export function walkBodyStructure(root: MessageStructureObject): MimeTree {
  */
 export class ImapFlowMailClient implements ImapMailClient {
   private readonly moveObserved: unknown[] = [];
+  private moveConnectionUsed = false;
+  private moveExpired = false;
+  private moveFailureRecorded = false;
+  private moveCleanupFailed = false;
 
   constructor(private readonly client: ImapFlow) {}
+
+  private async ownedMoveOperation<T>(operation: () => Promise<T>): Promise<{ expired: boolean; value: T }> {
+    if (this.moveExpired) throw new Error("IMAP move connection is closed");
+    this.moveFailureRecorded = false;
+    const closeFailures: unknown[] = [];
+    const timer = setTimeout(() => {
+      this.moveExpired = true;
+      try {
+        this.client.close();
+      } catch (error) {
+        this.moveCleanupFailed = true;
+        closeFailures.push(error);
+      }
+      imapDiagnostic("operation", closeFailures);
+    }, 30_000);
+    try {
+      const value = await operation();
+      if (this.moveExpired) this.moveObserved.push(value);
+      return { expired: this.moveExpired, value };
+    } catch (error) {
+      this.moveFailureRecorded = true;
+      this.moveObserved.push(error);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      this.moveObserved.push(...closeFailures);
+    }
+  }
 
   async prepareMove(
     path: string,
     uid: number,
   ): Promise<{ uidValidity: string; capabilities: Set<string>; found: boolean } | null> {
     if (!Number.isSafeInteger(uid) || uid < 1 || uid > 4_294_967_295) throw new Error("Invalid IMAP source UID");
+    this.moveConnectionUsed = true;
     try {
-      const mailbox = await this.client.mailboxOpen(path);
-      const matches = await this.client.search({ uid: String(uid) }, { uid: true });
+      const result = await this.ownedMoveOperation(async () => {
+        const mailbox = await this.client.mailboxOpen(path);
+        if (this.moveExpired) return null;
+        const matches = await this.client.search({ uid: String(uid) }, { uid: true });
+        return { mailbox, matches };
+      });
+      if (result.expired || !result.value) return null;
+      const { mailbox, matches } = result.value;
       const valid = Array.isArray(matches) && matches.every((value) => value === uid) && matches.length <= 1;
       if (!valid || matches.length === 0) this.moveObserved.push(matches);
       return {
@@ -178,7 +217,7 @@ export class ImapFlowMailClient implements ImapMailClient {
         found: valid && matches.length === 1,
       };
     } catch (error) {
-      this.moveObserved.push(error);
+      if (!this.moveFailureRecorded) this.moveObserved.push(error);
       return null;
     }
   }
@@ -190,15 +229,20 @@ export class ImapFlowMailClient implements ImapMailClient {
     uidValidity: string,
     targetPath: string,
   ): Promise<SafeImapMoveStepResult> {
+    this.moveConnectionUsed = true;
     try {
-      const result = await executeImapMoveStep(this.client, step, sourcePath, uid, uidValidity, targetPath);
+      const owned = await this.ownedMoveOperation(() =>
+        executeImapMoveStep(this.client, step, sourcePath, uid, uidValidity, targetPath),
+      );
+      if (owned.expired) return { kind: "uncertain" };
+      const result = owned.value;
       if (result.kind === "uncertain") {
         this.moveObserved.push(result.observed);
         return { kind: "uncertain" };
       }
       return result;
     } catch (error) {
-      this.moveObserved.push(error);
+      if (!this.moveFailureRecorded) this.moveObserved.push(error);
       return { kind: "uncertain" };
     }
   }
@@ -680,14 +724,48 @@ export class ImapFlowMailClient implements ImapMailClient {
   }
 
   /**
-   * Logs out, then releases the socket (issue #1510). It never rejects: the sync job calls it in a `finally`
-   * after a pass that may already have failed, and a cleanup failure must not replace that error. A LOGOUT
-   * that fails or does not answer within IMAP_LOGOUT_TIMEOUT_MS is logged with a fixed stage, and the socket
-   * is closed regardless.
+   * Logs out and requests socket closure. Existing read callers retain their fixed diagnostic
+   * behavior; a move-owned connection joins logout and reports cleanup failure with a safe error.
    */
   async close(): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     const observed: unknown[] = this.moveObserved;
+    if (this.moveConnectionUsed) {
+      if (!this.moveExpired) {
+        let timedOut = false;
+        const deadline = setTimeout(() => {
+          timedOut = true;
+          this.moveCleanupFailed = true;
+          try {
+            this.client.close();
+          } catch (error) {
+            observed.push(error);
+          }
+          imapDiagnostic("logout", observed);
+        }, IMAP_LOGOUT_TIMEOUT_MS);
+        try {
+          const logout: Promise<unknown> = this.client.logout();
+          const result: unknown = await logout;
+          if (result === false || timedOut) observed.push(result);
+        } catch (error) {
+          this.moveCleanupFailed = true;
+          observed.push(error);
+        } finally {
+          clearTimeout(deadline);
+          if (!timedOut) {
+            try {
+              this.client.close();
+            } catch (error) {
+              this.moveCleanupFailed = true;
+              observed.push(error);
+            }
+          }
+        }
+      }
+      if (observed.length > 0) imapDiagnostic("operation", observed);
+      if (this.moveCleanupFailed) throw new Error("IMAP move provider cleanup failed unexpectedly");
+      return;
+    }
     try {
       await Promise.race([
         this.client.logout(),

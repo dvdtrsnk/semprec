@@ -277,6 +277,7 @@ describe("page text search (issue #1658)", () => {
     await writePage(day, ["Klient schválil nabídku"]);
     await runPageTextJobs();
     expect(await has(day, "klient schválil")).toBe(true);
+    expect(await has(day, "inboxu")).toBe(true);
     expect(await bodyOf(day)).toBe("Poznámka z inboxu Klient schválil nabídku");
   });
 

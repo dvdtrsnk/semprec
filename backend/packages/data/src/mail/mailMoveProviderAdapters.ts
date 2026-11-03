@@ -1,6 +1,54 @@
 import type { ImapFlow } from "imapflow";
 import { logger } from "./logger.js";
 
+type GmailMoveCommand = "trash" | "untrash" | "add_inbox" | "remove_inbox";
+type GraphMoveDestination = "archive" | "deleteditems" | "inbox" | "sentitems";
+const gmailPreparers = new WeakMap<
+  object,
+  (id: string, step: GmailMoveCommand) => Promise<() => Promise<GmailMoveResult>>
+>();
+const graphPreparers = new WeakMap<
+  object,
+  (id: string, destination: GraphMoveDestination) => Promise<() => Promise<GraphMoveResult>>
+>();
+export function hasGmailMovePreparer(client: object): boolean {
+  return gmailPreparers.has(client);
+}
+export function hasGraphMovePreparer(client: object): boolean {
+  return graphPreparers.has(client);
+}
+
+export function registerGmailMovePreparer(
+  client: object,
+  prepare: (id: string, step: GmailMoveCommand) => Promise<() => Promise<GmailMoveResult>>,
+): void {
+  gmailPreparers.set(client, prepare);
+}
+export function registerGraphMovePreparer(
+  client: object,
+  prepare: (id: string, destination: GraphMoveDestination) => Promise<() => Promise<GraphMoveResult>>,
+): void {
+  graphPreparers.set(client, prepare);
+}
+export function prepareGmailMove(
+  client: object,
+  id: string,
+  step: GmailMoveCommand,
+): Promise<() => Promise<GmailMoveResult>> {
+  const prepare = gmailPreparers.get(client);
+  if (!prepare) throw new Error("Gmail move adapter is unavailable");
+  return prepare(id, step);
+}
+export function prepareGraphMove(
+  client: object,
+  id: string,
+  destination: GraphMoveDestination,
+): Promise<() => Promise<GraphMoveResult>> {
+  const prepare = graphPreparers.get(client);
+  if (!prepare) throw new Error("Graph move adapter is unavailable");
+  return prepare(id, destination);
+}
+
 /** Selects only an IMAP operation sequence that can expunge one specified UID. */
 export function selectImapMoveProtocol(capabilities: ReadonlySet<string>): "move" | "copy" | "unsupportedCapability" {
   if (capabilities.has("MOVE")) return "move";

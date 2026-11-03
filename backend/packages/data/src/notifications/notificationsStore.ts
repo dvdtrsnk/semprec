@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { z } from "zod";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { runAfterCommit } from "../db/pool.js";
 import { notifyNotificationReadState } from "../realtimeHook.js";
@@ -41,7 +42,16 @@ function mapRow(row: NotificationDbRow): NotificationRow {
   if (row.payload === null || typeof row.payload !== "object" || Array.isArray(row.payload)) {
     throw new Error("Invalid notification payload");
   }
-  const payload: Record<string, unknown> = Object.fromEntries(Object.entries(row.payload));
+  let payload: Record<string, unknown> = Object.fromEntries(Object.entries(row.payload));
+  if (row.kind === "mail_sync_stalled") {
+    const mailbox = z.uuid().safeParse(payload.mailboxItemId);
+    if (!mailbox.success) throw new Error("Invalid mail sync notification mailbox id");
+    const reason = payload.reason;
+    payload = {
+      mailboxItemId: mailbox.data,
+      reason: reason === "reauthorization" || reason === "connectionLimit" || reason === "other" ? reason : "other",
+    };
+  }
   return {
     id: row.id,
     userId: row.user_id,
