@@ -320,6 +320,13 @@ describe("rollup engine", () => {
 
     it("uses existing empty-input values for filled and empty count and percentage rollups", async () => {
       const f = await linkedFixture();
+      const emptyTask = await chokePoint.createItem({ databaseId: f.tasks.id, properties: {} });
+      await chokePoint.createRelation({
+        relationPropertyId: f.tasksRelation.id,
+        callerItemId: f.project.id,
+        targetItemId: emptyTask.id,
+      });
+      const unlinked = await chokePoint.createItem({ databaseId: f.projects.id, properties: {} });
       for (const [key, aggregation] of [
         ["countFilled", "count_filled"],
         ["countEmpty", "count_empty"],
@@ -336,13 +343,16 @@ describe("rollup engine", () => {
       }
       await drainQueue();
       const values = async () => (await chokePoint.getItem(f.projects.id, f.project.id))?.computed;
-      expect(await values()).toMatchObject({ countFilled: 2, countEmpty: 0, percentFilled: 1, percentEmpty: 0 });
+      const populated = { countFilled: 2, countEmpty: 1, percentFilled: 2 / 3, percentEmpty: 1 / 3 };
+      const empty = { countFilled: 0, countEmpty: 0, percentFilled: 0, percentEmpty: 0 };
+      expect(await values()).toMatchObject(populated);
+      expect((await chokePoint.getItem(f.projects.id, unlinked.id))?.computed).toMatchObject(empty);
       await chokePoint.archiveDatabase(f.tasks.id);
       await drainQueue();
-      expect(await values()).toMatchObject({ countFilled: 0, countEmpty: 0, percentFilled: 0, percentEmpty: 0 });
+      expect(await values()).toMatchObject(empty);
       await chokePoint.restoreDatabase(f.tasks.id);
       await drainQueue();
-      expect(await values()).toMatchObject({ countFilled: 2, countEmpty: 0, percentFilled: 1, percentEmpty: 0 });
+      expect(await values()).toMatchObject(populated);
     });
 
     it("queues one full job per dependent rollup property and a second archive request does not queue another", async () => {
