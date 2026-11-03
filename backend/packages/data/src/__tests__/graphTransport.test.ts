@@ -4,6 +4,10 @@ import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
+import { ingestEmailMessage } from "../mail/ingest.js";
+import { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
+import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { GRAPH_SEND_MAIL_MAX_RAW_BYTES } from "../mail/graphRestClient.js";
 import { GRAPH_SEND_PURPOSE } from "../mail/graphTransport.js";
@@ -308,6 +312,79 @@ describe("Graph mail transport (issue #1753)", () => {
       internetMessageId: "<boundary-2@graph.test>",
       internetMessageHeaders: [],
     });
+  });
+
+  it("deduplicates later synced copies using the Message-ID from both Graph send paths", async () => {
+    const storage: BlobStorageWriter = {
+      async writeStream() {
+        throw new Error("Unexpected attachment write");
+      },
+      async delete() {
+        throw new Error("Unexpected attachment delete");
+      },
+      readStream() {
+        throw new Error("Unexpected attachment read");
+      },
+    };
+    const microsoft = fakeMicrosoft();
+    for (const [size, id] of [
+      [1000, "<graph-small@x>"],
+      [GRAPH_SEND_MAIL_MAX_RAW_BYTES + 1, "<graph-large@x>"],
+    ] as const) {
+      const raw = textMessageOfSize(size, `Message-ID: ${id}`);
+      await (
+        await transportFor(microsoft)
+      ).send({ raw, envelope: { from: "sender@graph.test", recipients: ["bob@graph.test"] } });
+      const sentId =
+        size <= GRAPH_SEND_MAIL_MAX_RAW_BYTES
+          ? /^Message-ID: (.+)$/im
+              .exec(Buffer.from(onlyCallOf(microsoft.calls, "sendMail").text, "base64").toString("utf8"))?.[1]
+              ?.trim()
+          : (() => {
+              const payload: unknown = JSON.parse(onlyCallOf(microsoft.calls, "createDraft").text);
+              if (typeof payload !== "object" || payload === null || !("internetMessageId" in payload))
+                return undefined;
+              return typeof payload.internetMessageId === "string" ? payload.internetMessageId : undefined;
+            })();
+      expect(sentId).toBe(id);
+      if (!sentId) throw new Error("Missing sent Message-ID");
+      const result = await withTransaction(pool, async (client) => {
+        const ids = await resolveMailModuleIds(client);
+        const folderProperty = await getPropertyByKey(client, ids.emailsDatabaseId, "folder");
+        const attachmentProperty = await getPropertyByKey(client, ids.emailsDatabaseId, "attachments");
+        if (!folderProperty || !attachmentProperty) throw new Error("Missing Email relation properties");
+        const item = await createItemWithClient(client, { databaseId: ids.emailsDatabaseId, properties: {} });
+        const folder = await createItemWithClient(
+          client,
+          {
+            databaseId: ids.foldersDatabaseId,
+            properties: { name: "Sent", behavior: "folder", providerId: `sent-${size}` },
+          },
+          { allowedSystemKeys: ["name", "behavior", "providerId"] },
+        );
+        await upsertMailMessageMeta(client, {
+          itemId: item.id,
+          mailboxItemId: mailboxId,
+          messageId: sentId,
+          envelope: {},
+        });
+        const ingested = await ingestEmailMessage(client, {
+          emailsDatabaseId: ids.emailsDatabaseId,
+          filesDatabaseId: ids.filesDatabaseId,
+          folderRelationPropertyId: folderProperty.id,
+          attachmentsRelationPropertyId: attachmentProperty.id,
+          folderItemId: folder.id,
+          mailboxItemId: mailboxId,
+          messageId: sentId,
+          envelope: {},
+          attachments: [],
+          storage,
+          storageKeyPrefix: "test",
+        });
+        return { itemId: item.id, ingested };
+      });
+      expect(result.ingested).toEqual({ itemId: result.itemId, created: false });
+    }
   });
 
   it("keeps the Message-ID and the reply headers in a large reply, uploads its attachments in chunks and sends the draft", async () => {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GmailRestClient } from "../mail/gmailRestClient.js";
+import { logger } from "../mail/logger.js";
 
 describe("Gmail sync provider privacy", () => {
   it.each([
@@ -147,6 +148,7 @@ async function fetchFixture(payload: object) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("Gmail bulk-mail headers (issue #1502)", () => {
@@ -536,6 +538,54 @@ describe("Gmail sendMessage (issue #1637)", () => {
     );
     expect(error).toMatchObject({ message: "Mail send provider operation failed" });
     expect(JSON.stringify(error)).not.toContain("PRIVATE-SEND-SECRET");
+  });
+
+  it("confines an undefined reader failure even when cleanup diagnostics also fail", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {
+      throw new Error("PRIVATE-DIAGNOSTIC");
+    });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(undefined);
+      },
+    });
+    const client = new GmailRestClient(
+      async () => SECRET_TOKEN,
+      async () => new Response(body, { status: 200 }),
+    );
+    const error: unknown = await client.sendMessage(RAW_MESSAGE).then(
+      () => null,
+      (value: unknown) => value,
+    );
+    expect(error).toMatchObject({ message: "Mail send provider operation failed" });
+    expect(error).not.toHaveProperty("cause");
+    expect(JSON.stringify(error)).not.toContain("PRIVATE");
+    expect(warn).toHaveBeenCalledWith({ stage: "send-response" }, "Mail send cleanup failed");
+  });
+
+  it("retains a genuine recipient refusal when reader cancellation and diagnostics fail", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {
+      throw new Error("PRIVATE-DIAGNOSTIC");
+    });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from(`invalid recipient ${"x".repeat(5000)}`));
+      },
+      cancel() {
+        throw new Error("PRIVATE-CLEANUP");
+      },
+    });
+    const client = new GmailRestClient(
+      async () => SECRET_TOKEN,
+      async () => new Response(stream, { status: 400 }),
+    );
+    const error: unknown = await client.sendMessage(RAW_MESSAGE).then(
+      () => null,
+      (value: unknown) => value,
+    );
+    expect(error).toBeInstanceOf(MailRecipientRejectedError);
+    expect(JSON.stringify(error)).not.toContain("PRIVATE");
+    expect(warn).toHaveBeenCalledWith({ stage: "send-response" }, "Mail send cleanup failed");
   });
 
   it("rejects a success response that lacks the message or thread id", async () => {

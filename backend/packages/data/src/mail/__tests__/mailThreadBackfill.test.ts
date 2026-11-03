@@ -34,6 +34,8 @@ vi.mock("../threading.js", async (importOriginal) => {
   };
 });
 
+// Most paging and coordination cases below use synthetic metadata identifiers to isolate the
+// algorithm; they are not historical deployed rows. The real-item test covers the supported legacy shape.
 const MAILBOX_A = "00000000-0000-4000-8000-00000000000a";
 const MAILBOX_B = "00000000-0000-4000-8000-00000000000b";
 /** One more row than the job's page size of 200, so each pass has to read a second page. */

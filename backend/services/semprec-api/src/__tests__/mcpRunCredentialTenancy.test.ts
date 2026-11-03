@@ -174,6 +174,35 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
       expect(accepted.body).toHaveProperty("result");
       expect(await count(databaseId)).toBe((before ?? 0) + 1);
     }
+    const validType = await runInTenant(tenantA, () =>
+      withTransaction(pool, async (client) => {
+        const { rows } = await client.query<{ id: string; updated_at: Date }>(
+          "SELECT id, updated_at FROM items WHERE database_id = $1 AND properties->>'name' = $2",
+          [databases.types, "Valid"],
+        );
+        if (!rows[0]) throw new Error("Missing valid Inbox type");
+        return rows[0];
+      }),
+    );
+    for (const targetDatabase of ["journal", "transcripts", "nonsense"]) {
+      const rejected = await callTool(credential.token, "semprec.item.patch", {
+        itemId: validType.id,
+        properties: { targetDatabase },
+        ifVersion: validType.updated_at.toISOString(),
+      });
+      expect(rejected.status).toBe(200);
+      expect(rejected.body).toMatchObject({ error: { code: -32602, data: { field: "targetDatabase" } } });
+      const stored = await runInTenant(tenantA, () =>
+        withTransaction(pool, async (client) => {
+          const { rows } = await client.query<{ target: string }>(
+            "SELECT properties->>'targetDatabase' AS target FROM items WHERE database_id = $1 AND id = $2",
+            [databases.types, validType.id],
+          );
+          return rows[0]?.target;
+        }),
+      );
+      expect(stored).toBe("tasks");
+    }
     const days = await runInTenant(tenantA, () =>
       withTransaction(pool, async (client) => {
         const { rows } = await client.query<{ period: string }>(

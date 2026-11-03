@@ -3,6 +3,11 @@ import type { Pool } from "pg";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
+import { ingestEmailMessage } from "../mail/ingest.js";
+import { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
+import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
+import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { GMAIL_SEND_PURPOSE } from "../mail/gmailTransport.js";
@@ -159,6 +164,56 @@ describe("Gmail API mail transport (issue #1637)", () => {
     });
 
     expect(decodeRaw(google.sends[0]!)).toContain("Message-ID: <sent-1@gmail.test>");
+  });
+
+  it("deduplicates a later synced Gmail copy using the Message-ID actually sent", async () => {
+    const google = fakeGoogle();
+    const transport = await transportFor(google);
+    await transport.send({ raw: RAW_MESSAGE, envelope: { from: "me@gmail.test", recipients: ["bob@gmail.test"] } });
+    const [sent] = google.sends;
+    if (!sent) throw new Error("Missing Gmail send");
+    const match = /^Message-ID: (.+)$/im.exec(decodeRaw(sent));
+    if (!match?.[1]) throw new Error("Missing sent Message-ID");
+    const messageId = match[1].trim();
+    const storage: BlobStorageWriter = {
+      async writeStream() {
+        throw new Error("Unexpected attachment write");
+      },
+      async delete() {
+        throw new Error("Unexpected attachment delete");
+      },
+      readStream() {
+        throw new Error("Unexpected attachment read");
+      },
+    };
+    const { originalId, ingested } = await withTransaction(pool, async (client) => {
+      const ids = await resolveMailModuleIds(client);
+      const folderProperty = await getPropertyByKey(client, ids.emailsDatabaseId, "folder");
+      const attachmentProperty = await getPropertyByKey(client, ids.emailsDatabaseId, "attachments");
+      if (!folderProperty || !attachmentProperty) throw new Error("Missing Email relation properties");
+      const item = await createItemWithClient(client, { databaseId: ids.emailsDatabaseId, properties: {} });
+      const folder = await createItemWithClient(
+        client,
+        { databaseId: ids.foldersDatabaseId, properties: { name: "Sent", behavior: "folder", providerId: "SENT" } },
+        { allowedSystemKeys: ["name", "behavior", "providerId"] },
+      );
+      await upsertMailMessageMeta(client, { itemId: item.id, mailboxItemId: mailboxId, messageId, envelope: {} });
+      const ingested = await ingestEmailMessage(client, {
+        emailsDatabaseId: ids.emailsDatabaseId,
+        filesDatabaseId: ids.filesDatabaseId,
+        folderRelationPropertyId: folderProperty.id,
+        attachmentsRelationPropertyId: attachmentProperty.id,
+        folderItemId: folder.id,
+        mailboxItemId: mailboxId,
+        messageId,
+        envelope: {},
+        attachments: [],
+        storage,
+        storageKeyPrefix: "test",
+      });
+      return { originalId: item.id, ingested };
+    });
+    expect(ingested).toEqual({ itemId: originalId, created: false });
   });
 
   it("names the provider thread id of a reply as the send's threadId, so the message joins that thread", async () => {
