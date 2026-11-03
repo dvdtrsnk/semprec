@@ -1482,12 +1482,12 @@
       "sequence": 15,
       "status": "proposed",
       "title": "[backend-delivery 15/74] Implement agent-runtime, semprec-agents, application changes",
-      "bodyCharacters": 56551,
-      "specSha256": "c84302b30938997890e253a4a62f022946f9c9eb349bc753b56e83c864af27ed",
+      "bodyCharacters": 57637,
+      "specSha256": "7a5c08997c5428fc16ae86013c7bc30f7b14a04509ffe4e347c597cdf7c279f3",
       "members": [
         {
           "id": "gh-1568",
-          "specSha256": "702b310a3e8adf7ee760eaf6c2d846d4ee66f3b8367c32b1b1ffb68a499d92c0",
+          "specSha256": "bed39cad99eae4143a1ec9d68c9bb4c3e579ff6f68108581633efaa62b6d3313",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1374",
@@ -1497,7 +1497,7 @@
         },
         {
           "id": "gh-1527",
-          "specSha256": "fac62d5b90e97e941aafab0aee262720202d2093d40f5aa7544411800974b53c",
+          "specSha256": "13b14f1740fe63fc84d0bf571add0fd8aeae448ff297a10e47103161894c3a7d",
           "parent": "gh-1308",
           "dependencies": [
             "gh-1424",
@@ -1516,7 +1516,7 @@
         },
         {
           "id": "gh-1683",
-          "specSha256": "c1653e8168113fa080a40fa6051d84d35429c59c19a2e157e3d080708ccb9c28",
+          "specSha256": "2fe3e1d1345153d8e3e51c3a3e3c12270802d6dbb3e3ae5bc0254259bd8bf260",
           "parent": "gh-1305",
           "dependencies": [
             "gh-1618"
@@ -1525,7 +1525,7 @@
         },
         {
           "id": "gh-1728",
-          "specSha256": "933e6dc0c2a44306c25c4269fa6291cd2219ccf8ab197079a3b4026792bbf111",
+          "specSha256": "b8664d9b692088b14d2f2169f413a602488a6ee29fe39798f7cfc76c3c4b964d",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1452",
@@ -1568,7 +1568,7 @@
         },
         {
           "id": "gh-1773",
-          "specSha256": "2c6ed23ff2f26549556427ef046b47da85373e3d3d60cd613dbc5f491dac9b85",
+          "specSha256": "4ee258742b40c1a4c5bbe63ccdd659d86ce28b16dd5c19565886d70ff3501cc6",
           "parent": "gh-1305",
           "dependencies": [
             "gh-1466",
