@@ -392,6 +392,107 @@ describe("createAuthRequestListener", () => {
   });
 
   describe("GET /api/auth/session", () => {
+    it.each([
+      ["ios", 90],
+      ["web", 30],
+    ] as const)(
+      "slides a %s session through authenticated HTTP without changing its response",
+      async (platform, days) => {
+        const user = await makeUser();
+        const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: user.email, password: PASSWORD, platform }),
+        });
+        expect(loginResponse.status).toBe(200);
+        let headers: Record<string, string>;
+        if (platform === "web") {
+          headers = { Cookie: `${SESSION_COOKIE_NAME}=${sessionCookieFrom(loginResponse)}` };
+        } else {
+          const body: unknown = await loginResponse.json();
+          if (typeof body !== "object" || body === null || !("token" in body) || typeof body.token !== "string") {
+            throw new Error("Native login did not return a token");
+          }
+          headers = { Authorization: `Bearer ${body.token}` };
+        }
+        // Age the expiry to exercise the sliding update; the login API cannot backdate a session.
+        await withTransaction(pool, (client) =>
+          client.query("UPDATE sessions SET expires_at = now() + interval '1 day' WHERE user_id = $1", [user.id]),
+        );
+        const first = await fetch(`${baseUrl}/api/auth/session`, { headers });
+        expect(first.status).toBe(200);
+        const firstBody: unknown = await first.json();
+        const expiry = await pool.query<{ expires_at: Date }>("SELECT expires_at FROM sessions WHERE user_id = $1", [
+          user.id,
+        ]);
+        const firstExpiry = expiry.rows[0]?.expires_at.getTime();
+        expect(firstExpiry).toBeDefined();
+        expect(Math.abs((firstExpiry ?? 0) - Date.now() - days * 86400_000)).toBeLessThan(60_000);
+        const second = await fetch(`${baseUrl}/api/auth/session`, { headers });
+        expect(second.status).toBe(200);
+        expect(await second.json()).toEqual(firstBody);
+        const after = await pool.query<{ expires_at: Date }>("SELECT expires_at FROM sessions WHERE user_id = $1", [
+          user.id,
+        ]);
+        expect(after.rows[0]?.expires_at.getTime()).toBeGreaterThanOrEqual(firstExpiry ?? 0);
+      },
+    );
+
+    it("caps an old native session at its absolute lifetime through authenticated HTTP", async () => {
+      const user = await makeUser();
+      const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "ios" }),
+      });
+      const body: unknown = await loginResponse.json();
+      if (typeof body !== "object" || body === null || !("token" in body) || typeof body.token !== "string") {
+        throw new Error("Native login did not return a token");
+      }
+      // Production login cannot create an aged session; preserve a still-valid legacy session here.
+      await withTransaction(pool, (client) =>
+        client.query(
+          "UPDATE sessions SET created_at = now() - interval '364 days', expires_at = now() + interval '1 hour' WHERE user_id = $1",
+          [user.id],
+        ),
+      );
+      const response = await fetch(`${baseUrl}/api/auth/session`, {
+        headers: { Authorization: `Bearer ${body.token}` },
+      });
+      expect(response.status).toBe(200);
+      const result = await pool.query<{ capped: boolean }>(
+        "SELECT expires_at = created_at + interval '365 days' AS capped FROM sessions WHERE user_id = $1",
+        [user.id],
+      );
+      expect(result.rows).toEqual([{ capped: true }]);
+    });
+
+    it("rejects an expired web session over HTTP without renewing it", async () => {
+      const user = await makeUser();
+      const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "web" }),
+      });
+      const cookie = sessionCookieFrom(loginResponse);
+      // A valid login cannot create an already-expired session.
+      await withTransaction(pool, (client) =>
+        client.query(
+          "UPDATE sessions SET created_at = now() - interval '31 days', expires_at = now() - interval '1 day' WHERE user_id = $1",
+          [user.id],
+        ),
+      );
+      const response = await fetch(`${baseUrl}/api/auth/session`, {
+        headers: { Cookie: `${SESSION_COOKIE_NAME}=${cookie}` },
+      });
+      expect(response.status).toBe(401);
+      const result = await pool.query<{ expired: boolean }>(
+        "SELECT expires_at < now() AS expired FROM sessions WHERE user_id = $1",
+        [user.id],
+      );
+      expect(result.rows).toEqual([{ expired: true }]);
+    });
+
     it("authenticates with the bearer token returned by login", async () => {
       const user = await makeUser();
       const loginRes = await fetch(`${baseUrl}/api/auth/login`, {

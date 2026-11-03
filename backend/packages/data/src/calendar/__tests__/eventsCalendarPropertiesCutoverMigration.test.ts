@@ -3,6 +3,8 @@ import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { runEventsCalendarPropertiesCutoverMigration } from "../eventsCalendarPropertiesCutoverMigration.js";
+import { createChokePoint } from "../../chokePoint/chokePoint.js";
+import { withTransaction } from "../../db/pool.js";
 
 let pool: Pool;
 
@@ -69,19 +71,31 @@ describe("runEventsCalendarPropertiesCutoverMigration (issue #1416)", () => {
 
   it("adds exactly the missing properties to a previously seeded database, identical to a fresh seed, once", async () => {
     const fresh = await eventProperties();
-    await pool.query(
-      `DELETE FROM properties p USING databases d
-       WHERE d.id = p.database_id AND d.owner_module_id = 'events' AND p.key = ANY($1::text[])`,
-      [NEW_KEYS],
+    const database = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'events'");
+    if (!database.rows[0]) throw new Error("Events database was not seeded");
+    const event = await createChokePoint(pool).createItem({
+      databaseId: database.rows[0].id,
+      properties: { name: "Existing event", date: "2026-10-16" },
+    });
+    // Reconstruct the previous Events seed's property list; public APIs cannot alter its locked schema.
+    await withTransaction(pool, (client) =>
+      client.query(
+        `DELETE FROM properties p USING databases d
+         WHERE d.id = p.database_id AND d.owner_module_id = 'events' AND p.key = ANY($1::text[])`,
+        [NEW_KEYS],
+      ),
     );
+    const original = await createChokePoint(pool).getItem(database.rows[0].id, event.id);
     const before = await eventProperties();
     expect(before.map((p) => p.key)).toEqual(fresh.map((p) => p.key).filter((key) => !NEW_KEYS.includes(key)));
 
     await runEventsCalendarPropertiesCutoverMigration(pool);
     expect(await eventProperties()).toEqual(fresh);
+    expect(await createChokePoint(pool).getItem(database.rows[0].id, event.id)).toEqual(original);
 
     await runEventsCalendarPropertiesCutoverMigration(pool);
     expect(await eventProperties()).toEqual(fresh);
+    expect(await createChokePoint(pool).getItem(database.rows[0].id, event.id)).toEqual(original);
   });
 
   it("is a no-op when there is no Events database", async () => {

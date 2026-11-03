@@ -66,6 +66,24 @@ describe("generic operation AgentTools (issue #220)", () => {
   });
 
   describe("createGenericOperationAgentTools", () => {
+    it("refuses a Journal item without type or period through the agent tool without creating a row", async () => {
+      const journal = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "journal"));
+      if (!journal) throw new Error("Journal database was not seeded");
+      const projectItemId = await createProjectItem();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "create a journal entry" });
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+
+      const outcome = await tools["item.create"](run.id, { databaseId: journal.id, properties: {} });
+
+      expect(outcome.error).toBe(true);
+      expect(outcome.result).toMatch(/^forbidden:/);
+      const { rows } = await pool.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM items WHERE database_id = $1",
+        [journal.id],
+      );
+      expect(rows[0]?.count).toBe(0);
+    });
+
     it("returns owner_violation, never touching the choke point, for a currentRunId that doesn't exist", async () => {
       const tools = createGenericOperationAgentTools(pool, undefined, testMetadataResolver);
 

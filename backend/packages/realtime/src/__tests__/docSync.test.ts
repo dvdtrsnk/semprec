@@ -492,6 +492,7 @@ describe("createDocSyncRegistry doc:ack (issue #1362)", () => {
   /** Records, at the instant each ack is sent, how many rows `doc_updates` holds for the doc. */
   class AckSocket extends FakeSocket {
     readonly rowsAtAck: Promise<number>[] = [];
+    readonly textAtAck: Promise<string>[] = [];
     override send(data: Buffer | string): void {
       super.send(data as Buffer);
       if (typeof data === "string" && JSON.parse(data).type === "doc:ack") {
@@ -499,6 +500,9 @@ describe("createDocSyncRegistry doc:ack (issue #1362)", () => {
           pool
             .query<{ count: string }>(`SELECT count(*) FROM doc_updates WHERE doc_id = $1`, [docId])
             .then((r) => Number(r.rows[0]!.count)),
+        );
+        this.textAtAck.push(
+          runInTenant(tenantA, () => loadYDoc(runtimePool, docId)).then((doc) => doc.getText("body").toJSON()),
         );
       }
     }
@@ -560,8 +564,12 @@ describe("createDocSyncRegistry doc:ack (issue #1362)", () => {
 
     await registry.handleBinaryFrame(writer as unknown as never, tenantA, docId, frame(updateBytes("hi"), "edit-1"));
 
+    const observations = await Promise.allSettled([...writer.rowsAtAck, ...writer.textAtAck]);
     expect(acks(writer)).toEqual([{ type: "doc:ack", docId, clientUpdateId: "edit-1" }]);
-    expect(await Promise.all(writer.rowsAtAck)).toEqual([before + 1]);
+    expect(observations).toEqual([
+      { status: "fulfilled", value: before + 1 },
+      { status: "fulfilled", value: "hi" },
+    ]);
     expect(acks(peer)).toEqual([]);
 
     const { rows } = await pool.query<{ id: string }>(
@@ -625,6 +633,19 @@ describe("createDocSyncRegistry doc:ack (issue #1362)", () => {
     const id = "a".repeat(64);
     await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(updateBytes("x"), id));
     expect(acks(socket)).toEqual([{ type: "doc:ack", docId, clientUpdateId: id }]);
+  });
+
+  it("persists an update with a truncated correlation string and sends no ack", async () => {
+    const socket = new FakeSocket();
+    await registry.handleOpen(socket as unknown as never, tenantA, docId);
+    const before = await countUpdates();
+    // Synthetic malformed boundary: the declared varString length exceeds its remaining bytes.
+    const malformed = Buffer.concat([Buffer.from(encodeClientUpdate(updateBytes("truncated"))), Buffer.from([3, 97])]);
+
+    await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, malformed);
+
+    expect(await countUpdates()).toBe(before + 1);
+    expect(acks(socket)).toEqual([]);
   });
 
   it("sends no ack and writes nothing for a document the socket never opened", async () => {

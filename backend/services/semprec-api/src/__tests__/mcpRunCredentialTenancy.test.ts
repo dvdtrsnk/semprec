@@ -19,6 +19,7 @@ import {
   insertValueLink,
   login,
   mintMcpRunCredential,
+  seedSystem,
   setInvalidationHook,
   type InvalidationEvent,
   withTransaction,
@@ -108,6 +109,41 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
     });
     return { status: res.status, body: await res.json() };
   }
+
+  it("refuses Journal item.create through an authenticated run credential without creating a row", async () => {
+    await runInTenant(tenantA, () => seedSystem(pool));
+    const user = await createUserIn(tenantA);
+    const projectItemId = await runInTenant(tenantA, () => createTestProjectItem(pool));
+    const credential = await runInTenant(tenantA, () =>
+      withTransaction(pool, (client) =>
+        mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.write"], userId: user.id }),
+      ),
+    );
+    const journalId = await runInTenant(tenantA, () =>
+      withTransaction(pool, async (client) => {
+        const { rows } = await client.query<{ id: string }>(
+          "SELECT id FROM databases WHERE owner_module_id = 'journal'",
+        );
+        if (!rows[0]) throw new Error("Journal database was not seeded");
+        return rows[0].id;
+      }),
+    );
+
+    const result = await callTool(credential.token, "semprec.item.create", { databaseId: journalId, properties: {} });
+
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ error: { code: -32000, data: { code: "forbidden" } } });
+    const count = await runInTenant(tenantA, () =>
+      withTransaction(pool, async (client) => {
+        const { rows } = await client.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM items WHERE database_id = $1",
+          [journalId],
+        );
+        return rows[0]?.count;
+      }),
+    );
+    expect(count).toBe(0);
+  });
 
   it("answers tenant B's mint with tenant A's Projects item exactly like a random id", async () => {
     const aUser = await createUserIn(tenantA);

@@ -3,8 +3,9 @@ import type { Pool } from "pg";
 import { getTestPool, getTenantZeroId, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
-import { createHeartbeat } from "../scheduler/schedulerStore.js";
-import { CORE_AGENT_RUN_ACTION_ID, coreAgentRunAction } from "../scheduler/actions.js";
+import { createHeartbeat, sweepDueHeartbeats } from "../scheduler/schedulerStore.js";
+import { createActionRegistry, CORE_AGENT_RUN_ACTION_ID, coreAgentRunAction } from "../scheduler/actions.js";
+import { createHeartbeatFireAgentTask, createHeartbeatFireCoreTask } from "../scheduler/sweep.js";
 import { createAgentRun, getAgentRun } from "../agentRuns/agentRunsStore.js";
 import { finishTickRunWithMessage, getOrCreateTickThread } from "../semp/sempTickThreadStore.js";
 import { setSempThreadInvalidationHook } from "../realtimeHook.js";
@@ -88,6 +89,14 @@ describe("heartbeat runs in their tick thread", () => {
 
   it("a heartbeat whose action is not core.agentRun creates no thread", async () => {
     const hb = await makeHeartbeat("noop");
+    const registry = createActionRegistry();
+    const handler = vi.fn(async () => {});
+    registry.set("noop", handler);
+    const task = createHeartbeatFireCoreTask(pool, registry);
+    // Synthetic Graphile helpers provide the attempt metadata read by the fire task.
+    const helpers = { job: { id: "batch16-noop", attempts: 1, max_attempts: 1 } } as Parameters<typeof task>[1];
+    await inTenantZero(() => task({ heartbeatId: hb.id, itemId: hb.projectItemId }, helpers));
+    expect(handler).toHaveBeenCalledOnce();
     const { rows } = await pool.query("SELECT id FROM semp_threads WHERE heartbeat_id = $1", [hb.id]);
     expect(rows).toHaveLength(0);
     const { rows: all } = await pool.query("SELECT id FROM semp_threads");
@@ -115,6 +124,51 @@ describe("heartbeat runs in their tick thread", () => {
     expect(runs.map((r) => r.status)).toEqual(["error", "error", "error"]);
     expect(invalidations).toHaveLength(6);
     expect(new Set(invalidations)).toEqual(new Set([threads[0].id]));
+  });
+
+  it("routes retries of one scheduled occurrence through the agent fire task and writes only the final error message", async () => {
+    const hb = await makeHeartbeat(CORE_AGENT_RUN_ACTION_ID);
+    // A due time cannot be set through the heartbeat creation API.
+    await withTransaction(pool, (client) =>
+      client.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [hb.id]),
+    );
+    const sweep = await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+    expect(sweep.fired).toHaveLength(1);
+    const occurrence = await pool.query<{ id: string }>(
+      "SELECT id FROM heartbeat_occurrences WHERE heartbeat_id = $1",
+      [hb.id],
+    );
+    const occurrenceId = occurrence.rows[0]?.id;
+    if (!occurrenceId) throw new Error("Missing scheduled occurrence");
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async () => {
+        throw new Error("agent failure");
+      }),
+    );
+    const task = createHeartbeatFireAgentTask(pool, registry);
+    for (const attempt of [1, 2, 3]) {
+      // Synthetic Graphile helpers carry the actual attempt metadata consumed by this task.
+      const helpers = { job: { id: "batch16", attempts: attempt, max_attempts: 3 } } as Parameters<typeof task>[1];
+      await expect(
+        inTenantZero(() => task({ heartbeatId: hb.id, occurrenceId, generation: 1 }, helpers)),
+      ).rejects.toThrow("agent failure");
+      const { rows } = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_messages");
+      expect(rows[0]?.count).toBe(attempt === 3 ? 1 : 0);
+    }
+    const runs = await pool.query<{ heartbeat_occurrence_id: string; attempt: number; status: string }>(
+      "SELECT heartbeat_occurrence_id, attempt, status FROM agent_runs WHERE heartbeat_id = $1 ORDER BY attempt",
+      [hb.id],
+    );
+    expect(runs.rows).toEqual(
+      [1, 2, 3].map((attempt) => ({ heartbeat_occurrence_id: occurrenceId, attempt, status: "error" })),
+    );
+    expect(invalidations).toHaveLength(6);
+    const { rows: message } = await pool.query<{ status: string; role: string }>(
+      "SELECT status, role FROM semp_messages",
+    );
+    expect(message).toEqual([{ status: "error", role: "assistant" }]);
   });
 
   it("leaves the run unfinished when the actual action cannot insert its success message", async () => {
@@ -151,7 +205,7 @@ describe("heartbeat runs in their tick thread", () => {
         await client.query("DROP FUNCTION batch16_reject_tick_message()");
       });
     } catch (error) {
-      if (failure) throw new AggregateError([failure.error, error], "Test and cleanup failed");
+      if (failure) throw new AggregateError([failure.error, error], "Test and cleanup failed", { cause: error });
       throw error;
     }
     if (failure) throw failure.error;
