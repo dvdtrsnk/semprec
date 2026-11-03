@@ -1880,9 +1880,9 @@
       "id": "sp-f1a0629b-0137-4cd3-a7b7-9421ec0dc438",
       "sequence": 19,
       "status": "proposed",
-      "title": "[backend-delivery 19/74] Verify security readiness under parent supervision",
-      "bodyCharacters": 33722,
-      "specSha256": "21c5a606a698db95487cb89dd9a0b55931f461099c4d4a48340360cc4ee90d2c",
+      "title": "[backend-delivery 19/74] Accept local security repairs and retain the production release gate",
+      "bodyCharacters": 35037,
+      "specSha256": "ce4c81d55d4b0307a644b8f8ef50cb3a58ba482a0215f43a5c6d5a7329a1da70",
       "members": [
         {
           "id": "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a",
@@ -1961,18 +1961,21 @@
       "sequence": 20,
       "status": "proposed",
       "title": "[backend-delivery 20/74] Implement data/tenancy, data/auth, data/inbox changes",
-      "bodyCharacters": 55833,
-      "specSha256": "9f25be1f8698fa5ddc4ee1890baf62128473e8cb05ee3baed819031d918cfa33",
+      "bodyCharacters": 56407,
+      "specSha256": "71d45e5a3d95e795e2a4e6552ff966b4aee7a80f2648f3d8245627f21e4335ca",
       "members": [
         {
           "id": "gh-1087",
-          "specSha256": "e9a78e8ec3be57f426a8b28bfd5622ba9b45412124aa0d0ea28649c9a045f4c0",
+          "specSha256": "1651c063e0d2e0e68a0e646021823978f4c2c4017d4712968a7fc2a327e7877f",
           "parent": "gh-961",
           "dependencies": [
             "gh-1005",
             "gh-1073",
             "gh-1040",
-            "gh-1086"
+            "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a",
+            "sp-94a5c71d-4663-4014-9256-db63e179346e",
+            "sp-dd171464-d76c-45f9-b113-73d81b38aad4",
+            "sp-a0f046dd-8781-4141-bc04-5dad0b725faf"
           ],
           "approval": "approved"
         },

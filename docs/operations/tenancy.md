@@ -153,3 +153,20 @@ are separate work, not silent scope expansion of gh-1086. Under the currently ap
 criteria, batch 19 is incomplete and sequential advancement is held. Any future adjustment of
 obsolete deployment assumptions requires an explicit specification/decision update; missing,
 failed or simulated checks must retain their actual results.
+
+### Owner-directed local continuation (2026-11-03)
+
+The owner now directs autonomous continuation under
+[[2026-11-03-local-development-continues-with-open-production-gates]]. This later
+decision changes the local sequencing hold described above, not the historical
+R1 report or production evidence. Batch 19's four local corrective issues have
+reviewed, tested fixes and candidate-specific local acceptance; its aggregate
+may close its LOCAL lane while gh-1086 remains OPEN. Full verify still failed
+four tests on 716939c6; exact local exceptions and historical cleanup uncertainty
+are recorded in `issues/batches/backend/decisions/batch-19-local-continuation.md`.
+
+Production security result: **BLOCKED / NOT RUN**. The strict release tags,
+effective deployed policy/grants and host configuration, live backup/restore
+rehearsal, invitee disclosure and final security decision are not established.
+No deployment, production access or real second-account invitation is authorized.
+Subsequent backend implementation does not satisfy or erase these obligations.

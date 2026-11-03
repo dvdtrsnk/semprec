@@ -99,3 +99,18 @@ For batch 19, the parent commissions independent security review and records the
 decision itself under delegated authority. Remove obsolete assumptions only
 through explicit spec/decision changes and regenerated hashes. Do not fabricate
 release tags, production checks, credentials or third-party human sign-off.
+
+## Owner-directed autonomous continuation (2026-11-03)
+
+Resolve routine technical, specification and sequencing questions autonomously
+in line with Semprec architecture. Do not repeatedly ask the owner to unblock
+local implementation. Apply
+`2026-11-03-local-development-continues-with-open-production-gates`: unavailable
+production/live evidence remains an OPEN release gate while independently
+accepted local work continues. Batch 19 completes only its four corrective
+sources and local aggregate; gh-1086 remains OPEN. This narrows the earlier
+dispatch rule requiring every member to be completed: an explicitly recorded
+release-only member is retained with its unchanged source and deferred status.
+Use exact candidate-local exceptions and honest FAIL/NOT RUN; do not waive
+tenant/privacy guarantees, claim production PASS or expand push/deploy scope.
+The two-round review budget remains unchanged.
