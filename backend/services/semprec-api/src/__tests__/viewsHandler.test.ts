@@ -134,6 +134,25 @@ describe("view routes (issue #155)", () => {
       expect(body.error.details).toMatchObject({ field: "config" });
     });
 
+    it("rejects an invalid gallery patch over HTTP without changing the view", async () => {
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const database = await chokePoint.createDatabase({ name: "D" });
+      const view = await chokePoint.createView({
+        databaseId: database.id,
+        type: "gallery",
+        name: "G",
+        config: { columns: 3, aspect: "3:4" },
+      });
+      const res = await fetch(`${baseUrl}/api/views/${view.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ config: { columns: 5 } }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: { code: "validation_failed", details: { field: "config" } } });
+      expect((await chokePoint.getView(view.id))?.config).toEqual(view.config);
+    });
+
     it("returns 404 creating a view against an unknown database", async () => {
       const headers = { ...(await authHeader()), "Content-Type": "application/json" };
       const res = await fetch(`${baseUrl}/api/databases/${randomUUID()}/views`, {

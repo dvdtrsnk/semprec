@@ -991,7 +991,7 @@ describe("SempConversation across tenants", () => {
       const gate = new Promise<void>((resolve) => {
         release = resolve;
       });
-      const { createAgentSession } = recordingSessions(new Map([["slow one", gate]]));
+      const { createAgentSession, sessions } = recordingSessions(new Map([["slow one", gate]]));
       const reconstructed: string[] = [];
       const conversation = conversationFor(createAgentSession, {
         reconstructHistory: async (_pool, wake) => {
@@ -1001,27 +1001,39 @@ describe("SempConversation across tenants", () => {
       });
 
       const inFlight = sendThread(tenantA, conversation, "slow one", threadOne);
-      await new Promise((resolve) => setTimeout(resolve, 30));
-
-      expect(await sendThread(tenantA, conversation, "other", threadTwo)).toEqual({
-        ok: true,
-        message: "reply to other",
-      });
-      expect(await sendThread(tenantA, conversation, "slow again", threadOne)).toEqual({
-        ok: false,
-        error: SEMP_BUSY_ERROR_MESSAGE,
-      });
-
-      release();
-      expect(await inFlight).toEqual({ ok: true, message: "reply to slow one" });
-
-      expect(reconstructed.sort()).toEqual([threadOne.threadId, threadTwo.threadId].sort());
-      for (const thread of [threadOne, threadTwo]) {
-        const runs = await threadRuns(thread.threadId);
-        expect(runs).toHaveLength(1);
-        expect(runs[0]!.project_item_id).toBe(projectByTenant.get(tenantA));
+      let failure: { error: unknown } | undefined;
+      let settledFailure: { error: unknown } | undefined;
+      try {
+        await vi.waitFor(() => expect(sessions.some((session) => session.tasks.includes("slow one"))).toBe(true));
+        expect(await sendThread(tenantA, conversation, "other", threadTwo)).toEqual({
+          ok: true,
+          message: "reply to other",
+        });
+        expect(await sendThread(tenantA, conversation, "slow again", threadOne)).toEqual({
+          ok: false,
+          error: SEMP_BUSY_ERROR_MESSAGE,
+        });
+        release();
+        expect(await inFlight).toEqual({ ok: true, message: "reply to slow one" });
+        expect(reconstructed.sort()).toEqual([threadOne.threadId, threadTwo.threadId].sort());
+        for (const thread of [threadOne, threadTwo]) {
+          const runs = await threadRuns(thread.threadId);
+          expect(runs).toHaveLength(1);
+          expect(runs[0]!.project_item_id).toBe(projectByTenant.get(tenantA));
+        }
+      } catch (error) {
+        failure = { error };
+      } finally {
+        release();
+        const [settled] = await Promise.allSettled([inFlight]);
+        conversation.clear();
+        if (settled?.status === "rejected") settledFailure = { error: settled.reason };
       }
-      conversation.clear();
+      if (failure && settledFailure && failure.error !== settledFailure.error) {
+        throw new AggregateError([failure.error, settledFailure.error]);
+      }
+      if (failure) throw failure.error;
+      if (settledFailure) throw settledFailure.error;
     });
 
     it("gives a tick thread's wake run the heartbeat's project and does not call the resolver", async () => {
