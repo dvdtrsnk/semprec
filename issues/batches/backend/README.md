@@ -165,7 +165,7 @@ reported by the ordinary validator; they are not silently repaired by batching.
 | 18 | [[backend-delivery 18/74] Implement data/mail, data/observability, data/docs changes](../../items/sp-a0bbb89b-34c7-4d8e-8758-3552b91c85a5.md) | 9 | 46516 |
 | 19 | [[backend-delivery 19/74] Accept local security repairs and retain the production release gate](../../items/sp-f1a0629b-0137-4cd3-a7b7-9421ec0dc438.md) | 5 | 33722 |
 | 20 | [[backend-delivery 20/74] Implement data/tenancy, data/auth, data/inbox changes](../../items/sp-823fc8d3-3186-4b22-9c0b-3e360048d9d3.md) | 7 | 55757 |
-| 21 | [[backend-delivery 21/74] Implement data/mail, data/inbox, data/transcription changes](../../items/sp-3f9fb92f-ea6b-468c-8243-1fb711c94aa7.md) | 11 | 59837 |
+| 21 | [[backend-delivery 21/74] Implement data/mail, data/inbox, data/transcription changes](../../items/sp-3f9fb92f-ea6b-468c-8243-1fb711c94aa7.md) | 11 | 59972 |
 | 22 | [[backend-delivery 22/74] Implement application, data/chokePoint, shared/genericOperations changes](../../items/sp-0a8b4be1-3039-4f6d-87b4-e1b673eab967.md) | 7 | 54499 |
 | 23 | [[backend-delivery 23/74] Implement data/inbox, data/chokePoint, application changes](../../items/sp-10dd52f3-6bf6-481a-9f7d-14dece9c5e1e.md) | 9 | 56222 |
 | 24 | [[backend-delivery 24/74] Implement data/chokePoint, data/projects, module-registry changes](../../items/sp-534ed947-bd78-4bb4-aacb-737a414a57d0.md) | 10 | 57689 |
@@ -216,7 +216,7 @@ reported by the ordinary validator; they are not silently repaired by batching.
 | 69 | [[backend-delivery 69/74] Implement data/calendar, queue, data/chokePoint changes](../../items/sp-d2796d07-70a9-4c60-b951-e0062c704e5d.md) | 7 | 54419 |
 | 70 | [[backend-delivery 70/74] Implement data/inbox, data/blobs, data/docs changes](../../items/sp-e1a8e572-15ed-4568-b9be-33e76f66d8af.md) | 9 | 55996 |
 | 71 | [[backend-delivery 71/74] Implement data/inbox, data/transcription, semprec-transcribe changes](../../items/sp-9c059097-487d-4e51-950d-2ea975f0ed08.md) | 7 | 55908 |
-| 72 | [[backend-delivery 72/74] Implement data/calendar, data/inbox, data/docs changes](../../items/sp-3ccbdb63-4e68-4015-aa44-4dff162d1e91.md) | 9 | 57611 |
+| 72 | [[backend-delivery 72/74] Implement data/calendar, data/inbox, data/docs changes](../../items/sp-3ccbdb63-4e68-4015-aa44-4dff162d1e91.md) | 9 | 58514 |
 | 73 | [[backend-delivery 73/74] Implement data/inbox, data/mcp, queue changes](../../items/sp-56893bf7-2d28-48ba-bc63-2129e44d82bd.md) | 9 | 57226 |
 | 74 | [[backend-delivery 74/74] Implement data/inbox, data/mcp, data/recipes changes](../../items/sp-c4a4aa37-b11e-47da-8b15-4931b712b71d.md) | 9 | 52239 |
 

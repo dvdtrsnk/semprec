@@ -2043,8 +2043,8 @@
       "sequence": 21,
       "status": "proposed",
       "title": "[backend-delivery 21/74] Implement data/mail, data/inbox, data/transcription changes",
-      "bodyCharacters": 59837,
-      "specSha256": "63b66694bab6399562d71ae36152cdcd26658cfdd8a7cefe22bd523955b258b3",
+      "bodyCharacters": 59972,
+      "specSha256": "34d66597b5bf15c3708e669dc75cf0cac22ccfc9c60b7140fecbe6690fef275d",
       "members": [
         {
           "id": "gh-1454",
@@ -2124,7 +2124,7 @@
         },
         {
           "id": "gh-1648",
-          "specSha256": "856fff49029e7e75fda27688a23d7f2a8b7a813d4859673759eed60028e6e9b1",
+          "specSha256": "c54be1ad223cbb122c4d1096b0959e5b28e226956d9f31804d4cc882aaa269e0",
           "parent": "gh-1312",
           "dependencies": [
             "gh-1451",
@@ -6933,8 +6933,8 @@
       "sequence": 72,
       "status": "proposed",
       "title": "[backend-delivery 72/74] Implement data/calendar, data/inbox, data/docs changes",
-      "bodyCharacters": 57611,
-      "specSha256": "00d49d674e8a8d4d4d9171bb1e4cd2ea338250952c0a9be9cad555b0b2ce2a1b",
+      "bodyCharacters": 58514,
+      "specSha256": "2301ebf7b71810b8ac396a2eabf3498b419626c487c0b6a12d3195b5608d50f3",
       "members": [
         {
           "id": "gh-1962",
@@ -7016,10 +7016,11 @@
         },
         {
           "id": "gh-1981",
-          "specSha256": "de3d489a7267746b3805a29bcf1f75ded31cadde16d64564eebb3646d602c931",
+          "specSha256": "8cd13dba26bc25fdf70896cd5d880eecb225ed614f5c16c5c373781050804ef7",
           "parent": "gh-1331",
           "dependencies": [
-            "gh-1975"
+            "gh-1975",
+            "gh-1648"
           ],
           "approval": "approved"
         }
