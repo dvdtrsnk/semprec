@@ -1789,8 +1789,8 @@
       "sequence": 18,
       "status": "proposed",
       "title": "[backend-delivery 18/74] Implement data/mail, data/observability, data/docs changes",
-      "bodyCharacters": 53226,
-      "specSha256": "ebd99f19a6f154885d97a3ff6059f487436d19ddb315ab2f396524bc2050a01c",
+      "bodyCharacters": 56935,
+      "specSha256": "dbeb1bb11493aaea28e23cda3829664a9f8fa8cf8f770962b1719055c9f0aa26",
       "members": [
         {
           "id": "gh-1658",
@@ -1805,7 +1805,7 @@
         },
         {
           "id": "gh-1503",
-          "specSha256": "81603d9eeb7f78d79c047c17caa7df183f3815eaf4c870bc2a2925e3967e0dfd",
+          "specSha256": "d214a2fc0f0ac026646f8002ed90b1e1f88083ed2f9013241d3dd2c37871ce9c",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1497"
@@ -1824,7 +1824,7 @@
         },
         {
           "id": "gh-1746",
-          "specSha256": "41f688ca7001a4bee602dacbe65ed46b9d57f93e7b9b6f8f19cd8919553a0ed8",
+          "specSha256": "4f8453fbb5b60c6e7a42585e8b74d163b197436af54f98001e60712ba2041d9c",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1510"
@@ -1842,7 +1842,7 @@
         },
         {
           "id": "gh-1550",
-          "specSha256": "10631ca44adb71c58db84b0107c6e7d391635aa4f6ed2da0386a41bea25d140b",
+          "specSha256": "30906591c809cb4bfabcd18939059092514f377fc88117921cef6c3253e6acc6",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1510"
