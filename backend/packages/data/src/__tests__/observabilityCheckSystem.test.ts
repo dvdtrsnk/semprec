@@ -22,6 +22,8 @@ import { mailSyncProcessName, upsertProcessHeartbeat } from "../health/processHe
 import { ensureMailAccountSyncState, recordSyncError } from "../mail/mailAccountSyncStateStore.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { handleSyncMailAccountTask } from "../mail/mailSyncJob.js";
+import { MailReauthorizationRequiredError } from "../mail/providerTypes.js";
+import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { mailProblemKey } from "../semp/sourceProblemKeys.js";
 import { handleObservabilityCheckSystemTask } from "../observability/observabilityCheckSystem.js";
@@ -591,6 +593,47 @@ describe("observability.checkSystem (issue #169)", () => {
 
       expect(await mailProblems(mailboxItemId)).toMatchObject([
         { severity: "warning", occurrence_count: 2, resolved_at: null },
+      ]);
+    });
+
+    it("escalates the existing stall problem when a real sync pass requires reauthorization", async () => {
+      await createTestUser();
+      const mailboxItemId = await createActiveMailbox();
+      const moduleIds = await runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, (client) => resolveMailModuleIds(client)),
+      );
+      await runInTenant(getTenantZeroId(), async () => {
+        await expect(
+          handleSyncMailAccountTask(pool, { mailboxItemId }, {}, moduleIds, unusedStorage, {
+            job: { id: "sync-before-reauthorization" },
+          }),
+        ).rejects.toThrow("has no stored credential");
+      });
+      await runCheck();
+      expect(await mailProblems(mailboxItemId)).toMatchObject([
+        { severity: "warning", occurrence_count: 2, resolved_at: null },
+      ]);
+      await runInTenant(getTenantZeroId(), async () => {
+        await withTransaction(pool, (client) =>
+          storeCredential(client, { itemId: mailboxItemId, credentialType: "app_password", plaintext: "fixture" }),
+        );
+        await expect(
+          handleSyncMailAccountTask(
+            pool,
+            { mailboxItemId },
+            {
+              createImapClient: async () => {
+                throw new MailReauthorizationRequiredError();
+              },
+            },
+            moduleIds,
+            unusedStorage,
+            { job: { id: "sync-reauthorization" } },
+          ),
+        ).rejects.toBeInstanceOf(MailReauthorizationRequiredError);
+      });
+      expect(await mailProblems(mailboxItemId)).toMatchObject([
+        { severity: "critical", occurrence_count: 3, resolved_at: null },
       ]);
     });
 
