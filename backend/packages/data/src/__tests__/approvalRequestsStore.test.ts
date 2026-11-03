@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { RISK_CLASSES } from "@semprec/shared";
+import { RISK_CLASSES, runInTenant } from "@semprec/shared";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import {
   createTenantZeroUser,
+  createRuntimeRolePool,
   createTestTenant,
+  getTenantZeroId,
   getTestPool,
   resetDatabase,
   withTenantTransaction,
@@ -15,6 +17,7 @@ import { createUser as createRawUser } from "../auth/usersStore.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
+import { withTransaction } from "../db/pool.js";
 import {
   type ApprovalDescription,
   createPendingApprovalRequest,
@@ -168,6 +171,115 @@ describe("approvalRequestsStore toolCallId (issue #1618)", () => {
       run.id,
     ]);
     expect(rows[0].n).toBe(1);
+  });
+
+  it("deduplicates overlapping requests under the tenant runtime role", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const input = {
+      agentRunId: run.id,
+      toolName: "search_web",
+      riskClass: "unclassified" as const,
+      payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      toolCallId: "overlap",
+    };
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reportHolder = (_pid: number) => {};
+    let reportContender = (_pid: number) => {};
+    const holderReady = new Promise<number>((resolve) => {
+      reportHolder = resolve;
+    });
+    const contenderReady = new Promise<number>((resolve) => {
+      reportContender = resolve;
+    });
+    const bounded = async <T>(promise: Promise<T>): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("Approval overlap coordination timed out")), 3000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const holder = runInTenant(getTenantZeroId(), () =>
+      withTransaction(runtime, async (client) => {
+        await client.query("SET LOCAL statement_timeout = '5s'");
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+        if (pid === undefined) throw new Error("Missing holder PID");
+        const result = await createPendingApprovalRequest(client, input);
+        reportHolder(pid);
+        await gate;
+        return result;
+      }),
+    ).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    let contender:
+      Promise<{ value: Awaited<ReturnType<typeof createPendingApprovalRequest>> } | { error: unknown }> | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      const first = await bounded(
+        Promise.race([holderReady.then((pid) => ({ pid })), holder.then((outcome) => ({ outcome }))]),
+      );
+      if ("outcome" in first) throw new Error("Holder settled before overlap", { cause: first.outcome });
+      contender = runInTenant(getTenantZeroId(), () =>
+        withTransaction(runtime, async (client) => {
+          await client.query("SET LOCAL statement_timeout = '5s'");
+          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          if (pid === undefined) throw new Error("Missing contender PID");
+          reportContender(pid);
+          return createPendingApprovalRequest(client, input);
+        }),
+      ).then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      const second = await bounded(
+        Promise.race([contenderReady.then((pid) => ({ pid })), contender.then((outcome) => ({ outcome }))]),
+      );
+      if ("outcome" in second) throw new Error("Contender settled before overlap", { cause: second.outcome });
+      let blocked = false;
+      const deadline = Date.now() + 2500;
+      while (!blocked && Date.now() < deadline) {
+        const observed = await pool.query<{ blocked: boolean }>(
+          "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+          [first.pid, second.pid],
+        );
+        blocked = observed.rows[0]?.blocked === true;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(blocked).toBe(true);
+    } catch (error) {
+      failure = { error };
+    }
+    release();
+    const outcomes = await Promise.all([holder, ...(contender ? [contender] : [])]);
+    const errors: unknown[] = outcomes.flatMap((outcome) => ("error" in outcome ? [outcome.error] : []));
+    try {
+      await runtime.end();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length)
+      throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Approval overlap failed");
+    if (failure) throw failure.error;
+    const [first, second] = outcomes;
+    if (!first || !second || !("value" in first) || !("value" in second)) throw new Error("Missing overlap results");
+    expect(second.value.id).toBe(first.value.id);
+    const { rows } = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM approval_requests WHERE agent_run_id = $1 AND tool_call_id = $2",
+      [run.id, input.toolCallId],
+    );
+    expect(rows[0]?.count).toBe("1");
   });
 
   it("creates separate requests for the same tool call id in different runs or different ids in one run", async () => {
@@ -359,6 +471,118 @@ describe("approvalRequestsStore thread activity (issue #1728)", () => {
     } finally {
       client.release();
     }
+    expect(await activity(threadId)).toBe(future.getTime());
+  });
+
+  it("preserves later committed activity when an older request waits on the thread row", async () => {
+    const threadId = await insertThread();
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "t", userId: ownerId, threadId });
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let startRequest = () => {};
+    let finishUpdate = () => {};
+    let reportOld = (_pid: number) => {};
+    let reportNew = (_pid: number) => {};
+    const requestGate = new Promise<void>((resolve) => {
+      startRequest = resolve;
+    });
+    const updateGate = new Promise<void>((resolve) => {
+      finishUpdate = resolve;
+    });
+    const oldReady = new Promise<number>((resolve) => {
+      reportOld = resolve;
+    });
+    const newReady = new Promise<number>((resolve) => {
+      reportNew = resolve;
+    });
+    const bounded = async <T>(promise: Promise<T>): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("Activity overlap coordination timed out")), 3000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const future = new Date(Date.now() + 3_600_000);
+    const old = runInTenant(getTenantZeroId(), () =>
+      withTransaction(runtime, async (client) => {
+        await client.query("SET LOCAL statement_timeout = '5s'");
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid, now()")).rows[0]?.pid;
+        if (pid === undefined) throw new Error("Missing request PID");
+        reportOld(pid);
+        await requestGate;
+        return createPendingApprovalRequest(client, {
+          agentRunId: run.id,
+          toolName: "tool",
+          riskClass: "unclassified",
+          payload: mcpPayload(),
+          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+        });
+      }),
+    ).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    let newer: Promise<{ value: void } | { error: unknown }> | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      const first = await bounded(
+        Promise.race([oldReady.then((pid) => ({ pid })), old.then((outcome) => ({ outcome }))]),
+      );
+      if ("outcome" in first) throw new Error("Request ended before overlap", { cause: first.outcome });
+      newer = runInTenant(getTenantZeroId(), () =>
+        withTransaction(runtime, async (client) => {
+          await client.query("SET LOCAL statement_timeout = '5s'");
+          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+          if (pid === undefined) throw new Error("Missing update PID");
+          const updated = await client.query("UPDATE semp_threads SET last_activity_at = $2 WHERE id = $1", [
+            threadId,
+            future,
+          ]);
+          expect(updated.rowCount).toBe(1);
+          reportNew(pid);
+          await updateGate;
+        }),
+      ).then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      const second = await bounded(
+        Promise.race([newReady.then((pid) => ({ pid })), newer.then((outcome) => ({ outcome }))]),
+      );
+      if ("outcome" in second) throw new Error("Update ended before overlap", { cause: second.outcome });
+      startRequest();
+      let blocked = false;
+      const deadline = Date.now() + 2500;
+      while (!blocked && Date.now() < deadline) {
+        const observed = await pool.query<{ blocked: boolean }>(
+          "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+          [second.pid, first.pid],
+        );
+        blocked = observed.rows[0]?.blocked === true;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(blocked).toBe(true);
+    } catch (error) {
+      failure = { error };
+    }
+    startRequest();
+    finishUpdate();
+    const outcomes = await Promise.all([old, ...(newer ? [newer] : [])]);
+    const errors: unknown[] = outcomes.flatMap((outcome) => ("error" in outcome ? [outcome.error] : []));
+    try {
+      await runtime.end();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length)
+      throw new AggregateError(failure ? [failure.error, ...errors] : errors, "Activity overlap failed");
+    if (failure) throw failure.error;
+    expect(outcomes).toHaveLength(2);
     expect(await activity(threadId)).toBe(future.getTime());
   });
 });

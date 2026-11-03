@@ -628,10 +628,11 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
       faux.setResponses([
         fauxAssistantMessage(
           [
-            fauxToolCall(`mcp_search_web_${itemId.replace(/-/g, "").slice(0, 8)}`, {
-              query: "test",
-              semprecReason: rawReason,
-            }),
+            fauxToolCall(
+              `mcp_search_web_${itemId.replace(/-/g, "").slice(0, 8)}`,
+              { query: "test", semprecReason: rawReason },
+              { id: "mcp-call-1" },
+            ),
           ],
           { stopReason: "toolUse" },
         ),
@@ -645,6 +646,11 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
       expect(rows).toHaveLength(1);
       const request = await getApprovalRequest(pool, rows[0]!.id);
       expect(request?.reason).toBe(String(rawReason));
+      expect(request?.toolCallId).toBe("mcp-call-1");
+      expect((await runEvents(run.id)).find((event) => event.kind === "tool_result")?.payload).toMatchObject({
+        toolCallId: "mcp-call-1",
+        result: { details: { approvalRequestId: rows[0]!.id } },
+      });
       expect(request?.payload).toMatchObject({ args: { query: "test" } });
       expect(JSON.stringify(request?.payload)).not.toContain("semprecReason");
       expect(server.getHandshakeCount()).toBe(0);
@@ -738,9 +744,53 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     expect(rows).toHaveLength(1);
     const request = await getApprovalRequest(pool, rows[0]!.id);
     expect(request?.reason).toBe("reason-sentinel");
+    expect(request?.toolCallId).toBe("call-1");
+    expect((await runEvents(run.id)).find((event) => event.kind === "tool_result")?.payload).toMatchObject({
+      toolCallId: "call-1",
+      result: { details: { approvalRequestId: rows[0]!.id } },
+    });
     expect(request?.payload).toMatchObject({ canonicalInput: { itemId: item.id } });
     expect(JSON.stringify(request?.payload)).not.toContain("reason-sentinel");
     expect(JSON.stringify(request?.resourceSnapshot)).not.toContain("reason-sentinel");
+  });
+
+  it("persists the composed item.patch tool result with transactional previous and new values", async () => {
+    const projectItemId = await seededSemprecProjectItemId();
+    const chokePoint = createChokePoint(pool);
+    const database = await chokePoint.createDatabase({ name: "Patch event" });
+    await chokePoint.createProperty({ databaseId: database.id, key: "due", name: "Due", type: "text" });
+    const item = await inTenantZero(() =>
+      chokePoint.createItem({
+        databaseId: database.id,
+        properties: { due: "2026-10-21T14:00" },
+      }),
+    );
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "test" });
+    faux.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxToolCall(
+            "item_patch",
+            {
+              itemId: item.id,
+              properties: { due: "2026-10-22T09:00" },
+              ifVersion: item.updatedAt,
+            },
+            { id: "patch-call-1" },
+          ),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("done"),
+    ]);
+    const task = createAgentRunTask(pool, registry, fauxGateway, createInFlightAgentRuns());
+    await runInTenant(getTenantZeroId(), () => task({ agentRunId: run.id }, { job: { id: "1" } }));
+    expect((await runEvents(run.id)).find((event) => event.kind === "tool_result")?.payload).toMatchObject({
+      toolCallId: "patch-call-1",
+      result: {
+        details: { error: false, changes: [{ key: "due", before: "2026-10-21T14:00", after: "2026-10-22T09:00" }] },
+      },
+    });
   });
 
   it("keeps a reason out of logs when approval insertion fails", async () => {

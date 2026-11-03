@@ -19,6 +19,127 @@ import { withTransaction } from "../db/pool.js";
 const EXAMPLES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "db", "migrationExamples");
 const LONG_TITLE = "a title longer than ten characters";
 
+it("upgrades populated approvals and notifications through the batch 15 additive migrations", async () => {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("Missing test database URL");
+  // The generated database identifier contains only a fixed prefix and UUID hex.
+  const name = `batch15_upgrade_${randomUUID().replaceAll("-", "")}`;
+  const admin = new Pool({ connectionString: url });
+  const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch15-upgrade-"));
+  const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+  const files = (await readdir(migrations)).filter((file) => file.endsWith(".sql")).sort();
+  let scratch: Pool | undefined;
+  let created = false;
+  let failure: { error: unknown } | undefined;
+  try {
+    await admin.query(`CREATE DATABASE "${name}"`);
+    created = true;
+    const scratchUrl = new URL(url);
+    scratchUrl.pathname = `/${name}`;
+    scratch = new Pool({ connectionString: scratchUrl.toString() });
+    const db = scratch;
+    async function migrateThrough(last: string): Promise<void> {
+      for (const file of files.filter((entry) => entry <= last)) {
+        await copyFile(path.join(migrations, file), path.join(dir, file));
+      }
+      await runMigrations(db, dir);
+    }
+    const prior = files.find((file) => file.startsWith("0115_"));
+    if (!prior) throw new Error("Missing pre-0116 migration");
+    await migrateThrough(prior);
+    const tenantId = (await db.query<{ id: string }>("SELECT id FROM tenants LIMIT 1")).rows[0]?.id;
+    if (!tenantId) throw new Error("Missing initial tenant");
+    const userId = randomUUID();
+    const runId = randomUUID();
+    const requestId = randomUUID();
+    const notificationId = randomUUID();
+    await withTransaction(db, async (client) => {
+      await client.query("INSERT INTO users (id, tenant_id, email, password_hash) VALUES ($1, $2, $3, 'unused')", [
+        userId,
+        tenantId,
+        `${userId}@example.test`,
+      ]);
+      await client.query(
+        "INSERT INTO agent_runs (id, tenant_id, triggered_by, task) VALUES ($1, $2, 'user', 'legacy')",
+        [runId, tenantId],
+      );
+      await client.query(
+        "INSERT INTO approval_requests (id, tenant_id, agent_run_id, tool_name, risk_class, payload, resource_snapshot, execution_status) VALUES ($1, $2, $3, 'legacy_tool', 'unclassified', '{}'::jsonb, '{\"kind\":\"test\",\"resourceId\":\"legacy\",\"sha256\":null}'::jsonb, 'pending')",
+        [requestId, tenantId, runId],
+      );
+      await client.query(
+        "INSERT INTO notifications (id, tenant_id, user_id, kind, title, source_table, source_id, transition_instance) VALUES ($1, $2, $3, 'approval_pending', 'Legacy', 'legacy', 'old', 'one')",
+        [notificationId, tenantId, userId],
+      );
+    });
+    await migrateThrough("0116_approval_requests_tool_call_id.sql");
+    const afterId = await db.query<{ tool_name: string; tool_call_id: string | null }>(
+      "SELECT tool_name, tool_call_id FROM approval_requests WHERE id = $1",
+      [requestId],
+    );
+    expect(afterId.rows).toEqual([{ tool_name: "legacy_tool", tool_call_id: null }]);
+    await withTransaction(db, async (client) => {
+      await client.query("UPDATE approval_requests SET tool_call_id = 'call' WHERE id = $1", [requestId]);
+      await client.query(
+        "INSERT INTO approval_requests (tenant_id, agent_run_id, tool_name, risk_class, payload) VALUES ($1, $2, 'old_writer', 'unclassified', '{}'::jsonb), ($1, $2, 'old_writer_2', 'unclassified', '{}'::jsonb)",
+        [tenantId, runId],
+      );
+    });
+    await expect(
+      withTransaction(db, (client) =>
+        client.query(
+          "INSERT INTO approval_requests (tenant_id, agent_run_id, tool_name, risk_class, payload, tool_call_id) VALUES ($1, $2, 'duplicate', 'unclassified', '{}'::jsonb, 'call')",
+          [tenantId, runId],
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "23505" });
+    await migrateThrough("0117_approval_requests_description.sql");
+    const description = await db.query<{ description: unknown }>(
+      "SELECT description FROM approval_requests WHERE id = $1",
+      [requestId],
+    );
+    expect(description.rows).toEqual([{ description: null }]);
+    await migrateThrough("0122_notifications_body.sql");
+    const notification = await db.query<{ title: string; body: string | null }>(
+      "SELECT title, body FROM notifications WHERE id = $1",
+      [notificationId],
+    );
+    expect(notification.rows).toEqual([{ title: "Legacy", body: null }]);
+    await withTransaction(db, (client) =>
+      client.query(
+        "INSERT INTO notifications (tenant_id, user_id, kind, title, source_table, source_id, transition_instance) VALUES ($1, $2, 'approval_pending', 'Old writer', 'legacy', 'new', 'one')",
+        [tenantId, userId],
+      ),
+    );
+    expect(
+      (await db.query<{ body: string | null }>("SELECT body FROM notifications WHERE source_id = 'new'")).rows,
+    ).toEqual([{ body: null }]);
+  } catch (error) {
+    failure = { error };
+  }
+  const cleanupErrors: unknown[] = [];
+  for (const cleanup of [
+    async () => scratch?.end(),
+    async () => {
+      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+    },
+    async () => admin.end(),
+    async () => rm(dir, { recursive: true, force: true }),
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (cleanupErrors.length)
+    throw new AggregateError(
+      failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+      "Batch 15 migration test cleanup failed",
+    );
+  if (failure) throw failure.error;
+}, 120_000);
+
 it("upgrades populated item automation through migration 0092 and retains legacy reads and writes", async () => {
   const url = process.env.TEST_DATABASE_URL;
   if (!url) throw new Error("Missing test database URL");
