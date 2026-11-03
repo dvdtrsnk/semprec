@@ -1,3 +1,4 @@
+import { gmailMoveRequest, type GmailMoveResult } from "./mailMoveProviderAdapters.js";
 import { privateSendOperation, readSendBody } from "./mailSendPrivacy.js";
 import { Readable } from "node:stream";
 import { simpleParser } from "mailparser";
@@ -304,6 +305,19 @@ export class GmailRestClient implements GmailMailClient {
     private readonly getAccessToken: () => Promise<string>,
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
+
+  async observeMoveMessage(messageId: string): Promise<GmailMoveResult> {
+    const token = await this.getAccessToken();
+    return gmailMoveRequest(this.fetchImpl, token, messageId);
+  }
+
+  async applyMoveStep(
+    messageId: string,
+    step: "trash" | "untrash" | "add_inbox" | "remove_inbox",
+  ): Promise<GmailMoveResult> {
+    const token = await this.getAccessToken();
+    return gmailMoveRequest(this.fetchImpl, token, messageId, step);
+  }
 
   private async request<T>(path: string): Promise<{ status: number; json: T | null }> {
     const token = await this.getAccessToken();

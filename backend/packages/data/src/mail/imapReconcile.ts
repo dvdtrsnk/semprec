@@ -1,3 +1,4 @@
+import { hasUnsettledMailMove } from "./mailMessageMoveSyncStore.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import type { PoolClient } from "pg";
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
@@ -45,6 +46,17 @@ export interface ImapFolderRef {
 }
 
 export interface ImapMailClient {
+  prepareMove?(
+    path: string,
+    uid: number,
+  ): Promise<{ uidValidity: string; capabilities: Set<string>; found: boolean } | null>;
+  executeMoveStep?(
+    step: "move" | "copy" | "mark_deleted" | "expunge",
+    sourcePath: string,
+    uid: number,
+    uidValidity: string,
+    targetPath: string,
+  ): Promise<import("./mailMoveProviderAdapters.js").SafeImapMoveStepResult>;
   getCapabilities(): Promise<Set<string>>;
   listFolders(): Promise<ImapFolderRef[]>;
   selectFolder(path: string): Promise<ImapFolderSelection>;
@@ -210,7 +222,7 @@ export async function reconcileImapFolder(
       ...item.message,
     });
 
-    if (item.message.gmailLabels) {
+    if (!(await hasUnsettledMailMove(dbClient, result.itemId)) && item.message.gmailLabels) {
       await syncGmailLabelFolders(dbClient, params, relationDefinition.id, result.itemId, item.message.gmailLabels);
     }
   }
@@ -227,7 +239,7 @@ export async function reconcileImapFolder(
     for (const { uid, flags } of changedFlags) {
       if (uid >= sinceUid) continue; // already handled by the new-message loop above
       const emailItemId = await findEmailItemIdByFolderUid(dbClient, relationDefinition.id, params.folderItemId, uid);
-      if (!emailItemId) continue;
+      if (!emailItemId || (await hasUnsettledMailMove(dbClient, emailItemId))) continue;
       await applyObservedMailMessageFlags(dbClient, {
         emailsDatabaseId: params.emailsDatabaseId,
         messageItemId: emailItemId,
@@ -255,7 +267,7 @@ export async function reconcileImapFolder(
 
   for (const uid of vanishedUids) {
     const emailItemId = await findEmailItemIdByFolderUid(dbClient, relationDefinition.id, params.folderItemId, uid);
-    if (emailItemId) {
+    if (emailItemId && !(await hasUnsettledMailMove(dbClient, emailItemId))) {
       await deleteRelationWithClient(
         dbClient,
         {
@@ -364,6 +376,7 @@ export async function reconcileImapAccount(
   });
   const pendingByFlag = new Map<string, typeof pendingWrites>();
   for (const pending of pendingWrites) {
+    if (await hasUnsettledMailMove(dbClient, pending.messageItemId)) continue;
     const key = `${pending.messageItemId}:${pending.propertyKey}`;
     const writes = pendingByFlag.get(key) ?? [];
     writes.push(pending);

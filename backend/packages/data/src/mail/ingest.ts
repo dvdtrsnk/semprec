@@ -1,3 +1,4 @@
+import { hasUnsettledMailMove } from "./mailMessageMoveSyncStore.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import type { PoolClient } from "pg";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
@@ -213,6 +214,8 @@ export async function ingestEmailMessage(
       created = false;
     }
   }
+
+  if (!created && (await hasUnsettledMailMove(client, itemId))) return { itemId, created };
 
   // Provider observations establish current state but deliberately never replace a desired
   // user value already awaiting write-back. A newly created IMAP message gets matching desired

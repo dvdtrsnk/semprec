@@ -1,3 +1,5 @@
+import type { GraphMoveResult } from "./mailMoveProviderAdapters.js";
+import { hasUnsettledMailMove } from "./mailMessageMoveSyncStore.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import type { PoolClient } from "pg";
 import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
@@ -39,6 +41,11 @@ export interface GraphDeltaResult {
 }
 
 export interface GraphMailClient {
+  observeMoveMessage?(messageId: string): Promise<GraphMoveResult>;
+  moveMessage?(
+    messageId: string,
+    destination: "archive" | "deleteditems" | "inbox" | "sentitems",
+  ): Promise<GraphMoveResult>;
   listFolders(): Promise<GraphFolderRef[]>;
   /** `deltaLink: null` = initial/full-resync fetch (mailbox-wide `/me/messages/delta`, not per-folder — see the migration's `graph_delta_link` note). */
   fetchDelta(deltaLink: string | null): Promise<GraphDeltaResult>;
@@ -127,7 +134,7 @@ export async function reconcileGraphAccount(
   for (const change of delta.changes) {
     if (change.removed) {
       const meta = await getMailMessageMetaByProviderMessageId(dbClient, change.id);
-      if (!meta) continue;
+      if (!meta || (await hasUnsettledMailMove(dbClient, meta.itemId))) continue;
       const edges = await listRelationsForItem(dbClient, relationDefinition.id, meta.itemId);
       for (const edge of edges) {
         const folderItemId = otherSide(edge, meta.itemId);
@@ -161,6 +168,7 @@ export async function reconcileGraphAccount(
       ...change.message,
     });
 
+    if (await hasUnsettledMailMove(dbClient, result.itemId)) continue;
     const edges = await listRelationsForItem(dbClient, relationDefinition.id, result.itemId);
     for (const edge of edges) {
       const otherFolderId = otherSide(edge, result.itemId);
@@ -190,6 +198,7 @@ export async function reconcileGraphAccount(
     mailboxFolderRelationDefinitionId: mailboxFolderRelationDefinition.id,
     mailboxItemId: params.mailboxItemId,
   })) {
+    if (await hasUnsettledMailMove(dbClient, pending.messageItemId)) continue;
     if ((await writeback.write(pending)) === "applied")
       await recordConfirmedMailMessageFlag(dbClient, pending.messageItemId, pending.propertyKey, pending.desiredState);
   }

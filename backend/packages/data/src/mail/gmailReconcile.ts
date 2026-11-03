@@ -1,3 +1,5 @@
+import type { GmailMoveResult } from "./mailMoveProviderAdapters.js";
+import { hasUnsettledMailMove } from "./mailMessageMoveSyncStore.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import type { PoolClient } from "pg";
 import { currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
@@ -42,6 +44,8 @@ export interface GmailHistoryResult {
 }
 
 export interface GmailMailClient {
+  observeMoveMessage?(messageId: string): Promise<GmailMoveResult>;
+  applyMoveStep?(messageId: string, step: "trash" | "untrash" | "add_inbox" | "remove_inbox"): Promise<GmailMoveResult>;
   /** Used only when no `historyId` is stored yet (first sync, or right after an invalidation-triggered reset). */
   getCurrentHistoryId(): Promise<string>;
   listHistorySince(startHistoryId: string): Promise<GmailHistoryResult>;
@@ -219,7 +223,7 @@ export async function reconcileGmailAccount(
     }
 
     // Drop any folder edge for a label this message no longer carries.
-    if (itemId) {
+    if (itemId && !(await hasUnsettledMailMove(dbClient, itemId))) {
       const currentEdges = await listRelationsForItem(dbClient, relationDefinition.id, itemId);
       const mappedSet = new Set(mappedFolderIds);
       for (const edge of currentEdges) {
@@ -237,7 +241,7 @@ export async function reconcileGmailAccount(
 
   for (const id of removedIds) {
     const meta = await getMailMessageMetaByProviderMessageId(dbClient, id);
-    if (!meta) continue;
+    if (!meta || (await hasUnsettledMailMove(dbClient, meta.itemId))) continue;
     const currentEdges = await listRelationsForItem(dbClient, relationDefinition.id, meta.itemId);
     for (const edge of currentEdges) {
       const folderItemId = otherSide(edge, meta.itemId);
@@ -261,6 +265,7 @@ export async function reconcileGmailAccount(
     mailboxFolderRelationDefinitionId: mailboxFolderRelationDefinition.id,
     mailboxItemId: params.mailboxItemId,
   })) {
+    if (await hasUnsettledMailMove(dbClient, pending.messageItemId)) continue;
     if ((await writeback.write(pending)) === "applied")
       await recordConfirmedMailMessageFlag(dbClient, pending.messageItemId, pending.propertyKey, pending.desiredState);
   }

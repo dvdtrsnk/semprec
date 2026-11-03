@@ -1,3 +1,4 @@
+import { executeImapMoveStep, type SafeImapMoveStepResult } from "./mailMoveProviderAdapters.js";
 import type { ImapFlow, FetchMessageObject, MessageAddressObject, MessageStructureObject } from "imapflow";
 import { Readable } from "node:stream";
 import type { ImapFetchedMessage, ImapFolderRef, ImapFolderSelection, ImapMailClient } from "./imapReconcile.js";
@@ -157,7 +158,50 @@ export function walkBodyStructure(root: MessageStructureObject): MimeTree {
  * supplies this client after opening a policy-checked connection.
  */
 export class ImapFlowMailClient implements ImapMailClient {
+  private readonly moveObserved: unknown[] = [];
+
   constructor(private readonly client: ImapFlow) {}
+
+  async prepareMove(
+    path: string,
+    uid: number,
+  ): Promise<{ uidValidity: string; capabilities: Set<string>; found: boolean } | null> {
+    if (!Number.isSafeInteger(uid) || uid < 1 || uid > 4_294_967_295) throw new Error("Invalid IMAP source UID");
+    try {
+      const mailbox = await this.client.mailboxOpen(path);
+      const matches = await this.client.search({ uid: String(uid) }, { uid: true });
+      const valid = Array.isArray(matches) && matches.every((value) => value === uid) && matches.length <= 1;
+      if (!valid || matches.length === 0) this.moveObserved.push(matches);
+      return {
+        uidValidity: String(mailbox.uidValidity),
+        capabilities: new Set(this.client.capabilities.keys()),
+        found: valid && matches.length === 1,
+      };
+    } catch (error) {
+      this.moveObserved.push(error);
+      return null;
+    }
+  }
+
+  async executeMoveStep(
+    step: "move" | "copy" | "mark_deleted" | "expunge",
+    sourcePath: string,
+    uid: number,
+    uidValidity: string,
+    targetPath: string,
+  ): Promise<SafeImapMoveStepResult> {
+    try {
+      const result = await executeImapMoveStep(this.client, step, sourcePath, uid, uidValidity, targetPath);
+      if (result.kind === "uncertain") {
+        this.moveObserved.push(result.observed);
+        return { kind: "uncertain" };
+      }
+      return result;
+    } catch (error) {
+      this.moveObserved.push(error);
+      return { kind: "uncertain" };
+    }
+  }
 
   private async providerCall<T>(operation: () => Promise<T>): Promise<T> {
     try {
@@ -643,7 +687,7 @@ export class ImapFlowMailClient implements ImapMailClient {
    */
   async close(): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
-    const observed: unknown[] = [];
+    const observed: unknown[] = this.moveObserved;
     try {
       await Promise.race([
         this.client.logout(),
@@ -666,6 +710,7 @@ export class ImapFlowMailClient implements ImapMailClient {
         imapDiagnostic("close", observed);
       }
     }
+    if (observed.length > 0) imapDiagnostic("operation", observed);
     void observed;
   }
 }

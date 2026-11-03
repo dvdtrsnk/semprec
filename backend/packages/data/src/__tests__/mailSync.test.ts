@@ -27,6 +27,7 @@ import {
 } from "../mail/personLinkingActions.js";
 import { lookupPersonIdByEmail, reindexPersonEmails } from "../mail/personEmailIndexStore.js";
 import { resolveThreadId } from "../mail/threading.js";
+import { recordDesiredMailMessageMove, listPendingMoves } from "../mail/mailMessageMoveSyncStore.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
 import {
   getMailMessageMetaByItemId,
@@ -2351,6 +2352,92 @@ describe("mail sync job error handling (issue #26)", () => {
     chokePoint ??= createChokePoint(pool);
     await resetDatabase(pool);
     await seedSystem(pool);
+  });
+
+  tenantIt("runs the real Gmail move phase outside transactions before reconcile", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const moduleIds = {
+        emailsDatabaseId: await databaseIdFor("emails"),
+        filesDatabaseId: await databaseIdFor("files"),
+        foldersDatabaseId: await databaseIdFor("folders"),
+        mailboxesDatabaseId: await databaseIdFor("mailboxes"),
+      };
+      const fixture = await withTransaction(runtime, async (client) => {
+        const mailbox = await createItemWithClient(client, {
+          databaseId: moduleIds.mailboxesDatabaseId,
+          properties: { name: "Mailbox" },
+        });
+        const message = await createItemWithClient(
+          client,
+          { databaseId: moduleIds.emailsDatabaseId, properties: { name: "Message" } },
+          { allowedSystemKeys: ["name"] },
+        );
+        await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
+        await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "fake" });
+        await upsertMailMessageMeta(client, {
+          itemId: message.id,
+          mailboxItemId: mailbox.id,
+          messageId: "<move-job@example.test>",
+          providerMessageId: "fake-provider-id",
+          envelope: {},
+        });
+        await recordDesiredMailMessageMove(client, {
+          messageItemId: message.id,
+          mailboxItemId: mailbox.id,
+          desiredPurpose: "archive",
+          source: { provider: "gmail", providerMessageId: "fake-provider-id" },
+        });
+        return { mailbox: mailbox.id, message: message.id };
+      });
+      const calls: string[] = [];
+      const assertNoTransaction = async () => {
+        const result = await pool.query<{ pid: number; xact_start: Date | null }>(
+          "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'semprec_data'",
+        );
+        expect(result.rows.length).toBeGreaterThan(0);
+        expect(result.rows.every((row) => row.xact_start === null)).toBe(true);
+      };
+      const gmail: GmailMailClient = {
+        observeMoveMessage: async () => {
+          calls.push("observe");
+          await assertNoTransaction();
+          return { kind: "found", inTrash: false, inInbox: true, inSent: false };
+        },
+        applyMoveStep: async () => {
+          calls.push("move");
+          await assertNoTransaction();
+          const state = await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox));
+          expect(state[0]).toMatchObject({ operation_phase: "in_flight", operation_step: "modify_labels" });
+          return { kind: "acknowledged", inTrash: false, inInbox: false, inSent: false };
+        },
+        getCurrentHistoryId: async () => {
+          calls.push("reconcile");
+          return "1";
+        },
+        listHistorySince: async () => ({
+          invalidated: false,
+          newHistoryId: "1",
+          changedMessageIds: [],
+          removedMessageIds: [],
+        }),
+        listAllMessageIds: async () => [],
+        fetchMessage: async () => null,
+        listLabels: async () => [],
+        modifyMessageLabels: async () => {},
+      };
+      await handleSyncMailAccountTask(
+        runtime,
+        { mailboxItemId: fixture.mailbox },
+        { createGmailClient: () => gmail },
+        moduleIds,
+        noopStorage,
+      );
+      expect(calls).toEqual(["observe", "move", "reconcile"]);
+      expect(await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox))).toEqual([]);
+    } finally {
+      await runtime.end();
+    }
   });
 
   tenantIt(

@@ -1,3 +1,4 @@
+import { graphMoveRequest, type GraphMoveResult } from "./mailMoveProviderAdapters.js";
 import { privateSendOperation, readSendBody, reportSendCleanupFailure } from "./mailSendPrivacy.js";
 import { Readable, Transform } from "node:stream";
 import type { ClassifiedAttachment } from "./attachments.js";
@@ -338,6 +339,19 @@ export class GraphRestClient implements GraphMailClient {
     private readonly getAccessToken: () => Promise<string>,
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
+
+  async observeMoveMessage(messageId: string): Promise<GraphMoveResult> {
+    const token = await this.getAccessToken();
+    return graphMoveRequest(this.fetchImpl, token, messageId);
+  }
+
+  async moveMessage(
+    messageId: string,
+    destination: "archive" | "deleteditems" | "inbox" | "sentitems",
+  ): Promise<GraphMoveResult> {
+    const token = await this.getAccessToken();
+    return graphMoveRequest(this.fetchImpl, token, messageId, destination);
+  }
 
   private request<T>(url: string): Promise<T>;
   private request<T>(url: string, tolerated: 404 | 410): Promise<T | null>;

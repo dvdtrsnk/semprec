@@ -631,3 +631,8 @@ export { filterRecognitionCandidates, RECOGNITION_TARGETS } from "./inbox/inboxR
 export { createMailContactsRouteHandler } from "./mail/mailContactsRoute.js";
 
 export { getSelfPersonId, setSelfPersonId } from "./selfPerson.js";
+export {
+  recordDesiredMailMessageMove,
+  type MailMovePurpose,
+  type MailMoveSource,
+} from "./mail/mailMessageMoveSyncStore.js";
