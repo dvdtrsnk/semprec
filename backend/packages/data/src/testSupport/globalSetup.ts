@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,6 +18,8 @@ import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { activateCzechHunspellSearch } from "../mail/czechHunspellSearch.js";
 import { preserveFailingExitCode } from "./preserveFailingExitCode.js";
 import { sweepStalePostgresDirs } from "./stalePostgresDirs.js";
+import { ModuleRegistry } from "@semprec/module-registry";
+import { BLOCK_TYPES } from "@semprec/block-model";
 
 /**
  * A fixed port made any second test run on the same machine fail in a way that reads like a
@@ -54,6 +57,22 @@ async function choosePort(): Promise<number> {
 /** vitest globalSetup: one embedded Postgres instance for the whole test run. */
 export default async function setup(): Promise<() => Promise<void>> {
   preserveFailingExitCode();
+  const sharedPath = fileURLToPath(new URL("../../../shared/src/index.ts", import.meta.url));
+  const queuePath = fileURLToPath(new URL("../../../queue/src/index.ts", import.meta.url));
+  const registryPath = fileURLToPath(new URL("../../../module-registry/src/index.ts", import.meta.url));
+  const blockPath = fileURLToPath(new URL("../../../../../shared/block-model/src/index.ts", import.meta.url));
+  const sourceRunAsSystem: unknown = (await import(sharedPath)).runAsSystem;
+  const sourceEnsureQueueSchema: unknown = (await import(queuePath)).ensureQueueSchema;
+  const SourceModuleRegistry: unknown = (await import(registryPath)).ModuleRegistry;
+  const sourceBlockTypes: unknown = (await import(blockPath)).BLOCK_TYPES;
+  if (
+    runAsSystem !== sourceRunAsSystem ||
+    ensureQueueSchema !== sourceEnsureQueueSchema ||
+    ModuleRegistry !== SourceModuleRegistry ||
+    BLOCK_TYPES !== sourceBlockTypes
+  ) {
+    throw new Error("Global setup workspace roots must resolve to source modules");
+  }
 
   const removedStaleDirs = await sweepStalePostgresDirs({ tmpDir: tmpdir() });
   if (removedStaleDirs.length > 0) {
