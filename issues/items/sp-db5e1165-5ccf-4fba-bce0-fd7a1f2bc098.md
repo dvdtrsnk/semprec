@@ -10,10 +10,10 @@ parent: "sp-62331d42-78af-4b93-ae97-d5ccbe3324df"
 assignees: []
 milestone: null
 createdAt: "2026-10-31T17:31:01.915Z"
-updatedAt: "2026-11-03T06:03:31.966Z"
+updatedAt: "2026-11-03T06:29:37.414Z"
 closedAt: null
 source: null
-approval: {"specSha256":"2c958a864e618430ef10c77ee5c3fc80fffb126edae2145a97e32a6fee8bef5d","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: exact test-support production mail metadata fixture","at":"2026-11-03T06:03:31.966Z"}
+approval: {"specSha256":"2a65785f46ee5be794cab51068240444124dadbdbf5887dde8eed418c6ab874a","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: isolated compiled CLI evidence; native packaging remains unresolved","at":"2026-11-03T06:29:37.414Z"}
 resolution: null
 ---
 **Blocked by:** sp-e02ff8c6-d20d-4fde-be2a-e0033cf9ef91
@@ -502,7 +502,7 @@ Load `state-writes`, `db-migrations` and `testing`.
 1. Add a core task name `mailThreadBackfill` to `CORE_TASK_NAMES` and register its handler in `worker.ts`. The handler runs `forEachActiveTenant` and, for each tenant, runs the two passes below.
 2. Pass 1, missing threads: page through `mail_message_meta` rows with `thread_id IS NULL` ordered by `item_id` (keyset, page size 100 to 500, one transaction per page). For each row call `resolveThreadId` with its `message_id`, `in_reply_to`, `references` and the item's subject as hint, and set `thread_id`. The row's own `thread_id` is NULL, so the lookups in `resolveThreadId` (which only consider rows with a thread) never match it; a child processed before its parent gets a new thread that the parent later merges, as in live ingest.
 3. Pass 2, split copies: page through distinct `message_id` values that occur in more than one mailbox and whose rows have more than one distinct `thread_id`; for each, merge all those threads into the lowest `thread_id` with `reassignThread`.
-4. Enqueue the task once at deploy with a fixed `jobKey` (for example `mail-thread-backfill`), `maxAttempts: 3`. The existing invocation is in `db/runMigrationsCli.ts`; verify that real composition and repeated-invocation key safety rather than adding another deploy path. A failing tenant is logged and does not stop the others; after all tenants were tried the job fails with the aggregate error so it is retried.
+4. Enqueue the task once at deploy with a fixed `jobKey` (for example `mail-thread-backfill`), `maxAttempts: 3`. The existing invocation is in `db/runMigrationsCli.ts`; verify its actual compiled-root composition and repeated-invocation key safety using the isolated built-export runtime in `docs/adr/2026-11-03-mail-thread-backfill-cli-evidence-uses-isolated-built-exports.md`, not another enqueue path. Preserve the observed plain native Node module-resolution failure separately: this local fixture is not the unmodified deployment command and does not establish production packaging or deployment executability. A failing tenant is logged and does not stop the others; after all tenants were tried the job fails with the aggregate error so it is retried.
 5. Add tests: sent messages with NULL `thread_id` get the thread of their parent; copies in two mailboxes end in one thread and the emptied `mail_threads` rows are gone; a second run changes nothing; another tenant's rows are never touched.
 
 #### Touches
@@ -514,7 +514,11 @@ Load `state-writes`, `db-migrations` and `testing`.
 - backend/packages/data/src/index.ts (export line)
 - backend/packages/data/src/mail/__tests__/mailThreadBackfill.test.ts (new)
 - backend/packages/data/src/db/runMigrationsCli.ts (only the existing mailThreadBackfill deploy enqueue composition; repair only if the Task requires it)
-- backend/packages/data/src/__tests__/mailThreadBackfillCli.test.ts (new; isolated owned local invocation of the actual migration CLI and real queue enqueue/repeated-key evidence, no remote deploy)
+- backend/packages/data/src/__tests__/mailThreadBackfillCli.test.ts (new; owned compiled CLI invocation with the explicitly isolated built-export resolver, real queue key/maxAttempts/repeat evidence, no remote deploy)
+- backend/packages/data/src/__tests__/fixtures/mailThreadBackfillCliRuntime.mjs (new test-only native child bootstrap for the actual compiled CLI)
+- backend/packages/data/src/__tests__/fixtures/mailThreadBackfillDistResolver.mjs (new closed test-only public-export-to-built-JavaScript resolver)
+- docs/adr/2026-11-03-mail-thread-backfill-cli-evidence-uses-isolated-built-exports.md (new standalone bounded local CLI evidence decision)
+- issues/batches/backend/followups/native-runtime-package-resolution.md (controller-owned unresolved runtime-packaging prerequisite)
 
 #### Scope
 
@@ -526,6 +530,7 @@ Load `state-writes`, `db-migrations` and `testing`.
 
 - Threading new traffic: #1474 and #1384.
 - Row-level security or schema changes; the job only uses existing columns.
+- Production workspace export/packaging, compiler configuration, lockfile or deployment repair. The unresolved prerequisite is tracked in `issues/batches/backend/followups/native-runtime-package-resolution.md`; a fixture result does not clear it.
 - Any change to what a thread is shown as in the thread list: #1567.
 
 #### Acceptance criteria
