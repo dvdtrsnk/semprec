@@ -25,3 +25,7 @@ Use existing production queue composition and bounded owned settlement. Do not c
 ## 4. Review and evidence limits
 
 The owner's two-round automatic review cap remains mandatory for the whole batch. These pre-implementation scope reconciliations do not consume or reset that budget. Development runs are development evidence; final exact-SHA named targets, separate full verify and actual E2E retain their real results. No earlier candidate or batch exception transfers.
+
+## 5. gh-1524 actor locale reaches the actual query
+
+Task 4 requires resolving the acting user locale in `genericApplicationService` and passing it to the query compiler. Direct locale injection into a choke-point query plus a separate locale lookup test does not establish their composition. Authorize only the existing `backend/packages/application/src/__tests__/genericOperationGateway.test.ts` for real actor-to-locale database/view query evidence. Use distinguishable Czech and neutral ordering over persisted items, with real actor identity and production dispatch/service calls, rather than supplying locale directly or mocking its lookup. Keep the named data pagination tests for compiler and cursor cases. This test-path addition changes no Task, AC, public service contract, locale policy or production behavior. Unrelated inherited helpers and optional transport combinations are outside this addition.
