@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -810,3 +811,159 @@ exec "$TEST_NODE" "$@"
     if (failure) throw failure.value;
   }, 120_000);
 });
+
+const dockerCommand = promisify(execFile);
+const controlImage = "sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36";
+
+describe("fixture resource identity", () => {
+  for (const mode of ["network-race", "network-unknown", "container-race", "container-unknown"] as const) {
+    it(`preserves ${mode} until its independent owner cleans it`, async () => {
+      const work = await mkdtemp(join(tmpdir(), "semprec-identity-control-"));
+      const previous = { ...process.env };
+      const docker = (await dockerCommand("which", ["docker"])).stdout.trim();
+      const networkFile = join(work, "network-id");
+      const containerFile = join(work, "container-id");
+      let failure: { value: unknown } | undefined;
+      try {
+        await writeFile(
+          join(work, "docker"),
+          `#!/bin/bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$IDENTITY_TEST_DIR/calls"
+if [[ "$1 $2" == "network create" ]]; then
+  id=$("$REAL_TEST_DOCKER" "$@")
+  printf '%s\n' "$id" > "$IDENTITY_TEST_DIR/network-id"
+  if [[ "$IDENTITY_TEST_MODE" == network-race ]]; then exit 51; fi
+  if [[ "$IDENTITY_TEST_MODE" == network-unknown ]]; then exit 51; fi
+  printf '%s\n' "$id"; exit 0
+fi
+if [[ "$1" == run && "$IDENTITY_TEST_MODE" == container-race ]]; then
+  id=$("$REAL_TEST_DOCKER" create --name "$4" --network none "${controlImage}")
+  printf '%s\n' "$id" > "$IDENTITY_TEST_DIR/container-id"
+  exec "$REAL_TEST_DOCKER" "$@"
+fi
+if [[ "$1" == run && "$IDENTITY_TEST_MODE" == container-unknown ]]; then
+  id=$("$REAL_TEST_DOCKER" "$@")
+  printf '%s\n' "$id" > "$IDENTITY_TEST_DIR/container-id"
+  exit 52
+fi
+exec "$REAL_TEST_DOCKER" "$@"
+`,
+          { mode: 0o700 },
+        );
+        process.env.PATH = `${work}:${previous.PATH ?? ""}`;
+        process.env.TMPDIR = work;
+        process.env.REAL_TEST_DOCKER = docker;
+        process.env.IDENTITY_TEST_DIR = work;
+        process.env.IDENTITY_TEST_MODE = mode;
+        await expect(createBackupRecoveryFixture()).rejects.toThrow("Recovery fixture setup and cleanup failed");
+        const calls = await readFile(join(work, "calls"), "utf8");
+        expect(calls).not.toMatch(/^(?:rm |network rm )/m);
+        const kind = mode.startsWith("network") ? "network" : "container";
+        const id = (await readFile(kind === "network" ? networkFile : containerFile, "utf8")).trim();
+        expect(id).toMatch(/^[a-f0-9]{64}$/);
+        expect((await dockerCommand(docker, [kind, "inspect", "--format", "{{.Id}}", id])).stdout.trim()).toBe(id);
+        console.info(`RECOVERY_IDENTITY ${mode} id=${id} survived=true`);
+      } catch (error) {
+        failure = { value: error };
+      }
+      for (const key of ["PATH", "TMPDIR", "REAL_TEST_DOCKER", "IDENTITY_TEST_DIR", "IDENTITY_TEST_MODE"] as const) {
+        const value = previous[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      const cleanup: unknown[] = [];
+      for (const [path, kind] of [
+        [containerFile, "container"],
+        [networkFile, "network"],
+      ] as const) {
+        try {
+          let id: string;
+          try {
+            id = (await readFile(path, "utf8")).trim();
+          } catch (error) {
+            if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
+            throw error;
+          }
+          if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("Invalid control identity");
+          await dockerCommand(docker, kind === "container" ? ["rm", "--force", id] : ["network", "rm", id]);
+          const list = await dockerCommand(
+            docker,
+            kind === "container"
+              ? ["ps", "-a", "--no-trunc", "--format", "{{.ID}}"]
+              : ["network", "ls", "--no-trunc", "--format", "{{.ID}}"],
+          );
+          if (list.stdout.split("\n").includes(id)) throw new Error("Control object remains");
+          console.info(`RECOVERY_IDENTITY_CLEANUP ${kind} id=${id} absent=true`);
+        } catch (error) {
+          cleanup.push(error);
+        }
+      }
+      if (cleanup.length === 0) await rm(work, { recursive: true, force: true });
+      if (cleanup.length)
+        throw new AggregateError(failure ? [failure.value, ...cleanup] : cleanup, "Identity control cleanup failed");
+      if (failure) throw failure.value;
+    }, 120_000);
+  }
+});
+
+it("preserves real replacement container and network with the fixture's former names", async () => {
+  const owned = await createBackupRecoveryFixture();
+  const networkId = (
+    await dockerCommand("docker", ["network", "inspect", "--format", "{{.Id}}", owned.container])
+  ).stdout.trim();
+  if (!/^[a-f0-9]{64}$/.test(networkId)) throw new Error("Invalid owned network identity");
+  let replacementContainer = "";
+  let replacementNetwork = "";
+  let failure: { value: unknown } | undefined;
+  try {
+    await dockerCommand("docker", ["rm", "--force", owned.containerId]);
+    await dockerCommand("docker", ["network", "rm", networkId]);
+    replacementContainer = (
+      await dockerCommand("docker", ["create", "--name", owned.container, "--network", "none", controlImage])
+    ).stdout.trim();
+    replacementNetwork = (await dockerCommand("docker", ["network", "create", owned.container])).stdout.trim();
+    expect(replacementContainer).toMatch(/^[a-f0-9]{64}$/);
+    expect(replacementNetwork).toMatch(/^[a-f0-9]{64}$/);
+    await owned.close();
+    expect(
+      (
+        await dockerCommand("docker", ["container", "inspect", "--format", "{{.Id}}", replacementContainer])
+      ).stdout.trim(),
+    ).toBe(replacementContainer);
+    expect(
+      (await dockerCommand("docker", ["network", "inspect", "--format", "{{.Id}}", replacementNetwork])).stdout.trim(),
+    ).toBe(replacementNetwork);
+    console.info(`RECOVERY_REPLACEMENT container=${replacementContainer} network=${replacementNetwork} survived=true`);
+  } catch (error) {
+    failure = { value: error };
+  }
+  const cleanup: unknown[] = [];
+  for (const [kind, id] of [
+    ["container", replacementContainer],
+    ["network", replacementNetwork],
+  ] as const) {
+    if (!id) continue;
+    try {
+      if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("Invalid replacement identity");
+      await dockerCommand("docker", kind === "container" ? ["rm", "--force", id] : ["network", "rm", id]);
+      const list = await dockerCommand(
+        "docker",
+        kind === "container"
+          ? ["ps", "-a", "--no-trunc", "--format", "{{.ID}}"]
+          : ["network", "ls", "--no-trunc", "--format", "{{.ID}}"],
+      );
+      if (list.stdout.split("\n").includes(id)) throw new Error("Replacement remains");
+    } catch (error) {
+      cleanup.push(error);
+    }
+  }
+  try {
+    await owned.close();
+  } catch (error) {
+    cleanup.push(error);
+  }
+  if (cleanup.length)
+    throw new AggregateError(failure ? [failure.value, ...cleanup] : cleanup, "Replacement cleanup failed");
+  if (failure) throw failure.value;
+}, 120_000);

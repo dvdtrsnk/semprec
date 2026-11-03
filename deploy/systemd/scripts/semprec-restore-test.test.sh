@@ -49,18 +49,48 @@ printf "docker %s\\n" "$*" >> "$TEST_STATE/commands"
 fail() { [[ -e "$TEST_STATE/fail-$1" ]]; }
 mkdir -p "$TEST_STATE/resources"
 case "$1" in
-  ps) for f in "$TEST_STATE"/resources/container-*; do [[ -e "$f" ]] && printf "%s\n" "${f##*/container-}"; done; : ;;
+  ps)
+    if [[ "$*" == *"{{.ID}}"* ]] && fail replace-container; then
+      for f in "$TEST_STATE"/resources/container-*; do [[ -e "$f" ]] && printf "%064d\n" 4 > "$f"; done
+      rm "$TEST_STATE/fail-replace-container"
+    fi
+    for f in "$TEST_STATE"/resources/container-*; do
+      [[ -e "$f" ]] || continue
+      if [[ "$*" == *"{{.ID}}"* ]]; then cat "$f"; else printf "%s\n" "${f##*/container-}"; fi
+    done ;;
   port) printf "127.0.0.1:15432\n" ;;
-  container) if [[ "$2" == inspect ]]; then if fail unsettled-exec; then printf "[\"held\"]\n"; else echo null; fi; fi ;;
+  container)
+    if [[ "$*" == *"{{.Id}}"* ]]; then printf "%s\n" "${!#}"
+    elif fail unsettled-exec; then printf "[\"held\"]\n"; else echo null; fi ;;
   network)
-    if [[ "$2" == ls ]]; then for f in "$TEST_STATE"/resources/network-*; do [[ -e "$f" ]] && printf "%s\n" "${f##*/network-}"; done; fi
-    if [[ "$2" == create ]]; then touch "$TEST_STATE/resources/network-${!#}"; fi
-    if [[ "$2" == rm ]]; then rm "$TEST_STATE/resources/network-$3"; fi ;;
+    if [[ "$2" == ls ]]; then
+      if [[ "$*" == *"{{.ID}}"* ]] && fail replace-network; then
+        for f in "$TEST_STATE"/resources/network-*; do [[ -e "$f" ]] && printf "%064d\n" 3 > "$f"; done
+        rm "$TEST_STATE/fail-replace-network"
+      fi
+      for f in "$TEST_STATE"/resources/network-*; do
+        [[ -e "$f" ]] || continue
+        if [[ "$*" == *"{{.ID}}"* ]]; then cat "$f"; else printf "%s\n" "${f##*/network-}"; fi
+      done
+    elif [[ "$2" == inspect ]]; then printf "%s\n" "${!#}"
+    elif [[ "$2" == create ]]; then
+      if fail network-race; then printf "%064d\n" 3 > "$TEST_STATE/resources/network-${!#}"; exit 31; fi
+      printf "%064d\n" 2 > "$TEST_STATE/resources/network-${!#}"
+      if fail network-unknown; then exit 31; fi
+      printf "%064d\n" 2
+    elif [[ "$2" == rm ]]; then
+      for f in "$TEST_STATE"/resources/network-*; do [[ -e "$f" && "$(cat "$f")" == "$3" ]] && rm "$f"; done; :
+    fi ;;
   rm)
     if fail docker-rm-once; then rm "$TEST_STATE/fail-docker-rm-once"; exit 31; fi
-    rm "$TEST_STATE/resources/container-${!#}" ;;
+    for f in "$TEST_STATE"/resources/container-*; do [[ -e "$f" && "$(cat "$f")" == "${!#}" ]] && rm "$f"; done; : ;;
   run)
-    if [[ "$2" == --detach ]]; then touch "$TEST_STATE/resources/container-$4"; printf "%064d\n" 1; exit 0; fi
+    if [[ "$2" == --detach ]]; then
+      if fail container-race; then printf "%064d\n" 4 > "$TEST_STATE/resources/container-$4"; exit 32; fi
+      printf "%064d\n" 1 > "$TEST_STATE/resources/container-$4"
+      if fail container-unknown; then exit 32; fi
+      printf "%064d\n" 1; exit 0
+    fi
     exit 32 ;;
   exec)
     arguments=" $* "
@@ -155,7 +185,7 @@ assert_never_touches_production() {
     echo "the restore test addressed a production container or volume" >&2
     exit 1
   fi
-  if grep '^docker run ' "$TEST_STATE/commands" | grep -v -q -- '--network semprec-restore-test-'; then
+  if grep '^docker run ' "$TEST_STATE/commands" | grep -v -q -- '--network 0000000000000000000000000000000000000000000000000000000000000002'; then
     echo "a disposable container ran outside the restore-test network" >&2
     exit 1
   fi
@@ -256,6 +286,30 @@ for flag in key-restore-uncertain unsettled-exec; do
   test -n "$(ls -A "$TEST_STATE/resources")"
   # Only synthetic test artifacts are removed here, after verifying the production script preserved them.
   rm -rf "$TEST_STATE/resources" "$TEST_RESTORE_ROOT"/*
+done
+
+# Create failures after a precheck cannot authorize deletion by the selected name.
+for flag in network-race network-unknown container-race container-unknown; do
+  reset_state
+  touch "$TEST_STATE/fail-$flag"
+  if run_restore_test env; then echo "ambiguous create unexpectedly succeeded" >&2; exit 1; fi
+  ! grep -q '^docker rm ' "$TEST_STATE/commands"
+  ! grep -q '^docker network rm ' "$TEST_STATE/commands"
+  ! grep -q '^passed ' "$TEST_STATE/results"
+  test -n "$(ls -A "$TEST_STATE/resources")"
+  rm -rf "$TEST_STATE/resources" "$TEST_RESTORE_ROOT"/*
+done
+
+# A replacement at the old name is not the object created by the run.
+for kind in container network; do
+  reset_state
+  touch "$TEST_STATE/fail-replace-$kind"
+  run_restore_test env > "$TEST_STATE/stdout"
+  test "$(ls "$TEST_STATE/resources" | wc -l | tr -d " ")" -eq 1
+  if [[ "$kind" == container ]]; then foreign="$(printf "%064d" 4)"; else foreign="$(printf "%064d" 3)"; fi
+  test "$(cat "$TEST_STATE"/resources/*)" = "$foreign"
+  ! grep -E "^docker (rm .*|network rm )$foreign$" "$TEST_STATE/commands"
+  rm -rf "$TEST_STATE/resources"
 done
 
 # Missing configuration is itself a failed run.

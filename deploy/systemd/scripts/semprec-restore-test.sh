@@ -27,8 +27,9 @@ readonly POSTGRES_CONTAINER="$RESOURCE_NAME-postgres"
 # The check that is running (or last ran); a failure is reported under this name.
 CURRENT_CHECK=configuration
 WORK_DIRECTORY=
-NETWORK_CREATED=false
-POSTGRES_CREATED=false
+NETWORK_ATTEMPTED=false
+POSTGRES_ATTEMPTED=false
+NETWORK_ID=
 VERIFIED=false
 POSTGRES_ID=
 RESTORE_DATABASE_URL=
@@ -47,33 +48,40 @@ require_environment() {
   done
 }
 
-# Removes every disposable resource this run created. Each step runs even when an earlier one
-# fails, so one stuck resource cannot leave the others behind; the return status reports
-# whether everything is gone.
+# Removes positively identified resources after their dependent work settles. An uncertain
+# creation or failed cleanup preserves the remaining state for reconciliation.
 destroy_disposable_state() {
-  local exec_ids names
+  local exec_ids ids identity uncertain=false
   if [[ "$OWNER_RUNNING" == true || "$PRESERVE_STATE" == true ]]; then return 1; fi
-  if [[ "$POSTGRES_CREATED" == true ]]; then
-    names="$(docker ps --all --filter "name=^/$POSTGRES_CONTAINER$" --format '{{.Names}}')" || return 1
-    if [[ -n "$names" ]]; then
-      [[ "$names" == "$POSTGRES_CONTAINER" ]] || return 1
-      exec_ids="$(docker container inspect --format '{{json .ExecIDs}}' "$POSTGRES_CONTAINER")" || return 1
+  if [[ "$POSTGRES_ATTEMPTED" == true && -z "$POSTGRES_ID" ]]; then uncertain=true; fi
+  if [[ "$NETWORK_ATTEMPTED" == true && -z "$NETWORK_ID" ]]; then uncertain=true; fi
+  if [[ -n "$POSTGRES_ID" ]]; then
+    ids="$(docker ps --all --no-trunc --format '{{.ID}}')" || return 1
+    if grep -Fxq -- "$POSTGRES_ID" <<< "$ids"; then
+      identity="$(docker container inspect --format '{{.Id}}' "$POSTGRES_ID")" || return 1
+      [[ "$identity" == "$POSTGRES_ID" ]] || return 1
+      exec_ids="$(docker container inspect --format '{{json .ExecIDs}}' "$POSTGRES_ID")" || return 1
       [[ "$exec_ids" == null || "$exec_ids" == '[]' ]] || return 1
-      docker rm --force --volumes "$POSTGRES_CONTAINER" >/dev/null || return 1
-      names="$(docker ps --all --filter "name=^/$POSTGRES_CONTAINER$" --format '{{.Names}}')" || return 1
-      [[ -z "$names" ]] || return 1
+      docker rm --force --volumes "$POSTGRES_ID" >/dev/null || return 1
+      ids="$(docker ps --all --no-trunc --format '{{.ID}}')" || return 1
+      ! grep -Fxq -- "$POSTGRES_ID" <<< "$ids" || return 1
     fi
-    POSTGRES_CREATED=false
+    POSTGRES_ID=
+    POSTGRES_ATTEMPTED=false
   fi
-  if [[ "$NETWORK_CREATED" == true ]]; then
-    names="$(docker network ls --filter "name=^${NETWORK_NAME}$" --format '{{.Name}}')" || return 1
-    if [[ -n "$names" ]]; then
-      [[ "$names" == "$NETWORK_NAME" ]] || return 1
-      docker network rm "$NETWORK_NAME" >/dev/null || return 1
-      names="$(docker network ls --filter "name=^${NETWORK_NAME}$" --format '{{.Name}}')" || return 1
-      [[ -z "$names" ]] || return 1
+  # An unknown container may still be attached to the owned network.
+  if [[ "$uncertain" == true ]]; then return 1; fi
+  if [[ -n "$NETWORK_ID" ]]; then
+    ids="$(docker network ls --no-trunc --format '{{.ID}}')" || return 1
+    if grep -Fxq -- "$NETWORK_ID" <<< "$ids"; then
+      identity="$(docker network inspect --format '{{.Id}}' "$NETWORK_ID")" || return 1
+      [[ "$identity" == "$NETWORK_ID" ]] || return 1
+      docker network rm "$NETWORK_ID" >/dev/null || return 1
+      ids="$(docker network ls --no-trunc --format '{{.ID}}')" || return 1
+      ! grep -Fxq -- "$NETWORK_ID" <<< "$ids" || return 1
     fi
-    NETWORK_CREATED=false
+    NETWORK_ID=
+    NETWORK_ATTEMPTED=false
   fi
   if [[ -n "$WORK_DIRECTORY" ]]; then
     rm -rf -- "$WORK_DIRECTORY" || return 1
@@ -125,7 +133,7 @@ on_exit() {
 }
 
 pg_query() {
-  docker exec "$POSTGRES_CONTAINER" \
+  docker exec "$POSTGRES_ID" \
     psql --username=postgres --dbname="$RESTORE_DATABASE" \
     --no-psqlrc --tuples-only --no-align --field-separator=$'\t' --set=ON_ERROR_STOP=1 --command="$1"
 }
@@ -156,25 +164,32 @@ restore_snapshot() {
 
 start_postgres() {
   CURRENT_CHECK=postgresStart
-  local names password env_file mapping port
+  local names password env_file mapping port candidate identity
   names="$(docker ps --all --filter "name=^/$POSTGRES_CONTAINER$" --format '{{.Names}}')" || fail_check "container lookup failed"
   [[ -z "$names" ]] || fail_check "restore container identity already exists"
   names="$(docker network ls --filter "name=^${NETWORK_NAME}$" --format '{{.Name}}')" || fail_check "network lookup failed"
   [[ -z "$names" ]] || fail_check "restore network identity already exists"
-  NETWORK_CREATED=true
-  docker network create --driver bridge --opt com.docker.network.bridge.enable_ip_masquerade=false "$NETWORK_NAME" >/dev/null
+  NETWORK_ATTEMPTED=true
+  candidate="$(docker network create --driver bridge --opt com.docker.network.bridge.enable_ip_masquerade=false "$NETWORK_NAME")"
+  [[ "$candidate" =~ ^[a-f0-9]{64}$ ]] || fail_check "invalid restore network identity"
+  identity="$(docker network inspect --format '{{.Id}}' "$candidate")" || fail_check "restore network identity unavailable"
+  [[ "$identity" == "$candidate" ]] || fail_check "restore network identity mismatch"
+  NETWORK_ID="$candidate"
   password="$(openssl rand -hex 32)"
   [[ "$password" =~ ^[a-f0-9]{64}$ ]] || fail_check "could not generate restore password"
   env_file="$WORK_DIRECTORY/postgres.env"
   ( umask 077; printf 'POSTGRES_PASSWORD=%s\nPOSTGRES_DB=%s\n' "$password" "$RESTORE_DATABASE" > "$env_file" )
-  POSTGRES_CREATED=true
-  POSTGRES_ID="$(docker run --detach --name "$POSTGRES_CONTAINER" --network "$NETWORK_NAME" \
+  POSTGRES_ATTEMPTED=true
+  candidate="$(docker run --detach --name "$POSTGRES_CONTAINER" --network "$NETWORK_ID" \
     --publish 127.0.0.1::5432 --env-file "$env_file" \
     "$POSTGRES_IMAGE" postgres -c max_locks_per_transaction=2048)"
-  [[ "$POSTGRES_ID" =~ ^[a-f0-9]{64}$ ]] || fail_check "invalid restore container identity"
-  wait_until_ready docker exec "$POSTGRES_CONTAINER" pg_isready --host=127.0.0.1 --username=postgres \
+  [[ "$candidate" =~ ^[a-f0-9]{64}$ ]] || fail_check "invalid restore container identity"
+  identity="$(docker container inspect --format '{{.Id}}' "$candidate")" || fail_check "restore container identity unavailable"
+  [[ "$identity" == "$candidate" ]] || fail_check "restore container identity mismatch"
+  POSTGRES_ID="$candidate"
+  wait_until_ready docker exec "$POSTGRES_ID" pg_isready --host=127.0.0.1 --username=postgres \
     --dbname="$RESTORE_DATABASE" || fail_check "disposable PostgreSQL did not become ready"
-  mapping="$(docker port "$POSTGRES_CONTAINER" 5432/tcp)" || fail_check "restore port mapping is unavailable"
+  mapping="$(docker port "$POSTGRES_ID" 5432/tcp)" || fail_check "restore port mapping is unavailable"
   [[ "$mapping" =~ ^127\.0\.0\.1:([0-9]{1,5})$ ]] || fail_check "restore port mapping is not loopback"
   port="${BASH_REMATCH[1]}"
   (( 10#$port > 0 && 10#$port <= 65535 )) || fail_check "restore port is invalid"
@@ -184,7 +199,7 @@ start_postgres() {
 restore_postgres() {
   CURRENT_CHECK=pgRestore
   # Ownership and grants name production roles the disposable server does not have.
-  docker exec --interactive "$POSTGRES_CONTAINER" \
+  docker exec --interactive "$POSTGRES_ID" \
     pg_restore --username=postgres --dbname="$RESTORE_DATABASE" \
     --exit-on-error --no-owner --no-privileges < "$WORK_DIRECTORY/$RESTORED_DUMP_PATH"
 }

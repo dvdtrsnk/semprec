@@ -58,60 +58,69 @@ export async function createBackupRecoveryFixture(): Promise<BackupRecoveryFixtu
   const envFile = join(directory, "postgres.env");
   let networkAttempted = false;
   let containerAttempted = false;
+  let networkId: string | undefined;
+  let containerId: string | undefined;
   let closed = false;
   let ready = false;
   const close = async (): Promise<void> => {
     if (closed) return;
+    const ownedContainer = containerId;
+    const ownedNetwork = networkId;
     const failures: unknown[] = [];
-    if (containerAttempted) {
-      if (ready) {
-        const remaining = await command([
-          "exec",
-          "--interactive",
-          container,
-          "psql",
-          "--username=postgres",
-          "--dbname=postgres",
-          "--no-psqlrc",
-          "--tuples-only",
-          "--no-align",
-          "--set=ON_ERROR_STOP=1",
-          "--command=SELECT count(*) FROM pg_database WHERE left(datname,16) = 'semprec_restore_'",
-        ]);
-        if (remaining.toString("utf8").trim() !== "0") throw new Error("Fixture staging database remains present");
+    const ids = async (kind: "container" | "network"): Promise<string[]> => {
+      const args =
+        kind === "container"
+          ? ["ps", "--all", "--no-trunc", "--format", "{{.ID}}"]
+          : ["network", "ls", "--no-trunc", "--format", "{{.ID}}"];
+      return (await command(args)).toString("utf8").trim().split("\n").filter(Boolean);
+    };
+    const unknown = (containerAttempted && !containerId) || (networkAttempted && !networkId);
+    if (containerId) {
+      if ((await ids("container")).includes(containerId)) {
+        if (ready) {
+          const remaining = await command([
+            "exec",
+            "--interactive",
+            containerId,
+            "psql",
+            "--username=postgres",
+            "--dbname=postgres",
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--set=ON_ERROR_STOP=1",
+            "--command=SELECT count(*) FROM pg_database WHERE left(datname,16) = 'semprec_restore_'",
+          ]);
+          if (remaining.toString("utf8").trim() !== "0") throw new Error("Fixture staging database remains present");
+        }
+        const identity = (await command(["container", "inspect", "--format", "{{.Id}}", containerId]))
+          .toString("utf8")
+          .trim();
+        if (identity !== containerId) throw new Error("Fixture container identity mismatch");
+        const result = await command(["container", "inspect", "--format", "{{json .ExecIDs}}", containerId]);
+        const execIds = z
+          .array(z.string().regex(/^[a-f0-9]{64}$/))
+          .nullable()
+          .parse(JSON.parse(result.toString("utf8")));
+        if (execIds !== null && execIds.length !== 0) throw new Error("Fixture container has unsettled execs");
+        await command(["rm", "--force", "--volumes", containerId]);
+        if ((await ids("container")).includes(containerId)) throw new Error("Fixture container remains present");
       }
-      try {
-        const result = await command(["container", "inspect", "--format", "{{json .ExecIDs}}", container]);
-        const ids: unknown = JSON.parse(result.toString("utf8"));
-        if (ids !== null && (!Array.isArray(ids) || ids.length !== 0))
-          throw new Error("Fixture container has unsettled execs");
-      } catch (error) {
-        throw new Error("Fixture exec settlement is unknown", { cause: error });
-      }
-      try {
-        await command(["rm", "--force", "--volumes", container]);
-      } catch (error) {
-        failures.push(error);
-      }
-      try {
-        const names = (await command(["ps", "--all", "--format", "{{.Names}}"])).toString("utf8").split("\n");
-        if (names.includes(container)) failures.push(new Error("Fixture container remains present"));
-      } catch (error) {
-        failures.push(error);
-      }
+      containerAttempted = false;
+      containerId = undefined;
     }
-    if (networkAttempted) {
-      try {
-        await command(["network", "rm", network]);
-      } catch (error) {
-        failures.push(error);
+    if (unknown) throw new Error("Fixture creation outcome is uncertain");
+    if (networkId) {
+      if ((await ids("network")).includes(networkId)) {
+        const identity = (await command(["network", "inspect", "--format", "{{.Id}}", networkId]))
+          .toString("utf8")
+          .trim();
+        if (identity !== networkId) throw new Error("Fixture network identity mismatch");
+        await command(["network", "rm", networkId]);
+        if ((await ids("network")).includes(networkId)) throw new Error("Fixture network remains present");
       }
-      try {
-        const names = (await command(["network", "ls", "--format", "{{.Name}}"])).toString("utf8").split("\n");
-        if (names.includes(network)) failures.push(new Error("Fixture network remains present"));
-      } catch (error) {
-        failures.push(error);
-      }
+      networkAttempted = false;
+      networkId = undefined;
     }
     try {
       await rm(directory, { recursive: true, force: true });
@@ -119,7 +128,7 @@ export async function createBackupRecoveryFixture(): Promise<BackupRecoveryFixtu
       failures.push(error);
     }
     if (failures.length > 0) throw new AggregateError(failures, "Recovery fixture cleanup failed");
-    console.info(`RECOVERY_FIXTURE_CLEANUP container=${container} network=${network} absent=true`);
+    console.info(`RECOVERY_FIXTURE_CLEANUP containerId=${ownedContainer} networkId=${ownedNetwork} absent=true`);
     closed = true;
   };
   try {
@@ -129,24 +138,34 @@ export async function createBackupRecoveryFixture(): Promise<BackupRecoveryFixtu
     if (containerNames.includes(container) || networkNames.includes(network))
       throw new Error("Recovery fixture name is unavailable");
     networkAttempted = true;
-    await command([
-      "network",
-      "create",
-      "--driver",
-      "bridge",
-      "--opt",
-      "com.docker.network.bridge.enable_ip_masquerade=false",
-      network,
-    ]);
+    const networkCandidate = (
+      await command([
+        "network",
+        "create",
+        "--driver",
+        "bridge",
+        "--opt",
+        "com.docker.network.bridge.enable_ip_masquerade=false",
+        network,
+      ])
+    )
+      .toString("utf8")
+      .trim();
+    if (!/^[a-f0-9]{64}$/.test(networkCandidate)) throw new Error("Invalid recovery network identity");
+    const networkIdentity = (await command(["network", "inspect", "--format", "{{.Id}}", networkCandidate]))
+      .toString("utf8")
+      .trim();
+    if (networkIdentity !== networkCandidate) throw new Error("Recovery network identity mismatch");
+    networkId = networkCandidate;
     containerAttempted = true;
-    const containerId = (
+    const containerCandidate = (
       await command([
         "run",
         "--detach",
         "--name",
         container,
         "--network",
-        network,
+        networkId,
         "--publish",
         "127.0.0.1::5432",
         "--env-file",
@@ -159,11 +178,16 @@ export async function createBackupRecoveryFixture(): Promise<BackupRecoveryFixtu
     )
       .toString("utf8")
       .trim();
-    if (!/^[a-f0-9]{64}$/.test(containerId)) throw new Error("Invalid recovery container identity");
+    if (!/^[a-f0-9]{64}$/.test(containerCandidate)) throw new Error("Invalid recovery container identity");
+    const containerIdentity = (await command(["container", "inspect", "--format", "{{.Id}}", containerCandidate]))
+      .toString("utf8")
+      .trim();
+    if (containerIdentity !== containerCandidate) throw new Error("Recovery container identity mismatch");
+    containerId = containerCandidate;
     console.info(`RECOVERY_FIXTURE container=${container} id=${containerId} network=${network}`);
     for (let attempt = 0; attempt < 60; attempt += 1) {
       try {
-        await command(["exec", container, "pg_isready", "--host=127.0.0.1", "--username=postgres"]);
+        await command(["exec", containerId, "pg_isready", "--host=127.0.0.1", "--username=postgres"]);
         ready = true;
         break;
       } catch {
@@ -171,7 +195,7 @@ export async function createBackupRecoveryFixture(): Promise<BackupRecoveryFixtu
       }
     }
     if (!ready) throw new Error("Recovery fixture did not become ready");
-    const mapping = (await command(["port", container, "5432/tcp"])).toString("utf8").trim();
+    const mapping = (await command(["port", containerId, "5432/tcp"])).toString("utf8").trim();
     const match = /^127\.0\.0\.1:(\d{1,5})$/.exec(mapping);
     const port = Number(match?.[1]);
     if (!Number.isInteger(port) || port < 1 || port > 65_535)
@@ -188,11 +212,11 @@ export async function createBackupRecoveryFixture(): Promise<BackupRecoveryFixtu
     }
     return {
       container,
-      containerId,
+      containerId: containerCandidate,
       adminUrl: url.toString(),
       targetUrl: url.toString(),
       runningExecIds: async () => {
-        const result = await command(["container", "inspect", "--format", "{{json .ExecIDs}}", container]);
+        const result = await command(["container", "inspect", "--format", "{{json .ExecIDs}}", containerCandidate]);
         return (
           z
             .array(z.string().regex(/^[a-f0-9]{64}$/))
@@ -200,7 +224,7 @@ export async function createBackupRecoveryFixture(): Promise<BackupRecoveryFixtu
             .parse(JSON.parse(result.toString("utf8"))) ?? []
         );
       },
-      exec: (args, input) => command(["exec", "--interactive", container, ...args], input),
+      exec: (args, input) => command(["exec", "--interactive", containerCandidate, ...args], input),
       close,
     };
   } catch (error) {
