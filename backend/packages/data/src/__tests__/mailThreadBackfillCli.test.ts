@@ -5,7 +5,6 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 import { expect, it } from "vitest";
-import { getTestPool } from "../testSupport/testDb.js";
 
 const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const blockRoot = resolve(backend, "../shared/block-model");
@@ -68,7 +67,10 @@ it("runs the compiled migration root twice and queues one keyed mail-thread back
   if (!baseUrl) throw new Error("Missing isolated test database URL");
   if (statSync(compiled).mtimeMs < statSync(source).mtimeMs)
     throw new Error("Build backend artifacts before this test");
-  const admin = getTestPool();
+  // All operations use owned single-client pools. Server-side statement timeouts precede
+  // client query timeouts, so a timed-out statement settles before the pool is closed.
+  const poolOptions = { max: 1, connectionTimeoutMillis: 5_000, statement_timeout: 10_000, query_timeout: 12_000 };
+  const admin = new Pool({ connectionString: baseUrl, ...poolOptions });
   const name = `batch17_${randomUUID().replaceAll("-", "")}`;
   // The database identifier consists only of this fixed prefix and generated hexadecimal UUID digits.
   const identifier = `"${name}"`;
@@ -82,7 +84,7 @@ it("runs the compiled migration root twice and queues one keyed mail-thread back
     created = true;
     const url = new URL(baseUrl);
     url.pathname = `/${name}`;
-    database = new Pool({ connectionString: url.toString() });
+    database = new Pool({ connectionString: url.toString(), ...poolOptions });
     temporary = mkdtempSync(join(blockRoot, "node_modules/.batch17-"));
     const buildArgs = [
       join(backend, "node_modules/typescript/bin/tsc"),
@@ -146,5 +148,5 @@ it("runs the compiled migration root twice and queues one keyed mail-thread back
     throw new AggregateError([primary.error, ...cleanup], "CLI fixture and cleanup failed");
   if (primary) throw primary.error;
   if (cleanup.length) throw new AggregateError(cleanup, "CLI fixture cleanup failed");
-  // The 25-second build and two 40-second children leave 75 seconds for owned cleanup before Vitest's deadline.
-}, 180_000);
+  // Two bounded child runs, the build, connections and SQL leave teardown headroom before Vitest's deadline.
+}, 240_000);
