@@ -1583,12 +1583,12 @@
       "sequence": 16,
       "status": "proposed",
       "title": "[backend-delivery 16/74] Implement architecture, data/auth, realtime changes",
-      "bodyCharacters": 59782,
-      "specSha256": "22c5101cd3014a72823acc77d33d755649bb78edd1fae1c25fa9011c0bbe5a7d",
+      "bodyCharacters": 57557,
+      "specSha256": "6749f0611085628a702b0ffcab6bd25995d994f5bc2e8323ef86ee367a8e0dc2",
       "members": [
         {
           "id": "gh-1395",
-          "specSha256": "6e5ebca83c1af76f597458600455a51875c010b9aef554d916307fc66d111428",
+          "specSha256": "5dea0298c54bbb9dd84749a2062cb843a7f4fb4684c11c8f5b1a6a57cbdf2c21",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1367",
@@ -1622,7 +1622,7 @@
         },
         {
           "id": "gh-1512",
-          "specSha256": "92952c5dfee51494c5ec466d6065f4e5d61f9e2f2b678e00752f1f1a62402f77",
+          "specSha256": "159254c146b48ca942d1bbc1e9287c593526c2e04a30a411be2e559b0bfac9b1",
           "parent": "gh-1296",
           "dependencies": [
             "gh-1354"

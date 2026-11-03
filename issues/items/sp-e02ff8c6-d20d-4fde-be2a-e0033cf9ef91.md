@@ -10,10 +10,10 @@ parent: "sp-62331d42-78af-4b93-ae97-d5ccbe3324df"
 assignees: []
 milestone: null
 createdAt: "2026-10-31T17:31:01.910Z"
-updatedAt: "2026-11-03T04:28:02.318Z"
+updatedAt: "2026-11-03T04:50:55.963Z"
 closedAt: null
 source: null
-approval: {"specSha256":"22c5101cd3014a72823acc77d33d755649bb78edd1fae1c25fa9011c0bbe5a7d","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: exact protocol harnesses and authentication-touch reconciliation","at":"2026-11-03T04:28:02.318Z"}
+approval: {"specSha256":"6749f0611085628a702b0ffcab6bd25995d994f5bc2e8323ef86ee367a8e0dc2","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: grouped R1 expiry and scoped publication repair","at":"2026-11-03T04:50:55.963Z"}
 resolution: null
 ---
 **Blocked by:** sp-144a2408-c4a8-4b9f-b68b-a5eec527dba7
@@ -57,7 +57,7 @@ Decision: delivery is best effort, to sockets of the tenant only, with no replay
 
 Load `state-writes`, `io-hardening`, `canonical-keys` and `testing`.
 
-1. In `backend/packages/realtime/src/protocolV1.ts` add the message `{ type: 'invalidation', scope: 'sempThread', threadId }` to `RealtimeMessage` and the outbound frame `{ type: 'invalidate', scope: 'sempThread', threadId }` to `OutboundFrame`. Update `pgNotifyPublisher.ts` (publish and parse) and `syncServer.ts` fan-out so only sockets of the message's tenant receive it.
+1. In `backend/packages/realtime/src/protocolV1.ts` add the message `{ type: 'invalidation', scope: 'sempThread', threadId }` to `RealtimeMessage` and the outbound frame `{ type: 'invalidate', scope: 'sempThread', threadId }` to `OutboundFrame`. Update `pgNotifyPublisher.ts` (publish and parse) and `syncServer.ts` fan-out so only sockets of the message's tenant receive it. Follow the accepted tenant-scoped fan-out ADR: PostgreSQL derives the envelope tenant from publisher scope, with no explicit publisher tenant override; keep the existing session-revocation exception.
 2. Update `backend/packages/realtime-client` (`serverFrame.ts` and its exports) to parse and expose the new frame.
 3. Add a data-layer hook in `backend/packages/data/src/realtimeHook.ts` (a `publishSempThreadInvalidation(client, tenantId, threadId)` shape) that publishes after commit through the existing after-commit mechanism (`runAfterCommit`), usable from both `semprec-api` and `semprec-agents` hooks.
 4. Tests: a socket of tenant A receives the frame, a socket of tenant B does not; the frame is not published when the transaction rolls back; a hook call in a `semprec-agents` style write reaches an API socket through `semprec_events`; the client parses the frame; malformed frames are ignored.
@@ -73,6 +73,7 @@ Load `state-writes`, `io-hardening`, `canonical-keys` and `testing`.
 - backend/packages/realtime-client/src/index.ts (export line, if any)
 - tests beside each of the above
 - backend/services/semprec-api/src/__tests__/tenantIsolationRealtime.test.ts (only actual API sempThread hook/publisher delivery, runtime-role tenant isolation and rollback evidence)
+- backend/services/semprec-agents/src/__tests__/realtimeWiring.test.ts (only replace the existing schema-sentinel explicit publisher tenant argument with runInTenant for that tenant, preserving its assertions and lifecycle)
 
 #### Scope
 
@@ -287,9 +288,9 @@ Decisions (decided by the product owner as sufficient for v1; the values are ser
 Load `state-writes` and `testing`.
 
 1. In `authActions.ts` replace the single TTL with `SESSION_IDLE_TTL_SECONDS_BY_PLATFORM` (`ios` and `macos` 90 days, `web` 30 days) and `SESSION_MAX_LIFETIME_SECONDS` (365 days). Keep `SESSION_TTL_SECONDS` exported only if still needed by the cookie helper below; otherwise remove it and update the frozen export list in `publicSurface.test.ts`. `login` computes the initial `expiresAt` from the platform idle window.
-2. In `sessionsStore.ts` change `touchSessionLastSeen` to one `UPDATE` that sets `last_seen_at = now()` and `expires_at = LEAST(created_at + interval '365 days', GREATEST(expires_at, now() + <idle window by platform>))`. The idle window is chosen in SQL from the row's `platform` (or passed as a parameter derived from the already-loaded session); the expiry never moves backwards and never passes the ceiling.
+2. In `sessionsStore.ts` change `touchSessionLastSeen` to one `UPDATE` that sets `last_seen_at = now()` and `expires_at = LEAST(created_at + interval '365 days', GREATEST(expires_at, now() + <idle window by platform>))`. The idle window is chosen in SQL from the row's `platform` (or passed as a parameter derived from the already-loaded session); the expiry never passes the ceiling and never moves backwards when the existing expiry is at or below that ceiling. An existing expiry above the ceiling is clamped downward; this defensive case does not establish historical production data.
 3. In `authHandler.ts` set the web session cookie `Max-Age` to the ceiling (`SESSION_MAX_LIFETIME_SECONDS`); idleness is enforced by the server through `expires_at`, not by the cookie.
-4. Add tests: a native session touched once has `expires_at` about 90 days ahead; a web session about 30 days; a session whose `created_at` is 364 days old gets `expires_at` capped at `created_at + 365 days`; a session untouched for longer than its idle window gets 401; `expires_at` never decreases.
+4. Add tests: a native session touched once has `expires_at` about 90 days ahead; a web session about 30 days; a session whose `created_at` is 364 days old gets `expires_at` capped at `created_at + 365 days`; a session untouched for longer than its idle window gets 401; `expires_at` never decreases for a row already at or below its ceiling; a synthetic above-ceiling row is clamped. Include an active web session before its cap threshold and one at its cap threshold.
 
 #### Touches
 
@@ -317,8 +318,8 @@ Load `state-writes` and `testing`.
 
 - When an `ios` session makes an authenticated request, then its `expires_at` is about 90 days after now; for a `web` session about 30 days.
 - When a session has been unused for longer than its idle window, then its token gets 401.
-- When a session is more than 275 days old and is used, then `expires_at` equals `created_at + 365 days` and is never later.
-- `expires_at` never moves earlier because of a request.
+- On use, `expires_at` equals `created_at + 365 days` when the later of its existing expiry and now plus its platform idle window reaches that ceiling; it is never later. Native 90-day windows reach the age threshold at 275 days, web 30-day windows at 335 days; age 275 alone does not cap web sessions.
+- A request never moves `expires_at` earlier if it was already at or below `created_at + 365 days`. An above-ceiling expiry is clamped to the ceiling, preserving the exact Task 2 formula.
 - A web login sets a cookie whose `Max-Age` is 365 days.
 
 ### Requirement gh-1373: [approvals 02/20] Answer the MCP initialize handshake on POST /mcp
@@ -583,56 +584,8 @@ Load `state-writes`, `error-handling` and `testing`.
 
 ## Touches
 
-- backend/packages/realtime/src/protocolV1.ts
-- backend/packages/realtime/src/pgNotifyPublisher.ts
-- backend/packages/realtime/src/syncServer.ts
-- backend/packages/realtime/src/wireHooks.ts (only if hooks are wired there)
-- backend/packages/data/src/realtimeHook.ts
-- backend/packages/realtime-client/src/serverFrame.ts
-- backend/packages/realtime-client/src/index.ts (export line, if any)
-- tests beside each of the above
-- backend/packages/realtime/src/protocolV1.ts (OutboundFrame doc:ack variant, client update id helpers)
-- backend/packages/realtime/src/docSync.ts (handleBinaryFrame)
-- backend/packages/realtime-client/src/serverFrame.ts (parse doc:ack)
-- backend/packages/realtime-client/src/syncClient.ts (dispatch to onDocAck)
-- backend/packages/realtime/src/__tests__/protocolV1.unit.test.ts
-- backend/packages/realtime/src/__tests__/docSync.test.ts
-- backend/packages/realtime-client/src/__tests__ (parser and dispatch tests)
-- backend/packages/data/src/db/migrations/NNNN_semp_tick_thread_unique.sql (next free ordinal at commit time)
-- backend/packages/data/src/scheduler/actions.ts
-- backend/packages/data/src/agentRuns/agentRunsStore.ts (set `thread_id`)
-- backend/packages/data/src/ (new thread store functions next to the thread store from #1367)
-- backend/packages/data/src/__tests__/ (new tests)
-- backend/packages/data/src/db/migrations/NNNN_session_device_identity.sql (next free ordinal at commit time)
-- backend/packages/data/src/auth/types.ts (session device kinds, `SessionRow`)
-- backend/packages/data/src/auth/sessionsStore.ts (row type, columns, `createSession`)
-- backend/packages/data/src/auth/userAgentDevice.ts (new)
-- backend/packages/data/src/auth/authActions.ts (`LoginInput`, passing the device to `createSession`)
-- backend/packages/data/src/index.ts (barrel export of the new module)
-- backend/packages/data/src/__tests__/publicSurface.test.ts (new export names)
-- backend/packages/data/src/__tests__/authSchema.test.ts
-- backend/packages/data/src/__tests__/authActions.test.ts
-- backend/services/semprec-api/src/authHandler.ts (login body parsing)
-- backend/services/semprec-api/src/__tests__/authHandler.test.ts
-- backend/packages/data/src/auth/authActions.ts (TTL constants, initial `expiresAt` in `login`)
-- backend/packages/data/src/auth/sessionsStore.ts (`touchSessionLastSeen`)
-- backend/services/semprec-api/src/authHandler.ts (cookie `Max-Age`)
-- backend/packages/data/src/__tests__/publicSurface.test.ts (only if an exported constant is added or removed)
-- backend/services/semprec-api/src/mcp/mcpHandler.ts
-- backend/services/semprec-api/src/__tests__ (mcp handler tests)
-- docs/adr/YYYY-MM-DD-subpages-are-items-of-a-hidden-pages-database.md (new; creation date at commit time)
-- docs/adr/ (the block-model ADR from #1366: one added amendment note)
-- docs/adr/YYYY-MM-DD-mcp-card-confirm-only-prefills-project-grants.md (new; date at commit time)
-- backend/packages/data/src/seed/seedTenDatabases.ts (Events property list)
-- backend/packages/data/src/db/tenantCutoverMigrations.ts (one registered cutover)
-- backend/packages/data/src/calendar/eventsCalendarPropertiesCutoverMigration.ts (new)
-- backend/packages/data/src/seed/i18n/cs.json (property.events.* keys)
-- backend/packages/data/src/seed/i18n/en.json (property.events.* keys)
-- backend/packages/data/src/__tests__ (new seed and cutover tests)
-- backend/packages/data/src/domainWriteHooks.ts (hook registration line)
-- backend/packages/data/src/journal/journalWriteHook.ts (new)
-- backend/packages/data/src/__tests__/ (journal hook tests; fixture fixes)
-- backend/services/semprec-api/src/__tests__/itemsHandler.test.ts (Journal create case)
+- Exactly the union of the ten current member Touches sections embedded above, in declared order. Every path retains its member's purpose and restrictions; a directory does not authorize unrelated work.
+- No additional path is authorized by this aggregate. A scope correction must first update its source, exact embedded snapshot and approvals.
 
 ## Scope
 
