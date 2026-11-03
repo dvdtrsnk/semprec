@@ -1,8 +1,10 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
@@ -174,6 +176,60 @@ describe("runReplayCommand (issue #1078)", () => {
       expect(await statusOf(tenant)).toBe("active");
       expect(await statusOf(other)).toBe("active");
     });
+  });
+
+  describe("documented offline activation", () => {
+    async function invokeActivation(ledger: string): Promise<void> {
+      const baseUrl = process.env.TEST_DATABASE_URL;
+      if (!baseUrl) throw new Error("Missing isolated test database URL");
+      const password = randomUUID();
+      // The password is a generated UUID and the role name is fixed, so interpolation is closed.
+      await adminPool.query(`ALTER ROLE semprec_data WITH PASSWORD '${password}'`);
+      const url = new URL(baseUrl);
+      url.username = "semprec_data";
+      url.password = password;
+      const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+      await promisify(execFile)(
+        "bash",
+        [join(backend, "../deploy/systemd/scripts/semprec-restore-activation.test.sh")],
+        {
+          env: {
+            ...process.env,
+            NODE_OPTIONS: undefined,
+            NODE_PATH: undefined,
+            TEST_ACTIVATION_NODE: process.execPath,
+            TEST_ACTIVATION_NATIVE_DIR: join(backend, "packages/data/dist/tenancy"),
+            TEST_ACTIVATION_DATABASE_URL: url.toString(),
+            TEST_ACTIVATION_LEDGER_ID: ledger,
+            TEST_ACTIVATION_RESULT: join(workDir, "activated"),
+          },
+        },
+      );
+    }
+
+    it("keeps the last admin offline and starts only after a real replay retry succeeds", async () => {
+      const lastAdmin = await tenantWithAdmin();
+      await expect(invokeActivation(lastAdmin)).rejects.toMatchObject({ stdout: expect.stringContaining("lastAdmin") });
+      expect(existsSync(join(workDir, "activated"))).toBe(false);
+      expect(await statusOf(lastAdmin)).toBe("active");
+      await tenantWithAdmin();
+      await invokeActivation(lastAdmin);
+      expect(await statusOf(lastAdmin)).toBe("deleting");
+      expect(readFileSync(join(workDir, "activated"), "utf8").trim()).toBe(
+        "start semprec-api.service semprec-agents.service semprec-transcribe.service semprec-ai-gateway.service",
+      );
+    }, 180_000);
+
+    it("keeps services offline on malformed evidence and unexpected status", async () => {
+      const target = await createTestTenant(adminPool, { status: "provisioning" });
+      await expect(invokeActivation("invalid-ledger")).rejects.toThrow();
+      expect(existsSync(join(workDir, "activated"))).toBe(false);
+      await expect(invokeActivation(target)).rejects.toMatchObject({
+        stdout: expect.stringContaining("unexpectedStatus"),
+      });
+      expect(existsSync(join(workDir, "activated"))).toBe(false);
+      expect(await statusOf(target)).toBe("provisioning");
+    }, 180_000);
   });
 
   it("accepts a file of exactly the size cap", async () => {

@@ -235,48 +235,43 @@ pings the monitor's `/fail` endpoint, and exits non-zero. It never sends the suc
 
 ## Re-applying account deletions after a restore (issue #1078)
 
-A deleted account must never come back, but a restored snapshot taken before the deletion still
-holds the tenant. The ledger in every main snapshot lists the deletions completed up to that
-snapshot, and the replay CLI re-marks the ones the restored database lacks. After a production
-restore:
+Keep all user-facing services, workers and their timers offline throughout restoration,
+validation and replay. Restore the selected main snapshot and compatible keys as described
+above. Supply `SEMPREC_API_DATABASE_URL` securely for the API database role and set
+`SEMPREC_RESTORE_LEDGER` to a file in a protected operator-owned directory. Run this block
+as a directly executed Bash script; do not source it or place it in a conditional command.
+It fetches the newest path-selected replay ledger, checks that it covers the restored
+snapshot's tombstones, and starts application services only after actual replay succeeds.
 
-1. Restore the dump (`restic restore` of the main snapshot, then `pg_restore`, then the key dump,
-   as described under "Encrypted off-site backups").
-2. Fetch the **newest** ledger. It is newer than the restored snapshot when an older one was
-   restored. A bare `latest` can resolve to a key-dump-only snapshot, so name the path:
+<!-- restore-activation-command:start -->
+```bash
+set -euo pipefail
+umask 077
+: "${SEMPREC_API_DATABASE_URL:?SEMPREC_API_DATABASE_URL must be set}"
+: "${SEMPREC_RESTORE_LEDGER:?SEMPREC_RESTORE_LEDGER must be set}"
+restic dump --path /var/backups/semprec/postgres.dump latest \
+  /var/backups/semprec/tenant-deletions.ledger > "$SEMPREC_RESTORE_LEDGER"
+DATABASE_URL="$SEMPREC_API_DATABASE_URL" node \
+  /opt/semprec/current/backend/packages/data/dist/tenancy/validateRestoreLedgerCli.js \
+  --database "$SEMPREC_RESTORE_LEDGER"
+DATABASE_URL="$SEMPREC_API_DATABASE_URL" node \
+  /opt/semprec/current/backend/packages/data/dist/tenancy/replayTenantDeletionsCli.js \
+  "$SEMPREC_RESTORE_LEDGER"
+systemctl start semprec-api.service semprec-agents.service semprec-transcribe.service semprec-ai-gateway.service
+```
+<!-- restore-activation-command:end -->
 
-   ```
-   restic dump --path /var/backups/semprec/postgres.dump latest \
-     /var/backups/semprec/tenant-deletions.ledger > /root/tenant-deletions.ledger
-   ```
+Any nonzero step before `systemctl start` leaves the services offline. Replay refuses a tenant with `lastAdmin` or
+`unexpectedStatus`; it does not change that tenant. Resolve the refusal manually while still
+offline and rerun the entire block. Never automatically delete the last administrator.
+Replaying is safe to repeat: earlier successful deletions remain marked. A start failure after
+successful replay can leave some services started and requires normal operator recovery.
 
-3. Run the CLI as `semprec_data`, with the api's `SEMPREC_API_DATABASE_URL` as `DATABASE_URL`:
-
-   ```
-   DATABASE_URL="$SEMPREC_API_DATABASE_URL" node \
-     /opt/semprec/current/backend/packages/data/dist/tenancy/replayTenantDeletionsCli.js \
-     /root/tenant-deletions.ledger
-   ```
-
-   It parses the file first (exit 2 and no database write on a missing `DATABASE_URL`, a wrong
-   argument, an unreadable, non-regular or over-8-MiB file, or a malformed line), then moves every
-   listed `active` or `suspended` tenant to `deleting` the way an account deletion does: sessions
-   and push registrations revoked, the tenant's key row deleted, the deactivation signal published.
-   It prints how many tenants were marked, already `deleting`, absent, or refused, and lists the
-   refused ids.
-4. Start the services. The purge sweep then erases the replayed tenants within a minute.
-5. If the CLI exits 1, a tenant was refused: `lastAdmin` (it holds the only active admin) or
-   `unexpectedStatus` (e.g. `provisioning`). Nothing was changed for it; resolve each by hand,
-   then run the CLI again, which is safe to repeat. A `lastAdmin` refusal can also hit a deletion
-   that was recorded: when every active admin's tenant was deleted before the backup, the last one
-   in the ledger is refused, and only an operator can decide whether it goes. Any other failure
-   stops the run at that tenant (exit 1 with the error); tenants already marked stay marked and are
-   skipped as `alreadyDeleting` on the next run.
-
-Limits. A deletion completed after the newest snapshot is in no ledger and must be requested
-again; with the daily backup that is the 24-hour RPO window. Replaying a deletion does not remove
-the tenant's content from existing snapshots: it stays in restic until retention expires (12
-monthly snapshots), and only its secrets are crypto-shredded.
+The ledger is a later replay artifact, not an exact-snapshot census. A deletion completed after
+the newest retained ledger is absent and must be requested again; daily backup has a 24-hour
+RPO plus changes since the last completed backup. Deleting a tenant does not remove its content
+from existing restic snapshots until retention expires (12 monthly snapshots); its secrets are
+crypto-shredded according to the separate key backup's retention and availability limits.
 
 ## Bootstrap secrets (issue #175)
 
