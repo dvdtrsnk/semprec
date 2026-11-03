@@ -215,6 +215,19 @@ describe("mcpModelToolName (issue #1533)", () => {
     expect(mcpModelToolName("list_issues", github)).not.toBe(mcpModelToolName("list_issues", linear));
   });
 
+  it("warns and keeps the first tool when different servers share the same id prefix", () => {
+    const warnSpy = vi.spyOn(logger, "warn");
+    const samePrefix = "a1b2c3d4-0000-4000-8000-000000000002";
+    const first = fakeTool(mcpModelToolName("list_issues", github), "first");
+    const second = fakeTool(mcpModelToolName("list_issues", samePrefix), "second");
+    expect(first.name).toBe(second.name);
+    expect(withUniqueNames([first, second])).toEqual([first]);
+    expect(warnSpy).toHaveBeenCalledWith(
+      { toolName: first.name },
+      "Agent tool name collides with an earlier tool; skipped",
+    );
+  });
+
   it("sanitizes the tool name and keeps the name within 64 characters ending in the suffix", () => {
     expect(mcpModelToolName("list.issues/v1", github)).toBe("mcp_list_issues_v1_a1b2c3d4");
     const long = mcpModelToolName("x".repeat(120), github);
@@ -497,7 +510,11 @@ describe("agent language instruction (issue #1388)", () => {
   const CS = "Answer and write all user-visible text in Czech.";
   const EN = "Answer and write all user-visible text in English.";
 
-  async function composedPrompt(locale: string | null, projectItemId: string | null = null): Promise<string> {
+  async function composedPrompt(
+    locale: string | null,
+    projectItemId: string | null = null,
+    localeAfterComposition: string | null = locale,
+  ): Promise<string> {
     fixtures.locale = locale;
     const pool = new Pool();
     const faux = fauxProvider();
@@ -539,6 +556,7 @@ describe("agent language instruction (issue #1388)", () => {
         },
         run,
       );
+      fixtures.locale = localeAfterComposition;
       for await (const event of factory({ task: run.task }).messages()) void event;
       return prompt;
     } finally {
@@ -572,6 +590,15 @@ describe("agent language instruction (issue #1388)", () => {
     const prompt = await composedPrompt("en", "project-1");
     expect(prompt.indexOf(EN)).toBeGreaterThan(-1);
     expect(prompt.indexOf("Project guidance: be brief.")).toBeGreaterThan(prompt.indexOf(EN));
+  });
+
+  it("keeps the composed run's locale when it changes and uses the new locale for the next run", async () => {
+    const existing = await composedPrompt("en", null, "cs");
+    const next = await composedPrompt("cs");
+    expect(existing).toContain(EN);
+    expect(existing).not.toContain(CS);
+    expect(next).toContain(CS);
+    expect(next).not.toContain(EN);
   });
 });
 

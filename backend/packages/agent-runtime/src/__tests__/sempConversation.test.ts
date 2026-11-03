@@ -13,12 +13,15 @@ import { currentTenantScope, getTraceContext, runAsSystem, runInTenant } from "@
 import {
   SEMP_BUSY_ERROR_MESSAGE,
   SempConversation,
+  createReconstructConversationHistory,
   type SempConversationOptions,
   type SempSendOptions,
   type SempThread,
   type SempThreadWake,
 } from "../sempConversation.js";
 import { logger } from "../logger.js";
+import { repairInterruptedRuns } from "../startupRepair.js";
+import type { CompactionAdapter } from "../compaction.js";
 import type {
   AgentMessage,
   AgentSession,
@@ -113,6 +116,94 @@ describe("SempConversation", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("wakes with persisted history after startup repair closes an idle session", async () => {
+    const compaction: CompactionAdapter = {
+      estimateContextTokens: (messages) => messages.length,
+      shouldCompact: () => false,
+      prepareCompaction: (entries) => entries,
+      compact: (entries) => entries as ConversationEntry[],
+      contextWindow: 1_000_000,
+      settings: {},
+    };
+    const scripted = scriptedSession(
+      [{ kind: "turn_start" }, { kind: "message", text: "first" }, { kind: "turn_end" }],
+      [{ kind: "turn_start" }, { kind: "message", text: "second" }, { kind: "turn_end" }],
+    );
+    const options = {
+      createAgentSessionForRun: async () => scripted.createAgentSession,
+      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+      reconstructHistory: createReconstructConversationHistory(compaction),
+    };
+    const beforeRestart = new SempConversation(pool, options);
+    const afterRestart = new SempConversation(pool, options);
+    try {
+      expect(await sendInTenantZero(beforeRestart, "first")).toEqual({ ok: true, message: "first" });
+      beforeRestart.clear();
+      const repaired = await repairInterruptedRuns(pool);
+      expect(repaired.closedIdleRunIds).toHaveLength(1);
+      const notifications = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM notifications WHERE kind = 'agent_run_error'",
+      );
+      expect(notifications.rows[0]?.count).toBe("0");
+      expect(await sendInTenantZero(afterRestart, "second")).toEqual({ ok: true, message: "second" });
+      expect(scripted.initialStates[1]?.messages.map((entry) => entry.message.kind)).toEqual([
+        "turn_start",
+        "message",
+        "turn_end",
+      ]);
+    } finally {
+      beforeRestart.clear();
+      afterRestart.clear();
+    }
+  });
+
+  it("wakes after a mid-tool failure using the immediately paired persisted history", async () => {
+    const compaction: CompactionAdapter = {
+      estimateContextTokens: (messages) => messages.length,
+      shouldCompact: () => false,
+      prepareCompaction: (entries) => entries,
+      compact: (entries) => entries as ConversationEntry[],
+      contextWindow: 1_000_000,
+      settings: {},
+    };
+    const next = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "recovered" },
+      { kind: "turn_end" },
+    ]);
+    const failure = new Error("tool interrupted");
+    let wakes = 0;
+    const conversation = new SempConversation(pool, {
+      createAgentSessionForRun: async () => {
+        if (wakes++ > 0) return next.createAgentSession;
+        return () => ({
+          async *messages() {
+            yield { kind: "turn_start" };
+            yield { kind: "tool_use", toolCallId: "call-1", name: "search", arguments: {} };
+            throw failure;
+          },
+        });
+      },
+      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+      reconstructHistory: createReconstructConversationHistory(compaction),
+    });
+    try {
+      await expect(sendInTenantZero(conversation, "first")).rejects.toBe(failure);
+      expect(await sendInTenantZero(conversation, "next")).toEqual({ ok: true, message: "recovered" });
+      const messages = next.initialStates[0]?.messages;
+      expect(messages?.map((entry) => entry.message.kind)).toEqual(["turn_start", "tool_use", "tool_result"]);
+      expect(messages?.[2]?.message).toMatchObject({
+        kind: "tool_result",
+        toolCallId: "call-1",
+        name: "search",
+        isError: true,
+        result: { content: [{ type: "text", text: expect.stringContaining("failed") }], details: { error: true } },
+      });
+    } finally {
+      conversation.clear();
+    }
   });
 
   it("wakes a session-unit, user-triggered agent_runs row on the first send and returns the final assistant message", async () => {

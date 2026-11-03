@@ -7,12 +7,19 @@ import {
   createChokePoint,
   createPool,
   createUser,
+  finishAgentRunWithErrorNotification,
   insertAndNotifyAgentRunEvent,
   publishSempThreadInvalidation,
   seedSystem,
   withTransaction,
 } from "@semprec/data";
-import { createTestTenant, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import { REALTIME_CHANNEL, wireRealtimeHooks, type RealtimeMessage } from "@semprec/realtime";
 import { runInTenant } from "@semprec/shared";
 
@@ -92,6 +99,44 @@ describe("semprec-agents realtime wiring (issue #1383)", () => {
     expect(envelopes.filter((e) => e.tenantId === otherTenantId)).toEqual([]);
   });
 
+  it("publishes a runtime-role write for its tenant while refusing the other tenant's database", async () => {
+    const tenantId = getTenantZeroId();
+    const otherTenantId = await createTestTenant(adminPool);
+    const envelopes = await collectEnvelopes(listener!);
+    const runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+    try {
+      wireRealtimeHooks(runtimePool);
+      const { rows } = await runInTenant(tenantId, () =>
+        runtimePool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'"),
+      );
+      expect(rows).toHaveLength(1);
+      const databaseId = rows[0]!.id;
+      const item = await runInTenant(tenantId, () =>
+        createChokePoint(runtimePool).createItem({ databaseId, properties: {} }),
+      );
+      await waitUntil(() =>
+        envelopes.some(
+          (e) => e.message.type === "invalidation" && "itemId" in e.message && e.message.itemId === item.id,
+        ),
+      );
+      await expect(
+        runInTenant(otherTenantId, () => createChokePoint(runtimePool).createItem({ databaseId, properties: {} })),
+      ).rejects.toThrow();
+      const visible = await runInTenant(otherTenantId, () =>
+        runtimePool.query<{ id: string }>("SELECT id FROM items WHERE id = $1", [item.id]),
+      );
+      expect(visible.rows).toEqual([]);
+      const published = envelopes.filter(
+        (e) => e.message.type === "invalidation" && "itemId" in e.message && e.message.itemId === item.id,
+      );
+      expect(published).toHaveLength(1);
+      expect(published[0]!.tenantId).toBe(tenantId);
+    } finally {
+      wireRealtimeHooks(agentsPool);
+      await runtimePool.end();
+    }
+  });
+
   it("publishes an agent_run_event for an event inserted by an agent run", async () => {
     const tenantId = getTenantZeroId();
     const envelopes = await collectEnvelopes(listener!);
@@ -106,6 +151,34 @@ describe("semprec-agents realtime wiring (issue #1383)", () => {
     const published = envelopes.find((e) => e.message.type === "agent_run_event")!;
     expect(published.tenantId).toBe(tenantId);
     expect(published.message).toMatchObject({ type: "agent_run_event", eventId: String(event.id) });
+  });
+
+  it("publishes the notification created when an agent run fails", async () => {
+    const tenantId = getTenantZeroId();
+    const otherTenantId = await createTestTenant(adminPool);
+    const envelopes = await collectEnvelopes(listener!);
+    const { userId, notificationId } = await runInTenant(tenantId, async () => {
+      const user = await createUser(agentsPool, { email: "owner@example.test", passwordHash: "unused", tenantId });
+      const run = await createAgentRun(agentsPool, { triggeredBy: "heartbeat", task: "fail" });
+      await withTransaction(agentsPool, (client) =>
+        finishAgentRunWithErrorNotification(client, run.id, "failed", "interrupted"),
+      );
+      const { rows } = await agentsPool.query<{ id: string }>(
+        "SELECT id FROM notifications WHERE source_table = 'agent_runs' AND source_id = $1",
+        [run.id],
+      );
+      expect(rows).toHaveLength(1);
+      return { userId: user.id, notificationId: rows[0]!.id };
+    });
+
+    await waitUntil(() =>
+      envelopes.some((e) => e.message.type === "notification_created" && e.message.notificationId === notificationId),
+    );
+    const published = envelopes.filter(
+      (e) => e.message.type === "notification_created" && e.message.notificationId === notificationId,
+    );
+    expect(published).toEqual([{ tenantId, message: { type: "notification_created", userId, notificationId } }]);
+    expect(published.filter((e) => e.tenantId === otherTenantId)).toEqual([]);
   });
 
   it("publishes a sempThread invalidation of the given tenant after commit from an agents-style write (issue #1395)", async () => {
