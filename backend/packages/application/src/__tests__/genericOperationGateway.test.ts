@@ -109,6 +109,48 @@ describe("createGenericOperationGateway (issue #220)", () => {
     await pool?.end();
   });
 
+  it("uses the actor's locale for database and view queries through the application gateway", async () => {
+    await inTenantZero(async () => {
+      const users = await pool.query<{ id: string }>("SELECT id FROM users WHERE tenant_id = $1", [getTenantZeroId()]);
+      const user = users.rows[0];
+      if (!user) throw new Error("Missing tenant user");
+      const actor: AuthenticatedActor = { userId: user.id };
+      const database = await chokePoint.createDatabase({ name: "Collation" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "name", name: "Name", type: "title" });
+      for (const name of ["Hrad", "Chalupa", "Rybník", "Řeka"]) {
+        await chokePoint.createItem({ databaseId: database.id, properties: { name } });
+      }
+      const view = await chokePoint.createView({ databaseId: database.id, type: "table", name: "Names" });
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+      const sort = [{ property: "name", direction: "asc" }] as const;
+      for (const [locale, expected] of [
+        ["cs", ["Hrad", "Chalupa", "Rybník", "Řeka"]],
+        ["en", ["Chalupa", "Hrad", "Řeka", "Rybník"]],
+      ] as const) {
+        // There is no user locale update operation in this fixture's application port.
+        await pool.query("UPDATE users SET locale = $1 WHERE id = $2", [locale, user.id]);
+        for (const operation of ["database.query", "view.query"] as const) {
+          const names: string[] = [];
+          let cursor: string | undefined;
+          for (let page = 0; page < 3; page++) {
+            const input =
+              operation === "database.query"
+                ? { databaseId: database.id, sort, cursor, limit: 2 }
+                : { viewId: view.id, sort, cursor, limit: 2 };
+            const result =
+              operation === "database.query"
+                ? await gateway.invoke("database.query", actor, ALL_CAPABILITIES, input)
+                : await gateway.invoke("view.query", actor, ALL_CAPABILITIES, input);
+            names.push(...result.items.map((item) => String(item.properties.name)));
+            if (result.nextCursor === null) break;
+            cursor = result.nextCursor;
+          }
+          expect(names).toEqual(expected);
+        }
+      }
+    });
+  });
+
   it("item.patch carries the transactional pre-image through the production gateway and service", async () => {
     await inTenantZero(async () => {
       const gateway = createGenericOperationGateway(pool, testMetadataResolver);
