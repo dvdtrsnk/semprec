@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { getTestPool, getTenantZeroId, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -7,6 +8,8 @@ import { createHeartbeat, sweepDueHeartbeats } from "../scheduler/schedulerStore
 import { createActionRegistry, CORE_AGENT_RUN_ACTION_ID, coreAgentRunAction } from "../scheduler/actions.js";
 import { createHeartbeatFireAgentTask, createHeartbeatFireCoreTask } from "../scheduler/sweep.js";
 import { createAgentRun, getAgentRun } from "../agentRuns/agentRunsStore.js";
+import { insertAndNotifyAgentRunEvent } from "../agentRuns/agentRunEventsStore.js";
+import { createPendingApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { finishTickRunWithMessage, getOrCreateTickThread } from "../semp/sempTickThreadStore.js";
 import { setSempThreadInvalidationHook } from "../realtimeHook.js";
 import { createUser } from "../auth/usersStore.js";
@@ -101,6 +104,60 @@ describe("heartbeat runs in their tick thread", () => {
     expect(rows).toHaveLength(0);
     const { rows: all } = await pool.query("SELECT id FROM semp_threads");
     expect(all).toHaveLength(0);
+  });
+
+  it("stores the first and last event ids with the successful run's assistant message", async () => {
+    const hb = await makeHeartbeat(CORE_AGENT_RUN_ACTION_ID);
+    const eventIds: string[] = [];
+    const action = coreAgentRunAction(pool, async ({ agentRunId }) => {
+      await withTransaction(pool, async (client) => {
+        eventIds.push((await insertAndNotifyAgentRunEvent(client, agentRunId, "turn_start", {})).id);
+        eventIds.push((await insertAndNotifyAgentRunEvent(client, agentRunId, "message", { text: "done" })).id);
+      });
+      return { result: "done" };
+    });
+    await inTenantZero(() => action({ task: "do it" }, { heartbeatId: hb.id, projectItemId: hb.projectItemId }));
+    const result = await pool.query<{
+      event_from_id: string | null;
+      event_to_id: string | null;
+      agent_run_id: string | null;
+    }>("SELECT event_from_id, event_to_id, agent_run_id FROM semp_messages");
+    const runs = await pool.query<{ id: string }>("SELECT id FROM agent_runs WHERE heartbeat_id = $1", [hb.id]);
+    expect(eventIds).toHaveLength(2);
+    expect(result.rows).toEqual([
+      { event_from_id: eventIds[0], event_to_id: eventIds[1], agent_run_id: runs.rows[0]?.id },
+    ]);
+  });
+
+  it("finishes the run and writes its message when the agent created a pending approval", async () => {
+    const hb = await makeHeartbeat(CORE_AGENT_RUN_ACTION_ID);
+    const action = coreAgentRunAction(pool, async ({ agentRunId }) => {
+      await withTransaction(pool, (client) =>
+        createPendingApprovalRequest(client, {
+          agentRunId,
+          toolName: "send_email",
+          riskClass: "write",
+          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+        }),
+      );
+      return { result: "approval requested" };
+    });
+    await inTenantZero(() => action({ task: "do it" }, { heartbeatId: hb.id, projectItemId: hb.projectItemId }));
+    const result = await pool.query<{
+      run_status: string;
+      message_status: string;
+      text: string;
+      approval_status: string;
+    }>(
+      `SELECT r.status AS run_status, m.status AS message_status, m.text, a.status AS approval_status
+       FROM agent_runs r JOIN semp_messages m ON m.agent_run_id = r.id
+       JOIN approval_requests a ON a.agent_run_id = r.id WHERE r.heartbeat_id = $1`,
+      [hb.id],
+    );
+    expect(result.rows).toEqual([
+      { run_status: "done", message_status: "done", text: "approval requested", approval_status: "pending" },
+    ]);
   });
 
   it("an occurrence whose last attempt fails writes exactly one error message", async () => {

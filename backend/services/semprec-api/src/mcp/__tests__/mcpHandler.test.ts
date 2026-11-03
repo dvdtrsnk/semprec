@@ -186,12 +186,23 @@ describe("createMcpRequestListener (issue #220)", () => {
       );
       const request = initialize("2025-06-18");
       const snapshot = async () => {
-        const { rows } = await pool.query<{ items: unknown; runs: unknown; credentials: unknown; sessions: unknown }>(`
+        const { rows } = await pool.query<{
+          items: unknown;
+          databases: unknown;
+          properties: unknown;
+          users: unknown;
+          runs: unknown;
+          credentials: unknown;
+          sessions: unknown;
+        }>(`
           SELECT
             (SELECT coalesce(jsonb_agg(to_jsonb(i) ORDER BY i.id), '[]'::jsonb) FROM items i) AS items,
+            (SELECT coalesce(jsonb_agg(to_jsonb(d) ORDER BY d.id), '[]'::jsonb) FROM databases d) AS databases,
+            (SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id), '[]'::jsonb) FROM properties p) AS properties,
+            (SELECT coalesce(jsonb_agg(to_jsonb(u) - 'password_hash' ORDER BY u.id), '[]'::jsonb) FROM users u) AS users,
             (SELECT coalesce(jsonb_agg(to_jsonb(r) ORDER BY r.id), '[]'::jsonb) FROM agent_runs r) AS runs,
-            (SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY c.id), '[]'::jsonb) FROM agent_run_mcp_credentials c) AS credentials,
-            (SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY s.id), '[]'::jsonb) FROM sessions s) AS sessions
+            (SELECT coalesce(jsonb_agg(to_jsonb(c) - 'token_hash' ORDER BY c.id), '[]'::jsonb) FROM agent_run_mcp_credentials c) AS credentials,
+            (SELECT coalesce(jsonb_agg(to_jsonb(s) - 'token_hash' ORDER BY s.id), '[]'::jsonb) FROM sessions s) AS sessions
         `);
         if (!rows[0]) throw new Error("Missing persistence snapshot");
         return rows[0];
@@ -212,6 +223,9 @@ describe("createMcpRequestListener (issue #220)", () => {
       });
       expect(runBody).toEqual(humanBody);
       expect(afterHuman.items).toEqual(before.items);
+      expect(afterHuman.databases).toEqual(before.databases);
+      expect(afterHuman.properties).toEqual(before.properties);
+      expect(afterHuman.users).toEqual(before.users);
       expect(afterHuman.runs).toEqual(before.runs);
       expect(afterHuman.credentials).toEqual(before.credentials);
       // Authentication is allowed to touch the caller's session timestamps and no other fields.
@@ -276,8 +290,11 @@ describe("createMcpRequestListener (issue #220)", () => {
       servers.push(server);
 
       const res = await rpc(baseUrl, {}, initialize("2025-06-18"));
+      const list = await rpc(baseUrl, {}, { jsonrpc: "2.0", id: 7, method: "tools/list" });
 
       expect(res.status).toBe(401);
+      expect(list.status).toBe(res.status);
+      expect(await list.json()).toEqual(await res.json());
     });
 
     it("succeeds for a human session and writes nothing", async () => {
