@@ -1,8 +1,14 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
 import { AiGatewayFailedError, runInTenant } from "@semprec/shared";
-import { getTenantZeroId, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  getTenantZeroId,
+  getTestPool,
+  inTenantZero,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -82,6 +88,13 @@ function capturingTickRegistry(captured: Array<Record<string, unknown> | null>):
 }
 
 describe("Inbox item event dispatch (issue #103)", () => {
+  let retryRuntimePool: Pool | undefined;
+
+  afterEach(async () => {
+    await retryRuntimePool?.end();
+    retryRuntimePool = undefined;
+  });
+
   beforeEach(async () => {
     pool ??= getTestPool();
     viewTypeRegistry = createViewTypeRegistry();
@@ -303,7 +316,7 @@ describe("Inbox item event dispatch (issue #103)", () => {
     expect(afterDelete.every((j) => j.queue_name === SEMPREC_TICK_QUEUE_NAME)).toBe(true);
   });
 
-  it("a timeout on a non-final queue attempt keeps the heartbeat job for its retry and writes no card (issue #1485)", async () => {
+  it("retries two timeouts and records a failure card on the third worker attempt (issue #1485)", async () => {
     const inboxId = await databaseIdFor("inbox");
     const typesId = await databaseIdFor("inboxItemTypes");
     const proposalsId = await databaseIdFor("processingProposals");
@@ -330,18 +343,24 @@ describe("Inbox item event dispatch (issue #103)", () => {
       ),
     );
 
+    retryRuntimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = retryRuntimePool;
+    const role = await runtime.query<{ name: string; bypass: boolean; superuser: boolean }>(
+      "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+    );
+    expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
     const registry = createActionRegistry();
     registry.set(
       SEMPREC_TICK_ACTION_ID,
-      createSemprecTickAction(pool, async () => {
+      createSemprecTickAction(runtime, async () => {
         throw new AiGatewayFailedError("timeout");
       }),
     );
-    await drainQueue(registry);
+    await runOnce({ pgPool: pool, taskList: createCoreTaskList(runtime, registry) });
 
     // Attempt 1 of 3 is not final, so the tick rethrows and graphile-worker keeps the job for a retry.
-    const { rows: jobs } = await pool.query<{ attempts: number; last_error: string | null }>(
-      `SELECT j.attempts, j.last_error
+    const { rows: jobs } = await pool.query<{ key: string; attempts: number; last_error: string | null }>(
+      `SELECT j.key, j.attempts, j.last_error
        FROM graphile_worker._private_jobs j
        JOIN graphile_worker._private_tasks t ON t.id = j.task_id
        WHERE t.identifier = 'heartbeatFireCore'`,
@@ -355,6 +374,38 @@ describe("Inbox item event dispatch (issue #103)", () => {
       [proposalsId],
     );
     expect(cards[0]!.n).toBe(0);
+
+    // Advance only this test's pending job; Graphile's backoff would otherwise delay the retry.
+    await pool.query("UPDATE graphile_worker._private_jobs SET run_at = now() WHERE key = $1", [jobs[0]!.key]);
+    await runOnce({ pgPool: pool, taskList: createCoreTaskList(runtime, registry) });
+    const second = await pool.query<{ attempts: number; last_error: string | null }>(
+      `SELECT attempts, last_error FROM graphile_worker._private_jobs WHERE key = $1`,
+      [jobs[0]!.key],
+    );
+    expect(second.rows).toHaveLength(1);
+    expect(second.rows[0]).toMatchObject({ attempts: 2 });
+    expect(second.rows[0]!.last_error).toContain("AI gateway call failed: timeout");
+    const afterSecond = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+      proposalsId,
+    ]);
+    expect(afterSecond.rows[0]!.n).toBe(0);
+
+    await pool.query("UPDATE graphile_worker._private_jobs SET run_at = now() WHERE key = $1", [jobs[0]!.key]);
+    await runOnce({ pgPool: pool, taskList: createCoreTaskList(runtime, registry) });
+    const final = await pool.query<{ properties: Record<string, unknown> }>(
+      "SELECT properties FROM items WHERE database_id = $1 AND deleted_at IS NULL",
+      [proposalsId],
+    );
+    expect(final.rows).toHaveLength(1);
+    expect(final.rows[0]!.properties).toMatchObject({ status: "computeFailed" });
+    expect(final.rows[0]!.properties.history).toEqual([
+      expect.objectContaining({ message: "Computing the proposal failed: timeout." }),
+    ]);
+    const completed = await pool.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM graphile_worker._private_jobs WHERE key = $1",
+      [jobs[0]!.key],
+    );
+    expect(completed.rows[0]!.n).toBe(0);
   });
 
   // Restoring an Inbox item is a change of it: its `update` heartbeat re-runs the tick (issue #1604).

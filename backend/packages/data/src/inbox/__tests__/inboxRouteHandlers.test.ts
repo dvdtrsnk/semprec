@@ -2,10 +2,11 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
-import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
-import { withTransaction } from "../../db/pool.js";
+import { createPool, withTransaction } from "../../db/pool.js";
+import { runInTenant } from "@semprec/shared";
 import { renameDatabase } from "../../chokePoint/databasesStore.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
 import { createInboxTypeWithClient, type CreateInboxTypeInput } from "../inboxTypesStore.js";
@@ -82,6 +83,58 @@ describe("inbox custom route handlers (issue #239)", () => {
   }
 
   describe("createConfirmProposalRouteHandler", () => {
+    it("attributes a confirmed page block to the user through the runtime role", async () => {
+      const dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+      try {
+        await runInTenant(getTenantZeroId(), async () => {
+          const type = await withTransaction(dataPool, (client) =>
+            createInboxTypeWithClient(client, {
+              inboxItemTypesDatabaseId: typesId,
+              name: "Note",
+              emoji: "N",
+              processingMethod: "pageContent",
+            }),
+          );
+          const source = await withTransaction(dataPool, (client) =>
+            createInboxItemWithClient(client, {
+              inboxDatabaseId: inboxId,
+              date: "2026-08-28",
+              time: "09:00",
+              text: "A thought",
+              type: type.id,
+            }),
+          );
+          const tick = createSemprecTickAction(dataPool, async () => ({
+            target: type.id,
+            properties: { flavour: "paragraph", fields: { content: "A thought" } },
+          }));
+          await tick(
+            { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
+            { heartbeatId: "hb", projectItemId: "proj", itemId: source.id },
+          );
+          const proposal = await withTransaction(dataPool, async (client) => {
+            const { rows } = await client.query<{ id: string }>(
+              "SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL",
+              [proposalsId],
+            );
+            expect(rows).toHaveLength(1);
+            return rows[0]!.id;
+          });
+          const response = await createConfirmProposalRouteHandler(dataPool)({ params: { id: proposal }, body: {} });
+          expect(response.status).toBe(200);
+          const updates = await withTransaction(dataPool, async (client) => {
+            const { rows } = await client.query<{ created_by: string }>(
+              "SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id WHERE d.item_id = $1",
+              [type.id],
+            );
+            return rows;
+          });
+          expect(updates).toEqual([{ created_by: "user" }]);
+        });
+      } finally {
+        await dataPool.end();
+      }
+    });
     it("confirms a pending proposal, a thin mapping onto confirmProposalWithClient", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
       const handler = createConfirmProposalRouteHandler(pool);

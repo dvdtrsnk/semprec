@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { simpleParser } from "mailparser";
 import { ImapFlow } from "imapflow";
 import type { Pool, PoolClient } from "pg";
@@ -1454,6 +1454,25 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
   });
 
   describe("people linking of sent mail (issue #1480)", () => {
+    let ownerPool: Pool;
+
+    beforeEach(async () => {
+      ownerPool = pool;
+      pool = await createRuntimeRolePool(ownerPool, "semprec_data");
+      const role = await pool.query<{ name: string; bypass: boolean; superuser: boolean }>(
+        "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+      chokePoint = createChokePoint(pool);
+    });
+
+    afterEach(async () => {
+      const runtimePool = pool;
+      pool = ownerPool;
+      chokePoint = createChokePoint(pool);
+      await runtimePool.end();
+    });
+
     /** A Person whose `emails` property and `person_email_index` rows both list the given addresses. */
     async function personOwning(name: string, addresses: string[]): Promise<string> {
       const peopleId = await databaseIdFor("people");

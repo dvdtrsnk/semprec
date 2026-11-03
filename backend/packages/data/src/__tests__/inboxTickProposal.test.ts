@@ -3790,6 +3790,52 @@ describe("semprec.tick records a failed proposal computation on the card (issue 
     },
   );
 
+  it("retains the gateway failure and recording failure when the card write fails", async () => {
+    const { itemId } = await createTypedItem();
+    const gatewayError = new AiGatewayFailedError("budget_exceeded");
+    // A fixed test trigger forces the card INSERT to fail after the model error; no user input enters DDL.
+    await pool.query(`CREATE FUNCTION test_fail_compute_card() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'test card write failure'; END $$`);
+    const failures: unknown[] = [];
+    try {
+      await pool.query(
+        "CREATE TRIGGER test_fail_compute_card BEFORE INSERT ON items FOR EACH ROW EXECUTE FUNCTION test_fail_compute_card()",
+      );
+      let received: unknown;
+      try {
+        await attempt(
+          itemId,
+          async () => {
+            throw gatewayError;
+          },
+          false,
+        );
+      } catch (error) {
+        received = error;
+      }
+      expect(received).toBeInstanceOf(AggregateError);
+      if (!(received instanceof AggregateError)) throw new Error("Expected both failures");
+      expect(received.errors).toHaveLength(2);
+      expect(received.errors[0]).toBe(gatewayError);
+      expect(received.errors[1]).toMatchObject({ code: "P0001", message: "test card write failure" });
+    } catch (error) {
+      failures.push(error);
+    }
+    for (const statement of [
+      "DROP TRIGGER IF EXISTS test_fail_compute_card ON items",
+      "DROP FUNCTION IF EXISTS test_fail_compute_card()",
+    ]) {
+      try {
+        await pool.query(statement);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Failure-path test or cleanup failed");
+    expect(await findProposalForItem(pool, proposalsId, itemId)).toBeNull();
+  });
+
   it("an error that is not a gateway failure propagates even on the final attempt, and writes nothing", async () => {
     const { itemId } = await createTypedItem();
 

@@ -1055,6 +1055,13 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(answer.text).not.toContain("foreign-contact@example.com");
   },
   "mailbox removal impact": async () => {
+    const own = await send(b.member, {
+      method: "GET",
+      path: entryPath("mailbox removal impact", b.mailboxItemId),
+    });
+    expect(own.status).toBe(200);
+    const ownBody: unknown = JSON.parse(own.text);
+    expect(ownBody).toEqual({ messages: 0, drafts: 0, threads: 0, attachmentsKept: 0 });
     const answer = await expectForeignLikeRandom(b.member, [a.mailboxItemId], ([id]) => ({
       method: "GET",
       path: entryPath("mailbox removal impact", id!),

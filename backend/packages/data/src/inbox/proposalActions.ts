@@ -462,7 +462,7 @@ export async function confirmProposalWithClient(
       fields?: Record<string, unknown>;
       children?: string[];
     };
-    await putBlockWithClient(client, envelope.target, { id: proposal.id, flavour, fields, children }, "ai_agent");
+    await putBlockWithClient(client, envelope.target, { id: proposal.id, flavour, fields, children }, "user");
     const [targetPage] = await itemsStore.getItemsByIds(client, [envelope.target]);
     resultItemId = envelope.target;
     resultLabel = targetPage ? await resolveResultLabel(client, targetPage.databaseId, targetPage) : envelope.target;
