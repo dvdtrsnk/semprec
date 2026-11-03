@@ -1677,8 +1677,8 @@
       "sequence": 17,
       "status": "proposed",
       "title": "[backend-delivery 17/74] Implement data/mail, data/inbox, semprec-api/adapter changes",
-      "bodyCharacters": 53921,
-      "specSha256": "19b14d8eae7d23743974bee478c05cf16a507d403c72740c69c330eee56c4fbb",
+      "bodyCharacters": 57662,
+      "specSha256": "2c958a864e618430ef10c77ee5c3fc80fffb126edae2145a97e32a6fee8bef5d",
       "members": [
         {
           "id": "gh-1431",
@@ -1735,7 +1735,7 @@
         },
         {
           "id": "gh-1494",
-          "specSha256": "b20a330d04b5532c40730ce7c2b00f051a515479a40b1150882c4d4f6de9d883",
+          "specSha256": "2cdf8268a3aac94f917722ec867fd9d6ae11a253ae2b829abe06370bc4935ad3",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1490"
@@ -1753,7 +1753,7 @@
         },
         {
           "id": "gh-1570",
-          "specSha256": "25b0ad19ea012318e58274135de249c69b7fdcef9a182da065bef606ec2fb315",
+          "specSha256": "b9afd60658a8ccac3de82106d1eec76696a4be0f77be9d326c9884b904aa2e6e",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1384",
@@ -1764,7 +1764,7 @@
         },
         {
           "id": "gh-1637",
-          "specSha256": "f72b289c6eac537f67b4b6aff553141c77bdd4b4e8c132c9ec7cbbefe877aac7",
+          "specSha256": "9e197df6efe219823a30c1f4e56145885d283997de626f142fd6ef11425b5572",
           "parent": "gh-1338",
           "dependencies": [
             "gh-1505",
@@ -1774,7 +1774,7 @@
         },
         {
           "id": "gh-1753",
-          "specSha256": "962ffa37453489303ea06ce422342d3778b11f10850db9e8718db3b068a3fae2",
+          "specSha256": "8c96d46445553e1ca96d27db62df69b89fc9a736ad1c6aa9ca5ef8833340b308",
           "parent": "gh-1338",
           "dependencies": [
             "gh-1508",

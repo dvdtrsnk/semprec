@@ -10,10 +10,10 @@ parent: "sp-62331d42-78af-4b93-ae97-d5ccbe3324df"
 assignees: []
 milestone: null
 createdAt: "2026-10-31T17:31:01.915Z"
-updatedAt: "2026-11-03T05:46:34.429Z"
+updatedAt: "2026-11-03T06:03:31.966Z"
 closedAt: null
 source: null
-approval: {"specSha256":"19b14d8eae7d23743974bee478c05cf16a507d403c72740c69c330eee56c4fbb","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: batch 17 native transport and exact evidence scope","at":"2026-11-03T05:46:34.429Z"}
+approval: {"specSha256":"2c958a864e618430ef10c77ee5c3fc80fffb126edae2145a97e32a6fee8bef5d","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: exact test-support production mail metadata fixture","at":"2026-11-03T06:03:31.966Z"}
 resolution: null
 ---
 **Blocked by:** sp-e02ff8c6-d20d-4fde-be2a-e0033cf9ef91
@@ -417,6 +417,7 @@ Load `state-writes` and `testing`.
 - backend/packages/data/src/mail/mailSyncEnqueue.ts (existing extracted helper/job-key module from Task 2; no new queue behavior)
 - backend/services/semprec-api/src/__tests__/itemsHandler.test.ts (only actual generic flag PATCH transactional mailbox enqueue)
 - backend/packages/agent-runtime/src/__tests__/genericOperationAgentTools.test.ts (only actual agent flag patch transactional mailbox enqueue)
+- backend/packages/data/src/testSupport/testDb.ts (only test-support re-export of the existing upsertMailMessageMeta owner helper for the named REST/agent flag-enqueue fixtures; no production barrel/API)
 
 #### Scope
 
@@ -501,7 +502,7 @@ Load `state-writes`, `db-migrations` and `testing`.
 1. Add a core task name `mailThreadBackfill` to `CORE_TASK_NAMES` and register its handler in `worker.ts`. The handler runs `forEachActiveTenant` and, for each tenant, runs the two passes below.
 2. Pass 1, missing threads: page through `mail_message_meta` rows with `thread_id IS NULL` ordered by `item_id` (keyset, page size 100 to 500, one transaction per page). For each row call `resolveThreadId` with its `message_id`, `in_reply_to`, `references` and the item's subject as hint, and set `thread_id`. The row's own `thread_id` is NULL, so the lookups in `resolveThreadId` (which only consider rows with a thread) never match it; a child processed before its parent gets a new thread that the parent later merges, as in live ingest.
 3. Pass 2, split copies: page through distinct `message_id` values that occur in more than one mailbox and whose rows have more than one distinct `thread_id`; for each, merge all those threads into the lowest `thread_id` with `reassignThread`.
-4. Enqueue the task once at deploy with a fixed `jobKey` (for example `mail-thread-backfill`), `maxAttempts: 3`. A failing tenant is logged and does not stop the others; after all tenants were tried the job fails with the aggregate error so it is retried.
+4. Enqueue the task once at deploy with a fixed `jobKey` (for example `mail-thread-backfill`), `maxAttempts: 3`. The existing invocation is in `db/runMigrationsCli.ts`; verify that real composition and repeated-invocation key safety rather than adding another deploy path. A failing tenant is logged and does not stop the others; after all tenants were tried the job fails with the aggregate error so it is retried.
 5. Add tests: sent messages with NULL `thread_id` get the thread of their parent; copies in two mailboxes end in one thread and the emptied `mail_threads` rows are gone; a second run changes nothing; another tenant's rows are never touched.
 
 #### Touches
@@ -512,6 +513,8 @@ Load `state-writes`, `db-migrations` and `testing`.
 - backend/packages/data/src/mail/mailThreadBackfillJob.ts (new)
 - backend/packages/data/src/index.ts (export line)
 - backend/packages/data/src/mail/__tests__/mailThreadBackfill.test.ts (new)
+- backend/packages/data/src/db/runMigrationsCli.ts (only the existing mailThreadBackfill deploy enqueue composition; repair only if the Task requires it)
+- backend/packages/data/src/__tests__/mailThreadBackfillCli.test.ts (new; isolated owned local invocation of the actual migration CLI and real queue enqueue/repeated-key evidence, no remote deploy)
 
 #### Scope
 
@@ -544,11 +547,11 @@ This builds on the transport interface and the SMTP transport (#1634) and the Gm
 
 #### Task
 
-Load `io-hardening`, `error-handling` and `testing`.
+Load `io-hardening`, `error-handling` and `testing`. Apply `docs/adr/2026-11-03-oauth-mail-send-provider-failures-stay-private.md` only to its named SEND boundaries; preserve the older sync and OAuth contracts.
 
 1. Add `sendMessage(raw, threadId?)` to `GmailRestClient` that calls `users.messages.send` with the raw MIME as base64url and the optional `threadId`, with the same timeout and error discipline as the other Gmail calls. It returns the Gmail message id and thread id.
 2. Implement the `gmail_api` `MailTransport`: obtain an access token from the stored refresh token, pass `providerThreadId` (the provider thread id of the source message, when the draft is a reply) as `threadId`, and return the provider message id.
-3. Map a 400 or 401 from token refresh or send to `MailReauthorizationRequiredError`, and a Gmail response that names an invalid recipient to `MailRecipientRejectedError`; anything else is an ordinary failure. Error text never includes the message or tokens.
+3. Map a 400 or 401 from token refresh or send to `MailReauthorizationRequiredError`, and a Gmail response that names an invalid recipient to `MailRecipientRejectedError`; anything else is an ordinary failure. At the scoped send-provider privacy boundary, unknown failures become fixed generic errors after owned settlement/cleanup; do not infer a known diagnosis or wrap unrelated SQL/token acquisition. Error text never includes the message or tokens.
 4. Register the transport in the factory for the `gmail_api` sync mode.
 
 #### Touches
@@ -558,6 +561,8 @@ Load `io-hardening`, `error-handling` and `testing`.
 - backend/packages/data/src/mail/mailTransport.ts (factory registration)
 - backend/packages/data/src/__tests__/gmailRestClient.unit.test.ts
 - backend/packages/data/src/__tests__/gmailTransport.test.ts (new)
+- backend/packages/data/src/mail/mailSendPrivacy.ts (optional new private helper shared only by the named send operations; no public barrel/raw-error hook or general filtering framework)
+- docs/adr/2026-11-03-oauth-mail-send-provider-failures-stay-private.md (new scoped send-boundary decision; historical accepted ADR bodies stay unchanged)
 
 #### Scope
 
@@ -578,13 +583,15 @@ Load `io-hardening`, `error-handling` and `testing`.
 - When Gmail rejects a recipient, then the transport throws `MailRecipientRejectedError`.
 - The sent message keeps the Message-ID from the MIME, so the later synced copy deduplicates onto the same item.
 
+- Unknown send-provider failures expose fixed cause-free generic errors and safe closed diagnostics, with original primary/secondary values retained internally through owned cleanup. Genuine typed refusals and unrelated credential/SQL failures keep their established semantics. No MIME, token, preauthenticated upload URL or arbitrary error text/name/code escapes the named privacy boundary.
+
 ### Requirement gh-1753: [mail-compose 08/12] Send mail through Microsoft Graph
 
 #### Context
 
 Model tier rationale: Graph has two distinct sending paths with a hard 4 MB request limit, an upload-session protocol and an uncertain Message-ID guarantee, so the behavior has to be proved by tests and the large path involves multi-step provider state.
 
-Mailboxes that sync through Microsoft Graph send through it too. `backend/packages/data/src/mail/graphRestClient.ts` reads and patches messages but cannot send. Graph's `POST /me/sendMail` accepts MIME but limits the request to 4 MB; a larger message has to be created as a draft on the provider's side, its attachments uploaded through upload sessions, and then sent.
+Mailboxes that sync through Microsoft Graph send through it too. `backend/packages/data/src/mail/graphRestClient.ts` reads and patches messages but cannot send. For this Task, `POST /me/sendMail` has a configured budget of 4,000,000 bytes for its base64 MIME request body, not raw MIME. The encoded length is `4 * ceil(rawBytes / 3)`, so at most 3,000,000 raw bytes fit. A larger message is created as a provider-side draft, its attachments uploaded through upload sessions, then sent.
 
 This builds on the Gmail transport (#1637, same interface from #1634) and the Graph sync transport (#1508), whose client and token handling it extends.
 
@@ -592,11 +599,11 @@ Decision: the Message-ID of the outgoing MIME must survive; if it does not on a 
 
 #### Task
 
-Load `io-hardening`, `error-handling` and `testing`.
+Load `io-hardening`, `error-handling` and `testing`. Apply `docs/adr/2026-11-03-oauth-mail-send-provider-failures-stay-private.md` only to its named SEND boundaries; preserve the older sync and OAuth contracts.
 
-1. Add `sendMime(raw)` to `GraphRestClient` for requests up to 4 MB: `POST /me/sendMail` with the MIME as the request body (`text/plain`, base64 encoded as Graph requires).
-2. Add the large path: create the message with `POST /me/messages` carrying the subject, body, recipients, `internetMessageId`, and the reply headers; upload each attachment through `createUploadSession` in chunks; then `POST /me/messages/{id}/send`. A failure after creating the provider-side draft deletes that draft, best effort.
-3. Implement the `graph_api` `MailTransport` choosing the path by raw size, mapping 400/401 token failures to `MailReauthorizationRequiredError` and a refused recipient to `MailRecipientRejectedError`. Register it in the factory.
+1. Add `sendMime(raw)` to `GraphRestClient`: `POST /me/sendMail` with a base64 `text/plain` MIME body of at most 4,000,000 bytes (raw at most 3,000,000). Reject a direct oversized call before token acquisition/fetch; the transport selects the large path instead. Use this exact decimal budget and base64 padding, not a raw 4 MB or 4 MiB threshold.
+2. Add the large path: create the message with `POST /me/messages` carrying the subject, body, recipients, `internetMessageId`, and the reply headers; upload each attachment through `createUploadSession` in chunks; then `POST /me/messages/{id}/send`. A failure after obtaining a validated provider draft id and before final send acceptance attempts deletion of that owned draft, best effort. After actual Graph send acceptance, response cleanup failure keeps the accepted result and never deletes or resubmits the message.
+3. Implement the `graph_api` `MailTransport` choosing the path by the encoded-body budget in Task 1, mapping 400/401 token failures to `MailReauthorizationRequiredError` and a refused recipient to `MailRecipientRejectedError`. Register it in the factory. Apply the scoped send privacy ADR without changing token acquisition.
 4. Prove with tests against a stubbed Graph that the Message-ID is preserved on both paths.
 
 #### Touches
@@ -606,6 +613,8 @@ Load `io-hardening`, `error-handling` and `testing`.
 - backend/packages/data/src/mail/mailTransport.ts (factory registration)
 - backend/packages/data/src/__tests__/graphRestClient.unit.test.ts
 - backend/packages/data/src/__tests__/graphTransport.test.ts (new)
+- backend/packages/data/src/mail/mailSendPrivacy.ts (optional new private helper shared only by the named send operations; no public barrel/raw-error hook or general filtering framework)
+- docs/adr/2026-11-03-oauth-mail-send-provider-failures-stay-private.md (new scoped send-boundary decision; historical accepted ADR bodies stay unchanged)
 
 #### Scope
 
@@ -621,10 +630,13 @@ Load `io-hardening`, `error-handling` and `testing`.
 
 #### Acceptance criteria
 
-- When a message under 4 MB is sent, then it goes through `sendMail` and keeps its Message-ID.
-- When a message over 4 MB with attachments is sent, then it is created, its attachments are uploaded through upload sessions, it is sent, and it keeps its Message-ID.
-- When the large path fails after the provider-side draft was created, then that draft is deleted.
+- When the base64 MIME body fits 4,000,000 bytes (raw at most 3,000,000), it goes through `sendMail` and keeps its Message-ID. Test the exact raw limit; a direct oversized `sendMime` call fails before token/fetch work.
+- When the base64 MIME body exceeds 4,000,000 bytes, a message with attachments takes the draft/upload/send path and keeps its Message-ID. Test just above the raw limit and a raw message below 4 MB whose encoded body already exceeds the budget.
+- When the large path fails after obtaining a validated provider draft id and before send acceptance, deletion of that draft is attempted; the primary failure is preserved if best-effort deletion fails.
 - When the token is revoked, then the transport throws `MailReauthorizationRequiredError`.
+
+- Unknown send-provider failures expose fixed cause-free generic errors and safe closed diagnostics, with original primary/secondary values retained internally through owned cleanup. Genuine typed refusals and unrelated credential/SQL failures keep their established semantics. No MIME, token, preauthenticated upload URL or arbitrary error text/name/code escapes the named privacy boundary.
+- After actual Graph send acceptance, response cleanup failure is safely diagnosed while the accepted result is retained, with no draft deletion or resubmission.
 
 ## Touches
 
