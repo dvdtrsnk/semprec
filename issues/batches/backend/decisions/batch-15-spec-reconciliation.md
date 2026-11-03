@@ -31,3 +31,17 @@ The current backend has no Semp thread-list reader. gh-1728 explicitly excludes 
 Correction to the reported premise behind §2: both actual pendingApprovalResult implementations currently return error:false, not error:true. Preserve that flag and text. Approval deferral remains distinct from ordinary failure and successful non-patch execution; its approvalRequestId is required. The earlier worker report and parent handoff claiming true were mistaken and do not authorize changing it.
 
 Repeated upgrade/session Touches descriptions were shortened with explicit references to §§4–5 to keep the aggregate below the issue body cap; paths and limits remain unchanged.
+
+## 7. Original-write change redaction (gh-1527)
+
+Apply docs/adr/2026-11-03-item-patch-change-redaction-uses-write-metadata.md. Capture classification from the definitions already used by the guarded item write; carry a private enumerable Symbol through read projection, with one validated data reader and fail-closed missing metadata. No new property locks, shared output fields or schema-writer coordination are authorized. This snapshot defines classification for this operation and does not claim schema stability through commit. Preserve JSON/model text and gh-1429 pre-images. Test the actual type-change/delete gap and registered read projection with finite owned schedules, without claiming global schema serialization.
+
+## 8. Description catalogs and honest app-undo copy (gh-1683, gh-1773)
+
+Apply docs/adr/2026-11-03-approval-notification-undo-copy-follows-application-capability.md. Add all exact six catalog keys with the declared snapshot parameter contracts. Select app undo from generic operation metadata; all external MCP requests select unavailable app undo, independently of risk class. Replace the stronger irreversible sentence with the explicitly app-scoped sentence; render it as a separate suffix in the same locale/transaction. Only the named helper/writer/catalog/producer tests are added to scope. No claim that every external effect is universally irreversible, and no MCP argument reaches the body.
+
+## 9. Pairing and terminalization failure ownership (gh-1568)
+
+Apply docs/adr/2026-11-03-failed-agent-run-pairing-and-close-share-a-transaction.md. One managed failure-close transaction for the driven runtime and Semp failRun reads/pairs before terminalization; supplied-client recovery is rollback-only on failure. Preserve the exact primary alone on successful recovery or primary-first/cause AggregateError with the secondary recovery value when it also fails. Do not swallow pairing failure and then close the run. Use existing getAgentRun row locking and existing managed-owner helpers; no new global lock hierarchy/retry/lifecycle service. Ordinary delegated/MCP behavior and separate heartbeat owners remain unchanged. Explicit failure-injection tests prove rollback, eventual startup repair and actual next wake after recovery.
+
+The redundant top-level aggregate Touches copy is replaced by a reference to the complete exact member Touches, retaining all source clauses while staying below the body-size cap. The two-round review budget is unchanged.
