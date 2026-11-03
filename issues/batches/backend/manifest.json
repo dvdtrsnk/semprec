@@ -3,7 +3,7 @@
   "baseline": "9b4929ba4e672a8f2b0c83a955bdf0679757fcc3",
   "programIssue": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
   "scope": "backend-only",
-  "sourceCount": 665,
+  "sourceCount": 669,
   "activeBatchCount": 74,
   "heldBatchCount": 2,
   "externalPrerequisites": [
@@ -1880,13 +1880,49 @@
       "id": "sp-f1a0629b-0137-4cd3-a7b7-9421ec0dc438",
       "sequence": 19,
       "status": "proposed",
-      "title": "[backend-delivery 19/74] Verify security readiness under parent supervision",
-      "bodyCharacters": 11104,
-      "specSha256": "ff4fb264aecc5696062b17f7a503d96cfb8cc3ae4a0ba7b78675c5e41b135287",
+      "title": "[backend-delivery 19/74] Accept local security repairs and retain the production release gate",
+      "bodyCharacters": 35037,
+      "specSha256": "ce4c81d55d4b0307a644b8f8ef50cb3a58ba482a0215f43a5c6d5a7329a1da70",
       "members": [
         {
+          "id": "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a",
+          "specSha256": "2862274795b7ef4a5264cc0d2de4d4142759b8b042e21e012006d0bfde849be2",
+          "parent": "gh-961",
+          "dependencies": [],
+          "approval": "repository-approved"
+        },
+        {
+          "id": "sp-94a5c71d-4663-4014-9256-db63e179346e",
+          "specSha256": "2e258c0414d4b4030093a2ef57f39e4044844e6d537232815f24ef7876a87b5a",
+          "parent": "gh-961",
+          "dependencies": [
+            "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a"
+          ],
+          "approval": "repository-approved"
+        },
+        {
+          "id": "sp-dd171464-d76c-45f9-b113-73d81b38aad4",
+          "specSha256": "f30cdc5a063fb7a28cc878a9cd8062dfa19a833c60ece2d3c1b0b2104546ae3b",
+          "parent": "gh-961",
+          "dependencies": [
+            "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a",
+            "sp-94a5c71d-4663-4014-9256-db63e179346e"
+          ],
+          "approval": "repository-approved"
+        },
+        {
+          "id": "sp-a0f046dd-8781-4141-bc04-5dad0b725faf",
+          "specSha256": "258b55dbc9151bb919bc7b9462f180e8ec62b4dc78b6f28e0fecbc3825af2942",
+          "parent": "gh-961",
+          "dependencies": [
+            "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a",
+            "sp-dd171464-d76c-45f9-b113-73d81b38aad4"
+          ],
+          "approval": "repository-approved"
+        },
+        {
           "id": "gh-1086",
-          "specSha256": "62c272324aa2fcab0dbc834b4a0f4d1e069dfb5364e53afaf302cffea589a562",
+          "specSha256": "bc270280e733725519967175b68fcdb1b7ab52b8b5a467aca9e626102539ccaf",
           "parent": "gh-961",
           "dependencies": [
             "gh-1000",
@@ -1910,9 +1946,13 @@
             "gh-1084",
             "gh-1080",
             "gh-1085",
-            "gh-1068"
+            "gh-1068",
+            "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a",
+            "sp-94a5c71d-4663-4014-9256-db63e179346e",
+            "sp-dd171464-d76c-45f9-b113-73d81b38aad4",
+            "sp-a0f046dd-8781-4141-bc04-5dad0b725faf"
           ],
-          "approval": "unapproved"
+          "approval": "repository-approved"
         }
       ]
     },
@@ -1921,18 +1961,21 @@
       "sequence": 20,
       "status": "proposed",
       "title": "[backend-delivery 20/74] Implement data/tenancy, data/auth, data/inbox changes",
-      "bodyCharacters": 55833,
-      "specSha256": "9f25be1f8698fa5ddc4ee1890baf62128473e8cb05ee3baed819031d918cfa33",
+      "bodyCharacters": 56407,
+      "specSha256": "71d45e5a3d95e795e2a4e6552ff966b4aee7a80f2648f3d8245627f21e4335ca",
       "members": [
         {
           "id": "gh-1087",
-          "specSha256": "e9a78e8ec3be57f426a8b28bfd5622ba9b45412124aa0d0ea28649c9a045f4c0",
+          "specSha256": "1651c063e0d2e0e68a0e646021823978f4c2c4017d4712968a7fc2a327e7877f",
           "parent": "gh-961",
           "dependencies": [
             "gh-1005",
             "gh-1073",
             "gh-1040",
-            "gh-1086"
+            "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a",
+            "sp-94a5c71d-4663-4014-9256-db63e179346e",
+            "sp-dd171464-d76c-45f9-b113-73d81b38aad4",
+            "sp-a0f046dd-8781-4141-bc04-5dad0b725faf"
           ],
           "approval": "approved"
         },

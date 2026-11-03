@@ -44,6 +44,9 @@ if [[ "$1" == "compose" && " $* " == *" exec -T postgres "* ]]; then
 else
   exit 24
 fi'
+write_mock node '
+printf "node %s\\n" "$*" >> "$TEST_STATE/commands"
+[[ ! -e "$TEST_STATE/fail-ledger-validation" ]]'
 write_mock install 'mkdir -p "${!#}"'
 write_mock restic '
 printf "restic %s\\n" "$*" >> "$TEST_STATE/commands"
@@ -117,6 +120,15 @@ fi
 ! test -e "$TEST_BACKUP_DIRECTORY/tenant-deletions.ledger"
 ! test -e "$TEST_STATE/commands" || ! grep -q '^restic ' "$TEST_STATE/commands"
 rm "$TEST_STATE/fail-ledger" "$TEST_STATE/commands"
+
+touch "$TEST_STATE/fail-ledger-validation"
+if run_backup env; then
+  echo 'ledger validation failure unexpectedly succeeded' >&2
+  exit 1
+fi
+! test -e "$TEST_BACKUP_DIRECTORY/tenant-deletions.ledger.tmp"
+! grep -q '^restic ' "$TEST_STATE/commands"
+rm "$TEST_STATE/fail-ledger-validation" "$TEST_STATE/commands"
 
 touch "$TEST_STATE/fail-key-backup"
 if run_backup env; then

@@ -1,22 +1,20 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 import { expect, it } from "vitest";
 
 const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const blockRoot = resolve(backend, "../shared/block-model");
-const runtime = join(backend, "packages/data/src/__tests__/fixtures/mailThreadBackfillCliRuntime.mjs");
 const compiled = join(backend, "packages/data/dist/db/runMigrationsCli.js");
 const source = join(backend, "packages/data/src/db/runMigrationsCli.ts");
 
-async function runCli(databaseUrl: string, blockEntry: string): Promise<void> {
+async function runCli(databaseUrl: string): Promise<void> {
   await new Promise<void>((resolveResult, reject) => {
-    const child = spawn(process.execPath, [runtime], {
+    const child = spawn(process.execPath, [compiled], {
       cwd: backend,
-      env: { ...process.env, DATABASE_URL: databaseUrl, BATCH17_BLOCK_MODEL_ENTRY: blockEntry },
+      env: { ...process.env, DATABASE_URL: databaseUrl, NODE_OPTIONS: undefined, NODE_PATH: undefined },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let bytes = 0;
@@ -54,7 +52,7 @@ async function runCli(databaseUrl: string, blockEntry: string): Promise<void> {
         reject(new Error(`Migration CLI fixture failed (exit ${String(code)}, signal ${String(signal)})`));
       else {
         console.info(
-          `BATCH17_CLI ${JSON.stringify({ argv: [process.execPath, runtime], cwd: backend, pid: child.pid, exit: code, outputBytes: bytes })}`,
+          `BATCH17_CLI ${JSON.stringify({ argv: [process.execPath, compiled], cwd: backend, pid: child.pid, exit: code, outputBytes: bytes })}`,
         );
         resolveResult();
       }
@@ -81,7 +79,6 @@ async function runScenario(withholdAcknowledgement: boolean): Promise<ScenarioRe
   const name = `batch17_${randomUUID().replaceAll("-", "")}`;
   // The database identifier is a fixed prefix and hexadecimal digits from a generated UUID.
   const identifier = `"${name}"`;
-  let temporary: string | undefined;
   let database: Pool | undefined;
   let attemptOwned = false;
   let creatorSettled = false;
@@ -90,6 +87,7 @@ async function runScenario(withholdAcknowledgement: boolean): Promise<ScenarioRe
   let databaseAbsent = false;
   let creator: import("pg").PoolClient | undefined;
   let creatorIdentity: { pid: number; backend_start: string } | undefined;
+  let removalIdentity: { pid: number; backend_start: string } | undefined;
   let primary: { value: unknown } | undefined;
   const cleanup: unknown[] = [];
   const waitForOwnedBackend = async (identity: { pid: number; backend_start: string }): Promise<void> => {
@@ -138,36 +136,19 @@ async function runScenario(withholdAcknowledgement: boolean): Promise<ScenarioRe
     const url = new URL(baseUrl);
     url.pathname = `/${name}`;
     database = new Pool({ connectionString: url.toString(), ...poolOptions });
-    temporary = mkdtempSync(join(blockRoot, "node_modules/.batch17-"));
-    const buildArgs = [
-      join(backend, "node_modules/typescript/bin/tsc"),
-      "-p",
-      join(blockRoot, "tsconfig.json"),
-      "--noEmit",
-      "false",
-      "--declaration",
-      "false",
-      "--incremental",
-      "false",
-      "--outDir",
-      temporary,
-    ];
-    const build = spawnSync(process.execPath, buildArgs, {
-      cwd: backend,
-      timeout: 25_000,
-      maxBuffer: 1_000_000,
-      encoding: "utf8",
-    });
-    if (build.error || build.status !== 0)
-      throw new Error(`Temporary block-model build failed (${String(build.status)})`, { cause: build.error });
-    const blockEntry = join(temporary, "index.js");
-    const entrySha256 = createHash("sha256").update(readFileSync(compiled)).digest("hex");
-    console.info(`BATCH17_CLI_COMPILED sha256=${entrySha256}`);
-    console.info(
-      `BATCH17_BLOCK_BUILD ${JSON.stringify({ argv: [process.execPath, ...buildArgs], cwd: backend, pid: build.pid, exit: build.status })}`,
-    );
+    for (const artifact of [
+      compiled,
+      join(backend, "packages/shared/dist/index.js"),
+      join(backend, "packages/queue/dist/index.js"),
+      join(backend, "packages/module-registry/dist/index.js"),
+      join(backend, "../shared/block-model/dist/index.js"),
+    ]) {
+      console.info(
+        `BATCH19_ARTIFACT ${artifact} sha256=${createHash("sha256").update(readFileSync(artifact)).digest("hex")}`,
+      );
+    }
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      await runCli(url.toString(), blockEntry);
+      await runCli(url.toString());
       const { rows } = await database.query<{ key: string | null; max_attempts: number }>(
         "SELECT key, max_attempts FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
         ["mailThreadBackfill"],
@@ -201,7 +182,6 @@ async function runScenario(withholdAcknowledgement: boolean): Promise<ScenarioRe
   if (attemptOwned && creatorSettled && consumersSettled) {
     const removal = new Pool({ connectionString: baseUrl, ...poolOptions });
     let removalClient: import("pg").PoolClient | undefined;
-    let removalIdentity: { pid: number; backend_start: string } | undefined;
     try {
       removalClient = await removal.connect();
       const identity = await removalClient.query<{ pid: number; backend_start: string }>(
@@ -238,11 +218,6 @@ async function runScenario(withholdAcknowledgement: boolean): Promise<ScenarioRe
     }
   }
   try {
-    if (temporary) rmSync(temporary, { recursive: true, force: true });
-  } catch (error) {
-    cleanup.push(error);
-  }
-  try {
     await operationPool.end();
   } catch (error) {
     cleanup.push(error);
@@ -255,10 +230,24 @@ async function runScenario(withholdAcknowledgement: boolean): Promise<ScenarioRe
   if (cleanup.length)
     throw new AggregateError(primary ? [primary.value, ...cleanup] : cleanup, "CLI fixture cleanup failed");
   console.info(
-    `BATCH17_DB ${JSON.stringify({ creator: creatorIdentity, creatorObservedLive, creatorSettled, databaseAbsent, acknowledgementWithheld: withholdAcknowledgement })}`,
+    `BATCH17_DB ${JSON.stringify({ creator: creatorIdentity, remover: removalIdentity, creatorObservedLive, creatorSettled, databaseAbsent, acknowledgementWithheld: withholdAcknowledgement })}`,
   );
   return { failure: primary, creatorSettled, observedCreated, creatorObservedLive, databaseAbsent };
 }
+
+it("reaches application configuration refusal without a loader", () => {
+  const result = spawnSync(process.execPath, [compiled], {
+    cwd: backend,
+    env: { ...process.env, DATABASE_URL: undefined, NODE_OPTIONS: undefined, NODE_PATH: undefined },
+    encoding: "utf8",
+    timeout: 40_000,
+    maxBuffer: 2_000_000,
+  });
+  expect(result.error).toBeUndefined();
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("DATABASE_URL is not set");
+  expect(result.stderr).not.toContain("ERR_MODULE_NOT_FOUND");
+});
 
 it("runs the compiled migration root twice and queues one keyed mail-thread backfill", async () => {
   const result = await runScenario(false);

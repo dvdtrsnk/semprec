@@ -7,8 +7,8 @@ implementation or alter the running Relay workflow.
 
 ## Inventory and authority
 
-- 665 original open implementation requirements are assigned exactly once.
-- 74 main-lane batch specifications cover 663 requirements.
+- 665 original implementation requirements and 4 batch-19 security-review corrective requirements are assigned exactly once (669 total). The four additions preserve, rather than replace or waive, the original requirements.
+- 74 main-lane batch specifications cover 667 requirements. The two held client requirements remain separate.
 - 2 held batches preserve the deferred client-only sources gh-1088 and gh-1611.
 - The original 58 feature epics remain reporting groups. Sources keep their
   original parents, Task, AC, declared blockers and specification hashes.
@@ -163,7 +163,7 @@ reported by the ordinary validator; they are not silently repaired by batching.
 | 16 | [[backend-delivery 16/74] Implement architecture, data/auth, realtime changes](../../items/sp-e02ff8c6-d20d-4fde-be2a-e0033cf9ef91.md) | 10 | 57430 |
 | 17 | [[backend-delivery 17/74] Implement data/mail, data/inbox, semprec-api/adapter changes](../../items/sp-db5e1165-5ccf-4fba-bce0-fd7a1f2bc098.md) | 11 | 55538 |
 | 18 | [[backend-delivery 18/74] Implement data/mail, data/observability, data/docs changes](../../items/sp-a0bbb89b-34c7-4d8e-8758-3552b91c85a5.md) | 9 | 46516 |
-| 19 | [[backend-delivery 19/74] Verify security readiness under parent supervision](../../items/sp-f1a0629b-0137-4cd3-a7b7-9421ec0dc438.md) | 1 | 10388 |
+| 19 | [[backend-delivery 19/74] Accept local security repairs and retain the production release gate](../../items/sp-f1a0629b-0137-4cd3-a7b7-9421ec0dc438.md) | 5 | 33722 |
 | 20 | [[backend-delivery 20/74] Implement data/tenancy, data/auth, data/inbox changes](../../items/sp-823fc8d3-3186-4b22-9c0b-3e360048d9d3.md) | 7 | 55833 |
 | 21 | [[backend-delivery 21/74] Implement data/mail, data/inbox, data/transcription changes](../../items/sp-3f9fb92f-ea6b-468c-8243-1fb711c94aa7.md) | 11 | 56981 |
 | 22 | [[backend-delivery 22/74] Implement application, data/chokePoint, shared/genericOperations changes](../../items/sp-0a8b4be1-3039-4f6d-87b4-e1b673eab967.md) | 7 | 54499 |
@@ -229,3 +229,15 @@ They preserve the deferrals rather than pretending the client work is complete.
 |---|---|---:|---:|
 | Held | [[backend-held 1/2] Resolve [mt-go-live 03/03] Add the invitation acceptance page](../../items/sp-bdd77f36-8455-4ccf-b861-fe913749fb21.md) | 1 | 5119 |
 | Held | [[backend-held 2/2] Resolve [agent-md 04/07] Switch the web AGENT page to the guidance API and remove projects.agents](../../items/sp-0f2c4b83-7f3f-429c-8a7a-fb50cfad5086.md) | 1 | 5383 |
+
+## Local continuation and production release gates
+
+Owner instruction 2026-11-03 and
+[the continuation ADR](../../../docs/adr/2026-11-03-local-development-continues-with-open-production-gates.md)
+separate local acceptance from live production authorization. Batch 19 retains
+all five source snapshots/routing, completes its four local corrective sources
+and aggregate under the recorded parent decision, and leaves gh-1086 OPEN as
+a production/release gate. Its unavailable external evidence does not halt
+subsequent authorized local batches. No production check is waived or passed
+by this sequencing exception; original requirements and held client scope
+remain preserved. See [the exact decision](decisions/batch-19-local-continuation.md).
