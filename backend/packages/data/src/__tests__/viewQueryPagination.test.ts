@@ -510,6 +510,23 @@ describe("text sort collation and title tie-break (issue #1524)", () => {
     expect(paged.map(nameOf)).toEqual(["Auto", "Hrad", "Chalupa", "Rybník", "Řeka"]);
   });
 
+  it("uses the same Czech collation for URL ordering and its keyset cursor", async () => {
+    await chokePoint.createProperty({ databaseId, key: "url", name: "URL", type: "url" });
+    for (const name of titles) {
+      const id = ids[name];
+      if (!id) throw new Error(`Missing place ${name}`);
+      await chokePoint.updateItem({ databaseId, itemId: id, propertiesPatch: { url: `https://example.test/${name}` } });
+    }
+    const sort = [{ property: "url", direction: "asc" }];
+    const { ids: paged, pages } = await collectPages((cursor) =>
+      chokePoint.queryDatabaseItems(databaseId, { sort, limit: 2, cursor, locale: "cs" }),
+    );
+    expect(pages).toBe(3);
+    expect(paged.map(nameOf)).toEqual(["Auto", "Hrad", "Chalupa", "Rybník", "Řeka"]);
+    const neutral = await chokePoint.queryDatabaseItems(databaseId, { sort, locale: "en" });
+    expect(neutral.items.map((item) => item.properties.name)).toEqual(["Auto", "Chalupa", "Hrad", "Řeka", "Rybník"]);
+  });
+
   it("reads the locale of a user", async () => {
     const user = await createUser(pool, {
       email: `locale-${randomUUID()}@example.test`,

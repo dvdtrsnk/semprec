@@ -89,6 +89,19 @@ describe("views", () => {
     });
 
     describe("gallery view type", () => {
+      it.each(["table", "board", "calendar", "list"])(
+        "keeps common config validation and permits unrelated fields for the %s built-in",
+        async (type) => {
+          const db = await makeTasksDb();
+          const config = { columns: 5, aspect: "1:1", visibility: { name: true } };
+          const view = await chokePoint.createView({ databaseId: db.id, type, name: "Existing type", config });
+          expect(view.config).toMatchObject(config);
+          await expect(
+            chokePoint.patchView({ id: view.id, actor: userActor, config: { visibility: { name: "not boolean" } } }),
+          ).rejects.toMatchObject({ status: 400, details: { field: "config" } });
+          expect((await chokePoint.getView(view.id))?.config).toEqual(view.config);
+        },
+      );
       it("creates gallery views with and without a coverKey", async () => {
         const db = await makeTasksDb();
         const plain = await chokePoint.createView({
@@ -148,6 +161,8 @@ describe("views", () => {
         });
         const patched = await chokePoint.patchView({ id: view.id, actor: userActor, config: { columns: 2 } });
         expect(patched.config).toMatchObject({ columns: 2, aspect: "3:4" });
+        const aspectOnly = await chokePoint.patchView({ id: view.id, actor: userActor, config: { aspect: "4:3" } });
+        expect(aspectOnly.config).toMatchObject({ columns: 2, aspect: "4:3" });
       });
 
       it("rejects ownerModuleId and re-registration like every built-in type", async () => {

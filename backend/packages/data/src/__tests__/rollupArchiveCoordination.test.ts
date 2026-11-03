@@ -288,8 +288,7 @@ describe("rollup source archive coordination", () => {
         const closed = await Promise.allSettled(pools.map((pool) => pool.end()));
         const secondary = [...outcomes, ...closed]
           .filter((result) => result.status === "rejected")
-          .map((result) => result.reason)
-          .filter((reason) => !failure || reason !== failure.error);
+          .map((result) => result.reason);
         if (secondary.length)
           failure = { error: new AggregateError(failure ? [failure.error, ...secondary] : secondary) };
       }
@@ -377,14 +376,9 @@ describe("rollup source archive coordination", () => {
       waiter?.restore();
       const closed = await Promise.allSettled(pools.map((pool) => pool.end()));
       const secondary: unknown[] = [];
-      if (
-        creationResult?.status === "rejected" &&
-        creationResult.reason !== marker &&
-        (!failure || creationResult.reason !== failure.error)
-      )
+      if (creationResult?.status === "rejected" && creationResult.reason !== marker)
         secondary.push(creationResult.reason);
-      if (archiveResult?.status === "rejected" && (!failure || archiveResult.reason !== failure.error))
-        secondary.push(archiveResult.reason);
+      if (archiveResult?.status === "rejected") secondary.push(archiveResult.reason);
       for (const result of closed) if (result.status === "rejected") secondary.push(result.reason);
       if (secondary.length)
         failure = { error: new AggregateError(failure ? [failure.error, ...secondary] : secondary) };
@@ -406,6 +400,7 @@ describe("rollup source archive coordination", () => {
         sourcePropertyKey: null,
       };
       const client = await runtime.connect();
+      let clientFailure: { error: unknown } | undefined;
       try {
         await expect(databaseArchiveWithClient(client, database.id)).rejects.toThrow(/active managed transaction/);
         await expect(upsertRollupDependency(client, input)).rejects.toThrow(/active managed transaction/);
@@ -415,9 +410,14 @@ describe("rollup source archive coordination", () => {
             await expect(upsertRollupDependency(client, input)).rejects.toThrow(/active managed transaction/);
           }),
         );
-      } finally {
-        client.release();
+      } catch (error) {
+        clientFailure = { error };
       }
+      const [released] = await Promise.allSettled([Promise.resolve().then(() => client.release())]);
+      if (clientFailure && released?.status === "rejected")
+        throw new AggregateError([clientFailure.error, released.reason]);
+      if (clientFailure) throw clientFailure.error;
+      if (released?.status === "rejected") throw released.reason;
       for (const isolation of ["repeatable_read", "serializable"] as const) {
         await expect(
           runInTenant(tenant, () =>
