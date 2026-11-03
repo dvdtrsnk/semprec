@@ -1775,16 +1775,65 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     expect(card!.properties.history).toHaveLength(3);
   });
 
-  it("a card invalid for targetArchived is not touched when its source is deleted and restored", async () => {
+  it.each(["targetArchived", "targetDeleted", "legacy", "otherSource"] as const)(
+    "source deletion supersedes %s invalidity and repeated deletion is a no-op",
+    async (kind) => {
+      const { item } = await createTypedItem("Buy milk");
+      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+      const proposed = await findProposalForItem(pool, proposalsId, item.id);
+      const reason = {
+        code: kind === "legacy" ? "targetArchived" : kind === "otherSource" ? "sourceDeleted" : kind,
+        field: "target",
+        itemId: await databaseIdFor("tasks"),
+        label: "Tasks",
+      };
+      await withTransaction(pool, (client) =>
+        itemsStore.updateItemProperties(client, {
+          databaseId: proposalsId,
+          itemId: proposed!.id,
+          propertiesPatch: { status: "invalid", ...(kind === "legacy" ? {} : { invalidReason: reason }) },
+        }),
+      );
+      const before = await findProposalForItem(pool, proposalsId, item.id);
+
+      await trashSource(item.id);
+      await runTick(pool, databaseIds, item.id, async () => {
+        throw new Error("computeProposal must not be called for a deleted source");
+      });
+      const deleted = await findProposalForItem(pool, proposalsId, item.id);
+      expect(deleted?.properties.status).toBe("invalid");
+      expect(deleted!.properties.invalidReason).toEqual({
+        code: "sourceDeleted",
+        field: "",
+        itemId: item.id,
+        label: "Buy milk",
+      });
+      const previousHistory = before?.properties.history;
+      const history = deleted?.properties.history;
+      if (!Array.isArray(previousHistory) || !Array.isArray(history)) throw new Error("expected proposal history");
+      expect(history).toHaveLength(previousHistory.length + 1);
+      expect(history.at(-1)).toMatchObject({ author: "ai", kind: "invalidated" });
+      await runTick(pool, databaseIds, item.id, async () => {
+        throw new Error("computeProposal must not be called for a deleted source");
+      });
+      expect(await findProposalForItem(pool, proposalsId, item.id)).toEqual(deleted);
+      await restoreSource(item.id);
+      await runTick(pool, databaseIds, item.id, async () => {
+        throw new Error("computeProposal must not be called when the source fingerprint is unchanged");
+      });
+
+      const after = await findProposalForItem(pool, proposalsId, item.id);
+      expect(after!.properties.status).toBe("proposed");
+      expect(after!.properties.invalidReason).toBeNull();
+      expect(after!.properties.proposal).toEqual(proposed!.properties.proposal);
+    },
+  );
+
+  it("a restore tick leaves targetArchived unchanged when no deletion transition occurred", async () => {
     const { item } = await createTypedItem("Buy milk");
     await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
     const proposed = await findProposalForItem(pool, proposalsId, item.id);
-    const reason = {
-      code: "targetArchived",
-      field: "target",
-      itemId: await databaseIdFor("tasks"),
-      label: "Tasks",
-    };
+    const reason = { code: "targetArchived", field: "target", itemId: await databaseIdFor("tasks"), label: "Tasks" };
     await withTransaction(pool, (client) =>
       itemsStore.updateItemProperties(client, {
         databaseId: proposalsId,
@@ -1793,20 +1842,12 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       }),
     );
     const before = await findProposalForItem(pool, proposalsId, item.id);
-
     await trashSource(item.id);
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for a deleted source");
-    });
     await restoreSource(item.id);
     await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called when the source fingerprint is unchanged");
+      throw new Error("unchanged source must not recompute");
     });
-
-    const after = await findProposalForItem(pool, proposalsId, item.id);
-    expect(after!.properties.status).toBe("invalid");
-    expect(after!.properties.invalidReason).toEqual(reason);
-    expect(after!.properties.history).toEqual(before!.properties.history);
+    expect(await findProposalForItem(pool, proposalsId, item.id)).toEqual(before);
   });
 
   it.each(["confirmed", "rejected"] as const)(

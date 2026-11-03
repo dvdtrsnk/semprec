@@ -49,8 +49,8 @@ function parseAcceptBody(raw: unknown): { token: string; password: string; displ
  *
  * Per client address, under the `invitationAccept` limit of `clientIpThrottle.ts` (the limiter type
  * `authHandler.ts` also uses for login and password reset): a request over the limit is answered 429
- * before its body is read. Only an unusable token counts toward the limit; a validation failure, an
- * oversized body and a success do not.
+ * before its body is read. In-flight requests hold reservations; completed unusable tokens remain
+ * counted, while validation failures, oversized bodies, successes and unexpected failures release them.
  */
 export function createInvitationRequestListener(pool: Pool, options: InvitationRequestListenerOptions) {
   const clientIpThrottle = options.clientIpThrottle ?? createClientIpThrottle();

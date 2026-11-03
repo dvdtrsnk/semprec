@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { z } from "zod";
 import { requireAffectedRows, requireSingleRow, withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
@@ -30,6 +31,9 @@ const CARD_STATE_PROPERTIES: ReadonlyArray<{ key: string; name: string; type: Pr
  * option order, so a populated tenant and a fresh tenant end with the same option list.
  */
 const CARD_STATE_STATUS_OPTIONS = ["computing", "computeFailed"] as const;
+const statusConfigSchema = z
+  .object({ options: z.array(z.object({ key: z.string() }).passthrough()).optional() })
+  .passthrough();
 
 /**
  * One-time populated-upgrade cutover for issue #1451's Processing proposals card state (mirroring
@@ -73,12 +77,12 @@ export async function runProcessingProposalsCardStateCutoverMigration(pool: Pool
       );
     }
 
-    const { rows: statusRows } = await client.query<{ id: string; config: { options?: { key: string }[] } }>(
+    const { rows: statusRows } = await client.query<{ id: string; config: unknown }>(
       `SELECT id, config FROM properties WHERE database_id = $1 AND key = 'status'`,
       [proposals.id],
     );
     const status = requireSingleRow(statusRows, "properties.status row");
-    const options = status.config.options ?? [];
+    const options = statusConfigSchema.parse(status.config).options ?? [];
     const missingOptions = CARD_STATE_STATUS_OPTIONS.filter((key) => !options.some((option) => option.key === key));
     if (missingOptions.length > 0) {
       const result = await client.query(

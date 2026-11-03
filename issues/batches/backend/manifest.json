@@ -1961,12 +1961,12 @@
       "sequence": 20,
       "status": "proposed",
       "title": "[backend-delivery 20/74] Implement data/tenancy, data/auth, data/inbox changes",
-      "bodyCharacters": 56407,
-      "specSha256": "71d45e5a3d95e795e2a4e6552ff966b4aee7a80f2648f3d8245627f21e4335ca",
+      "bodyCharacters": 55757,
+      "specSha256": "cc46422dd1174fec2d7986eb78b76f85cad39e5555fd5a5bfe4b15fad45ed006",
       "members": [
         {
           "id": "gh-1087",
-          "specSha256": "1651c063e0d2e0e68a0e646021823978f4c2c4017d4712968a7fc2a327e7877f",
+          "specSha256": "bba669a8114adada1b13a8c02b935d13b0b9f89e9c3cc3575e9745af3d894933",
           "parent": "gh-961",
           "dependencies": [
             "gh-1005",
@@ -1981,7 +1981,7 @@
         },
         {
           "id": "gh-1262",
-          "specSha256": "ed2cc161f5cdbfd8835df4119806499cebc51bca9f43f9f257d97bdad0958e96",
+          "specSha256": "f77477c85887ad514ca5c032249e31879dcfdb976ab9c3a8de9c0fa7aa6e856c",
           "parent": null,
           "dependencies": [
             "gh-1067",
@@ -1991,7 +1991,7 @@
         },
         {
           "id": "gh-1387",
-          "specSha256": "2144710fbb013e94cf55454af77c298b758f936472826ad0995061666fb68e97",
+          "specSha256": "5cda1a53a605c7284bf555a5175dedd939184e7671993ef1df4332c9516193b4",
           "parent": "gh-1296",
           "dependencies": [
             "gh-1262"
@@ -2000,7 +2000,7 @@
         },
         {
           "id": "gh-1449",
-          "specSha256": "fc2ef7435824148787ce19f07e1033308820b638a4cdd9761c0a99a434f920c2",
+          "specSha256": "32edbc594ec4dec69d49aef31a4488bde792c24eee06094a5e49020a163f10cf",
           "parent": "gh-1309",
           "dependencies": [
             "gh-1416",
@@ -2020,7 +2020,7 @@
         },
         {
           "id": "gh-1451",
-          "specSha256": "d91966dff08aab5f034199fd7b0dbaceb74a3eb6280cac07dceebad68c1214be",
+          "specSha256": "15de32ee667dfe7c506c7f9d9d5e9660b7b930306fa6c14d29bad2f5e5fb9ea9",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1449"
@@ -2029,7 +2029,7 @@
         },
         {
           "id": "gh-1482",
-          "specSha256": "069e12010d896b37be19b7bacae96d9dc111fe4daae696e46668dad7d3628485",
+          "specSha256": "2d87350eda1c462a4ea01505a78ea8d9a1c1831193b7337c201e587bf06cc226",
           "parent": "gh-1313",
           "dependencies": [
             "gh-1451"

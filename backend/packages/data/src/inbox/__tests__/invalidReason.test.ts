@@ -67,7 +67,16 @@ describe("renderInvalidReason (issue #1482)", () => {
     expect(await renderInvalidReason(ARCHIVED_REASON, "en")).toBe(
       "The target “Website redesign” was archived, so this proposal has nowhere to go. Choose another target or ask Semp to recompute.",
     );
-    expect(await renderInvalidReason(ARCHIVED_REASON, "cs")).toContain("„Website redesign“");
+    expect(await renderInvalidReason(ARCHIVED_REASON, "cs")).toBe(
+      "Cíl „Website redesign“ byl archivován, takže návrh nemá kam zapsat. Vyberte jiný cíl nebo požádejte Semp o nový výpočet.",
+    );
+    const deleted: InvalidReason = { ...ARCHIVED_REASON, code: "targetDeleted" };
+    expect(await renderInvalidReason(deleted, "en")).toBe(
+      "The target “Website redesign” was deleted, so this proposal has nowhere to go. Choose another target or ask Semp to recompute.",
+    );
+    expect(await renderInvalidReason(deleted, "cs")).toBe(
+      "Cíl „Website redesign“ byl smazán, takže návrh nemá kam zapsat. Vyberte jiný cíl nebo požádejte Semp o nový výpočet.",
+    );
   });
 
   it("falls back to English for a locale without a catalog", async () => {

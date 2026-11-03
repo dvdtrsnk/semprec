@@ -6,7 +6,9 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
+import { login, verifySessionToken } from "../auth/authActions.js";
+import { hashPassword } from "../auth/passwordHash.js";
 import { runMigrations } from "../db/migrate.js";
 import { withTransaction } from "../db/pool.js";
 import { runApprovalRequestExecutionStatusCutoverMigration } from "../mcp/approvalRequestExecutionStatusCutoverMigration.js";
@@ -25,6 +27,104 @@ import { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
 
 const EXAMPLES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "db", "migrationExamples");
 const LONG_TITLE = "a title longer than ten characters";
+
+it("preserves populated users when the display name migration runs", async () => {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("Missing test database URL");
+  // The database identifier consists of a fixed prefix and generated UUID hex.
+  const name = `batch20_users_${randomUUID().replaceAll("-", "")}`;
+  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch20-users-"));
+  const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+  const migration = "0124_users_display_name.sql";
+  let scratch: Pool | undefined;
+  let created = false;
+  let failure: { error: unknown } | undefined;
+  try {
+    await admin.query(`CREATE DATABASE "${name}"`);
+    created = true;
+    const scratchUrl = new URL(url);
+    scratchUrl.pathname = `/${name}`;
+    scratch = new Pool({
+      connectionString: scratchUrl.toString(),
+      connectionTimeoutMillis: 5000,
+      statement_timeout: 30000,
+    });
+    for (const file of (await readdir(migrations))
+      .filter((entry) => entry.endsWith(".sql") && entry < migration)
+      .sort()) {
+      await copyFile(path.join(migrations, file), path.join(dir, file));
+    }
+    await runMigrations(scratch, dir);
+    const tenant = await scratch.query<{ id: string }>("SELECT id FROM tenants");
+    const tenantId = tenant.rows[0]?.id;
+    if (!tenantId || tenant.rows.length !== 1) throw new Error("Expected one historical tenant");
+    const password = "synthetic-historical-password";
+    const passwordHash = await hashPassword(password);
+    const userId = randomUUID();
+    // The current createUser writer selects display_name, which does not exist in the historical schema.
+    await scratch.query(
+      "INSERT INTO users (id, tenant_id, email, password_hash, role, locale) VALUES ($1, $2, $3, $4, $5, $6)",
+      [userId, tenantId, "legacy@example.test", passwordHash, "admin", "en"],
+    );
+    const second = await scratch.query<{ id: string }>("INSERT INTO tenants (status) VALUES ('active') RETURNING id");
+    const secondTenantId = second.rows[0]?.id;
+    if (!secondTenantId) throw new Error("Expected second historical tenant");
+    await scratch.query(
+      "INSERT INTO users (tenant_id, email, password_hash, role, locale) VALUES ($1, $2, $3, $4, $5)",
+      [secondTenantId, "second@example.test", "other-hash", "member", "cs"],
+    );
+    const before = await scratch.query<{ row: unknown }>("SELECT to_jsonb(u) AS row FROM users u ORDER BY id");
+    expect(before.rows).toHaveLength(2);
+    await copyFile(path.join(migrations, migration), path.join(dir, migration));
+    await runMigrations(scratch, dir);
+    const after = await scratch.query<{ row: unknown; display_name: string | null }>(
+      "SELECT to_jsonb(u) - 'display_name' AS row, display_name FROM users u ORDER BY id",
+    );
+    expect(after.rows).toEqual(before.rows.map(({ row }) => ({ row, display_name: null })));
+    const db = scratch;
+    const result = await runAsSystem("historical-login-test", () =>
+      login(db, {
+        email: "legacy@example.test",
+        password,
+        platform: "ios",
+        ip: "192.0.2.4",
+      }),
+    );
+    expect(result.user).toMatchObject({ id: userId, email: "legacy@example.test", displayName: null });
+    expect(result.role).toBe("admin");
+    const identity = await runAsSystem("historical-login-test", () => verifySessionToken(db, result.token));
+    expect(identity).toMatchObject({ tenantId, role: "admin", user: { id: userId, displayName: null } });
+    const sessions = await scratch.query<{ id: string; user_id: string }>(
+      "SELECT id, user_id FROM sessions WHERE id = $1",
+      [result.session.id],
+    );
+    expect(sessions.rows).toEqual([{ id: result.session.id, user_id: userId }]);
+  } catch (error) {
+    failure = { error };
+  }
+  const cleanupErrors: unknown[] = [];
+  for (const cleanup of [
+    async () => scratch?.end(),
+    async () => {
+      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+    },
+    async () => admin.end(),
+    async () => rm(dir, { recursive: true, force: true }),
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (cleanupErrors.length)
+    throw new AggregateError(
+      failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+      "User upgrade cleanup failed",
+    );
+  if (failure) throw failure.error;
+}, 120_000);
 
 it("adds the move state table over populated mail without changing existing metadata", async () => {
   const url = process.env.TEST_DATABASE_URL;

@@ -34,6 +34,7 @@ import {
   listMcpToolGrantsForProject,
   setProjectMcpGrantForAgentPage,
   seedSystem,
+  runProjectAgentGuidanceCutoverMigration,
   upsertMcpToolRegistration,
   withTransaction,
 } from "@semprec/data";
@@ -190,6 +191,41 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
       delegatedAgentRunTask: createAgentRunTask(pool, registry, fauxGateway, createInFlightAgentRuns()),
     });
   }
+
+  it("composes converted project guidance into the next real agent session", async () => {
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      await runInTenant(getTenantZeroId(), async () => {
+        const projectItemId = await seededSemprecProjectItemId();
+        await runProjectAgentGuidanceCutoverMigration(runtimePool);
+        const expected =
+          "## Purpose\nsupervise Semprec, the personal life-organization system, and delegate to project agents.\n\n" +
+          "## Allowed\nread the schema-derived permission manifest for any project and delegate tasks to its agent.\n\n" +
+          "## Not allowed\nwrite any property whose owner is 'system', or change a locked/schema_locked database.\n\n" +
+          "## General instructions\nkeep delegated tasks and their results terse; the manifest is the source of truth for what is allowed.\n";
+        const stored = await withTransaction(runtimePool, (client) =>
+          client.query<{ markdown: string }>("SELECT markdown FROM project_agent_guidance WHERE project_item_id = $1", [
+            projectItemId,
+          ]),
+        );
+        expect(stored.rows).toEqual([{ markdown: expected }]);
+        let prompt: string | undefined;
+        faux.setResponses([
+          (context) => {
+            prompt = context.systemPrompt;
+            return fauxAssistantMessage("done");
+          },
+        ]);
+        const run = await createAgentRun(runtimePool, { projectItemId, triggeredBy: "user", task: "inspect" });
+        const factory = await createAgentSessionFactoryForRun(runtimePool, registry, fauxGateway, run);
+        for await (const event of factory({ task: "inspect" }).messages()) void event;
+        expect(prompt).toContain(`## Project-specific guidance\n\n${expected}`);
+        await finishAgentRun(runtimePool, run.id, "done", "inspected");
+      });
+    } finally {
+      await runtimePool.end();
+    }
+  });
 
   it("offers persisted grants only while their server is active", async () => {
     const runtimePool = await createRuntimeRolePool(pool, "semprec_data");

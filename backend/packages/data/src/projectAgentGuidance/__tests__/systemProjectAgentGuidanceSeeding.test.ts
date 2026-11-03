@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import { bootstrapFirstAccount } from "../../auth/authActions.js";
 import { createUser } from "../../auth/usersStore.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
@@ -36,6 +36,43 @@ const BOOKS_MARKDOWN =
   "## Allowed\ncreate a Books item (name/author/rating/status) via the generic create-item endpoint.\n\n" +
   "## Not allowed\nwrite 'cover' — owner: 'system', reserved for the metadata heartbeat regardless of who requests the write.\n\n" +
   "## General instructions\nuse the same create-item path as the UI; there is no separate AI path.\n";
+
+const EXPECTED_MARKDOWN: Record<string, string> = {
+  [SYSTEM_SETTINGS_MODULE_ID]:
+    "## Purpose\nsupervise Semprec, the personal life-organization system, and delegate to project agents.\n\n## Allowed\nread the schema-derived permission manifest for any project and delegate tasks to its agent.\n\n## Not allowed\nwrite any property whose owner is 'system', or change a locked/schema_locked database.\n\n## General instructions\nkeep delegated tasks and their results terse; the manifest is the source of truth for what is allowed.\n",
+  [MCP_SERVERS_MODULE_ID]:
+    "## Purpose\nhost MCP (Model Context Protocol) server connections as a system resource.\n\n## Allowed\npropose a new MCP server's name and connectionConfig via the standard database proposal/confirm path; a human supplies the credential (if any) and confirms.\n\n## Not allowed\nwriting connectionConfig fields that carry a credential (rejected outright, never stored on the item), writing syncStatus/lastSynced/syncError (owner: 'system', written only by the human-triggered Synchronize tools action), or triggering a sync itself — that action has no agent-reachable path at all.\n\n## General instructions\nthis project exists only to host MCP server items; tool discovery/grants/invocation are later issues.\n",
+  [MAILBOXES_MODULE_ID]:
+    "## Purpose\nkeep synced mailboxes/folders/messages consistent and link messages to People deterministically.\n\n## Allowed\nread Mailboxes/Folders/Emails via the generic list/get endpoints; call email.draft.create freely — drafting never requires confirmation.\n\n## Not allowed\nwrite any Mailboxes/Folders/Emails property directly outside email.draft.create — every field except the user-owned Emails.read/Emails.flagged triage flags is owner: 'system', written only by the sync worker or the draft/send path (mail/ingest.ts, mail/draft.ts, mail/send.ts). Calling email.send without this project's capabilities.email.send.autonomous grant ends in a 403; the draft is left unchanged, not queued for approval.\n\n## General instructions\nthis project's only agent-facing write surface is drafting and (when explicitly granted) sending mail; it otherwise exists to host the sync worker's heartbeats.\n",
+  [BOOKS_MODULE_ID]: BOOKS_MARKDOWN,
+  [MOVIES_MODULE_ID]:
+    "## Purpose\ncatalog movies and TV series watched or planned to watch.\n\n## Allowed\ncreate a Movies/TV item (name/year/type/rating/status) via the generic create-item endpoint, and link 'Watched with' to a Person with a 1-5 rating on the relation.\n\n## Not allowed\nwrite 'cover'/'secondaryRating'/'sourceUrl' — owner: 'system', reserved for the metadata heartbeat regardless of who requests the write.\n\n## General instructions\nuse the same create-item path as the UI; there is no separate AI path.\n",
+};
+
+async function expectSystemGuidance(dataPool: Pool, tenantId: string, ownerId: string): Promise<void> {
+  const rows = await runInTenant(tenantId, () =>
+    withTransaction(
+      dataPool,
+      async (client) =>
+        (
+          await client.query<{ module_id: string; owner_user_id: string; markdown: string }>(
+            `SELECT d.owner_module_id AS module_id, g.owner_user_id, g.markdown
+       FROM databases d JOIN project_agent_guidance g ON g.project_item_id = d.owner_project_item_id
+       WHERE d.system AND d.owner_module_id = ANY($1::text[]) ORDER BY d.owner_module_id`,
+            [Object.keys(EXPECTED_MARKDOWN)],
+          )
+        ).rows,
+    ),
+  );
+  expect(rows).toHaveLength(5);
+  for (const row of rows)
+    expect(row).toEqual({
+      module_id: row.module_id,
+      owner_user_id: ownerId,
+      markdown: EXPECTED_MARKDOWN[row.module_id],
+    });
+  expect(rows.map((row) => row.module_id).sort()).toEqual(Object.keys(EXPECTED_MARKDOWN).sort());
+}
 
 interface GuidanceRow {
   project_item_id: string;
@@ -123,6 +160,7 @@ describe("system project guidance seeding (issue #1449)", () => {
       const rows = await allGuidance();
       expect(rows).toHaveLength(5);
       expect(rows.every((row) => row.owner_user_id === account.id)).toBe(true);
+      await expectSystemGuidance(dataPool, getTenantZeroId(), account.id);
     } finally {
       await dataPool.end();
     }
@@ -275,6 +313,13 @@ describe("system project guidance for an invited account (issue #1449)", () => {
         const token = new URL(created.inviteUrl).hash.replace("#token=", "");
 
         const invited = await acceptInvitation(dataPool, { token, password: PASSWORD });
+
+        const { rows: users } = await pool.query<{ tenant_id: string }>("SELECT tenant_id FROM users WHERE id = $1", [
+          invited.id,
+        ]);
+        const tenantId = users[0]?.tenant_id;
+        if (!tenantId) throw new Error("invited user has no tenant");
+        await expectSystemGuidance(dataPool, tenantId, invited.id);
 
         const { rows } = await pool.query<GuidanceRow>(
           "SELECT project_item_id, owner_user_id, markdown FROM project_agent_guidance WHERE owner_user_id = $1",

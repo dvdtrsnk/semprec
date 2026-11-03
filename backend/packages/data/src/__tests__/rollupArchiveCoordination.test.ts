@@ -438,6 +438,9 @@ describe("rollup source archive coordination", () => {
               original = { error };
             }
             if (!original) throw new Error("Expected PostgreSQL failure");
+            // The queued probe waits for the previous ReadyForQuery before it runs.
+            await expect(tx.query("SELECT 1")).rejects.toMatchObject({ code: "25P02" });
+            expect(tx.getTransactionStatus()).toBe("E");
             await expect(requireRollupCoordinationTransaction(tx)).rejects.toThrow(/active READ COMMITTED transaction/);
             throw original.error;
           }),
