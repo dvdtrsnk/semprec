@@ -1,7 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { EventEmitter } from "node:events";
 import type { Pool } from "pg";
-import type { ImapFlow } from "imapflow";
+import { ImapFlow } from "imapflow";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import {
@@ -54,30 +53,43 @@ class FakeConnection implements ImapIdleConnection {
   }
 }
 
-class OwnedIdleClient extends EventEmitter {
-  falseLogout = false;
-  holdClose = false;
-  closeFailure: Error | undefined;
-  throwUndefined = false;
-  closeCalls = 0;
-  async list(): Promise<Array<{ path: string; specialUse: string }>> {
-    return [{ path: "INBOX", specialUse: "\\Inbox" }];
-  }
-  async mailboxOpen(): Promise<void> {}
-  async logout(): Promise<boolean> {
-    if (this.falseLogout) return false;
-    this.emit("close");
-    return true;
-  }
-  close(): void {
-    this.closeCalls++;
-    if (this.throwUndefined) {
-      // eslint-disable-next-line @typescript-eslint/only-throw-error
-      throw undefined;
-    }
-    if (this.closeFailure !== undefined) throw this.closeFailure;
-    if (!this.holdClose) this.emit("close");
-  }
+function ownedIdleClient() {
+  const client = new ImapFlow({
+    host: "imap.example.test",
+    port: 993,
+    secure: true,
+    auth: { user: "fake", pass: "fake" },
+    logger: false,
+  });
+  vi.spyOn(client, "list").mockResolvedValue([
+    {
+      path: "INBOX",
+      pathAsListed: "INBOX",
+      name: "INBOX",
+      delimiter: "/",
+      parent: [],
+      parentPath: "",
+      flags: new Set(),
+      specialUse: "\\Inbox",
+      listed: true,
+      subscribed: true,
+    },
+  ]);
+  vi.spyOn(client, "mailboxOpen").mockResolvedValue({
+    path: "INBOX",
+    delimiter: "/",
+    flags: new Set(),
+    uidValidity: 1n,
+    uidNext: 1,
+    exists: 0,
+  });
+  const logout = vi.spyOn(client, "logout").mockImplementation(async () => {
+    client.emit("close");
+  });
+  const close = vi.spyOn(client, "close").mockImplementation(() => {
+    client.emit("close");
+  });
+  return { client, logout, close };
 }
 
 interface FakeTransportOptions {
@@ -514,17 +526,19 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
   });
 
   it("retries a composed IDLE transport after one already-closed connection error", async () => {
-    const discovery = new OwnedIdleClient();
-    const first = new OwnedIdleClient();
-    const second = new OwnedIdleClient();
-    first.falseLogout = true;
+    const discovery = ownedIdleClient();
+    const first = ownedIdleClient();
+    const second = ownedIdleClient();
+    // ImapFlow's declaration says void, but its public implementation returns false here.
+    // @ts-expect-error public ImapFlow logout can resolve false
+    first.logout.mockResolvedValue(false);
     const clients = [discovery, first, second];
     const errors: unknown[] = [];
     let next = 0;
     const transport = createImapFlowIdleTransport(async () => {
       const client = clients[next++];
       if (!client) throw new Error("Unexpected IDLE connection");
-      return client as unknown as ImapFlow;
+      return client.client;
     });
     const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
       getCredential: async () => "password",
@@ -533,30 +547,50 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
       onError: (_id, _folder, error) => errors.push(error),
     })({ mailboxItemId: "retry-composed", syncMode: "imap" });
     const original = new Error("private original failure");
+    let primary: { value: unknown } | undefined;
+    let cleanup: { value: unknown } | undefined;
     try {
       await lifecycle.start();
-      await vi.waitFor(() => expect(first.listenerCount("error")).toBe(1));
-      first.emit("error", original);
-      first.emit("close");
-      await vi.waitFor(() => expect(second.listenerCount("error")).toBe(1));
+      await vi.waitFor(() => expect(first.client.listenerCount("error")).toBe(1));
+      first.client.emit("error", original);
+      first.client.emit("close");
+      await vi.waitFor(() => expect(second.client.listenerCount("error")).toBe(1));
       expect(errors).toEqual([original]);
+    } catch (error) {
+      primary = { value: error };
     } finally {
-      first.emit("close");
-      second.emit("close");
-      await lifecycle.stop();
+      first.client.emit("close");
+      second.client.emit("close");
+      try {
+        await lifecycle.stop();
+      } catch (error) {
+        cleanup = { value: error };
+      }
     }
+    if (primary && cleanup)
+      throw new AggregateError([primary.value, cleanup.value], "IDLE test and cleanup failed", {
+        cause: primary.value,
+      });
+    if (primary) throw primary.value;
+    if (cleanup) throw cleanup.value;
   });
 
   it.each(["none", "error", "undefined"] as const)(
     "keeps a composed IDLE owner until public close, close throws=%s",
     async (closeMode) => {
-      const discovery = new OwnedIdleClient();
-      const active = new OwnedIdleClient();
-      active.falseLogout = true;
-      active.holdClose = true;
+      const discovery = ownedIdleClient();
+      const active = ownedIdleClient();
+      // ImapFlow's declaration says void, but its public implementation returns false here.
+      // @ts-expect-error public ImapFlow logout can resolve false
+      active.logout.mockResolvedValue(false);
       const closeFailure = new Error("private close failure");
-      if (closeMode === "error") active.closeFailure = closeFailure;
-      if (closeMode === "undefined") active.throwUndefined = true;
+      active.close.mockImplementation(() => {
+        if (closeMode === "error") throw closeFailure;
+        if (closeMode === "undefined") {
+          // eslint-disable-next-line @typescript-eslint/only-throw-error
+          throw undefined;
+        }
+      });
       const clients = [discovery, active];
       const errors: unknown[] = [];
       let next = 0;
@@ -564,7 +598,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
       const transport = createImapFlowIdleTransport(async () => {
         const client = clients[next++];
         if (!client) throw new Error("Unexpected IDLE connection");
-        return client as unknown as ImapFlow;
+        return client.client;
       });
       const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
         getCredential: async () => "password",
@@ -582,38 +616,63 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
         onError: (_id, _folder, error) => errors.push(error),
       })({ mailboxItemId: `held-close-${closeMode}`, syncMode: "imap" });
       const original = new Error("private original failure");
-      let stopping: Promise<unknown> | undefined;
+      let stopping: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
+      let observedStop = false;
+      let primary: { value: unknown } | undefined;
+      let cleanup: { value: unknown } | undefined;
       try {
         await lifecycle.start();
-        await vi.waitFor(() => expect(active.listenerCount("error")).toBe(1));
-        active.emit("error", original);
-        await vi.waitFor(() => expect(active.closeCalls).toBe(1));
+        await vi.waitFor(() => expect(active.client.listenerCount("error")).toBe(1));
+        active.client.emit("error", original);
+        await vi.waitFor(() => expect(active.close).toHaveBeenCalledTimes(1));
         let settled = false;
         stopping = lifecycle
           .stop()
-          .catch((error: unknown) => error)
-          .then((error) => {
+          .then(
+            () => ({ ok: true as const }),
+            (error: unknown) => ({ ok: false as const, error }),
+          )
+          .then((result) => {
             settled = true;
-            return error;
+            return result;
           });
         await Promise.resolve();
         expect(settled).toBe(false);
         expect(heldSlots).toBe(1);
-        active.emit("close");
+        active.client.emit("close");
         const result = await stopping;
+        observedStop = true;
         expect(heldSlots).toBe(0);
-        expect(result).toBeInstanceOf(Error);
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("Expected IDLE stop failure");
+        expect(result.error).toBeInstanceOf(Error);
         if (closeMode !== "none") {
           expect(errors[0]).toBeInstanceOf(AggregateError);
           if (!(errors[0] instanceof AggregateError)) throw new Error("Expected operation and cleanup failures");
           expect(errors[0].errors).toEqual([original, closeMode === "error" ? closeFailure : undefined]);
         } else expect(errors).toEqual([original]);
-        expect(JSON.stringify(result)).not.toContain("private");
+        expect(JSON.stringify(result.error)).not.toContain("private");
+      } catch (error) {
+        primary = { value: error };
       } finally {
-        active.emit("close");
-        if (stopping) await stopping;
-        else await lifecycle.stop().catch(() => {});
+        active.client.emit("close");
+        if (stopping) {
+          const result = await stopping;
+          if (!observedStop && !result.ok) cleanup = { value: result.error };
+        } else {
+          try {
+            await lifecycle.stop();
+          } catch (error) {
+            cleanup = { value: error };
+          }
+        }
       }
+      if (cleanup && primary)
+        throw new AggregateError([primary.value, cleanup.value], "IDLE test and cleanup failed", {
+          cause: primary.value,
+        });
+      if (primary) throw primary.value;
+      if (cleanup) throw cleanup.value;
     },
   );
 });

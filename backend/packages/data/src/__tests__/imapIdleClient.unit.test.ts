@@ -199,9 +199,14 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     client.emit("error", shared);
     expect(await ended).toBe(shared);
     const cleanup = connection.close().catch((error: unknown) => error);
-    client.emit("error", shared);
-    client.emit("close");
-    expect(await cleanup).toBe(shared);
+    try {
+      client.emit("error", shared);
+      client.emit("close");
+      expect(await cleanup).toBe(shared);
+    } finally {
+      client.emit("close");
+      await cleanup;
+    }
   });
   it("retains a close-time error event before a separate synchronous close failure", async () => {
     const client = new FakeImapFlow();
@@ -223,13 +228,18 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     client.emit("error", original);
     expect(await ended).toBe(original);
     const pending = connection.close().catch((error: unknown) => error);
-    await Promise.resolve();
-    await Promise.resolve();
-    client.emit("close");
-    const cleanup = await pending;
-    expect(cleanup).toBeInstanceOf(AggregateError);
-    if (!(cleanup instanceof AggregateError)) throw new Error("expected ordered cleanup errors");
-    expect(cleanup.errors).toEqual([eventFailure, closeFailure]);
+    try {
+      await Promise.resolve();
+      await Promise.resolve();
+      client.emit("close");
+      const cleanup = await pending;
+      expect(cleanup).toBeInstanceOf(AggregateError);
+      if (!(cleanup instanceof AggregateError)) throw new Error("expected ordered cleanup errors");
+      expect(cleanup.errors).toEqual([eventFailure, closeFailure]);
+    } finally {
+      client.emit("close");
+      await pending;
+    }
   });
   it("keeps ownership until the public close event after logout returns", async () => {
     const client = new FakeImapFlow();
@@ -244,21 +254,27 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     const closing = connection.close().then(() => {
       settled = true;
     });
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(settled).toBe(false);
-    client.emit("close");
-    await closing;
-    await expect(connection.waitForEnd()).resolves.toBeUndefined();
-    expect(client.listenerCount("close")).toBe(0);
-    expect(client.listenerCount("error")).toBe(0);
+    try {
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      client.emit("close");
+      await closing;
+      await expect(connection.waitForEnd()).resolves.toBeUndefined();
+      expect(client.listenerCount("close")).toBe(0);
+      expect(client.listenerCount("error")).toBe(0);
+    } finally {
+      client.emit("close");
+      await closing;
+    }
   });
   it("forces a stalled logout closed and joins its actual rejection", async () => {
     vi.useFakeTimers();
+    const client = new FakeImapFlow();
+    const lateFailure = new Error("private logout rejection");
+    let rejectLogout: (error: unknown) => void = () => {};
+    let outcome: Promise<unknown> | undefined;
     try {
-      const client = new FakeImapFlow();
-      const lateFailure = new Error("private logout rejection");
-      let rejectLogout!: (error: unknown) => void;
       client.logout = () =>
         new Promise((_resolve, reject) => {
           rejectLogout = reject;
@@ -273,7 +289,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "INBOX",
         () => {},
       );
-      const outcome = connection.close().catch((error: unknown) => error);
+      outcome = connection.close().catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(10_000);
       const error = await outcome;
       expect(error).toBeInstanceOf(AggregateError);
@@ -282,6 +298,9 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       expect(error.errors[0]).toBe(lateFailure);
       expect(client.listenerCount("close")).toBe(0);
     } finally {
+      rejectLogout(lateFailure);
+      client.emit("close");
+      if (outcome) await outcome;
       vi.useRealTimers();
     }
   });
@@ -311,9 +330,10 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
 
   it("keeps stop pending after public close until the actual logout settles", async () => {
     vi.useFakeTimers();
+    const client = new FakeImapFlow();
+    let release: () => void = () => {};
+    let pending: Promise<unknown> | undefined;
     try {
-      const client = new FakeImapFlow();
-      let release!: () => void;
       client.logout = () =>
         new Promise<void>((resolve) => {
           release = resolve;
@@ -326,7 +346,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         () => {},
       );
       let settled = false;
-      const pending = connection
+      pending = connection
         .close()
         .catch((error: unknown) => error)
         .then((error) => {
@@ -340,15 +360,19 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       expect(await pending).toBeInstanceOf(Error);
       expect(settled).toBe(true);
     } finally {
+      release();
+      client.emit("close");
+      if (pending) await pending;
       vi.useRealTimers();
     }
   });
   it("diagnoses a false logout received after timeout without releasing pending close observation", async () => {
     vi.useFakeTimers();
     const warning = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const client = new FakeImapFlow();
+    let releaseLogout: (value: boolean) => void = () => {};
+    let pending: Promise<unknown> | undefined;
     try {
-      const client = new FakeImapFlow();
-      let releaseLogout!: (value: boolean) => void;
       client.logout = () =>
         new Promise<boolean>((resolve) => {
           releaseLogout = resolve;
@@ -361,7 +385,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         () => {},
       );
       let settled = false;
-      const pending = connection
+      pending = connection
         .close()
         .catch((error: unknown) => error)
         .then((error) => {
@@ -381,6 +405,9 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       client.emit("close");
       expect(await pending).toBeInstanceOf(Error);
     } finally {
+      releaseLogout(false);
+      client.emit("close");
+      if (pending) await pending;
       warning.mockRestore();
       vi.useRealTimers();
     }
@@ -401,21 +428,27 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       const pending = connection.close().then(() => {
         settled = true;
       });
-      await Promise.resolve();
-      await Promise.resolve();
-      if (!alreadyClosed) {
-        expect(settled).toBe(false);
+      try {
+        await Promise.resolve();
+        await Promise.resolve();
+        if (!alreadyClosed) {
+          expect(settled).toBe(false);
+          client.emit("close");
+        }
+        await pending;
+        expect(settled).toBe(true);
+      } finally {
         client.emit("close");
+        await pending;
       }
-      await pending;
-      expect(settled).toBe(true);
     }
   });
   it("uses the same grace deadline when logout succeeds but public close is still absent", async () => {
     vi.useFakeTimers();
     const warning = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const client = new FakeImapFlow();
+    let pending: Promise<unknown> | undefined;
     try {
-      const client = new FakeImapFlow();
       client.logout = async () => true;
       const close = vi.spyOn(client, "close").mockImplementation(() => {});
       const connection = await createImapFlowIdleTransport(makeFactory([client]).createClient).connect(
@@ -425,7 +458,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         () => {},
       );
       let settled = false;
-      const pending = connection
+      pending = connection
         .close()
         .catch((error: unknown) => error)
         .then((error) => {
@@ -439,6 +472,8 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       client.emit("close");
       expect(await pending).toBeInstanceOf(Error);
     } finally {
+      client.emit("close");
+      if (pending) await pending;
       warning.mockRestore();
       vi.useRealTimers();
     }
@@ -454,6 +489,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     const warning = vi.spyOn(logger, "warn").mockImplementation(() => {
       throw diagnostic;
     });
+    let pending: Promise<unknown> | undefined;
     try {
       const connection = await createImapFlowIdleTransport(makeFactory([client]).createClient).connect(
         "mailbox-1",
@@ -462,7 +498,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         () => {},
       );
       let settled = false;
-      const pending = connection
+      pending = connection
         .close()
         .catch((error: unknown) => error)
         .then((error) => {
@@ -478,14 +514,17 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       if (!(error instanceof AggregateError)) throw new Error("expected cleanup failures");
       expect(error.errors).toEqual([diagnostic, closeFailure]);
     } finally {
+      client.emit("close");
+      if (pending) await pending;
       warning.mockRestore();
     }
   });
   it("retains an undefined logout rejection before its timeout and close failure", async () => {
     vi.useFakeTimers();
+    const client = new FakeImapFlow();
+    let rejectLogout: (error: unknown) => void = () => {};
+    let pending: Promise<unknown> | undefined;
     try {
-      const client = new FakeImapFlow();
-      let rejectLogout!: (error: unknown) => void;
       client.logout = () =>
         new Promise((_resolve, reject) => {
           rejectLogout = reject;
@@ -500,7 +539,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "INBOX",
         () => {},
       );
-      const pending = connection.close().catch((error: unknown) => error);
+      pending = connection.close().catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(10_000);
       rejectLogout(undefined);
       client.emit("close");
@@ -511,6 +550,9 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       expect(error.errors[1]).toBeInstanceOf(Error);
       expect(error.errors[2]).toBe(closeFailure);
     } finally {
+      rejectLogout(undefined);
+      client.emit("close");
+      if (pending) await pending;
       vi.useRealTimers();
     }
   });

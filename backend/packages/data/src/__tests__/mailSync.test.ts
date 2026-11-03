@@ -2852,14 +2852,26 @@ describe("mail sync job error handling (issue #26)", () => {
                 f.mailboxProperty,
               );
             }
-            const moveClient = {
+            const unexpected = async (): Promise<never> => {
+              throw new Error("Unexpected IMAP move read or append");
+            };
+            const moveClient: ImapMailClient = {
               prepareMove: async () => ({ uidValidity: "11", capabilities: new Set(["MOVE"]), found: true }),
               executeMoveStep: async () => {
                 await perform();
                 return { kind: "acknowledged" as const, targetUid: 27, targetUidValidity: "12" };
               },
+              getCapabilities: unexpected,
+              listFolders: unexpected,
+              selectFolder: unexpected,
+              fetchMessagesSince: unexpected,
+              fetchVanishedSince: unexpected,
+              fetchAllUids: unexpected,
+              fetchFlagsChangedSince: unexpected,
+              setMessageFlag: unexpected,
+              appendMessage: unexpected,
               close: async () => {},
-            } as unknown as ImapMailClient;
+            };
             return drainImapMoves(
               runtime,
               f.mailbox,
