@@ -3,18 +3,18 @@ schemaVersion: 1
 id: "sp-e02ff8c6-d20d-4fde-be2a-e0033cf9ef91"
 title: "[backend-delivery 16/74] Implement architecture, data/auth, realtime changes"
 kind: "implementation"
-state: "open"
-stateReason: null
+state: "closed"
+stateReason: "completed"
 labels: ["execution:batch","execution:sequential","spec:approved"]
 parent: "sp-62331d42-78af-4b93-ae97-d5ccbe3324df"
 assignees: []
 milestone: null
 createdAt: "2026-10-31T17:31:01.910Z"
-updatedAt: "2026-11-03T04:50:55.963Z"
-closedAt: null
+updatedAt: "2026-11-03T05:37:51.537Z"
+closedAt: "2026-11-03T05:37:51.537Z"
 source: null
 approval: {"specSha256":"6749f0611085628a702b0ffcab6bd25995d994f5bc2e8323ef86ee367a8e0dc2","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: grouped R1 expiry and scoped publication repair","at":"2026-11-03T04:50:55.963Z"}
-resolution: null
+resolution: {"pullRequests":[],"commit":"ee37aac1813db1773b01b64fdf44999078116493","at":"2026-11-03T05:37:51.537Z"}
 ---
 **Blocked by:** sp-144a2408-c4a8-4b9f-b68b-a5eec527dba7
 **Model tier:** high
