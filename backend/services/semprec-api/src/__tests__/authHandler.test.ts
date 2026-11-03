@@ -97,9 +97,9 @@ describe("createAuthRequestListener", () => {
       });
 
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { user: { id: string; email: string }; token?: unknown };
-      expect(body.token).toBeUndefined();
-      expect(body.user.email).toBe(user.email);
+      const body: unknown = await res.json();
+      expect(body).not.toHaveProperty("token");
+      expect(body).toMatchObject({ user: { email: user.email } });
       expect(body).not.toHaveProperty("user.passwordHash");
       expect(sessionCookieFrom(res)).toBeTruthy();
       expect(res.headers.get("set-cookie")).toContain(`Max-Age=${365 * 24 * 60 * 60}`);
@@ -115,9 +115,8 @@ describe("createAuthRequestListener", () => {
       });
 
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { token: string; user: { id: string; email: string } };
-      expect(body.token).toBeTruthy();
-      expect(body.user.email).toBe(user.email);
+      const body: unknown = await res.json();
+      expect(body).toMatchObject({ token: expect.stringMatching(/.+/), user: { email: user.email } });
       expect(res.headers.get("set-cookie")).toBeNull();
     });
 
@@ -131,9 +130,8 @@ describe("createAuthRequestListener", () => {
       });
 
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { user: { displayName: string | null; role: string } };
-      expect(body.user.displayName).toBeNull();
-      expect(body.user.role).toBe("member");
+      const body: unknown = await res.json();
+      expect(body).toMatchObject({ user: { displayName: null, role: "member" } });
     });
 
     it("returns a null displayName and the role in the native login body", async () => {
@@ -146,9 +144,8 @@ describe("createAuthRequestListener", () => {
       });
 
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { user: { displayName: string | null; role: string } };
-      expect(body.user.displayName).toBeNull();
-      expect(body.user.role).toBe("member");
+      const body: unknown = await res.json();
+      expect(body).toMatchObject({ user: { displayName: null, role: "member" } });
     });
 
     it("returns the stored displayName and an admin's role in the native login body", async () => {
@@ -158,7 +155,7 @@ describe("createAuthRequestListener", () => {
         passwordHash: await hashPassword(PASSWORD),
         role: "admin",
       });
-      // Nothing writes the name yet (#1513 does, at account creation), so the test sets the column directly.
+      // Set the stored value directly to exercise the read path required by issue #1387.
       await pool.query("UPDATE users SET display_name = $2 WHERE id = $1", [user.id, "Ada Lovelace"]);
 
       const res = await fetch(`${baseUrl}/api/auth/login`, {
@@ -168,9 +165,8 @@ describe("createAuthRequestListener", () => {
       });
 
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { user: { displayName: string | null; role: string } };
-      expect(body.user.displayName).toBe("Ada Lovelace");
-      expect(body.user.role).toBe("admin");
+      const body: unknown = await res.json();
+      expect(body).toMatchObject({ user: { displayName: "Ada Lovelace", role: "admin" } });
     });
 
     it("returns 401 for a wrong password", async () => {
@@ -539,12 +535,20 @@ describe("createAuthRequestListener", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "ios" }),
       });
-      const { token } = (await loginRes.json()) as { token: string };
+      const loginBody: unknown = await loginRes.json();
+      if (
+        typeof loginBody !== "object" ||
+        loginBody === null ||
+        !("token" in loginBody) ||
+        typeof loginBody.token !== "string"
+      )
+        throw new Error("expected token");
+      const token = loginBody.token;
 
       const res = await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { user: { email: string } };
-      expect(body.user.email).toBe(user.email);
+      const body: unknown = await res.json();
+      expect(body).toMatchObject({ user: { email: user.email } });
     });
 
     it("returns the user's role", async () => {
@@ -559,11 +563,19 @@ describe("createAuthRequestListener", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "ios" }),
       });
-      const { token } = (await loginRes.json()) as { token: string };
+      const loginBody: unknown = await loginRes.json();
+      if (
+        typeof loginBody !== "object" ||
+        loginBody === null ||
+        !("token" in loginBody) ||
+        typeof loginBody.token !== "string"
+      )
+        throw new Error("expected token");
+      const token = loginBody.token;
 
       const res = await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } });
-      const body = (await res.json()) as { user: { role: string } };
-      expect(body.user.role).toBe("admin");
+      const body: unknown = await res.json();
+      expect(body).toMatchObject({ user: { role: "admin" } });
     });
 
     it("returns a null displayName for an account without one", async () => {
@@ -573,29 +585,45 @@ describe("createAuthRequestListener", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "ios" }),
       });
-      const { token } = (await loginRes.json()) as { token: string };
+      const loginBody: unknown = await loginRes.json();
+      if (
+        typeof loginBody !== "object" ||
+        loginBody === null ||
+        !("token" in loginBody) ||
+        typeof loginBody.token !== "string"
+      )
+        throw new Error("expected token");
+      const token = loginBody.token;
 
       const res = await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { user: { displayName: string | null } };
-      expect(body.user.displayName).toBeNull();
+      const body: unknown = await res.json();
+      expect(body).toMatchObject({ user: { displayName: null } });
     });
 
     it("returns the stored displayName", async () => {
       const user = await makeUser();
-      // Nothing writes the name yet (#1513 does, at account creation), so the test sets the column directly.
+      // Set the stored value directly to exercise the read path required by issue #1387.
       await pool.query("UPDATE users SET display_name = $2 WHERE id = $1", [user.id, "Ada Lovelace"]);
       const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "ios" }),
       });
-      const { token } = (await loginRes.json()) as { token: string };
+      const loginBody: unknown = await loginRes.json();
+      if (
+        typeof loginBody !== "object" ||
+        loginBody === null ||
+        !("token" in loginBody) ||
+        typeof loginBody.token !== "string"
+      )
+        throw new Error("expected token");
+      const token = loginBody.token;
 
       const res = await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { user: { displayName: string | null } };
-      expect(body.user.displayName).toBe("Ada Lovelace");
+      const body: unknown = await res.json();
+      expect(body).toMatchObject({ user: { displayName: "Ada Lovelace" } });
     });
 
     it("authenticates with the session cookie set by login", async () => {

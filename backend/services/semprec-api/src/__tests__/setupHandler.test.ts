@@ -41,8 +41,8 @@ describe("createSetupRequestListener", () => {
       });
 
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { user: { email: string } };
-      expect(body.user.email).toBe("owner@example.com");
+      const body: unknown = await res.json();
+      expect(body).toMatchObject({ user: { email: "owner@example.com" } });
     });
 
     it("returns 404 for a wrong token", async () => {
@@ -114,8 +114,8 @@ describe("createSetupRequestListener", () => {
         const res = await postSetup({ displayName: "  David  " });
 
         expect(res.status).toBe(200);
-        const body = (await res.json()) as { user: { displayName: string | null } };
-        expect(body.user.displayName).toBe("David");
+        const body: unknown = await res.json();
+        expect(body).toMatchObject({ user: { displayName: "David" } });
         const { rows } = await pool.query<{ display_name: string | null }>("SELECT display_name FROM users");
         expect(rows).toEqual([{ display_name: "David" }]);
       });
@@ -124,8 +124,8 @@ describe("createSetupRequestListener", () => {
         const res = await postSetup({});
 
         expect(res.status).toBe(200);
-        const body = (await res.json()) as { user: { displayName: string | null } };
-        expect(body.user.displayName).toBeNull();
+        const body: unknown = await res.json();
+        expect(body).toMatchObject({ user: { displayName: null } });
         const { rows } = await pool.query<{ display_name: string | null }>("SELECT display_name FROM users");
         expect(rows).toEqual([{ display_name: null }]);
       });
@@ -134,9 +134,8 @@ describe("createSetupRequestListener", () => {
         const res = await postSetup({ displayName: "a".repeat(81) });
 
         expect(res.status).toBe(400);
-        const body = (await res.json()) as { code: string; details: { field: string } };
-        expect(body.code).toBe("validation_failed");
-        expect(body.details).toEqual({ field: "displayName" });
+        const body: unknown = await res.json();
+        expect(body).toMatchObject({ code: "validation_failed", details: { field: "displayName" } });
         expect(await accountCount()).toBe(0);
       });
 

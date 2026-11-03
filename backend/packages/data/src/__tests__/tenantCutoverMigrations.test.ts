@@ -9,6 +9,8 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { ForbiddenError } from "../errors.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import { createUser } from "../auth/usersStore.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 import { TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID } from "../transcription/transcriptionActions.js";
 import { createTestTenant, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -342,6 +344,123 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
     expect((await readState(b)).statusOptions).not.toContain("error");
   });
 
+  it("continues guidance cutover for another tenant when one tenant's guidance insertion fails", async () => {
+    await runInTenant(zero, () => seedSystem(dataPool));
+    await runInTenant(b, () => seedSystem(dataPool));
+    const ownerA = await createUser(adminPool, {
+      tenantId: zero,
+      email: "guidance-a@example.test",
+      passwordHash: "unused",
+    });
+    const ownerB = await createUser(adminPool, {
+      tenantId: b,
+      email: "guidance-b@example.test",
+      passwordHash: "unused",
+    });
+    async function addProject(tenantId: string, text: string): Promise<string> {
+      return runInTenant(tenantId, () =>
+        withTransaction(dataPool, async (client) => {
+          const projects = await getDatabaseByModuleId(client, "projects");
+          if (!projects) throw new Error("missing Projects database");
+          return (
+            await itemsStore.insertItem(client, {
+              databaseId: projects.id,
+              properties: { name: "Guidance fixture", agents: text },
+            })
+          ).id;
+        }),
+      );
+    }
+    const projectA = await addProject(zero, "Purpose: healthy tenant");
+    const projectB = await addProject(b, "Purpose: failing tenant");
+    const ddl = await adminPool.query<{ sql: string }>(
+      `SELECT format($fn$CREATE FUNCTION batch20_fail_guidance() RETURNS trigger LANGUAGE plpgsql AS $body$
+        BEGIN IF NEW.owner_user_id = %L::uuid THEN RAISE EXCEPTION 'batch20 guidance failure'; END IF; RETURN NEW; END
+        $body$$fn$, $1::text) AS sql`,
+      [ownerB.id],
+    );
+    const sql = ddl.rows[0]?.sql;
+    if (!sql) throw new Error("missing trigger function DDL");
+    let functionCreated = false;
+    let triggerCreated = false;
+    let primary: unknown;
+    try {
+      await adminPool.query(sql);
+      functionCreated = true;
+      await adminPool.query(
+        "CREATE TRIGGER batch20_fail_guidance BEFORE INSERT ON project_agent_guidance FOR EACH ROW EXECUTE FUNCTION batch20_fail_guidance()",
+      );
+      triggerCreated = true;
+      const error: unknown = await runCutovers(dataPool).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+      if (!(error instanceof AggregateError)) throw new Error("expected tenant aggregate failure");
+      expect(error.message).toContain(b);
+      expect(error.message).not.toContain(zero);
+      expect(error.errors).toHaveLength(1);
+      expect(error.errors[0]).toMatchObject({ message: "batch20 guidance failure" });
+      const healthy = await runInTenant(zero, () =>
+        withTransaction(dataPool, async (client) => ({
+          guidance: (
+            await client.query<{ owner_user_id: string; markdown: string }>(
+              "SELECT owner_user_id, markdown FROM project_agent_guidance WHERE project_item_id = $1",
+              [projectA],
+            )
+          ).rows,
+          heartbeat: (
+            await client.query<{ enabled: boolean }>(
+              "SELECT enabled FROM project_heartbeats WHERE project_item_id = $1 AND action_id = 'core.agentGuidanceDrift'",
+              [projectA],
+            )
+          ).rows,
+        })),
+      );
+      expect(healthy).toEqual({
+        guidance: [{ owner_user_id: ownerA.id, markdown: "## Purpose\nhealthy tenant\n" }],
+        heartbeat: [{ enabled: true }],
+      });
+      const failed = await runInTenant(b, () =>
+        withTransaction(dataPool, async (client) => ({
+          guidance: (await client.query<{ id: string }>("SELECT project_item_id AS id FROM project_agent_guidance"))
+            .rows,
+          heartbeat: (
+            await client.query<{ id: string }>(
+              "SELECT id FROM project_heartbeats WHERE project_item_id = $1 AND action_id = 'core.agentGuidanceDrift'",
+              [projectB],
+            )
+          ).rows,
+        })),
+      );
+      expect(failed).toEqual({ guidance: [], heartbeat: [] });
+    } catch (error) {
+      primary = error;
+    }
+    const cleanupErrors: unknown[] = [];
+    for (const cleanup of [
+      async () => {
+        if (triggerCreated) await adminPool.query("DROP TRIGGER batch20_fail_guidance ON project_agent_guidance");
+      },
+      async () => {
+        if (functionCreated) await adminPool.query("DROP FUNCTION batch20_fail_guidance()");
+      },
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        primary === undefined ? cleanupErrors : [primary, ...cleanupErrors],
+        "Guidance fixture cleanup failed",
+        { cause: primary },
+      );
+    if (primary instanceof Error) throw primary;
+    if (primary !== undefined) throw new Error("Guidance fixture failed", { cause: primary });
+  });
+
   it("refuses the owner pool and writes nothing", async () => {
     await seedOldShape(zero);
     await seedOldShape(b);
@@ -648,6 +767,54 @@ describe("processing proposals card-state tenant cutover (issue #1451)", () => {
     expect(cards.get("without-proposal")).not.toHaveProperty("aiProposal");
     expect(cards.get("null-proposal")).not.toHaveProperty("aiProposal");
   });
+
+  it("preserves extra status option data while appending the missing options", async () => {
+    const databaseId = await seedPreCardStateShape(b);
+    await adminPool.query("UPDATE properties SET config = $2::jsonb WHERE database_id = $1 AND key = 'status'", [
+      databaseId,
+      JSON.stringify({ options: [{ key: "proposed", color: "blue" }], custom: "keep" }),
+    ]);
+    await runCutovers(dataPool);
+    const { rows } = await adminPool.query<{ config: unknown }>(
+      "SELECT config FROM properties WHERE database_id = $1 AND key = 'status'",
+      [databaseId],
+    );
+    expect(rows).toEqual([
+      {
+        config: {
+          options: [{ key: "proposed", color: "blue" }, { key: "computing" }, { key: "computeFailed" }],
+          custom: "keep",
+        },
+      },
+    ]);
+  });
+
+  it("adds the options when a valid status config has none", async () => {
+    const databaseId = await seedPreCardStateShape(b);
+    await adminPool.query("UPDATE properties SET config = '{}'::jsonb WHERE database_id = $1 AND key = 'status'", [
+      databaseId,
+    ]);
+    await runCutovers(dataPool);
+    const { rows } = await adminPool.query<{ config: unknown }>(
+      "SELECT config FROM properties WHERE database_id = $1 AND key = 'status'",
+      [databaseId],
+    );
+    expect(rows).toEqual([{ config: { options: [{ key: "computing" }, { key: "computeFailed" }] } }]);
+  });
+
+  it.each([{ options: "invalid" }, { options: [{ key: 42 }] }, null])(
+    "refuses malformed status config %j and rolls back the tenant cutover",
+    async (config) => {
+      const databaseId = await seedPreCardStateShape(b);
+      await adminPool.query("UPDATE properties SET config = $2::jsonb WHERE database_id = $1 AND key = 'status'", [
+        databaseId,
+        JSON.stringify(config),
+      ]);
+      const before = await proposalSnapshot(databaseId);
+      await expect(runCutovers(dataPool)).rejects.toBeInstanceOf(AggregateError);
+      expect(await proposalSnapshot(databaseId)).toEqual(before);
+    },
+  );
 
   it("a second run changes no property, option or item", async () => {
     const databaseId = await populatedTenant();

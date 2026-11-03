@@ -1,4 +1,4 @@
-import { createServer, type Server } from "node:http";
+import { createServer, request as httpRequest, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
@@ -197,11 +197,16 @@ describe("createInvitationRequestListener (issue #1087)", () => {
   });
 
   it("answers 413 for a body over the 64 KiB cap", async () => {
-    const baseUrl = await serve();
+    const throttle = createClientIpThrottle({ limits: { invitationAccept: { maxEvents: 1, windowSeconds: 3600 } } });
+    const baseUrl = await serve({ trustProxy: true, clientIpThrottle: throttle });
+    const ip = "203.0.113.8";
 
-    const res = await post(baseUrl, JSON.stringify({ token: "x".repeat(70 * 1024), password: PASSWORD }));
+    const res = await post(baseUrl, JSON.stringify({ token: "x".repeat(70 * 1024), password: PASSWORD }), {
+      "X-Forwarded-For": ip,
+    });
 
     expect(res.status).toBe(413);
+    expect(throttle.retryAfterSeconds("invitationAccept", ip)).toBeNull();
   });
 
   it("answers 404 for a GET on the route and for a POST on another path", async () => {
@@ -243,15 +248,79 @@ describe("createInvitationRequestListener (issue #1087)", () => {
     PROVISIONING_TEST_TIMEOUT_MS,
   );
 
+  it("reserves concurrent slow requests before reading bodies and releases validation failures", async () => {
+    const throttle = createClientIpThrottle({ limits: { invitationAccept: { maxEvents: 2, windowSeconds: 3600 } } });
+    const listener = createInvitationRequestListener(dataPool, { trustProxy: true, clientIpThrottle: throttle });
+    let arrivals = 0;
+    let notifyArrived: () => void = () => {};
+    const allArrived = new Promise<void>((resolve) => {
+      notifyArrived = resolve;
+    });
+    const server = createServer((req, res) => {
+      if (++arrivals === 3) notifyArrived();
+      listener(req, res);
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const ip = "203.0.113.7";
+    const payload = "{}";
+    const requests = Array.from({ length: 3 }, () => {
+      const req = httpRequest(`${baseUrl}/api/invitations/accept`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": String(Buffer.byteLength(payload)),
+          "X-Forwarded-For": ip,
+        },
+      });
+      const status = new Promise<number>((resolve, reject) => {
+        req.on("response", (res) => {
+          res.resume();
+          res.on("end", () => resolve(res.statusCode ?? 0));
+          res.on("error", reject);
+        });
+        req.on("error", reject);
+        req.setTimeout(5000, () => req.destroy(new Error("request timed out")));
+      });
+      return { req, status };
+    });
+    const settled = Promise.all(requests.map(({ status }) => status));
+    const timeout = setTimeout(() => {
+      for (const { req } of requests) req.destroy(new Error("arrival timeout"));
+    }, 5000);
+    try {
+      for (const { req } of requests) req.flushHeaders();
+      await Promise.race([allArrived, settled]);
+      for (const { req } of requests) req.end(payload);
+      const statuses = await settled;
+      expect(statuses.filter((status) => status === 400)).toHaveLength(2);
+      expect(statuses.filter((status) => status === 429)).toHaveLength(1);
+      expect(throttle.retryAfterSeconds("invitationAccept", ip)).toBeNull();
+      expect((await accept(baseUrl, UNISSUED_TOKEN, PASSWORD, { "X-Forwarded-For": ip })).status).toBe(404);
+      expect((await accept(baseUrl, UNISSUED_TOKEN, PASSWORD, { "X-Forwarded-For": ip })).status).toBe(404);
+      expect((await accept(baseUrl, UNISSUED_TOKEN, PASSWORD, { "X-Forwarded-For": ip })).status).toBe(429);
+    } finally {
+      clearTimeout(timeout);
+      for (const { req } of requests) req.destroy();
+      await Promise.allSettled(requests.map(({ status }) => status));
+    }
+  });
+
   it("answers 500 without the token, the email or the password when a step after the commit fails", async () => {
     const errorLog = vi.spyOn(logger, "error").mockImplementation(() => undefined);
     // The superuser pool makes provisionTenant refuse the connection's role after the invitation is consumed.
-    const baseUrl = await serve({ trustProxy: false }, adminPool);
+    const throttle = createClientIpThrottle({ limits: { invitationAccept: { maxEvents: 1, windowSeconds: 3600 } } });
+    const baseUrl = await serve({ trustProxy: true, clientIpThrottle: throttle }, adminPool);
     const { token } = await issue(INVITEE);
+    const ip = "203.0.113.9";
 
-    const res = await accept(baseUrl, token);
+    const res = await accept(baseUrl, token, PASSWORD, { "X-Forwarded-For": ip });
 
     expect(res.status).toBe(500);
+    expect(throttle.retryAfterSeconds("invitationAccept", ip)).toBeNull();
     expect(await res.json()).toEqual({ error: "Internal server error" });
     expect(errorLog).toHaveBeenCalledWith(
       { errorName: "Error", method: "POST", path: "/api/invitations/accept" },
@@ -282,8 +351,8 @@ describe("createInvitationRequestListener (issue #1087)", () => {
         const res = await post(baseUrl, JSON.stringify({ token, password: PASSWORD, displayName: "  Novak  " }));
 
         expect(res.status).toBe(200);
-        const body = (await res.json()) as { user: { displayName: string | null } };
-        expect(body.user.displayName).toBe("Novak");
+        const body: unknown = await res.json();
+        expect(body).toMatchObject({ user: { displayName: "Novak" } });
         expect(await storedDisplayName(INVITEE)).toBe("Novak");
       },
       PROVISIONING_TEST_TIMEOUT_MS,
@@ -298,8 +367,8 @@ describe("createInvitationRequestListener (issue #1087)", () => {
         const res = await accept(baseUrl, token);
 
         expect(res.status).toBe(200);
-        const body = (await res.json()) as { user: { displayName: string | null } };
-        expect(body.user.displayName).toBeNull();
+        const body: unknown = await res.json();
+        expect(body).toMatchObject({ user: { displayName: null } });
         expect(await storedDisplayName(INVITEE)).toBeNull();
       },
       PROVISIONING_TEST_TIMEOUT_MS,
