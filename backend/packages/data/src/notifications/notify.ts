@@ -28,12 +28,15 @@ function renderBody(
   template: string,
   params: Readonly<Record<string, string | number | null>>,
   unnamedLabel: string,
+  optionalProjectName: boolean,
 ): string {
   const values: Record<string, string> = {};
   for (const [name, value] of Object.entries(params)) {
     values[name] = value === null ? unnamedLabel : String(value);
   }
-  return interpolate(template, values);
+  if (optionalProjectName) values.projectName ??= "";
+  const rendered = interpolate(template, values);
+  return optionalProjectName ? rendered.trimEnd() : rendered;
 }
 
 export interface WriteNotificationInput {
@@ -52,6 +55,7 @@ export interface WriteNotificationInput {
    * `notification.body.unnamed` label; a param the entry does not name is ignored.
    */
   bodyParams?: Readonly<Record<string, string | number | null>>;
+  bodySuffixKey?: string;
   /**
    * Where this notification's title should link, already resolved to the app's URL scheme
    * (e.g. `?page=agent-run&id=...`) — the writer has no per-kind routing knowledge, only the
@@ -103,6 +107,8 @@ export interface WriteNotificationInput {
  * "upsert always returns a row, and tells you whether it inserted" idiom.
  */
 export async function writeNotification(client: PoolClient, input: WriteNotificationInput): Promise<string> {
+  if (input.bodyKey === undefined && input.bodySuffixKey !== undefined)
+    throw new Error("Notification suffix requires a body");
   const user = await getUserById(client, input.userId);
   if (!user) {
     throw new Error(`writeNotification: no user with id "${input.userId}"`);
@@ -113,14 +119,19 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
   const localeCatalog = catalogs[locale];
   const titleTemplate = resolveCatalogLabel(null, localeCatalog, catalogs.en, `notification.${input.kind}.title`);
   const title = interpolate(titleTemplate, input.titleParams ?? {});
-  const body =
+  const action =
     input.bodyKey === undefined
       ? null
       : renderBody(
           resolveCatalogLabel(null, localeCatalog, catalogs.en, input.bodyKey),
           input.bodyParams ?? {},
           resolveCatalogLabel(null, localeCatalog, catalogs.en, UNNAMED_LABEL_KEY),
+          input.bodyKey === "approval.itemDelete",
         );
+  const body =
+    action === null || input.bodySuffixKey === undefined
+      ? action
+      : `${action} ${resolveCatalogLabel(null, localeCatalog, catalogs.en, input.bodySuffixKey)}`;
 
   const { rows } = await client.query<{ id: string; created_at: Date; inserted: boolean }>(
     `INSERT INTO notifications (user_id, kind, title, body, link_href, source_table, source_id, transition_instance, payload)

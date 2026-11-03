@@ -1482,12 +1482,12 @@
       "sequence": 15,
       "status": "proposed",
       "title": "[backend-delivery 15/74] Implement agent-runtime, semprec-agents, application changes",
-      "bodyCharacters": 56100,
-      "specSha256": "ee6846d4ada59870cc649c6c8ea72d5d65f860f612688f484552379a2cca04af",
+      "bodyCharacters": 57637,
+      "specSha256": "7a5c08997c5428fc16ae86013c7bc30f7b14a04509ffe4e347c597cdf7c279f3",
       "members": [
         {
           "id": "gh-1568",
-          "specSha256": "9ad12366c1b80f4da8083c8f1713064de90088057364a070e7baa522d3a86f60",
+          "specSha256": "bed39cad99eae4143a1ec9d68c9bb4c3e579ff6f68108581633efaa62b6d3313",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1374",
@@ -1497,7 +1497,7 @@
         },
         {
           "id": "gh-1527",
-          "specSha256": "3eb29ce0db868f0f0f00ac7eb395a05d9e0c1201613eba24805a86a0561700a2",
+          "specSha256": "13b14f1740fe63fc84d0bf571add0fd8aeae448ff297a10e47103161894c3a7d",
           "parent": "gh-1308",
           "dependencies": [
             "gh-1424",
@@ -1507,7 +1507,7 @@
         },
         {
           "id": "gh-1618",
-          "specSha256": "a3059aceae18b6c55bdd01ff04753c16da8ba441f45d9294d68c1a1e8e9e20d1",
+          "specSha256": "7987cfe7d96b86f1b112b36185a7467b08347706e0f25d8c356619f7c9db94db",
           "parent": "gh-1305",
           "dependencies": [
             "gh-1527"
@@ -1516,7 +1516,7 @@
         },
         {
           "id": "gh-1683",
-          "specSha256": "9a6275ab86e67377080d57da7d8d7ce7f060c48e86aca4d7cc699e8b89597c4c",
+          "specSha256": "2fe3e1d1345153d8e3e51c3a3e3c12270802d6dbb3e3ae5bc0254259bd8bf260",
           "parent": "gh-1305",
           "dependencies": [
             "gh-1618"
@@ -1525,7 +1525,7 @@
         },
         {
           "id": "gh-1728",
-          "specSha256": "e0794827363f86df483928b1186d6eb6ab9597c88f3d29ca00267e4e206d455b",
+          "specSha256": "b8664d9b692088b14d2f2169f413a602488a6ee29fe39798f7cfc76c3c4b964d",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1452",
@@ -1549,7 +1549,7 @@
         },
         {
           "id": "gh-1533",
-          "specSha256": "c3a33e61f3b10276a069d0fdc1bce7518f1f23f23202d5ea6d55f8afb1af3467",
+          "specSha256": "fadc446d843fb8b26fcda9f6ce51860e4951ed6e5999775a10b5fb50501db11b",
           "parent": "gh-1321",
           "dependencies": [
             "gh-1447"
@@ -1568,7 +1568,7 @@
         },
         {
           "id": "gh-1773",
-          "specSha256": "db1fdb5023dd3c0b76a37d55074bbfb3b6210d2f85e26063fb8cbed76eea6833",
+          "specSha256": "4ee258742b40c1a4c5bbe63ccdd659d86ce28b16dd5c19565886d70ff3501cc6",
           "parent": "gh-1305",
           "dependencies": [
             "gh-1466",

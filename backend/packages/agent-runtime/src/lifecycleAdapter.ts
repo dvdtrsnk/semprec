@@ -7,6 +7,8 @@ import {
   getAgentRun,
   insertAndNotifyAgentRunEvent,
   listAgentRunEvents,
+  requireManagedTransaction,
+  markManagedTransactionRollbackOnly,
   type AgentRunErrorCode,
   type AgentRunEventKind,
   type AgentRunEventRow,
@@ -239,30 +241,48 @@ export async function runAgentSession(client: Pool | PoolClient, input: RunAgent
   });
 }
 
-/**
- * Pairs every unpaired `tool_use` of a still-`running` run with a synthetic error `tool_result`
- * in the regular tool result shape, so the run's history keeps its protocol invariant and the
- * thread can be woken again without waiting for a restart. Call it before closing the run: only a
- * `running` run accepts these events. A failure to pair is logged and never replaces the turn's
- * own failure, which the caller still has to record.
- */
-export async function pairDanglingToolCalls(
+/** Pairs dangling calls and closes the failed run in one managed transaction. */
+export async function closeFailedAgentRun(
   client: Pool | PoolClient,
   agentRunId: string,
   failure: unknown,
 ): Promise<void> {
   try {
-    const dangling = findDanglingToolUses(await listAgentRunEvents(client, agentRunId));
-    if (dangling.length === 0) return;
-    const reason = agentRunErrorCodeOf(failure) === "cancelled" ? "cancelled" : "failed";
-    const text = `Turn ${reason} before this tool call completed.`;
-    await closeAtomically(client, async (c) => {
+    const close = async (c: PoolClient): Promise<void> => {
+      const run = await getAgentRun(c, agentRunId, true);
+      if (!run || run.status !== "running") return;
+      const dangling = findDanglingToolUses(await listAgentRunEvents(c, agentRunId));
+      const reason = agentRunErrorCodeOf(failure) === "cancelled" ? "cancelled" : "failed";
       for (const toolUse of dangling) {
-        await recordPersistentEvent(c, agentRunId, "tool_result", syntheticToolResult(toolUse, text));
+        await recordPersistentEvent(
+          c,
+          agentRunId,
+          "tool_result",
+          syntheticToolResult(toolUse, `Turn ${reason} before this tool call completed.`),
+        );
       }
-    });
-  } catch (err) {
-    logger.error({ err, agentRunId }, "Failed to pair dangling tool calls of a failed turn");
+      const closed = await finishAgentRunWithErrorNotification(
+        c,
+        agentRunId,
+        failure instanceof Error ? failure.message : String(failure),
+        agentRunErrorCodeOf(failure),
+      );
+      if (closed) await pushRunStatus(c, agentRunId, "error");
+    };
+    if (client instanceof Pool) await withTransaction(client, close);
+    else {
+      requireManagedTransaction(client);
+      try {
+        await close(client);
+      } catch (error) {
+        markManagedTransactionRollbackOnly(client, error);
+        throw error;
+      }
+    }
+  } catch (secondary) {
+    // The recovery ADR requires the original failure as cause and retains the caught error in errors[1].
+    // eslint-disable-next-line preserve-caught-error
+    throw new AggregateError([failure, secondary], "Failed to recover agent run", { cause: failure });
   }
 }
 
@@ -304,26 +324,7 @@ export async function runAgentSessionForRun(
         await pushRunStatus(c, run.id, "done");
       });
     } catch (err) {
-      await pairDanglingToolCalls(client, run.id, err);
-      try {
-        // Issue #149: same client as the status write, so a caller-supplied transaction rolls
-        // both back together. A `false` close means another closer already decided the outcome,
-        // so this session writes no terminal event of its own.
-        await closeAtomically(client, async (c) => {
-          const closed = await finishAgentRunWithErrorNotification(
-            c,
-            run.id,
-            err instanceof Error ? err.message : String(err),
-            agentRunErrorCodeOf(err),
-          );
-          if (!closed) return;
-          await pushRunStatus(c, run.id, "error");
-        });
-      } catch (finishErr) {
-        // Preserve the session failure for the caller, but do not erase evidence that the
-        // secondary lifecycle close failed and left the row running.
-        logger.error({ err: finishErr, agentRunId: run.id }, "Failed to record failed agent run lifecycle");
-      }
+      await closeFailedAgentRun(client, run.id, err);
       throw err;
     }
 

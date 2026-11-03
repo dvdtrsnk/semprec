@@ -1,6 +1,15 @@
 import "./domainWriteHooks.js";
 
-export { createPool, withTransaction, withClient, requireAffectedRows, type Queryable } from "./db/pool.js";
+export {
+  createPool,
+  withTransaction,
+  withClient,
+  requireAffectedRows,
+  requireManagedTransaction,
+  markManagedTransactionRollbackOnly,
+  type Queryable,
+} from "./db/pool.js";
+export { readItemPatchChangeMetadata } from "./chokePoint/itemPatchChangeMetadata.js";
 export { assertRuntimeRole, RuntimeRoleAssertionError } from "./db/runtimeRoleAssertion.js";
 export { runMigrations } from "./db/migrate.js";
 export * from "./errors.js";

@@ -850,6 +850,7 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
         userId: owner,
         kind: "heartbeat_error",
         titleParams: { name: "Daily digest" },
+        bodyKey: "notification.body.canUndo",
         linkHref: null,
         sourceTable: "project_heartbeats",
         sourceId: "hb-1",
@@ -858,8 +859,11 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
     );
     await publishRealtimeMessage(pool, { type: "notification_created", userId: owner, notificationId });
 
-    const message = JSON.parse(await receivedByOwner) as { type: string; notification: { id: string; userId: string } };
-    expect(message).toMatchObject({ type: "notification", notification: { id: notificationId, userId: owner } });
+    const message: unknown = JSON.parse(await receivedByOwner);
+    expect(message).toMatchObject({
+      type: "notification",
+      notification: { id: notificationId, userId: owner, body: "This can be undone later." },
+    });
 
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(bystanderMessage).toBeUndefined();

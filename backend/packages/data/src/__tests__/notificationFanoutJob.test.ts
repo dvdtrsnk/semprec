@@ -196,8 +196,9 @@ describe("notificationFanout job (issue #151)", () => {
         sourceTable: "approval_requests",
         sourceId: "approval-body-push",
         transitionInstance: "approval-body-push",
-        bodyKey: "notification.approval_pending.body.viewDelete",
-        bodyParams: { viewName: "Open tasks" },
+        bodyKey: "approval.viewDelete",
+        bodyParams: { viewName: "Open tasks", databaseName: "Tasks" },
+        bodySuffixKey: "notification.body.cannotUndo",
       }),
     );
 
@@ -207,7 +208,7 @@ describe("notificationFanout job (issue #151)", () => {
     expect(sendWebPush).toHaveBeenCalledWith(expect.anything(), {
       notificationId,
       title: "Semp potřebuje schválení",
-      body: "Smazat pohled „Open tasks“. Tuto akci nelze vzít zpět.",
+      body: "Smazat pohled „Open tasks“ z „Tasks“. Semp tuto akci nedokáže vrátit zpět.",
       linkHref: `?page=approvals&user=${userId}`,
       interruptionLevel: "time-sensitive",
     });

@@ -11,12 +11,14 @@
   "notification.mail_sync_stalled.title": "Synchronizace pošty se zasekla",
   "notification.backup_restore_failed.title": "Test obnovy zálohy selhal",
   "notification.semp_problem.title": "Něco vyžaduje vaši pozornost",
-  "notification.approval_pending.body.itemDelete": "Smazat položku „{itemName}“ v databázi „{databaseName}“. Lze ji později vzít zpět.",
-  "notification.approval_pending.body.propertyDelete": "Smazat vlastnost „{propertyName}“ v databázi „{databaseName}“. Tuto akci nelze vzít zpět.",
-  "notification.approval_pending.body.databaseArchive": "Archivovat databázi „{databaseName}“. Lze ji později vzít zpět.",
-  "notification.approval_pending.body.viewDelete": "Smazat pohled „{viewName}“. Tuto akci nelze vzít zpět.",
-  "notification.approval_pending.body.relationDelete": "Odebrat propojení mezi „{fromItemName}“ a „{toItemName}“. Tuto akci nelze vzít zpět.",
-  "notification.approval_pending.body.pageRestore": "Obnovit stránku „{itemName}“ v databázi „{databaseName}“ do starší verze. Lze ji později vzít zpět.",
-  "notification.approval_pending.body.mcpInvoke": "Zavolat nástroj „{toolName}“ na MCP serveru „{serverName}“. Tuto akci nelze vzít zpět.",
-  "notification.body.unnamed": "bez názvu"
+  "notification.body.unnamed": "bez názvu",
+  "approval.itemDelete": "Smazat „{itemName}“ z „{databaseName}“ ({databaseKey}); propojených položek: {linkedCount}, uchování: {restorableDays} dní. {projectName}",
+  "approval.propertyDelete": "Smazat „{propertyName}“ z „{databaseName}“ ({databaseKey}); dotčených položek: {affectedCount}.",
+  "approval.databaseArchive": "Archivovat „{databaseName}“; dotčených položek: {affectedCount}.",
+  "approval.viewDelete": "Smazat pohled „{viewName}“ z „{databaseName}“.",
+  "approval.relationDelete": "Odebrat propojení z „{fromItemName}“ ({fromDatabaseKey}) na „{toItemName}“ ({toDatabaseKey}).",
+  "approval.pageRestore": "Obnovit „{itemName}“ v „{databaseName}“ ({databaseKey}).",
+  "approval.mcpInvoke": "Zavolat „{toolName}“ na MCP serveru „{serverName}“.",
+  "notification.body.canUndo": "Lze ji později vzít zpět.",
+  "notification.body.cannotUndo": "Semp tuto akci nedokáže vrátit zpět."
 }

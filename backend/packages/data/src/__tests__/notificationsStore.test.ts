@@ -94,6 +94,25 @@ describe("notificationsStore (issue #152)", () => {
       expect(unread.map((n) => n.sourceId)).toEqual(["hb-1", "hb-2"]);
     });
 
+    it("returns the stored localized body through the list reader", async () => {
+      const userId = await createTestUser();
+      await withTransaction(pool, (client) =>
+        writeNotification(client, {
+          userId,
+          kind: "heartbeat_error",
+          titleParams: { name: "body" },
+          bodyKey: "notification.body.canUndo",
+          linkHref: null,
+          sourceTable: "project_heartbeats",
+          sourceId: "body",
+          transitionInstance: "one",
+        }),
+      );
+      const rows = await withTransaction(pool, (client) => listUnreadNotificationsForUser(client, userId));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.body).toBe("Lze ji později vzít zpět.");
+    });
+
     it("excludes a notification once it has been read", async () => {
       const userId = await createTestUser();
       await writeTestNotification(userId, "hb-1");

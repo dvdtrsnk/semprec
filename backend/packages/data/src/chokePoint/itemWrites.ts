@@ -1,5 +1,6 @@
 import { ConflictError } from "../errors.js";
 import { projectItemsForRead } from "./itemReadProjection.js";
+import { attachItemPatchChangeMetadata } from "./itemPatchChangeMetadata.js";
 import { z } from "zod";
 // Owns the choke point's item writes: `createItem` / `updateItem` and their transaction-scoped
 // `createItemWithClient` / `updateItemWithClient` counterparts, the property writability checks
@@ -558,7 +559,16 @@ export async function updateItemWithClient(
       userId: options.actingUserId,
     }),
   );
-  return { ...item, previous: Object.fromEntries(patchKeys.map((key) => [key, previous[key]])) };
+  const eligibility = new Map(
+    patchKeys.map((key) => {
+      const property = properties.find((candidate) => candidate.key === key);
+      return [key, property !== undefined && property.type !== "longText"] as const;
+    }),
+  );
+  return attachItemPatchChangeMetadata(
+    { ...item, previous: Object.fromEntries(patchKeys.map((key) => [key, previous[key]])) },
+    eligibility,
+  );
 }
 
 export interface ConvergeObservedEmailFlagsInput {

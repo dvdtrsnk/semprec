@@ -271,7 +271,7 @@ async function preflightDestructiveApproval(
       await writeNotification(client, {
         userId,
         kind: "approval_pending",
-        ...approvalNotificationBody(created.description),
+        ...approvalNotificationBody(created),
         linkHref: `?page=approvals&user=${userId}`,
         sourceTable: "approval_requests",
         sourceId: created.id,
