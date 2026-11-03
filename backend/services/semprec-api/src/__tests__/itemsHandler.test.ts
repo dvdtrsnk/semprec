@@ -20,6 +20,7 @@ import {
   registerItemUpdateHook,
   resetDatabase,
   tenantForNextTestUser,
+  upsertMailMessageMeta,
 } from "@semprec/data/testSupport";
 import {
   createChokePoint,
@@ -387,6 +388,47 @@ describe("item routes (issue #241)", () => {
     const renamed = await patch({ name: "Renamed" }, legacy.updatedAt);
     expect(renamed.status).toBe(200);
     expect(await renamed.json()).toMatchObject({ properties: { name: "Renamed", targetDatabase: "journal" } });
+  });
+
+  it("queues one mailbox sync through REST flag patches", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const fixture = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, async (client) => {
+        const emails = await getDatabaseByModuleId(client, "emails");
+        const mailboxes = await getDatabaseByModuleId(client, "mailboxes");
+        if (!emails || !mailboxes) throw new Error("Mail databases were not seeded");
+        const mailbox = await createItemWithClient(client, {
+          databaseId: mailboxes.id,
+          properties: { name: "Work", provider: "generic" },
+        });
+        const first = await createItemWithClient(client, { databaseId: emails.id, properties: {} });
+        const second = await createItemWithClient(client, { databaseId: emails.id, properties: {} });
+        for (const [item, messageId] of [
+          [first, "<first@example.test>"],
+          [second, "<second@example.test>"],
+        ] as const) {
+          await upsertMailMessageMeta(client, { itemId: item.id, mailboxItemId: mailbox.id, messageId, envelope: {} });
+        }
+        return { mailbox, first, second };
+      }),
+    );
+    for (const [item, properties] of [
+      [fixture.first, { read: true }],
+      [fixture.second, { flagged: true }],
+    ] as const) {
+      const response = await fetch(`${baseUrl}/api/items/${item.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties, ifVersion: item.updatedAt }),
+      });
+      expect(response.status).toBe(200);
+    }
+    const { rows } = await pool.query<{ key: string | null }>(
+      "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1",
+      ["mailAccountSync"],
+    );
+    expect(rows).toEqual([{ key: `mail-account-sync:${fixture.mailbox.id}` }]);
   });
 
   it("validates Books ratings through the PATCH HTTP response", async () => {

@@ -93,3 +93,5 @@ export async function resetDatabase(pool: Pool): Promise<void> {
     END $$;
   `);
 }
+
+export { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";

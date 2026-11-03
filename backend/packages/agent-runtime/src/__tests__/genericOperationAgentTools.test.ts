@@ -3,7 +3,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as application from "@semprec/application";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createTenantZeroUser,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+  upsertMailMessageMeta,
+} from "@semprec/data/testSupport";
 import {
   createAgentRun,
   createItemWithClient,
@@ -16,7 +22,7 @@ import {
   type ChokePoint,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
-import { GENERIC_OPERATION_NAMES } from "@semprec/shared";
+import { GENERIC_OPERATION_NAMES, runInTenant } from "@semprec/shared";
 import {
   TOOL_CHANGE_VALUE_MAX_LENGTH,
   createGenericOperationAgentTools,
@@ -134,6 +140,48 @@ describe("generic operation AgentTools (issue #220)", () => {
       );
       expect(rows[0]?.body).toBe(raw);
     });
+
+    it("queues one mailbox sync for agent flag patches of two messages", async () =>
+      runInTenant(getTenantZeroId(), async () => {
+        const emails = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "emails"));
+        const mailboxes = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "mailboxes"));
+        if (!emails || !mailboxes) throw new Error("Mail databases were not seeded");
+        const fixture = await withTransaction(pool, async (client) => {
+          const mailbox = await createItemWithClient(client, {
+            databaseId: mailboxes.id,
+            properties: { name: "Work", provider: "generic" },
+          });
+          const first = await createItemWithClient(client, { databaseId: emails.id, properties: {} });
+          const second = await createItemWithClient(client, { databaseId: emails.id, properties: {} });
+          for (const [item, messageId] of [
+            [first, "<first@example.test>"],
+            [second, "<second@example.test>"],
+          ] as const) {
+            await upsertMailMessageMeta(client, {
+              itemId: item.id,
+              mailboxItemId: mailbox.id,
+              messageId,
+              envelope: {},
+            });
+          }
+          return { mailbox, first, second };
+        });
+        const projectItemId = await createProjectItem();
+        const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "flag messages" });
+        const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+        for (const [item, properties] of [
+          [fixture.first, { read: true }],
+          [fixture.second, { flagged: true }],
+        ] as const) {
+          const result = await tools["item.patch"](run.id, { itemId: item.id, properties, ifVersion: item.updatedAt });
+          expect(result.error).toBe(false);
+        }
+        const { rows } = await pool.query<{ key: string | null }>(
+          "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1",
+          ["mailAccountSync"],
+        );
+        expect(rows).toEqual([{ key: `mail-account-sync:${fixture.mailbox.id}` }]);
+      }));
 
     it("refuses a Journal item without type or period through the agent tool without creating a row", async () => {
       const journal = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "journal"));
