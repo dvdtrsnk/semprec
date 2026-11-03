@@ -4,7 +4,14 @@ import * as decoding from "lib0/decoding";
 import * as syncProtocol from "y-protocols/sync.js";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createChokePoint, createDocStore, loadYDoc, type ChokePoint, type DocStore } from "@semprec/data";
+import {
+  createChokePoint,
+  createDocStore,
+  loadYDoc,
+  withTransaction,
+  type ChokePoint,
+  type DocStore,
+} from "@semprec/data";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -707,5 +714,40 @@ describe("createDocSyncRegistry doc:ack (issue #1362)", () => {
 
     expect(acks(socket)).toEqual([]);
     expect(await countUpdates()).toBe(before);
+  });
+
+  it("sends no ack when a valid update fails at the persistence insert", async () => {
+    const socket = new FakeSocket();
+    await registry.handleOpen(socket as unknown as never, tenantA, docId);
+    const before = await countUpdates();
+    // Inject a database failure at the actual update-row insertion boundary.
+    await withTransaction(pool, async (client) => {
+      await client.query(
+        "CREATE FUNCTION batch16_reject_doc_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected doc persistence failure'; END $$",
+      );
+      await client.query(
+        "CREATE TRIGGER batch16_reject_doc_update BEFORE INSERT ON doc_updates FOR EACH ROW EXECUTE FUNCTION batch16_reject_doc_update()",
+      );
+    });
+    let failure: { error: unknown } | undefined;
+    try {
+      await expect(
+        registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(updateBytes("valid"), "failed")),
+      ).rejects.toThrow("injected doc persistence failure");
+      expect(acks(socket)).toEqual([]);
+      expect(await countUpdates()).toBe(before);
+    } catch (error) {
+      failure = { error };
+    }
+    try {
+      await withTransaction(pool, async (client) => {
+        await client.query("DROP TRIGGER batch16_reject_doc_update ON doc_updates");
+        await client.query("DROP FUNCTION batch16_reject_doc_update()");
+      });
+    } catch (error) {
+      if (failure) throw new AggregateError([failure.error, error], "Test and cleanup failed", { cause: error });
+      throw error;
+    }
+    if (failure) throw failure.error;
   });
 });
