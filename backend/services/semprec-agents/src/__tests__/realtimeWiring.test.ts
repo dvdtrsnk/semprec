@@ -119,9 +119,17 @@ describe("semprec-agents realtime wiring (issue #1383)", () => {
           (e) => e.message.type === "invalidation" && "itemId" in e.message && e.message.itemId === item.id,
         ),
       );
+      const countItems = () =>
+        runInTenant(tenantId, () =>
+          runtimePool.query<{ count: string }>("SELECT count(*)::text AS count FROM items WHERE database_id = $1", [
+            databaseId,
+          ]),
+        );
+      const beforeRefusal = (await countItems()).rows[0]!.count;
       await expect(
         runInTenant(otherTenantId, () => createChokePoint(runtimePool).createItem({ databaseId, properties: {} })),
       ).rejects.toThrow();
+      expect((await countItems()).rows[0]!.count).toBe(beforeRefusal);
       const visible = await runInTenant(otherTenantId, () =>
         runtimePool.query<{ id: string }>("SELECT id FROM items WHERE id = $1", [item.id]),
       );

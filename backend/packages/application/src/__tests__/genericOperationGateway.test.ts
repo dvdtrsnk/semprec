@@ -391,7 +391,13 @@ describe("createGenericOperationGateway (issue #220)", () => {
       const database = await chokePoint.createDatabase({ name: "Gateway DB tool call" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       const projectItemId = randomUUID();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
+      const thread = await withTransaction(pool, (client) =>
+        client.query<{ id: string }>(
+          "INSERT INTO semp_threads (kind, last_activity_at) VALUES ('chat', '2020-01-01') RETURNING id",
+        ),
+      );
+      const threadId = thread.rows[0]!.id;
+      const run = await createAgentRun(pool, { projectItemId, threadId, triggeredBy: "user", task: "delete it" });
       const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
 
       const linked = (await gateway
@@ -407,6 +413,14 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect((await getApprovalRequest(pool, linked.details.approvalRequestId))!.toolCallId).toBe("call_1");
       expect(redelivered.details.approvalRequestId).toBe(linked.details.approvalRequestId);
       expect((await getApprovalRequest(pool, unlinked.details.approvalRequestId))!.toolCallId).toBeNull();
+      const activity = await withTransaction(pool, (client) =>
+        client.query<{ last_activity_at: Date; requested_at: Date }>(
+          "SELECT t.last_activity_at, r.requested_at FROM semp_threads t JOIN approval_requests r ON r.id = $2 WHERE t.id = $1",
+          [threadId, unlinked.details.approvalRequestId],
+        ),
+      );
+      expect(activity.rows).toHaveLength(1);
+      expect(activity.rows[0]!.last_activity_at.getTime()).toBe(activity.rows[0]!.requested_at.getTime());
     });
 
     it("still rejects a reason field inside the operation input as strict-schema ValidationError (issue #1420)", async () => {

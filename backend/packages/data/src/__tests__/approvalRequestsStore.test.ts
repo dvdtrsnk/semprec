@@ -18,6 +18,7 @@ import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/vie
 import { seedSystem } from "../seed/seedSystem.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { withTransaction } from "../db/pool.js";
+import { getOrCreateTickThread } from "../semp/sempTickThreadStore.js";
 import {
   type ApprovalDescription,
   createPendingApprovalRequest,
@@ -449,6 +450,50 @@ describe("approvalRequestsStore thread activity (issue #1728)", () => {
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
     expect(await activity(threadId)).toBeGreaterThan(new Date(OLD).getTime());
+  });
+
+  it("raises the persisted activity of the requesting tick thread", async () => {
+    const heartbeats = await withTransaction(pool, (client) =>
+      client.query<{ id: string; project_item_id: string }>(
+        "SELECT id, project_item_id FROM project_heartbeats WHERE action_id = 'core.agentRun' LIMIT 1",
+      ),
+    );
+    const heartbeat = heartbeats.rows[0];
+    if (!heartbeat) throw new Error("Missing seeded agent heartbeat");
+    const thread = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) => getOrCreateTickThread(client, heartbeat.id)),
+    );
+    const reset = await withTransaction(pool, (client) =>
+      client.query("UPDATE semp_threads SET last_activity_at = $2 WHERE id = $1", [thread.id, OLD]),
+    );
+    expect(reset.rowCount).toBe(1);
+    const run = await createAgentRun(pool, {
+      triggeredBy: "heartbeat",
+      task: "tick",
+      userId: ownerId,
+      threadId: thread.id,
+      heartbeatId: heartbeat.id,
+      projectItemId: heartbeat.project_item_id,
+    });
+    const request = await withTransaction(pool, (client) =>
+      createPendingApprovalRequest(client, {
+        agentRunId: run.id,
+        toolName: "tool",
+        riskClass: "unclassified",
+        payload: mcpPayload(),
+        resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      }),
+    );
+    const rows = await withTransaction(pool, (client) =>
+      client.query<{ activity: Date; requested: Date; kind: string }>(
+        "SELECT t.last_activity_at AS activity, t.kind, r.requested_at AS requested FROM semp_threads t JOIN approval_requests r ON r.id = $2 WHERE t.id = $1",
+        [thread.id, request.id],
+      ),
+    );
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0]!.kind).toBe("tick");
+    expect(rows.rows[0]!.activity.getTime()).toBe(rows.rows[0]!.requested.getTime());
+    expect(rows.rows[0]!.activity.getTime()).toBeGreaterThan(new Date(OLD).getTime());
   });
 
   it("never moves activity backwards when a newer activity committed after the transaction started", async () => {

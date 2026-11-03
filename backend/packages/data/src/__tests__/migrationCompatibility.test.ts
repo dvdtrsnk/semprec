@@ -9,6 +9,9 @@ import { z } from "zod";
 import { runInTenant } from "@semprec/shared";
 import { runMigrations } from "../db/migrate.js";
 import { withTransaction } from "../db/pool.js";
+import { runApprovalRequestExecutionStatusCutoverMigration } from "../mcp/approvalRequestExecutionStatusCutoverMigration.js";
+import { getApprovalRequest } from "../mcp/approvalRequestsStore.js";
+import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsActorUserIdCutoverMigration.js";
 
 /**
  * Compatibility fixture for issue #191: applies each migration example on top of the previous
@@ -47,6 +50,8 @@ it("upgrades populated approvals and notifications through the batch 15 additive
     const prior = files.find((file) => file.startsWith("0115_"));
     if (!prior) throw new Error("Missing pre-0116 migration");
     await migrateThrough(prior);
+    await runApprovalRequestExecutionStatusCutoverMigration(db);
+    await runAgentRunsActorUserIdCutoverMigration(db);
     const tenantId = (await db.query<{ id: string }>("SELECT id FROM tenants LIMIT 1")).rows[0]?.id;
     if (!tenantId) throw new Error("Missing initial tenant");
     const userId = randomUUID();
@@ -60,12 +65,17 @@ it("upgrades populated approvals and notifications through the batch 15 additive
         `${userId}@example.test`,
       ]);
       await client.query(
-        "INSERT INTO agent_runs (id, tenant_id, triggered_by, task) VALUES ($1, $2, 'user', 'legacy')",
-        [runId, tenantId],
+        "INSERT INTO agent_runs (id, tenant_id, actor_user_id, triggered_by, task) VALUES ($1, $2, $3, 'user', 'legacy')",
+        [runId, tenantId, userId],
       );
       await client.query(
-        "INSERT INTO approval_requests (id, tenant_id, agent_run_id, tool_name, risk_class, payload, resource_snapshot, execution_status) VALUES ($1, $2, $3, 'legacy_tool', 'unclassified', '{}'::jsonb, '{\"kind\":\"test\",\"resourceId\":\"legacy\",\"sha256\":null}'::jsonb, 'pending')",
-        [requestId, tenantId, runId],
+        'INSERT INTO approval_requests (id, tenant_id, agent_run_id, tool_name, risk_class, payload, resource_snapshot) VALUES ($1, $2, $3, \'legacy_tool\', \'unclassified\', $4::jsonb, \'{"kind":"test","resourceId":"legacy","sha256":null}\'::jsonb)',
+        [
+          requestId,
+          tenantId,
+          runId,
+          JSON.stringify({ mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} }),
+        ],
       );
       await client.query(
         "INSERT INTO notifications (id, tenant_id, user_id, kind, title, source_table, source_id, transition_instance) VALUES ($1, $2, $3, 'approval_pending', 'Legacy', 'legacy', 'old', 'one')",
@@ -81,15 +91,25 @@ it("upgrades populated approvals and notifications through the batch 15 additive
     await withTransaction(db, async (client) => {
       await client.query("UPDATE approval_requests SET tool_call_id = 'call' WHERE id = $1", [requestId]);
       await client.query(
-        "INSERT INTO approval_requests (tenant_id, agent_run_id, tool_name, risk_class, payload) VALUES ($1, $2, 'old_writer', 'unclassified', '{}'::jsonb), ($1, $2, 'old_writer_2', 'unclassified', '{}'::jsonb)",
-        [tenantId, runId],
+        "INSERT INTO approval_requests (tenant_id, agent_run_id, tool_name, risk_class, payload, resource_snapshot) VALUES ($1, $2, 'old_writer', 'unclassified', $3::jsonb, $4::jsonb), ($1, $2, 'old_writer_2', 'unclassified', $3::jsonb, $4::jsonb)",
+        [
+          tenantId,
+          runId,
+          JSON.stringify({ mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} }),
+          JSON.stringify({ kind: "test", resourceId: "legacy", sha256: null }),
+        ],
       );
     });
     await expect(
       withTransaction(db, (client) =>
         client.query(
-          "INSERT INTO approval_requests (tenant_id, agent_run_id, tool_name, risk_class, payload, tool_call_id) VALUES ($1, $2, 'duplicate', 'unclassified', '{}'::jsonb, 'call')",
-          [tenantId, runId],
+          "INSERT INTO approval_requests (tenant_id, agent_run_id, tool_name, risk_class, payload, resource_snapshot, tool_call_id) VALUES ($1, $2, 'duplicate', 'unclassified', $3::jsonb, $4::jsonb, 'call')",
+          [
+            tenantId,
+            runId,
+            JSON.stringify({ mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} }),
+            JSON.stringify({ kind: "test", resourceId: "legacy", sha256: null }),
+          ],
         ),
       ),
     ).rejects.toMatchObject({ code: "23505" });
@@ -99,6 +119,13 @@ it("upgrades populated approvals and notifications through the batch 15 additive
       [requestId],
     );
     expect(description.rows).toEqual([{ description: null }]);
+    expect(await getApprovalRequest(db, requestId)).toMatchObject({
+      id: requestId,
+      toolName: "legacy_tool",
+      executionStatus: "not_approved",
+      toolCallId: "call",
+      description: null,
+    });
     await migrateThrough("0122_notifications_body.sql");
     const notification = await db.query<{ title: string; body: string | null }>(
       "SELECT title, body FROM notifications WHERE id = $1",

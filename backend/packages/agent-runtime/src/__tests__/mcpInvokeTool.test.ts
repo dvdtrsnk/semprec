@@ -351,7 +351,13 @@ describe("MCP invoke adapter (issue #128)", () => {
       const contractServer = startStdioContractServer([SEARCH_TOOL]);
       servers.push(contractServer);
       const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
-      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+      const thread = await withTransaction(pool, (client) =>
+        client.query<{ id: string }>(
+          "INSERT INTO semp_threads (kind, last_activity_at) VALUES ('chat', '2020-01-01') RETURNING id",
+        ),
+      );
+      const threadId = thread.rows[0]!.id;
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", threadId });
 
       const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
       const first = await invoke({ query: "semprec" }, undefined, { toolCallId: "call_1" });
@@ -361,6 +367,14 @@ describe("MCP invoke adapter (issue #128)", () => {
       expect(again.approvalRequestId).toBe(first.approvalRequestId);
       expect((await getApprovalRequest(pool, first.approvalRequestId!))!.toolCallId).toBe("call_1");
       expect((await getApprovalRequest(pool, without.approvalRequestId!))!.toolCallId).toBeNull();
+      const activity = await withTransaction(pool, (client) =>
+        client.query<{ last_activity_at: Date; requested_at: Date }>(
+          "SELECT t.last_activity_at, r.requested_at FROM semp_threads t JOIN approval_requests r ON r.id = $2 WHERE t.id = $1",
+          [threadId, without.approvalRequestId],
+        ),
+      );
+      expect(activity.rows).toHaveLength(1);
+      expect(activity.rows[0]!.last_activity_at.getTime()).toBe(activity.rows[0]!.requested_at.getTime());
       const { rows } = await pool.query("SELECT count(*)::int AS n FROM approval_requests WHERE agent_run_id = $1", [
         run.id,
       ]);
