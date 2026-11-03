@@ -64,6 +64,7 @@ const TENANT_TABLES = [
   "mail_message_meta",
   "mail_attachments",
   "mail_message_flag_sync_state",
+  "mail_message_move_sync_state",
   "person_email_index",
   "external_credentials",
   "credential_access_log",
@@ -75,6 +76,7 @@ const TENANT_TABLES = [
   "tenant_exports",
   "mail_oauth_states",
   "semp_problems",
+  "semp_problem_occurrences",
   "semp_threads",
   "semp_messages",
   "value_links",
@@ -671,7 +673,12 @@ describe("tenancy classification catalog", () => {
           AND c.relnamespace = 'public'::regnamespace AND NOT c.relispartition
         ORDER BY k.conname`,
     );
-    expect(twins).toHaveLength(35);
+    expect(twins).toHaveLength(36);
+    expect(twins).toContainEqual({
+      table_name: "semp_problem_occurrences",
+      constraint_name: "semp_problem_occurrences_problem_id_tenant_fkey",
+      column_name: "problem_id",
+    });
     for (const twin of twins) {
       const client = await pool.connect();
       try {
