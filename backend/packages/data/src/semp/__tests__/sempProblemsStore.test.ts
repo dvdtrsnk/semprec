@@ -358,6 +358,32 @@ describe("semp problems store", () => {
     expect(receipts.rows.map((row) => row.problem_id).sort()).toEqual([first.problemId, second.problemId].sort());
   });
 
+  it("keeps occurrence receipts isolated from a different runtime tenant", async () => {
+    const a = await withTenantTransaction(runtimePool, tenantZero, (client) =>
+      raiseProblem(client, input({ occurrenceKey: "shared-job" })),
+    );
+    const b = await withTenantTransaction(runtimePool, tenantB, (client) =>
+      raiseProblem(client, input({ userId: userB, occurrenceKey: "shared-job" })),
+    );
+    const visible = (tenantId: string) =>
+      withTenantTransaction(runtimePool, tenantId, (client) =>
+        client.query<{ problem_id: string }>(
+          "SELECT problem_id FROM semp_problem_occurrences WHERE occurrence_key = $1",
+          ["shared-job"],
+        ),
+      );
+    expect((await visible(tenantZero)).rows).toEqual([{ problem_id: a.problemId }]);
+    expect((await visible(tenantB)).rows).toEqual([{ problem_id: b.problemId }]);
+    await expect(
+      withTenantTransaction(runtimePool, tenantB, (client) =>
+        client.query("INSERT INTO semp_problem_occurrences (problem_id, occurrence_key) VALUES ($1, 'foreign')", [
+          a.problemId,
+        ]),
+      ),
+    ).rejects.toMatchObject({ code: "23503" });
+    expect((await visible(tenantZero)).rows).toEqual([{ problem_id: a.problemId }]);
+  });
+
   it("leaves one row when two transactions raise the same key concurrently", async () => {
     const notifications: NotificationCreatedEvent[] = [];
     setNotificationCreatedHook((event) => notifications.push(event));

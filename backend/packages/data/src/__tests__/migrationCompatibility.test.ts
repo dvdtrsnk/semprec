@@ -13,6 +13,9 @@ import { runApprovalRequestExecutionStatusCutoverMigration } from "../mcp/approv
 import { getApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsActorUserIdCutoverMigration.js";
 import { raiseProblem } from "../semp/sempProblemsStore.js";
+import { createDatabase } from "../chokePoint/databasesStore.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
 
 /**
  * Compatibility fixture for issue #191: applies each migration example on top of the previous
@@ -22,6 +25,125 @@ import { raiseProblem } from "../semp/sempProblemsStore.js";
 
 const EXAMPLES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "db", "migrationExamples");
 const LONG_TITLE = "a title longer than ten characters";
+
+it("adds the move state table over populated mail without changing existing metadata", async () => {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("Missing test database URL");
+  // The generated identifier is a fixed prefix and UUID hex.
+  const name = `batch18_move_${randomUUID().replaceAll("-", "")}`;
+  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch18-move-"));
+  const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+  const migration = "0129_mail_message_move_sync_state.sql";
+  let scratch: Pool | undefined;
+  let created = false;
+  let failure: { error: unknown } | undefined;
+  try {
+    await admin.query(`CREATE DATABASE "${name}"`);
+    created = true;
+    const scratchUrl = new URL(url);
+    scratchUrl.pathname = `/${name}`;
+    scratch = new Pool({
+      connectionString: scratchUrl.toString(),
+      connectionTimeoutMillis: 5000,
+      statement_timeout: 30000,
+    });
+    const db = scratch;
+    for (const file of (await readdir(migrations))
+      .filter((entry) => entry.endsWith(".sql") && entry < migration)
+      .sort()) {
+      await copyFile(path.join(migrations, file), path.join(dir, file));
+    }
+    await runMigrations(db, dir);
+    const tenants = await db.query<{ id: string }>("SELECT id FROM tenants");
+    const tenantId = tenants.rows[0]?.id;
+    if (!tenantId || tenants.rows.length !== 1) throw new Error("Expected one historical tenant");
+    const { mailboxId, messageId } = await runInTenant(tenantId, () =>
+      withTransaction(db, async (client) => {
+        const mailboxDb = await createDatabase(client, { name: "Mailboxes" });
+        const emailDb = await createDatabase(client, { name: "Emails" });
+        const mailbox = await createItemWithClient(client, { databaseId: mailboxDb.id, properties: {} });
+        const message = await createItemWithClient(client, { databaseId: emailDb.id, properties: {} });
+        await upsertMailMessageMeta(client, {
+          itemId: message.id,
+          mailboxItemId: mailbox.id,
+          messageId: `<${randomUUID()}@example.test>`,
+          envelope: {},
+        });
+        return { mailboxId: mailbox.id, messageId: message.id };
+      }),
+    );
+    const before = (
+      await db.query<{ row: unknown }>("SELECT to_jsonb(m) AS row FROM mail_message_meta m WHERE item_id = $1", [
+        messageId,
+      ])
+    ).rows[0]?.row;
+    expect(before).toBeDefined();
+    expect(
+      (
+        await db.query<{ name: string | null }>(
+          "SELECT to_regclass('public.mail_message_move_sync_state')::text AS name",
+        )
+      ).rows,
+    ).toEqual([{ name: null }]);
+    await copyFile(path.join(migrations, migration), path.join(dir, migration));
+    await runMigrations(db, dir);
+    expect(
+      (
+        await db.query<{ row: unknown }>("SELECT to_jsonb(m) AS row FROM mail_message_meta m WHERE item_id = $1", [
+          messageId,
+        ])
+      ).rows[0]?.row,
+    ).toEqual(before);
+    const catalog = await db.query<{ relrowsecurity: boolean; can_insert: boolean; policy_count: string }>(
+      `SELECT c.relrowsecurity, has_table_privilege('semprec_side', c.oid, 'INSERT') AS can_insert,
+         (SELECT count(*)::text FROM pg_policy p WHERE p.polrelid = c.oid) AS policy_count
+       FROM pg_class c WHERE c.oid = 'mail_message_move_sync_state'::regclass`,
+    );
+    expect(catalog.rows).toEqual([{ relrowsecurity: true, can_insert: true, policy_count: "2" }]);
+    await runInTenant(tenantId, () =>
+      withTransaction(db, (client) =>
+        client.query(
+          'INSERT INTO mail_message_move_sync_state (message_item_id, mailbox_item_id, desired_purpose, source_evidence) VALUES ($1, $2, \'archive\', \'{"provider":"gmail","providerMessageId":"fixture"}\')',
+          [messageId, mailboxId],
+        ),
+      ),
+    );
+    await expect(
+      runInTenant(tenantId, () =>
+        withTransaction(db, (client) =>
+          client.query(
+            "UPDATE mail_message_move_sync_state SET desired_purpose = 'unknown' WHERE message_item_id = $1",
+            [messageId],
+          ),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+  } catch (error) {
+    failure = { error };
+  }
+  const cleanupErrors: unknown[] = [];
+  for (const cleanup of [
+    async () => scratch?.end(),
+    async () => {
+      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+    },
+    async () => admin.end(),
+    async () => rm(dir, { recursive: true, force: true }),
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (cleanupErrors.length)
+    throw new AggregateError(
+      failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+      "Move upgrade cleanup failed",
+    );
+  if (failure) throw failure.error;
+}, 120_000);
 
 it("preserves a historical problem and lazily records its last known occurrence on upgrade", async () => {
   const url = process.env.TEST_DATABASE_URL;

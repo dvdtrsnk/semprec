@@ -4,6 +4,7 @@ CREATE TABLE mail_message_move_sync_state (
   message_item_id uuid NOT NULL,
   mailbox_item_id uuid NOT NULL,
   desired_purpose text NOT NULL CHECK (desired_purpose IN ('archive', 'trash', 'inbox', 'sent')),
+  source_evidence jsonb NOT NULL CHECK (jsonb_typeof(source_evidence) = 'object' AND octet_length(source_evidence::text) <= 4096),
   current_purpose text CHECK (current_purpose IN ('archive', 'trash', 'inbox', 'sent')),
   desired_revision bigint NOT NULL DEFAULT 1 CHECK (desired_revision > 0),
   operation_token uuid,
