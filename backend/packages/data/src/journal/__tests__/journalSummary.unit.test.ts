@@ -12,6 +12,10 @@ describe("computeJournalSummary (issue #1711)", () => {
     expect(computeJournalSummary("První řádek\nDruhý řádek")).toBe("První řádek");
   });
 
+  it("uses only the first line when one paragraph contains a soft break", () => {
+    expect(computeJournalSummary("First line\nSecond line")).toBe("First line");
+  });
+
   it("does not prefer a heading that comes after other text", () => {
     expect(computeJournalSummary("Úvodní věta\n## Cíle kvartálu")).toBe("Úvodní věta");
   });

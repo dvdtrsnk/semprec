@@ -8,6 +8,8 @@ import {
   createUser,
   createViewTypeRegistry,
   hashPassword,
+  getSystemSettingsDatabaseId,
+  getSystemSettingsItemId,
   loadFullModuleRegistry,
   login,
   seedSystem,
@@ -192,29 +194,54 @@ describe("createSchemaRequestListener (issue #147)", () => {
 
   it("returns the tenant zone and its current day, and reflects a zone change on the next request", async () => {
     const headers = await authHeader("en");
-    const fetchTenant = async () => {
+    const fetchProjection = async () => {
       const res = await fetch(`${baseUrl}/api/schema`, { headers });
       expect(res.status).toBe(200);
-      return ((await res.json()) as SchemaProjectionBody).tenant;
+      const value: unknown = await res.json();
+      if (typeof value !== "object" || value === null || Array.isArray(value))
+        throw new Error("Expected schema object");
+      if (
+        !("tenant" in value) ||
+        typeof value.tenant !== "object" ||
+        value.tenant === null ||
+        Array.isArray(value.tenant)
+      ) {
+        throw new Error("Expected tenant object");
+      }
+      const tenant = value.tenant;
+      if (
+        !("timezone" in tenant) ||
+        typeof tenant.timezone !== "string" ||
+        !("today" in tenant) ||
+        typeof tenant.today !== "string"
+      ) {
+        throw new Error("Expected tenant timezone and today");
+      }
+      const { tenant: _tenant, ...rest } = value;
+      return { tenant: { timezone: tenant.timezone, today: tenant.today }, rest };
     };
 
     const before = new Date();
-    const prague = await fetchTenant();
+    const original = await fetchProjection();
+    const prague = original.tenant;
     const after = new Date();
     expect(prague.timezone).toBe("Europe/Prague");
     expect([today("Europe/Prague", before), today("Europe/Prague", after)]).toContain(prague.today);
 
-    await pool.query(
-      `UPDATE items SET properties = jsonb_set(properties, '{timezone}', '"Pacific/Kiritimati"')
-       WHERE database_id = (SELECT id FROM databases WHERE owner_module_id = 'systemSettings' AND system = true)`,
-    );
+    const settings = await withTransaction(pool, async (client) => ({
+      databaseId: await getSystemSettingsDatabaseId(client),
+      itemId: await getSystemSettingsItemId(client),
+    }));
+    await createChokePoint(pool).updateItem({ ...settings, propertiesPatch: { timezone: "Pacific/Kiritimati" } });
     const changedBefore = new Date();
-    const changed = await fetchTenant();
+    const next = await fetchProjection();
+    const changed = next.tenant;
     const changedAfter = new Date();
     expect(changed.timezone).toBe("Pacific/Kiritimati");
     expect([today("Pacific/Kiritimati", changedBefore), today("Pacific/Kiritimati", changedAfter)]).toContain(
       changed.today,
     );
+    expect(next.rest).toEqual(original.rest);
   });
 
   it("loads the empty calendar module and lists no database for it", async () => {
