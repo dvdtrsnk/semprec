@@ -22,6 +22,110 @@ import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsA
 const EXAMPLES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "db", "migrationExamples");
 const LONG_TITLE = "a title longer than ten characters";
 
+it("upgrades a populated search index through the page text migration", async () => {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("Missing test database URL");
+  // The database identifier consists of a fixed prefix and UUID hex.
+  const name = `batch18_search_${randomUUID().replaceAll("-", "")}`;
+  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch18-search-"));
+  const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+  const migration = "0120_item_search_index_body.sql";
+  let scratch: Pool | undefined;
+  let created = false;
+  let failure: { error: unknown } | undefined;
+  try {
+    await admin.query(`CREATE DATABASE "${name}"`);
+    created = true;
+    const scratchUrl = new URL(url);
+    scratchUrl.pathname = `/${name}`;
+    scratch = new Pool({
+      connectionString: scratchUrl.toString(),
+      connectionTimeoutMillis: 5000,
+      statement_timeout: 30000,
+    });
+    const db = scratch;
+    for (const file of (await readdir(migrations))
+      .filter((entry) => entry.endsWith(".sql") && entry < migration)
+      .sort()) {
+      await copyFile(path.join(migrations, file), path.join(dir, file));
+    }
+    await runMigrations(db, dir);
+    const tenants = await db.query<{ id: string }>("SELECT id FROM tenants");
+    const tenantId = tenants.rows[0]?.id;
+    if (!tenantId || tenants.rows.length !== 1) throw new Error("Expected one historical tenant");
+    const databaseId = randomUUID();
+    const itemId = randomUUID();
+    await runInTenant(tenantId, () =>
+      withTransaction(db, async (client) => {
+        // Current item writers require later schema; use the actual pre-0120 shape.
+        await client.query("INSERT INTO databases (id, name, tenant_id) VALUES ($1, 'Legacy', $2)", [
+          databaseId,
+          tenantId,
+        ]);
+        await client.query("SELECT create_items_partition($1::uuid)", [databaseId]);
+        await client.query("INSERT INTO items (id, database_id, tenant_id) VALUES ($1, $2, $3)", [
+          itemId,
+          databaseId,
+          tenantId,
+        ]);
+        await client.query(
+          "INSERT INTO item_search_index (item_id, database_id, search_vector, tenant_id) VALUES ($1, $2, to_tsvector('simple', 'legacy text'), $3)",
+          [itemId, databaseId, tenantId],
+        );
+      }),
+    );
+    const before = (
+      await db.query<{ row: unknown }>("SELECT to_jsonb(s) AS row FROM item_search_index s WHERE item_id = $1", [
+        itemId,
+      ])
+    ).rows[0]?.row;
+    expect(before).toBeDefined();
+    await copyFile(path.join(migrations, migration), path.join(dir, migration));
+    await runMigrations(db, dir);
+    const upgraded = await db.query<{ old_row: unknown; body: string | null; page_text: string | null }>(
+      "SELECT to_jsonb(s) - 'body' - 'page_text' AS old_row, body, page_text FROM item_search_index s WHERE item_id = $1",
+      [itemId],
+    );
+    expect(upgraded.rows).toEqual([{ old_row: before, body: null, page_text: null }]);
+    await db.query(
+      "UPDATE item_search_index SET search_vector = to_tsvector('simple', 'old writer') WHERE item_id = $1",
+      [itemId],
+    );
+    expect(
+      (
+        await db.query<{ body: string | null; page_text: string | null; matches: boolean }>(
+          "SELECT body, page_text, search_vector @@ plainto_tsquery('simple', 'writer') AS matches FROM item_search_index WHERE item_id = $1",
+          [itemId],
+        )
+      ).rows,
+    ).toEqual([{ body: null, page_text: null, matches: true }]);
+  } catch (error) {
+    failure = { error };
+  }
+  const cleanupErrors: unknown[] = [];
+  for (const cleanup of [
+    async () => scratch?.end(),
+    async () => {
+      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+    },
+    async () => admin.end(),
+    async () => rm(dir, { recursive: true, force: true }),
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (cleanupErrors.length)
+    throw new AggregateError(
+      failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+      "Search upgrade cleanup failed",
+    );
+  if (failure) throw failure.error;
+}, 120_000);
+
 it("upgrades populated heartbeats and sessions through tick and device migrations", async () => {
   const url = process.env.TEST_DATABASE_URL;
   if (!url) throw new Error("Missing test database URL");

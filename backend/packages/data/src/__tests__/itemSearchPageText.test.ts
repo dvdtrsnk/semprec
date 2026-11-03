@@ -11,7 +11,7 @@ import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { withTransaction } from "../db/pool.js";
-import { mutateDoc } from "../docs/docPersistence.js";
+import { mutateDoc, mutateDocWithClient } from "../docs/docPersistence.js";
 import { getOrCreateDoc } from "../docs/docsStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
@@ -157,6 +157,27 @@ afterAll(async () => {
 });
 
 describe("page text search (issue #1658)", () => {
+  it("rolls back the page update and its job together", async () => {
+    const item = await task();
+    const doc = await inTenant(() => withTransaction(pool, (client) => getOrCreateDoc(client, item.id, "page")));
+    const aborted = new Error("abort edit");
+    await expect(
+      inTenant(() =>
+        withTransaction(pool, async (client) => {
+          await mutateDocWithClient(client, doc.id, "user", (ydoc) => ydoc.getMap("test").set("edit", "value"));
+          throw aborted;
+        }),
+      ),
+    ).rejects.toBe(aborted);
+    expect(await countJobsByIdentifier(admin, taskName)).toBe(0);
+    const updates = await inTenant(() =>
+      withTransaction(pool, (client) =>
+        client.query<{ count: string }>("SELECT count(*)::text AS count FROM doc_updates WHERE doc_id = $1", [doc.id]),
+      ),
+    );
+    expect(updates.rows).toEqual([{ count: "0" }]);
+  });
+
   it("makes a page's text searchable once its job has run, and stores the converted text", async () => {
     const item = await task();
     await writePage(item.id, ["Zkontrolovat rozpočet projektu"]);
