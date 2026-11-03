@@ -395,6 +395,7 @@ export async function confirmProposalWithClient(
   let resultLabel: string;
   let stepResults: Array<{ ref: string; itemId: string; databaseId: string }> = [];
   let blockIds: string[] = [];
+  const reusedFileRefs = new Set<string>();
   if (envelope.entityKind === "database") {
     if (credential) {
       if (targetDatabase?.ownerModuleId !== MCP_SERVERS_MODULE_ID) {
@@ -420,6 +421,7 @@ export async function confirmProposalWithClient(
       resultDatabaseId = executed.primaryDatabaseId;
       createdItemIds = executed.createdItemIds;
       stepResults = executed.executedSteps;
+      for (const file of executed.fileFromAttachments) if (!file.created) reusedFileRefs.add(file.ref);
     } else {
       created = await createItemWithClient(
         client,
@@ -490,12 +492,17 @@ export async function confirmProposalWithClient(
       fields?: Record<string, unknown>;
       children?: string[];
     };
-    await putBlockWithClient(client, envelope.target, { id: proposal.id, flavour, fields, children }, "user");
+    const inserted = await putBlockWithClient(
+      client,
+      envelope.target,
+      { id: proposal.id, flavour, fields, children },
+      "user",
+    );
     const [targetPage] = await itemsStore.getItemsByIds(client, [envelope.target]);
     resultItemId = envelope.target;
     if (!targetPage) throw new Error("Target page disappeared during confirm");
     stepResults = [{ ref: "primary", itemId: targetPage.id, databaseId: targetPage.databaseId }];
-    blockIds = [proposal.id];
+    blockIds = inserted ? [proposal.id] : [];
     resultLabel = await resolveResultLabel(client, targetPage.databaseId, targetPage);
   }
 
@@ -506,12 +513,27 @@ export async function confirmProposalWithClient(
     const database = await databasesStore.getDatabase(client, written.databaseId);
     if (!item || !database) throw new Error("Confirmed result item or database disappeared");
     const step = envelope.operations?.find((operation) => operation.ref === written.ref);
-    const relationValues = step
-      ? Object.values(effectiveStepRelations(step)).flat()
+    const requestedRelations = step
+      ? effectiveStepRelations(step)
       : envelope.entityKind === "relation"
-        ? [envelope.target]
-        : Object.values(envelope.relations ?? {}).flat();
-    const targets = relationValues.map((target) => (typeof target === "string" ? target : idsByRef.get(target.ref)));
+        ? {}
+        : (envelope.relations ?? {});
+    const targets: Array<string | undefined> = [];
+    if (envelope.entityKind === "relation") targets.push(envelope.target);
+    for (const [key, relationValues] of Object.entries(requestedRelations)) {
+      let retained: Set<string> | undefined;
+      if (reusedFileRefs.has(written.ref)) {
+        const property = await propertiesStore.getPropertyByKey(client, written.databaseId, key);
+        const definition = property && (await relationsStore.getRelationDefinitionByPropertyId(client, property.id));
+        if (!definition) throw new Error(`Missing confirmed relation definition for ${key}`);
+        const edges = await relationsStore.listRelationsForItem(client, definition.id, item.id);
+        retained = new Set(edges.map((edge) => relationsStore.otherSide(edge, item.id)));
+      }
+      for (const value of relationValues) {
+        const target = typeof value === "string" ? value : idsByRef.get(value.ref);
+        if (!retained || (target !== undefined && retained.has(target))) targets.push(target);
+      }
+    }
     const linked = await itemsStore.getItemsByIds(
       client,
       targets.filter((id): id is string => id !== undefined),

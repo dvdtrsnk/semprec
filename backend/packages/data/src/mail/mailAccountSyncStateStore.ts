@@ -224,8 +224,14 @@ export class ProviderAccountAlreadyConnectedError extends ChokePointError {
 }
 
 function isProviderAccountAddressConflict(error: unknown): boolean {
-  const e = error as { code?: unknown; constraint?: unknown } | null;
-  return e?.code === "23505" && e.constraint === PROVIDER_ACCOUNT_ADDRESS_INDEX;
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "23505" &&
+    "constraint" in error &&
+    error.constraint === PROVIDER_ACCOUNT_ADDRESS_INDEX
+  );
 }
 
 /**

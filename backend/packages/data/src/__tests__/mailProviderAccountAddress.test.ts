@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createPool, withTransaction } from "../db/pool.js";
@@ -230,6 +230,30 @@ describe("mailbox addresses are server-owned (issue #1454)", () => {
     // The refused write leaves the second mailbox's stored address exactly as it was.
     expect(await readStoredAddress(tenantId, second.itemId)).toBeNull();
     expect(await readStoredAddress(tenantId, first.itemId)).toBe("shared@example.com");
+  });
+
+  it("preserves nonmatching database and unknown thrown errors from the recorder", async () => {
+    const tenantId = getTenantZeroId();
+    const { itemId } = await createMailbox(tenantId, "owner@example.com");
+    const errors: unknown[] = [
+      new Error("database connection failed"),
+      { code: "23505", constraint: "other_index" },
+      "opaque failure",
+      null,
+    ];
+    await runInTenant(tenantId, () =>
+      withTransaction(dataPool, async (client) => {
+        for (const error of errors) {
+          const query = vi.spyOn(client, "query").mockRejectedValueOnce(error);
+          try {
+            await expect(recordProviderAccountAddress(client, itemId, "owner@example.com")).rejects.toBe(error);
+          } finally {
+            query.mockRestore();
+          }
+        }
+      }),
+    );
+    expect(await readStoredAddress(tenantId, itemId)).toBeNull();
   });
 
   it("the same provider address in two tenants is allowed", async () => {

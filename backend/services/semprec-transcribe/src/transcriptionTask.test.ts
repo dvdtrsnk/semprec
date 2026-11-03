@@ -1308,6 +1308,37 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     expect(await readMatch(transcript.id)).toEqual({ eventIds: [eventId], cards: [] });
   });
 
+  async function ownedTranscriptionJobs(fileIds: string[]): Promise<string[]> {
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT j.id::text FROM graphile_worker._private_jobs j
+       JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+       WHERE t.identifier = $1 AND j.payload->'payload'->>'fileItemId' = ANY($2::text[]) ORDER BY j.id`,
+      [CORE_TASK_NAMES.TRANSCRIPTION_JOB, fileIds],
+    );
+    return rows.map((row) => row.id);
+  }
+
+  async function assertTranscriptionsSettled(runtime: Pool, fileIds: string[], jobIds: string[]): Promise<void> {
+    const remaining = await pool.query<{ id: string }>(
+      "SELECT id::text FROM graphile_worker.jobs WHERE id = ANY($1::bigint[])",
+      [jobIds],
+    );
+    expect(remaining.rows).toEqual([]);
+    const rows = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(runtime, (client) =>
+        client.query<{ file_id: string; transcript_status: string; automation_status: string }>(
+          `SELECT f.id AS file_id, t.properties->>'status' AS transcript_status, a.status AS automation_status
+         FROM items f JOIN items t ON t.id = (f.computed->>'create')::uuid
+         JOIN item_automation a ON a.item_id = t.id WHERE f.id = ANY($1::uuid[]) ORDER BY f.id`,
+          [fileIds],
+        ),
+      ),
+    );
+    expect(rows.rows).toHaveLength(fileIds.length);
+    expect(new Set(rows.rows.map((row) => row.file_id))).toEqual(new Set(fileIds));
+    for (const row of rows.rows) expect(row).toMatchObject({ transcript_status: "done", automation_status: "done" });
+  }
+
   it("the queued worker links two recordings to one Event without a proposal card", async () => {
     const first = await createSourceFile();
     const second = await createSourceFile();
@@ -1327,7 +1358,11 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
         await enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: first.file.id });
         await enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: second.file.id });
       });
+      const fileIds = [first.file.id, second.file.id];
+      const jobIds = await ownedTranscriptionJobs(fileIds);
+      expect(jobIds).toHaveLength(2);
       await runOnce({ pgPool: pool, taskList: { [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: task } });
+      await assertTranscriptionsSettled(runtime, fileIds, jobIds);
       const result = await runInTenant(getTenantZeroId(), () =>
         withTransaction(runtime, async (client) => {
           const { rows } = await client.query<{ file_id: string; transcript_id: string; event_id: string }>(
@@ -1465,13 +1500,19 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
         createTranscriptionTask(runtime, blobStorage, gatewayClient, summaryClient),
       );
       await inTenantZero(() => enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: first.file.id }));
+      const firstJobs = await ownedTranscriptionJobs([first.file.id]);
+      expect(firstJobs).toHaveLength(1);
       await runOnce({ pgPool: pool, taskList: { [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: task } });
+      await assertTranscriptionsSettled(runtime, [first.file.id], firstJobs);
       const eventId = await createEvent(FIXTURE_CREATION_TIME);
       const aliceId = await createParticipant(eventId, "Alice");
       summaryClient.speakerMappings = [{ speaker: "SPEAKER_01", personId: aliceId }];
       const second = await createSourceFile();
       await inTenantZero(() => enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: second.file.id }));
+      const secondJobs = await ownedTranscriptionJobs([second.file.id]);
+      expect(secondJobs).toHaveLength(1);
       await runOnce({ pgPool: pool, taskList: { [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: task } });
+      await assertTranscriptionsSettled(runtime, [second.file.id], secondJobs);
       const cards = await runInTenant(getTenantZeroId(), () =>
         withTransaction(runtime, async (client) => {
           const { rows } = await client.query<{ properties: unknown }>(

@@ -11,7 +11,12 @@ import { runInTenant } from "@semprec/shared";
 import { getDatabaseByModuleId, renameDatabase } from "../../chokePoint/databasesStore.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createBlob } from "../../blobs/blobsStore.js";
+import { createDocStore } from "../../docs/docStore.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
+import { insertInboxAttachments, listInboxAttachments } from "../inboxAttachmentsStore.js";
+import * as propertiesStore from "../../chokePoint/propertiesStore.js";
+import * as relationsStore from "../../chokePoint/relationsStore.js";
+import { createRelationWithClient } from "../../chokePoint/relationOps.js";
 import { getOrCreateJournalItem } from "../../journal/journalStore.js";
 import { createInboxTypeWithClient, type CreateInboxTypeInput } from "../inboxTypesStore.js";
 import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inboxTickAction.js";
@@ -90,89 +95,107 @@ describe("inbox custom route handlers (issue #239)", () => {
   }
 
   describe("createConfirmProposalRouteHandler", () => {
-    it("attributes a confirmed page block to the user through the runtime role", async () => {
-      const dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
-      const failures: unknown[] = [];
-      try {
-        const role = await dataPool.query<{ name: string; bypass: boolean; superuser: boolean }>(
-          "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
-        );
-        expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
-        await runInTenant(getTenantZeroId(), async () => {
-          const type = await withTransaction(dataPool, (client) =>
-            createInboxTypeWithClient(client, {
-              inboxItemTypesDatabaseId: typesId,
-              name: "Note",
-              emoji: "N",
-              processingMethod: "pageContent",
-            }),
+    it.each([false, true])(
+      "attributes a confirmed page block to the user with existing block=%s",
+      async (existingBlock) => {
+        const dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+        const failures: unknown[] = [];
+        try {
+          const role = await dataPool.query<{ name: string; bypass: boolean; superuser: boolean }>(
+            "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
           );
-          const source = await withTransaction(dataPool, (client) =>
-            createInboxItemWithClient(client, {
-              inboxDatabaseId: inboxId,
-              date: "2026-08-28",
-              time: "09:00",
-              text: "A thought",
-              type: type.id,
-            }),
-          );
-          const chokePoint = createChokePoint(dataPool);
-          const custom = await chokePoint.createDatabase({ name: "Custom page" });
-          const page = await chokePoint.createItem({ databaseId: custom.id, properties: {} });
-          const tick = createSemprecTickAction(dataPool, async () => ({
-            target: page.id,
-            properties: { flavour: "paragraph", fields: { content: "A thought" } },
-          }));
-          await tick(
-            { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
-            { heartbeatId: "hb", projectItemId: "proj", itemId: source.id },
-          );
-          const proposal = await withTransaction(dataPool, async (client) => {
-            const { rows } = await client.query<{ id: string }>(
-              "SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL",
-              [proposalsId],
+          expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+          await runInTenant(getTenantZeroId(), async () => {
+            const type = await withTransaction(dataPool, (client) =>
+              createInboxTypeWithClient(client, {
+                inboxItemTypesDatabaseId: typesId,
+                name: "Note",
+                emoji: "N",
+                processingMethod: "pageContent",
+              }),
             );
-            expect(rows).toHaveLength(1);
-            return rows[0]!.id;
-          });
-          const response = await createConfirmProposalRouteHandler(dataPool)({ params: { id: proposal }, body: {} });
-          expect(response.status).toBe(200);
-          if (!("item" in response)) throw new Error("Expected item response");
-          expect(response.results).toEqual([
-            expect.objectContaining({
-              ref: "primary",
-              itemId: page.id,
-              databaseKey: null,
-              role: "primary",
-              blockIds: [proposal],
-              followUp: null,
-            }),
-          ]);
-          expect(response.item.properties.results).toEqual(response.results);
-          const replay = await createConfirmProposalRouteHandler(dataPool)({ params: { id: proposal }, body: {} });
-          if (!("item" in replay)) throw new Error("Expected item response");
-          expect(replay.results).toEqual(response.results);
-          expect(replay.item.updatedAt).toBe(response.item.updatedAt);
-          const updates = await withTransaction(dataPool, async (client) => {
-            const { rows } = await client.query<{ created_by: string }>(
-              "SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id WHERE d.item_id = $1",
-              [page.id],
+            const source = await withTransaction(dataPool, (client) =>
+              createInboxItemWithClient(client, {
+                inboxDatabaseId: inboxId,
+                date: "2026-08-28",
+                time: "09:00",
+                text: "A thought",
+                type: type.id,
+              }),
             );
-            return rows;
+            const chokePoint = createChokePoint(dataPool);
+            const custom = await chokePoint.createDatabase({ name: "Custom page" });
+            const page = await chokePoint.createItem({ databaseId: custom.id, properties: {} });
+            const tick = createSemprecTickAction(dataPool, async () => ({
+              target: page.id,
+              properties: { flavour: "paragraph", fields: { content: "A thought" } },
+            }));
+            await tick(
+              {
+                inboxDatabaseId: inboxId,
+                inboxItemTypesDatabaseId: typesId,
+                processingProposalsDatabaseId: proposalsId,
+              },
+              { heartbeatId: "hb", projectItemId: "proj", itemId: source.id },
+            );
+            const proposal = await withTransaction(dataPool, async (client) => {
+              const { rows } = await client.query<{ id: string }>(
+                "SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL",
+                [proposalsId],
+              );
+              expect(rows).toHaveLength(1);
+              return rows[0]!.id;
+            });
+            const docs = createDocStore(dataPool);
+            if (existingBlock) {
+              await docs.putBlock(
+                page.id,
+                { id: proposal, flavour: "paragraph", fields: { content: "Before" } },
+                "user",
+              );
+            }
+            const response = await createConfirmProposalRouteHandler(dataPool)({ params: { id: proposal }, body: {} });
+            expect(response.status).toBe(200);
+            if (!("item" in response)) throw new Error("Expected item response");
+            expect(response.results).toEqual([
+              expect.objectContaining({
+                ref: "primary",
+                itemId: page.id,
+                databaseKey: null,
+                role: "primary",
+                blockIds: existingBlock ? [] : [proposal],
+                followUp: null,
+              }),
+            ]);
+            expect(response.item.properties.results).toEqual(response.results);
+            const replay = await createConfirmProposalRouteHandler(dataPool)({ params: { id: proposal }, body: {} });
+            if (!("item" in replay)) throw new Error("Expected item response");
+            expect(replay.results).toEqual(response.results);
+            expect(replay.item.updatedAt).toBe(response.item.updatedAt);
+            const updates = await withTransaction(dataPool, async (client) => {
+              const { rows } = await client.query<{ created_by: string }>(
+                "SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id WHERE d.item_id = $1",
+                [page.id],
+              );
+              return rows;
+            });
+            expect(updates).toEqual(
+              existingBlock ? [{ created_by: "user" }, { created_by: "user" }] : [{ created_by: "user" }],
+            );
+            expect(await docs.getBlock(page.id, proposal)).toMatchObject({ content: "A thought", "sys:id": proposal });
           });
-          expect(updates).toEqual([{ created_by: "user" }]);
-        });
-      } catch (error) {
-        failures.push(error);
-      }
-      try {
-        await dataPool.end();
-      } catch (error) {
-        failures.push(error);
-      }
-      if (failures.length === 1) throw failures[0];
-      if (failures.length > 1) throw new AggregateError(failures, "Page test and settlement failed");
-    });
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          await dataPool.end();
+        } catch (error) {
+          failures.push(error);
+        }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1) throw new AggregateError(failures, "Page test and settlement failed");
+      },
+    );
     it("records the file and follow-up task with project labels and current versions", async () => {
       const proposalId = await createDatabaseProposal("Seed");
       await withTransaction(pool, async (client) => {
@@ -241,6 +264,148 @@ describe("inbox custom route handlers (issue #239)", () => {
       );
       for (const result of response.results)
         expect(result.updatedAt).toBe(rows.find((row) => row.id === result.itemId)?.updated_at.toISOString());
+    });
+
+    it.each(["created", "reused-empty", "reused-linked"] as const)(
+      "reports only retained or created file relations: %s",
+      async (mode) => {
+        const reuse = mode !== "created";
+        const proposalId = await createDatabaseProposal("Attachment");
+        const fixture = await withTransaction(pool, async (client) => {
+          const files = await getDatabaseByModuleId(client, "files");
+          const tasks = await getDatabaseByModuleId(client, "tasks");
+          const projects = await getDatabaseByModuleId(client, "projects");
+          if (!files || !tasks || !projects) throw new Error("Missing databases");
+          const sourceProperty = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
+          if (!sourceProperty) throw new Error("Missing source relation");
+          const sourceRelation = await relationsStore.getRelationDefinitionByPropertyId(client, sourceProperty.id);
+          if (!sourceRelation) throw new Error("Missing source definition");
+          const sourceEdges = await relationsStore.listRelationsForItem(client, sourceRelation.id, proposalId);
+          if (sourceEdges.length !== 1) throw new Error("Missing source item");
+          const sourceId = relationsStore.otherSide(sourceEdges[0]!, proposalId);
+          const project = await createItemWithClient(client, {
+            databaseId: projects.id,
+            properties: { name: "Project" },
+          });
+          const blob = await createBlob(client, {
+            mimeType: "application/pdf",
+            byteSize: 12,
+            storageKey: `test/${randomUUID()}`,
+          });
+          const existing = reuse
+            ? await createItemWithClient(client, {
+                databaseId: files.id,
+                properties: { name: "Existing", file: { blobId: blob.id } },
+              })
+            : null;
+          if (mode === "reused-linked" && existing) {
+            const property = await propertiesStore.getPropertyByKey(client, files.id, "projects");
+            if (!property) throw new Error("Missing projects relation");
+            await createRelationWithClient(client, {
+              relationPropertyId: property.id,
+              callerItemId: existing.id,
+              targetItemId: project.id,
+            });
+          }
+          await insertInboxAttachments(client, sourceId, [{ blobId: blob.id, source: "camera" }]);
+          const attachment = (await listInboxAttachments(client, [sourceId]))[0];
+          if (!attachment) throw new Error("Missing attachment");
+          await updateItemWithClient(
+            client,
+            {
+              databaseId: proposalsId,
+              itemId: proposalId,
+              propertiesPatch: {
+                proposal: {
+                  entityKind: "database",
+                  target: tasks.id,
+                  properties: { name: "Task" },
+                  operations: [
+                    { ref: "task", op: "create", databaseKey: "tasks", role: "primary", properties: { name: "Task" } },
+                    {
+                      ref: "file",
+                      op: "fileFromAttachment",
+                      role: "secondary",
+                      properties: { attachmentId: attachment.attachmentId, name: "File" },
+                      relations: { projects: [project.id] },
+                    },
+                  ],
+                },
+              },
+            },
+            { allowedSystemKeys: ["proposal"] },
+          );
+          return { filesId: files.id, projectId: project.id, existingId: existing?.id };
+        });
+        const oldFile = fixture.existingId
+          ? await pool.query<{ properties: Record<string, unknown>; updated_at: Date }>(
+              "SELECT properties, updated_at FROM items WHERE id = $1",
+              [fixture.existingId],
+            )
+          : null;
+        const handler = createConfirmProposalRouteHandler(pool);
+        const result = await handler({ params: { id: proposalId }, body: {} });
+        if (!("item" in result) || !result.results) throw new Error("Missing results");
+        const file = result.results.find((entry) => entry.ref === "file");
+        if (!file) throw new Error("Missing file result");
+        expect(file.linkLabels).toEqual(mode === "reused-empty" ? [] : ["Project"]);
+        if (reuse) {
+          expect(file.itemId).toBe(fixture.existingId);
+          const unchanged = await pool.query<{ properties: Record<string, unknown>; updated_at: Date }>(
+            "SELECT properties, updated_at FROM items WHERE id = $1",
+            [fixture.existingId],
+          );
+          expect(unchanged.rows).toEqual(oldFile?.rows);
+        }
+        const edges = await withTransaction(pool, async (client) => {
+          const property = await propertiesStore.getPropertyByKey(client, fixture.filesId, "projects");
+          if (!property) throw new Error("Missing project relation");
+          const definition = await relationsStore.getRelationDefinitionByPropertyId(client, property.id);
+          if (!definition) throw new Error("Missing project definition");
+          return (await relationsStore.listRelationsForItem(client, definition.id, file.itemId)).map((edge) =>
+            relationsStore.otherSide(edge, file.itemId),
+          );
+        });
+        expect(edges).toEqual(mode === "reused-empty" ? [] : [fixture.projectId]);
+        expect(result.item.properties.results).toEqual(result.results);
+        const replay = await handler({ params: { id: proposalId }, body: {} });
+        if (!("item" in replay)) throw new Error("Missing replay");
+        expect(replay.results).toEqual(result.results);
+      },
+    );
+
+    it("rejects malformed persisted confirmation results without changing the confirmed card", async () => {
+      const proposalId = await createDatabaseProposal("Malformed stored result");
+      const handler = createConfirmProposalRouteHandler(pool);
+      await handler({ params: { id: proposalId }, body: {} });
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          {
+            databaseId: proposalsId,
+            itemId: proposalId,
+            propertiesPatch: { results: [{ ref: 42 }] },
+          },
+          { allowedSystemKeys: ["results"] },
+        ),
+      );
+      const before = await pool.query<{ properties: Record<string, unknown>; updated_at: Date }>(
+        "SELECT properties, updated_at FROM items WHERE id = $1",
+        [proposalId],
+      );
+      const countsBefore = await pool.query<{ items: string; jobs: string }>(
+        "SELECT (SELECT count(*) FROM items)::text AS items, (SELECT count(*) FROM graphile_worker.jobs)::text AS jobs",
+      );
+      await expect(handler({ params: { id: proposalId }, body: {} })).rejects.toThrow();
+      const countsAfter = await pool.query<{ items: string; jobs: string }>(
+        "SELECT (SELECT count(*) FROM items)::text AS items, (SELECT count(*) FROM graphile_worker.jobs)::text AS jobs",
+      );
+      expect(countsAfter.rows).toEqual(countsBefore.rows);
+      const after = await pool.query<{ properties: Record<string, unknown>; updated_at: Date }>(
+        "SELECT properties, updated_at FROM items WHERE id = $1",
+        [proposalId],
+      );
+      expect(after.rows).toEqual(before.rows);
     });
 
     it("records a secondary updated item under its own step reference", async () => {

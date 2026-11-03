@@ -32,9 +32,13 @@ export async function putBlockWithClient(
   itemId: string,
   block: BlockInput,
   origin: CreatedBy,
-): Promise<void> {
+): Promise<boolean> {
   const doc = await docsStore.getOrCreateDoc(client, itemId, "page");
-  await mutateDocWithClient(client, doc.id, origin, (ydoc) => blocks.putBlock(ydoc, block));
+  return mutateDocWithClient(client, doc.id, origin, (ydoc) => {
+    const inserted = blocks.getBlock(ydoc, block.id) === null;
+    blocks.putBlock(ydoc, block);
+    return inserted;
+  });
 }
 
 export interface DocVersion {

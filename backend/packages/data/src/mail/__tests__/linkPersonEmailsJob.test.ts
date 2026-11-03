@@ -120,16 +120,16 @@ describe("historical mail links for newly claimed addresses", () => {
       }),
     );
   }
-  async function claim(addresses: string): Promise<void> {
+  async function claim(addresses: string, businessPool: Pool = runtime): Promise<void> {
     await runInTenant(tenant(), async () => {
-      await withTransaction(runtime, (client) =>
+      await withTransaction(businessPool, (client) =>
         updateItemWithClient(client, {
           databaseId: peopleId,
           itemId: personId,
           propertiesPatch: { emails: addresses },
         }),
       );
-      await createPersonEmailReindexAction(runtime)(
+      await createPersonEmailReindexAction(businessPool)(
         { peopleDatabaseId: peopleId },
         {
           heartbeatId: "test",
@@ -150,13 +150,140 @@ describe("historical mail links for newly claimed addresses", () => {
       return rows.map((row) => row.key);
     });
   }
-  async function drain(): Promise<void> {
-    const tasks = createCoreTaskList(runtime, new Map());
+  async function drain(businessPool: Pool = runtime, queuePool: Pool = admin): Promise<void> {
+    const tasks = createCoreTaskList(businessPool, new Map());
     await runOnce({
-      pgPool: admin,
+      pgPool: queuePool,
       taskList: { [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]: tasks[CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]! },
     });
   }
+  async function pendingDueJobs(): Promise<string[]> {
+    const { rows } = await admin.query<{ id: string }>(
+      `SELECT j.id::text FROM graphile_worker._private_jobs j JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+       WHERE t.identifier = $1 AND j.run_at <= now() ORDER BY j.id`,
+      [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS],
+    );
+    return rows.map((row) => row.id);
+  }
+  async function drainSuccess(businessPool: Pool = runtime, queuePool: Pool = admin): Promise<void> {
+    const ids = await pendingDueJobs();
+    expect(ids.length).toBeGreaterThan(0);
+    await drain(businessPool, queuePool);
+    const remaining = await admin.query<{ id: string; last_error: string | null }>(
+      "SELECT id::text, last_error FROM graphile_worker._private_jobs WHERE id = ANY($1::bigint[])",
+      [ids],
+    );
+    expect(remaining.rows).toEqual([]);
+  }
+  async function allSenders(itemId: string): Promise<string[]> {
+    return runInTenant(tenant(), async () => {
+      const { rows } = await runtime.query<{ target: string }>(
+        `SELECT r.item_b AS target FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
+         JOIN properties p ON p.id = d.property_id_a WHERE r.item_a = $1 AND p.key = 'senderPeople' ORDER BY r.item_b`,
+        [itemId],
+      );
+      return rows.map((row) => row.target);
+    });
+  }
+
+  function ownedPool(role: boolean): { pool: Pool; active: Set<PoolClient> } {
+    const pool = createPool(process.env.TEST_DATABASE_URL ?? "", {
+      ...(role ? { role: "semprec_data" as const } : {}),
+      statementTimeoutMs: 8000,
+    });
+    pool.options.max = role ? 1 : 3;
+    const active = new Set<PoolClient>();
+    pool.on("acquire", (client: PoolClient) => active.add(client));
+    pool.on("release", (_error: Error | undefined, client: PoolClient) => active.delete(client));
+    return { pool, active };
+  }
+  async function bounded<T>(promise: Promise<T>, ms = 10000): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Owned overlap deadline exceeded")), ms);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+  async function finishOwned(
+    operations: Array<Promise<unknown>>,
+    pools: Array<ReturnType<typeof ownedPool>>,
+    failures: unknown[],
+  ): Promise<void> {
+    const settled = Promise.allSettled(operations);
+    let outcomes: PromiseSettledResult<unknown>[] | undefined;
+    try {
+      outcomes = await bounded(settled);
+    } catch (error) {
+      failures.push(error);
+      for (const owned of pools)
+        for (const client of owned.active) {
+          try {
+            client.release(true);
+          } catch (releaseError) {
+            failures.push(releaseError);
+          }
+        }
+      try {
+        outcomes = await bounded(settled);
+      } catch (settlementError) {
+        failures.push(settlementError);
+      }
+    }
+    if (outcomes) for (const outcome of outcomes) if (outcome.status === "rejected") failures.push(outcome.reason);
+    for (const owned of pools) {
+      try {
+        await bounded(owned.pool.end());
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+  }
+  async function backendPid(pool: Pool): Promise<number> {
+    const { rows } = await pool.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+    if (!rows[0]) throw new Error("Missing owned backend PID");
+    return rows[0].pid;
+  }
+  async function assertBlocked(waiter: number, blocker: number): Promise<void> {
+    for (let i = 0; i < 100; i++) {
+      const { rows } = await admin.query<{ blocked: boolean }>(
+        "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+        [blocker, waiter],
+      );
+      if (rows[0]?.blocked) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`Owned backend ${waiter} did not block on ${blocker}`);
+  }
+
+  it("bounds an owned barrier and retains the primary and settlement failures", async () => {
+    const owned = ownedPool(true);
+    const client = await owned.pool.connect();
+    const primary = new Error("primary barrier failure");
+    const failures: unknown[] = [primary, undefined];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    try {
+      await expect(bounded(gate, 10)).rejects.toThrow("Owned overlap deadline exceeded");
+    } finally {
+      release();
+      client.release();
+    }
+    const secondary = new Error("settlement failure");
+    const rejected = Promise.reject(secondary);
+    void rejected.catch(() => {});
+    await finishOwned([gate, rejected], [owned], failures);
+    expect(failures).toEqual([primary, undefined, secondary]);
+    expect(owned.active.size).toBe(0);
+  });
+
   it("installs the envelope containment index through the migration runner", async () => {
     const { rows } = await admin.query<{ definition: string }>(
       "SELECT indexdef AS definition FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'mail_message_meta_envelope_gin_idx'",
@@ -258,6 +385,10 @@ describe("historical mail links for newly claimed addresses", () => {
   it("serializes an actual job behind a held shared linker for the same sender", async () => {
     const message = await ingest({ from: { address: "overlap@example.com" } });
     await claim("overlap@example.com");
+    const workerPool = ownedPool(true);
+    const holderPool = ownedPool(true);
+    const queuePool = ownedPool(false);
+    const failures: unknown[] = [];
     let release!: () => void;
     let ready!: (pid: number) => void;
     const held = new Promise<void>((resolve) => {
@@ -267,7 +398,7 @@ describe("historical mail links for newly claimed addresses", () => {
       ready = resolve;
     });
     const shared = runInTenant(tenant(), () =>
-      withTransaction(runtime, async (client) => {
+      withTransaction(holderPool.pool, async (client) => {
         const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
         await linkEmailEnvelopeToPeople(client, {
           itemId: message,
@@ -280,52 +411,29 @@ describe("historical mail links for newly claimed addresses", () => {
         await held;
       }),
     );
-    const failures: unknown[] = [];
     let worker: Promise<void> | undefined;
     try {
-      const timer = setTimeout(() => release(), 5_000);
-      let blocker: number;
-      try {
-        blocker = await Promise.race([
+      const blocker = await bounded(
+        Promise.race([
           acquired,
           shared.then(() => {
-            throw new Error("Shared linker finished before acquiring the barrier");
+            throw new Error("Shared linker ended early");
           }),
-        ]);
-      } finally {
-        clearTimeout(timer);
-      }
-      worker = drain().catch((error: unknown) => {
-        failures.push(error);
-      });
-      let blocked = false;
-      for (let i = 0; i < 100; i++) {
-        const { rows } = await admin.query<{ pid: number }>(
-          "SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))",
-          [blocker],
-        );
-        if (rows.length > 0) {
-          blocked = true;
-          break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-      expect(blocked).toBe(true);
+        ]),
+      );
+      const workerPid = await backendPid(workerPool.pool);
+      worker = drainSuccess(workerPool.pool, queuePool.pool);
+      void worker.catch(() => {});
+      await assertBlocked(workerPid, blocker);
     } catch (error) {
       failures.push(error);
-    }
-    release();
-    for (const operation of [shared, worker]) {
-      if (!operation) continue;
-      try {
-        await operation;
-      } catch (error) {
-        failures.push(error);
-      }
+    } finally {
+      release();
+      await finishOwned([shared, ...(worker ? [worker] : [])], [workerPool, holderPool, queuePool], failures);
     }
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Overlap test or settlement failed");
-    expect(await edges(message)).toEqual(["senderPeople"]);
+    expect(await allSenders(message)).toEqual([personId]);
   });
   it("a claim during a held worker pass triggers a new pass from the beginning", async () => {
     const messages = [
@@ -335,6 +443,13 @@ describe("historical mail links for newly claimed addresses", () => {
     const older = messages[0]!;
     const later = messages[1]!;
     await claim("first@example.com");
+    const initialJobs = await pendingDueJobs();
+    expect(initialJobs).toHaveLength(1);
+    let laterJobId: string | undefined;
+    const workerPool = ownedPool(true);
+    const holderPool = ownedPool(true);
+    const queuePool = ownedPool(false);
+    const failures: unknown[] = [];
     let release!: () => void;
     let ready!: (pid: number) => void;
     const held = new Promise<void>((resolve) => {
@@ -344,60 +459,64 @@ describe("historical mail links for newly claimed addresses", () => {
       ready = resolve;
     });
     const holder = runInTenant(tenant(), () =>
-      withTransaction(runtime, async (client) => {
+      withTransaction(holderPool.pool, async (client) => {
         const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
         await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [emailsId, later]);
         ready(rows[0]!.pid);
         await held;
       }),
     );
-    const failures: unknown[] = [];
     let worker: Promise<void> | undefined;
     try {
-      const blocker = await Promise.race([
-        acquired,
-        holder.then(() => {
-          throw new Error("Holder ended early");
-        }),
-      ]);
-      worker = drain().catch((error: unknown) => {
-        failures.push(error);
-      });
-      let workerPid: number | undefined;
-      for (let i = 0; i < 100; i++) {
-        const { rows } = await admin.query<{ pid: number }>(
-          "SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))",
-          [blocker],
-        );
-        if (rows[0]) {
-          workerPid = rows[0].pid;
-          break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-      expect(workerPid).toBeDefined();
+      const blocker = await bounded(
+        Promise.race([
+          acquired,
+          holder.then(() => {
+            throw new Error("Holder ended early");
+          }),
+        ]),
+      );
+      const workerPid = await backendPid(workerPool.pool);
+      worker = drainSuccess(workerPool.pool, queuePool.pool);
+      void worker.catch(() => {});
+      await assertBlocked(workerPid, blocker);
       await claim("first@example.com\nlater@example.com");
+      const laterJob = await admin.query<{ id: string }>(
+        "SELECT id::text FROM graphile_worker._private_jobs WHERE key = $1",
+        [`mail-link-person-emails:${personId}`],
+      );
+      expect(laterJob.rows).toHaveLength(1);
+      laterJobId = laterJob.rows[0]!.id;
+      expect(laterJobId).not.toBe(initialJobs[0]);
     } catch (error) {
       failures.push(error);
-    }
-    release();
-    for (const operation of [holder, worker]) {
-      if (!operation) continue;
-      try {
-        await operation;
-      } catch (error) {
-        failures.push(error);
-      }
+    } finally {
+      release();
+      await finishOwned([holder, ...(worker ? [worker] : [])], [workerPool, holderPool, queuePool], failures);
     }
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Running claim test or settlement failed");
-    await drain();
+    if (!laterJobId) throw new Error("Missing later owned job");
+    const remaining = await admin.query<{ id: string }>(
+      "SELECT id::text FROM graphile_worker._private_jobs WHERE id = $1",
+      [laterJobId],
+    );
+    if (remaining.rows.length > 0) await drainSuccess();
+    expect(
+      (await admin.query("SELECT id FROM graphile_worker._private_jobs WHERE id = $1", [laterJobId])).rows,
+    ).toEqual([]);
     expect(await edges(later)).toEqual(["recipientsPeople", "senderPeople"]);
     expect(await edges(older)).toEqual(["recipientsPeople", "senderPeople"]);
+    expect(await allSenders(later)).toEqual([personId]);
   });
   it("holds index ownership until its page commits before a release can finish", async () => {
     const message = await ingest({ from: { address: "held@example.com" } });
     await claim("held@example.com");
+    const workerPool = ownedPool(true);
+    const holderPool = ownedPool(true);
+    const releasePool = ownedPool(true);
+    const queuePool = ownedPool(false);
+    const failures: unknown[] = [];
     let release!: () => void;
     let ready!: (pid: number) => void;
     const held = new Promise<void>((resolve) => {
@@ -407,78 +526,61 @@ describe("historical mail links for newly claimed addresses", () => {
       ready = resolve;
     });
     const holder = runInTenant(tenant(), () =>
-      withTransaction(runtime, async (client) => {
+      withTransaction(holderPool.pool, async (client) => {
         const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
         await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [emailsId, message]);
         ready(rows[0]!.pid);
         await held;
       }),
     );
-    const failures: unknown[] = [];
     let worker: Promise<void> | undefined;
     let removal: Promise<void> | undefined;
     try {
-      const blocker = await Promise.race([
-        acquired,
-        holder.then(() => {
-          throw new Error("Holder ended early");
-        }),
-      ]);
-      worker = drain().catch((error: unknown) => {
-        failures.push(error);
-      });
-      let workerPid: number | undefined;
-      for (let i = 0; i < 100; i++) {
-        const { rows } = await admin.query<{ pid: number }>(
-          "SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))",
-          [blocker],
-        );
-        if (rows[0]) {
-          workerPid = rows[0].pid;
-          break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-      if (workerPid === undefined) throw new Error("Worker did not block on message");
-      removal = claim("").catch((error: unknown) => {
-        failures.push(error);
-      });
-      let releaseBlocked = false;
-      for (let i = 0; i < 100; i++) {
-        const { rows } = await admin.query<{ pid: number }>(
-          "SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))",
-          [workerPid],
-        );
-        if (rows.length > 0) {
-          releaseBlocked = true;
-          break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-      expect(releaseBlocked).toBe(true);
+      const blocker = await bounded(
+        Promise.race([
+          acquired,
+          holder.then(() => {
+            throw new Error("Holder ended early");
+          }),
+        ]),
+      );
+      const workerPid = await backendPid(workerPool.pool);
+      const removalPid = await backendPid(releasePool.pool);
+      worker = drainSuccess(workerPool.pool, queuePool.pool);
+      void worker.catch(() => {});
+      await assertBlocked(workerPid, blocker);
+      removal = claim("", releasePool.pool);
+      void removal.catch(() => {});
+      await assertBlocked(removalPid, workerPid);
     } catch (error) {
       failures.push(error);
-    }
-    release();
-    for (const operation of [holder, worker, removal]) {
-      if (!operation) continue;
-      try {
-        await operation;
-      } catch (error) {
-        failures.push(error);
-      }
+    } finally {
+      release();
+      await finishOwned(
+        [holder, ...(worker ? [worker] : []), ...(removal ? [removal] : [])],
+        [workerPool, holderPool, releasePool, queuePool],
+        failures,
+      );
     }
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Index ownership test or settlement failed");
-    expect(await edges(message)).toEqual(["senderPeople"]);
+    expect(await allSenders(message)).toEqual([personId]);
   });
-  it("removed or conflicting claims do not authorize an old pending job", async () => {
+  it("reconciles an old wake-up after reassignment and preserves recorded edges", async () => {
     const oldPerson = personId;
-    const message = await ingest({ from: { address: "removed@example.com" } });
+    const historical = await ingest({
+      from: { address: "removed@example.com" },
+      to: [{ address: "removed@example.com" }],
+    });
     await claim("removed@example.com");
-    await claim("");
     await drain();
-    expect(await edges(message)).toEqual([]);
+    expect(await edges(historical)).toEqual(["recipientsPeople", "senderPeople"]);
+    const message = await ingest({
+      from: { address: "removed@example.com" },
+      to: [{ address: "removed@example.com" }],
+    });
+    await claim("removed@example.com\nwakeup@example.com");
+    await claim("");
     personId = await runInTenant(tenant(), () =>
       withTransaction(
         runtime,
@@ -489,19 +591,31 @@ describe("historical mail links for newly claimed addresses", () => {
     await claim("removed@example.com");
     const owner = personId;
     const queued = () =>
-      admin.query<{ key: string | null }>(
-        `SELECT j.key FROM graphile_worker._private_jobs j JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+      admin.query<{ id: string; key: string }>(
+        `SELECT j.id::text, j.key FROM graphile_worker._private_jobs j JOIN graphile_worker._private_tasks t ON t.id = j.task_id
        WHERE t.identifier = $1 ORDER BY j.key`,
         [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS],
       );
-    const beforeConflict = (await queued()).rows;
+    const jobs = (await queued()).rows;
+    const oldJob = jobs.find((job) => job.key === `mail-link-person-emails:${oldPerson}`);
+    const newJob = jobs.find((job) => job.key === `mail-link-person-emails:${owner}`);
+    if (!oldJob || !newJob) throw new Error("Missing owned jobs");
     personId = oldPerson;
     await claim("removed@example.com");
-    expect((await queued()).rows).toEqual(beforeConflict);
-    await drain();
+    expect((await queued()).rows).toEqual(jobs);
+    await admin.query("UPDATE graphile_worker._private_jobs SET run_at = now() + interval '1 hour' WHERE id = $1", [
+      newJob.id,
+    ]);
+    await drainSuccess();
+    expect((await queued()).rows).toEqual([newJob]);
     expect(await edges(message)).toEqual([]);
+    expect(await edges(historical)).toEqual(["recipientsPeople", "senderPeople"]);
+    await admin.query("UPDATE graphile_worker._private_jobs SET run_at = now() WHERE id = $1", [newJob.id]);
+    await drainSuccess();
+    expect((await queued()).rows).toEqual([]);
     personId = owner;
-    expect(await edges(message)).toEqual(["senderPeople"]);
+    expect(await edges(message)).toEqual(["recipientsPeople", "senderPeople"]);
+    expect(await edges(historical)).toEqual(["recipientsPeople"]);
   });
 
   it("scopes worker ownership and mail to each tenant, refusing a foreign person hint", async () => {
