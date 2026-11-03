@@ -34,6 +34,8 @@ vi.mock("../threading.js", async (importOriginal) => {
   };
 });
 
+// Most paging and coordination cases below use synthetic metadata identifiers to isolate the
+// algorithm; they are not historical deployed rows. The real-item test covers the supported legacy shape.
 const MAILBOX_A = "00000000-0000-4000-8000-00000000000a";
 const MAILBOX_B = "00000000-0000-4000-8000-00000000000b";
 /** One more row than the job's page size of 200, so each pass has to read a second page. */
@@ -501,6 +503,73 @@ describe("mailThreadBackfill (issue #1570)", () => {
     },
     30000,
   );
+
+  it("repairs historical unthreaded sends and split copies backed by actual mailbox and Email items", async () => {
+    const fixture = await runInTenant(tenantZero, () =>
+      withTransaction(pool, async (client) => {
+        const mailboxes = await getDatabaseByModuleId(client, "mailboxes");
+        const emails = await getDatabaseByModuleId(client, "emails");
+        if (!mailboxes || !emails) throw new Error("Mail databases were not seeded");
+        const mailboxA = await createItemWithClient(client, {
+          databaseId: mailboxes.id,
+          properties: { name: "A", provider: "generic" },
+        });
+        const mailboxB = await createItemWithClient(client, {
+          databaseId: mailboxes.id,
+          properties: { name: "B", provider: "generic" },
+        });
+        const createEmail = (name: string) =>
+          createItemWithClient(
+            client,
+            { databaseId: emails.id, properties: { name } },
+            { allowedSystemKeys: EMAIL_INGEST_ALLOWED_SYSTEM_KEYS },
+          );
+        const parent = await createEmail("Parent");
+        const reply = await createEmail("Reply");
+        const copyA = await createEmail("Copy A");
+        const copyB = await createEmail("Copy B");
+        const parentThread = await createMailThread(client);
+        const firstThread = await createMailThread(client);
+        const secondThread = await createMailThread(client);
+        await writeMessage(client, {
+          itemId: parent.id,
+          mailboxItemId: mailboxA.id,
+          messageId: "<real-parent@x>",
+          threadId: parentThread.id,
+        });
+        // Before the send-threading fix, sent Email items had a null thread_id.
+        await writeMessage(client, {
+          itemId: reply.id,
+          mailboxItemId: mailboxA.id,
+          messageId: "<real-reply@x>",
+          inReplyTo: "<real-parent@x>",
+        });
+        // Before cross-mailbox deduplication, independently ingested copies could have distinct threads.
+        await writeMessage(client, {
+          itemId: copyA.id,
+          mailboxItemId: mailboxA.id,
+          messageId: "<real-copy@x>",
+          threadId: firstThread.id,
+        });
+        await writeMessage(client, {
+          itemId: copyB.id,
+          mailboxItemId: mailboxB.id,
+          messageId: "<real-copy@x>",
+          threadId: secondThread.id,
+        });
+        return { parentThread, reply, copyA, copyB, firstThread, secondThread };
+      }),
+    );
+    await runBackfill();
+    expect(await threadOf(tenantZero, fixture.reply.id)).toBe(fixture.parentThread.id);
+    const survivor = [fixture.firstThread.id, fixture.secondThread.id].sort()[0];
+    expect(await threadOf(tenantZero, fixture.copyA.id)).toBe(survivor);
+    expect(await threadOf(tenantZero, fixture.copyB.id)).toBe(survivor);
+    expect(await orphanThreads(tenantZero)).toBe(0);
+    const first = await snapshot(tenantZero);
+    await runBackfill();
+    expect(await snapshot(tenantZero)).toEqual(first);
+  });
 
   it("gives a sent message its replied-to message's thread, and a send with no ancestors a new thread named by its subject", async () => {
     const parentThread = await synced(tenantZero, {

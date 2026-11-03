@@ -1,8 +1,14 @@
 import { DateTime } from "luxon";
 import { describe, expect, it } from "vitest";
 import { ValidationError } from "../../errors.js";
-import { describeJournalPeriods, parseJournalPeriodKey, weeksOfMonth } from "../journalPeriods.js";
-import { computeJournalPeriodKey, JOURNAL_PERIOD_TYPES, type JournalPeriodType } from "../journalStore.js";
+import {
+  computeJournalPeriodKey,
+  describeJournalPeriods,
+  JOURNAL_PERIOD_TYPES,
+  parseJournalPeriodKey,
+  weeksOfMonth,
+  type JournalPeriodType,
+} from "../journalPeriods.js";
 
 const utc = (iso: string) => DateTime.fromISO(iso, { zone: "UTC" });
 

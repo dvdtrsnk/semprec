@@ -1,3 +1,4 @@
+import { privateSendOperation, readSendBody } from "./mailSendPrivacy.js";
 import { Readable } from "node:stream";
 import { simpleParser } from "mailparser";
 import type { GmailFetchedMessage, GmailHistoryResult, GmailLabelRef, GmailMailClient } from "./gmailReconcile.js";
@@ -274,23 +275,7 @@ export interface GmailSentMessage {
  * failure propagates, so the send fails as an ordinary error rather than with a classification it did not earn.
  */
 async function readSendErrorBodyStart(response: Response): Promise<string> {
-  if (!response.body) return "";
-  const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader();
-  const chunks: Buffer[] = [];
-  let read = 0;
-  try {
-    while (read < SEND_ERROR_BODY_READ_LIMIT) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = Buffer.from(value);
-      chunks.push(chunk);
-      read += chunk.byteLength;
-    }
-  } finally {
-    // Releasing the stream is cleanup. A failure here must not replace the outcome of the read above.
-    await reader.cancel().catch(() => undefined);
-  }
-  return Buffer.concat(chunks).subarray(0, SEND_ERROR_BODY_READ_LIMIT).toString("utf8");
+  return (await readSendBody(response, SEND_ERROR_BODY_READ_LIMIT)).text;
 }
 
 /**
@@ -489,14 +474,24 @@ export class GmailRestClient implements GmailMailClient {
    */
   async sendMessage(raw: Buffer, threadId?: string): Promise<GmailSentMessage> {
     const token = await this.getAccessToken();
-    const response = await this.fetchImpl(`${BASE_URL}/messages/send`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ raw: raw.toString("base64url"), ...(threadId ? { threadId } : {}) }),
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!response.ok) throw await sendFailure(response);
-    const body = assertJsonObject(await response.json(), "Gmail send response");
+    const response = await privateSendOperation(() =>
+      this.fetchImpl(`${BASE_URL}/messages/send`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ raw: raw.toString("base64url"), ...(threadId ? { threadId } : {}) }),
+        signal: AbortSignal.timeout(30_000),
+      }),
+    );
+    if (!response.ok) throw await privateSendOperation(() => sendFailure(response));
+    const read = await privateSendOperation(() => readSendBody(response, 32 * 1024));
+    if (read.truncated) throw new Error("Gmail send response is too large");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(read.text);
+    } catch {
+      throw new Error("Gmail send response is not valid JSON");
+    }
+    const body = assertJsonObject(parsed, "Gmail send response");
     if (typeof body.id !== "string" || typeof body.threadId !== "string") {
       throw new Error("Gmail send response is missing the message id or the thread id");
     }

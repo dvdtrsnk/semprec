@@ -1,3 +1,4 @@
+import { privateSendOperation, readSendBody, reportSendCleanupFailure } from "./mailSendPrivacy.js";
 import { Readable, Transform } from "node:stream";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { GraphChangedMessage, GraphDeltaResult, GraphFolderRef, GraphMailClient } from "./graphReconcile.js";
@@ -285,28 +286,7 @@ const RECIPIENT_REFUSAL = /ErrorInvalidRecipients|invalid recipient/i;
  * dropped, because the outcome of the read is what the caller needs.
  */
 async function readBodyUpTo(response: Response, limit: number): Promise<{ text: string; truncated: boolean }> {
-  if (!response.body) return { text: "", truncated: false };
-  const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader();
-  const chunks: Buffer[] = [];
-  let read = 0;
-  let truncated = false;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = Buffer.from(value);
-      if (read + chunk.byteLength > limit) {
-        chunks.push(chunk.subarray(0, limit - read));
-        truncated = true;
-        break;
-      }
-      chunks.push(chunk);
-      read += chunk.byteLength;
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined);
-  }
-  return { text: Buffer.concat(chunks).toString("utf8"), truncated };
+  return privateSendOperation(() => readSendBody(response, limit));
 }
 
 /**
@@ -575,13 +555,18 @@ export class GraphRestClient implements GraphMailClient {
     init: { method: "POST" | "DELETE"; body?: string; contentType?: string },
   ): Promise<Response> {
     const token = await this.getAccessToken();
-    const response = await this.fetchImpl(url, {
-      method: init.method,
-      headers: { Authorization: `Bearer ${token}`, ...(init.contentType ? { "Content-Type": init.contentType } : {}) },
-      ...(init.body !== undefined ? { body: init.body } : {}),
-      signal: AbortSignal.timeout(WRITE_REQUEST_TIMEOUT_MS),
-    });
-    if (!response.ok) throw await writeFailure(response);
+    const response = await privateSendOperation(() =>
+      this.fetchImpl(url, {
+        method: init.method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(init.contentType ? { "Content-Type": init.contentType } : {}),
+        },
+        ...(init.body !== undefined ? { body: init.body } : {}),
+        signal: AbortSignal.timeout(WRITE_REQUEST_TIMEOUT_MS),
+      }),
+    );
+    if (!response.ok) throw await privateSendOperation(() => writeFailure(response));
     return response;
   }
 
@@ -590,12 +575,18 @@ export class GraphRestClient implements GraphMailClient {
    * the Sent copy itself and answers 202 with no body. The caller keeps `raw` within GRAPH_SEND_MAIL_MAX_RAW_BYTES.
    */
   async sendMime(raw: Buffer): Promise<void> {
+    if (raw.byteLength > GRAPH_SEND_MAIL_MAX_RAW_BYTES) throw new Error("Graph MIME exceeds the send body budget");
     const response = await this.writeRequest(`${BASE_URL}/sendMail`, {
       method: "POST",
       body: raw.toString("base64"),
       contentType: "text/plain",
     });
-    await response.body?.cancel();
+    try {
+      await response.body?.cancel();
+    } catch (error) {
+      void error;
+      reportSendCleanupFailure("graph-send-response");
+    }
   }
 
   /** Creates a draft that carries the Message-ID and the reply headers. Returns the draft's id. */
@@ -645,14 +636,26 @@ export class GraphRestClient implements GraphMailClient {
    * failure rather than a credential one.
    */
   async uploadChunk(uploadUrl: string, chunk: Buffer, start: number, total: number): Promise<void> {
-    const response = await this.fetchImpl(uploadUrl, {
-      method: "PUT",
-      headers: { "Content-Range": `bytes ${start}-${start + chunk.byteLength - 1}/${total}` },
-      body: chunk,
-      signal: AbortSignal.timeout(UPLOAD_CHUNK_TIMEOUT_MS),
+    const response = await privateSendOperation(() =>
+      this.fetchImpl(uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Range": `bytes ${start}-${start + chunk.byteLength - 1}/${total}` },
+        body: chunk,
+        signal: AbortSignal.timeout(UPLOAD_CHUNK_TIMEOUT_MS),
+      }),
+    );
+    if (!response.ok) {
+      try {
+        await response.body?.cancel();
+      } catch (error) {
+        void error;
+        reportSendCleanupFailure("graph-upload-response");
+      }
+      throw new Error(`Microsoft Graph upload failed with status ${response.status}`);
+    }
+    await privateSendOperation(async () => {
+      await response.body?.cancel();
     });
-    if (!response.ok) throw new Error(`Microsoft Graph upload failed with status ${response.status}`);
-    await response.body?.cancel();
   }
 
   /** Sends a draft with `POST /me/messages/{id}/send`. Graph files the sent copy itself. */
@@ -660,7 +663,12 @@ export class GraphRestClient implements GraphMailClient {
     const response = await this.writeRequest(`${BASE_URL}/messages/${encodeURIComponent(draftId)}/send`, {
       method: "POST",
     });
-    await response.body?.cancel();
+    try {
+      await response.body?.cancel();
+    } catch (error) {
+      void error;
+      reportSendCleanupFailure("graph-send-response");
+    }
   }
 
   /** Deletes a message, here a draft that a failed large send left behind. */
@@ -668,6 +676,8 @@ export class GraphRestClient implements GraphMailClient {
     const response = await this.writeRequest(`${BASE_URL}/messages/${encodeURIComponent(messageId)}`, {
       method: "DELETE",
     });
-    await response.body?.cancel();
+    await privateSendOperation(async () => {
+      await response.body?.cancel();
+    });
   }
 }

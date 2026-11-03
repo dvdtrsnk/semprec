@@ -4,6 +4,10 @@ import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
+import { ingestEmailMessage } from "../mail/ingest.js";
+import { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
+import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { GRAPH_SEND_MAIL_MAX_RAW_BYTES } from "../mail/graphRestClient.js";
 import { GRAPH_SEND_PURPOSE } from "../mail/graphTransport.js";
@@ -310,6 +314,79 @@ describe("Graph mail transport (issue #1753)", () => {
     });
   });
 
+  it("deduplicates later synced copies using the Message-ID from both Graph send paths", async () => {
+    const storage: BlobStorageWriter = {
+      async writeStream() {
+        throw new Error("Unexpected attachment write");
+      },
+      async delete() {
+        throw new Error("Unexpected attachment delete");
+      },
+      readStream() {
+        throw new Error("Unexpected attachment read");
+      },
+    };
+    const microsoft = fakeMicrosoft();
+    for (const [size, id] of [
+      [1000, "<graph-small@x>"],
+      [GRAPH_SEND_MAIL_MAX_RAW_BYTES + 1, "<graph-large@x>"],
+    ] as const) {
+      const raw = textMessageOfSize(size, `Message-ID: ${id}`);
+      await (
+        await transportFor(microsoft)
+      ).send({ raw, envelope: { from: "sender@graph.test", recipients: ["bob@graph.test"] } });
+      const sentId =
+        size <= GRAPH_SEND_MAIL_MAX_RAW_BYTES
+          ? /^Message-ID: (.+)$/im
+              .exec(Buffer.from(onlyCallOf(microsoft.calls, "sendMail").text, "base64").toString("utf8"))?.[1]
+              ?.trim()
+          : (() => {
+              const payload: unknown = JSON.parse(onlyCallOf(microsoft.calls, "createDraft").text);
+              if (typeof payload !== "object" || payload === null || !("internetMessageId" in payload))
+                return undefined;
+              return typeof payload.internetMessageId === "string" ? payload.internetMessageId : undefined;
+            })();
+      expect(sentId).toBe(id);
+      if (!sentId) throw new Error("Missing sent Message-ID");
+      const result = await withTransaction(pool, async (client) => {
+        const ids = await resolveMailModuleIds(client);
+        const folderProperty = await getPropertyByKey(client, ids.emailsDatabaseId, "folder");
+        const attachmentProperty = await getPropertyByKey(client, ids.emailsDatabaseId, "attachments");
+        if (!folderProperty || !attachmentProperty) throw new Error("Missing Email relation properties");
+        const item = await createItemWithClient(client, { databaseId: ids.emailsDatabaseId, properties: {} });
+        const folder = await createItemWithClient(
+          client,
+          {
+            databaseId: ids.foldersDatabaseId,
+            properties: { name: "Sent", behavior: "folder", providerId: `sent-${size}` },
+          },
+          { allowedSystemKeys: ["name", "behavior", "providerId"] },
+        );
+        await upsertMailMessageMeta(client, {
+          itemId: item.id,
+          mailboxItemId: mailboxId,
+          messageId: sentId,
+          envelope: {},
+        });
+        const ingested = await ingestEmailMessage(client, {
+          emailsDatabaseId: ids.emailsDatabaseId,
+          filesDatabaseId: ids.filesDatabaseId,
+          folderRelationPropertyId: folderProperty.id,
+          attachmentsRelationPropertyId: attachmentProperty.id,
+          folderItemId: folder.id,
+          mailboxItemId: mailboxId,
+          messageId: sentId,
+          envelope: {},
+          attachments: [],
+          storage,
+          storageKeyPrefix: "test",
+        });
+        return { itemId: item.id, ingested };
+      });
+      expect(result.ingested).toEqual({ itemId: result.itemId, created: false });
+    }
+  });
+
   it("keeps the Message-ID and the reply headers in a large reply, uploads its attachments in chunks and sends the draft", async () => {
     const report = patternedBytes(6 * ONE_MIB);
     const logo = Buffer.from([1, 2, 3]);
@@ -537,7 +614,7 @@ describe("Graph mail transport (issue #1753)", () => {
     expect(onlyCallOf(microsoft.calls, "deleteDraft").text).toBe("");
   });
 
-  it("keeps the upload's error when deleting the draft also fails, and logs the failure by its name only", async () => {
+  it("keeps the upload error and reports only a closed cleanup stage when draft deletion fails", async () => {
     const warn = vi.spyOn(logger, "warn");
     const microsoft = fakeMicrosoft({
       replies: {
@@ -556,10 +633,66 @@ describe("Graph mail transport (issue #1753)", () => {
       .catch((e: unknown) => e);
 
     expect(error instanceof Error ? error.message : "").toBe("Microsoft Graph request failed with status 503");
-    expect(warn).toHaveBeenCalledWith(
-      expect.objectContaining({ mailboxItemId: mailboxId, draftId: DRAFT_ID, errorName: "Error" }),
-      "Deleting the Graph draft after a failed send failed",
-    );
+    expect(warn).toHaveBeenCalledWith({ stage: "graph-draft-delete" }, "Mail send cleanup failed");
+  });
+
+  it("confines an unknown upload failure while attempting draft deletion even if diagnostics fail", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {
+      throw new Error("PRIVATE-DIAGNOSTIC");
+    });
+    const microsoft = fakeMicrosoft({ replies: { deleteDraft: () => new Response("failure", { status: 500 }) } });
+    const original = microsoft.fetchImpl.getMockImplementation();
+    if (!original) throw new Error("Missing fake provider implementation");
+    microsoft.fetchImpl.mockImplementation(async (input, init) => {
+      if (requestTarget(input).startsWith(UPLOAD_HOST))
+        // Provider boundaries can reject with non-Error values.
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        return Promise.reject({ name: "PRIVATE-NAME", url: "PRIVATE-UPLOAD-URL" });
+      return original(input, init);
+    });
+    const transport = await transportFor(microsoft);
+    const error: unknown = await transport
+      .send({
+        raw: await largeMime([{ filename: "a.txt", content: Buffer.from("attached") }]),
+        envelope: { from: "sender@graph.test", recipients: ["bob@graph.test"] },
+      })
+      .then(
+        () => null,
+        (value: unknown) => value,
+      );
+    expect(error).toMatchObject({ message: "Mail send provider operation failed" });
+    expect(error).not.toHaveProperty("cause");
+    expect(JSON.stringify(error)).not.toContain("PRIVATE");
+    expect(routesOf(microsoft.calls)).toEqual(["createDraft", "createUploadSession", "deleteDraft"]);
+    expect(warn).toHaveBeenCalledWith({ stage: "graph-draft-delete" }, "Mail send cleanup failed");
+  });
+
+  it("keeps a Graph-accepted draft send when response cleanup and its diagnostic fail", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {
+      throw new Error("PRIVATE-DIAGNOSTIC");
+    });
+    const microsoft = fakeMicrosoft({
+      replies: {
+        sendDraft: () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              cancel() {
+                throw new Error("PRIVATE-CLEANUP");
+              },
+            }),
+            { status: 202 },
+          ),
+      },
+    });
+    const transport = await transportFor(microsoft);
+    await expect(
+      transport.send({
+        raw: await largeMime([{ filename: "a.txt", content: Buffer.from("attached") }]),
+        envelope: { from: "sender@graph.test", recipients: ["bob@graph.test"] },
+      }),
+    ).resolves.toEqual({});
+    expect(routesOf(microsoft.calls)).toEqual(["createDraft", "createUploadSession", "sendDraft"]);
+    expect(warn).toHaveBeenCalledWith({ stage: "graph-send-response" }, "Mail send cleanup failed");
   });
 
   it("deletes the draft and reports MailRecipientRejectedError when Graph refuses a recipient at send", async () => {

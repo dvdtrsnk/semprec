@@ -1,7 +1,27 @@
 import { DateTime } from "luxon";
 import { ValidationError } from "../errors.js";
 import { assertValidTimezone } from "../timezone.js";
-import { computeJournalPeriodKey, JOURNAL_PERIOD_TYPES, type JournalPeriodType } from "./journalStore.js";
+import { assertKnownValue } from "../dbRowValidation.js";
+
+export const JOURNAL_PERIOD_TYPES = ["year", "quarter", "month", "week", "day"] as const;
+export type JournalPeriodType = (typeof JOURNAL_PERIOD_TYPES)[number];
+
+/** The canonical period key, also stored verbatim in the `period` property — e.g. '2026', '2026-Q3', '2026-08', '2026-W35', '2026-08-28'. */
+export function computeJournalPeriodKey(type: JournalPeriodType, reference: DateTime): string {
+  assertKnownValue(JOURNAL_PERIOD_TYPES, type, "journal period type");
+  switch (type) {
+    case "year":
+      return String(reference.year);
+    case "quarter":
+      return `${reference.year}-Q${reference.quarter}`;
+    case "month":
+      return reference.toFormat("yyyy-LL");
+    case "week":
+      return reference.toFormat("kkkk-'W'WW");
+    case "day":
+      return reference.toISODate() as string;
+  }
+}
 
 export interface JournalPeriodRange {
   /** Canonical period key, as written by `computeJournalPeriodKey`. */

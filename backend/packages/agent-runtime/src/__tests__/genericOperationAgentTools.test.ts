@@ -3,7 +3,14 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as application from "@semprec/application";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTenantZeroUser,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+  upsertMailMessageMeta,
+} from "@semprec/data/testSupport";
 import {
   createAgentRun,
   createItemWithClient,
@@ -16,7 +23,7 @@ import {
   type ChokePoint,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
-import { GENERIC_OPERATION_NAMES } from "@semprec/shared";
+import { GENERIC_OPERATION_NAMES, runInTenant } from "@semprec/shared";
 import {
   TOOL_CHANGE_VALUE_MAX_LENGTH,
   createGenericOperationAgentTools,
@@ -66,6 +73,153 @@ describe("generic operation AgentTools (issue #220)", () => {
   });
 
   describe("createGenericOperationAgentTools", () => {
+    it("validates Inbox capture and type creation through the agent tool", async () => {
+      const inbox = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "inbox"));
+      const types = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "inboxItemTypes"));
+      if (!inbox || !types) throw new Error("Inbox databases were not seeded");
+      const projectItemId = await createProjectItem();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "create inbox items" });
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+      const count = async (databaseId: string) => {
+        const { rows } = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM items WHERE database_id = $1",
+          [databaseId],
+        );
+        return rows[0]?.count ?? 0;
+      };
+      for (const [databaseId, properties] of [
+        [inbox.id, { date: "2026-02-30", time: "12:00" }],
+        [inbox.id, { date: "2026-10-16", time: "24:00" }],
+        [types.id, { name: "Invalid", processingMethod: "database", targetDatabase: "journal" }],
+        [types.id, { name: "Invalid", processingMethod: "database", targetDatabase: "transcripts" }],
+        [types.id, { name: "Invalid", processingMethod: "database", targetDatabase: "nonsense" }],
+      ] as const) {
+        const before = await count(databaseId);
+        const rejected = await tools["item.create"](run.id, { databaseId, properties });
+        expect(rejected.error).toBe(true);
+        expect(rejected.result).toMatch(/^validation_failed:/);
+        expect(await count(databaseId)).toBe(before);
+      }
+      for (const [databaseId, properties] of [
+        [inbox.id, { date: "2026-10-16", time: "12:00" }],
+        [types.id, { name: "Valid", processingMethod: "database", targetDatabase: "tasks" }],
+      ] as const) {
+        const before = await count(databaseId);
+        const accepted = await tools["item.create"](run.id, { databaseId, properties });
+        expect(accepted.error).toBe(false);
+        expect(await count(databaseId)).toBe(before + 1);
+      }
+      const validType = (await chokePoint.listItems(types.id)).items.find((item) => item.properties.name === "Valid");
+      if (!validType) throw new Error("Missing valid Inbox type");
+      for (const targetDatabase of ["journal", "transcripts", "nonsense"]) {
+        const rejected = await tools["item.patch"](run.id, {
+          itemId: validType.id,
+          properties: { targetDatabase },
+          ifVersion: validType.updatedAt,
+        });
+        expect(rejected.error).toBe(true);
+        expect(rejected.result).toMatch(/^validation_failed:/);
+        const unchanged = await chokePoint.getItem(types.id, validType.id);
+        expect(unchanged?.properties.targetDatabase).toBe("tasks");
+      }
+      const { rows } = await pool.query<{ period: string }>(
+        `SELECT day.properties->>'period' AS period FROM item_relations r
+         JOIN relation_definitions d ON d.id = r.relation_definition_id
+         JOIN properties p ON p.id = d.property_id_a
+         JOIN items source ON source.id = r.item_a
+         JOIN items day ON day.id = r.item_b
+         WHERE p.database_id = $1 AND p.key = 'journalDay' AND source.properties->>'date' = $2`,
+        [inbox.id, "2026-10-16"],
+      );
+      expect(rows).toEqual([{ period: "2026-10-16" }]);
+    });
+
+    it("projects Emails body on agent item.get but leaves stored and other-module HTML unchanged", async () => {
+      const emails = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "emails"));
+      if (!emails) throw new Error("Emails database was not seeded");
+      const raw = '<p onclick="evil()">safe</p><script>evil()</script><img src="https://tracker.example/pixel">';
+      const email = await withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: emails.id, properties: { body: raw } },
+          { allowedSystemKeys: ["body"] },
+        ),
+      );
+      const other = await chokePoint.createDatabase({ name: "Other" });
+      await chokePoint.createProperty({ databaseId: other.id, key: "body", name: "Body", type: "longText" });
+      const otherItem = await chokePoint.createItem({ databaseId: other.id, properties: { body: raw } });
+      const projectItemId = await createProjectItem();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "read emails" });
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+      const projected = await tools["item.get"](run.id, { itemId: email.id });
+      expect(projected.error).toBe(false);
+      expect(projected.result).toContain("safe");
+      expect(projected.result).not.toMatch(/<script|onclick|https:\/\/tracker/i);
+      const unchanged = await tools["item.get"](run.id, { itemId: otherItem.id });
+      expect(unchanged.error).toBe(false);
+      expect(unchanged.result).toContain("tracker.example");
+      const { rows } = await pool.query<{ body: string }>(
+        "SELECT properties->>'body' AS body FROM items WHERE database_id = $1 AND id = $2",
+        [emails.id, email.id],
+      );
+      expect(rows[0]?.body).toBe(raw);
+    });
+
+    it("queues one mailbox sync for agent flag patches of two messages", async () =>
+      runInTenant(getTenantZeroId(), async () => {
+        const runtime = await createRuntimeRolePool(pool, "semprec_data");
+        try {
+          const emails = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "emails"));
+          const mailboxes = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "mailboxes"));
+          if (!emails || !mailboxes) throw new Error("Mail databases were not seeded");
+          const fixture = await withTransaction(runtime, async (client) => {
+            const mailbox = await createItemWithClient(client, {
+              databaseId: mailboxes.id,
+              properties: { name: "Work", provider: "generic" },
+            });
+            const first = await createItemWithClient(client, { databaseId: emails.id, properties: {} });
+            const second = await createItemWithClient(client, { databaseId: emails.id, properties: {} });
+            for (const [item, messageId] of [
+              [first, "<first@example.test>"],
+              [second, "<second@example.test>"],
+            ] as const) {
+              await upsertMailMessageMeta(client, {
+                itemId: item.id,
+                mailboxItemId: mailbox.id,
+                messageId,
+                envelope: {},
+              });
+            }
+            return { mailbox, first, second };
+          });
+          const projects = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
+          if (!projects) throw new Error("Projects database was not seeded");
+          const projectItemId = (
+            await createChokePoint(runtime).createItem({ databaseId: projects.id, properties: {} })
+          ).id;
+          const run = await createAgentRun(runtime, { projectItemId, triggeredBy: "user", task: "flag messages" });
+          const tools = createGenericOperationAgentTools(runtime, moduleRegistry, testMetadataResolver);
+          for (const [item, properties] of [
+            [fixture.first, { read: true }],
+            [fixture.second, { flagged: true }],
+          ] as const) {
+            const result = await tools["item.patch"](run.id, {
+              itemId: item.id,
+              properties,
+              ifVersion: item.updatedAt,
+            });
+            expect(result.error).toBe(false);
+          }
+          const { rows } = await pool.query<{ key: string | null }>(
+            "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1",
+            ["mailAccountSync"],
+          );
+          expect(rows).toEqual([{ key: `mail-account-sync:${fixture.mailbox.id}` }]);
+        } finally {
+          await runtime.end();
+        }
+      }));
+
     it("refuses a Journal item without type or period through the agent tool without creating a row", async () => {
       const journal = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "journal"));
       if (!journal) throw new Error("Journal database was not seeded");

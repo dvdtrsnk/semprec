@@ -7,7 +7,7 @@ import {
   type GraphRecipient,
   type GraphUploadAttachment,
 } from "./graphRestClient.js";
-import { logger } from "./logger.js";
+import { privateSendOperation, reportSendCleanupFailure } from "./mailSendPrivacy.js";
 import { refreshAndPersistAccessToken } from "./mailOAuthAccess.js";
 import { MICROSOFT_TOKEN_URL } from "./oauthTokenExchange.js";
 import type { MailTransport, MailTransportMessage } from "./mailTransport.js";
@@ -52,7 +52,7 @@ export function createGraphMailTransport(options: GraphMailTransportOptions): Ma
       if (message.raw.byteLength <= GRAPH_SEND_MAIL_MAX_RAW_BYTES) {
         await client.sendMime(message.raw);
       } else {
-        await sendAsDraft(client, mailboxItemId, message);
+        await sendAsDraft(client, message);
       }
       return {};
     },
@@ -64,12 +64,8 @@ export function createGraphMailTransport(options: GraphMailTransportOptions): Ma
  * empty attachment, whose zero chunks the upload loop would drop without a trace) fails without leaving a draft behind.
  * From the moment the draft exists, any failure deletes it, best effort, and the caller receives the send's own error.
  */
-async function sendAsDraft(
-  client: GraphRestClient,
-  mailboxItemId: string,
-  message: MailTransportMessage,
-): Promise<void> {
-  const parsed = await simpleParser(message.raw, { keepCidLinks: true });
+async function sendAsDraft(client: GraphRestClient, message: MailTransportMessage): Promise<void> {
+  const parsed = await privateSendOperation(() => simpleParser(message.raw, { keepCidLinks: true }));
   const messageId = parsed.messageId;
   if (!messageId) throw new Error("The outgoing message has no Message-ID to keep");
   for (const attachment of parsed.attachments) {
@@ -86,7 +82,7 @@ async function sendAsDraft(
     }
     await client.sendDraft(draft.id);
   } catch (error) {
-    await deleteDraftBestEffort(client, mailboxItemId, draft.id);
+    await deleteDraftBestEffort(client, draft.id);
     throw error;
   }
 }
@@ -149,16 +145,14 @@ async function uploadInChunks(client: GraphRestClient, uploadUrl: string, conten
 }
 
 /**
- * Deletes the draft a failed send left behind. A failure here is logged by its error name and dropped, so the send's own
- * error, the one the caller needs, is the one that propagates.
+ * Deletes the draft a failed send left behind. A failure is reported with a fixed cleanup stage, while the send's own
+ * error remains the one that propagates.
  */
-async function deleteDraftBestEffort(client: GraphRestClient, mailboxItemId: string, draftId: string): Promise<void> {
+async function deleteDraftBestEffort(client: GraphRestClient, draftId: string): Promise<void> {
   try {
     await client.deleteMessage(draftId);
   } catch (error) {
-    logger.warn(
-      { mailboxItemId, draftId, errorName: error instanceof Error ? error.name : "NonError" },
-      "Deleting the Graph draft after a failed send failed",
-    );
+    void error;
+    reportSendCleanupFailure("graph-draft-delete");
   }
 }

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GmailRestClient } from "../mail/gmailRestClient.js";
+import { logger } from "../mail/logger.js";
 
 describe("Gmail sync provider privacy", () => {
   it.each([
@@ -147,6 +148,7 @@ async function fetchFixture(payload: object) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("Gmail bulk-mail headers (issue #1502)", () => {
@@ -501,6 +503,90 @@ describe("Gmail sendMessage (issue #1637)", () => {
     expect(error).not.toBeInstanceOf(MailReauthorizationRequiredError);
     expect(error).not.toBeInstanceOf(MailRecipientRejectedError);
     expect((error as Error).message).toBe("Gmail send failed with status 500");
+  });
+
+  it.each([undefined, { token: "PRIVATE-SEND-SECRET" }, new Error("PRIVATE-SEND-SECRET")])(
+    "confines an unknown send fetch rejection",
+    async (failure) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(failure);
+      const client = new GmailRestClient(async () => SECRET_TOKEN, fetchImpl);
+      const error: unknown = await client.sendMessage(RAW_MESSAGE).then(
+        () => null,
+        (value: unknown) => value,
+      );
+      expect(error).toBeInstanceOf(Error);
+      if (!(error instanceof Error)) throw new Error("Expected a failure");
+      expect(error.message).toBe("Mail send provider operation failed");
+      expect(error).not.toHaveProperty("cause");
+      expect(`${error.stack} ${JSON.stringify(error)}`).not.toContain("PRIVATE-SEND-SECRET");
+    },
+  );
+
+  it("confines a failed required success body without fabricating an id", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("PRIVATE-SEND-SECRET"));
+      },
+    });
+    const client = new GmailRestClient(
+      async () => SECRET_TOKEN,
+      async () => new Response(stream, { status: 200 }),
+    );
+    const error: unknown = await client.sendMessage(RAW_MESSAGE).then(
+      () => null,
+      (value: unknown) => value,
+    );
+    expect(error).toMatchObject({ message: "Mail send provider operation failed" });
+    expect(JSON.stringify(error)).not.toContain("PRIVATE-SEND-SECRET");
+  });
+
+  it("confines an undefined reader failure even when cleanup diagnostics also fail", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {
+      throw new Error("PRIVATE-DIAGNOSTIC");
+    });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(undefined);
+      },
+    });
+    const client = new GmailRestClient(
+      async () => SECRET_TOKEN,
+      async () => new Response(body, { status: 200 }),
+    );
+    const error: unknown = await client.sendMessage(RAW_MESSAGE).then(
+      () => null,
+      (value: unknown) => value,
+    );
+    expect(error).toMatchObject({ message: "Mail send provider operation failed" });
+    expect(error).not.toHaveProperty("cause");
+    expect(JSON.stringify(error)).not.toContain("PRIVATE");
+    expect(warn).toHaveBeenCalledWith({ stage: "send-response" }, "Mail send cleanup failed");
+  });
+
+  it("retains a genuine recipient refusal when reader cancellation and diagnostics fail", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {
+      throw new Error("PRIVATE-DIAGNOSTIC");
+    });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from(`invalid recipient ${"x".repeat(5000)}`));
+      },
+      cancel() {
+        throw new Error("PRIVATE-CLEANUP");
+      },
+    });
+    const client = new GmailRestClient(
+      async () => SECRET_TOKEN,
+      async () => new Response(stream, { status: 400 }),
+    );
+    const error: unknown = await client.sendMessage(RAW_MESSAGE).then(
+      () => null,
+      (value: unknown) => value,
+    );
+    expect(error).toBeInstanceOf(MailRecipientRejectedError);
+    expect(JSON.stringify(error)).not.toContain("PRIVATE");
+    expect(warn).toHaveBeenCalledWith({ stage: "send-response" }, "Mail send cleanup failed");
+    expect(stream.locked).toBe(false);
   });
 
   it("rejects a success response that lacks the message or thread id", async () => {

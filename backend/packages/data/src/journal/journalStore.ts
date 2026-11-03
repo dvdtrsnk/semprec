@@ -1,29 +1,18 @@
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
-import { assertKnownValue } from "../dbRowValidation.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { assertValidTimezone } from "../timezone.js";
 import type { ItemRow } from "../types.js";
+import { computeJournalPeriodKey, type JournalPeriodType } from "./journalPeriods.js";
 
-export const JOURNAL_PERIOD_TYPES = ["year", "quarter", "month", "week", "day"] as const;
-export type JournalPeriodType = (typeof JOURNAL_PERIOD_TYPES)[number];
-
-/** The canonical period key, also stored verbatim in the `period` property — e.g. '2026', '2026-Q3', '2026-08', '2026-W35', '2026-08-28'. */
-export function computeJournalPeriodKey(type: JournalPeriodType, reference: DateTime): string {
-  assertKnownValue(JOURNAL_PERIOD_TYPES, type, "journal period type");
-  switch (type) {
-    case "year":
-      return String(reference.year);
-    case "quarter":
-      return `${reference.year}-Q${reference.quarter}`;
-    case "month":
-      return reference.toFormat("yyyy-LL");
-    case "week":
-      return reference.toFormat("kkkk-'W'WW");
-    case "day":
-      return reference.toISODate() as string;
-  }
-}
+export {
+  computeJournalPeriodKey,
+  describeJournalPeriods,
+  JOURNAL_PERIOD_TYPES,
+  parseJournalPeriodKey,
+  weeksOfMonth,
+  type JournalPeriodType,
+} from "./journalPeriods.js";
 
 /**
  * Lazily creates the Journal item for a given period on first write (issue #24, point 10):

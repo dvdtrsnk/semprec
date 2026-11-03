@@ -475,6 +475,29 @@ describe("database routes (issue #240)", () => {
     expect(((await detail.json()) as DatabaseBody).searchPlaceholder).toBe("Hledat v Lidech");
   });
 
+  it("keeps every search placeholder identical in the localized list and schema envelopes", async () => {
+    const custom = await chokePoint.createDatabase({ name: "Placeholder comparison" });
+    for (const locale of ["cs", "en"]) {
+      const headers = await authHeader(locale);
+      const listResponse = await fetch(`${baseUrl}/api/databases?limit=200`, { headers });
+      const schemaResponse = await fetch(`${baseUrl}/api/schema`, { headers });
+      expect(listResponse.status).toBe(200);
+      expect(schemaResponse.status).toBe(200);
+      const placeholder = z.string().nullable();
+      const list = z
+        .object({ databases: z.array(z.object({ id: z.string(), searchPlaceholder: placeholder })) })
+        .parse(await listResponse.json());
+      const schema = z
+        .object({ databases: z.array(z.object({ databaseId: z.string(), searchPlaceholder: placeholder })) })
+        .parse(await schemaResponse.json());
+      expect(list.databases.some((database) => database.id === custom.id)).toBe(true);
+      expect(list.databases.some((database) => database.searchPlaceholder === null)).toBe(true);
+      expect(new Map(schema.databases.map((database) => [database.databaseId, database.searchPlaceholder]))).toEqual(
+        new Map(list.databases.map((database) => [database.id, database.searchPlaceholder])),
+      );
+    }
+  });
+
   it("projects the same five collection metadata fields in the list and schema endpoints", async () => {
     const headers = await authHeader("en");
     const metadata = z.object({

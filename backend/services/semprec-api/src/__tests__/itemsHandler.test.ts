@@ -14,12 +14,14 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import {
+  createRuntimeRolePool,
   getTestPool,
   getTenantZeroId,
   registerItemCreateHook,
   registerItemUpdateHook,
   resetDatabase,
   tenantForNextTestUser,
+  upsertMailMessageMeta,
 } from "@semprec/data/testSupport";
 import {
   createChokePoint,
@@ -274,6 +276,186 @@ describe("item routes (issue #241)", () => {
     expect(
       projects.items.some((item) => item.properties.name === "New Project" && item.properties.color === "#FF3B30"),
     ).toBe(true);
+  });
+
+  it("validates Inbox capture and type writes through REST and replays a capture without duplicating its day edge", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const databases = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, async (client) => {
+        const inbox = await getDatabaseByModuleId(client, "inbox");
+        const types = await getDatabaseByModuleId(client, "inboxItemTypes");
+        if (!inbox || !types) throw new Error("Inbox databases were not seeded");
+        return { inbox, types };
+      }),
+    );
+    const create = (databaseId: string, properties: Record<string, unknown>, key = randomUUID()) =>
+      fetch(`${baseUrl}/api/databases/${databaseId}/items`, {
+        method: "POST",
+        headers: { ...headers, "Idempotency-Key": key },
+        body: JSON.stringify({ properties }),
+      });
+    const count = async (databaseId: string) =>
+      (await runInTenant(getTenantZeroId(), () => chokePoint.listItems(databaseId))).items.length;
+    for (const [databaseId, properties, field] of [
+      [databases.inbox.id, { date: "2026-02-30", time: "12:00" }, "date"],
+      [databases.inbox.id, { date: "2026-10-16", time: "24:00" }, "time"],
+      [
+        databases.types.id,
+        { name: "Invalid", processingMethod: "database", targetDatabase: "journal" },
+        "targetDatabase",
+      ],
+      [
+        databases.types.id,
+        { name: "Invalid", processingMethod: "database", targetDatabase: "transcripts" },
+        "targetDatabase",
+      ],
+      [
+        databases.types.id,
+        { name: "Invalid", processingMethod: "database", targetDatabase: "nonsense" },
+        "targetDatabase",
+      ],
+    ] as const) {
+      const before = await count(databaseId);
+      const response = await create(databaseId, properties);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: "validation_failed", details: { field } } });
+      expect(await count(databaseId)).toBe(before);
+    }
+    const key = randomUUID();
+    const first = await create(databases.inbox.id, { date: "2026-10-16", time: "12:00" }, key);
+    const replay = await create(databases.inbox.id, { date: "2026-10-16", time: "12:00" }, key);
+    expect(first.status).toBe(201);
+    expect(replay.status).toBe(201);
+    const itemSchema = z.object({ id: z.string() });
+    const firstBody: unknown = await first.json();
+    const replayBody: unknown = await replay.json();
+    const itemId = itemSchema.parse(firstBody).id;
+    expect(itemSchema.parse(replayBody).id).toBe(itemId);
+    expect(await count(databases.inbox.id)).toBe(1);
+    const days = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, async (client) => {
+        const { rows } = await client.query<{ period: string }>(
+          `SELECT day.properties->>'period' AS period FROM item_relations r
+         JOIN relation_definitions d ON d.id = r.relation_definition_id
+         JOIN properties p ON p.id = d.property_id_a
+         JOIN items day ON day.id = r.item_b
+         WHERE p.database_id = $1 AND p.key = 'journalDay' AND r.item_a = $2`,
+          [databases.inbox.id, itemId],
+        );
+        return rows;
+      }),
+    );
+    expect(days).toEqual([{ period: "2026-10-16" }]);
+    const valid = await create(databases.types.id, {
+      name: "Valid",
+      processingMethod: "database",
+      targetDatabase: "tasks",
+    });
+    expect(valid.status).toBe(201);
+    const validBody: unknown = await valid.json();
+    const typeItem = z.object({ id: z.string(), updatedAt: z.string() }).parse(validBody);
+    const patch = (properties: Record<string, unknown>, ifVersion: string) =>
+      fetch(`${baseUrl}/api/items/${typeItem.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties, ifVersion }),
+      });
+    for (const properties of [
+      { targetDatabase: "journal" },
+      { targetDatabase: "transcripts" },
+      { targetDatabase: "nonsense" },
+      { processingMethod: "pageContent" },
+    ]) {
+      const rejected = await patch(properties, typeItem.updatedAt);
+      expect(rejected.status).toBe(400);
+      expect(await rejected.json()).toMatchObject({
+        error: { code: "validation_failed", details: { field: "targetDatabase" } },
+      });
+      const unchanged = await runInTenant(getTenantZeroId(), () => chokePoint.getItem(databases.types.id, typeItem.id));
+      expect(unchanged?.properties).toMatchObject({ processingMethod: "database", targetDatabase: "tasks" });
+    }
+    // Generic writes before validation could persist the now-disallowed journal target.
+    await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, async (client) => {
+        const result = await client.query<{ id: string }>(
+          "UPDATE items SET properties = jsonb_set(properties, '{targetDatabase}', to_jsonb($3::text)) WHERE database_id = $1 AND id = $2 RETURNING id",
+          [databases.types.id, typeItem.id, "journal"],
+        );
+        expect(result.rows).toHaveLength(1);
+      }),
+    );
+    const legacy = await runInTenant(getTenantZeroId(), () => chokePoint.getItem(databases.types.id, typeItem.id));
+    if (!legacy) throw new Error("Missing legacy type");
+    const renamed = await patch({ name: "Renamed" }, legacy.updatedAt);
+    expect(renamed.status).toBe(200);
+    expect(await renamed.json()).toMatchObject({ properties: { name: "Renamed", targetDatabase: "journal" } });
+  });
+
+  it("queues one mailbox sync through REST flag patches", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let runtimeServer: Server | undefined;
+    try {
+      const dispatch = await createDispatcher(runtime, {
+        passwordResetMailer: noopMailer,
+        appBaseUrl: "http://localhost",
+        setupToken: "unused-setup-token",
+        moduleRegistry,
+        blobStorage: new LocalFsBlobStorageWriter(tmpBlobDir),
+        maxFileSizeBytes: 10 * 1024 * 1024,
+      });
+      runtimeServer = createServer(dispatch);
+      await new Promise<void>((resolve) => runtimeServer?.listen(0, "127.0.0.1", resolve));
+      const address = runtimeServer.address();
+      if (!address || typeof address === "string") throw new Error("Expected a bound runtime server");
+      const runtimeUrl = `http://127.0.0.1:${address.port}`;
+      const fixture = await runInTenant(getTenantZeroId(), () =>
+        withTransaction(runtime, async (client) => {
+          const emails = await getDatabaseByModuleId(client, "emails");
+          const mailboxes = await getDatabaseByModuleId(client, "mailboxes");
+          if (!emails || !mailboxes) throw new Error("Mail databases were not seeded");
+          const mailbox = await createItemWithClient(client, {
+            databaseId: mailboxes.id,
+            properties: { name: "Work", provider: "generic" },
+          });
+          const first = await createItemWithClient(client, { databaseId: emails.id, properties: {} });
+          const second = await createItemWithClient(client, { databaseId: emails.id, properties: {} });
+          for (const [item, messageId] of [
+            [first, "<first@example.test>"],
+            [second, "<second@example.test>"],
+          ] as const) {
+            await upsertMailMessageMeta(client, {
+              itemId: item.id,
+              mailboxItemId: mailbox.id,
+              messageId,
+              envelope: {},
+            });
+          }
+          return { mailbox, first, second };
+        }),
+      );
+      for (const [item, properties] of [
+        [fixture.first, { read: true }],
+        [fixture.second, { flagged: true }],
+      ] as const) {
+        const response = await fetch(`${runtimeUrl}/api/items/${item.id}`, {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({ properties, ifVersion: item.updatedAt }),
+        });
+        expect(response.status).toBe(200);
+      }
+      const { rows } = await pool.query<{ key: string | null }>(
+        "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1",
+        ["mailAccountSync"],
+      );
+      expect(rows).toEqual([{ key: `mail-account-sync:${fixture.mailbox.id}` }]);
+    } finally {
+      if (runtimeServer) await new Promise<void>((resolve) => runtimeServer?.close(() => resolve()));
+      await runtime.end();
+    }
   });
 
   it("validates Books ratings through the PATCH HTTP response", async () => {
