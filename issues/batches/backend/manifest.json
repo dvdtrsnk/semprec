@@ -1881,8 +1881,8 @@
       "sequence": 19,
       "status": "proposed",
       "title": "[backend-delivery 19/74] Verify security readiness under parent supervision",
-      "bodyCharacters": 32270,
-      "specSha256": "9909c9e52aa77196b7c8c659d019b7e98471c12c38d739490cc5a6a9a4f9b1ba",
+      "bodyCharacters": 33722,
+      "specSha256": "21c5a606a698db95487cb89dd9a0b55931f461099c4d4a48340360cc4ee90d2c",
       "members": [
         {
           "id": "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a",
@@ -1893,7 +1893,7 @@
         },
         {
           "id": "sp-94a5c71d-4663-4014-9256-db63e179346e",
-          "specSha256": "1fbee1d65f6925d58b07752b1fbcb83230b5912395a34388c77e4755955f9303",
+          "specSha256": "2e258c0414d4b4030093a2ef57f39e4044844e6d537232815f24ef7876a87b5a",
           "parent": "gh-961",
           "dependencies": [
             "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a"
@@ -1902,7 +1902,7 @@
         },
         {
           "id": "sp-dd171464-d76c-45f9-b113-73d81b38aad4",
-          "specSha256": "21f87c129aac19725dcb7f400a7363f754bff90001f3be2ce261a0cb1622ee4d",
+          "specSha256": "f30cdc5a063fb7a28cc878a9cd8062dfa19a833c60ece2d3c1b0b2104546ae3b",
           "parent": "gh-961",
           "dependencies": [
             "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a",

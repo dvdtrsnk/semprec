@@ -163,7 +163,7 @@ reported by the ordinary validator; they are not silently repaired by batching.
 | 16 | [[backend-delivery 16/74] Implement architecture, data/auth, realtime changes](../../items/sp-e02ff8c6-d20d-4fde-be2a-e0033cf9ef91.md) | 10 | 57430 |
 | 17 | [[backend-delivery 17/74] Implement data/mail, data/inbox, semprec-api/adapter changes](../../items/sp-db5e1165-5ccf-4fba-bce0-fd7a1f2bc098.md) | 11 | 55538 |
 | 18 | [[backend-delivery 18/74] Implement data/mail, data/observability, data/docs changes](../../items/sp-a0bbb89b-34c7-4d8e-8758-3552b91c85a5.md) | 9 | 46516 |
-| 19 | [[backend-delivery 19/74] Verify security readiness under parent supervision](../../items/sp-f1a0629b-0137-4cd3-a7b7-9421ec0dc438.md) | 5 | 32270 |
+| 19 | [[backend-delivery 19/74] Verify security readiness under parent supervision](../../items/sp-f1a0629b-0137-4cd3-a7b7-9421ec0dc438.md) | 5 | 33722 |
 | 20 | [[backend-delivery 20/74] Implement data/tenancy, data/auth, data/inbox changes](../../items/sp-823fc8d3-3186-4b22-9c0b-3e360048d9d3.md) | 7 | 55833 |
 | 21 | [[backend-delivery 21/74] Implement data/mail, data/inbox, data/transcription changes](../../items/sp-3f9fb92f-ea6b-468c-8243-1fb711c94aa7.md) | 11 | 56981 |
 | 22 | [[backend-delivery 22/74] Implement application, data/chokePoint, shared/genericOperations changes](../../items/sp-0a8b4be1-3039-4f6d-87b4-e1b673eab967.md) | 7 | 54499 |
