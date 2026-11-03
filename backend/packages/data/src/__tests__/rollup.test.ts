@@ -44,15 +44,15 @@ const realDrainSteps: DrainSteps = {
  * queue is still non-empty after the last pass, so a caller never asserts against a partial drain.
  * `steps` is replaced only by the drainQueue boundary checks below.
  */
-async function drainQueue(steps: DrainSteps = realDrainSteps) {
+async function drainQueue(steps: DrainSteps = realDrainSteps, passLimit = DRAIN_PASS_LIMIT) {
   let remaining: string | undefined;
-  for (let pass = 0; pass < DRAIN_PASS_LIMIT; pass++) {
+  for (let pass = 0; pass < passLimit; pass++) {
     await steps.runPass();
     remaining = await steps.countRemainingJobs();
     if (remaining === "0") return;
   }
   throw new Error(
-    `drainQueue: incomplete drain, ${remaining ?? "unknown"} job(s) still remaining after the ${DRAIN_PASS_LIMIT}-pass limit`,
+    `drainQueue: incomplete drain, ${remaining ?? "unknown"} job(s) still remaining after the ${passLimit}-pass limit`,
   );
 }
 
@@ -341,17 +341,18 @@ describe("rollup engine", () => {
           config: { relationPropertyKey: "tasks", targetPropertyKey: "hours", aggregation },
         });
       }
-      await drainQueue();
+      // Six rollups and two parent items can enqueue six full and twelve cell jobs.
+      await drainQueue(realDrainSteps, 24);
       const values = async () => (await chokePoint.getItem(f.projects.id, f.project.id))?.computed;
       const populated = { countFilled: 2, countEmpty: 1, percentFilled: 2 / 3, percentEmpty: 1 / 3 };
       const empty = { countFilled: 0, countEmpty: 0, percentFilled: 0, percentEmpty: 0 };
       expect(await values()).toMatchObject(populated);
       expect((await chokePoint.getItem(f.projects.id, unlinked.id))?.computed).toMatchObject(empty);
       await chokePoint.archiveDatabase(f.tasks.id);
-      await drainQueue();
+      await drainQueue(realDrainSteps, 24);
       expect(await values()).toMatchObject(empty);
       await chokePoint.restoreDatabase(f.tasks.id);
-      await drainQueue();
+      await drainQueue(realDrainSteps, 24);
       expect(await values()).toMatchObject(populated);
     });
 
