@@ -119,6 +119,7 @@ describe("SempConversation", () => {
   });
 
   it("wakes with persisted history after startup repair closes an idle session", async () => {
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
     const compaction: CompactionAdapter = {
       estimateContextTokens: (messages) => messages.length,
       shouldCompact: () => false,
@@ -136,12 +137,13 @@ describe("SempConversation", () => {
       resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
       reconstructHistory: createReconstructConversationHistory(compaction),
     };
-    const beforeRestart = new SempConversation(pool, options);
-    const afterRestart = new SempConversation(pool, options);
+    const beforeRestart = new SempConversation(runtimePool, options);
+    const afterRestart = new SempConversation(runtimePool, options);
+    let failure: { error: unknown } | undefined;
     try {
       expect(await sendInTenantZero(beforeRestart, "first")).toEqual({ ok: true, message: "first" });
       beforeRestart.clear();
-      const repaired = await repairInterruptedRuns(pool);
+      const repaired = await repairInterruptedRuns(runtimePool);
       expect(repaired.closedIdleRunIds).toHaveLength(1);
       const notifications = await pool.query<{ count: string }>(
         "SELECT count(*)::text AS count FROM notifications WHERE kind = 'agent_run_error'",
@@ -153,13 +155,23 @@ describe("SempConversation", () => {
         "message",
         "turn_end",
       ]);
+    } catch (error) {
+      failure = { error };
     } finally {
       beforeRestart.clear();
       afterRestart.clear();
     }
+    try {
+      await runtimePool.end();
+    } catch (error) {
+      if (failure) throw new AggregateError([failure.error, error], "Wake test and pool cleanup failed");
+      throw error;
+    }
+    if (failure) throw failure.error;
   });
 
   it("wakes after a mid-tool failure using the immediately paired persisted history", async () => {
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
     const compaction: CompactionAdapter = {
       estimateContextTokens: (messages) => messages.length,
       shouldCompact: () => false,
@@ -173,24 +185,25 @@ describe("SempConversation", () => {
       { kind: "message", text: "recovered" },
       { kind: "turn_end" },
     ]);
-    const failure = new Error("tool interrupted");
+    const turnFailure = new Error("tool interrupted");
     let wakes = 0;
-    const conversation = new SempConversation(pool, {
+    const conversation = new SempConversation(runtimePool, {
       createAgentSessionForRun: async () => {
         if (wakes++ > 0) return next.createAgentSession;
         return () => ({
           async *messages() {
             yield { kind: "turn_start" };
             yield { kind: "tool_use", toolCallId: "call-1", name: "search", arguments: {} };
-            throw failure;
+            throw turnFailure;
           },
         });
       },
       resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
       reconstructHistory: createReconstructConversationHistory(compaction),
     });
+    let failure: { error: unknown } | undefined;
     try {
-      await expect(sendInTenantZero(conversation, "first")).rejects.toBe(failure);
+      await expect(sendInTenantZero(conversation, "first")).rejects.toBe(turnFailure);
       expect(await sendInTenantZero(conversation, "next")).toEqual({ ok: true, message: "recovered" });
       const messages = next.initialStates[0]?.messages;
       expect(messages?.map((entry) => entry.message.kind)).toEqual(["turn_start", "tool_use", "tool_result"]);
@@ -201,9 +214,18 @@ describe("SempConversation", () => {
         isError: true,
         result: { content: [{ type: "text", text: expect.stringContaining("failed") }], details: { error: true } },
       });
+    } catch (error) {
+      failure = { error };
     } finally {
       conversation.clear();
     }
+    try {
+      await runtimePool.end();
+    } catch (error) {
+      if (failure) throw new AggregateError([failure.error, error], "Wake test and pool cleanup failed");
+      throw error;
+    }
+    if (failure) throw failure.error;
   });
 
   it("wakes a session-unit, user-triggered agent_runs row on the first send and returns the final assistant message", async () => {
