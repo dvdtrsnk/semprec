@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import {
@@ -20,7 +21,14 @@ import {
   getTestPool,
   resetDatabase,
 } from "@semprec/data/testSupport";
-import { REALTIME_CHANNEL, wireRealtimeHooks, type RealtimeMessage } from "@semprec/realtime";
+import {
+  createSyncServer,
+  publishRealtimeMessage,
+  REALTIME_CHANNEL,
+  wireRealtimeHooks,
+  type RealtimeMessage,
+  type SyncServer,
+} from "@semprec/realtime";
 import { runInTenant } from "@semprec/shared";
 
 let adminPool: Pool;
@@ -159,6 +167,140 @@ describe("semprec-agents realtime wiring (issue #1383)", () => {
     const published = envelopes.find((e) => e.message.type === "agent_run_event")!;
     expect(published.tenantId).toBe(tenantId);
     expect(published.message).toMatchObject({ type: "agent_run_event", eventId: String(event.id) });
+  });
+
+  it("delivers the agents item write to its tenant socket and not another tenant socket", async () => {
+    const tenantId = getTenantZeroId();
+    const otherTenantId = await createTestTenant(adminPool);
+    const runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const server = createServer();
+    let sync: SyncServer | undefined;
+    let owner: WebSocket | undefined;
+    let other: WebSocket | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      sync = await createSyncServer(runtimePool, {
+        authenticate: async (req) => {
+          const token = new URL(req.url ?? "/", "http://localhost").searchParams.get("token");
+          if (token === "owner") return { tenantId, userId: randomUUID(), sessionId: "owner" };
+          if (token === "other") return { tenantId: otherTenantId, userId: randomUUID(), sessionId: "other" };
+          return null;
+        },
+        revalidateSession: async () => true,
+      });
+      const runningSync = sync;
+      server.on("upgrade", (req, socket, head) => runningSync.handleUpgrade(req, socket, head));
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => {
+          server.off("error", reject);
+          resolve();
+        });
+      });
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing socket server address");
+      owner = new WebSocket(`ws://127.0.0.1:${address.port}/api/sync?token=owner`);
+      other = new WebSocket(`ws://127.0.0.1:${address.port}/api/sync?token=other`);
+      const clients = [owner, other];
+      const opened = await Promise.allSettled(
+        clients.map(
+          (client) =>
+            new Promise<void>((resolve, reject) => {
+              const timer = setTimeout(() => reject(new Error("Socket open timed out")), 3000);
+              client.addEventListener(
+                "open",
+                () => {
+                  clearTimeout(timer);
+                  resolve();
+                },
+                { once: true },
+              );
+              client.addEventListener(
+                "error",
+                () => {
+                  clearTimeout(timer);
+                  reject(new Error("Socket open failed"));
+                },
+                { once: true },
+              );
+            }),
+        ),
+      );
+      const openErrors: unknown[] = opened.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+      if (openErrors.length) throw new AggregateError(openErrors, "Socket open failed");
+      const ownFrames: unknown[] = [];
+      const otherFrames: unknown[] = [];
+      owner.addEventListener("message", (event) => {
+        if (typeof event.data === "string") {
+          const parsed: unknown = JSON.parse(event.data);
+          ownFrames.push(parsed);
+        }
+      });
+      other.addEventListener("message", (event) => {
+        if (typeof event.data === "string") {
+          const parsed: unknown = JSON.parse(event.data);
+          otherFrames.push(parsed);
+        }
+      });
+      wireRealtimeHooks(runtimePool);
+      const databases = await runInTenant(tenantId, () =>
+        runtimePool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'"),
+      );
+      expect(databases.rows).toHaveLength(1);
+      const item = await runInTenant(tenantId, () =>
+        createChokePoint(runtimePool).createItem({
+          databaseId: databases.rows[0]!.id,
+          properties: {},
+        }),
+      );
+      await waitUntil(() =>
+        ownFrames.some(
+          (frame) => typeof frame === "object" && frame !== null && "itemId" in frame && frame.itemId === item.id,
+        ),
+      );
+      const sentinel = randomUUID();
+      await publishRealtimeMessage(
+        runtimePool,
+        { type: "invalidation", scope: "schema", databaseId: sentinel },
+        otherTenantId,
+      );
+      await waitUntil(() =>
+        otherFrames.some(
+          (frame) =>
+            typeof frame === "object" && frame !== null && "databaseId" in frame && frame.databaseId === sentinel,
+        ),
+      );
+      expect(ownFrames).toContainEqual(expect.objectContaining({ type: "invalidate", scope: "item", itemId: item.id }));
+      expect(otherFrames).toEqual([{ type: "invalidate", scope: "schema", databaseId: sentinel }]);
+    } catch (error) {
+      failure = { error };
+    }
+    owner?.close();
+    other?.close();
+    const cleanupErrors: unknown[] = [];
+    for (const cleanup of [
+      async () => {
+        await sync?.close();
+      },
+      async () => {
+        if (server.listening)
+          await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      },
+      () => runtimePool.end(),
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    wireRealtimeHooks(agentsPool);
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+        "Socket test cleanup failed",
+      );
+    if (failure) throw failure.error;
   });
 
   it("publishes the notification created when an agent run fails", async () => {
