@@ -331,6 +331,7 @@ describe("item routes (issue #241)", () => {
     const replayBody: unknown = await replay.json();
     const itemId = itemSchema.parse(firstBody).id;
     expect(itemSchema.parse(replayBody).id).toBe(itemId);
+    expect(await count(databases.inbox.id)).toBe(1);
     const days = await runInTenant(getTenantZeroId(), () =>
       withTransaction(pool, async (client) => {
         const { rows } = await client.query<{ period: string }>(
