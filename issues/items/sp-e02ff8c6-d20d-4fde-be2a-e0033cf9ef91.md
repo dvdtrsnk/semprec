@@ -5,15 +5,15 @@ title: "[backend-delivery 16/74] Implement architecture, data/auth, realtime cha
 kind: "implementation"
 state: "open"
 stateReason: null
-labels: ["spec:proposed","execution:batch","execution:sequential"]
+labels: ["execution:batch","execution:sequential","spec:approved"]
 parent: "sp-62331d42-78af-4b93-ae97-d5ccbe3324df"
 assignees: []
 milestone: null
 createdAt: "2026-10-31T17:31:01.910Z"
-updatedAt: "2026-10-31T17:31:01.910Z"
+updatedAt: "2026-11-03T04:14:25.215Z"
 closedAt: null
 source: null
-approval: null
+approval: {"specSha256":"46017d0cccd7431aa71c1994f333502da57b236e6e4240ea1c23cbec01c16d70","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: append-only ADR reconciliation and exact backend evidence scope","at":"2026-11-03T04:14:25.215Z"}
 resolution: null
 ---
 **Blocked by:** sp-144a2408-c4a8-4b9f-b68b-a5eec527dba7
@@ -29,7 +29,7 @@ Web and mobile implementation, client catalogs, client builds and client tests a
 
 Follow the scoped execution exception in docs/adr/2026-10-31-sequential-backend-delivery-batches.md. Before starting, reconcile this checkout with any newer local integration history; already-delivered work needs evidence and handover reconciliation, not reimplementation. No source or batch is completed by this planning change.
 
-This is a proposed specification, not execution authorization. Obtain owner approval for this exact batch before queueing. Included unapproved source specifications also remain unapproved.
+This exact specification is approved for owner-delegated backend execution at dispatch. Follow `issues/batches/backend/decisions/batch-16-spec-reconciliation.md`; approval applies only to the recorded current hashes and does not waive review, runtime gates or completion guards.
 
 Execution order: gh-1395 → gh-1362 → gh-1557 → gh-1354 → gh-1512 → gh-1373 → gh-1393 → gh-1382 → gh-1416 → gh-1428. Internal prerequisites are included earlier in this order; prerequisites assigned to previous batches must have passed their gates first. Preserve declared source dependencies; no shared-file dependency has been discarded.
 
@@ -167,7 +167,7 @@ Decision: only heartbeats whose action is `core.agentRun` get a thread; other ac
 
 Load `state-writes`, `error-handling`, `io-hardening` and `testing`.
 
-1. Add a partial unique index on `semp_threads (tenant_id, heartbeat_id) WHERE kind = 'tick'` in a migration `backend/packages/data/src/db/migrations/NNNN_semp_tick_thread_unique.sql` (next free ordinal at commit time). If `semp_threads` has no `heartbeat_id` column when this is implemented, add it in the same migration. Tenant, RLS and grant conventions follow the table from #1367.
+1. Verify the existing partial unique index on `semp_threads (tenant_id, heartbeat_id) WHERE kind = 'tick'`, the `heartbeat_id` column, tenant, RLS and grants supplied by #1367 in `0087_semp_threads_and_messages.sql`. Preserve that historical migration; do not add a redundant index or migration solely to repeat it. If a genuinely missing requirement needs an additive corrective migration, propose its exact scope to the controller first.
 2. In `coreAgentRunAction`, before running the agent, lazily get-or-create the tick thread with `INSERT ... ON CONFLICT (tenant_id, heartbeat_id) WHERE kind = 'tick' DO UPDATE SET last_activity_at = now() RETURNING id` (a `DO NOTHING` form would not return the id of the existing row). Set `agent_runs.thread_id` on the created run.
 3. On success, in one `withTransaction`: `finishAgentRun` to `done` and insert the assistant message with `text` = the run result, `agent_run_id`, `event_from_id` = the first and `event_to_id` = the last event of the run. Either both writes happen or neither. A pending approval request created by the run does not change this: the run is `done` and the request link is carried by the steps field filled by #1860.
 4. On error, write the assistant message with status `error` and an error code only for the final attempt of the occurrence (`context.isFinalAttempt !== false`); a non-final attempt writes no message. The code values are filled by #1907; until then store the field empty.
@@ -176,7 +176,8 @@ Load `state-writes`, `error-handling`, `io-hardening` and `testing`.
 
 #### Touches
 
-- backend/packages/data/src/db/migrations/NNNN_semp_tick_thread_unique.sql (next free ordinal at commit time)
+- backend/packages/data/src/db/migrations/0087_semp_threads_and_messages.sql (existing dependency schema: verify without rewriting)
+- backend/packages/data/src/__tests__/migrationCompatibility.test.ts (only actual staged tick-thread schema upgrade, populated legacy preservation and unique-index constraints)
 - backend/packages/data/src/scheduler/actions.ts
 - backend/packages/data/src/agentRuns/agentRunsStore.ts (set `thread_id`)
 - backend/packages/data/src/ (new thread store functions next to the thread store from #1367)
@@ -237,6 +238,8 @@ Load `db-migrations`, `error-handling`, `io-hardening` and `testing`.
 - backend/packages/data/src/auth/authActions.ts (`LoginInput`, passing the device to `createSession`)
 - backend/packages/data/src/index.ts (barrel export of the new module)
 - backend/packages/data/src/__tests__/publicSurface.test.ts (new export names)
+- backend/packages/data/src/__tests__/userAgentDevice.unit.test.ts (the required pure matcher tests)
+- backend/packages/data/src/__tests__/migrationCompatibility.test.ts (only actual staged session-device upgrade, populated legacy preservation and new constraints)
 - backend/packages/data/src/__tests__/authSchema.test.ts
 - backend/packages/data/src/__tests__/authActions.test.ts
 - backend/services/semprec-api/src/authHandler.ts (login body parsing)
@@ -385,21 +388,20 @@ Decisions to record (each with the rejected alternative and the trade-off):
 
 #### Task
 
-Load `adr-conventions`. Write exactly one new ADR file; no code.
+Load `adr-conventions`. Reconcile the existing accepted ADR below; no code and no duplicate ADR. Follow batch-16-spec-reconciliation.md section 1.
 
-1. Create `docs/adr/YYYY-MM-DD-subpages-are-items-of-a-hidden-pages-database.md` (creation date at commit time) with the frontmatter and sections of `docs/adr/README.md`, status `accepted`, area `backend`. It must record every decision above with alternatives and consequences, and must not contradict `2026-09-10-single-writer-ownership-model.md`.
-2. Add a short "amended by" note to the block-model ADR created by #1366 saying that `page` blocks carry the title as plain `text`; do not change anything else in that file.
+1. Verify `docs/adr/2026-10-29-subpages-are-items-of-a-hidden-pages-database.md`, already created and accepted, with the frontmatter and sections of `docs/adr/README.md`, area `backend`. It must record every decision above with alternatives and consequences, and must not contradict `2026-09-10-single-writer-ownership-model.md`. Preserve its creation date, permanent path and accepted body; a missing material decision requires an append-only corrective ADR proposed to the controller.
+2. Verify the explicit amendment in Decision 3 of the existing subpages ADR: `page` blocks carry the title as plain `text`. The historical block-model ADR `2026-10-28-block-model-for-page-documents.md` remains byte-identical, including its body and frontmatter; do not add a retrospective note to it.
 
 #### Touches
 
-- docs/adr/YYYY-MM-DD-subpages-are-items-of-a-hidden-pages-database.md (new; creation date at commit time)
-- docs/adr/ (the block-model ADR from #1366: one added amendment note)
+- docs/adr/2026-10-29-subpages-are-items-of-a-hidden-pages-database.md (existing accepted decision: reconcile without rewriting; any missing material decision needs controller-approved append-only correction)
 
 #### Scope
 
 ##### In scope
 
-- The single ADR and the amendment note.
+- The existing accepted subpages ADR and its explicit amendment of the block-model contract, preserving the historical block-model ADR unchanged.
 
 ##### Out of scope
 
@@ -411,7 +413,7 @@ Load `adr-conventions`. Write exactly one new ADR file; no code.
 
 - The ADR exists with valid frontmatter, links no external specification, and states for storage, parent link, page block shape, title source, lifecycle, hosts and limits the chosen option and the rejected one.
 - It states that the hidden database is created on first use and is never shown as a collection.
-- The block-model ADR carries the amendment note and is otherwise unchanged.
+- Decision 3 of the subpages ADR explicitly amends the page-block text contract; the historical block-model ADR remains byte-identical.
 - No source file is changed.
 
 ### Requirement gh-1382: [inbox-cards 01/10] Record in an ADR that confirming an MCP card only pre-fills project grants
@@ -555,6 +557,8 @@ Load `state-writes`, `error-handling` and `testing`.
 - backend/packages/data/src/journal/journalWriteHook.ts (new)
 - backend/packages/data/src/__tests__/ (journal hook tests; fixture fixes)
 - backend/services/semprec-api/src/__tests__/itemsHandler.test.ts (Journal create case)
+- backend/packages/agent-runtime/src/__tests__/genericOperationAgentTools.test.ts (only the required real agent Journal item.create refusal)
+- backend/services/semprec-api/src/__tests__/mcpRunCredentialTenancy.test.ts (only the required authenticated MCP Journal item.create refusal)
 
 #### Scope
 
