@@ -40,8 +40,8 @@ export interface ImapIdleTransport {
   /**
    * Discovers the folder paths this account keeps under IDLE — Inbox and an All-Mail-
    * equivalent folder (issue #196's Task) when the server has one, Inbox alone otherwise
-   * (plain IMAP/iCloud has no such folder). Called once per `start()`; the resolved paths are
-   * held for the lifetime of that lifecycle and reused as-is across every hard-cycle recycle
+   * (plain IMAP/iCloud has no such folder). Discovery retries until successful or stopped; the
+   * resolved paths are held for the lifetime of that lifecycle and reused across every hard-cycle recycle
    * and reconnect. A folder renamed or added while the lifecycle is running is only picked up
    * the next time the lifecycle is started.
    */
@@ -177,24 +177,37 @@ export function createBoundedImapIdleLifecycleFactory(
         signals.add(task);
       });
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let outcome: { kind: "stop" } | { kind: "recycled" } | { kind: "ended"; err: unknown } | undefined;
+      let primary: { value: unknown } | undefined;
       try {
-        return await Promise.race([
+        outcome = await Promise.race([
           connection.waitForEnd().then((err): { kind: "ended"; err: unknown } => ({ kind: "ended", err })),
           new Promise<{ kind: "recycled" }>((resolve) => {
             timer = setTimeout(() => resolve({ kind: "recycled" }), hardCycleDeadlineMs);
           }),
           waitForStop().then((): { kind: "stop" } => ({ kind: "stop" })),
         ]);
+      } catch (error) {
+        primary = { value: error };
       } finally {
         if (timer !== undefined) clearTimeout(timer);
-        try {
-          await connection.close();
-        } catch (err) {
-          ownedFailures.push(err);
-          report(folderPath, err);
-          throw err;
-        }
       }
+      try {
+        await connection.close();
+      } catch (error) {
+        ownedFailures.push(error);
+        report(folderPath, error);
+        if (primary)
+          // The first failure remains the cause, with the cleanup failure retained second.
+          throw new AggregateError([primary.value, error], "IMAP IDLE round and cleanup failed", {
+            // eslint-disable-next-line preserve-caught-error
+            cause: primary.value,
+          });
+        throw error;
+      }
+      if (primary) throw primary.value;
+      if (!outcome) throw new Error("IMAP IDLE round ended without an outcome");
+      return outcome;
     }
 
     async function runFolderLoop(folderPath: string, credential: string): Promise<void> {

@@ -79,10 +79,3 @@ export async function connectionLimitOf(pool: Pool, mailboxItemId: string): Prom
   const provider = typeof mailbox?.properties.provider === "string" ? mailbox.properties.provider : undefined;
   return imapConnectionLimitForProvider(provider, mailbox?.properties.connectionLimit);
 }
-
-/** The only parts of a connection error the lifecycle logs: its name and, when it has one, its code. */
-export function errorNameAndCode(err: unknown): { errorName: string; errorCode?: string } {
-  const errorName = err instanceof Error ? err.name : "NonError";
-  const code = typeof err === "object" && err !== null && "code" in err ? err.code : undefined;
-  return typeof code === "string" ? { errorName, errorCode: code } : { errorName };
-}

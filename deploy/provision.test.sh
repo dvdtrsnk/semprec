@@ -206,9 +206,9 @@ done
 test "$(grep -l 'master-key\.env' "$TEST_ROOT"/systemd/system/semprec-*.service | xargs -n 1 basename | sort | tr '\n' ' ')" = 'semprec-agents.service semprec-api.service '
 test "$(grep -l 'postgres\.env' "$TEST_ROOT"/systemd/system/semprec-*.service | xargs -n 1 basename)" = 'semprec-backup.service'
 
-# The twelve templates partition the 52 keys: every key is declared exactly once.
+# The twelve templates partition the 59 keys: every key is declared exactly once.
 all_template_keys="$(cat "$TEST_DEPLOY"/shared/env/*.env.example | grep -oE '^[A-Z_0-9]+=' | sort)"
-test "$(wc -l <<<"$all_template_keys")" -eq 52
+test "$(wc -l <<<"$all_template_keys")" -eq 59
 test -z "$(uniq -d <<<"$all_template_keys")"
 for line in APP_BASE_URL= SMTP_HOST= SMTP_PORT=587 SMTP_SECURE=false SMTP_FROM_ADDRESS= SMTP_USER= SMTP_PASSWORD=; do
   test "$(grep -cx "$line" "$TEST_ROOT/opt/semprec/shared/env/api.env")" -eq 1

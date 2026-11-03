@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createImapFlowIdleTransport,
   IMAP_IDLE_MAX_IDLE_TIME_MS,
@@ -165,5 +165,64 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     expect(observed).toBeInstanceOf(AggregateError);
     if (!(observed instanceof AggregateError)) throw new Error("expected aggregate");
     expect(observed.errors).toEqual([original, cleanup]);
+  });
+  it("detaches end listeners even when logout returns without a close event", async () => {
+    const client = new FakeImapFlow();
+    client.logout = async () => {};
+    const connection = await createImapFlowIdleTransport(makeFactory([client]).createClient).connect(
+      "mailbox-1",
+      "cred",
+      "INBOX",
+      () => {},
+    );
+    await connection.close();
+    await expect(connection.waitForEnd()).resolves.toBeUndefined();
+    expect(client.listenerCount("close")).toBe(0);
+    expect(client.listenerCount("error")).toBe(0);
+  });
+  it("forces a stalled logout closed and joins its actual rejection", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new FakeImapFlow();
+      const lateFailure = new Error("private logout rejection");
+      let rejectLogout!: (error: unknown) => void;
+      client.logout = () =>
+        new Promise((_resolve, reject) => {
+          rejectLogout = reject;
+        });
+      client.close = () => {
+        rejectLogout(lateFailure);
+        client.emit("close");
+      };
+      const connection = await createImapFlowIdleTransport(makeFactory([client]).createClient).connect(
+        "mailbox-1",
+        "cred",
+        "INBOX",
+        () => {},
+      );
+      const outcome = connection.close().catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const error = await outcome;
+      expect(error).toBeInstanceOf(AggregateError);
+      if (!(error instanceof AggregateError)) throw new Error("expected aggregate");
+      expect(error.errors).toHaveLength(2);
+      expect(error.errors[1]).toBe(lateFailure);
+      expect(client.listenerCount("close")).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("distinguishes an error event carrying undefined from a clean close", async () => {
+    const client = new FakeImapFlow();
+    const connection = await createImapFlowIdleTransport(makeFactory([client]).createClient).connect(
+      "mailbox-1",
+      "cred",
+      "INBOX",
+      () => {},
+    );
+    const ended = connection.waitForEnd();
+    client.emit("error", undefined);
+    await expect(ended).resolves.toEqual({ failure: undefined });
+    await connection.close();
   });
 });

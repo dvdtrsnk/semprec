@@ -778,6 +778,7 @@ describe("observability.checkSystem (issue #169)", () => {
             second = order === "failure-first" ? settled(runCheck("racing-check", runtime)) : settled(failing());
             const secondPid = await waitBlocked(firstPid);
             expect(secondPid).not.toBe(firstPid);
+            process.stdout.write(`batch18 mailbox transition order=${order} gate=${controlPid} first=${firstPid} second=${secondPid}\n`);
             await control.query("SELECT pg_advisory_unlock(18001506)");
             locked = false;
             const firstResult = await first;

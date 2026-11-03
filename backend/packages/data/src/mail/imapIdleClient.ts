@@ -49,49 +49,78 @@ export type CreateIdleTunedImapFlowClient = (
 const SPECIAL_USE_INBOX = "\\Inbox";
 const SPECIAL_USE_ALL = "\\All";
 
-function endPromiseFor(client: ImapFlow): Promise<unknown> {
-  return new Promise((resolve) => {
-    const cleanup = () => {
+function endPromiseFor(client: ImapFlow): { promise: Promise<unknown>; settle: (error: unknown) => void } {
+  let settle: (error: unknown) => void = () => {};
+  const promise = new Promise<unknown>((resolve) => {
+    let settled = false;
+    const onError = (error: unknown) => finish(error === undefined ? { failure: undefined } : error);
+    const onClose = () => finish(undefined);
+    const finish = (error: unknown) => {
+      if (settled) return;
+      settled = true;
       client.off("error", onError);
       client.off("close", onClose);
+      resolve(error);
     };
-    const onError = (err: unknown) => {
-      cleanup();
-      resolve(err);
-    };
-    const onClose = () => {
-      cleanup();
-      resolve(undefined);
-    };
+    settle = finish;
     client.on("error", onError);
     client.on("close", onClose);
   });
+  return { promise, settle };
 }
 
+const IDLE_LOGOUT_TIMEOUT_MS = 10_000;
+
 async function closeClient(client: ImapFlow): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let logout: Promise<{ kind: "done" } | { kind: "failed"; error: unknown }>;
   try {
-    await client.logout();
+    logout = client.logout().then(
+      () => ({ kind: "done" as const }),
+      (error: unknown) => ({ kind: "failed" as const, error }),
+    );
   } catch (error) {
-    try {
-      client.close();
-    } catch (secondary) {
-      throw new AggregateError([error, secondary], "IMAP IDLE connection cleanup failed");
-    }
-    throw error;
+    logout = Promise.resolve({ kind: "failed", error });
   }
+  let outcome: { kind: "done" } | { kind: "failed"; error: unknown } | { kind: "timeout" };
+  try {
+    outcome = await Promise.race([
+      logout,
+      new Promise<{ kind: "timeout" }>((resolve) => {
+        timer = setTimeout(() => resolve({ kind: "timeout" }), IDLE_LOGOUT_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  if (outcome.kind === "done") return;
+  const failures: unknown[] = [outcome.kind === "failed" ? outcome.error : new Error("IMAP IDLE logout timed out")];
+  try {
+    client.close();
+  } catch (error) {
+    failures.push(error);
+  }
+  if (outcome.kind === "timeout") {
+    const settled = await logout;
+    if (settled.kind === "failed") failures.push(settled.error);
+  }
+  if (failures.length === 1) throw failures[0];
+  throw new AggregateError(failures, "IMAP IDLE connection cleanup failed", { cause: failures[0] });
 }
 
 async function closeAfterFailure(client: ImapFlow, original: unknown): Promise<never> {
   try {
     await closeClient(client);
   } catch (secondary) {
-    throw new AggregateError([original, secondary], "IMAP IDLE operation and cleanup failed");
+    // Keep the operation failure first and retain the cleanup failure as a secondary.
+    // eslint-disable-next-line preserve-caught-error
+    throw new AggregateError([original, secondary], "IMAP IDLE operation and cleanup failed", { cause: original });
   }
   throw original;
 }
 
 class ImapFlowIdleConnection implements ImapIdleConnection {
-  private readonly ended: Promise<unknown>;
+  private readonly ended: ReturnType<typeof endPromiseFor>;
 
   constructor(
     private readonly client: ImapFlow,
@@ -101,14 +130,27 @@ class ImapFlowIdleConnection implements ImapIdleConnection {
   }
 
   waitForEnd(): Promise<unknown> {
-    return this.ended;
+    return this.ended.promise;
   }
 
-  close(): Promise<void> {
+  async close(): Promise<void> {
     // Detach exists/expunge/flags before logout so a final server push during BYE can't still
     // reach onSignal after the caller considers this connection closed.
-    this.detachSignalListeners();
-    return closeClient(this.client);
+    const failures: unknown[] = [];
+    try {
+      this.detachSignalListeners();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await closeClient(this.client);
+    } catch (error) {
+      failures.push(error);
+    } finally {
+      this.ended.settle(undefined);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "IMAP IDLE cleanup failed");
   }
 }
 
@@ -125,25 +167,20 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
         maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
         socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
       });
-      let list: Awaited<ReturnType<ImapFlow["list"]>>;
+      let targets: ImapIdleFolderTarget[];
       try {
-        list = await client.list();
-      } catch (error) {
-        return closeAfterFailure(client, error);
-      }
-      try {
+        const list = await client.list();
         const inbox = list.find((f) => f.specialUse === SPECIAL_USE_INBOX);
         const allMail = list.find((f) => f.specialUse === SPECIAL_USE_ALL);
-        const targets = [inbox, allMail]
-          .filter((f): f is NonNullable<typeof f> => Boolean(f))
-          .map((f) => ({ path: f.path }));
+        targets = [inbox, allMail].filter((f): f is NonNullable<typeof f> => Boolean(f)).map((f) => ({ path: f.path }));
         // A server with neither special-use attribute (plain IMAP without RFC 6154) still has
         // an INBOX by definition — falling back to it keeps this account under some IDLE
         // coverage instead of none.
-        return targets.length > 0 ? targets : [{ path: "INBOX" }];
-      } finally {
-        await closeClient(client);
+      } catch (error) {
+        return closeAfterFailure(client, error);
       }
+      await closeClient(client);
+      return targets.length > 0 ? targets : [{ path: "INBOX" }];
     },
 
     async connect(mailboxItemId, credential, folderPath, onSignal): Promise<ImapIdleConnection> {
