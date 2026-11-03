@@ -1,6 +1,7 @@
 import type { CollectionMetadataResolver } from "@semprec/data";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import * as application from "@semprec/application";
 import type { Pool } from "pg";
 import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
@@ -9,6 +10,7 @@ import {
   createViewTypeRegistry,
   loadFullModuleRegistry,
   seedSystem,
+  withTransaction,
   type ChokePoint,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
@@ -186,6 +188,39 @@ describe("generic operation AgentTools (issue #220)", () => {
       expect(outcome.approvalRequestId).toBeUndefined();
     });
 
+    it("keeps a changed key without before when the operation output omits its previous value", async () => {
+      const projectItemId = await createProjectItem();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "patch" });
+      const database = await chokePoint.createDatabase({ name: "Missing previous" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "due", name: "Due", type: "text" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: { due: "old" } });
+      const originalFactory = application.createGenericOperationGateway;
+      const factorySpy = vi.spyOn(application, "createGenericOperationGateway").mockImplementation((...args) => {
+        const gateway = originalFactory(...args);
+        const invoke = gateway.invoke.bind(gateway);
+        vi.spyOn(gateway, "invoke").mockImplementation(async (...call) => {
+          const output = await invoke(...call);
+          if (call[0] === "item.patch") Object.defineProperty(output, "previous", { value: {} });
+          return output;
+        });
+        return gateway;
+      });
+      try {
+        const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+        const outcome = await tools["item.patch"](run.id, {
+          itemId: item.id,
+          properties: { due: "new" },
+          ifVersion: item.updatedAt,
+        });
+        expect(outcome.error).toBe(false);
+        expect(outcome.changes).toEqual([{ key: "due", after: "new" }]);
+        expect(outcome.changes?.[0]).not.toHaveProperty("before");
+      } finally {
+        factorySpy.mockRestore();
+        vi.restoreAllMocks();
+      }
+    });
+
     it("shortens long string values and stores no content of a longText property", async () => {
       const { run, item, tools } = await patchFixture();
       const long = "x".repeat(TOOL_CHANGE_VALUE_MAX_LENGTH + 50);
@@ -203,6 +238,91 @@ describe("generic operation AgentTools (issue #220)", () => {
       ]);
       expect(JSON.stringify(outcome.changes)).not.toContain("secret");
     });
+
+    it.each(["type change", "deletion"] as const)(
+      "keeps longText values private after a post-write %s",
+      async (change) => {
+        const projectItemId = await createProjectItem();
+        const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "patch" });
+        const database = await chokePoint.createDatabase({ name: "Redaction" });
+        const property = await chokePoint.createProperty({
+          databaseId: database.id,
+          key: "body",
+          name: "Body",
+          type: "longText",
+        });
+        const item = await chokePoint.createItem({ databaseId: database.id, properties: { body: "old secret" } });
+        const originalFactory = application.createGenericOperationGateway;
+        const factorySpy = vi.spyOn(application, "createGenericOperationGateway").mockImplementation((...args) => {
+          const gateway = originalFactory(...args);
+          const invoke = gateway.invoke.bind(gateway);
+          vi.spyOn(gateway, "invoke").mockImplementation(async (...call) => {
+            const output = await invoke(...call);
+            if (call[0] === "item.patch") {
+              if (change === "type change") {
+                // The public conversion catalog has no longText-to-text path; simulate the committed schema change directly.
+                const updated = await withTransaction(pool, (client) =>
+                  client.query("UPDATE properties SET type = 'text' WHERE id = $1", [property.id]),
+                );
+                expect(updated.rowCount).toBe(1);
+              } else await chokePoint.deleteProperty(property.id);
+            }
+            return output;
+          });
+          return gateway;
+        });
+        try {
+          const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+          const result = await tools["item.patch"](run.id, {
+            itemId: item.id,
+            properties: { body: "new secret" },
+            ifVersion: item.updatedAt,
+          });
+          expect(result.error).toBe(false);
+          expect(result.changes).toEqual([{ key: "body" }]);
+          expect(JSON.stringify(result.changes)).not.toContain("secret");
+        } finally {
+          factorySpy.mockRestore();
+          vi.restoreAllMocks();
+        }
+      },
+    );
+
+    it.each(["missing", "invalid"] as const)(
+      "fails closed when an item.patch classification carrier is %s",
+      async (mode) => {
+        const { run, item } = await patchFixture();
+        const originalFactory = application.createGenericOperationGateway;
+        const factorySpy = vi.spyOn(application, "createGenericOperationGateway").mockImplementation((...args) => {
+          const gateway = originalFactory(...args);
+          const invoke = gateway.invoke.bind(gateway);
+          vi.spyOn(gateway, "invoke").mockImplementation(async (...call) => {
+            const output = await invoke(...call);
+            if (call[0] === "item.patch") {
+              const symbols = Object.getOwnPropertySymbols(output);
+              expect(symbols).toHaveLength(1);
+              if (mode === "missing") Reflect.deleteProperty(output, symbols[0]!);
+              else Object.defineProperty(output, symbols[0]!, { value: "invalid" });
+            }
+            return output;
+          });
+          return gateway;
+        });
+        try {
+          const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+          const result = await tools["item.patch"](run.id, {
+            itemId: item.id,
+            properties: { due: "new" },
+            ifVersion: item.updatedAt,
+          });
+          expect(result.error).toBe(false);
+          expect(result.changes).toEqual([{ key: "due" }]);
+        } finally {
+          factorySpy.mockRestore();
+          vi.restoreAllMocks();
+        }
+      },
+    );
 
     it("stores no changes for a failed patch or for a read", async () => {
       const { run, item, tools } = await patchFixture();

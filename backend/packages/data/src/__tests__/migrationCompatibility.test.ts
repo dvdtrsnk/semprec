@@ -58,6 +58,7 @@ it("upgrades populated approvals and notifications through the batch 15 additive
     const runId = randomUUID();
     const requestId = randomUUID();
     const notificationId = randomUUID();
+    // Current writers cannot target the pre-0116 schema, so these are historical fixtures.
     await withTransaction(db, async (client) => {
       await client.query("INSERT INTO users (id, tenant_id, email, password_hash) VALUES ($1, $2, $3, 'unused')", [
         userId,

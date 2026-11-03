@@ -1,8 +1,10 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import * as data from "@semprec/data";
 import type { Pool } from "pg";
 import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { createUser, hashPassword } from "@semprec/data";
-import { AgentRunCancelledError, runAgentSession } from "../lifecycleAdapter.js";
+import { createAgentRun, createUser, hashPassword, withTransaction } from "@semprec/data";
+import { AgentRunCancelledError, closeFailedAgentRun, runAgentSession } from "../lifecycleAdapter.js";
+import { repairInterruptedRuns } from "../startupRepair.js";
 import { reconstructConversationHistory } from "../conversationReconstruction.js";
 import type { CompactionAdapter } from "../compaction.js";
 import type { AgentMessage, AgentSession, ConversationEntry, CreateAgentSession } from "../types.js";
@@ -136,6 +138,87 @@ describe("runAgentSession pairs dangling tool calls when a turn fails", () => {
       [runId],
     );
     expect(rows[0]!.payload.result.content[0]!.text).toContain("failed");
+  });
+
+  it("rolls back the failure close when pairing fails and allows later startup repair", async () => {
+    const failure = new Error("turn failed");
+    const createAgentSession = sessionThen([toolUse("call-1")], () => Promise.reject(failure));
+    let testFailure: { error: unknown } | undefined;
+    try {
+      await pool.query(`CREATE FUNCTION batch15_reject_tool_result() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.kind = 'tool_result' THEN RAISE EXCEPTION 'pairing rejected'; END IF; RETURN NEW; END $$`);
+      await pool.query(`CREATE TRIGGER batch15_reject_tool_result BEFORE INSERT ON agent_run_events
+        FOR EACH ROW EXECUTE FUNCTION batch15_reject_tool_result()`);
+      const result: unknown = await runAgentSession(pool, {
+        createAgentSession,
+        task: "t",
+        triggeredBy: "user",
+        unit: "session",
+        projectItemId: ITEM_ID,
+      }).catch((error: unknown) => error);
+      expect(result).toBeInstanceOf(AggregateError);
+      if (!(result instanceof AggregateError)) throw new Error("Expected recovery failure");
+      expect(result.errors).toHaveLength(2);
+      expect(result.errors[0]).toBe(failure);
+      expect(result.cause).toBe(failure);
+      expect(result.errors[1]).toBeInstanceOf(Error);
+      const runId = await runnableRunIds();
+      expect(await storedKinds(runId)).toEqual(["tool_use"]);
+      const state = await pool.query<{ status: string; notifications: string }>(
+        "SELECT status, (SELECT count(*)::text FROM notifications WHERE source_id = $1::text) AS notifications FROM agent_runs WHERE id = $1::uuid",
+        [runId],
+      );
+      expect(state.rows).toEqual([{ status: "running", notifications: "0" }]);
+      await pool.query("DROP TRIGGER batch15_reject_tool_result ON agent_run_events");
+      const repaired = await repairInterruptedRuns(pool);
+      expect(repaired.repairedRunIds).toContain(runId);
+      expect(await storedKinds(runId)).toEqual(["tool_use", "tool_result"]);
+    } catch (error) {
+      testFailure = { error };
+    }
+    const cleanupErrors: unknown[] = [];
+    for (const sql of [
+      "DROP TRIGGER IF EXISTS batch15_reject_tool_result ON agent_run_events",
+      "DROP FUNCTION IF EXISTS batch15_reject_tool_result()",
+    ]) {
+      try {
+        await pool.query(sql);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        testFailure ? [testFailure.error, ...cleanupErrors] : cleanupErrors,
+        "Recovery test cleanup failed",
+      );
+    if (testFailure) throw testFailure.error;
+  });
+
+  it("retains undefined primary and recovery failures and marks a supplied transaction rollback-only", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const spy = vi.spyOn(data, "getAgentRun").mockRejectedValueOnce(undefined);
+    let observed: { error: unknown } | undefined;
+    try {
+      await expect(
+        withTransaction(pool, async (client) => {
+          try {
+            await closeFailedAgentRun(client, run.id, undefined);
+          } catch (error) {
+            observed = { error };
+          }
+        }),
+      ).rejects.toBeUndefined();
+      expect(observed?.error).toBeInstanceOf(AggregateError);
+      if (!(observed?.error instanceof AggregateError)) throw new Error("Expected aggregate failure");
+      expect(observed.error.errors).toEqual([undefined, undefined]);
+      expect(Object.hasOwn(observed.error, "cause")).toBe(true);
+      expect(observed.error.cause).toBeUndefined();
+      const { rows } = await pool.query<{ status: string }>("SELECT status FROM agent_runs WHERE id = $1", [run.id]);
+      expect(rows).toEqual([{ status: "running" }]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("a turn that fails with every tool call paired adds no synthetic result", async () => {

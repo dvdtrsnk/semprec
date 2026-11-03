@@ -5,7 +5,7 @@ import {
   ChokePointError,
   generatePermissionManifest,
   getAgentRun,
-  listPropertiesByDatabase,
+  readItemPatchChangeMetadata,
   withTransaction,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
@@ -16,7 +16,6 @@ import {
   type GenericOperationName,
 } from "@semprec/shared";
 import { createGenericOperationGateway, type GenericOperationGateway } from "@semprec/application";
-import { logger } from "../../logger.js";
 import type { ToolResultChange } from "../../toolEventPayload.js";
 
 /** Shaped like a pi-agent-core `tool_result` payload — the same local approximation `heartbeatAgentTools.ts`'s `HeartbeatAgentToolResult` uses. */
@@ -50,28 +49,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * Builds `changes` for a successful `item.patch` from the operation's own `previous` values (read
  * inside its write transaction) and the call's `properties`. A `longText` property keeps only its
- * key; a key without a reported previous value has no `before`. Returns undefined when nothing
- * can be reported, including when the property types could not be read: the content of a
- * `longText` property must never be stored by guess.
+ * key; a key without a reported previous value has no `before`. Missing write-time classification
+ * leaves a key without values.
  */
-async function buildPatchChanges(pool: Pool, output: unknown, args: unknown): Promise<ToolResultChange[] | undefined> {
+function buildPatchChanges(output: unknown, args: unknown): ToolResultChange[] | undefined {
   if (!isRecord(output) || !isRecord(args) || !isRecord(args.properties)) return undefined;
-  const databaseId = output.databaseId;
-  if (typeof databaseId !== "string") return undefined;
   const patched = args.properties;
   const previous = isRecord(output.previous) ? output.previous : {};
   const keys = Object.keys(patched);
   if (keys.length === 0) return undefined;
-  let longTextKeys: Set<string>;
-  try {
-    const properties = await withTransaction(pool, (client) => listPropertiesByDatabase(client, databaseId));
-    longTextKeys = new Set(properties.filter((property) => property.type === "longText").map((p) => p.key));
-  } catch (err) {
-    logger.error({ err, databaseId }, "could not read property types for the item.patch changes; omitting them");
-    return undefined;
-  }
+  const eligibility = readItemPatchChangeMetadata(output);
   return keys.map((key): ToolResultChange => {
-    if (longTextKeys.has(key)) return { key };
+    if (eligibility?.get(key) !== true) return { key };
     return {
       key,
       ...(Object.hasOwn(previous, key) ? { before: boundValue(previous[key]) } : {}),
@@ -153,7 +142,7 @@ function createTool(
         return { error: true, result: "owner_violation: no persisted run context for this agent tool call" };
       }
       const output = await gateway.invoke(operation, context.actor, context.grantedCapabilities, args ?? {}, options);
-      const changes = operation === "item.patch" ? await buildPatchChanges(pool, output, args) : undefined;
+      const changes = operation === "item.patch" ? buildPatchChanges(output, args) : undefined;
       return { error: false, result: JSON.stringify(output), ...(changes ? { changes } : {}) };
     } catch (err) {
       return toolResultFromError(err, operation);

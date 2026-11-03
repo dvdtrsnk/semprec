@@ -191,9 +191,19 @@ describe("semprec-agents realtime wiring (issue #1383)", () => {
       const runningSync = sync;
       server.on("upgrade", (req, socket, head) => runningSync.handleUpgrade(req, socket, head));
       await new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(0, "127.0.0.1", () => {
-          server.off("error", reject);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 3000);
+        controller.signal.addEventListener("abort", () => reject(new Error("Socket server startup timed out")), {
+          once: true,
+        });
+        const onError = (error: Error) => {
+          clearTimeout(timer);
+          reject(error);
+        };
+        server.once("error", onError);
+        server.listen({ port: 0, host: "127.0.0.1", signal: controller.signal }, () => {
+          clearTimeout(timer);
+          server.off("error", onError);
           resolve();
         });
       });

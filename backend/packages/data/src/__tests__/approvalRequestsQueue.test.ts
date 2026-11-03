@@ -83,6 +83,22 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       reason: null,
       description: null,
     });
+    expect(await toApprovalRequestDecisionView(pool, created)).toEqual({
+      id: created.id,
+      status: "pending",
+      decidedAt: null,
+      decidedBy: null,
+      executionStatus: "not_approved",
+      conflictReason: null,
+      toolName: "send_email",
+      riskClass: "write",
+      riskLevel: "write",
+      requestedAt: created.requestedAt,
+      agentRunId: run.id,
+      safeSummary: rows[0]!.safeSummary,
+      reason: null,
+      description: null,
+    });
   });
 
   it("surfaces the agent-supplied reason on the queue entry and on the decision view, null when absent", async () => {

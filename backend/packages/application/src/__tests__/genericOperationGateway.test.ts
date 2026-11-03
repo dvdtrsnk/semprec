@@ -391,6 +391,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
       const database = await chokePoint.createDatabase({ name: "Gateway DB tool call" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       const projectItemId = randomUUID();
+      // No public writer creates a chat thread with a historical activity timestamp.
       const thread = await withTransaction(pool, (client) =>
         client.query<{ id: string }>(
           "INSERT INTO semp_threads (kind, last_activity_at) VALUES ('chat', '2020-01-01') RETURNING id",
@@ -785,10 +786,22 @@ describe("createGenericOperationGateway (issue #220)", () => {
         targetDatabaseId: people.id,
         inverse: { key: "assignedTasks", name: "Assigned Tasks" },
       });
+      const { property: reviewedBy } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: tasks.id,
+        key: "reviewedBy",
+        name: "Reviewed By",
+        targetDatabaseId: people.id,
+        inverse: { key: "reviewedTasks", name: "Reviewed Tasks" },
+      });
       const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { name: "Tax return" } });
       const person = await chokePoint.createItem({ databaseId: people.id, properties: {} });
       await chokePoint.createRelation({
         relationPropertyId: assignedTo.id,
+        callerItemId: task.id,
+        targetItemId: person.id,
+      });
+      await chokePoint.createRelation({
+        relationPropertyId: reviewedBy.id,
         callerItemId: task.id,
         targetItemId: person.id,
       });
@@ -884,7 +897,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
       return rows[0]!;
     }
 
-    it("gives every approval the fixed title, and property.delete a body that ends with the irreversible sentence", async () => {
+    it("gives every approval the fixed title, and property.delete the no-app-undo sentence", async () => {
       const database = await chokePoint.createDatabase({ name: "Journal" });
       const property = await chokePoint.createProperty({
         databaseId: database.id,
@@ -898,7 +911,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
       expect(await notificationOf(requestId)).toEqual({
         title: "Semp needs approval",
-        body: 'Delete the property "Mood" in the database "Journal". This action is irreversible.',
+        body: 'Delete "Mood" from "Journal" (unnamed); 0 items affected. Semp cannot undo this action.',
       });
     });
 
@@ -911,7 +924,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
       const requestId = await raiseInEnglish("item.delete", actor, { itemId: task.id });
 
       expect((await notificationOf(requestId)).body).toBe(
-        'Delete the item "Tax return" in the database "Tasks". This can be undone later.',
+        'Delete "Tax return" from "Tasks" (unnamed); 0 linked items, retained for 30 days. This can be undone later.',
       );
     });
 
@@ -923,11 +936,11 @@ describe("createGenericOperationGateway (issue #220)", () => {
       const requestId = await raiseInEnglish("item.delete", actor, { itemId: task.id });
 
       expect((await notificationOf(requestId)).body).toBe(
-        'Delete the item "unnamed" in the database "Tasks". This can be undone later.',
+        'Delete "unnamed" from "Tasks" (unnamed); 0 linked items, retained for 30 days. This can be undone later.',
       );
     });
 
-    it("gives database.archive an undo sentence and view.delete and relation.delete the irreversible one", async () => {
+    it("gives database.archive an undo sentence and view.delete and relation.delete the no-app-undo one", async () => {
       const tasks = await chokePoint.createDatabase({ name: "Tasks" });
       const people = await chokePoint.createDatabase({ name: "People" });
       await chokePoint.createProperty({ databaseId: tasks.id, key: "name", name: "Name", type: "text" });
@@ -953,10 +966,14 @@ describe("createGenericOperationGateway (issue #220)", () => {
       );
 
       const archiveId = await raiseInEnglish("database.archive", actor, { databaseId: tasks.id });
-      expect((await notificationOf(archiveId)).body).toBe('Archive the database "Tasks". This can be undone later.');
+      expect((await notificationOf(archiveId)).body).toBe(
+        'Archive "Tasks"; 1 items affected. This can be undone later.',
+      );
 
       const viewId = await raiseInEnglish("view.delete", actor, { viewId: view.id });
-      expect((await notificationOf(viewId)).body).toBe('Delete the view "Open tasks". This action is irreversible.');
+      expect((await notificationOf(viewId)).body).toBe(
+        'Delete view "Open tasks" from "Tasks". Semp cannot undo this action.',
+      );
 
       const relationId = await raiseInEnglish("relation.delete", actor, {
         relationPropertyId: assignedTo.id,
@@ -964,7 +981,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         targetItemId: person.id,
       });
       expect((await notificationOf(relationId)).body).toBe(
-        'Remove the link between "Tax return" and "Eva". This action is irreversible.',
+        'Remove the link from "Tax return" (unnamed) to "Eva" (unnamed). Semp cannot undo this action.',
       );
     });
   });

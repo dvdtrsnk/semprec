@@ -92,7 +92,11 @@ export async function buildDestructiveApprovalDescription(
         itemName: nameOf(item.properties),
         databaseKey: database.key,
         databaseName: databaseDisplayName(database),
-        linkedCount: (await relationsStore.listAllRelationsForItem(client, item.id)).length,
+        linkedCount: new Set(
+          (await relationsStore.listAllRelationsForItem(client, item.id)).map((relation) =>
+            relationsStore.otherSide(relation, item.id),
+          ),
+        ).size,
         restorableDays: TRASH_RETENTION_DAYS,
       };
       if (database.ownerProjectItemId) {

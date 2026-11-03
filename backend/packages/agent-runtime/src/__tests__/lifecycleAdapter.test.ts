@@ -242,10 +242,11 @@ describe("runAgentSession", () => {
 
 describe("runAgentSessionForRun terminal close", () => {
   const okSession = fakeSession([{ kind: "turn_start" }, { kind: "message", text: "fine" }, { kind: "turn_end" }]);
+  const turnFailure = new Error("boom");
   const throwingSession: CreateAgentSession = (): AgentSession => ({
     // eslint-disable-next-line require-yield
     async *messages() {
-      throw new Error("boom");
+      throw turnFailure;
     },
   });
 
@@ -319,9 +320,15 @@ describe("runAgentSessionForRun terminal close", () => {
   it("leaves the row running with no terminal event when every terminal event write fails (success)", async () => {
     const run = await openRun();
     await failEventsFor("done", "error");
-    await expect(runAgentSessionForRun(pool, run, { createAgentSession: okSession })).rejects.toThrow(
-      "injected run_status failure",
+    const result: unknown = await runAgentSessionForRun(pool, run, { createAgentSession: okSession }).catch(
+      (error: unknown) => error,
     );
+    expect(result).toBeInstanceOf(AggregateError);
+    if (!(result instanceof AggregateError)) throw new Error("Expected recovery failure");
+    expect(result.errors).toHaveLength(2);
+    expect(result.errors[0]).toBeInstanceOf(Error);
+    expect(result.errors[1]).toBeInstanceOf(Error);
+    expect(result.cause).toBe(result.errors[0]);
     expect(await rowStatus(run.id)).toBe("running");
     expect(await terminalEvents(run.id)).toEqual([]);
   });
@@ -329,9 +336,22 @@ describe("runAgentSessionForRun terminal close", () => {
   it("leaves the row running with no terminal event when every terminal event write fails (throwing)", async () => {
     const run = await openRun();
     await failEventsFor("done", "error");
-    await expect(runAgentSessionForRun(pool, run, { createAgentSession: throwingSession })).rejects.toThrow("boom");
+    const result: unknown = await runAgentSessionForRun(pool, run, { createAgentSession: throwingSession }).catch(
+      (error: unknown) => error,
+    );
+    expect(result).toBeInstanceOf(AggregateError);
+    if (!(result instanceof AggregateError)) throw new Error("Expected recovery failure");
+    expect(result.errors).toHaveLength(2);
+    expect(result.errors[0]).toBe(turnFailure);
+    expect(result.cause).toBe(turnFailure);
+    expect(result.errors[1]).toBeInstanceOf(Error);
     expect(await rowStatus(run.id)).toBe("running");
     expect(await terminalEvents(run.id)).toEqual([]);
+    const { rows } = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM notifications WHERE source_id = $1",
+      [run.id],
+    );
+    expect(rows[0]!.count).toBe("0");
   });
 
   it("falls back to a single error close when only the done event write fails", async () => {

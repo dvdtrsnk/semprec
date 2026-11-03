@@ -351,6 +351,7 @@ describe("MCP invoke adapter (issue #128)", () => {
       const contractServer = startStdioContractServer([SEARCH_TOOL]);
       servers.push(contractServer);
       const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      // No public writer creates a chat thread with a historical activity timestamp.
       const thread = await withTransaction(pool, (client) =>
         client.query<{ id: string }>(
           "INSERT INTO semp_threads (kind, last_activity_at) VALUES ('chat', '2020-01-01') RETURNING id",
@@ -476,7 +477,7 @@ describe("MCP invoke adapter (issue #128)", () => {
       const user = earliestUser;
 
       const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
-      const first = await invoke({ query: "semprec" });
+      const first = await invoke({ query: "private-argument-sentinel" });
       const firstRequestId = first.result.match(/Approval request ([0-9a-f-]{36})/i)![1]!;
 
       const { rows: afterFirst } = await pool.query(
@@ -488,12 +489,13 @@ describe("MCP invoke adapter (issue #128)", () => {
           user_id: user.id,
           kind: "approval_pending",
           title: "Semp needs approval",
-          body: `Call the tool "search_web" on the MCP server "Contract server". This action is irreversible.`,
+          body: `Call "search_web" on MCP server "Contract server". Semp cannot undo this action.`,
           source_table: "approval_requests",
           transition_instance: firstRequestId,
           link_href: `?page=approvals&user=${user.id}`,
         },
       ]);
+      expect(JSON.stringify(afterFirst)).not.toContain("private-argument-sentinel");
 
       // A second, independent call is a different request (a different transition) and gets its
       // own notification rather than being deduped against the first.

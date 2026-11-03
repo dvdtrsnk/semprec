@@ -463,6 +463,7 @@ describe("approvalRequestsStore thread activity (issue #1728)", () => {
     const thread = await runInTenant(getTenantZeroId(), () =>
       withTransaction(pool, (client) => getOrCreateTickThread(client, heartbeat.id)),
     );
+    // The public tick writer cannot set a historical activity timestamp.
     const reset = await withTransaction(pool, (client) =>
       client.query("UPDATE semp_threads SET last_activity_at = $2 WHERE id = $1", [thread.id, OLD]),
     );

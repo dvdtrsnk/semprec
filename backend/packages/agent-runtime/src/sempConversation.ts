@@ -1,6 +1,5 @@
 import type { Pool } from "pg";
 import {
-  agentRunErrorCodeOf,
   type AgentRunRow,
   createAgentRun,
   finishAgentRun,
@@ -15,7 +14,7 @@ import {
   reconstructConversationHistory as reconstructHistoryEntries,
   type ReconstructedHistory,
 } from "./conversationReconstruction.js";
-import { extractResultSnapshot, pairDanglingToolCalls, pushRunStatus, runAgentTurn } from "./lifecycleAdapter.js";
+import { closeFailedAgentRun, extractResultSnapshot, pushRunStatus, runAgentTurn } from "./lifecycleAdapter.js";
 import type { AgentMessage, AgentSession, CreateAgentSession, UserTurnContextRef } from "./types.js";
 import { logger } from "./logger.js";
 
@@ -70,23 +69,8 @@ interface ConversationRegistryEntry {
   ttlTimer: ReturnType<typeof setTimeout> | undefined;
 }
 
-/**
- * Best-effort: matches `runAgentSession`'s error handling in `lifecycleAdapter.ts` so a failed
- * turn never leaves an `agent_runs` row stuck at `running` forever. Closing the run and writing
- * its `agent_run_error` notification (issue #149) run in one transaction, so a crash between the
- * two never leaves one without the other.
- */
 async function failRun(pool: Pool, agentRunId: string, err: unknown): Promise<void> {
-  await pairDanglingToolCalls(pool, agentRunId, err);
-  try {
-    const message = err instanceof Error ? err.message : String(err);
-    await withTransaction(pool, (client) =>
-      finishAgentRunWithErrorNotification(client, agentRunId, message, agentRunErrorCodeOf(err)),
-    );
-    await pushRunStatus(pool, agentRunId, "error");
-  } catch (closeErr) {
-    logger.error({ err: closeErr, agentRunId }, "SempConversation: failed to close errored run");
-  }
+  await closeFailedAgentRun(pool, agentRunId, err);
 }
 
 /**

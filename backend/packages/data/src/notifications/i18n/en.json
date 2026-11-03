@@ -11,12 +11,14 @@
   "notification.mail_sync_stalled.title": "Mail sync has stalled",
   "notification.backup_restore_failed.title": "Backup restore test failed",
   "notification.semp_problem.title": "Something needs your attention",
-  "notification.approval_pending.body.itemDelete": "Delete the item \"{itemName}\" in the database \"{databaseName}\". This can be undone later.",
-  "notification.approval_pending.body.propertyDelete": "Delete the property \"{propertyName}\" in the database \"{databaseName}\". This action is irreversible.",
-  "notification.approval_pending.body.databaseArchive": "Archive the database \"{databaseName}\". This can be undone later.",
-  "notification.approval_pending.body.viewDelete": "Delete the view \"{viewName}\". This action is irreversible.",
-  "notification.approval_pending.body.relationDelete": "Remove the link between \"{fromItemName}\" and \"{toItemName}\". This action is irreversible.",
-  "notification.approval_pending.body.pageRestore": "Restore the page \"{itemName}\" in the database \"{databaseName}\" to an earlier version. This can be undone later.",
-  "notification.approval_pending.body.mcpInvoke": "Call the tool \"{toolName}\" on the MCP server \"{serverName}\". This action is irreversible.",
-  "notification.body.unnamed": "unnamed"
+  "notification.body.unnamed": "unnamed",
+  "approval.itemDelete": "Delete \"{itemName}\" from \"{databaseName}\" ({databaseKey}); {linkedCount} linked items, retained for {restorableDays} days. {projectName}",
+  "approval.propertyDelete": "Delete \"{propertyName}\" from \"{databaseName}\" ({databaseKey}); {affectedCount} items affected.",
+  "approval.databaseArchive": "Archive \"{databaseName}\"; {affectedCount} items affected.",
+  "approval.viewDelete": "Delete view \"{viewName}\" from \"{databaseName}\".",
+  "approval.relationDelete": "Remove the link from \"{fromItemName}\" ({fromDatabaseKey}) to \"{toItemName}\" ({toDatabaseKey}).",
+  "approval.pageRestore": "Restore \"{itemName}\" in \"{databaseName}\" ({databaseKey}).",
+  "approval.mcpInvoke": "Call \"{toolName}\" on MCP server \"{serverName}\".",
+  "notification.body.canUndo": "This can be undone later.",
+  "notification.body.cannotUndo": "Semp cannot undo this action."
 }

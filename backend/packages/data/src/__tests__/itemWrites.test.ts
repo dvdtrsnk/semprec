@@ -12,6 +12,9 @@ import { withTransaction } from "../db/pool.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
+import "../domainWriteHooks.js";
+import { projectItemForRead } from "../chokePoint/hooks.js";
+import { readItemPatchChangeMetadata } from "../chokePoint/itemPatchChangeMetadata.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -59,6 +62,32 @@ describe("choke-point itemWrites", () => {
     await expect(chokePoint.createItem({ databaseId: db.id, properties: { nope: 1 } })).rejects.toBeInstanceOf(
       ValidationError,
     );
+  });
+
+  it("preserves write classification through a registered item projection without changing JSON", async () => {
+    const db = await chokePoint.createDatabase({ name: "Redaction metadata" });
+    await chokePoint.createProperty({ databaseId: db.id, key: "body", name: "Body", type: "longText" });
+    await chokePoint.createProperty({ databaseId: db.id, key: "title", name: "Title", type: "text" });
+    const item = await chokePoint.createItem({ databaseId: db.id, properties: { body: "old", title: "before" } });
+    const result = await chokePoint.updateItem({
+      databaseId: db.id,
+      itemId: item.id,
+      propertiesPatch: { body: "new", title: "after" },
+    });
+    expect(readItemPatchChangeMetadata(result)).toEqual(
+      new Map([
+        ["body", false],
+        ["title", true],
+      ]),
+    );
+    const projected = projectItemForRead(result, "emails");
+    expect(readItemPatchChangeMetadata(projected)).toEqual(
+      new Map([
+        ["body", false],
+        ["title", true],
+      ]),
+    );
+    expect(JSON.parse(JSON.stringify(projected))).toEqual(JSON.parse(JSON.stringify(result)));
   });
 
   it("rejects writing an owner:'system' property from the generic path", async () => {
