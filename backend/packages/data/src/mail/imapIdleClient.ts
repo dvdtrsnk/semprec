@@ -68,16 +68,26 @@ function endPromiseFor(client: ImapFlow): Promise<unknown> {
   });
 }
 
-async function closeQuietly(client: ImapFlow): Promise<void> {
+async function closeClient(client: ImapFlow): Promise<void> {
   try {
     await client.logout();
-  } catch {
+  } catch (error) {
     try {
       client.close();
-    } catch {
-      // Already gone — nothing left to release.
+    } catch (secondary) {
+      throw new AggregateError([error, secondary], "IMAP IDLE connection cleanup failed");
     }
+    throw error;
   }
+}
+
+async function closeAfterFailure(client: ImapFlow, original: unknown): Promise<never> {
+  try {
+    await closeClient(client);
+  } catch (secondary) {
+    throw new AggregateError([original, secondary], "IMAP IDLE operation and cleanup failed");
+  }
+  throw original;
 }
 
 class ImapFlowIdleConnection implements ImapIdleConnection {
@@ -98,7 +108,7 @@ class ImapFlowIdleConnection implements ImapIdleConnection {
     // Detach exists/expunge/flags before logout so a final server push during BYE can't still
     // reach onSignal after the caller considers this connection closed.
     this.detachSignalListeners();
-    return closeQuietly(this.client);
+    return closeClient(this.client);
   }
 }
 
@@ -115,8 +125,13 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
         maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
         socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
       });
+      let list: Awaited<ReturnType<ImapFlow["list"]>>;
       try {
-        const list = await client.list();
+        list = await client.list();
+      } catch (error) {
+        return closeAfterFailure(client, error);
+      }
+      try {
         const inbox = list.find((f) => f.specialUse === SPECIAL_USE_INBOX);
         const allMail = list.find((f) => f.specialUse === SPECIAL_USE_ALL);
         const targets = [inbox, allMail]
@@ -127,7 +142,7 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
         // coverage instead of none.
         return targets.length > 0 ? targets : [{ path: "INBOX" }];
       } finally {
-        await closeQuietly(client);
+        await closeClient(client);
       }
     },
 
@@ -139,8 +154,7 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
       try {
         await client.mailboxOpen(folderPath);
       } catch (err) {
-        await closeQuietly(client);
-        throw err;
+        return closeAfterFailure(client, err);
       }
       // EXISTS (new message), EXPUNGE (deletion), and flags (read/flagged toggled from another
       // client) are exactly the three signal kinds issue #196's Task names; imapflow keeps

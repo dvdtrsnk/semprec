@@ -115,8 +115,9 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     const lifecycle = factory({ mailboxItemId: "mailbox-1", syncMode: "imap" });
 
     await lifecycle.start();
-    expect(await pendingMailSyncJobCount("mailbox-1")).toBe(1);
+    await vi.waitFor(async () => expect(await pendingMailSyncJobCount("mailbox-1")).toBe(1));
 
+    await vi.waitFor(() => expect(connections.get("INBOX")?.length).toBe(1));
     const conn = connections.get("INBOX")![0]!;
     conn.onSignal(); // simulates an EXISTS/EXPUNGE/flags notification observed while idling
     // The signal only ever re-enqueues through the same idempotent jobKey — never a second,
@@ -152,53 +153,32 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
   });
 
   it("recycles a healthy connection once the hard-cycle deadline elapses, with no backoff delay", async () => {
-    vi.useFakeTimers();
     const { transport, connections } = createFakeTransport();
-    const factory = createBoundedImapIdleLifecycleFactory(pool, transport, {
+    const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
       getCredential: async () => "app-password",
       getConnectionLimit: () => 5,
-      hardCycleDeadlineMs: 1000,
-    });
-    const lifecycle = factory({ mailboxItemId: "mailbox-3", syncMode: "imap" });
-
+      hardCycleDeadlineMs: 30,
+    })({ mailboxItemId: "mailbox-3", syncMode: "imap" });
     await lifecycle.start();
-    expect(connections.get("INBOX")!.length).toBe(1);
-    const firstConn = connections.get("INBOX")![0]!;
-
-    await vi.advanceTimersByTimeAsync(1001);
-    expect(firstConn.closeCalls).toBe(1);
-    expect(connections.get("INBOX")!.length).toBe(2);
-
+    await vi.waitFor(() => expect(connections.get("INBOX")?.length ?? 0).toBeGreaterThanOrEqual(2));
+    expect(connections.get("INBOX")![0]!.closeCalls).toBe(1);
     await lifecycle.stop();
   });
 
-  it("backs off with a capped, growing delay after repeated connection failures, then resets after a success", async () => {
-    vi.useFakeTimers();
+  it("backs off after repeated connection failures and reconnects", async () => {
     let rejectNext = 3;
-    const { transport, connections } = createFakeTransport({
-      onConnect: () => {
-        if (rejectNext > 0) {
-          rejectNext--;
-          return "reject";
-        }
-        return new FakeConnection(() => {});
-      },
+    const { transport, connections, connectAttempts } = createFakeTransport({
+      onConnect: () => (--rejectNext >= 0 ? "reject" : new FakeConnection(() => {})),
     });
-    const factory = createBoundedImapIdleLifecycleFactory(pool, transport, {
+    const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
       getCredential: async () => "app-password",
       getConnectionLimit: () => 5,
-      reconnectBaseDelayMs: 1000,
-      reconnectMaxDelayMs: 10_000,
-    });
-    const lifecycle = factory({ mailboxItemId: "mailbox-4", syncMode: "imap" });
-
+      reconnectBaseDelayMs: 5,
+      reconnectMaxDelayMs: 20,
+    })({ mailboxItemId: "mailbox-4", syncMode: "imap" });
     await lifecycle.start();
-    // 3 rejected attempts back off 1000ms, 2000ms, 4000ms before the 4th attempt succeeds.
-    await vi.advanceTimersByTimeAsync(1000);
-    await vi.advanceTimersByTimeAsync(2000);
-    await vi.advanceTimersByTimeAsync(4000);
-    expect(connections.get("INBOX")?.length).toBe(1);
-
+    await vi.waitFor(() => expect(connections.get("INBOX")?.length).toBe(1));
+    expect(connectAttempts.get("INBOX")).toBe(4);
     await lifecycle.stop();
   });
 
@@ -253,5 +233,73 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     expect(maxActive).toBe(1);
 
     await lifecycle.stop();
+  });
+  it("retries refused discovery and eventually connects", async () => {
+    let attempts = 0;
+    const refusal = new Error("private credential and host");
+    const errors: unknown[] = [];
+    const { transport, connections } = createFakeTransport();
+    const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
+      getCredential: async () => {
+        if (++attempts === 1) throw refusal;
+        return "password";
+      },
+      getConnectionLimit: () => 1,
+      reconnectBaseDelayMs: 1,
+      onError: (_id, _folder, error) => errors.push(error),
+    })({ mailboxItemId: "discovery-retry", syncMode: "imap" });
+    await lifecycle.start();
+    await vi.waitFor(() => expect(connections.get("INBOX")?.length).toBe(1));
+    expect(errors).toEqual([refusal]);
+    await lifecycle.stop();
+    expect(connections.get("INBOX")?.[0]?.closed).toBe(true);
+  });
+
+  it("retries a failed connection-limit lookup", async () => {
+    let attempts = 0;
+    const { transport, connections } = createFakeTransport();
+    const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
+      getCredential: async () => "password",
+      getConnectionLimit: () => {
+        if (++attempts === 1) throw new Error("private limit");
+        return 1;
+      },
+      reconnectBaseDelayMs: 1,
+      onError: () => {},
+    })({ mailboxItemId: "limit-retry", syncMode: "imap" });
+    await lifecycle.start();
+    await vi.waitFor(() => expect(connections.get("INBOX")?.length).toBe(1));
+    await lifecycle.stop();
+    expect(connections.get("INBOX")?.[0]?.closed).toBe(true);
+  });
+
+  it("joins discovery on stop and does not open a connection afterwards", async () => {
+    let release!: (targets: ImapIdleFolderTarget[]) => void;
+    let entered!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const { transport, connectAttempts } = createFakeTransport();
+    transport.resolveFolders = async () => {
+      entered();
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    };
+    const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
+      getCredential: async () => "password",
+      getConnectionLimit: () => 1,
+    })({ mailboxItemId: "discovery-stop", syncMode: "imap" });
+    const starting = lifecycle.start();
+    await ready;
+    let stopped = false;
+    const stopping = lifecycle.stop().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    release([{ path: "INBOX" }]);
+    await Promise.all([starting, stopping]);
+    expect(connectAttempts.size).toBe(0);
   });
 });

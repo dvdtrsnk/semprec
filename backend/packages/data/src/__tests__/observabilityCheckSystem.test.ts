@@ -114,7 +114,7 @@ async function beatMailbox(mailboxId: string, ageMs: number): Promise<void> {
   );
 }
 
-async function runCheck(jobId = randomUUID(), taskPool: Pool = pool): Promise<void> {
+async function runCheck(jobId: string = randomUUID(), taskPool: Pool = pool): Promise<void> {
   await runAsSystem("test", () => handleObservabilityCheckSystemTask(taskPool, { job: { id: jobId } }));
 }
 

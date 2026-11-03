@@ -63,10 +63,8 @@ export function createImapIdleLifecycleFactory(pool: Pool): MailLiveSyncLifecycl
       return credential;
     },
     getConnectionLimit: (mailboxItemId) => connectionLimitOf(pool, mailboxItemId),
-    // Logs the mailbox, the folder and the error's name and code only. The error object itself can carry the
-    // resolved address of a socket error, which the mail connections ADR keeps out of logs.
-    onError: (mailboxItemId, folderPath, err) => {
-      logger.warn({ mailboxItemId, folderPath, ...errorNameAndCode(err) }, "IMAP IDLE connection failed");
+    onError: (mailboxItemId) => {
+      logger.warn({ mailboxItemId, stage: "idle", category: "failure" }, "IMAP IDLE lifecycle failed");
     },
   });
 }

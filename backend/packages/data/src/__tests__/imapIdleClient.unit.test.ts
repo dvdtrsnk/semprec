@@ -145,4 +145,25 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     await expect(ended).resolves.toBe(boom);
     await expect(connection.close()).resolves.toBeUndefined();
   });
+  it("retains the original discovery and cleanup failures in order", async () => {
+    const client = new FakeImapFlow();
+    const original = new Error("private discovery failure");
+    const cleanup = new Error("private logout failure");
+    client.list = async () => {
+      throw original;
+    };
+    client.logout = async () => {
+      throw cleanup;
+    };
+    const transport = createImapFlowIdleTransport(makeFactory([client]).createClient);
+    let observed: unknown;
+    try {
+      await transport.resolveFolders("mailbox-1", "credential");
+    } catch (error) {
+      observed = error;
+    }
+    expect(observed).toBeInstanceOf(AggregateError);
+    if (!(observed instanceof AggregateError)) throw new Error("expected aggregate");
+    expect(observed.errors).toEqual([original, cleanup]);
+  });
 });
