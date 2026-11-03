@@ -318,6 +318,33 @@ describe("rollup engine", () => {
       await expectValues(f, 2, 7);
     });
 
+    it("uses existing empty-input values for filled and empty count and percentage rollups", async () => {
+      const f = await linkedFixture();
+      for (const [key, aggregation] of [
+        ["countFilled", "count_filled"],
+        ["countEmpty", "count_empty"],
+        ["percentFilled", "percent_filled"],
+        ["percentEmpty", "percent_empty"],
+      ] as const) {
+        await chokePoint.createProperty({
+          databaseId: f.projects.id,
+          key,
+          name: aggregation,
+          type: "rollup",
+          config: { relationPropertyKey: "tasks", targetPropertyKey: "hours", aggregation },
+        });
+      }
+      await drainQueue();
+      const values = async () => (await chokePoint.getItem(f.projects.id, f.project.id))?.computed;
+      expect(await values()).toMatchObject({ countFilled: 2, countEmpty: 0, percentFilled: 1, percentEmpty: 0 });
+      await chokePoint.archiveDatabase(f.tasks.id);
+      await drainQueue();
+      expect(await values()).toMatchObject({ countFilled: 0, countEmpty: 0, percentFilled: 0, percentEmpty: 0 });
+      await chokePoint.restoreDatabase(f.tasks.id);
+      await drainQueue();
+      expect(await values()).toMatchObject({ countFilled: 2, countEmpty: 0, percentFilled: 1, percentEmpty: 0 });
+    });
+
     it("queues one full job per dependent rollup property and a second archive request does not queue another", async () => {
       const f = await linkedFixture();
       await chokePoint.archiveDatabase(f.tasks.id);

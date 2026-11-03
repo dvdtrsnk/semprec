@@ -3,7 +3,9 @@ import { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createPool, withTransaction } from "../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createTestTenant, tenantZeroSessionOptions } from "../testSupport/tenantFixtures.js";
 import type { FilterNode } from "../views/filterTree.js";
 
@@ -146,6 +148,29 @@ describe("view filters and sorts do not depend on the session time zone", () => 
       ["lateUtc"],
     ],
   ];
+
+  it("filters the seeded Events date consistently across session zones", async () => {
+    const admin = getTestPool();
+    pools.push(admin);
+    await inTenantZero(() => seedSystem(admin));
+    const events = await inTenantZero(() =>
+      withTransaction(admin, (client) => getDatabaseByModuleId(client, "events")),
+    );
+    if (!events) throw new Error("Missing seeded Events database");
+    const utc = chokePoints.get("UTC")!;
+    const match = await utc.createItem({ databaseId: events.id, properties: { name: "Match", date: "2026-10-16" } });
+    const before = await utc.createItem({ databaseId: events.id, properties: { name: "Before", date: "2026-10-15" } });
+    const after = await utc.createItem({ databaseId: events.id, properties: { name: "After", date: "2026-10-17" } });
+    for (const zone of ZONES) {
+      const result = await chokePoints.get(zone)!.queryDatabaseItems(events.id, {
+        filter: { type: "date_range", property: "date", value: { from: "2026-10-16", to: "2026-10-16" } },
+      });
+      const ids = result.items.map((item) => item.id);
+      expect(ids).toContain(match.id);
+      expect(ids).not.toContain(before.id);
+      expect(ids).not.toContain(after.id);
+    }
+  });
 
   it.each(filters)("%s returns the expected rows in every zone", async (_label, filter, expected) => {
     for (const zone of ZONES) expect(await names(zone, filter)).toEqual(expected);

@@ -199,7 +199,6 @@ function compileDateRelative(
   };
   const startField = field(node.property);
   const start = dayExpression(startField, zoneParam);
-  const end = node.endProperty ? `COALESCE(${dayExpression(field(node.endProperty), zoneParam)}, ${start})` : start;
   const range = resolveDayRange(node.preset, context);
   const clauses: string[] = [`${start} IS NOT NULL`];
   if (node.preset === "beforeNow") {
@@ -214,6 +213,7 @@ function compileDateRelative(
     return `(${clauses.join(" AND ")})`;
   }
   if (range.from !== undefined) {
+    const end = node.endProperty ? `COALESCE(${dayExpression(field(node.endProperty), zoneParam)}, ${start})` : start;
     params.push(range.from);
     clauses.push(`${end} >= $${params.length}::date`);
   }

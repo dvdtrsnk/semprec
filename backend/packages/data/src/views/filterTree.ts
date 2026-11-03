@@ -82,6 +82,7 @@ const dateRelativePreset = z.union([
   z.enum(DATE_RELATIVE_PRESETS),
   z
     .object({ fromDays: relativeDays, toDays: relativeDays.optional() })
+    .strict()
     .refine((range) => range.toDays === undefined || range.fromDays <= range.toDays, {
       message: "fromDays must not exceed toDays",
     }),
@@ -93,12 +94,14 @@ const filterConditionSchema = z.union([
   z.object({ type: z.enum(["is_empty", "is_not_empty"]), property }),
   z.object({ type: z.enum(["before", "after", "on_or_before", "on_or_after"]), property, value: z.string() }),
   z.object({ type: z.literal("date_range"), property, value: z.object({ from: z.string(), to: z.string() }) }),
-  z.object({
-    type: z.literal("date_relative"),
-    property,
-    endProperty: property.optional(),
-    preset: dateRelativePreset,
-  }),
+  z
+    .object({
+      type: z.literal("date_relative"),
+      property,
+      endProperty: property.optional(),
+      preset: dateRelativePreset,
+    })
+    .strict(),
   z.object({ type: z.enum(["lt", "lte", "gt", "gte"]), property, value: z.number().finite() }),
   z.object({ type: z.literal("in"), property, value: z.array(z.string()).min(1) }),
   // The value is a target *item id*, so it is validated as a uuid here rather than reaching

@@ -62,6 +62,16 @@ describe("date_relative filter", () => {
     expect(await titles(relative("today"))).toEqual([]);
   });
 
+  it.each(["past", "onOrBeforeToday", "olderThan30", "beforeNow"])(
+    "uses an end property with the upper-only %s preset",
+    async (preset) => {
+      await seed("old", { due: "2026-09-01", until: "2026-11-01" });
+      await seed("future", { due: "2026-11-02", until: "2026-11-03" });
+      await seed("missing", {});
+      expect(await titles(relative(preset, { endProperty: "until" }))).toEqual(["old"]);
+    },
+  );
+
   it("reduces a timestamp to the tenant-zone day", async () => {
     // 00:30 on the 22nd in Prague is still the 21st in UTC.
     await seed("prague-morning", { due: "2026-10-21T22:30:00Z" });
