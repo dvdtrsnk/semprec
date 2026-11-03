@@ -91,6 +91,7 @@ function isFolderLabel(label: GmailLabelRef): boolean {
 
 export interface ReconcileGmailAccountParams {
   mailboxItemId: string;
+  protectedMoveMessageIds?: ReadonlySet<string>;
   emailsDatabaseId: string;
   filesDatabaseId: string;
   foldersDatabaseId: string;
@@ -204,6 +205,7 @@ export async function reconcileGmailAccount(
         attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
         folderItemId,
         mailboxItemId: params.mailboxItemId,
+        protectedMoveMessageIds: params.protectedMoveMessageIds,
         providerMessageId: fetched.id,
         providerThreadId: fetched.threadId,
         storage: params.storage,
@@ -223,7 +225,7 @@ export async function reconcileGmailAccount(
     }
 
     // Drop any folder edge for a label this message no longer carries.
-    if (itemId && !(await hasUnsettledMailMove(dbClient, itemId))) {
+    if (itemId && !params.protectedMoveMessageIds?.has(itemId) && !(await hasUnsettledMailMove(dbClient, itemId))) {
       const currentEdges = await listRelationsForItem(dbClient, relationDefinition.id, itemId);
       const mappedSet = new Set(mappedFolderIds);
       for (const edge of currentEdges) {
@@ -241,7 +243,12 @@ export async function reconcileGmailAccount(
 
   for (const id of removedIds) {
     const meta = await getMailMessageMetaByProviderMessageId(dbClient, id);
-    if (!meta || (await hasUnsettledMailMove(dbClient, meta.itemId))) continue;
+    if (
+      !meta ||
+      params.protectedMoveMessageIds?.has(meta.itemId) ||
+      (await hasUnsettledMailMove(dbClient, meta.itemId))
+    )
+      continue;
     const currentEdges = await listRelationsForItem(dbClient, relationDefinition.id, meta.itemId);
     for (const edge of currentEdges) {
       const folderItemId = otherSide(edge, meta.itemId);
@@ -265,7 +272,11 @@ export async function reconcileGmailAccount(
     mailboxFolderRelationDefinitionId: mailboxFolderRelationDefinition.id,
     mailboxItemId: params.mailboxItemId,
   })) {
-    if (await hasUnsettledMailMove(dbClient, pending.messageItemId)) continue;
+    if (
+      params.protectedMoveMessageIds?.has(pending.messageItemId) ||
+      (await hasUnsettledMailMove(dbClient, pending.messageItemId))
+    )
+      continue;
     if ((await writeback.write(pending)) === "applied")
       await recordConfirmedMailMessageFlag(dbClient, pending.messageItemId, pending.propertyKey, pending.desiredState);
   }

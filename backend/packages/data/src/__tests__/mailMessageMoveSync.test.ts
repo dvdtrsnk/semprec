@@ -5,6 +5,7 @@ import { runInTenant } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { drainGmailMoves, drainGraphMoves, drainImapMoves } from "../mail/mailMessageMoveSync.js";
 import { logger } from "../mail/logger.js";
+import { reconcileImapAccount } from "../mail/imapReconcile.js";
 import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
 import { GmailRestClient } from "../mail/gmailRestClient.js";
 import { GraphRestClient } from "../mail/graphRestClient.js";
@@ -192,6 +193,8 @@ describe("mail move intent store", () => {
       throw original;
     });
     const cancel = vi.fn(async () => {
+      // Provider cleanup may reject without a value; the owner must retain its presence.
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
       throw undefined;
     });
     const releaseLock = vi.fn();
@@ -592,14 +595,25 @@ describe("mail move intent store", () => {
         recordDesiredMailMessageMove(client, { ...own, source, desiredPurpose: purpose }),
       ),
     );
+    const assertNoMoveTransaction = async () => {
+      const activity = await admin.query<{ pid: number; xact_start: Date | null }>(
+        "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'semprec_data'",
+      );
+      expect(activity.rows.length).toBeGreaterThan(0);
+      expect(activity.rows.every((row) => row.xact_start === null)).toBe(true);
+    };
     const fetchProvider: typeof fetch = vi
       .fn()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ id: source.providerMessageId, parentFolderId: "old-folder-id" }), {
+      .mockImplementationOnce(async () => {
+        await assertNoMoveTransaction();
+        return new Response(JSON.stringify({ id: source.providerMessageId, parentFolderId: "old-folder-id" }), {
           status: 200,
-        }),
-      )
-      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "new-id" }), { status: 201 }));
+        });
+      })
+      .mockImplementationOnce(async () => {
+        await assertNoMoveTransaction();
+        return new Response(JSON.stringify({ id: "new-id" }), { status: 201 });
+      });
     const graph = new GraphRestClient(async () => "fake-token", fetchProvider);
     await runInTenant(a, () => drainGraphMoves(pool, own.mailboxItemId, graph, target.databaseId, target.propertyId));
     expect(
@@ -690,6 +704,61 @@ describe("mail move intent store", () => {
       );
       expect(failed.rows[0]).toEqual({ status: "failed", attempts: 5, failure_reason: "messageMissing" });
       expect(missing).toHaveBeenCalledTimes(5);
+      await runInTenant(a, () =>
+        withTransaction(pool, (client) =>
+          recordDesiredMailMessageMove(client, {
+            ...own,
+            source: { provider: "graph", providerMessageId: "after-external-move" },
+            desiredPurpose: purpose,
+          }),
+        ),
+      );
+      const afterRemote = vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ id: "after-external-move", parentFolderId: "other-folder" }), { status: 200 }),
+        )
+        .mockResolvedValueOnce(new Response(JSON.stringify({ id: "rejected-local-result" }), { status: 201 }));
+      const rollbackGraph = new GraphRestClient(async () => "fake-token", afterRemote);
+      let created = false;
+      let primary: { value: unknown } | undefined;
+      try {
+        await admin.query(`CREATE FUNCTION batch18_reject_graph_result() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN IF NEW.provider_message_id = 'rejected-local-result' THEN RAISE EXCEPTION 'synthetic result rollback'; END IF; RETURN NEW; END $$`);
+        await admin.query(`CREATE TRIGGER batch18_reject_graph_result BEFORE UPDATE ON mail_message_meta
+          FOR EACH ROW EXECUTE FUNCTION batch18_reject_graph_result()`);
+        created = true;
+        await expect(
+          runInTenant(a, () =>
+            drainGraphMoves(pool, own.mailboxItemId, rollbackGraph, target.databaseId, target.propertyId),
+          ),
+        ).rejects.toThrow("synthetic result rollback");
+        const blocked = (
+          await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId)))
+        )[0];
+        expect(blocked).toMatchObject({ operation_phase: "in_flight", status: "pending" });
+        await runInTenant(a, () =>
+          drainGraphMoves(pool, own.mailboxItemId, rollbackGraph, target.databaseId, target.propertyId),
+        );
+        expect(afterRemote).toHaveBeenCalledTimes(2);
+      } catch (error) {
+        primary = { value: error };
+      }
+      const cleanupErrors: unknown[] = [];
+      try {
+        if (created) await admin.query("DROP TRIGGER batch18_reject_graph_result ON mail_message_meta");
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      try {
+        await admin.query("DROP FUNCTION IF EXISTS batch18_reject_graph_result()");
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      if (primary && cleanupErrors.length)
+        throw new AggregateError([primary.value, ...cleanupErrors], "Graph rollback test and cleanup failed");
+      if (primary) throw primary.value;
+      if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "Graph rollback cleanup failed");
     }
   });
 
@@ -717,6 +786,61 @@ describe("mail move intent store", () => {
         ),
       ),
     ).toBe(false);
+  });
+
+  it("does not dispatch a second Gmail job while the first owns its step", async () => {
+    const own = await fixture(a);
+    await runInTenant(a, () =>
+      withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...own, desiredPurpose: "archive" })),
+    );
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === "GET")
+        return new Response(JSON.stringify({ id: own.source.providerMessageId, labelIds: ["INBOX"] }), { status: 200 });
+      entered();
+      await gate;
+      return new Response(JSON.stringify({ id: own.source.providerMessageId, labelIds: [] }), { status: 200 });
+    });
+    const gmail = new GmailRestClient(async () => "fake-token", request);
+    const first = runInTenant(a, () => drainGmailMoves(pool, own.mailboxItemId, gmail)).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let primary: { value: unknown } | undefined;
+    try {
+      await Promise.race([
+        ready,
+        first.then(() => {
+          throw new Error("first move settled before dispatch");
+        }),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("move dispatch timed out")), 5000);
+        }),
+      ]);
+      await runInTenant(a, () => drainGmailMoves(pool, own.mailboxItemId, gmail));
+      expect(request.mock.calls.filter((call) => call[1]?.method === "POST")).toHaveLength(1);
+    } catch (error) {
+      primary = { value: error };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      release();
+    }
+    const settledFirst = await first;
+    if (primary && !settledFirst.ok)
+      throw new AggregateError([primary.value, settledFirst.error], "move overlap and cleanup failed");
+    if (primary) throw primary.value;
+    if (!settledFirst.ok) throw settledFirst.error;
+    expect(
+      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId))),
+    ).toEqual([]);
   });
 
   it("serializes competing move claims under the actual tenant guard", async () => {
@@ -1067,7 +1191,7 @@ describe("mail move intent store", () => {
     expect(
       await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, fixture.mailbox))),
     ).toEqual([]);
-    if (purpose === "archive") {
+    if (purpose === "archive" || purpose === "trash") {
       await runInTenant(a, () =>
         withTransaction(pool, async (client) => {
           await recordDesiredMailMessageMove(client, {
@@ -1088,7 +1212,11 @@ describe("mail move intent store", () => {
           );
         }),
       );
-      const copy = vi.fn(async () => ({ path: "Destination", destination: "Source" }));
+      const copy = vi.fn(async () =>
+        purpose === "archive"
+          ? { path: "Destination", destination: "Source" }
+          : { path: "Destination", destination: "Source", uidValidity: 99n, uidMap: new Map([[27, 44]]) },
+      );
       const flags = vi.fn(async () => true);
       const expunge = vi.fn(async () => true);
       const flow = {
@@ -1120,7 +1248,11 @@ describe("mail move intent store", () => {
       const blocked = (
         await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, fixture.mailbox)))
       )[0];
-      expect(blocked).toMatchObject({ status: "pending", operation_phase: "uncertain", operation_step: "copy" });
+      expect(blocked).toMatchObject(
+        purpose === "archive"
+          ? { status: "pending", operation_phase: "uncertain", operation_step: "copy" }
+          : { status: "pending", operation_phase: "between_steps", operation_step: "mark_deleted" },
+      );
     }
   });
 
@@ -1299,10 +1431,23 @@ describe("mail move intent store", () => {
       }),
     );
     const steps: string[] = [];
-    const close = vi.fn(async () => {});
+    const assertNoMoveTransaction = async () => {
+      const activity = await admin.query<{ pid: number; xact_start: Date | null }>(
+        "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'semprec_data'",
+      );
+      expect(activity.rows.length).toBeGreaterThan(0);
+      expect(activity.rows.every((row) => row.xact_start === null)).toBe(true);
+    };
+    const close = vi.fn(async () => {
+      await assertNoMoveTransaction();
+    });
     const fake = {
-      prepareMove: async () => ({ uidValidity: "42", capabilities: new Set(["UIDPLUS"]), found: true }),
+      prepareMove: async () => {
+        await assertNoMoveTransaction();
+        return { uidValidity: "42", capabilities: new Set(["UIDPLUS"]), found: true };
+      },
       executeMoveStep: async (step: string) => {
+        await assertNoMoveTransaction();
         const state = (await withTransaction(pool, (client) => listPendingMoves(client, fixture.mailboxId)))[0];
         expect(state).toMatchObject({ operation_phase: "in_flight", operation_step: step });
         steps.push(step);
@@ -1316,7 +1461,10 @@ describe("mail move intent store", () => {
       drainImapMoves(
         pool,
         fixture.mailboxId,
-        async () => fake,
+        async () => {
+          await assertNoMoveTransaction();
+          return fake;
+        },
         fixture.folderDb,
         fixture.mailboxProperty,
         fixture.folderProperty,
@@ -1388,6 +1536,38 @@ describe("mail move intent store", () => {
       setMessageFlag: setFlag,
     } as unknown as import("../mail/imapReconcile.js").ImapMailClient).write(flagWrites[0]!);
     expect(setFlag).toHaveBeenCalledWith("Archive", 23, "\\Seen", true);
+    const reconciledFlag = vi.fn(async () => {});
+    const reconcileClient = {
+      getCapabilities: async () => new Set<string>(),
+      listFolders: async () => [{ path: "Archive", specialUse: "\\Archive" }],
+      selectFolder: async () => ({ uidvalidity: 43, uidnext: 30, highestModSeq: null }),
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => null,
+      fetchAllUids: async () => [23],
+      fetchFlagsChangedSince: async () => [],
+      setMessageFlag: reconciledFlag,
+      appendMessage: async () => {},
+      close: async () => {},
+    } satisfies import("../mail/imapReconcile.js").ImapMailClient;
+    await runInTenant(a, () =>
+      withTransaction(pool, async (client) => {
+        const files = await getDatabaseByModuleId(client, "files");
+        const attachments = await getPropertyByKey(client, fixture.emailDb, "attachments");
+        if (!files || !attachments) throw new Error("missing attachment schema");
+        await reconcileImapAccount(client, reconcileClient, {
+          mailboxItemId: fixture.mailboxId,
+          emailsDatabaseId: fixture.emailDb,
+          filesDatabaseId: files.id,
+          foldersDatabaseId: fixture.folderDb,
+          folderRelationPropertyId: fixture.folderProperty,
+          mailboxFolderRelationPropertyId: fixture.mailboxProperty,
+          attachmentsRelationPropertyId: attachments.id,
+          storage: new LocalFsBlobStorageWriter("/private/tmp/unused-move-test"),
+          storageKeyPrefix: fixture.mailboxId,
+        });
+      }),
+    );
+    expect(reconciledFlag).toHaveBeenCalledWith("Archive", 23, "\\Seen", true);
 
     await runInTenant(a, () =>
       withTransaction(pool, async (client) => {
@@ -1509,6 +1689,8 @@ describe("mail move intent store", () => {
           messageItemId: message.id,
           messageId,
           emailsDatabaseId: emailDb.id,
+          foldersDatabaseId: folderDb.id,
+          mailboxPropertyId: folderMailbox.id,
           folderId,
           propertyId: emailFolder.id,
         };
@@ -1571,6 +1753,23 @@ describe("mail move intent store", () => {
         return result;
       }),
     );
+    const closeMissingAdapter = vi.fn(async () => {});
+    const missingAdapter = {
+      close: closeMissingAdapter,
+    } as unknown as import("../mail/imapReconcile.js").ImapMailClient;
+    await expect(
+      runInTenant(a, () =>
+        drainImapMoves(
+          pool,
+          fixture.mailboxItemId,
+          async () => missingAdapter,
+          fixture.foldersDatabaseId,
+          fixture.mailboxPropertyId,
+          fixture.propertyId,
+        ),
+      ),
+    ).rejects.toThrow("IMAP move adapter is unavailable");
+    expect(closeMissingAdapter).toHaveBeenCalledTimes(1);
     const next = await runInTenant(a, () =>
       withTransaction(pool, (client) =>
         recordDesiredMailMessageMove(client, {

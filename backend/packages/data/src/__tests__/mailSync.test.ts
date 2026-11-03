@@ -2421,9 +2421,14 @@ describe("mail sync job error handling (issue #26)", () => {
           changedMessageIds: [],
           removedMessageIds: [],
         }),
-        listAllMessageIds: async () => [],
-        fetchMessage: async () => null,
-        listLabels: async () => [],
+        listAllMessageIds: async () => ["fake-provider-id"],
+        fetchMessage: async () => ({
+          id: "fake-provider-id",
+          threadId: "fake-thread",
+          labelIds: ["INBOX"],
+          message: { messageId: "<move-job@example.test>", envelope: {}, attachments: [] },
+        }),
+        listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
         modifyMessageLabels: async () => {},
       };
       await handleSyncMailAccountTask(
@@ -2435,6 +2440,15 @@ describe("mail sync job error handling (issue #26)", () => {
       );
       expect(calls).toEqual(["observe", "move", "reconcile"]);
       expect(await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox))).toEqual([]);
+      const oldEdges = await withTransaction(runtime, (client) =>
+        client.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM item_relations edge JOIN items folder ON
+         (folder.id = edge.item_a OR folder.id = edge.item_b)
+         WHERE (edge.item_a = $1 OR edge.item_b = $1) AND folder.properties ->> 'providerId' = 'INBOX'`,
+          [fixture.message],
+        ),
+      );
+      expect(oldEdges.rows[0]?.count).toBe("0");
     } finally {
       await runtime.end();
     }

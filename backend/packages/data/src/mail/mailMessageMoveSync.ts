@@ -300,17 +300,6 @@ export async function drainImapMoves(
       row.operation_phase === "uncertain"
     )
       continue;
-    const target = await withTransaction(pool, (client) =>
-      imapTarget(
-        client,
-        foldersDatabaseId,
-        mailboxFolderPropertyId,
-        mailboxItemId,
-        row.message_item_id,
-        row.captured_purpose ?? row.desired_purpose,
-      ),
-    );
-    if (!target) continue;
     const source = row.source_evidence;
     const imap = await createClient();
     let providerFailure: { value: unknown } | undefined;
@@ -322,6 +311,17 @@ export async function drainImapMoves(
     let token = row.operation_token;
     const perform = async (): Promise<void> => {
       if (!imap.prepareMove || !imap.executeMoveStep) throw new Error("IMAP move adapter is unavailable");
+      const target = await withTransaction(pool, (client) =>
+        imapTarget(
+          client,
+          foldersDatabaseId,
+          mailboxFolderPropertyId,
+          mailboxItemId,
+          row.message_item_id,
+          row.captured_purpose ?? row.desired_purpose,
+        ),
+      );
+      if (!target) return;
       let prepared: Awaited<ReturnType<NonNullable<ImapMailClient["prepareMove"]>>>;
       try {
         prepared = await imap.prepareMove(source.path, source.uid);
@@ -415,7 +415,9 @@ export async function drainImapMoves(
           if (
             !currentTarget ||
             currentTarget.id !== activeEvidence.targetFolderId ||
-            currentTarget.path !== activeEvidence.targetPath
+            currentTarget.path !== activeEvidence.targetPath ||
+            (activeEvidence.targetUidValidity !== undefined &&
+              currentTarget.uidValidity !== activeEvidence.targetUidValidity)
           )
             return false;
           return claimMailMoveStep(client, {
@@ -534,7 +536,7 @@ async function imapTarget(
   mailboxItemId: string,
   messageItemId: string,
   purpose: MailMovePurpose,
-): Promise<{ id: string; path: string } | null> {
+): Promise<{ id: string; path: string; uidValidity: string | null } | null> {
   await lockMailThreadMutation(client);
   await client.query(
     "SELECT 1 FROM mail_message_move_sync_state WHERE tenant_id = app_tenant_default() AND message_item_id = $1 FOR UPDATE",
@@ -551,11 +553,12 @@ async function imapTarget(
     [foldersDatabaseId, purpose, mailboxItemId, mailboxFolderPropertyId],
   );
   const item = found.rows[0];
-  return found.rowCount === 1 &&
-    item &&
-    typeof item.path === "string" &&
-    item.path.length > 0 &&
-    item.path.length <= 1024
-    ? { id: item.id, path: item.path }
-    : null;
+  if (found.rowCount !== 1 || !item || typeof item.path !== "string" || !item.path || item.path.length > 1024)
+    return null;
+  const state = await client.query<{ uidvalidity: string | null }>(
+    "SELECT uidvalidity FROM mail_folder_sync_state WHERE tenant_id = app_tenant_default() AND item_id = $1 FOR UPDATE",
+    [item.id],
+  );
+  if (state.rowCount !== 1) return null;
+  return { id: item.id, path: item.path, uidValidity: state.rows[0]?.uidvalidity ?? null };
 }

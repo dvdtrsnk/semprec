@@ -69,6 +69,7 @@ function specialPurposeForGraphFolder(folder: GraphFolderRef): string {
 
 export interface ReconcileGraphAccountParams {
   mailboxItemId: string;
+  protectedMoveMessageIds?: ReadonlySet<string>;
   emailsDatabaseId: string;
   filesDatabaseId: string;
   foldersDatabaseId: string;
@@ -134,7 +135,12 @@ export async function reconcileGraphAccount(
   for (const change of delta.changes) {
     if (change.removed) {
       const meta = await getMailMessageMetaByProviderMessageId(dbClient, change.id);
-      if (!meta || (await hasUnsettledMailMove(dbClient, meta.itemId))) continue;
+      if (
+        !meta ||
+        params.protectedMoveMessageIds?.has(meta.itemId) ||
+        (await hasUnsettledMailMove(dbClient, meta.itemId))
+      )
+        continue;
       const edges = await listRelationsForItem(dbClient, relationDefinition.id, meta.itemId);
       for (const edge of edges) {
         const folderItemId = otherSide(edge, meta.itemId);
@@ -161,6 +167,7 @@ export async function reconcileGraphAccount(
       attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
       folderItemId,
       mailboxItemId: params.mailboxItemId,
+      protectedMoveMessageIds: params.protectedMoveMessageIds,
       providerMessageId: change.id,
       storage: params.storage,
       storageKeyPrefix: params.storageKeyPrefix,
@@ -168,7 +175,8 @@ export async function reconcileGraphAccount(
       ...change.message,
     });
 
-    if (await hasUnsettledMailMove(dbClient, result.itemId)) continue;
+    if (params.protectedMoveMessageIds?.has(result.itemId) || (await hasUnsettledMailMove(dbClient, result.itemId)))
+      continue;
     const edges = await listRelationsForItem(dbClient, relationDefinition.id, result.itemId);
     for (const edge of edges) {
       const otherFolderId = otherSide(edge, result.itemId);
@@ -198,7 +206,11 @@ export async function reconcileGraphAccount(
     mailboxFolderRelationDefinitionId: mailboxFolderRelationDefinition.id,
     mailboxItemId: params.mailboxItemId,
   })) {
-    if (await hasUnsettledMailMove(dbClient, pending.messageItemId)) continue;
+    if (
+      params.protectedMoveMessageIds?.has(pending.messageItemId) ||
+      (await hasUnsettledMailMove(dbClient, pending.messageItemId))
+    )
+      continue;
     if ((await writeback.write(pending)) === "applied")
       await recordConfirmedMailMessageFlag(dbClient, pending.messageItemId, pending.propertyKey, pending.desiredState);
   }

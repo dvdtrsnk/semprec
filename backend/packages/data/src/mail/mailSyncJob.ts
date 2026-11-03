@@ -260,8 +260,11 @@ export async function handleSyncMailAccountTask(
 
     logger.info({ mailboxItemId: payload.mailboxItemId, syncMode: state.syncMode }, "Mail sync starting");
 
+    const movesAtStart = await withTransaction(pool, (client) => listPendingMoves(client, payload.mailboxItemId));
+    const protectedMoveMessageIds = new Set(movesAtStart.map((move) => move.message_item_id));
     const shared = {
       mailboxItemId: payload.mailboxItemId,
+      protectedMoveMessageIds,
       emailsDatabaseId: moduleIds.emailsDatabaseId,
       filesDatabaseId: moduleIds.filesDatabaseId,
       foldersDatabaseId: moduleIds.foldersDatabaseId,
@@ -276,9 +279,8 @@ export async function handleSyncMailAccountTask(
     if (state.syncMode === "imap") {
       if (!adapters.createImapClient) throw new Error("No IMAP adapter configured for this composition root");
       const connectionLimit = imapConnectionLimitForProvider(mailboxProvider, mailboxItem.properties.connectionLimit);
-      const pendingMoves = await withTransaction(pool, (client) => listPendingMoves(client, payload.mailboxItemId));
       if (
-        pendingMoves.some(
+        movesAtStart.some(
           (move) =>
             move.source_evidence.provider === "imap" &&
             move.operation_phase !== "in_flight" &&
