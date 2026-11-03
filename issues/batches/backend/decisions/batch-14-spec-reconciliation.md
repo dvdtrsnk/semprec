@@ -45,3 +45,17 @@ The Task asks for collations in the test database and the deploy image, not a li
 Correct the nonexistent `backend/services/semprec-api/src/__tests__/customRouteMount.test.ts` Touches entry to the existing `backend/services/semprec-api/src/adapter/__tests__/customRouteMount.test.ts`. Its existing harness already mounts custom routes and constructs the real dispatcher. One combined request through that dispatcher must invoke the injected control through the actual factory/container, with the exact result/arguments asserted. Separate identity-only and mount-only tests do not establish that combined path. Keep existing dependency omission/error and unchanged-route cases; preserve owned HTTP resource settlement.
 
 This is a filename correction within the existing dependency-delivery Task and section 1, not permission to create an alternative harness or implement production per-mailbox controls. Source Task/AC, actual root API and the accepted ADR remain unchanged.
+
+## 9. gh-1359 measured archive/configuration race
+
+The parent's hash check of `rollup-overlap-diagnostic.log` verified the actual counterexample (archive PID 6424 scans zero dependencies; create PID 6423 commits; workers 6425/6426/6427 finish count 1; archive commits leaving count 1 and zero full jobs). This is a missed recount, not a measured lock wait or deadlock. The opposite-order and ordinary archive/restore controls are separate evidence with their own limits.
+
+Implement the narrow protocol in `2026-11-03-source-database-row-locks-coordinate-rollup-dependencies-and-archive`: source-row `FOR SHARE` before dependency upsert through its caller's enqueue/commit, conflicting with the existing archive/restore UPDATE, followed by a fresh READ COMMITTED dependency scan. Use the private database-owner row-locking slice to avoid the existing databasesStore/dependencies import cycle; no public export or propertyOps/config rewrite is needed. Task 4 and exact helper/dependency Touches are added. Preserve current tenant, missing/foreign, archived-source configuration and approved-operation behavior; require managed, actually open READ COMMITTED participants, without global locks, retries or a new busy response.
+
+Keep all original diagnostic logs/patches; replace defect-asserting scratch tests with the finite healthy-order regression tests and actual workers specified by the ADR. Other schema/purge races and multi-operation lock hierarchies are outside this measured repair. No acceptance or general deadlock/cancellation claim is made. The existing two-round whole-batch review budget is unchanged.
+
+## 10. gh-1409 gallery PATCH validates the merged result
+
+`viewsStore.patchView` shallow-merges config; replacing that behavior would change all view types beyond this Task. Required gallery members must be present and valid on create and in the final merged patch result. Omitting a member in a valid partial patch retains its stored value; an explicit invalid value or an invalid resulting merged configuration is refused with the established config validation error. Correct Task 5 and AC 2 to state this precisely, keeping positive omission and negative explicit-value assertions in the named tests. Do not change common merge/adoption semantics or introduce a new replace operation.
+
+The aggregate's repetitive top-level Context is shortened to fit the metadata limit; all complete member snapshots remain present. No member requirement is deleted to make space.
