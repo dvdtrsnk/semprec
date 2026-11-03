@@ -10,10 +10,10 @@ parent: "sp-62331d42-78af-4b93-ae97-d5ccbe3324df"
 assignees: []
 milestone: null
 createdAt: "2026-10-31T17:31:01.910Z"
-updatedAt: "2026-11-03T04:21:12.348Z"
+updatedAt: "2026-11-03T04:24:20.780Z"
 closedAt: null
 source: null
-approval: {"specSha256":"40d7bc2b85aac151d9ef97b7c34bc7270dbe6bde9aaf1372e8dd691c2736f7fe","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: Journal domain refusal preserves established transport envelopes","at":"2026-11-03T04:21:12.348Z"}
+approval: {"specSha256":"a06f403d1efff061b0cfae3c27f522b8792c702176d7d907e75d2a24acf91b3f","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: exact existing Events seed/cutover test harness","at":"2026-11-03T04:24:20.780Z"}
 resolution: null
 ---
 **Blocked by:** sp-144a2408-c4a8-4b9f-b68b-a5eec527dba7
@@ -507,6 +507,7 @@ Load `db-migrations`, `canonical-keys` and `testing`.
 - backend/packages/data/src/seed/i18n/cs.json (property.events.* keys)
 - backend/packages/data/src/seed/i18n/en.json (property.events.* keys)
 - backend/packages/data/src/__tests__ (new seed and cutover tests)
+- backend/packages/data/src/calendar/__tests__/eventsCalendarPropertiesCutoverMigration.test.ts (existing seed/cutover harness for the exact Task 4 and AC, including unchanged existing items/date config and second-run idempotence)
 
 #### Scope
 
