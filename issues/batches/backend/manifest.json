@@ -3,7 +3,7 @@
   "baseline": "9b4929ba4e672a8f2b0c83a955bdf0679757fcc3",
   "programIssue": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
   "scope": "backend-only",
-  "sourceCount": 665,
+  "sourceCount": 669,
   "activeBatchCount": 74,
   "heldBatchCount": 2,
   "externalPrerequisites": [
@@ -1881,12 +1881,40 @@
       "sequence": 19,
       "status": "proposed",
       "title": "[backend-delivery 19/74] Verify security readiness under parent supervision",
-      "bodyCharacters": 11104,
-      "specSha256": "ff4fb264aecc5696062b17f7a503d96cfb8cc3ae4a0ba7b78675c5e41b135287",
+      "bodyCharacters": 27363,
+      "specSha256": "9a98aca597b54ae88b6b30735d4de941c1ff172d60fe2d53fc80002fd0ea014e",
       "members": [
         {
+          "id": "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a",
+          "specSha256": "151b937e6061d6bead13ade1cbb3485fb70f5d243d711d5cdc284010ecf14161",
+          "parent": "gh-961",
+          "dependencies": [],
+          "approval": "unapproved"
+        },
+        {
+          "id": "sp-a0f046dd-8781-4141-bc04-5dad0b725faf",
+          "specSha256": "b4477a04f16399f900bb423a6287cb000de7be7985cc4e1af6ee625669a0f104",
+          "parent": "gh-961",
+          "dependencies": [],
+          "approval": "unapproved"
+        },
+        {
+          "id": "sp-94a5c71d-4663-4014-9256-db63e179346e",
+          "specSha256": "c746d92079db88e6726cac6df96aa0f262f0b5c30491d6e07ee746952dbc63bf",
+          "parent": "gh-961",
+          "dependencies": [],
+          "approval": "unapproved"
+        },
+        {
+          "id": "sp-dd171464-d76c-45f9-b113-73d81b38aad4",
+          "specSha256": "9aedebcda37a77e87ec9f009e0ad0c1ef711cade5d6e5f5ece3ec3d71b7e5a01",
+          "parent": "gh-961",
+          "dependencies": [],
+          "approval": "unapproved"
+        },
+        {
           "id": "gh-1086",
-          "specSha256": "62c272324aa2fcab0dbc834b4a0f4d1e069dfb5364e53afaf302cffea589a562",
+          "specSha256": "ec64a54e01534dec504a48aea3a8f619d36b2eb927c29097c8b32dba9b15b5b4",
           "parent": "gh-961",
           "dependencies": [
             "gh-1000",
@@ -1910,9 +1938,13 @@
             "gh-1084",
             "gh-1080",
             "gh-1085",
-            "gh-1068"
+            "gh-1068",
+            "sp-a0f046dd-8781-4141-bc04-5dad0b725faf",
+            "sp-94a5c71d-4663-4014-9256-db63e179346e",
+            "sp-dd171464-d76c-45f9-b113-73d81b38aad4",
+            "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a"
           ],
-          "approval": "unapproved"
+          "approval": "repository-approved"
         }
       ]
     },

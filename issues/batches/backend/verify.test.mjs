@@ -12,7 +12,7 @@ const catalog = await loadCatalog(root);
 const handovers = await handoverIds(root);
 
 test('the complete real plan preserves all sources and their dependency order', () => {
-  assert.deepEqual(verifyPlan(original, catalog, handovers), { sources: 665, mainBatches: 74, heldBatches: 2 });
+  assert.deepEqual(verifyPlan(original, catalog, handovers), { sources: 669, mainBatches: 74, heldBatches: 2 });
 });
 
 test('malformed manifest inputs are rejected at the file boundary', () => {
