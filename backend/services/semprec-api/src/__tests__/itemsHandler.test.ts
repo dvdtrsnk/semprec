@@ -276,6 +276,119 @@ describe("item routes (issue #241)", () => {
     ).toBe(true);
   });
 
+  it("validates Inbox capture and type writes through REST and replays a capture without duplicating its day edge", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const databases = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, async (client) => {
+        const inbox = await getDatabaseByModuleId(client, "inbox");
+        const types = await getDatabaseByModuleId(client, "inboxItemTypes");
+        if (!inbox || !types) throw new Error("Inbox databases were not seeded");
+        return { inbox, types };
+      }),
+    );
+    const create = (databaseId: string, properties: Record<string, unknown>, key = randomUUID()) =>
+      fetch(`${baseUrl}/api/databases/${databaseId}/items`, {
+        method: "POST",
+        headers: { ...headers, "Idempotency-Key": key },
+        body: JSON.stringify({ properties }),
+      });
+    const count = async (databaseId: string) =>
+      (await runInTenant(getTenantZeroId(), () => chokePoint.listItems(databaseId))).items.length;
+    for (const [databaseId, properties, field] of [
+      [databases.inbox.id, { date: "2026-02-30", time: "12:00" }, "date"],
+      [databases.inbox.id, { date: "2026-10-16", time: "24:00" }, "time"],
+      [
+        databases.types.id,
+        { name: "Invalid", processingMethod: "database", targetDatabase: "journal" },
+        "targetDatabase",
+      ],
+      [
+        databases.types.id,
+        { name: "Invalid", processingMethod: "database", targetDatabase: "transcripts" },
+        "targetDatabase",
+      ],
+      [
+        databases.types.id,
+        { name: "Invalid", processingMethod: "database", targetDatabase: "nonsense" },
+        "targetDatabase",
+      ],
+    ] as const) {
+      const before = await count(databaseId);
+      const response = await create(databaseId, properties);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: "validation_failed", details: { field } } });
+      expect(await count(databaseId)).toBe(before);
+    }
+    const key = randomUUID();
+    const first = await create(databases.inbox.id, { date: "2026-10-16", time: "12:00" }, key);
+    const replay = await create(databases.inbox.id, { date: "2026-10-16", time: "12:00" }, key);
+    expect(first.status).toBe(201);
+    expect(replay.status).toBe(201);
+    const itemSchema = z.object({ id: z.string() });
+    const firstBody: unknown = await first.json();
+    const replayBody: unknown = await replay.json();
+    const itemId = itemSchema.parse(firstBody).id;
+    expect(itemSchema.parse(replayBody).id).toBe(itemId);
+    const days = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, async (client) => {
+        const { rows } = await client.query<{ period: string }>(
+          `SELECT day.properties->>'period' AS period FROM item_relations r
+         JOIN relation_definitions d ON d.id = r.relation_definition_id
+         JOIN properties p ON p.id = d.property_id_a
+         JOIN items day ON day.id = r.item_b
+         WHERE p.database_id = $1 AND p.key = 'journalDay' AND r.item_a = $2`,
+          [databases.inbox.id, itemId],
+        );
+        return rows;
+      }),
+    );
+    expect(days).toEqual([{ period: "2026-10-16" }]);
+    const valid = await create(databases.types.id, {
+      name: "Valid",
+      processingMethod: "database",
+      targetDatabase: "tasks",
+    });
+    expect(valid.status).toBe(201);
+    const validBody: unknown = await valid.json();
+    const typeItem = z.object({ id: z.string(), updatedAt: z.string() }).parse(validBody);
+    const patch = (properties: Record<string, unknown>, ifVersion: string) =>
+      fetch(`${baseUrl}/api/items/${typeItem.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties, ifVersion }),
+      });
+    for (const properties of [
+      { targetDatabase: "journal" },
+      { targetDatabase: "transcripts" },
+      { targetDatabase: "nonsense" },
+      { processingMethod: "pageContent" },
+    ]) {
+      const rejected = await patch(properties, typeItem.updatedAt);
+      expect(rejected.status).toBe(400);
+      expect(await rejected.json()).toMatchObject({
+        error: { code: "validation_failed", details: { field: "targetDatabase" } },
+      });
+      const unchanged = await runInTenant(getTenantZeroId(), () => chokePoint.getItem(databases.types.id, typeItem.id));
+      expect(unchanged?.properties).toMatchObject({ processingMethod: "database", targetDatabase: "tasks" });
+    }
+    // Generic writes before validation could persist the now-disallowed journal target.
+    await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, async (client) => {
+        const result = await client.query<{ id: string }>(
+          "UPDATE items SET properties = jsonb_set(properties, '{targetDatabase}', to_jsonb($3::text)) WHERE database_id = $1 AND id = $2 RETURNING id",
+          [databases.types.id, typeItem.id, "journal"],
+        );
+        expect(result.rows).toHaveLength(1);
+      }),
+    );
+    const legacy = await runInTenant(getTenantZeroId(), () => chokePoint.getItem(databases.types.id, typeItem.id));
+    if (!legacy) throw new Error("Missing legacy type");
+    const renamed = await patch({ name: "Renamed" }, legacy.updatedAt);
+    expect(renamed.status).toBe(200);
+    expect(await renamed.json()).toMatchObject({ properties: { name: "Renamed", targetDatabase: "journal" } });
+  });
+
   it("validates Books ratings through the PATCH HTTP response", async () => {
     await seedSystem(pool, createViewTypeRegistry());
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };

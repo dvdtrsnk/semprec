@@ -2061,6 +2061,86 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     expect(readIdArray(notifications, "notifications")).toEqual([a.notificationId]);
   });
 
+  it("returns localized active Inbox type fields over authenticated HTTP", async () => {
+    for (const [locale, targetLabel] of [
+      ["cs", "Úkoly"],
+      ["en", "Tasks"],
+    ] as const) {
+      const tenantId = await createTestTenant(adminPool);
+      await provisionTenant(pool, tenantId);
+      const typesId = await databaseIdFor(tenantId, "inboxItemTypes");
+      const fixture = await inTenantTransaction(tenantId, async (client) => {
+        const create = (properties: Record<string, unknown>) =>
+          createItemWithClient(client, { databaseId: typesId, properties });
+        const task = await create({
+          name: "Task",
+          emoji: "☑️",
+          status: "active",
+          processingMethod: "database",
+          targetDatabase: "tasks",
+        });
+        const note = await create({ name: "Note", emoji: "📝", status: "active", processingMethod: "pageContent" });
+        const unknown = await create({
+          name: "Old",
+          emoji: "❔",
+          status: "active",
+          processingMethod: "database",
+          targetDatabase: "tasks",
+        });
+        const archived = await create({
+          name: "Archived",
+          emoji: "🗑️",
+          status: "archived",
+          processingMethod: "pageContent",
+        });
+        // Older generic writes accepted arbitrary select values; this reproduces a legacy target.
+        const changed = await client.query<{ id: string }>(
+          "UPDATE items SET properties = jsonb_set(properties, '{targetDatabase}', to_jsonb($3::text)) WHERE database_id = $1 AND id = $2 RETURNING id",
+          [typesId, unknown.id, "legacyUnknown"],
+        );
+        expect(changed.rows).toHaveLength(1);
+        return { task, note, unknown, archived };
+      });
+      const email = `${randomUUID()}@example.test`;
+      const password = `pw-${randomUUID()}`;
+      const passwordHash = await hashPassword(password);
+      await runAsSystem("inbox-type-http-fixture", () =>
+        createUser(adminPool, { tenantId, email, passwordHash, locale }),
+      );
+      const caller = await signIn(email, password, "ios");
+      const body: unknown = JSON.parse(await sendOk(caller, { method: "GET", path: "/api/inbox-types" }));
+      expect(body).toMatchObject({
+        types: expect.arrayContaining([
+          {
+            id: fixture.task.id,
+            emoji: "☑️",
+            label: "Task",
+            processingMethod: "database",
+            targetDatabaseKey: "tasks",
+            targetLabel,
+          },
+          {
+            id: fixture.note.id,
+            emoji: "📝",
+            label: "Note",
+            processingMethod: "pageContent",
+            targetDatabaseKey: null,
+            targetLabel: null,
+          },
+          {
+            id: fixture.unknown.id,
+            emoji: "❔",
+            label: "Old",
+            processingMethod: "database",
+            targetDatabaseKey: "legacyUnknown",
+            targetLabel: "legacyUnknown",
+          },
+        ]),
+      });
+      expect(readIdArray(JSON.stringify(body), "types")).not.toContain(fixture.archived.id);
+    }
+  });
+
   it("returns localized model and operation breakdowns over authenticated HTTP", async () => {
     for (const [locale, expectedModel, expectedOperation] of [
       ["cs", "Diarizace", "Rozpoznání mluvčích"],

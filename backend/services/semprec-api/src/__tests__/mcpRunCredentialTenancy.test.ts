@@ -14,6 +14,8 @@ import {
 } from "@semprec/data/testSupport";
 import {
   createChokePoint,
+  createItemWithClient,
+  getDatabaseByModuleId,
   createUser,
   hashPassword,
   insertValueLink,
@@ -109,6 +111,104 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
     });
     return { status: res.status, body: await res.json() };
   }
+
+  it("validates Inbox capture and type creates through authenticated MCP without retaining rejected rows", async () => {
+    await runInTenant(tenantA, () => seedSystem(pool));
+    const user = await createUserIn(tenantA);
+    const projectItemId = await runInTenant(tenantA, () => createTestProjectItem(pool));
+    const credential = await runInTenant(tenantA, () =>
+      withTransaction(pool, (client) =>
+        mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.write"], userId: user.id }),
+      ),
+    );
+    const databases = await runInTenant(tenantA, () =>
+      withTransaction(pool, async (client) => {
+        const { rows } = await client.query<{ id: string; owner_module_id: string }>(
+          "SELECT id, owner_module_id FROM databases WHERE owner_module_id = ANY($1::text[])",
+          [["inbox", "inboxItemTypes"]],
+        );
+        const inbox = rows.find((row) => row.owner_module_id === "inbox");
+        const types = rows.find((row) => row.owner_module_id === "inboxItemTypes");
+        if (!inbox || !types) throw new Error("Inbox databases were not seeded");
+        return { inbox: inbox.id, types: types.id };
+      }),
+    );
+    const count = (databaseId: string) =>
+      runInTenant(tenantA, () =>
+        withTransaction(pool, async (client) => {
+          const result = await client.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM items WHERE database_id = $1",
+            [databaseId],
+          );
+          return result.rows[0]?.count;
+        }),
+      );
+    for (const [databaseId, properties, field] of [
+      [databases.inbox, { date: "2026-02-30", time: "12:00" }, "date"],
+      [databases.inbox, { date: "2026-10-16", time: "24:00" }, "time"],
+      [databases.types, { name: "Invalid", processingMethod: "database", targetDatabase: "journal" }, "targetDatabase"],
+      [
+        databases.types,
+        { name: "Invalid", processingMethod: "database", targetDatabase: "transcripts" },
+        "targetDatabase",
+      ],
+      [
+        databases.types,
+        { name: "Invalid", processingMethod: "database", targetDatabase: "nonsense" },
+        "targetDatabase",
+      ],
+    ] as const) {
+      const before = await count(databaseId);
+      const rejected = await callTool(credential.token, "semprec.item.create", { databaseId, properties });
+      expect(rejected.status).toBe(200);
+      expect(rejected.body).toMatchObject({ error: { code: -32602, data: { field } } });
+      expect(await count(databaseId)).toBe(before);
+    }
+    for (const [databaseId, properties] of [
+      [databases.inbox, { date: "2026-10-16", time: "12:00" }],
+      [databases.types, { name: "Valid", processingMethod: "database", targetDatabase: "tasks" }],
+    ] as const) {
+      const before = await count(databaseId);
+      const accepted = await callTool(credential.token, "semprec.item.create", { databaseId, properties });
+      expect(accepted.status).toBe(200);
+      expect(accepted.body).toHaveProperty("result");
+      expect(await count(databaseId)).toBe((before ?? 0) + 1);
+    }
+  });
+
+  it("projects Emails HTML through authenticated MCP while keeping the stored body raw", async () => {
+    await runInTenant(tenantA, () => seedSystem(pool));
+    const user = await createUserIn(tenantA);
+    const credential = await mintCredentialIn(tenantA, user.id);
+    const raw = '<p onclick="evil()">safe</p><script>evil()</script><img src="https://tracker.example/pixel">';
+    const item = await runInTenant(tenantA, () =>
+      withTransaction(pool, async (client) => {
+        const database = await getDatabaseByModuleId(client, "emails");
+        if (!database) throw new Error("Emails database was not seeded");
+        return createItemWithClient(
+          client,
+          { databaseId: database.id, properties: { body: raw } },
+          { allowedSystemKeys: ["body"] },
+        );
+      }),
+    );
+    const response = await callTool(credential.token, "semprec.item.get", { itemId: item.id });
+    expect(response.status).toBe(200);
+    expect(response.body).toHaveProperty("result");
+    const text = JSON.stringify(response.body);
+    expect(text).toContain("safe");
+    expect(text).not.toMatch(/<script|onclick|https:\/\/tracker/i);
+    const stored = await runInTenant(tenantA, () =>
+      withTransaction(pool, async (client) => {
+        const { rows } = await client.query<{ body: string }>(
+          "SELECT properties->>'body' AS body FROM items WHERE database_id = $1 AND id = $2",
+          [item.databaseId, item.id],
+        );
+        return rows[0]?.body;
+      }),
+    );
+    expect(stored).toBe(raw);
+  });
 
   it("refuses Journal item.create through an authenticated run credential without creating a row", async () => {
     await runInTenant(tenantA, () => seedSystem(pool));

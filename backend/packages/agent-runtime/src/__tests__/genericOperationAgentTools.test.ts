@@ -66,6 +66,75 @@ describe("generic operation AgentTools (issue #220)", () => {
   });
 
   describe("createGenericOperationAgentTools", () => {
+    it("validates Inbox capture and type creation through the agent tool", async () => {
+      const inbox = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "inbox"));
+      const types = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "inboxItemTypes"));
+      if (!inbox || !types) throw new Error("Inbox databases were not seeded");
+      const projectItemId = await createProjectItem();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "create inbox items" });
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+      const count = async (databaseId: string) => {
+        const { rows } = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM items WHERE database_id = $1",
+          [databaseId],
+        );
+        return rows[0]?.count ?? 0;
+      };
+      for (const [databaseId, properties] of [
+        [inbox.id, { date: "2026-02-30", time: "12:00" }],
+        [inbox.id, { date: "2026-10-16", time: "24:00" }],
+        [types.id, { name: "Invalid", processingMethod: "database", targetDatabase: "journal" }],
+        [types.id, { name: "Invalid", processingMethod: "database", targetDatabase: "transcripts" }],
+        [types.id, { name: "Invalid", processingMethod: "database", targetDatabase: "nonsense" }],
+      ] as const) {
+        const before = await count(databaseId);
+        const rejected = await tools["item.create"](run.id, { databaseId, properties });
+        expect(rejected.error).toBe(true);
+        expect(rejected.result).toMatch(/^validation_failed:/);
+        expect(await count(databaseId)).toBe(before);
+      }
+      for (const [databaseId, properties] of [
+        [inbox.id, { date: "2026-10-16", time: "12:00" }],
+        [types.id, { name: "Valid", processingMethod: "database", targetDatabase: "tasks" }],
+      ] as const) {
+        const before = await count(databaseId);
+        const accepted = await tools["item.create"](run.id, { databaseId, properties });
+        expect(accepted.error).toBe(false);
+        expect(await count(databaseId)).toBe(before + 1);
+      }
+    });
+
+    it("projects Emails body on agent item.get but leaves stored and other-module HTML unchanged", async () => {
+      const emails = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "emails"));
+      if (!emails) throw new Error("Emails database was not seeded");
+      const raw = '<p onclick="evil()">safe</p><script>evil()</script><img src="https://tracker.example/pixel">';
+      const email = await withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: emails.id, properties: { body: raw } },
+          { allowedSystemKeys: ["body"] },
+        ),
+      );
+      const other = await chokePoint.createDatabase({ name: "Other" });
+      await chokePoint.createProperty({ databaseId: other.id, key: "body", name: "Body", type: "longText" });
+      const otherItem = await chokePoint.createItem({ databaseId: other.id, properties: { body: raw } });
+      const projectItemId = await createProjectItem();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "read emails" });
+      const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+      const projected = await tools["item.get"](run.id, { itemId: email.id });
+      expect(projected.error).toBe(false);
+      expect(projected.result).toContain("safe");
+      expect(projected.result).not.toMatch(/<script|onclick|https:\/\/tracker/i);
+      const unchanged = await tools["item.get"](run.id, { itemId: otherItem.id });
+      expect(unchanged.error).toBe(false);
+      expect(unchanged.result).toContain("tracker.example");
+      const { rows } = await pool.query<{ body: string }>(
+        "SELECT properties->>'body' AS body FROM items WHERE database_id = $1 AND id = $2",
+        [emails.id, email.id],
+      );
+      expect(rows[0]?.body).toBe(raw);
+    });
+
     it("refuses a Journal item without type or period through the agent tool without creating a row", async () => {
       const journal = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "journal"));
       if (!journal) throw new Error("Journal database was not seeded");
