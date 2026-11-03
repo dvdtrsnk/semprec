@@ -3160,7 +3160,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     }
 
     /** A card whose source Inbox item was soft-deleted, so the tick makes it `invalid` with `sourceDeleted`. */
-    async function createSourceDeletedCard() {
+    async function createSourceDeletedCard(prior?: "targetArchived" | "targetDeleted" | "legacy") {
       const type = await withTransaction(pool, (client) =>
         createInboxTypeWithClient(client, {
           inboxItemTypesDatabaseId: typesId,
@@ -3180,6 +3180,21 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         }),
       );
       await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+      if (prior) {
+        const card = await findProposalForItem(item.id);
+        if (!card) throw new Error("expected proposal");
+        await markInvalid(
+          card.id,
+          prior === "legacy"
+            ? undefined
+            : {
+                code: prior,
+                field: "project",
+                itemId: randomUUID(),
+                label: "Project",
+              },
+        );
+      }
       await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, item.id));
       await runTick(item.id, async () => {
         throw new Error("computeProposal must not be called for a deleted source");
@@ -3187,31 +3202,34 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       return (await findProposalForItem(item.id))!;
     }
 
-    it("a card invalid for a deleted source is refused on revise, and the card is left unchanged", async () => {
-      const card = await createSourceDeletedCard();
-      expect(card.properties.status).toBe("invalid");
-      expect(card.properties.invalidReason).toMatchObject({ code: "sourceDeleted" });
-      const before = await readCard(card.id);
+    it.each(["targetArchived", "targetDeleted", "legacy"] as const)(
+      "a deleted source supersedes %s and revise is refused without changes",
+      async (prior) => {
+        const card = await createSourceDeletedCard(prior);
+        expect(card.properties.status).toBe("invalid");
+        expect(card.properties.invalidReason).toMatchObject({ code: "sourceDeleted" });
+        const before = await readCard(card.id);
 
-      const attempt = withTransaction(pool, (client) =>
-        reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card.id, {
-          message: "Use Tasks instead",
-          entityKind: "database",
-          target: tasksId,
-          properties: { name: "Buy milk" },
-        }),
-      );
-      const error = await attempt.then(
-        () => null,
-        (err: unknown) => err,
-      );
-      expect(error).toBeInstanceOf(ValidationError);
-      expect(error).toHaveProperty("details", { field: "status" });
+        const attempt = withTransaction(pool, (client) =>
+          reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card.id, {
+            message: "Use Tasks instead",
+            entityKind: "database",
+            target: tasksId,
+            properties: { name: "Buy milk" },
+          }),
+        );
+        const error = await attempt.then(
+          () => null,
+          (err: unknown) => err,
+        );
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toHaveProperty("details", { field: "status" });
 
-      const after = await readCard(card.id);
-      expect(after!.properties).toEqual(before!.properties);
-      expect(after!.updatedAt).toEqual(before!.updatedAt);
-    });
+        const after = await readCard(card.id);
+        expect(after!.properties).toEqual(before!.properties);
+        expect(after!.updatedAt).toEqual(before!.updatedAt);
+      },
+    );
 
     it("revising a fixable targetArchived card returns it to proposed and clears its reason in the same write", async () => {
       const card = await createDatabaseProposal("Buy milk");

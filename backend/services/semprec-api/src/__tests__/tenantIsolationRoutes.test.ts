@@ -2056,6 +2056,59 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     expect(adminMismatch).toEqual([]);
   });
 
+  it("refuses user PATCHes of every proposal card-state key while allowing the owner's user property", async () => {
+    const path = `/api/items/${a.proposalItemId}`;
+    const before = await sendOk(a.member, { method: "GET", path });
+    const version = readString(before, "updatedAt");
+    const values: Record<string, unknown> = {
+      aiProposal: {},
+      userOverrides: {},
+      userEditedKeys: [],
+      aiVersion: 1,
+      reason: "reason",
+      recognizedTypeId: "type",
+      typeCandidates: [],
+      candidates: [],
+      invalidReason: {},
+      referencedItemIds: [],
+      results: [],
+      context: {},
+    };
+    for (const [key, value] of Object.entries(values)) {
+      const response = await send(a.member, {
+        method: "PATCH",
+        path,
+        body: { properties: { [key]: value }, ifVersion: version },
+      });
+      expect(response.status, key).toBe(403);
+      expect(await sendOk(a.member, { method: "GET", path }), key).toBe(before);
+    }
+    const foreign = await send(b.member, {
+      method: "PATCH",
+      path,
+      body: { properties: { reason: "foreign" }, ifVersion: version },
+    });
+    expect(foreign.status).toBe(404);
+    expect(await sendOk(a.member, { method: "GET", path })).toBe(before);
+
+    const created = await sendOk(a.member, {
+      method: "POST",
+      path: `/api/databases/${a.databaseId}/items`,
+      body: { properties: {} },
+    });
+    const ownPath = `/api/items/${readString(created, "id")}`;
+    const changed = await sendOk(a.member, {
+      method: "PATCH",
+      path: ownPath,
+      body: {
+        properties: { [a.propertyKey]: "allowed" },
+        ifVersion: readString(created, "updatedAt"),
+      },
+    });
+    const parsed: unknown = JSON.parse(changed);
+    expect(parsed).toMatchObject({ properties: { [a.propertyKey]: "allowed" } });
+  });
+
   it("lists A's own approval request and unread notification for A", async () => {
     expect(readIdArray(await sendOk(a.member, { method: "GET", path: "/api/approval-requests" }), "rows")).toEqual([
       a.approvalRequestId,

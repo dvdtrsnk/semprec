@@ -583,8 +583,8 @@ function invalidReasonLabel(item: ItemRow | null): string {
  * exists, and stores why as the `sourceDeleted` `invalidReason` (issue #1482). A locked
  * (`confirmed`/`rejected`) proposal, or one with no proposal row at all, is left untouched — per
  * the epic's "a locked card is never recomputed again" rule and because there is nothing to
- * invalidate. A no-op if already `invalid`, so a source deleted more than once (e.g. soft-deleted,
- * then its delete event re-fires) doesn't spam history.
+ * invalidate. A card already invalid for this deleted source is left untouched, so repeated delete
+ * events do not add history; other invalid reasons are superseded by the deleted source.
  */
 async function invalidateProposalForDeletedSource(
   client: PoolClient,
@@ -594,12 +594,11 @@ async function invalidateProposalForDeletedSource(
   sourceItem: ItemRow | null,
 ): Promise<void> {
   if (!existingProposal) return;
-  const status = existingProposal.properties.status;
-  if (typeof status === "string" && LOCKED_PROPOSAL_STATUSES.has(status)) return;
-  if (status === "invalid") return;
-
   const locked = await lockUnlockedProposal(client, config, existingProposal);
   if (!locked) return;
+  const existingReason = invalidReasonSchema.safeParse(locked.properties.invalidReason);
+  if (isFinalInvalid(locked.properties) && existingReason.success && existingReason.data.itemId === sourceItemId)
+    return;
   const invalidReason: InvalidReason = {
     code: "sourceDeleted",
     field: "",

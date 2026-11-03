@@ -158,6 +158,18 @@ describe("acceptInvitation (issue #1087)", () => {
     "activates the new tenant, binds a member with the invitation's email and seeds the tenant's own system databases",
     async () => {
       const zeroDatabasesBefore = await countDatabases(getTenantZeroId());
+      const zeroBefore = await adminPool.query<{ row: unknown }>(
+        "SELECT to_jsonb(t) AS row FROM tenants t WHERE id = $1",
+        [getTenantZeroId()],
+      );
+      const zeroDatabaseRowsBefore = await adminPool.query<{ row: unknown }>(
+        "SELECT to_jsonb(d) AS row FROM databases d WHERE tenant_id = $1 ORDER BY id",
+        [getTenantZeroId()],
+      );
+      const inviterBefore = await adminPool.query<{ row: unknown }>(
+        "SELECT to_jsonb(u) AS row FROM users u WHERE id = $1",
+        [inviterId],
+      );
       const { token } = await invite(INVITEE);
 
       const user = await acceptInvitation(dataPool, { token, password: PASSWORD });
@@ -199,6 +211,25 @@ describe("acceptInvitation (issue #1087)", () => {
       expect(budgets.rowCount).toBe(0);
 
       expect(await countDatabases(getTenantZeroId())).toBe(zeroDatabasesBefore);
+      expect(
+        (
+          await adminPool.query<{ row: unknown }>("SELECT to_jsonb(t) AS row FROM tenants t WHERE id = $1", [
+            getTenantZeroId(),
+          ])
+        ).rows,
+      ).toEqual(zeroBefore.rows);
+      expect(
+        (
+          await adminPool.query<{ row: unknown }>(
+            "SELECT to_jsonb(d) AS row FROM databases d WHERE tenant_id = $1 ORDER BY id",
+            [getTenantZeroId()],
+          )
+        ).rows,
+      ).toEqual(zeroDatabaseRowsBefore.rows);
+      expect(
+        (await adminPool.query<{ row: unknown }>("SELECT to_jsonb(u) AS row FROM users u WHERE id = $1", [inviterId]))
+          .rows,
+      ).toEqual(inviterBefore.rows);
       const inviter = requireSingleRow(
         (await adminPool.query<{ tenant_id: string }>("SELECT tenant_id FROM users WHERE id = $1", [inviterId])).rows,
         "the inviting admin",
