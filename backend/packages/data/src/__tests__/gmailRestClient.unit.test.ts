@@ -503,6 +503,41 @@ describe("Gmail sendMessage (issue #1637)", () => {
     expect((error as Error).message).toBe("Gmail send failed with status 500");
   });
 
+  it.each([undefined, { token: "PRIVATE-SEND-SECRET" }, new Error("PRIVATE-SEND-SECRET")])(
+    "confines an unknown send fetch rejection",
+    async (failure) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(failure);
+      const client = new GmailRestClient(async () => SECRET_TOKEN, fetchImpl);
+      const error: unknown = await client.sendMessage(RAW_MESSAGE).then(
+        () => null,
+        (value: unknown) => value,
+      );
+      expect(error).toBeInstanceOf(Error);
+      if (!(error instanceof Error)) throw new Error("Expected a failure");
+      expect(error.message).toBe("Mail send provider operation failed");
+      expect(error).not.toHaveProperty("cause");
+      expect(`${error.stack} ${JSON.stringify(error)}`).not.toContain("PRIVATE-SEND-SECRET");
+    },
+  );
+
+  it("confines a failed required success body without fabricating an id", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("PRIVATE-SEND-SECRET"));
+      },
+    });
+    const client = new GmailRestClient(
+      async () => SECRET_TOKEN,
+      async () => new Response(stream, { status: 200 }),
+    );
+    const error: unknown = await client.sendMessage(RAW_MESSAGE).then(
+      () => null,
+      (value: unknown) => value,
+    );
+    expect(error).toMatchObject({ message: "Mail send provider operation failed" });
+    expect(JSON.stringify(error)).not.toContain("PRIVATE-SEND-SECRET");
+  });
+
   it("rejects a success response that lacks the message or thread id", async () => {
     const { client } = stubSend(sendResponse(200, { id: "sent-id-only" }));
 

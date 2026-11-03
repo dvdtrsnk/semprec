@@ -537,7 +537,7 @@ describe("Graph mail transport (issue #1753)", () => {
     expect(onlyCallOf(microsoft.calls, "deleteDraft").text).toBe("");
   });
 
-  it("keeps the upload's error when deleting the draft also fails, and logs the failure by its name only", async () => {
+  it("keeps the upload error and reports only a closed cleanup stage when draft deletion fails", async () => {
     const warn = vi.spyOn(logger, "warn");
     const microsoft = fakeMicrosoft({
       replies: {
@@ -556,10 +556,66 @@ describe("Graph mail transport (issue #1753)", () => {
       .catch((e: unknown) => e);
 
     expect(error instanceof Error ? error.message : "").toBe("Microsoft Graph request failed with status 503");
-    expect(warn).toHaveBeenCalledWith(
-      expect.objectContaining({ mailboxItemId: mailboxId, draftId: DRAFT_ID, errorName: "Error" }),
-      "Deleting the Graph draft after a failed send failed",
-    );
+    expect(warn).toHaveBeenCalledWith({ stage: "graph-draft-delete" }, "Mail send cleanup failed");
+  });
+
+  it("confines an unknown upload failure while attempting draft deletion even if diagnostics fail", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {
+      throw new Error("PRIVATE-DIAGNOSTIC");
+    });
+    const microsoft = fakeMicrosoft({ replies: { deleteDraft: () => new Response("failure", { status: 500 }) } });
+    const original = microsoft.fetchImpl.getMockImplementation();
+    if (!original) throw new Error("Missing fake provider implementation");
+    microsoft.fetchImpl.mockImplementation(async (input, init) => {
+      if (requestTarget(input).startsWith(UPLOAD_HOST))
+        // Provider boundaries can reject with non-Error values.
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        return Promise.reject({ name: "PRIVATE-NAME", url: "PRIVATE-UPLOAD-URL" });
+      return original(input, init);
+    });
+    const transport = await transportFor(microsoft);
+    const error: unknown = await transport
+      .send({
+        raw: await largeMime([{ filename: "a.txt", content: Buffer.from("attached") }]),
+        envelope: { from: "sender@graph.test", recipients: ["bob@graph.test"] },
+      })
+      .then(
+        () => null,
+        (value: unknown) => value,
+      );
+    expect(error).toMatchObject({ message: "Mail send provider operation failed" });
+    expect(error).not.toHaveProperty("cause");
+    expect(JSON.stringify(error)).not.toContain("PRIVATE");
+    expect(routesOf(microsoft.calls)).toEqual(["createDraft", "createUploadSession", "deleteDraft"]);
+    expect(warn).toHaveBeenCalledWith({ stage: "graph-draft-delete" }, "Mail send cleanup failed");
+  });
+
+  it("keeps a Graph-accepted draft send when response cleanup and its diagnostic fail", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {
+      throw new Error("PRIVATE-DIAGNOSTIC");
+    });
+    const microsoft = fakeMicrosoft({
+      replies: {
+        sendDraft: () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              cancel() {
+                throw new Error("PRIVATE-CLEANUP");
+              },
+            }),
+            { status: 202 },
+          ),
+      },
+    });
+    const transport = await transportFor(microsoft);
+    await expect(
+      transport.send({
+        raw: await largeMime([{ filename: "a.txt", content: Buffer.from("attached") }]),
+        envelope: { from: "sender@graph.test", recipients: ["bob@graph.test"] },
+      }),
+    ).resolves.toEqual({});
+    expect(routesOf(microsoft.calls)).toEqual(["createDraft", "createUploadSession", "sendDraft"]);
+    expect(warn).toHaveBeenCalledWith({ stage: "graph-send-response" }, "Mail send cleanup failed");
   });
 
   it("deletes the draft and reports MailRecipientRejectedError when Graph refuses a recipient at send", async () => {

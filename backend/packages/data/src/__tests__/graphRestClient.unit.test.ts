@@ -441,6 +441,64 @@ const sampleDraft = {
 };
 
 describe("Graph mail send (issue #1753)", () => {
+  it("guards the exact encoded body budget before token or network access", async () => {
+    const token = vi.fn(async () => GRAPH_TOKEN);
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(null, { status: 202 }));
+    const client = new GraphRestClient(token, fetchImpl);
+    await client.sendMime(Buffer.alloc(3_000_000));
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(token).toHaveBeenCalledOnce();
+    await expect(client.sendMime(Buffer.alloc(3_000_001))).rejects.toThrow("Graph MIME exceeds the send body budget");
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(token).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, { uploadUrl: "PRIVATE-SEND-SECRET" }, new Error("PRIVATE-SEND-SECRET")])(
+    "confines unknown upload fetch errors",
+    async (failure) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(failure);
+      const error = await rejectionOf(
+        graphClient(fetchImpl).uploadChunk("https://upload.example/PRIVATE-SEND-SECRET", Buffer.from("x"), 0, 1),
+      );
+      expect(error).toBeInstanceOf(Error);
+      if (!(error instanceof Error)) throw new Error("Expected a failure");
+      expect(error.message).toBe("Mail send provider operation failed");
+      expect(error).not.toHaveProperty("cause");
+      expect(`${error.stack} ${JSON.stringify(error)}`).not.toContain("PRIVATE-SEND-SECRET");
+    },
+  );
+
+  it("keeps the token-source error unchanged and confines a failed draft response body", async () => {
+    const tokenError = new Error("token source failure");
+    const fetchImpl = vi.fn<typeof fetch>();
+    const tokenClient = new GraphRestClient(async () => {
+      throw tokenError;
+    }, fetchImpl);
+    await expect(tokenClient.createDraft(sampleDraft)).rejects.toBe(tokenError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("PRIVATE-SEND-SECRET"));
+      },
+    });
+    const client = graphClient(async () => new Response(body, { status: 201 }));
+    const error = await rejectionOf(client.createDraft(sampleDraft));
+    expect(error).toMatchObject({ message: "Mail send provider operation failed" });
+    expect(error).not.toHaveProperty("cause");
+    expect(JSON.stringify(error)).not.toContain("PRIVATE-SEND-SECRET");
+  });
+
+  it("keeps Graph send acceptance when response cancellation fails", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        throw new Error("PRIVATE-SEND-SECRET");
+      },
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(body, { status: 202 }));
+    await expect(graphClient(fetchImpl).sendDraft("draft-id")).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it("posts the MIME to sendMail as base64 text with the bearer token", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => new Response(null, { status: 202 }));
     const raw = Buffer.from("From: me@graph.test\r\nMessage-ID: <sent-1@graph.test>\r\n\r\nHi\r\n");
