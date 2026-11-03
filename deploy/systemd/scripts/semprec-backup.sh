@@ -7,6 +7,7 @@
 set -euo pipefail
 
 readonly COMPOSE_FILE=/opt/semprec/current/deploy/docker-compose.yml
+readonly LEDGER_VALIDATOR=/opt/semprec/current/backend/packages/data/dist/tenancy/validateRestoreLedgerCli.js
 readonly BACKUP_DIRECTORY=/var/backups/semprec
 readonly DUMP_FILE="$BACKUP_DIRECTORY/postgres.dump"
 readonly DUMP_TEMPORARY_FILE="$DUMP_FILE.tmp"
@@ -61,13 +62,13 @@ main() {
     --table=public.tenant_keys > "$TENANT_KEYS_DUMP_TEMPORARY_FILE"
   mv -- "$TENANT_KEYS_DUMP_TEMPORARY_FILE" "$TENANT_KEYS_DUMP_FILE"
 
-  # The ids of every tenant erased so far travel in the same snapshot as the dump, so a restore of
-  # an older snapshot can re-apply the deletions recorded since (see deploy/README.md).
+  # The later replay ledger travels with the main dump, but is not from the same database snapshot.
   docker compose -f "$COMPOSE_FILE" exec -T postgres \
     psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --no-psqlrc --tuples-only --no-align \
     --set=ON_ERROR_STOP=1 \
     --command="SELECT tenant_id FROM tenant_deletions ORDER BY completed_at, tenant_id" \
     > "$DELETION_LEDGER_TEMPORARY_FILE"
+  node "$LEDGER_VALIDATOR" --file-only "$DELETION_LEDGER_TEMPORARY_FILE"
   mv -- "$DELETION_LEDGER_TEMPORARY_FILE" "$DELETION_LEDGER_FILE"
 
   restic backup "$DUMP_FILE" "$DELETION_LEDGER_FILE" "$FILES_STORAGE_DIR" "$MAIL_ATTACHMENTS_DIR"
