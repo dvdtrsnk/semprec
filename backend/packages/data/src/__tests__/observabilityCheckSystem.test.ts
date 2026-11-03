@@ -24,6 +24,7 @@ import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { handleSyncMailAccountTask } from "../mail/mailSyncJob.js";
 import { MailReauthorizationRequiredError } from "../mail/providerTypes.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
+import type { ImapMailClient } from "../mail/imapReconcile.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { mailProblemKey } from "../semp/sourceProblemKeys.js";
 import { handleObservabilityCheckSystemTask } from "../observability/observabilityCheckSystem.js";
@@ -115,6 +116,27 @@ async function beatMailbox(mailboxId: string, ageMs: number): Promise<void> {
 
 async function runCheck(jobId = randomUUID(), taskPool: Pool = pool): Promise<void> {
   await runAsSystem("test", () => handleObservabilityCheckSystemTask(taskPool, { job: { id: jobId } }));
+}
+
+async function withBoundedRuntime(fn: (runtime: Pool) => Promise<void>): Promise<void> {
+  const runtime = await createRuntimeRolePool(pool, "semprec_data");
+  runtime.options.connectionTimeoutMillis = 2000;
+  runtime.options.statement_timeout = 7000;
+  runtime.options.query_timeout = 9000;
+  let primary: { value: unknown } | undefined;
+  try {
+    await fn(runtime);
+  } catch (error) {
+    primary = { value: error };
+  }
+  try {
+    await runtime.end();
+  } catch (error) {
+    throw new AggregateError(primary ? [primary.value, error] : [error], "Runtime pool cleanup failed", {
+      cause: error,
+    });
+  }
+  if (primary) throw primary.value;
 }
 
 describe("observability.checkSystem (issue #169)", () => {
@@ -655,6 +677,163 @@ describe("observability.checkSystem (issue #169)", () => {
         { resolved_at: expect.any(Date), resolution_kind: "recovered" },
       ]);
     });
+
+    it.each(["failure-first", "check-first"] as const)(
+      "uses locked current mailbox state when the %s operation wins",
+      async (order) => {
+        await createTestUser();
+        const mailboxItemId = await createActiveMailbox();
+        const tenantId = getTenantZeroId();
+        await withBoundedRuntime(async (runtime) => {
+          const moduleIds = await runInTenant(tenantId, () =>
+            withTransaction(runtime, (client) => resolveMailModuleIds(client)),
+          );
+          await runInTenant(tenantId, () =>
+            withTransaction(runtime, (client) =>
+              storeCredential(client, { itemId: mailboxItemId, credentialType: "app_password", plaintext: "fixture" }),
+            ),
+          );
+          const failing = () =>
+            runInTenant(tenantId, () =>
+              handleSyncMailAccountTask(
+                runtime,
+                { mailboxItemId },
+                {
+                  createImapClient: async () => {
+                    throw new Error("synthetic sync failure");
+                  },
+                },
+                moduleIds,
+                unusedStorage,
+                { job: { id: randomUUID() } },
+              ),
+            );
+          const imap: ImapMailClient = {
+            getCapabilities: async () => new Set(),
+            listFolders: async () => [],
+            selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+            fetchMessagesSince: async () => [],
+            fetchVanishedSince: async () => [],
+            fetchAllUids: async () => [],
+            fetchFlagsChangedSince: async () => [],
+            setMessageFlag: async () => {},
+            appendMessage: async () => {},
+            close: async () => {},
+          };
+          await expect(failing()).rejects.toThrow("synthetic sync failure");
+          await runCheck("initial-check", runtime);
+          await runInTenant(tenantId, () =>
+            handleSyncMailAccountTask(
+              runtime,
+              { mailboxItemId },
+              {
+                createImapClient: async () => imap,
+              },
+              moduleIds,
+              unusedStorage,
+              { job: { id: "successful-pass" } },
+            ),
+          );
+          expect(await mailProblems(mailboxItemId)).toMatchObject([{ resolved_at: expect.any(Date) }]);
+          expect((await getTenantCheck(`mail:${mailboxItemId}`))?.status).toBe("alerting");
+
+          const control = await pool.connect();
+          let first: Promise<unknown> | undefined;
+          let second: Promise<unknown> | undefined;
+          let primary: { value: unknown } | undefined;
+          let locked = false;
+          const settled = (promise: Promise<unknown>) =>
+            promise.then(
+              () => ({ ok: true as const }),
+              (error: unknown) => ({ ok: false as const, error }),
+            );
+          const waitBlocked = async (blocker: number): Promise<number> => {
+            const deadline = Date.now() + 5000;
+            while (Date.now() < deadline) {
+              const result = await pool.query<{ pid: number }>(
+                "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+                [blocker],
+              );
+              if (result.rows.length === 1 && result.rows[0]) return result.rows[0].pid;
+              await new Promise<void>((resolve) => setTimeout(resolve, 25));
+            }
+            throw new Error("Timed out waiting for the owned database operation to block");
+          };
+          try {
+            await control.query("SELECT pg_advisory_lock(18001506)");
+            locked = true;
+            const controlPid = (await control.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            if (controlPid === undefined) throw new Error("Missing gate backend PID");
+            await pool.query(`CREATE FUNCTION batch18_mail_state_gate() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN PERFORM pg_advisory_xact_lock(18001506); RETURN NEW; END $$`);
+            await pool.query(
+              order === "failure-first"
+                ? `CREATE TRIGGER batch18_mail_state_gate BEFORE UPDATE ON mail_account_sync_state
+               FOR EACH ROW WHEN (NEW.last_error IS NOT NULL) EXECUTE FUNCTION batch18_mail_state_gate()`
+                : `CREATE TRIGGER batch18_mail_state_gate BEFORE UPDATE ON tenant_observability_checks
+               FOR EACH ROW WHEN (NEW.check_key LIKE 'mail:%' AND NEW.status = 'ok') EXECUTE FUNCTION batch18_mail_state_gate()`,
+            );
+            first = order === "failure-first" ? settled(failing()) : settled(runCheck("racing-check", runtime));
+            const firstPid = await waitBlocked(controlPid);
+            second = order === "failure-first" ? settled(runCheck("racing-check", runtime)) : settled(failing());
+            const secondPid = await waitBlocked(firstPid);
+            expect(secondPid).not.toBe(firstPid);
+            await control.query("SELECT pg_advisory_unlock(18001506)");
+            locked = false;
+            const firstResult = await first;
+            const secondResult = await second;
+            expect(order === "failure-first" ? firstResult : secondResult).toMatchObject({
+              ok: false,
+              error: expect.any(Error),
+            });
+            expect(order === "failure-first" ? secondResult : firstResult).toEqual({ ok: true });
+            expect(await mailProblems(mailboxItemId)).toMatchObject([
+              { resolved_at: expect.any(Date) },
+              { resolved_at: null },
+            ]);
+            if (order === "failure-first")
+              expect((await getTenantCheck(`mail:${mailboxItemId}`))?.status).toBe("alerting");
+          } catch (error) {
+            primary = { value: error };
+          }
+          const cleanupErrors: unknown[] = [];
+          for (const cleanup of [
+            async () => {
+              if (locked) await control.query("SELECT pg_advisory_unlock(18001506)");
+            },
+            async () => {
+              await Promise.all([first, second].filter((value) => value !== undefined));
+            },
+            async () => {
+              await pool.query(
+                order === "failure-first"
+                  ? "DROP TRIGGER IF EXISTS batch18_mail_state_gate ON mail_account_sync_state"
+                  : "DROP TRIGGER IF EXISTS batch18_mail_state_gate ON tenant_observability_checks",
+              );
+            },
+            async () => {
+              await pool.query("DROP FUNCTION IF EXISTS batch18_mail_state_gate()");
+            },
+            async () => {
+              control.release();
+            },
+          ]) {
+            try {
+              await cleanup();
+            } catch (error) {
+              cleanupErrors.push(error);
+            }
+          }
+          if (cleanupErrors.length)
+            throw new AggregateError(
+              primary ? [primary.value, ...cleanupErrors] : cleanupErrors,
+              "Mailbox overlap cleanup failed",
+            );
+          if (primary) throw primary.value;
+        });
+      },
+      30_000,
+    );
 
     it("raises no problem for a stalled mailbox while the tenant has no user", async () => {
       const mailboxItemId = await overdueMailbox();
