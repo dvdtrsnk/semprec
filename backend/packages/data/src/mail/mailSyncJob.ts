@@ -1,3 +1,5 @@
+import { captureMailMoveBaseline, listPendingMoves } from "./mailMessageMoveSyncStore.js";
+import { drainGmailMoves, drainGraphMoves, drainImapMoves } from "./mailMessageMoveSync.js";
 import { enqueueMailAccountSync } from "./mailSyncEnqueue.js";
 export { enqueueMailAccountSync, mailAccountSyncJobKey } from "./mailSyncEnqueue.js";
 import type { Readable } from "node:stream";
@@ -258,8 +260,13 @@ export async function handleSyncMailAccountTask(
 
     logger.info({ mailboxItemId: payload.mailboxItemId, syncMode: state.syncMode }, "Mail sync starting");
 
+    const { moveBaseline, movesAtStart } = await withTransaction(pool, async (client) => ({
+      moveBaseline: await captureMailMoveBaseline(client, payload.mailboxItemId),
+      movesAtStart: await listPendingMoves(client, payload.mailboxItemId),
+    }));
     const shared = {
       mailboxItemId: payload.mailboxItemId,
+      moveBaseline,
       emailsDatabaseId: moduleIds.emailsDatabaseId,
       filesDatabaseId: moduleIds.filesDatabaseId,
       foldersDatabaseId: moduleIds.foldersDatabaseId,
@@ -274,6 +281,25 @@ export async function handleSyncMailAccountTask(
     if (state.syncMode === "imap") {
       if (!adapters.createImapClient) throw new Error("No IMAP adapter configured for this composition root");
       const connectionLimit = imapConnectionLimitForProvider(mailboxProvider, mailboxItem.properties.connectionLimit);
+      if (
+        movesAtStart.some(
+          (move) =>
+            move.source_evidence.provider === "imap" &&
+            move.operation_phase !== "in_flight" &&
+            move.operation_phase !== "uncertain",
+        )
+      ) {
+        await imapConnectionLimiter.run(payload.mailboxItemId, connectionLimit, () =>
+          drainImapMoves(
+            pool,
+            payload.mailboxItemId,
+            () => adapters.createImapClient!(payload.mailboxItemId, credential),
+            moduleIds.foldersDatabaseId,
+            mailboxFolderProperty.id,
+            folderProperty.id,
+          ),
+        );
+      }
       // The limiter's wait for a free slot happens here, outside any transaction — a pooled
       // database connection is only ever checked out once a slot is actually granted, so a
       // long queue wait (up to `ACCOUNT_QUEUE_WAIT_TIMEOUT_MS`) never pins one for nothing.
@@ -298,6 +324,7 @@ export async function handleSyncMailAccountTask(
     } else if (state.syncMode === "gmail_api") {
       if (!adapters.createGmailClient) throw new Error("No Gmail adapter configured for this composition root");
       const gmail = adapters.createGmailClient(payload.mailboxItemId, credential);
+      await drainGmailMoves(pool, payload.mailboxItemId, gmail);
       await withTransaction(pool, async (client) => {
         await reconcileGmailAccount(client, gmail, shared);
         await writeSyncStatus(client, "ok");
@@ -306,6 +333,7 @@ export async function handleSyncMailAccountTask(
     } else {
       if (!adapters.createGraphClient) throw new Error("No Graph adapter configured for this composition root");
       const graph = adapters.createGraphClient(payload.mailboxItemId, credential);
+      await drainGraphMoves(pool, payload.mailboxItemId, graph, moduleIds.foldersDatabaseId, mailboxFolderProperty.id);
       await withTransaction(pool, async (client) => {
         await reconcileGraphAccount(client, graph, shared);
         await writeSyncStatus(client, "ok");

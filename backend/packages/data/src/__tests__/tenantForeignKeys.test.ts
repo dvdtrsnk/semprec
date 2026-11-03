@@ -19,6 +19,7 @@ import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
 import { writeNotification } from "../notifications/notify.js";
 import { upsertWebPushSubscription } from "../push/pushSubscriptionsStore.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
+import { raiseProblem } from "../semp/sempProblemsStore.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 /**
@@ -46,6 +47,7 @@ interface Parents {
   notificationId: string;
   pushSubscriptionId: string;
   toolRegistrationId: string;
+  problemId: string;
 }
 
 let adminPool: Pool;
@@ -116,6 +118,15 @@ async function seedParents(tenantId: string): Promise<Parents> {
       toolName: "probe",
       toolSchema: {},
     });
+    const problem = await raiseProblem(client, {
+      userId: user.id,
+      category: "mail",
+      kind: "sync",
+      severity: "warning",
+      sourceTable: "mail_account_sync_state",
+      sourceId: randomUUID(),
+      dedupeKey: "fk-probe",
+    });
     return {
       userId: user.id,
       databaseId: database.id,
@@ -131,6 +142,7 @@ async function seedParents(tenantId: string): Promise<Parents> {
       notificationId,
       pushSubscriptionId: subscription.id,
       toolRegistrationId: registration.id,
+      problemId: problem.problemId,
     };
   });
 }
@@ -154,6 +166,15 @@ interface Reference {
 }
 
 const REFERENCES: Reference[] = [
+  {
+    parent: "problem",
+    constraint: "semp_problem_occurrences_problem_id_tenant_fkey",
+    table: "semp_problem_occurrences",
+    column: "problem_id",
+    parentId: (p) => p.problemId,
+    insert: (client, id) =>
+      client.query("INSERT INTO semp_problem_occurrences (problem_id, occurrence_key) VALUES ($1, 'probe')", [id]),
+  },
   {
     parent: "database",
     constraint: "properties_database_id_tenant_fkey",

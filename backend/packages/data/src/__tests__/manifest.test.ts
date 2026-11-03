@@ -22,6 +22,7 @@ import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
 import { setProjectMcpGrant } from "../mcp/mcpGrantsAdminStore.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
+import { getSystemSettingsDatabaseId, getSystemSettingsItemId } from "../systemSettings.js";
 
 const SYSTEM_DATABASES_MANIFEST_PATH = new URL("../seed/systemDatabasesModuleManifest.js", import.meta.url).href;
 
@@ -72,19 +73,67 @@ describe("permission manifest and drift check", () => {
   it("projects the tenant zone and its current day, which differs from the UTC day around local midnight", async () => {
     const instant = new Date("2026-03-10T23:30:00Z");
     await seedSystem(pool, createViewTypeRegistry());
-    const projectTenant = (zone: string) =>
-      withTransaction(pool, async (client) => {
-        await client.query(
-          `UPDATE items SET properties = jsonb_set(properties, '{timezone}', to_jsonb($1::text))
-           WHERE database_id = (SELECT id FROM databases WHERE owner_module_id = 'systemSettings' AND system = true)`,
-          [zone],
-        );
-        return (await generateSchemaProjection(client, new ModuleRegistry(() => new Set()), { now: instant })).tenant;
-      });
+    const settings = await withTransaction(pool, async (client) => ({
+      databaseId: await getSystemSettingsDatabaseId(client),
+      itemId: await getSystemSettingsItemId(client),
+    }));
+    const projectTenant = async (zone: string) => {
+      await chokePoint.updateItem({ ...settings, propertiesPatch: { timezone: zone } });
+      return withTransaction(
+        pool,
+        async (client) =>
+          (await generateSchemaProjection(client, new ModuleRegistry(() => new Set()), { now: instant })).tenant,
+      );
+    };
 
     expect(await projectTenant("Europe/Prague")).toEqual({ timezone: "Europe/Prague", today: "2026-03-11" });
     expect(await projectTenant("UTC")).toEqual({ timezone: "UTC", today: "2026-03-10" });
     expect(await projectTenant("America/New_York")).toEqual({ timezone: "America/New_York", today: "2026-03-10" });
+  });
+
+  it("projects each runtime tenant's own timezone after a settings change", async () => {
+    const tenantA = getTenantZeroId();
+    const tenantB = await createTestTenant(pool);
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let primary: { value: unknown } | undefined;
+    try {
+      for (const tenant of [tenantA, tenantB]) {
+        await runInTenant(tenant, () => seedSystem(runtime, createViewTypeRegistry()));
+      }
+      const clock = new Date("2026-03-10T23:30:00Z");
+      const projection = (tenant: string) =>
+        runInTenant(tenant, () =>
+          withTransaction(
+            runtime,
+            async (client) =>
+              (await generateSchemaProjection(client, new ModuleRegistry(() => new Set()), { now: clock })).tenant,
+          ),
+        );
+      const settings = await runInTenant(tenantA, () =>
+        withTransaction(runtime, async (client) => ({
+          databaseId: await getSystemSettingsDatabaseId(client),
+          itemId: await getSystemSettingsItemId(client),
+        })),
+      );
+      await runInTenant(tenantA, () =>
+        createChokePoint(runtime).updateItem({
+          ...settings,
+          propertiesPatch: { timezone: "America/New_York" },
+        }),
+      );
+      expect(await projection(tenantA)).toEqual({ timezone: "America/New_York", today: "2026-03-10" });
+      expect(await projection(tenantB)).toEqual({ timezone: "Europe/Prague", today: "2026-03-11" });
+    } catch (error) {
+      primary = { value: error };
+    }
+    try {
+      await runtime.end();
+    } catch (error) {
+      throw new AggregateError(primary ? [primary.value, error] : [error], "Runtime pool cleanup failed", {
+        cause: error,
+      });
+    }
+    if (primary) throw primary.value;
   });
 
   it("projects id, type, typed config and filterable per property in the schema (issue #1360)", async () => {

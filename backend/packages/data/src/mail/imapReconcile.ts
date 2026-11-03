@@ -1,3 +1,4 @@
+import { hasUnsettledMailMove, protectedMailMovesForPass, type MailMoveBaseline } from "./mailMessageMoveSyncStore.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import type { PoolClient } from "pg";
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
@@ -45,6 +46,17 @@ export interface ImapFolderRef {
 }
 
 export interface ImapMailClient {
+  prepareMove?(
+    path: string,
+    uid: number,
+  ): Promise<{ uidValidity: string; capabilities: Set<string>; found: boolean } | null>;
+  executeMoveStep?(
+    step: "move" | "copy" | "mark_deleted" | "expunge",
+    sourcePath: string,
+    uid: number,
+    uidValidity: string,
+    targetPath: string,
+  ): Promise<import("./mailMoveProviderAdapters.js").SafeImapMoveStepResult>;
   getCapabilities(): Promise<Set<string>>;
   listFolders(): Promise<ImapFolderRef[]>;
   selectFolder(path: string): Promise<ImapFolderSelection>;
@@ -94,6 +106,8 @@ export interface ReconcileImapFolderParams {
   storageKeyPrefix: string;
   /** The Mailbox item this folder belongs to — `ingestEmailMessage`'s per-mailbox dedup scope, and also used by the Gmail label sync below. */
   mailboxItemId: string;
+  protectedMoveMessageIds?: ReadonlySet<string>;
+  moveBaseline?: MailMoveBaseline;
   /**
    * Only needed for Gmail-in-IMAP-fallback-mode's label-derived Folder membership (below) —
    * every other IMAP target (iCloud, generic, Outlook) leaves a fetched message's
@@ -180,6 +194,12 @@ export async function reconcileImapFolder(
   params: ReconcileImapFolderParams,
 ): Promise<void> {
   await lockMailThreadMutation(dbClient);
+  const protectedMoveMessageIds = await protectedMailMovesForPass(
+    dbClient,
+    params.mailboxItemId,
+    params.moveBaseline,
+    params.protectedMoveMessageIds,
+  );
   const relationDefinition = await getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId);
   if (!relationDefinition)
     throw new ValidationError(`Folder relation property ${params.folderRelationPropertyId} has no relation definition`);
@@ -203,6 +223,7 @@ export async function reconcileImapFolder(
       attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
       folderItemId: params.folderItemId,
       mailboxItemId: params.mailboxItemId,
+      protectedMoveMessageIds,
       folderUid: item.uid,
       storage: params.storage,
       storageKeyPrefix: params.storageKeyPrefix,
@@ -210,7 +231,11 @@ export async function reconcileImapFolder(
       ...item.message,
     });
 
-    if (item.message.gmailLabels) {
+    if (
+      !protectedMoveMessageIds?.has(result.itemId) &&
+      !(await hasUnsettledMailMove(dbClient, result.itemId)) &&
+      item.message.gmailLabels
+    ) {
       await syncGmailLabelFolders(dbClient, params, relationDefinition.id, result.itemId, item.message.gmailLabels);
     }
   }
@@ -227,7 +252,12 @@ export async function reconcileImapFolder(
     for (const { uid, flags } of changedFlags) {
       if (uid >= sinceUid) continue; // already handled by the new-message loop above
       const emailItemId = await findEmailItemIdByFolderUid(dbClient, relationDefinition.id, params.folderItemId, uid);
-      if (!emailItemId) continue;
+      if (
+        !emailItemId ||
+        protectedMoveMessageIds?.has(emailItemId) ||
+        (await hasUnsettledMailMove(dbClient, emailItemId))
+      )
+        continue;
       await applyObservedMailMessageFlags(dbClient, {
         emailsDatabaseId: params.emailsDatabaseId,
         messageItemId: emailItemId,
@@ -255,7 +285,11 @@ export async function reconcileImapFolder(
 
   for (const uid of vanishedUids) {
     const emailItemId = await findEmailItemIdByFolderUid(dbClient, relationDefinition.id, params.folderItemId, uid);
-    if (emailItemId) {
+    if (
+      emailItemId &&
+      !protectedMoveMessageIds?.has(emailItemId) &&
+      !(await hasUnsettledMailMove(dbClient, emailItemId))
+    ) {
       await deleteRelationWithClient(
         dbClient,
         {
@@ -288,6 +322,8 @@ const SPECIAL_USE_TO_PURPOSE: Record<string, string> = {
 
 export interface ReconcileImapAccountParams {
   mailboxItemId: string;
+  protectedMoveMessageIds?: ReadonlySet<string>;
+  moveBaseline?: MailMoveBaseline;
   emailsDatabaseId: string;
   filesDatabaseId: string;
   foldersDatabaseId: string;
@@ -316,6 +352,12 @@ export async function reconcileImapAccount(
   params: ReconcileImapAccountParams,
 ): Promise<void> {
   await lockMailThreadMutation(dbClient);
+  const protectedMoveMessageIds = await protectedMailMovesForPass(
+    dbClient,
+    params.mailboxItemId,
+    params.moveBaseline,
+    params.protectedMoveMessageIds,
+  );
   await ensureMailAccountSyncState(dbClient, { itemId: params.mailboxItemId, syncMode: "imap" });
   const allFolders = await imap.listFolders();
   const folders = params.folderPaths ? allFolders.filter((f) => params.folderPaths!.includes(f.path)) : allFolders;
@@ -334,6 +376,7 @@ export async function reconcileImapAccount(
     await reconcileImapFolder(dbClient, imap, {
       folderItemId,
       folderPath: folder.path,
+      protectedMoveMessageIds,
       emailsDatabaseId: params.emailsDatabaseId,
       filesDatabaseId: params.filesDatabaseId,
       folderRelationPropertyId: params.folderRelationPropertyId,
@@ -364,6 +407,11 @@ export async function reconcileImapAccount(
   });
   const pendingByFlag = new Map<string, typeof pendingWrites>();
   for (const pending of pendingWrites) {
+    if (
+      protectedMoveMessageIds?.has(pending.messageItemId) ||
+      (await hasUnsettledMailMove(dbClient, pending.messageItemId))
+    )
+      continue;
     const key = `${pending.messageItemId}:${pending.propertyKey}`;
     const writes = pendingByFlag.get(key) ?? [];
     writes.push(pending);

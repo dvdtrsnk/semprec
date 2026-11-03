@@ -21,6 +21,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import { handleSyncMailAccountTask } from "../mail/mailSyncJob.js";
+import { transitionTenantObservabilityCheck } from "../observability/observabilityChecksStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 
 class RollbackSentinel extends Error {}
@@ -371,15 +372,33 @@ describe("semp_problem notifications raised by raiseProblem (issue #1466)", () =
     "stores a %s notification and never pushes it, even when every problems level passes",
     async (kind) => {
       await inZero((client) => patchNotificationPreferences(client, userId, { problemsLevel: "all" }));
-      const sourceId = randomUUID();
+      let sourceId: string = randomUUID();
+      let mailboxItemId: string | undefined;
+      if (kind === "mail_sync_stalled") {
+        await runInTenant(tenantZero, () => seedSystem(pool));
+        const { rows } = await inZero((client) =>
+          client.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", ["mailboxes"]),
+        );
+        const databaseId = rows[0]?.id;
+        if (!databaseId) throw new Error("Missing seeded mailboxes database");
+        const mailbox = await inZero((client) =>
+          createItemWithClient(client, { databaseId, properties: { name: "Mailbox" } }),
+        );
+        mailboxItemId = mailbox.id;
+        const check = await inZero((client) =>
+          transitionTenantObservabilityCheck(client, `mail:${mailbox.id}`, () => ({ status: "alerting", detail: {} })),
+        );
+        sourceId = check.id;
+      }
       await inZero((client) =>
         writeNotification(client, {
           userId,
           kind,
           linkHref: null,
-          sourceTable: "project_heartbeats",
+          sourceTable: kind === "mail_sync_stalled" ? "tenant_observability_checks" : "project_heartbeats",
           sourceId,
           transitionInstance: "job-1",
+          ...(mailboxItemId ? { payload: { mailboxItemId, reason: "other" } } : {}),
         }),
       );
 

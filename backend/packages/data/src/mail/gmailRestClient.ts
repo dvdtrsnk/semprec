@@ -1,3 +1,9 @@
+import {
+  prepareGmailMove,
+  registerGmailMovePreparer,
+  gmailMoveRequest,
+  type GmailMoveResult,
+} from "./mailMoveProviderAdapters.js";
 import { privateSendOperation, readSendBody } from "./mailSendPrivacy.js";
 import { Readable } from "node:stream";
 import { simpleParser } from "mailparser";
@@ -303,7 +309,36 @@ export class GmailRestClient implements GmailMailClient {
   constructor(
     private readonly getAccessToken: () => Promise<string>,
     private readonly fetchImpl: typeof fetch = fetch,
-  ) {}
+  ) {
+    registerGmailMovePreparer(this, (id, step) => this.prepareMoveStep(id, step));
+  }
+
+  async observeMoveMessage(messageId: string): Promise<GmailMoveResult> {
+    const token = await this.getAccessToken();
+    return gmailMoveRequest(this.fetchImpl, token, messageId);
+  }
+
+  async applyMoveStep(
+    messageId: string,
+    step: "trash" | "untrash" | "add_inbox" | "remove_inbox",
+  ): Promise<GmailMoveResult> {
+    return (await prepareGmailMove(this, messageId, step))();
+  }
+
+  private async prepareMoveStep(
+    messageId: string,
+    step: "trash" | "untrash" | "add_inbox" | "remove_inbox",
+  ): Promise<() => Promise<GmailMoveResult>> {
+    if (!messageId || messageId.length > 1024) throw new Error("Invalid Gmail message identity");
+    if (!["trash", "untrash", "add_inbox", "remove_inbox"].includes(step)) throw new Error("Invalid Gmail move step");
+    const token = await this.getAccessToken();
+    let used = false;
+    return () => {
+      if (used) throw new Error("Gmail move command already used");
+      used = true;
+      return gmailMoveRequest(this.fetchImpl, token, messageId, step);
+    };
+  }
 
   private async request<T>(path: string): Promise<{ status: number; json: T | null }> {
     const token = await this.getAccessToken();

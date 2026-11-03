@@ -39,6 +39,7 @@ import { createMailThread, reassignThread } from "../mail/mailMessageMetaStore.j
 import { requestTenantExport } from "../tenancy/tenantExportsStore.js";
 import { handleTenantPurgeTask, type TenantPurgeDirs } from "../tenancy/tenantPurgeJob.js";
 import { insertItemOrigins } from "../inbox/itemOriginsStore.js";
+import { raiseProblem } from "../semp/sempProblemsStore.js";
 import {
   createRuntimeRolePool,
   createTestProjectItem,
@@ -415,6 +416,22 @@ describe("tenant purge (issue #1055)", () => {
     const tenantB = await provisionedTenant();
     const a = await seedTenant(tenantA);
     const b = await seedTenant(tenantB);
+    for (const seeded of [a, b]) {
+      await runInTenant(seeded.tenantId, () =>
+        withTransaction(pool, (client) =>
+          raiseProblem(client, {
+            userId: seeded.userId,
+            category: "mail",
+            kind: "sync",
+            severity: "warning",
+            sourceTable: "mail_account_sync_state",
+            sourceId: randomUUID(),
+            dedupeKey: "purge-receipt",
+            occurrenceKey: "job-a",
+          }),
+        ),
+      );
+    }
     for (const tenant of [tenantA, tenantB]) {
       await runInTenant(tenant, () =>
         withTransaction(pool, async (client) => {
@@ -435,6 +452,8 @@ describe("tenant purge (issue #1055)", () => {
     expect(countsA.mail_thread_aliases).toBe(1);
     expect((await rowCounts(tenantB)).mail_thread_aliases).toBe(1);
     expect(countsA.item_origins).toBe(1);
+    expect(countsA.semp_problem_occurrences).toBe(1);
+    expect((await rowCounts(tenantB)).semp_problem_occurrences).toBe(1);
     expect((await rowCounts(tenantB)).item_origins).toBe(1);
     expect((await nonEmptyTables(tenantB)).length).toBeGreaterThan(10);
     expect(b.databaseIds.length).toBeGreaterThan(0);

@@ -12,6 +12,10 @@ import { withTransaction } from "../db/pool.js";
 import { runApprovalRequestExecutionStatusCutoverMigration } from "../mcp/approvalRequestExecutionStatusCutoverMigration.js";
 import { getApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsActorUserIdCutoverMigration.js";
+import { raiseProblem } from "../semp/sempProblemsStore.js";
+import { createDatabase } from "../chokePoint/databasesStore.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
 
 /**
  * Compatibility fixture for issue #191: applies each migration example on top of the previous
@@ -21,6 +25,355 @@ import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsA
 
 const EXAMPLES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "db", "migrationExamples");
 const LONG_TITLE = "a title longer than ten characters";
+
+it("adds the move state table over populated mail without changing existing metadata", async () => {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("Missing test database URL");
+  // The generated identifier is a fixed prefix and UUID hex.
+  const name = `batch18_move_${randomUUID().replaceAll("-", "")}`;
+  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch18-move-"));
+  const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+  const migration = "0129_mail_message_move_sync_state.sql";
+  let scratch: Pool | undefined;
+  let created = false;
+  let failure: { error: unknown } | undefined;
+  try {
+    await admin.query(`CREATE DATABASE "${name}"`);
+    created = true;
+    const scratchUrl = new URL(url);
+    scratchUrl.pathname = `/${name}`;
+    scratch = new Pool({
+      connectionString: scratchUrl.toString(),
+      connectionTimeoutMillis: 5000,
+      statement_timeout: 30000,
+    });
+    const db = scratch;
+    for (const file of (await readdir(migrations))
+      .filter((entry) => entry.endsWith(".sql") && entry < migration)
+      .sort()) {
+      await copyFile(path.join(migrations, file), path.join(dir, file));
+    }
+    await runMigrations(db, dir);
+    const tenants = await db.query<{ id: string }>("SELECT id FROM tenants");
+    const tenantId = tenants.rows[0]?.id;
+    if (!tenantId || tenants.rows.length !== 1) throw new Error("Expected one historical tenant");
+    const { mailboxId, messageId } = await runInTenant(tenantId, () =>
+      withTransaction(db, async (client) => {
+        const mailboxDb = await createDatabase(client, { name: "Mailboxes" });
+        const emailDb = await createDatabase(client, { name: "Emails" });
+        const mailbox = await createItemWithClient(client, { databaseId: mailboxDb.id, properties: {} });
+        const message = await createItemWithClient(client, { databaseId: emailDb.id, properties: {} });
+        await upsertMailMessageMeta(client, {
+          itemId: message.id,
+          mailboxItemId: mailbox.id,
+          messageId: `<${randomUUID()}@example.test>`,
+          envelope: {},
+        });
+        return { mailboxId: mailbox.id, messageId: message.id };
+      }),
+    );
+    const before = (
+      await db.query<{ row: unknown }>("SELECT to_jsonb(m) AS row FROM mail_message_meta m WHERE item_id = $1", [
+        messageId,
+      ])
+    ).rows[0]?.row;
+    expect(before).toBeDefined();
+    expect(
+      (
+        await db.query<{ name: string | null }>(
+          "SELECT to_regclass('public.mail_message_move_sync_state')::text AS name",
+        )
+      ).rows,
+    ).toEqual([{ name: null }]);
+    await copyFile(path.join(migrations, migration), path.join(dir, migration));
+    await runMigrations(db, dir);
+    expect(
+      (
+        await db.query<{ row: unknown }>("SELECT to_jsonb(m) AS row FROM mail_message_meta m WHERE item_id = $1", [
+          messageId,
+        ])
+      ).rows[0]?.row,
+    ).toEqual(before);
+    const catalog = await db.query<{ relrowsecurity: boolean; can_insert: boolean; policy_count: string }>(
+      `SELECT c.relrowsecurity, has_table_privilege('semprec_side', c.oid, 'INSERT') AS can_insert,
+         (SELECT count(*)::text FROM pg_policy p WHERE p.polrelid = c.oid) AS policy_count
+       FROM pg_class c WHERE c.oid = 'mail_message_move_sync_state'::regclass`,
+    );
+    expect(catalog.rows).toEqual([{ relrowsecurity: true, can_insert: true, policy_count: "2" }]);
+    await runInTenant(tenantId, () =>
+      withTransaction(db, (client) =>
+        client.query(
+          'INSERT INTO mail_message_move_sync_state (message_item_id, mailbox_item_id, desired_purpose, source_evidence) VALUES ($1, $2, \'archive\', \'{"provider":"gmail","providerMessageId":"fixture"}\')',
+          [messageId, mailboxId],
+        ),
+      ),
+    );
+    await expect(
+      runInTenant(tenantId, () =>
+        withTransaction(db, (client) =>
+          client.query(
+            "UPDATE mail_message_move_sync_state SET desired_purpose = 'unknown' WHERE message_item_id = $1",
+            [messageId],
+          ),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+  } catch (error) {
+    failure = { error };
+  }
+  const cleanupErrors: unknown[] = [];
+  for (const cleanup of [
+    async () => scratch?.end(),
+    async () => {
+      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+    },
+    async () => admin.end(),
+    async () => rm(dir, { recursive: true, force: true }),
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (cleanupErrors.length)
+    throw new AggregateError(
+      failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+      "Move upgrade cleanup failed",
+    );
+  if (failure) throw failure.error;
+}, 120_000);
+
+it("preserves a historical problem and lazily records its last known occurrence on upgrade", async () => {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("Missing test database URL");
+  // The generated database identifier contains a fixed prefix and UUID hex.
+  const name = `batch18_receipt_${randomUUID().replaceAll("-", "")}`;
+  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch18-receipt-"));
+  const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+  const migration = "0128_semp_problem_occurrences.sql";
+  let scratch: Pool | undefined;
+  let created = false;
+  let failure: { error: unknown } | undefined;
+  try {
+    await admin.query(`CREATE DATABASE "${name}"`);
+    created = true;
+    const scratchUrl = new URL(url);
+    scratchUrl.pathname = `/${name}`;
+    scratch = new Pool({
+      connectionString: scratchUrl.toString(),
+      connectionTimeoutMillis: 5000,
+      statement_timeout: 30000,
+    });
+    const db = scratch;
+    for (const file of (await readdir(migrations))
+      .filter((entry) => entry.endsWith(".sql") && entry < migration)
+      .sort()) {
+      await copyFile(path.join(migrations, file), path.join(dir, file));
+    }
+    await runMigrations(db, dir);
+    const tenants = await db.query<{ id: string }>("SELECT id FROM tenants");
+    const tenantId = tenants.rows[0]?.id;
+    if (!tenantId || tenants.rows.length !== 1) throw new Error("Expected one historical tenant");
+    const userId = randomUUID();
+    const sourceId = randomUUID();
+    // The pre-upgrade store wrote this row without an occurrence receipt table.
+    await db.query("INSERT INTO users (id, tenant_id, email, password_hash) VALUES ($1, $2, $3, 'unused')", [
+      userId,
+      tenantId,
+      `${userId}@example.test`,
+    ]);
+    const inserted = await db.query<{ id: string }>(
+      `INSERT INTO semp_problems (tenant_id, user_id, category, kind, severity, source_table, source_id, dedupe_key, occurrence_count, last_occurrence_key)
+       VALUES ($1, $2, 'mail', 'sync', 'warning', 'mail_account_sync_state', $3, 'upgrade', 4, 'old-last') RETURNING id`,
+      [tenantId, userId, sourceId],
+    );
+    const problemId = inserted.rows[0]?.id;
+    if (!problemId) throw new Error("Missing historical problem");
+    const before = (
+      await db.query<{ row: unknown }>("SELECT to_jsonb(p) AS row FROM semp_problems p WHERE id = $1", [problemId])
+    ).rows[0]?.row;
+    await copyFile(path.join(migrations, migration), path.join(dir, migration));
+    await runMigrations(db, dir);
+    expect(
+      (await db.query<{ row: unknown }>("SELECT to_jsonb(p) AS row FROM semp_problems p WHERE id = $1", [problemId]))
+        .rows[0]?.row,
+    ).toEqual(before);
+    expect((await db.query("SELECT 1 FROM semp_problem_occurrences")).rows).toEqual([]);
+    await runInTenant(tenantId, () =>
+      withTransaction(db, (client) =>
+        raiseProblem(client, {
+          userId,
+          category: "mail",
+          kind: "sync",
+          severity: "warning",
+          sourceTable: "mail_account_sync_state",
+          sourceId,
+          dedupeKey: "upgrade",
+          occurrenceKey: "new-job",
+        }),
+      ),
+    );
+    await runInTenant(tenantId, () =>
+      withTransaction(db, (client) =>
+        raiseProblem(client, {
+          userId,
+          category: "mail",
+          kind: "sync",
+          severity: "warning",
+          sourceTable: "mail_account_sync_state",
+          sourceId,
+          dedupeKey: "upgrade",
+          occurrenceKey: "old-last",
+        }),
+      ),
+    );
+    expect(
+      (
+        await db.query<{ occurrence_count: number }>("SELECT occurrence_count FROM semp_problems WHERE id = $1", [
+          problemId,
+        ])
+      ).rows,
+    ).toEqual([{ occurrence_count: 5 }]);
+    expect(
+      (
+        await db.query<{ occurrence_key: string }>(
+          "SELECT occurrence_key FROM semp_problem_occurrences WHERE problem_id = $1 ORDER BY occurrence_key",
+          [problemId],
+        )
+      ).rows,
+    ).toEqual([{ occurrence_key: "new-job" }, { occurrence_key: "old-last" }]);
+  } catch (error) {
+    failure = { error };
+  }
+  const cleanupErrors: unknown[] = [];
+  for (const cleanup of [
+    async () => scratch?.end(),
+    async () => {
+      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+    },
+    async () => admin.end(),
+    async () => rm(dir, { recursive: true, force: true }),
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (cleanupErrors.length)
+    throw new AggregateError(
+      failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+      "Receipt upgrade cleanup failed",
+    );
+  if (failure) throw failure.error;
+}, 120_000);
+
+it("upgrades a populated search index through the page text migration", async () => {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("Missing test database URL");
+  // The database identifier consists of a fixed prefix and UUID hex.
+  const name = `batch18_search_${randomUUID().replaceAll("-", "")}`;
+  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch18-search-"));
+  const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+  const migration = "0120_item_search_index_body.sql";
+  let scratch: Pool | undefined;
+  let created = false;
+  let failure: { error: unknown } | undefined;
+  try {
+    await admin.query(`CREATE DATABASE "${name}"`);
+    created = true;
+    const scratchUrl = new URL(url);
+    scratchUrl.pathname = `/${name}`;
+    scratch = new Pool({
+      connectionString: scratchUrl.toString(),
+      connectionTimeoutMillis: 5000,
+      statement_timeout: 30000,
+    });
+    const db = scratch;
+    for (const file of (await readdir(migrations))
+      .filter((entry) => entry.endsWith(".sql") && entry < migration)
+      .sort()) {
+      await copyFile(path.join(migrations, file), path.join(dir, file));
+    }
+    await runMigrations(db, dir);
+    const tenants = await db.query<{ id: string }>("SELECT id FROM tenants");
+    const tenantId = tenants.rows[0]?.id;
+    if (!tenantId || tenants.rows.length !== 1) throw new Error("Expected one historical tenant");
+    const databaseId = randomUUID();
+    const itemId = randomUUID();
+    await runInTenant(tenantId, () =>
+      withTransaction(db, async (client) => {
+        // Current item writers require later schema; use the actual pre-0120 shape.
+        await client.query("INSERT INTO databases (id, name, tenant_id) VALUES ($1, 'Legacy', $2)", [
+          databaseId,
+          tenantId,
+        ]);
+        await client.query("SELECT create_items_partition($1::uuid)", [databaseId]);
+        await client.query("INSERT INTO items (id, database_id, tenant_id) VALUES ($1, $2, $3)", [
+          itemId,
+          databaseId,
+          tenantId,
+        ]);
+        await client.query(
+          "INSERT INTO item_search_index (item_id, database_id, search_vector, tenant_id) VALUES ($1, $2, to_tsvector('simple', 'legacy text'), $3)",
+          [itemId, databaseId, tenantId],
+        );
+      }),
+    );
+    const before = (
+      await db.query<{ row: unknown }>("SELECT to_jsonb(s) AS row FROM item_search_index s WHERE item_id = $1", [
+        itemId,
+      ])
+    ).rows[0]?.row;
+    expect(before).toBeDefined();
+    await copyFile(path.join(migrations, migration), path.join(dir, migration));
+    await runMigrations(db, dir);
+    const upgraded = await db.query<{ old_row: unknown; body: string | null; page_text: string | null }>(
+      "SELECT to_jsonb(s) - 'body' - 'page_text' AS old_row, body, page_text FROM item_search_index s WHERE item_id = $1",
+      [itemId],
+    );
+    expect(upgraded.rows).toEqual([{ old_row: before, body: null, page_text: null }]);
+    await db.query(
+      "UPDATE item_search_index SET search_vector = to_tsvector('simple', 'old writer') WHERE item_id = $1",
+      [itemId],
+    );
+    expect(
+      (
+        await db.query<{ body: string | null; page_text: string | null; matches: boolean }>(
+          "SELECT body, page_text, search_vector @@ plainto_tsquery('simple', 'writer') AS matches FROM item_search_index WHERE item_id = $1",
+          [itemId],
+        )
+      ).rows,
+    ).toEqual([{ body: null, page_text: null, matches: true }]);
+  } catch (error) {
+    failure = { error };
+  }
+  const cleanupErrors: unknown[] = [];
+  for (const cleanup of [
+    async () => scratch?.end(),
+    async () => {
+      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+    },
+    async () => admin.end(),
+    async () => rm(dir, { recursive: true, force: true }),
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (cleanupErrors.length)
+    throw new AggregateError(
+      failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+      "Search upgrade cleanup failed",
+    );
+  if (failure) throw failure.error;
+}, 120_000);
 
 it("upgrades populated heartbeats and sessions through tick and device migrations", async () => {
   const url = process.env.TEST_DATABASE_URL;

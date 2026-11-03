@@ -13,6 +13,8 @@ import {
 import { CORE_CRONTAB, createCoreTaskList } from "../../worker.js";
 import { createActionRegistry } from "../../scheduler/actions.js";
 import { SEMP_PROBLEMS_RETENTION_DAYS, handleSempProblemsPruneTask } from "../sempProblemsPrune.js";
+import { withTransaction } from "../../db/pool.js";
+import { raiseProblem, resolveProblem } from "../sempProblemsStore.js";
 
 let adminPool: Pool;
 let pool: Pool;
@@ -101,6 +103,42 @@ describe("handleSempProblemsPruneTask (issue #1558)", () => {
     expect(result).toEqual({ deleted: 2 });
     expect(await remainingIds(tenantZero)).toEqual([keepZero]);
     expect(await remainingIds(tenantB)).toEqual([keepB]);
+  });
+
+  it("cascades only the pruned episode's occurrence receipts", async () => {
+    const create = (tenantId: string, userId: string) =>
+      runInTenant(tenantId, () =>
+        withTransaction(pool, async (client) => {
+          const problem = await raiseProblem(client, {
+            userId,
+            category: "mail",
+            kind: "sync",
+            severity: "warning",
+            sourceTable: "mail_account_sync_state",
+            sourceId: randomUUID(),
+            dedupeKey: "receipt-prune",
+            occurrenceKey: "job-a",
+          });
+          await resolveProblem(client, { dedupeKey: "receipt-prune", resolutionKind: "recovered" });
+          return problem.problemId;
+        }),
+      );
+    const old = await create(tenantZero, userZero);
+    const retained = await create(tenantB, userB);
+    await adminPool.query("UPDATE semp_problems SET resolved_at = now() - interval '31 days' WHERE id = $1", [old]);
+    expect(await runAsSystem("test", () => handleSempProblemsPruneTask(pool))).toEqual({ deleted: 1 });
+    const receipts = await runInTenant(tenantB, () =>
+      withTransaction(pool, (client) =>
+        client.query<{ problem_id: string }>("SELECT problem_id FROM semp_problem_occurrences"),
+      ),
+    );
+    expect(receipts.rows).toEqual([{ problem_id: retained }]);
+    const gone = await runInTenant(tenantZero, () =>
+      withTransaction(pool, (client) =>
+        client.query("SELECT 1 FROM semp_problem_occurrences WHERE problem_id = $1", [old]),
+      ),
+    );
+    expect(gone.rows).toEqual([]);
   });
 
   it("leaves a suspended tenant's problems alone", async () => {

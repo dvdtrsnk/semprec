@@ -7,7 +7,11 @@ import {
   getExpectedProcessHeartbeatStatuses,
   type ProcessHeartbeatStatus,
 } from "../health/processHeartbeats.js";
-import { listAllMailAccountSyncStates, type MailAccountSyncStateRow } from "../mail/mailAccountSyncStateStore.js";
+import {
+  listAllMailAccountSyncStates,
+  lockMailAccountSyncState,
+  type MailAccountSyncStateRow,
+} from "../mail/mailAccountSyncStateStore.js";
 import {
   transitionObservabilityCheck,
   transitionTenantObservabilityCheck,
@@ -292,9 +296,11 @@ async function checkMailSync(pool: Pool, helpers: ObservabilityCheckSystemHelper
   await withTransaction(pool, (client) =>
     deleteOrphanedTenantObservabilityChecks(client, MAIL_CHECK_KEY_PREFIX, currentCheckKeys),
   );
-  for (const account of accounts) {
-    const checkKey = `${MAIL_CHECK_KEY_PREFIX}${account.itemId}`;
+  for (const snapshot of accounts) {
+    const checkKey = `${MAIL_CHECK_KEY_PREFIX}${snapshot.itemId}`;
     await withTransaction(pool, async (client) => {
+      const account = await lockMailAccountSyncState(client, snapshot.itemId);
+      if (!account) return;
       const overdue =
         account.nextExpectedActivityAt !== null && new Date(account.nextExpectedActivityAt).getTime() < Date.now();
       const alerting = overdue || account.lastError !== null;

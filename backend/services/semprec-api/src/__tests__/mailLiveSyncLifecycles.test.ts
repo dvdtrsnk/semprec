@@ -31,9 +31,9 @@ import {
   connectionLimitOf,
   createImapIdleLifecycleFactory,
   createMailLiveSyncLifecycleFactory,
-  errorNameAndCode,
   type MailLiveSyncLifecycleDispatchOptions,
 } from "../mailLiveSyncLifecycles.js";
+import { logger } from "../logger.js";
 
 const DISCOVERY_INTERVAL_MS = 200;
 const RECONNECT_BASE_MS = 5;
@@ -201,10 +201,6 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promi
   expect(await check()).toBe(true);
 }
 
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 describe("mail live-sync lifecycles by sync mode (issue #1550)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -290,19 +286,22 @@ describe("mail live-sync lifecycles by sync mode (issue #1550)", () => {
     expect(lifecycleErrors).toEqual([]);
   });
 
-  it("fails the start of an imap account that has no stored credential, naming the mailbox", async () => {
+  it("retries discovery for an imap account that has no stored credential, naming the mailbox", async () => {
     root = composeRoot({ imap: createImapIdleLifecycleFactory(pool) });
     const mailboxId = await insertMailbox("generic");
 
+    const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
     await root.start();
+    await vi.waitFor(() => expect(warning).toHaveBeenCalled());
 
-    expect(lifecycleErrors).toHaveLength(1);
-    const [failure] = lifecycleErrors;
-    expect(failure).toMatchObject({ mailboxItemId: mailboxId, phase: "start" });
-    expect(messageOf(failure?.err)).toBe(`Mailbox ${mailboxId} has no stored credential`);
+    expect(lifecycleErrors).toHaveLength(0);
+    expect(warning).toHaveBeenCalledWith(
+      { mailboxItemId: mailboxId, stage: "idle", category: "failure" },
+      "IMAP IDLE lifecycle failed",
+    );
   });
 
-  it("fails the start of an imap account that has a credential but no IMAP settings, naming the mailbox", async () => {
+  it("retries discovery for an imap account that has a credential but no IMAP settings, naming the mailbox", async () => {
     root = composeRoot({ imap: createImapIdleLifecycleFactory(pool) });
     const mailboxId = await insertMailbox("generic");
     await inTenantZero(() =>
@@ -311,18 +310,18 @@ describe("mail live-sync lifecycles by sync mode (issue #1550)", () => {
       ),
     );
 
+    const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
     await root.start();
+    await vi.waitFor(() => expect(warning).toHaveBeenCalled());
 
-    expect(lifecycleErrors).toHaveLength(1);
-    const [failure] = lifecycleErrors;
-    expect(failure).toMatchObject({ mailboxItemId: mailboxId, phase: "start" });
-    expect(messageOf(failure?.err)).toBe(
-      `Mailbox ${mailboxId} has no IMAP server settings; set the IMAP host before syncing it`,
+    expect(lifecycleErrors).toHaveLength(0);
+    expect(warning).toHaveBeenCalledWith(
+      { mailboxItemId: mailboxId, stage: "idle", category: "failure" },
+      "IMAP IDLE lifecycle failed",
     );
-    expect(messageOf(failure?.err)).not.toContain(APP_PASSWORD);
   });
 
-  it("fails the start of an imap account whose stored settings hold only an SMTP endpoint, with the same configuration error", async () => {
+  it("retries discovery for an imap account whose stored settings hold only an SMTP endpoint, with the same configuration error", async () => {
     root = composeRoot({ imap: createImapIdleLifecycleFactory(pool) });
     const mailboxId = await insertMailbox("generic");
     await inTenantZero(() =>
@@ -336,29 +335,73 @@ describe("mail live-sync lifecycles by sync mode (issue #1550)", () => {
       }),
     );
 
+    const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
     await root.start();
+    await vi.waitFor(() => expect(warning).toHaveBeenCalled());
 
-    expect(lifecycleErrors).toHaveLength(1);
-    const [failure] = lifecycleErrors;
-    expect(failure).toMatchObject({ mailboxItemId: mailboxId, phase: "start" });
-    expect(messageOf(failure?.err)).toBe(
-      `Mailbox ${mailboxId} has no IMAP server settings; set the IMAP host before syncing it`,
+    expect(lifecycleErrors).toHaveLength(0);
+    expect(warning).toHaveBeenCalledWith(
+      { mailboxItemId: mailboxId, stage: "idle", category: "failure" },
+      "IMAP IDLE lifecycle failed",
     );
   });
 
-  it("opens an imap account's connection through the address-checked step: a host that resolves to a private address is refused, and the start fails with the unreachable error", async () => {
+  it("opens an imap account's connection through the address-checked step: a host that resolves to a private address is refused, and discovery retries safely", async () => {
     stub = stubDnsLookup({ [IMAP_HOST]: ["10.0.0.1"] });
     root = composeRoot({ imap: createImapIdleLifecycleFactory(pool) });
     const mailboxId = await insertMailbox("generic");
     await storeImapSetup(mailboxId, IMAP_HOST);
 
+    const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
     await root.start();
+    await vi.waitFor(() => expect(warning).toHaveBeenCalled());
 
+    expect(lifecycleErrors).toHaveLength(0);
+    expect(warning).toHaveBeenCalledWith(
+      { mailboxItemId: mailboxId, stage: "idle", category: "failure" },
+      "IMAP IDLE lifecycle failed",
+    );
+    expect(stub.calls).toContain(IMAP_HOST);
+  });
+
+  it("settles sibling IDLE cleanup before the root sees a safe stop failure", async () => {
+    const secret = "private-stop-error-value";
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fake = createFakeIdleTransport({ folders: ["INBOX", "Archive"] });
+    const connect = fake.transport.connect.bind(fake.transport);
+    fake.transport.connect = async (...args) => {
+      const connection = await connect(...args);
+      const close = connection.close.bind(connection);
+      connection.close = async () => {
+        if (args[2] === "Archive") await gate;
+        await close();
+        if (args[2] === "INBOX") throw new Error(secret);
+      };
+      return connection;
+    };
+    root = composeRoot({ imap: imapIdleOver(fake.transport) });
+    const mailboxId = await insertMailbox("generic");
+    await root.start();
+    await waitFor(async () => fake.connections.length === 2);
+    const stopping = root.stop();
+    await waitFor(async () =>
+      fake.connections.some((connection) => connection.folderPath === "INBOX" && connection.closeCalls === 1),
+    );
+    expect(lifecycleErrors).toEqual([]);
+    release();
+    await stopping;
+    root = undefined;
+    expect(fake.connections.every((connection) => connection.closeCalls === 1)).toBe(true);
     expect(lifecycleErrors).toHaveLength(1);
-    const [failure] = lifecycleErrors;
-    expect(failure).toMatchObject({ mailboxItemId: mailboxId, phase: "start" });
-    expect(failure?.err).toBeInstanceOf(MailServerUnreachableError);
-    expect(messageOf(failure?.err)).not.toContain("10.0.0.1");
+    expect(lifecycleErrors[0]).toMatchObject({ mailboxItemId: mailboxId, phase: "stop" });
+    const error = lifecycleErrors[0]?.err;
+    expect(error).toBeInstanceOf(Error);
+    expect(JSON.stringify(error)).not.toContain(secret);
+    expect(error).toEqual(new Error("IMAP IDLE lifecycle failed unexpectedly"));
+    expect(Object.keys(error as Error)).toEqual([]);
   });
 
   it("reads the mailbox's configured connection limit, then its provider's, then the default", async () => {
@@ -379,14 +422,23 @@ describe("mail live-sync lifecycles by sync mode (issue #1550)", () => {
     });
   });
 
-  it("logs an error's name and code, and never its message", () => {
-    expect(errorNameAndCode(new MailServerUnreachableError())).toEqual({
-      errorName: "MailServerUnreachableError",
-      errorCode: "mail_server_unreachable",
-    });
-    expect(errorNameAndCode(new Error(`socket reset while connected to ${APP_PASSWORD}`))).toEqual({
-      errorName: "Error",
-    });
-    expect(errorNameAndCode("a bare string")).toEqual({ errorName: "NonError" });
+  it("uses fixed diagnostics for a failed credential lookup", async () => {
+    const mailboxId = await insertMailbox("generic");
+    const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    try {
+      await inTenantZero(async () => {
+        const lifecycle = createImapIdleLifecycleFactory(pool)({ mailboxItemId: mailboxId, syncMode: "imap" });
+        await lifecycle.start();
+        await vi.waitFor(() => expect(warning).toHaveBeenCalled());
+        await lifecycle.stop();
+      });
+      expect(warning).toHaveBeenCalledWith(
+        { mailboxItemId: mailboxId, stage: "idle", category: "failure" },
+        "IMAP IDLE lifecycle failed",
+      );
+      expect(JSON.stringify(warning.mock.calls)).not.toContain(APP_PASSWORD);
+    } finally {
+      warning.mockRestore();
+    }
   });
 });

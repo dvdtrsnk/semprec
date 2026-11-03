@@ -2,6 +2,7 @@ import { requireAffectedRows, type Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { ChokePointError, ValidationError } from "../errors.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
+import type { PoolClient } from "pg";
 
 export const SYNC_MODES = ["imap", "gmail_api", "graph_api"] as const;
 export type SyncMode = (typeof SYNC_MODES)[number];
@@ -123,6 +124,18 @@ export async function getMailAccountSyncState(
 ): Promise<MailAccountSyncStateRow | null> {
   const { rows } = await client.query<MailAccountSyncStateDbRow>(
     `SELECT ${COLUMNS} FROM mail_account_sync_state WHERE item_id = $1`,
+    [itemId],
+  );
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
+/** Locks the current account state for a transition in the caller's transaction. */
+export async function lockMailAccountSyncState(
+  client: PoolClient,
+  itemId: string,
+): Promise<MailAccountSyncStateRow | null> {
+  const { rows } = await client.query<MailAccountSyncStateDbRow>(
+    `SELECT ${COLUMNS} FROM mail_account_sync_state WHERE item_id = $1 FOR UPDATE`,
     [itemId],
   );
   return rows[0] ? mapRow(rows[0]) : null;

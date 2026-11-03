@@ -5,6 +5,7 @@ import { createServer as createNetServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import tls from "node:tls";
+import { ImapFlow } from "imapflow";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +26,7 @@ import {
 import { ensureFolderItem } from "../mail/folderDiscovery.js";
 import type { ImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import type { ImapMailClient } from "../mail/imapReconcile.js";
+import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
 import type { SyncMode } from "../mail/mailAccountSyncStateStore.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { logger } from "../mail/logger.js";
@@ -1144,6 +1146,35 @@ describe("Sent-folder copy of an accepted SMTP send (issue #1641)", () => {
       "SMTP operation reported a failure",
     );
     expect(JSON.stringify(warn.mock.calls)).not.toContain("quarterly numbers");
+  });
+
+  it("keeps SMTP accepted and diagnoses an IMAP APPEND that did not run", async () => {
+    useLoopbackPolicy();
+    trustMailCertificate();
+    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
+    await addSentFolder(pool, mailboxId, "Sent Items");
+    const server = await startFakeSmtp();
+    const imap = new ImapFlow({ host: "unused.example.test", port: 993, secure: true, logger: false });
+    const append = vi.spyOn(imap, "append").mockResolvedValue(false);
+    vi.spyOn(imap, "logout").mockResolvedValue(undefined);
+    const close = vi.spyOn(imap, "close").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn");
+    const transport = createSmtpMailTransport(
+      mailboxId,
+      settingsFor("mail.test", server.port),
+      credential,
+      createSmtpTransporter,
+      createSentCopySaver(pool, mailboxId, credential, async () => new ImapFlowMailClient(imap)),
+    );
+    await expect(transport.send({ raw: rawMessage, envelope })).resolves.toEqual({});
+    expect(server.accepted).toHaveLength(1);
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      { mailboxItemId: mailboxId, stage: "sent_copy" },
+      "SMTP operation reported a failure",
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(rawMessage.toString());
   });
 
   it("keeps no copy when the mailbox has no Sent folder yet, and logs the reason", async () => {

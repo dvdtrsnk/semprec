@@ -63,10 +63,8 @@ export function createImapIdleLifecycleFactory(pool: Pool): MailLiveSyncLifecycl
       return credential;
     },
     getConnectionLimit: (mailboxItemId) => connectionLimitOf(pool, mailboxItemId),
-    // Logs the mailbox, the folder and the error's name and code only. The error object itself can carry the
-    // resolved address of a socket error, which the mail connections ADR keeps out of logs.
-    onError: (mailboxItemId, folderPath, err) => {
-      logger.warn({ mailboxItemId, folderPath, ...errorNameAndCode(err) }, "IMAP IDLE connection failed");
+    onError: (mailboxItemId) => {
+      logger.warn({ mailboxItemId, stage: "idle", category: "failure" }, "IMAP IDLE lifecycle failed");
     },
   });
 }
@@ -80,11 +78,4 @@ export async function connectionLimitOf(pool: Pool, mailboxItemId: string): Prom
   // A mailbox that is gone takes the default budget; the live-sync root stops its lifecycle on the next pass.
   const provider = typeof mailbox?.properties.provider === "string" ? mailbox.properties.provider : undefined;
   return imapConnectionLimitForProvider(provider, mailbox?.properties.connectionLimit);
-}
-
-/** The only parts of a connection error the lifecycle logs: its name and, when it has one, its code. */
-export function errorNameAndCode(err: unknown): { errorName: string; errorCode?: string } {
-  const errorName = err instanceof Error ? err.name : "NonError";
-  const code = typeof err === "object" && err !== null && "code" in err ? err.code : undefined;
-  return typeof code === "string" ? { errorName, errorCode: code } : { errorName };
 }

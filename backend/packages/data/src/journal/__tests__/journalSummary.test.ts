@@ -6,7 +6,13 @@ import { runInTenant } from "@semprec/shared";
 import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
 import { countJobsByIdentifier } from "@semprec/queue/testSupport";
 import "../../domainWriteHooks.js";
-import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { createComputedKeyRegistry, type ComputedKeyRegistry } from "../../chokePoint/computedKeyRegistry.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
@@ -126,6 +132,21 @@ afterAll(async () => {
 });
 
 describe("Journal summary (issue #1711)", () => {
+  it("does not write a foreign tenant's summary and processes the owner's queued edit", async () => {
+    const journalId = await databaseIdOf("journal");
+    const entry = await newQuarterEntry(journalId);
+    await writePageBlocks(entry, [{ type: "h2", text: "Owner heading" }]);
+    const foreign = await createTestTenant(admin);
+    await runInTenant(foreign, () => seedSystem(pool, createViewTypeRegistry()));
+    events = [];
+    await runInTenant(foreign, () => handleItemSearchPageTextTask(pool, { itemId: entry }));
+    expect(await summaryOf(journalId, entry)).toBeUndefined();
+    expect(itemEvents(entry)).toEqual([]);
+    await runPageTextJobs();
+    expect(await summaryOf(journalId, entry)).toBe("Owner heading");
+    expect(itemEvents(entry)).toHaveLength(1);
+  });
+
   it("stores the heading that starts a quarter page as the summary within one trigger run", async () => {
     const journalId = await databaseIdOf("journal");
     const entry = await newQuarterEntry(journalId);

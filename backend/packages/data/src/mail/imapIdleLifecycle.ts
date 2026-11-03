@@ -40,8 +40,8 @@ export interface ImapIdleTransport {
   /**
    * Discovers the folder paths this account keeps under IDLE — Inbox and an All-Mail-
    * equivalent folder (issue #196's Task) when the server has one, Inbox alone otherwise
-   * (plain IMAP/iCloud has no such folder). Called once per `start()`; the resolved paths are
-   * held for the lifetime of that lifecycle and reused as-is across every hard-cycle recycle
+   * (plain IMAP/iCloud has no such folder). Discovery retries until successful or stopped; the
+   * resolved paths are held for the lifetime of that lifecycle and reused across every hard-cycle recycle
    * and reconnect. A folder renamed or added while the lifecycle is running is only picked up
    * the next time the lifecycle is started.
    */
@@ -76,10 +76,6 @@ const DEFAULT_RECONNECT_MAX_DELAY_MS = 5 * 60 * 1000;
 
 export function reconnectBackoffDelayMs(attempt: number, baseMs: number, maxMs: number): number {
   return Math.min(baseMs * 2 ** Math.max(0, attempt - 1), maxMs);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export interface CreateBoundedImapIdleLifecycleFactoryOptions {
@@ -122,17 +118,40 @@ export function createBoundedImapIdleLifecycleFactory(
       stopResolve = resolve;
     });
     let folderLoops: Promise<void>[] = [];
+    let discovery: Promise<void> | undefined;
+    const signals = new Set<Promise<void>>();
+    let ownedFailures: unknown[] = [];
+
+    function report(folderPath: string, error: unknown): void {
+      const failures: unknown[] = [error];
+      try {
+        options.onError?.(account.mailboxItemId, folderPath, error);
+      } catch (diagnosticFailure) {
+        failures.push(diagnosticFailure);
+        ownedFailures.push(diagnosticFailure);
+      }
+    }
+
+    async function delayOrStop(ms: number): Promise<boolean> {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          new Promise<false>((resolve) => {
+            timer = setTimeout(() => resolve(false), ms);
+          }),
+          waitForStop().then(() => true),
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    }
 
     function waitForStop(): Promise<"stop"> {
       return stopPromise;
     }
 
     async function backoffOrStop(attempt: number): Promise<boolean> {
-      const outcome = await Promise.race([
-        sleep(reconnectBackoffDelayMs(attempt, reconnectBaseDelayMs, reconnectMaxDelayMs)).then(() => "slept" as const),
-        waitForStop(),
-      ]);
-      return outcome === "stop";
+      return delayOrStop(reconnectBackoffDelayMs(attempt, reconnectBaseDelayMs, reconnectMaxDelayMs));
     }
 
     /**
@@ -151,30 +170,82 @@ export function createBoundedImapIdleLifecycleFactory(
         // mutation in callback") — the existing idempotent, per-account-deduplicated reconcile
         // path, same one the periodic sweep and the account-discovery restart already use, so
         // a signal can never race ahead of it into a second, parallel ingestion path.
-        enqueueMailAccountSync(pool, account.mailboxItemId).catch((err) =>
-          options.onError?.(account.mailboxItemId, folderPath, err),
-        );
+        if (stopped) return;
+        const task = enqueueMailAccountSync(pool, account.mailboxItemId)
+          .catch((err: unknown) => {
+            if (stopped) ownedFailures.push(err);
+            report(folderPath, err);
+          })
+          .finally(() => signals.delete(task));
+        signals.add(task);
       });
-      const outcome = await Promise.race([
-        connection.waitForEnd().then((err): { kind: "ended"; err: unknown } => ({ kind: "ended", err })),
-        sleep(hardCycleDeadlineMs).then((): { kind: "recycled" } => ({ kind: "recycled" })),
-        waitForStop().then((): { kind: "stop" } => ({ kind: "stop" })),
-      ]);
-      await connection.close().catch(() => {});
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let outcome: { kind: "stop" } | { kind: "recycled" } | { kind: "ended"; err: unknown } | undefined;
+      let primary: { value: unknown } | undefined;
+      let ended: { value: unknown } | undefined;
+      let endFailure: { value: unknown } | undefined;
+      try {
+        outcome = await Promise.race([
+          connection.waitForEnd().then(
+            (err): { kind: "ended"; err: unknown } => {
+              ended = { value: err };
+              return { kind: "ended", err };
+            },
+            (error: unknown): never => {
+              endFailure = { value: error };
+              throw error;
+            },
+          ),
+          new Promise<{ kind: "recycled" }>((resolve) => {
+            timer = setTimeout(() => resolve({ kind: "recycled" }), hardCycleDeadlineMs);
+          }),
+          waitForStop().then((): { kind: "stop" } => ({ kind: "stop" })),
+        ]);
+      } catch (error) {
+        primary = { value: error };
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+      try {
+        await connection.close();
+      } catch (error) {
+        const original = primary ?? endFailure ?? (ended?.value !== undefined ? ended : undefined);
+        const failure = original
+          ? new AggregateError([original.value, error], "IMAP IDLE round and cleanup failed", {
+              cause: original.value,
+            })
+          : error;
+        ownedFailures.push(failure);
+        throw failure;
+      }
+      if (primary) throw primary.value;
+      if (!outcome) throw new Error("IMAP IDLE round ended without an outcome");
+      if (endFailure) {
+        if (stopped) ownedFailures.push(endFailure.value);
+        report(folderPath, endFailure.value);
+      }
+      if (outcome.kind !== "ended" && ended?.value !== undefined) {
+        if (stopped) ownedFailures.push(ended.value);
+        report(folderPath, ended.value);
+      }
       return outcome;
     }
 
     async function runFolderLoop(folderPath: string, credential: string): Promise<void> {
       let attempt = 0;
       while (!stopped) {
-        const limit = await options.getConnectionLimit(account.mailboxItemId);
-
         let result: { kind: "stop" } | { kind: "recycled" } | { kind: "ended"; err: unknown };
         try {
-          result = await limiter.run(account.mailboxItemId, limit, () => runOneIdleRound(folderPath, credential));
-        } catch (err) {
+          const limit = await options.getConnectionLimit(account.mailboxItemId);
           if (stopped) return;
-          options.onError?.(account.mailboxItemId, folderPath, err);
+          result = await limiter.run(account.mailboxItemId, limit, () =>
+            stopped ? Promise.resolve({ kind: "stop" as const }) : runOneIdleRound(folderPath, credential),
+          );
+        } catch (err) {
+          if (stopped) ownedFailures.push(err);
+          report(folderPath, err);
+          if (stopped) return;
+          if (ownedFailures.length > 0) return;
           attempt++;
           if (await backoffOrStop(attempt)) return;
           continue;
@@ -188,7 +259,8 @@ export function createBoundedImapIdleLifecycleFactory(
 
         attempt = 0; // a round that actually opened a connection clears any prior connect-failure streak.
         if (result.err !== undefined) {
-          options.onError?.(account.mailboxItemId, folderPath, result.err);
+          if (stopped) ownedFailures.push(result.err);
+          report(folderPath, result.err);
           if (await backoffOrStop(1)) return;
         }
         // A clean end with no error (the server closed the connection normally) reconnects immediately, same as a recycle.
@@ -197,24 +269,53 @@ export function createBoundedImapIdleLifecycleFactory(
 
     return {
       async start() {
+        if (discovery !== undefined) return;
         stopped = false;
         stopPromise = new Promise((resolve) => {
           stopResolve = resolve;
         });
-        // A newly (re)activated account gets an immediate reconcile rather than waiting on its
-        // first IDLE signal or the periodic sweep — same rationale as the noop factory
-        // (mailLiveSyncRoot.ts's `createNoopMailLiveSyncLifecycleFactory`).
-        await enqueueMailAccountSync(pool, account.mailboxItemId);
-
-        const credential = await options.getCredential(account.mailboxItemId);
-        const folders = await transport.resolveFolders(account.mailboxItemId, credential);
-        folderLoops = folders.map((folder) => runFolderLoop(folder.path, credential));
+        discovery = (async () => {
+          let attempt = 0;
+          while (!stopped) {
+            try {
+              await enqueueMailAccountSync(pool, account.mailboxItemId);
+              if (stopped) return;
+              const credential = await options.getCredential(account.mailboxItemId);
+              if (stopped) return;
+              const folders = await transport.resolveFolders(account.mailboxItemId, credential);
+              if (stopped) return;
+              folderLoops = folders.map((folder) =>
+                runFolderLoop(folder.path, credential).catch((error: unknown) => {
+                  ownedFailures.push(error);
+                }),
+              );
+              return;
+            } catch (err) {
+              if (stopped) ownedFailures.push(err);
+              report("", err);
+              if (stopped) return;
+              if (ownedFailures.length > 0) return;
+              attempt++;
+              if (await backoffOrStop(attempt)) return;
+            }
+          }
+        })().catch((error: unknown) => {
+          ownedFailures.push(error);
+        });
       },
       async stop() {
         stopped = true;
         stopResolve("stop");
-        await Promise.all(folderLoops);
+        const settled = await Promise.allSettled([...(discovery === undefined ? [] : [discovery]), ...folderLoops]);
+        const signalResults = await Promise.allSettled(signals);
+        for (const result of [...settled, ...signalResults]) {
+          if (result.status === "rejected") ownedFailures.push(result.reason);
+        }
         folderLoops = [];
+        discovery = undefined;
+        const failed = ownedFailures.length > 0;
+        ownedFailures = [];
+        if (failed) throw new Error("IMAP IDLE lifecycle failed unexpectedly");
       },
     };
   };

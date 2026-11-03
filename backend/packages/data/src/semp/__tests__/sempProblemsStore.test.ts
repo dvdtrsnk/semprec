@@ -294,6 +294,96 @@ describe("semp problems store", () => {
     expect((await rowsFor(tenantZero, "mail:sync:account-1"))[0]?.occurrence_count).toBe(2);
   });
 
+  it("deduplicates nonconsecutive reports while still escalating a duplicate", async () => {
+    const created = await inZero((client) => raiseProblem(client, input({ occurrenceKey: "job-a" })));
+    await inZero((client) => raiseProblem(client, input({ occurrenceKey: "job-b" })));
+    const replay = await inZero((client) =>
+      raiseProblem(client, input({ occurrenceKey: "job-a", severity: "critical" })),
+    );
+    expect(replay).toEqual({ problemId: created.problemId, outcome: "escalated" });
+    expect((await rowsFor(tenantZero, "mail:sync:account-1"))[0]).toMatchObject({
+      occurrence_count: 2,
+      severity: "critical",
+    });
+    const receipts = await withTenantTransaction(runtimePool, tenantZero, (client) =>
+      client.query<{ occurrence_key: string }>(
+        "SELECT occurrence_key FROM semp_problem_occurrences WHERE problem_id = $1 ORDER BY occurrence_key",
+        [created.problemId],
+      ),
+    );
+    expect(receipts.rows).toEqual([{ occurrence_key: "job-a" }, { occurrence_key: "job-b" }]);
+  });
+
+  it("counts concurrent reports with the same occurrence key once", async () => {
+    const owned = await createRuntimeRolePool(pool, "semprec_data");
+    expect(
+      await overlapRaises(input({ occurrenceKey: "same-job" }), input({ occurrenceKey: "same-job" }), owned),
+    ).toEqual(["created", "created", "merged"]);
+    expect((await rowsFor(tenantZero, "mail:sync:account-1"))[0]?.occurrence_count).toBe(1);
+  });
+
+  it("rolls back a new receipt with its report", async () => {
+    const problem = await inZero((client) => raiseProblem(client, input({ occurrenceKey: "historical" })));
+    await inZero((client) => raiseProblem(client, input({ occurrenceKey: "new" })));
+    await inZero((client) => raiseProblem(client, input({ occurrenceKey: "historical" })));
+    expect((await rowsFor(tenantZero, "mail:sync:account-1"))[0]?.occurrence_count).toBe(2);
+    await expect(
+      inZero(async (client) => {
+        await raiseProblem(client, input({ occurrenceKey: "rolled-back" }));
+        throw new RollbackSentinel();
+      }),
+    ).rejects.toBeInstanceOf(RollbackSentinel);
+    const receipts = await withTenantTransaction(runtimePool, tenantZero, (client) =>
+      client.query<{ occurrence_key: string }>(
+        "SELECT occurrence_key FROM semp_problem_occurrences WHERE problem_id = $1 ORDER BY occurrence_key",
+        [problem.problemId],
+      ),
+    );
+    expect(receipts.rows).toEqual([{ occurrence_key: "historical" }, { occurrence_key: "new" }]);
+    expect((await rowsFor(tenantZero, "mail:sync:account-1"))[0]?.occurrence_count).toBe(2);
+  });
+
+  it("counts the same occurrence key again in a new problem episode", async () => {
+    const first = await inZero((client) => raiseProblem(client, input({ occurrenceKey: "job-a" })));
+    await inZero((client) => resolveProblem(client, { dedupeKey: "mail:sync:account-1", resolutionKind: "recovered" }));
+    const second = await inZero((client) => raiseProblem(client, input({ occurrenceKey: "job-a" })));
+    expect(second.problemId).not.toBe(first.problemId);
+    expect((await rowsFor(tenantZero, "mail:sync:account-1")).map((row) => row.occurrence_count)).toEqual([1, 1]);
+    const receipts = await withTenantTransaction(runtimePool, tenantZero, (client) =>
+      client.query<{ problem_id: string }>(
+        "SELECT problem_id FROM semp_problem_occurrences WHERE occurrence_key = $1",
+        ["job-a"],
+      ),
+    );
+    expect(receipts.rows.map((row) => row.problem_id).sort()).toEqual([first.problemId, second.problemId].sort());
+  });
+
+  it("keeps occurrence receipts isolated from a different runtime tenant", async () => {
+    const a = await withTenantTransaction(runtimePool, tenantZero, (client) =>
+      raiseProblem(client, input({ occurrenceKey: "shared-job" })),
+    );
+    const b = await withTenantTransaction(runtimePool, tenantB, (client) =>
+      raiseProblem(client, input({ userId: userB, occurrenceKey: "shared-job" })),
+    );
+    const visible = (tenantId: string) =>
+      withTenantTransaction(runtimePool, tenantId, (client) =>
+        client.query<{ problem_id: string }>(
+          "SELECT problem_id FROM semp_problem_occurrences WHERE occurrence_key = $1",
+          ["shared-job"],
+        ),
+      );
+    expect((await visible(tenantZero)).rows).toEqual([{ problem_id: a.problemId }]);
+    expect((await visible(tenantB)).rows).toEqual([{ problem_id: b.problemId }]);
+    await expect(
+      withTenantTransaction(runtimePool, tenantB, (client) =>
+        client.query("INSERT INTO semp_problem_occurrences (problem_id, occurrence_key) VALUES ($1, 'foreign')", [
+          a.problemId,
+        ]),
+      ),
+    ).rejects.toMatchObject({ code: "23503" });
+    expect((await visible(tenantZero)).rows).toEqual([{ problem_id: a.problemId }]);
+  });
+
   it("leaves one row when two transactions raise the same key concurrently", async () => {
     const notifications: NotificationCreatedEvent[] = [];
     setNotificationCreatedHook((event) => notifications.push(event));

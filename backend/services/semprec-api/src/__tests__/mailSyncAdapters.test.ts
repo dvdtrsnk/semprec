@@ -252,6 +252,7 @@ function createFakeMicrosoft(options: FakeMicrosoftOptions = {}): FakeMicrosoft 
       const route = href.slice(GRAPH_API_PREFIX.length);
       calls.graphRoutes.push(route);
       calls.authorizations.push(new Headers(init?.headers).get("Authorization") ?? "");
+      if (route === "/messages/missing?$select=id,parentFolderId") return new Response("not found", { status: 404 });
       if (route === "/mailFolders/inbox") return Response.json({ id: GRAPH_INBOX_ID, displayName: "Inbox" });
       if (route === "/mailFolders?$top=999&$select=id,displayName,childFolderCount")
         return Response.json({ value: [{ id: GRAPH_INBOX_ID, displayName: "Inbox", childFolderCount: 0 }] });
@@ -475,6 +476,39 @@ describe("createMailSyncAdapters (issues #1505, #1508)", () => {
     await inTenantZero(() => gmailClientFactory(adapters)(mailboxId, STALE_JOB_CREDENTIAL).listLabels());
     expect(google.calls.presentedRefreshTokens).toHaveLength(3);
     expect(google.calls.authorizations.at(-1)).toBe("Bearer ya29.access-3");
+  });
+
+  it("composes the Gmail and Graph move observations with the stored OAuth credentials", async () => {
+    const gmailMailbox = await createGmailMailbox("Move observation Gmail");
+    const graphMailbox = await createGraphMailbox("Move observation Graph");
+    const google = createFakeGoogle();
+    const microsoft = createFakeMicrosoft();
+    const gmail = gmailClientFactory(
+      createMailSyncAdapters({
+        pool,
+        env: { GMAIL_OAUTH_CLIENT_ID: GMAIL_CLIENT_ID, GMAIL_OAUTH_CLIENT_SECRET: GMAIL_CLIENT_SECRET },
+        fetchImpl: google.fetchImpl,
+      }),
+    )(gmailMailbox, STALE_JOB_CREDENTIAL);
+    const graph = graphClientFactory(
+      createMailSyncAdapters({
+        pool,
+        env: { MS_GRAPH_OAUTH_CLIENT_ID: GRAPH_CLIENT_ID, MS_GRAPH_OAUTH_CLIENT_SECRET: GRAPH_CLIENT_SECRET },
+        fetchImpl: microsoft.fetchImpl,
+      }),
+    )(graphMailbox, STALE_JOB_CREDENTIAL);
+    const observeGmail = gmail.observeMoveMessage?.bind(gmail);
+    const observeGraph = graph.observeMoveMessage?.bind(graph);
+    if (!observeGmail || !observeGraph) throw new Error("move observation unavailable");
+
+    expect(await inTenantZero(() => observeGmail("missing"))).toEqual({ kind: "missing" });
+    expect(await inTenantZero(() => observeGraph("missing"))).toEqual({ kind: "missing" });
+    expect(google.calls.presentedRefreshTokens).toEqual([STORED_REFRESH_TOKEN]);
+    expect(google.calls.gmailRoutes).toEqual(["/messages/missing?format=minimal"]);
+    expect(google.calls.authorizations).toEqual(["Bearer ya29.access-1"]);
+    expect(microsoft.calls.presentedRefreshTokens).toEqual([STORED_MICROSOFT_REFRESH_TOKEN]);
+    expect(microsoft.calls.graphRoutes).toEqual(["/messages/missing?$select=id,parentFolderId"]);
+    expect(microsoft.calls.authorizations).toEqual(["Bearer eyJ-access-1"]);
   });
 
   it("surfaces a rejected refresh token as a failure before any Gmail request, without the secret or a token in the message", async () => {
