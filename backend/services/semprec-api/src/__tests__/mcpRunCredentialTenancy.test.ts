@@ -174,6 +174,21 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
       expect(accepted.body).toHaveProperty("result");
       expect(await count(databaseId)).toBe((before ?? 0) + 1);
     }
+    const days = await runInTenant(tenantA, () =>
+      withTransaction(pool, async (client) => {
+        const { rows } = await client.query<{ period: string }>(
+          `SELECT day.properties->>'period' AS period FROM item_relations r
+         JOIN relation_definitions d ON d.id = r.relation_definition_id
+         JOIN properties p ON p.id = d.property_id_a
+         JOIN items source ON source.id = r.item_a
+         JOIN items day ON day.id = r.item_b
+         WHERE p.database_id = $1 AND p.key = 'journalDay' AND source.properties->>'date' = $2`,
+          [databases.inbox, "2026-10-16"],
+        );
+        return rows;
+      }),
+    );
+    expect(days).toEqual([{ period: "2026-10-16" }]);
   });
 
   it("projects Emails HTML through authenticated MCP while keeping the stored body raw", async () => {

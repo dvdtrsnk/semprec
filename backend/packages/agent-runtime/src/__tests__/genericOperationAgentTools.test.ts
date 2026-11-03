@@ -108,6 +108,16 @@ describe("generic operation AgentTools (issue #220)", () => {
         expect(accepted.error).toBe(false);
         expect(await count(databaseId)).toBe(before + 1);
       }
+      const { rows } = await pool.query<{ period: string }>(
+        `SELECT day.properties->>'period' AS period FROM item_relations r
+         JOIN relation_definitions d ON d.id = r.relation_definition_id
+         JOIN properties p ON p.id = d.property_id_a
+         JOIN items source ON source.id = r.item_a
+         JOIN items day ON day.id = r.item_b
+         WHERE p.database_id = $1 AND p.key = 'journalDay' AND source.properties->>'date' = $2`,
+        [inbox.id, "2026-10-16"],
+      );
+      expect(rows).toEqual([{ period: "2026-10-16" }]);
     });
 
     it("projects Emails body on agent item.get but leaves stored and other-module HTML unchanged", async () => {

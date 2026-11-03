@@ -5,7 +5,14 @@ import { assertValidTimezone } from "../timezone.js";
 import type { ItemRow } from "../types.js";
 import { computeJournalPeriodKey, type JournalPeriodType } from "./journalPeriods.js";
 
-export { computeJournalPeriodKey, JOURNAL_PERIOD_TYPES, type JournalPeriodType } from "./journalPeriods.js";
+export {
+  computeJournalPeriodKey,
+  describeJournalPeriods,
+  JOURNAL_PERIOD_TYPES,
+  parseJournalPeriodKey,
+  weeksOfMonth,
+  type JournalPeriodType,
+} from "./journalPeriods.js";
 
 /**
  * Lazily creates the Journal item for a given period on first write (issue #24, point 10):
