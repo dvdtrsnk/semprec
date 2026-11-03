@@ -1677,8 +1677,8 @@
       "sequence": 17,
       "status": "proposed",
       "title": "[backend-delivery 17/74] Implement data/mail, data/inbox, semprec-api/adapter changes",
-      "bodyCharacters": 55538,
-      "specSha256": "ae7a95178bc1fec1537ae022ee34409dd9b65e082cea8a1c333afa9e7fb23266",
+      "bodyCharacters": 53921,
+      "specSha256": "19b14d8eae7d23743974bee478c05cf16a507d403c72740c69c330eee56c4fbb",
       "members": [
         {
           "id": "gh-1431",
@@ -1689,7 +1689,7 @@
         },
         {
           "id": "gh-1432",
-          "specSha256": "8f48d5503e32994959def548af6927b9d972ee1cfd0e986b0ad43af6d4cda72f",
+          "specSha256": "b77893bbfe9d3e360a6bcb2c22a14306f5be17a1e5b5691974be560607c6f7ed",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1428"
@@ -1698,7 +1698,7 @@
         },
         {
           "id": "gh-1436",
-          "specSha256": "5a58322901a7cf234467cc41dd8ecb024117e44450d29e71e6b6d0e2ff808d68",
+          "specSha256": "e73482424a4ada6b02e734bbb4353164d61541c1151e936f90daf8840b1c3bfa",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1432"
@@ -1707,7 +1707,7 @@
         },
         {
           "id": "gh-1439",
-          "specSha256": "a31e3370db8cf2b092e9c85dc040267f2216cc9448e536aceec3985b12c2e98e",
+          "specSha256": "cab8b854cb26121af5bf91843d0f971cc3af6df5f958bf9674c05df2693f1a40",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1436"
@@ -1716,7 +1716,7 @@
         },
         {
           "id": "gh-1490",
-          "specSha256": "4ea733cf08e83152ded1f09e9a5ba919c5489272e963d9a4df403632bd3af79c",
+          "specSha256": "1830132c02b43702973da370667a53375c9386253ea856d4e5064394346ba392",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1436"
@@ -1735,7 +1735,7 @@
         },
         {
           "id": "gh-1494",
-          "specSha256": "f7cd4c5b2062a4f78aa83d5476c6736a0058cf1d897c3147bc49a0de49ba2a24",
+          "specSha256": "b20a330d04b5532c40730ce7c2b00f051a515479a40b1150882c4d4f6de9d883",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1490"

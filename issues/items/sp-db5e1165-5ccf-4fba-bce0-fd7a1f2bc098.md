@@ -5,15 +5,15 @@ title: "[backend-delivery 17/74] Implement data/mail, data/inbox, semprec-api/ad
 kind: "implementation"
 state: "open"
 stateReason: null
-labels: ["spec:proposed","execution:batch","execution:sequential"]
+labels: ["execution:batch","execution:sequential","spec:approved"]
 parent: "sp-62331d42-78af-4b93-ae97-d5ccbe3324df"
 assignees: []
 milestone: null
 createdAt: "2026-10-31T17:31:01.915Z"
-updatedAt: "2026-10-31T17:31:01.915Z"
+updatedAt: "2026-11-03T05:46:34.429Z"
 closedAt: null
 source: null
-approval: null
+approval: {"specSha256":"19b14d8eae7d23743974bee478c05cf16a507d403c72740c69c330eee56c4fbb","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: batch 17 native transport and exact evidence scope","at":"2026-11-03T05:46:34.429Z"}
 resolution: null
 ---
 **Blocked by:** sp-e02ff8c6-d20d-4fde-be2a-e0033cf9ef91
@@ -29,7 +29,7 @@ Web and mobile implementation, client catalogs, client builds and client tests a
 
 Follow the scoped execution exception in docs/adr/2026-10-31-sequential-backend-delivery-batches.md. Before starting, reconcile this checkout with any newer local integration history; already-delivered work needs evidence and handover reconciliation, not reimplementation. No source or batch is completed by this planning change.
 
-This is a proposed specification, not execution authorization. Obtain owner approval for this exact batch before queueing. Included unapproved source specifications also remain unapproved.
+This exact batch is approved for owner-delegated backend execution at dispatch. Follow issues/batches/backend/decisions/batch-17-spec-reconciliation.md and the current recorded hashes; approval does not waive review, runtime gates or completion guards.
 
 Execution order: gh-1431 → gh-1432 → gh-1436 → gh-1439 → gh-1490 → gh-1525 → gh-1494 → gh-1498 → gh-1570 → gh-1637 → gh-1753. Internal prerequisites are included earlier in this order; prerequisites assigned to previous batches must have passed their gates first. Preserve declared source dependencies; no shared-file dependency has been discarded.
 
@@ -122,6 +122,9 @@ Load `state-writes`, `error-handling` and `testing`.
 - backend/packages/data/src/__tests__/inboxCreateHook.test.ts (new)
 - backend/packages/data/src/__tests__/inboxTick.test.ts (callers of the helper, as needed)
 - backend/packages/data/src/__tests__/journalInboxCompute.test.ts (callers of the helper, as needed)
+- backend/services/semprec-api/src/__tests__/itemsHandler.test.ts (only actual Inbox capture create validation, journal-day link and Idempotency-Key replay)
+- backend/packages/agent-runtime/src/__tests__/genericOperationAgentTools.test.ts (only actual agent Inbox create hook evidence)
+- backend/services/semprec-api/src/__tests__/mcpRunCredentialTenancy.test.ts (only authenticated MCP Inbox create hook evidence)
 
 #### Scope
 
@@ -138,9 +141,9 @@ Load `state-writes`, `error-handling` and `testing`.
 #### Acceptance criteria
 
 - When an Inbox item is created through the generic create with a valid `date` and `time`, then it has a `journalDay` edge to the Journal day of that date in the tenant's timezone.
-- When `date` or `time` is missing or malformed, then the response is 400 `validation_failed` with the failing `field`, and no item exists.
+- When `date` or `time` is missing or malformed, the underlying error is `ValidationError` with status 400, code `validation_failed` and the failing `field`, and no item exists. REST returns HTTP 400; agent and MCP retain their native error envelopes.
 - When the same `Idempotency-Key` is used twice, then one item and one `journalDay` edge exist.
-- The same validation applies to creates from an agent tool and from `/mcp`.
+- The same validation applies to actual agent-tool and `/mcp` creates: agent returns its existing `validation_failed: ...` error result; authenticated MCP returns HTTP 200 JSON-RPC -32602 with the failing field in its error data. No new error fields or transport mapping are introduced.
 
 ### Requirement gh-1436: [inbox-core 06/22] Validate Inbox item type writes in a choke-point hook
 
@@ -175,6 +178,9 @@ Load `state-writes`, `error-handling`, `canonical-keys` and `testing`.
 - backend/packages/data/src/domainWriteHooks.ts (register the hooks)
 - backend/packages/data/src/__tests__/inboxTypeWriteHook.test.ts (new)
 - backend/packages/data/src/__tests__/inboxPipeline.test.ts (existing helper tests, as needed)
+- backend/services/semprec-api/src/__tests__/itemsHandler.test.ts (only actual REST Inbox-type create/update validation and preserved legacy name-only update)
+- backend/packages/agent-runtime/src/__tests__/genericOperationAgentTools.test.ts (only actual agent Inbox-type write validation)
+- backend/services/semprec-api/src/__tests__/mcpRunCredentialTenancy.test.ts (only authenticated MCP Inbox-type write validation)
 
 #### Scope
 
@@ -191,7 +197,7 @@ Load `state-writes`, `error-handling`, `canonical-keys` and `testing`.
 
 #### Acceptance criteria
 
-- When a type is created or updated through REST, an agent tool or `/mcp` with `targetDatabase` `journal`, `transcripts` or an unknown string, then the write is rejected with 400 `validation_failed` and `field` `targetDatabase`.
+- When a type is created or updated through REST, an agent tool or `/mcp` with `targetDatabase` `journal`, `transcripts` or an unknown string, the underlying rejection is `ValidationError` with status 400, code `validation_failed` and field `targetDatabase`. REST returns HTTP 400; agent keeps its code-prefixed error result and authenticated MCP HTTP 200 JSON-RPC -32602 with the failing field in its error data.
 - When `processingMethod` is `pageContent` and a target is set, then the write is rejected.
 - When the pair is valid, then the write succeeds.
 - A write that does not touch the pair on an already stored invalid type succeeds.
@@ -223,6 +229,7 @@ Load `canonical-keys` and `testing`.
 - backend/packages/data/src/inbox/inboxTypesStore.ts (`InboxTypeSummary`, `listActiveInboxTypes`)
 - backend/packages/data/src/inbox/inboxRouteHandlers.ts (`createInboxTypesRouteHandler`)
 - backend/packages/data/src/inbox/__tests__/inboxRouteHandlers.test.ts
+- backend/services/semprec-api/src/__tests__/tenantIsolationRoutes.test.ts (only authenticated GET /api/inbox-types additive cs/en, target fallback and archived exclusion contract)
 
 #### Scope
 
@@ -276,6 +283,9 @@ Load `state-writes`, `canonical-keys` and `testing`.
 - backend/services/semprec-api/src/adapter/errorContract.ts
 - backend/packages/data/src/index.ts (export line)
 - backend/packages/data/src/__tests__/emailsBodyReadProjection.test.ts (new)
+- backend/services/semprec-api/src/__tests__/itemsHandler.test.ts (only actual REST item/database/view reads, write response and version-conflict currentItem body sanitization)
+- backend/packages/agent-runtime/src/__tests__/genericOperationAgentTools.test.ts (only actual agent Emails body read projection)
+- backend/services/semprec-api/src/__tests__/mcpRunCredentialTenancy.test.ts (only authenticated MCP Emails body read projection)
 
 #### Scope
 
@@ -404,6 +414,9 @@ Load `state-writes` and `testing`.
 - backend/packages/data/src/mail/mailSyncJob.ts (enqueue helper location, if moved)
 - backend/packages/data/src/domainWriteHooks.ts (only if the hook registration changes)
 - backend/packages/data/src/mail/__tests__/mailMessageFlagsHook.test.ts
+- backend/packages/data/src/mail/mailSyncEnqueue.ts (existing extracted helper/job-key module from Task 2; no new queue behavior)
+- backend/services/semprec-api/src/__tests__/itemsHandler.test.ts (only actual generic flag PATCH transactional mailbox enqueue)
+- backend/packages/agent-runtime/src/__tests__/genericOperationAgentTools.test.ts (only actual agent flag patch transactional mailbox enqueue)
 
 #### Scope
 
@@ -615,66 +628,8 @@ Load `io-hardening`, `error-handling` and `testing`.
 
 ## Touches
 
-- backend/packages/data/src/journal/journalStore.ts (new exports; `computeJournalPeriodKey` unchanged)
-- backend/packages/data/src/journal/journalPeriods.ts (new, if the helpers are split out)
-- backend/packages/data/src/journal/__tests__/journalPeriods.unit.test.ts (new)
-- backend/packages/data/src/index.ts (barrel export line)
-- backend/packages/data/src/inbox/inboxCreateHook.ts (new)
-- backend/packages/data/src/domainWriteHooks.ts (register the hook)
-- backend/packages/data/src/inbox/inboxStore.ts (`createInboxItemWithClient` reduced to the type edge)
-- backend/packages/data/src/__tests__/inboxCreateHook.test.ts (new)
-- backend/packages/data/src/__tests__/inboxTick.test.ts (callers of the helper, as needed)
-- backend/packages/data/src/__tests__/journalInboxCompute.test.ts (callers of the helper, as needed)
-- backend/packages/data/src/inbox/inboxTypesStore.ts (exported check, constant, duplicate call removed)
-- backend/packages/data/src/inbox/inboxTypeWriteHook.ts (new)
-- backend/packages/data/src/domainWriteHooks.ts (register the hooks)
-- backend/packages/data/src/__tests__/inboxTypeWriteHook.test.ts (new)
-- backend/packages/data/src/__tests__/inboxPipeline.test.ts (existing helper tests, as needed)
-- backend/packages/data/src/inbox/inboxTypesStore.ts (`InboxTypeSummary`, `listActiveInboxTypes`)
-- backend/packages/data/src/inbox/inboxRouteHandlers.ts (`createInboxTypesRouteHandler`)
-- backend/packages/data/src/inbox/__tests__/inboxRouteHandlers.test.ts
-- backend/packages/data/src/chokePoint/hooks.ts
-- backend/packages/data/src/domainWriteHooks.ts
-- backend/packages/data/src/chokePoint/itemReads.ts
-- backend/packages/data/src/chokePoint/viewQueryOps.ts
-- backend/packages/data/src/chokePoint/itemWrites.ts (public `createItem` and `updateItem` wrappers only)
-- backend/services/semprec-api/src/adapter/errorContract.ts
-- backend/packages/data/src/index.ts (export line)
-- backend/packages/data/src/__tests__/emailsBodyReadProjection.test.ts (new)
-- backend/packages/data/src/seed/i18n/cs.json (database.<key>.searchPlaceholder entries and collection.custom.searchPlaceholder)
-- backend/packages/data/src/seed/i18n/en.json (same keys)
-- backend/packages/data/src/library/i18n/cs.json (books, movies)
-- backend/packages/data/src/library/i18n/en.json (books, movies)
-- backend/packages/data/src/mail/i18n/cs.json (emails)
-- backend/packages/data/src/mail/i18n/en.json (emails)
-- backend/packages/data/src/manifest/catalogResolution.ts (placeholder lookup, CatalogResolver)
-- backend/packages/data/src/manifest/schemaProjection.ts (SchemaDatabaseProjection)
-- backend/packages/data/src/__tests__/publicSurface.test.ts
-- backend/packages/data/src/__tests__/systemI18nCatalogCoverage.test.ts
-- backend/services/semprec-api/src/adapter/databaseEnvelope.ts
-- backend/services/semprec-api/src/databasesHandler.ts (resolvedDatabaseBody)
-- backend/services/semprec-api/src/__tests__/databasesHandler.test.ts
-- backend/services/semprec-api/src/__tests__/schemaHandler.test.ts
-- backend/packages/data/src/mail/mailMessageFlagSyncStore.ts (the hook)
-- backend/packages/data/src/mail/mailSyncJob.ts (enqueue helper location, if moved)
-- backend/packages/data/src/domainWriteHooks.ts (only if the hook registration changes)
-- backend/packages/data/src/mail/__tests__/mailMessageFlagsHook.test.ts
-- backend/packages/data/src/mail/mailboxConnectionLimitHook.ts (new)
-- backend/packages/data/src/__tests__/mailboxConnectionLimitHook.test.ts (new)
-- backend/packages/queue/src/index.ts (`CORE_TASK_NAMES` entry)
-- backend/packages/data/src/worker.ts (task handler registration)
-- backend/packages/data/src/mail/mailMessageMetaStore.ts (paged selection helpers)
-- backend/packages/data/src/mail/mailThreadBackfillJob.ts (new)
-- backend/packages/data/src/mail/__tests__/mailThreadBackfill.test.ts (new)
-- backend/packages/data/src/mail/gmailRestClient.ts
-- backend/packages/data/src/mail/gmailTransport.ts (new)
-- backend/packages/data/src/mail/mailTransport.ts (factory registration)
-- backend/packages/data/src/__tests__/gmailRestClient.unit.test.ts
-- backend/packages/data/src/__tests__/gmailTransport.test.ts (new)
-- backend/packages/data/src/mail/graphRestClient.ts
-- backend/packages/data/src/mail/graphTransport.ts (new)
-- backend/packages/data/src/__tests__/graphRestClient.unit.test.ts
-- backend/packages/data/src/__tests__/graphTransport.test.ts (new)
+- Exactly the union of the eleven complete current member Touches sections embedded above. Every path keeps its member's named purpose and restrictions; no additional path or unrelated directory work is authorized.
+- Controller-approved corrections must update the source, exact embedded snapshot and approval before execution.
 
 ## Scope
 
