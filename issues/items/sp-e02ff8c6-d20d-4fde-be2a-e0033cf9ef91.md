@@ -10,10 +10,10 @@ parent: "sp-62331d42-78af-4b93-ae97-d5ccbe3324df"
 assignees: []
 milestone: null
 createdAt: "2026-10-31T17:31:01.910Z"
-updatedAt: "2026-11-03T04:24:20.780Z"
+updatedAt: "2026-11-03T04:28:02.318Z"
 closedAt: null
 source: null
-approval: {"specSha256":"a06f403d1efff061b0cfae3c27f522b8792c702176d7d907e75d2a24acf91b3f","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: exact existing Events seed/cutover test harness","at":"2026-11-03T04:24:20.780Z"}
+approval: {"specSha256":"22c5101cd3014a72823acc77d33d755649bb78edd1fae1c25fa9011c0bbe5a7d","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: exact protocol harnesses and authentication-touch reconciliation","at":"2026-11-03T04:28:02.318Z"}
 resolution: null
 ---
 **Blocked by:** sp-144a2408-c4a8-4b9f-b68b-a5eec527dba7
@@ -23,11 +23,11 @@ resolution: null
 
 Model tier rationale: This delivery combines several existing backend specifications across typed storage, API and runtime boundaries; preserving their contracts and verifying the combined behavior requires cross-module reasoning.
 
-Use one working tree and one source-writing agent at a time. Implement the complete batch before independent review, AC acceptance and full backend verification. Original feature epics remain reporting groups, not execution units. Preserve every embedded Task, decision and acceptance criterion. Each member's Out of scope limits that member; it does not prohibit another explicitly included member's Task. Do not add behavior beyond the union of member Tasks.
+Use one tree and one source writer. Complete the batch before review, acceptance and full verification. Feature epics are reporting groups. Preserve every embedded Task/decision/AC; a member's exclusions limit that member, not another included Task. Implement only their union.
 
-Web and mobile implementation, client catalogs, client builds and client tests are excluded. Backend contracts and server-side tests for device/platform behavior remain included. Product UI descriptions are context only. Do not remove existing client-required backend data merely because client work is deferred.
+No web/mobile app work, catalogs, builds or tests. Backend device/platform contracts and server tests remain included. UI is context; retain required backend data.
 
-Follow the scoped execution exception in docs/adr/2026-10-31-sequential-backend-delivery-batches.md. Before starting, reconcile this checkout with any newer local integration history; already-delivered work needs evidence and handover reconciliation, not reimplementation. No source or batch is completed by this planning change.
+Follow docs/adr/2026-10-31-sequential-backend-delivery-batches.md. Reconcile newer local integration and recovered work with evidence/handovers rather than rebuilding. Dispatch is not completion.
 
 This exact specification is approved for owner-delegated backend execution at dispatch. Follow `issues/batches/backend/decisions/batch-16-spec-reconciliation.md`; approval applies only to the recorded current hashes and does not waive review, runtime gates or completion guards.
 
@@ -35,7 +35,7 @@ Execution order: gh-1395 → gh-1362 → gh-1557 → gh-1354 → gh-1512 → gh-
 
 ## Task
 
-Implement the following immutable requirement snapshots in the listed order. Load each snapshot's required topic skills. Keep an AC evidence matrix keyed by source ID and criterion, with production entry point, implementation SHA, test/scenario, log path and verdict. Write required tests with the implementation and use targeted checks during development; perform independent review and the complete backend gate after the batch is implemented.
+Implement these exact snapshots in order with their required skills and tests. Bind every source Task/AC to production entry point, SHA, scenario, log and verdict. Use targeted development checks, then independent review and the full backend gate.
 
 ### Requirement gh-1395: [semp-threads 03/19] Publish Semp thread invalidations over realtime
 
@@ -72,6 +72,7 @@ Load `state-writes`, `io-hardening`, `canonical-keys` and `testing`.
 - backend/packages/realtime-client/src/serverFrame.ts
 - backend/packages/realtime-client/src/index.ts (export line, if any)
 - tests beside each of the above
+- backend/services/semprec-api/src/__tests__/tenantIsolationRealtime.test.ts (only actual API sempThread hook/publisher delivery, runtime-role tenant isolation and rollback evidence)
 
 #### Scope
 
@@ -339,12 +340,13 @@ Load `io-hardening` and `testing`.
 1. Handle `initialize` in `createMcpRequestListener`, after authentication and inside the tenant scope like the other methods: result `{ protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "semprec", version } }`. `params` that are missing or malformed answer `-32602` (the same shape as invalid tool arguments).
 2. A JSON-RPC notification (no `id`), such as `notifications/initialized`, answers HTTP 202 with an empty body and nothing else; this applies to any notification method.
 3. A `GET` (and any non-POST method) on `/mcp` answers 405 with `Allow: POST`. `tools/list` and `tools/call` are unchanged.
-4. `initialize` stores nothing and returns nothing about other tenants or users; the response is identical for a run credential and for a human session.
+4. `initialize` persists no domain or handshake/client data and exposes no other tenant/user data; human and run-credential responses are identical. Preserve #1512 authentication: only the caller session's normal `last_seen_at`/`expires_at` touch is allowed, with no new run-credential write.
 
 #### Touches
 
 - backend/services/semprec-api/src/mcp/mcpHandler.ts
 - backend/services/semprec-api/src/__tests__ (mcp handler tests)
+- backend/services/semprec-api/src/mcp/__tests__/mcpHandler.test.ts (existing protocol harness, including actual human-session/run-credential initialize equivalence and persistence assertions)
 
 #### Scope
 
@@ -365,7 +367,7 @@ Load `io-hardening` and `testing`.
 - `notifications/initialized` returns 202 with no body, and a following `tools/list` returns the same tools as before.
 - `GET /mcp` returns 405 with `Allow: POST`.
 - An unauthenticated `initialize` is rejected exactly as an unauthenticated `tools/list` is.
-- `initialize` made with a human session succeeds and writes nothing to the database.
+- Human-session `initialize` succeeds without domain or handshake/client persistence. Only its normal `last_seen_at`/`expires_at` touch is allowed; other session fields/rows and relevant domain rows stay unchanged. Compare contents, not counts alone. Run-credential initialize has the same response, no session touch and no handshake persistence.
 
 ### Requirement gh-1393: [subpages 01/12] Record where subpages live in an ADR
 
