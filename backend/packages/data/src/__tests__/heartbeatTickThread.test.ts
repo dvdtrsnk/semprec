@@ -98,7 +98,9 @@ describe("heartbeat runs in their tick thread", () => {
     const task = createHeartbeatFireCoreTask(pool, registry);
     // Synthetic Graphile helpers provide the attempt metadata read by the fire task.
     const helpers = { job: { id: "batch16-noop", attempts: 1, max_attempts: 1 } } as Parameters<typeof task>[1];
-    await inTenantZero(() => task({ heartbeatId: hb.id, itemId: hb.projectItemId }, helpers));
+    await inTenantZero(async () => {
+      await task({ heartbeatId: hb.id, itemId: hb.projectItemId }, helpers);
+    });
     expect(handler).toHaveBeenCalledOnce();
     const { rows } = await pool.query("SELECT id FROM semp_threads WHERE heartbeat_id = $1", [hb.id]);
     expect(rows).toHaveLength(0);
@@ -209,7 +211,9 @@ describe("heartbeat runs in their tick thread", () => {
       // Synthetic Graphile helpers carry the actual attempt metadata consumed by this task.
       const helpers = { job: { id: "batch16", attempts: attempt, max_attempts: 3 } } as Parameters<typeof task>[1];
       await expect(
-        inTenantZero(() => task({ heartbeatId: hb.id, occurrenceId, generation: 1 }, helpers)),
+        inTenantZero(async () => {
+          await task({ heartbeatId: hb.id, occurrenceId, generation: 1 }, helpers);
+        }),
       ).rejects.toThrow("agent failure");
       const { rows } = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_messages");
       expect(rows[0]?.count).toBe(attempt === 3 ? 1 : 0);
