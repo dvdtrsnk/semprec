@@ -90,3 +90,21 @@ describe("relation emptiness schema", () => {
     },
   );
 });
+
+describe("date_relative schema", () => {
+  it.each([
+    { type: "date_relative", property: "due", preset: "today" },
+    { type: "date_relative", property: "due", endProperty: "until", preset: { fromDays: -2, toDays: 3 } },
+  ])("accepts %j", (node) => {
+    expect(filterNodeSchema.parse(node)).toEqual(node);
+  });
+
+  it.each([
+    { type: "date_relative", property: "due", preset: "today", extra: true },
+    { type: "date_relative", property: "due", preset: { fromDays: 0, extra: true } },
+    { type: "date_relative", property: "due", preset: { fromDays: 2, toDays: 1 } },
+    { type: "date_relative", property: "due", preset: "unknown" },
+  ])("rejects %j", (node) => {
+    expect(filterNodeSchema.safeParse(node).success).toBe(false);
+  });
+});

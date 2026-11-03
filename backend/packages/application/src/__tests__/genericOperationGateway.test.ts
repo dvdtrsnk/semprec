@@ -11,7 +11,8 @@ import {
   getTestPool,
   resetDatabase,
 } from "@semprec/data/testSupport";
-import { runOnce } from "@semprec/queue";
+import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
+import { countJobsByIdentifier } from "@semprec/queue/testSupport";
 import {
   ApprovalRequiredError,
   ConflictError,
@@ -106,6 +107,48 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("uses the actor's locale for database and view queries through the application gateway", async () => {
+    await inTenantZero(async () => {
+      const users = await pool.query<{ id: string }>("SELECT id FROM users WHERE tenant_id = $1", [getTenantZeroId()]);
+      const user = users.rows[0];
+      if (!user) throw new Error("Missing tenant user");
+      const actor: AuthenticatedActor = { userId: user.id };
+      const database = await chokePoint.createDatabase({ name: "Collation" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "name", name: "Name", type: "title" });
+      for (const name of ["Hrad", "Chalupa", "Rybník", "Řeka"]) {
+        await chokePoint.createItem({ databaseId: database.id, properties: { name } });
+      }
+      const view = await chokePoint.createView({ databaseId: database.id, type: "table", name: "Names" });
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+      const sort = [{ property: "name", direction: "asc" }] as const;
+      for (const [locale, expected] of [
+        ["cs", ["Hrad", "Chalupa", "Rybník", "Řeka"]],
+        ["en", ["Chalupa", "Hrad", "Řeka", "Rybník"]],
+      ] as const) {
+        // There is no user locale update operation in this fixture's application port.
+        await pool.query("UPDATE users SET locale = $1 WHERE id = $2", [locale, user.id]);
+        for (const operation of ["database.query", "view.query"] as const) {
+          const names: string[] = [];
+          let cursor: string | undefined;
+          for (let page = 0; page < 3; page++) {
+            const input =
+              operation === "database.query"
+                ? { databaseId: database.id, sort, cursor, limit: 2 }
+                : { viewId: view.id, sort, cursor, limit: 2 };
+            const result =
+              operation === "database.query"
+                ? await gateway.invoke("database.query", actor, ALL_CAPABILITIES, input)
+                : await gateway.invoke("view.query", actor, ALL_CAPABILITIES, input);
+            names.push(...result.items.map((item) => String(item.properties.name)));
+            if (result.nextCursor === null) break;
+            cursor = result.nextCursor;
+          }
+          expect(names).toEqual(expected);
+        }
+      }
+    });
   });
 
   it("item.patch carries the transactional pre-image through the production gateway and service", async () => {
@@ -939,6 +982,88 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(finished!.executionStatus).toBe("succeeded");
       const reloaded = await chokePoint.getDatabase(database.id);
       expect(reloaded?.archivedAt).not.toBeNull();
+    });
+
+    it("recounts dependent rollups after approved database.archive replay through the worker", async () => {
+      const { projects, tasks, project } = await inTenantZero(async () => {
+        const projects = await chokePoint.createDatabase({ name: "Rollup parents" });
+        const tasks = await chokePoint.createDatabase({ name: "Rollup source" });
+        await chokePoint.createProperty({ databaseId: tasks.id, key: "hours", name: "Hours", type: "number" });
+        const { property: relation } = await chokePoint.createRelationProperty({
+          sourceDatabaseId: projects.id,
+          targetDatabaseId: tasks.id,
+          key: "tasks",
+          name: "Tasks",
+        });
+        await chokePoint.createProperty({
+          databaseId: projects.id,
+          key: "taskCount",
+          name: "Count",
+          type: "rollup",
+          config: { relationPropertyKey: "tasks", aggregation: "count" },
+        });
+        await chokePoint.createProperty({
+          databaseId: projects.id,
+          key: "totalHours",
+          name: "Sum",
+          type: "rollup",
+          config: { relationPropertyKey: "tasks", aggregation: "sum", targetPropertyKey: "hours" },
+        });
+        const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
+        for (const hours of [3, 4]) {
+          const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { hours } });
+          await chokePoint.createRelation({
+            relationPropertyId: relation.id,
+            callerItemId: project.id,
+            targetItemId: task.id,
+          });
+        }
+        return { projects, tasks, project };
+      });
+      const taskList = createCoreTaskList(
+        pool,
+        new Map(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        replayApprovedGenericOperation,
+      );
+      const drainUntil = async (count: number, sum: number | null) => {
+        for (let pass = 0; pass < 10; pass++) {
+          await runOnce({ pgPool: pool, taskList });
+          const current = await inTenantZero(() => chokePoint.getItem(projects.id, project.id));
+          const pending = await Promise.all(
+            [
+              CORE_TASK_NAMES.ROLLUP_RECOMPUTE,
+              CORE_TASK_NAMES.ROLLUP_RECOMPUTE_FULL,
+              CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE,
+            ].map((name) => countJobsByIdentifier(pool, name)),
+          );
+          if (
+            current?.computed.taskCount === count &&
+            current.computed.totalHours === sum &&
+            pending.every((n) => n === 0)
+          )
+            return;
+        }
+        throw new Error(`Rollup worker did not reach count ${count} and sum ${String(sum)}`);
+      };
+      await drainUntil(2, 7);
+      const actor = await inTenantZero(() => makeAgentActor());
+      const requestId = await inTenantZero(() =>
+        approveDestructive("database.archive", actor, { databaseId: tasks.id }),
+      );
+      const { outcome, finished } = await inTenantZero(() => replay(requestId));
+      expect(outcome.error).toBe(false);
+      expect(finished?.executionStatus).toBe("succeeded");
+      expect((await chokePoint.getDatabase(tasks.id))?.archivedAt).not.toBeNull();
+      expect(await countJobsByIdentifier(pool, CORE_TASK_NAMES.ROLLUP_RECOMPUTE_FULL)).toBe(2);
+      await drainUntil(0, null);
+      const current = await inTenantZero(() => chokePoint.getItem(projects.id, project.id));
+      expect(current?.computed).toMatchObject({ taskCount: 0, totalHours: null });
     });
 
     it("property.delete: preflight, approve, and replay delete the property exactly once", async () => {

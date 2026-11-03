@@ -12,7 +12,13 @@ import {
   SempConversation,
 } from "@semprec/agent-runtime";
 import { runInTenant } from "@semprec/shared";
-import { getTenantZeroId, getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  getTenantZeroId,
+  getTestPool,
+  inTenantZero,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import {
   CORE_AGENT_RUN_ACTION_ID,
   createAgentRun,
@@ -23,7 +29,9 @@ import {
   finishAgentRun,
   getAgentRun,
   getApprovalRequest,
+  getProjectMcpGrant,
   loadFullModuleRegistry,
+  listMcpToolGrantsForProject,
   setProjectMcpGrantForAgentPage,
   seedSystem,
   upsertMcpToolRegistration,
@@ -176,6 +184,78 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
       delegatedAgentRunTask: createAgentRunTask(pool, registry, fauxGateway, createInFlightAgentRuns()),
     });
   }
+
+  it("offers persisted grants only while their server is active", async () => {
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      await runInTenant(getTenantZeroId(), async () => {
+        const cp = createChokePoint(runtimePool);
+        const { rows } = await withTransaction(runtimePool, (client) =>
+          client.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", ["mcpServers"]),
+        );
+        const database = rows[0];
+        if (!database) throw new Error("Missing MCP servers database");
+        const server = await cp.createItem({ databaseId: database.id, properties: { name: "Catalog", active: true } });
+        const granted = await upsertMcpToolRegistration(runtimePool, {
+          mcpServerItemId: server.id,
+          toolName: "granted",
+          toolSchema: { type: "object" },
+        });
+        await upsertMcpToolRegistration(runtimePool, {
+          mcpServerItemId: server.id,
+          toolName: "ungranted",
+          toolSchema: { type: "object" },
+        });
+        const projectItemId = await seededSemprecProjectItemId();
+        await withTransaction(runtimePool, (client) =>
+          setProjectMcpGrantForAgentPage(client, {
+            projectItemId,
+            mcpToolRegistrationId: granted.id,
+            granted: true,
+          }),
+        );
+        const grantRows = () =>
+          withTransaction(runtimePool, (client) => listMcpToolGrantsForProject(client, projectItemId, "en"));
+        const storedGrant = () =>
+          withTransaction(runtimePool, (client) => getProjectMcpGrant(client, projectItemId, granted.id));
+        const originalGrant = await storedGrant();
+        expect(originalGrant).toMatchObject({ projectItemId, mcpToolRegistrationId: granted.id, granted: true });
+        const offered = async () => {
+          const run = await createAgentRun(runtimePool, { projectItemId, triggeredBy: "user", task: "catalog" });
+          let names: string[] = [];
+          faux.setResponses([
+            (context) => {
+              names = context.tools?.map((tool) => tool.name) ?? [];
+              return fauxAssistantMessage("done");
+            },
+          ]);
+          const factory = await createAgentSessionFactoryForRun(runtimePool, registry, fauxGateway, run);
+          for await (const event of factory({ task: "catalog" }).messages()) void event;
+          await finishAgentRun(runtimePool, run.id, "done", "catalog inspected");
+          return names.filter((name) => name.startsWith("mcp_"));
+        };
+        const name = `mcp_granted_${server.id.replace(/-/g, "").slice(0, 8)}`;
+        expect(await offered()).toEqual([name]);
+        expect(await storedGrant()).toEqual(originalGrant);
+        await cp.updateItem({ databaseId: database.id, itemId: server.id, propertiesPatch: { active: false } });
+        expect((await grantRows()).find((row) => row.mcpToolRegistrationId === granted.id)).toMatchObject({
+          granted: true,
+          mcpServerOnline: false,
+        });
+        expect(await offered()).toEqual([]);
+        expect(await storedGrant()).toEqual(originalGrant);
+        await cp.updateItem({ databaseId: database.id, itemId: server.id, propertiesPatch: { active: true } });
+        expect((await grantRows()).find((row) => row.mcpToolRegistrationId === granted.id)).toMatchObject({
+          granted: true,
+          mcpServerOnline: true,
+        });
+        expect(await offered()).toEqual([name]);
+        expect(await storedGrant()).toEqual(originalGrant);
+      });
+    } finally {
+      await runtimePool.end();
+    }
+  });
 
   it("runs a queued agentRun job's session and closes the row as done with the model's text", async () => {
     const projectItemId = await seededSemprecProjectItemId();

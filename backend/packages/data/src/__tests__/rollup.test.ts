@@ -1,7 +1,17 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runOnce } from "@semprec/queue";
-import { bindToTenantZero, getTenantZeroId, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
+import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
+import { countJobsByIdentifier } from "@semprec/queue/testSupport";
+import { runInTenant } from "@semprec/shared";
+import {
+  bindToTenantZero,
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  inTenantZero,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
@@ -34,15 +44,15 @@ const realDrainSteps: DrainSteps = {
  * queue is still non-empty after the last pass, so a caller never asserts against a partial drain.
  * `steps` is replaced only by the drainQueue boundary checks below.
  */
-async function drainQueue(steps: DrainSteps = realDrainSteps) {
+async function drainQueue(steps: DrainSteps = realDrainSteps, passLimit = DRAIN_PASS_LIMIT) {
   let remaining: string | undefined;
-  for (let pass = 0; pass < DRAIN_PASS_LIMIT; pass++) {
+  for (let pass = 0; pass < passLimit; pass++) {
     await steps.runPass();
     remaining = await steps.countRemainingJobs();
     if (remaining === "0") return;
   }
   throw new Error(
-    `drainQueue: incomplete drain, ${remaining ?? "unknown"} job(s) still remaining after the ${DRAIN_PASS_LIMIT}-pass limit`,
+    `drainQueue: incomplete drain, ${remaining ?? "unknown"} job(s) still remaining after the ${passLimit}-pass limit`,
   );
 }
 
@@ -308,6 +318,44 @@ describe("rollup engine", () => {
       await expectValues(f, 2, 7);
     });
 
+    it("uses existing empty-input values for filled and empty count and percentage rollups", async () => {
+      const f = await linkedFixture();
+      const emptyTask = await chokePoint.createItem({ databaseId: f.tasks.id, properties: {} });
+      await chokePoint.createRelation({
+        relationPropertyId: f.tasksRelation.id,
+        callerItemId: f.project.id,
+        targetItemId: emptyTask.id,
+      });
+      const unlinked = await chokePoint.createItem({ databaseId: f.projects.id, properties: {} });
+      for (const [key, aggregation] of [
+        ["countFilled", "count_filled"],
+        ["countEmpty", "count_empty"],
+        ["percentFilled", "percent_filled"],
+        ["percentEmpty", "percent_empty"],
+      ] as const) {
+        await chokePoint.createProperty({
+          databaseId: f.projects.id,
+          key,
+          name: aggregation,
+          type: "rollup",
+          config: { relationPropertyKey: "tasks", targetPropertyKey: "hours", aggregation },
+        });
+      }
+      // Six rollups and two parent items can enqueue six full and twelve cell jobs.
+      await drainQueue(realDrainSteps, 24);
+      const values = async () => (await chokePoint.getItem(f.projects.id, f.project.id))?.computed;
+      const populated = { countFilled: 2, countEmpty: 1, percentFilled: 2 / 3, percentEmpty: 1 / 3 };
+      const empty = { countFilled: 0, countEmpty: 0, percentFilled: 0, percentEmpty: 0 };
+      expect(await values()).toMatchObject(populated);
+      expect((await chokePoint.getItem(f.projects.id, unlinked.id))?.computed).toMatchObject(empty);
+      await chokePoint.archiveDatabase(f.tasks.id);
+      await drainQueue(realDrainSteps, 24);
+      expect(await values()).toMatchObject(empty);
+      await chokePoint.restoreDatabase(f.tasks.id);
+      await drainQueue(realDrainSteps, 24);
+      expect(await values()).toMatchObject(populated);
+    });
+
     it("queues one full job per dependent rollup property and a second archive request does not queue another", async () => {
       const f = await linkedFixture();
       await chokePoint.archiveDatabase(f.tasks.id);
@@ -330,6 +378,82 @@ describe("rollup engine", () => {
       expect(await fullJobKeys()).toHaveLength(2);
       await drainQueue();
       await expectValues(f, 0, null);
+    });
+
+    it("keeps archive and recount tenant-scoped and rolls back the queued job with the archive", async () => {
+      const tenantA = getTenantZeroId();
+      const tenantB = await createTestTenant(pool);
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      let failure: { error: unknown } | undefined;
+      try {
+        const cp = createChokePoint(runtime);
+        const fixture = await runInTenant(tenantA, async () => {
+          const parents = await cp.createDatabase({ name: "Scoped rollup parents" });
+          const source = await cp.createDatabase({ name: "Scoped rollup source" });
+          const { property: relation } = await cp.createRelationProperty({
+            sourceDatabaseId: parents.id,
+            targetDatabaseId: source.id,
+            key: "children",
+            name: "Children",
+          });
+          const rollup = await cp.createProperty({
+            databaseId: parents.id,
+            key: "childCount",
+            name: "Count",
+            type: "rollup",
+            config: { relationPropertyKey: "children", aggregation: "count" },
+          });
+          const parent = await cp.createItem({ databaseId: parents.id, properties: {} });
+          const child = await cp.createItem({ databaseId: source.id, properties: {} });
+          await cp.createRelation({ relationPropertyId: relation.id, callerItemId: parent.id, targetItemId: child.id });
+          return { parents, source, rollup, parent };
+        });
+        const drain = async () => {
+          for (let pass = 0; pass < 10; pass++) {
+            await runOnce({ pgPool: runtime, taskList: createCoreTaskList(runtime, createActionRegistry()) });
+            const remaining = await Promise.all(
+              [CORE_TASK_NAMES.ROLLUP_RECOMPUTE, CORE_TASK_NAMES.ROLLUP_RECOMPUTE_FULL].map((name) =>
+                countJobsByIdentifier(pool, name),
+              ),
+            );
+            if (remaining.every((count) => count === 0)) return;
+          }
+          throw new Error("Rollup queue did not drain");
+        };
+        const value = async () =>
+          (await runInTenant(tenantA, () => cp.getItem(fixture.parents.id, fixture.parent.id)))?.computed.childCount;
+        await drain();
+        expect(await value()).toBe(1);
+        const marker = new Error("rollback archive");
+        await expect(
+          runInTenant(tenantA, () =>
+            withTransaction(runtime, async (client) => {
+              await databaseArchiveWithClient(client, fixture.source.id);
+              throw marker;
+            }),
+          ),
+        ).rejects.toBe(marker);
+        expect((await runInTenant(tenantA, () => cp.getDatabase(fixture.source.id)))?.archivedAt).toBeNull();
+        expect(await countJobsByIdentifier(pool, CORE_TASK_NAMES.ROLLUP_RECOMPUTE_FULL)).toBe(0);
+        expect(await value()).toBe(1);
+        const foreign = await Promise.allSettled([runInTenant(tenantB, () => cp.archiveDatabase(fixture.source.id))]);
+        expect(foreign[0]).toMatchObject({ status: "rejected", reason: { status: 404 } });
+        expect(await countJobsByIdentifier(pool, CORE_TASK_NAMES.ROLLUP_RECOMPUTE_FULL)).toBe(0);
+        expect((await runInTenant(tenantA, () => cp.getDatabase(fixture.source.id)))?.archivedAt).toBeNull();
+        await runInTenant(tenantA, () => cp.archiveDatabase(fixture.source.id));
+        expect(await countJobsByIdentifier(pool, CORE_TASK_NAMES.ROLLUP_RECOMPUTE_FULL)).toBe(1);
+        await drain();
+        expect(await value()).toBe(0);
+        await runInTenant(tenantA, () => cp.restoreDatabase(fixture.source.id));
+        await drain();
+        expect(await value()).toBe(1);
+      } catch (error) {
+        failure = { error };
+      }
+      const [closed] = await Promise.allSettled([runtime.end()]);
+      if (failure && closed?.status === "rejected") throw new AggregateError([failure.error, closed.reason]);
+      if (failure) throw failure.error;
+      if (closed?.status === "rejected") throw closed.reason;
     });
   });
 

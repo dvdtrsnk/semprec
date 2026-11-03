@@ -148,6 +148,8 @@ describe("date_relative schema", () => {
     ]) {
       expect(accepts({ type: "date_relative", property: "due", preset })).toBe(false);
     }
+    expect(accepts({ type: "date_relative", property: "due", preset: "today", extra: true })).toBe(false);
+    expect(accepts({ type: "date_relative", property: "due", preset: { fromDays: 0, extra: true } })).toBe(false);
     expect(accepts({ type: "date_relative", property: "due" })).toBe(false);
     expect(accepts({ type: "date_relative", property: "", preset: "today" })).toBe(false);
   });

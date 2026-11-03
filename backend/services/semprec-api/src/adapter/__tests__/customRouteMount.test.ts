@@ -296,6 +296,35 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
     expect(seen.dependencies).toBe(container);
   });
 
+  it("uses the injected mailbox control through the dispatcher and factory on a request", async () => {
+    const moduleRegistry = await loadFullModuleRegistry();
+    vi.spyOn(moduleRegistry, "getCustomRouteDefinitions").mockResolvedValue(DEPENDENT_DEFINITIONS);
+    const startMailbox = vi.fn(async () => {});
+    const stopMailbox = vi.fn(async () => {});
+    const dispatcher = await createDispatcher(pool, {
+      passwordResetMailer: noopPasswordResetMailer,
+      appBaseUrl: "https://app.example.test",
+      setupToken: "deps-setup-token",
+      moduleRegistry,
+      blobStorage: new LocalFsBlobStorageWriter(join(tmpdir(), `semprec-test-blobs-${randomUUID()}`)),
+      maxFileSizeBytes: 1024,
+      customRouteDependencies: { mailLiveSync: { startMailbox, stopMailbox } },
+    });
+    const server = createServer(dispatcher);
+    openServers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const token = await tokenFor("dispatcher-control@example.com");
+    const response = await fetch(`${baseUrlOf(server)}/api/fixture-mailbox/start`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ started: true });
+    expect(startMailbox).toHaveBeenCalledExactlyOnceWith("tenant-fixture", "mailbox-fixture");
+    expect(stopMailbox).not.toHaveBeenCalled();
+  });
+
   it("createDispatcher mounts with an empty container when the caller gives none", async () => {
     const moduleRegistry = await loadFullModuleRegistry();
     const seen: { dependencies?: CustomRouteDependencies } = {};

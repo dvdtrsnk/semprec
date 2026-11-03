@@ -1,10 +1,12 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { runAsSystem } from "@semprec/shared";
-import { createPool } from "../db/pool.js";
+import { runAsSystem, runInTenant } from "@semprec/shared";
+import { createPool, withTransaction } from "../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { tenantZeroSessionOptions } from "../testSupport/tenantFixtures.js";
+import { getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import { createTestTenant, tenantZeroSessionOptions } from "../testSupport/tenantFixtures.js";
 import type { FilterNode } from "../views/filterTree.js";
 
 const ZONES = ["UTC", "Pacific/Auckland", "America/Los_Angeles"] as const;
@@ -44,6 +46,46 @@ describe("createPool session time zone", () => {
       pool.query<{ zone: string; role: string }>("SELECT current_setting('TimeZone') AS zone, current_user AS role"),
     );
     expect(result.rows[0]).toEqual({ zone: "UTC", role: "semprec_data" });
+  });
+
+  it("preserves role and tenant isolation across a rolled-back transaction and view queries", async () => {
+    const admin = getTestPool();
+    pools.push(admin);
+    await resetDatabase(admin);
+    const tenantA = await createTestTenant(admin);
+    const tenantB = await createTestTenant(admin);
+    const adminChokePoint = createChokePoint(admin);
+    const fixture = await runInTenant(tenantA, async () => {
+      const database = await adminChokePoint.createDatabase({ name: "Scoped dates" });
+      await adminChokePoint.createProperty({ databaseId: database.id, key: "due", name: "Due", type: "date" });
+      const item = await adminChokePoint.createItem({ databaseId: database.id, properties: { due: "2026-10-16" } });
+      const view = await adminChokePoint.createView({ databaseId: database.id, type: "table", name: "Dates" });
+      return { item, view };
+    });
+    const runtime = createPool(connectionString(), { role: "semprec_data" });
+    pools.push(runtime);
+    const cp = createChokePoint(runtime);
+    const rollback = new Error("rollback probe");
+    await expect(
+      runInTenant(tenantA, () =>
+        withTransaction(runtime, async (client) => {
+          const result = await client.query<{ zone: string; role: string; tenant: string }>(
+            "SELECT current_setting('TimeZone') AS zone, current_user AS role, current_setting('app.tenant_id') AS tenant",
+          );
+          expect(result.rows[0]).toEqual({ zone: "UTC", role: "semprec_data", tenant: tenantA });
+          throw rollback;
+        }),
+      ),
+    ).rejects.toBe(rollback);
+    const input = { filter: { type: "on_or_after", property: "due", value: "2026-10-16" } };
+    const visible = await runInTenant(tenantA, () => cp.queryViewItems(fixture.view.id, input));
+    expect(visible.items.map((item) => item.id)).toEqual([fixture.item.id]);
+    await expect(runInTenant(tenantB, () => cp.queryViewItems(fixture.view.id, input))).rejects.toMatchObject({
+      status: 404,
+    });
+    expect(
+      (await runInTenant(tenantA, () => cp.queryViewItems(fixture.view.id, input))).items.map((item) => item.id),
+    ).toEqual([fixture.item.id]);
   });
 });
 
@@ -106,6 +148,29 @@ describe("view filters and sorts do not depend on the session time zone", () => 
       ["lateUtc"],
     ],
   ];
+
+  it("filters the seeded Events date consistently across session zones", async () => {
+    const admin = getTestPool();
+    pools.push(admin);
+    await inTenantZero(() => seedSystem(admin));
+    const events = await inTenantZero(() =>
+      withTransaction(admin, (client) => getDatabaseByModuleId(client, "events")),
+    );
+    if (!events) throw new Error("Missing seeded Events database");
+    const utc = chokePoints.get("UTC")!;
+    const match = await utc.createItem({ databaseId: events.id, properties: { name: "Match", date: "2026-10-16" } });
+    const before = await utc.createItem({ databaseId: events.id, properties: { name: "Before", date: "2026-10-15" } });
+    const after = await utc.createItem({ databaseId: events.id, properties: { name: "After", date: "2026-10-17" } });
+    for (const zone of ZONES) {
+      const result = await chokePoints.get(zone)!.queryDatabaseItems(events.id, {
+        filter: { type: "date_range", property: "date", value: { from: "2026-10-16", to: "2026-10-16" } },
+      });
+      const ids = result.items.map((item) => item.id);
+      expect(ids).toContain(match.id);
+      expect(ids).not.toContain(before.id);
+      expect(ids).not.toContain(after.id);
+    }
+  });
 
   it.each(filters)("%s returns the expected rows in every zone", async (_label, filter, expected) => {
     for (const zone of ZONES) expect(await names(zone, filter)).toEqual(expected);

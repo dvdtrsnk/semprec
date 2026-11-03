@@ -169,6 +169,48 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
     expect(JSON.stringify(ownB.body)).toContain(b.projectItemId);
   });
 
+  it("validates color through MCP writes without changing rejected or foreign items", async () => {
+    const user = await createUserIn(tenantA);
+    const projectItemId = await runInTenant(tenantA, () => createTestProjectItem(pool));
+    const credential = await runInTenant(tenantA, () =>
+      withTransaction(pool, (client) =>
+        mintMcpRunCredential(client, {
+          projectItemId,
+          capabilities: ["core.item.write", "core.item.read"],
+          userId: user.id,
+        }),
+      ),
+    );
+    const cp = createChokePoint(pool);
+    const makeItem = (tenant: string) =>
+      runInTenant(tenant, async () => {
+        const database = await cp.createDatabase({ name: "Colors" });
+        await cp.createProperty({ databaseId: database.id, key: "color", name: "Color", type: "color" });
+        return cp.createItem({ databaseId: database.id, properties: { color: "#FF3B30" } });
+      });
+    const own = await makeItem(tenantA);
+    const foreign = await makeItem(tenantB);
+    const patch = (itemId: string, color: unknown, ifVersion: string) =>
+      callTool(credential.token, "semprec.item.patch", { itemId, properties: { color }, ifVersion });
+    const invalid = await patch(own.id, "red", own.updatedAt);
+    expect(invalid.status).toBe(200);
+    expect(invalid.body).toMatchObject({ error: { code: -32602, data: { field: "color" } } });
+    expect((await runInTenant(tenantA, () => cp.getItem(own.databaseId, own.id)))?.properties.color).toBe("#FF3B30");
+    const foreignResult = await patch(foreign.id, "#ff3b30", foreign.updatedAt);
+    expect(foreignResult).toEqual(await patch(randomUUID(), "#ff3b30", foreign.updatedAt));
+    expect((await runInTenant(tenantB, () => cp.getItem(foreign.databaseId, foreign.id)))?.properties.color).toBe(
+      "#FF3B30",
+    );
+    const valid = await patch(own.id, "#ff3b30", own.updatedAt);
+    expect(valid.body).not.toHaveProperty("error");
+    const changed = await runInTenant(tenantA, () => cp.getItem(own.databaseId, own.id));
+    expect(changed?.properties.color).toBe("#ff3b30");
+    if (!changed) throw new Error("Missing updated item");
+    const cleared = await patch(own.id, null, changed.updatedAt);
+    expect(cleared.body).not.toHaveProperty("error");
+    expect((await runInTenant(tenantA, () => cp.getItem(own.databaseId, own.id)))?.properties.color ?? null).toBeNull();
+  });
+
   it("attributes a linked relation write to the minted run's user", async () => {
     const user = await createUserIn(tenantA);
     const projectItemId = await runInTenant(tenantA, () => createTestProjectItem(pool));

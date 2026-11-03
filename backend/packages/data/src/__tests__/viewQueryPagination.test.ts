@@ -1,12 +1,15 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { randomUUID } from "node:crypto";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { ValidationError } from "../errors.js";
 import type { QueryViewResult } from "../views/viewQuery.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { withTransaction } from "../db/pool.js";
+import { getOrCreateJournalItem } from "../journal/journalStore.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -34,6 +37,50 @@ function encodeCursor(payload: unknown): string {
 
 afterAll(async () => {
   await pool?.end();
+});
+
+describe("Journal grouped view ordering", () => {
+  it("orders the seeded period types in reverse with descending weeks across pages", async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await inTenantZero(() => seedSystem(pool));
+    chokePoint = createChokePoint(pool);
+    const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [
+      "journal",
+    ]);
+    const journal = rows[0];
+    if (!journal) throw new Error("Journal database was not seeded");
+    const inputs = [
+      ["year", "2026-10-06"],
+      ["quarter", "2026-10-06"],
+      ["month", "2026-10-06"],
+      ["week", "2026-10-06"],
+      ["week", "2026-09-29"],
+      ["day", "2026-10-06"],
+    ] as const;
+    const expected = new Map<string, string>();
+    for (const [type, date] of inputs) {
+      const item = await inTenantZero(() =>
+        withTransaction(pool, (client) =>
+          getOrCreateJournalItem(client, journal.id, type, new Date(`${date}T12:00:00Z`), "UTC"),
+        ),
+      );
+      expected.set(`${type}:${String(item.properties.period)}`, item.id);
+    }
+    const view = await chokePoint.createView({
+      databaseId: journal.id,
+      type: "table",
+      name: "Grouped periods",
+      config: { groupBy: "type", groupDirection: "desc", sort: [{ property: "period", direction: "desc" }] },
+    });
+    const result = await collectPages((cursor) => chokePoint.queryView(view.id, { cursor, limit: 2 }));
+    expect(result.ids).toEqual(
+      ["day:2026-10-06", "week:2026-W41", "week:2026-W40", "month:2026-10", "quarter:2026-Q4", "year:2026"].map((key) =>
+        expected.get(key),
+      ),
+    );
+    expect(result.pages).toBe(3);
+  });
 });
 
 describe("sorted view query pagination (issue #664)", () => {
@@ -461,6 +508,23 @@ describe("text sort collation and title tie-break (issue #1524)", () => {
       chokePoint.queryDatabaseItems(databaseId, { sort, limit: 2, cursor, locale: "cs" }),
     );
     expect(paged.map(nameOf)).toEqual(["Auto", "Hrad", "Chalupa", "Rybník", "Řeka"]);
+  });
+
+  it("uses the same Czech collation for URL ordering and its keyset cursor", async () => {
+    await chokePoint.createProperty({ databaseId, key: "url", name: "URL", type: "url" });
+    for (const name of titles) {
+      const id = ids[name];
+      if (!id) throw new Error(`Missing place ${name}`);
+      await chokePoint.updateItem({ databaseId, itemId: id, propertiesPatch: { url: `https://example.test/${name}` } });
+    }
+    const sort = [{ property: "url", direction: "asc" }];
+    const { ids: paged, pages } = await collectPages((cursor) =>
+      chokePoint.queryDatabaseItems(databaseId, { sort, limit: 2, cursor, locale: "cs" }),
+    );
+    expect(pages).toBe(3);
+    expect(paged.map(nameOf)).toEqual(["Auto", "Hrad", "Chalupa", "Rybník", "Řeka"]);
+    const neutral = await chokePoint.queryDatabaseItems(databaseId, { sort, locale: "en" });
+    expect(neutral.items.map((item) => item.properties.name)).toEqual(["Auto", "Chalupa", "Hrad", "Řeka", "Rybník"]);
   });
 
   it("reads the locale of a user", async () => {
