@@ -3425,6 +3425,42 @@ describe("mailbox Semp problem raised by the sync job (issue #1506)", () => {
     expect(notifications).toHaveLength(0);
   });
 
+  it("does not count an older retried job after a different job reported the same failure", async () => {
+    await createOwner();
+    const mailboxId = await createMailbox(false);
+    const moduleIds = await seededModuleIds();
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let primary: { value: unknown } | undefined;
+    try {
+      await inTenantZero(async () => {
+        for (const jobId of ["job-a", "job-b", "job-a"]) {
+          await expect(
+            handleSyncMailAccountTask(runtime, { mailboxItemId: mailboxId }, {}, moduleIds, noopStorage, {
+              job: { id: jobId },
+            }),
+          ).rejects.toThrow("has no stored credential");
+        }
+        const result = await withTransaction(runtime, (client) =>
+          client.query<{ occurrence_count: number; resolved_at: Date | null }>(
+            "SELECT occurrence_count, resolved_at FROM semp_problems WHERE dedupe_key = $1",
+            [mailProblemKey(mailboxId)],
+          ),
+        );
+        expect(result.rows).toEqual([{ occurrence_count: 2, resolved_at: null }]);
+      });
+    } catch (error) {
+      primary = { value: error };
+    }
+    try {
+      await runtime.end();
+    } catch (error) {
+      throw new AggregateError(primary ? [primary.value, error] : [error], "Runtime pool cleanup failed", {
+        cause: error,
+      });
+    }
+    if (primary) throw primary.value;
+  });
+
   it("raises no problem before any user account exists", async () => {
     const mailboxId = await createMailbox(false);
 

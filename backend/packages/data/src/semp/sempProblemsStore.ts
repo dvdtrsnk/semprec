@@ -27,7 +27,7 @@ export interface RaiseProblemInput {
   projectItemId?: string | null;
   /** When the problem started, for a first raise that happens after the fact. Defaults to now. */
   since?: Date;
-  /** Identifies the job or run reporting; a repeat of the stored key adds no occurrence. */
+  /** Identifies the job or run reporting; a repeat within this problem episode adds no occurrence. */
   occurrenceKey?: string;
 }
 
@@ -46,8 +46,8 @@ interface RaiseRow {
 /**
  * Records one report of a problem in the caller's open transaction (it never opens one): creates
  * the active problem for `(tenant, dedupeKey)` or merges into it. A merge increases
- * `occurrence_count` and sets `last_seen_at`, unless `occurrenceKey` equals the stored
- * `last_occurrence_key` (a replay of the same job or run). A `critical` raise escalates a stored
+ * `occurrence_count` and sets `last_seen_at`, unless `occurrenceKey` was already recorded for
+ * this episode. A `critical` raise escalates a stored
  * `warning`; an equal or lower severity never changes the stored one.
  *
  * A new or escalated problem also writes its `semp_problem` notification in the same transaction
@@ -70,6 +70,21 @@ export async function raiseProblem(client: PoolClient, input: RaiseProblemInput)
     "SELECT pg_advisory_xact_lock(hashtextextended('semp_problems:' || app_tenant_default()::text || ':' || $1::text, 0))",
     [input.dedupeKey],
   );
+  const previous = await client.query<{ id: string; last_occurrence_key: string | null }>(
+    `SELECT id, last_occurrence_key FROM semp_problems
+     WHERE tenant_id = app_tenant_default() AND dedupe_key = $1 AND resolved_at IS NULL`,
+    [input.dedupeKey],
+  );
+  const existing = previous.rows[0];
+  let countOccurrence = true;
+  if (existing && input.occurrenceKey !== undefined) {
+    const receipt = await client.query<{ present: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM semp_problem_occurrences
+         WHERE tenant_id = app_tenant_default() AND problem_id = $1 AND occurrence_key = $2) AS present`,
+      [existing.id, input.occurrenceKey],
+    );
+    countOccurrence = existing.last_occurrence_key !== input.occurrenceKey && !receipt.rows[0]?.present;
+  }
   const { rows } = await client.query<RaiseRow>(
     `WITH prior AS (
        SELECT severity FROM semp_problems
@@ -85,12 +100,8 @@ export async function raiseProblem(client: PoolClient, input: RaiseProblemInput)
           AND d.system AND d.owner_module_id = $11 AND i.id = $8::uuid
      )
      ON CONFLICT (tenant_id, dedupe_key) WHERE resolved_at IS NULL DO UPDATE SET
-       occurrence_count = semp_problems.occurrence_count
-         + CASE WHEN EXCLUDED.last_occurrence_key IS NOT NULL
-                     AND semp_problems.last_occurrence_key = EXCLUDED.last_occurrence_key THEN 0 ELSE 1 END,
-       last_seen_at = CASE WHEN EXCLUDED.last_occurrence_key IS NOT NULL
-                                AND semp_problems.last_occurrence_key = EXCLUDED.last_occurrence_key
-                           THEN semp_problems.last_seen_at ELSE now() END,
+       occurrence_count = semp_problems.occurrence_count + CASE WHEN $12::boolean THEN 1 ELSE 0 END,
+       last_seen_at = CASE WHEN $12::boolean THEN now() ELSE semp_problems.last_seen_at END,
        last_occurrence_key = COALESCE(EXCLUDED.last_occurrence_key, semp_problems.last_occurrence_key),
        severity = CASE WHEN EXCLUDED.severity = 'critical' THEN 'critical' ELSE semp_problems.severity END
      RETURNING id, (xmax = 0) AS inserted, (SELECT severity FROM prior) AS prior_severity, severity`,
@@ -106,10 +117,24 @@ export async function raiseProblem(client: PoolClient, input: RaiseProblemInput)
       input.since?.toISOString() ?? null,
       input.occurrenceKey ?? null,
       PROJECTS_MODULE_ID,
+      countOccurrence,
     ],
   );
   const row = rows[0];
   if (!row) throw new ValidationError("Invalid projectItemId", { field: "projectItemId" });
+  if (input.occurrenceKey !== undefined) {
+    const keys = new Set([input.occurrenceKey]);
+    if (!row.inserted && existing?.last_occurrence_key !== null && existing?.last_occurrence_key !== undefined) {
+      keys.add(existing.last_occurrence_key);
+    }
+    for (const key of keys) {
+      await client.query(
+        `INSERT INTO semp_problem_occurrences (problem_id, occurrence_key) VALUES ($1, $2)
+         ON CONFLICT (tenant_id, problem_id, occurrence_key) DO NOTHING`,
+        [row.id, key],
+      );
+    }
+  }
   const escalated = row.prior_severity === "warning" && row.severity === "critical";
   const outcome: RaiseProblemOutcome = row.inserted ? "created" : escalated ? "escalated" : "merged";
   if (outcome !== "merged") {

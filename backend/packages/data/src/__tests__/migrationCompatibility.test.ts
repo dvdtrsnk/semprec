@@ -12,6 +12,7 @@ import { withTransaction } from "../db/pool.js";
 import { runApprovalRequestExecutionStatusCutoverMigration } from "../mcp/approvalRequestExecutionStatusCutoverMigration.js";
 import { getApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsActorUserIdCutoverMigration.js";
+import { raiseProblem } from "../semp/sempProblemsStore.js";
 
 /**
  * Compatibility fixture for issue #191: applies each migration example on top of the previous
@@ -21,6 +22,132 @@ import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsA
 
 const EXAMPLES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "db", "migrationExamples");
 const LONG_TITLE = "a title longer than ten characters";
+
+it("preserves a historical problem and lazily records its last known occurrence on upgrade", async () => {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("Missing test database URL");
+  // The generated database identifier contains a fixed prefix and UUID hex.
+  const name = `batch18_receipt_${randomUUID().replaceAll("-", "")}`;
+  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch18-receipt-"));
+  const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+  const migration = "0128_semp_problem_occurrences.sql";
+  let scratch: Pool | undefined;
+  let created = false;
+  let failure: { error: unknown } | undefined;
+  try {
+    await admin.query(`CREATE DATABASE "${name}"`);
+    created = true;
+    const scratchUrl = new URL(url);
+    scratchUrl.pathname = `/${name}`;
+    scratch = new Pool({
+      connectionString: scratchUrl.toString(),
+      connectionTimeoutMillis: 5000,
+      statement_timeout: 30000,
+    });
+    const db = scratch;
+    for (const file of (await readdir(migrations))
+      .filter((entry) => entry.endsWith(".sql") && entry < migration)
+      .sort()) {
+      await copyFile(path.join(migrations, file), path.join(dir, file));
+    }
+    await runMigrations(db, dir);
+    const tenants = await db.query<{ id: string }>("SELECT id FROM tenants");
+    const tenantId = tenants.rows[0]?.id;
+    if (!tenantId || tenants.rows.length !== 1) throw new Error("Expected one historical tenant");
+    const userId = randomUUID();
+    const sourceId = randomUUID();
+    // The pre-upgrade store wrote this row without an occurrence receipt table.
+    await db.query("INSERT INTO users (id, tenant_id, email, password_hash) VALUES ($1, $2, $3, 'unused')", [
+      userId,
+      tenantId,
+      `${userId}@example.test`,
+    ]);
+    const inserted = await db.query<{ id: string }>(
+      `INSERT INTO semp_problems (tenant_id, user_id, category, kind, severity, source_table, source_id, dedupe_key, occurrence_count, last_occurrence_key)
+       VALUES ($1, $2, 'mail', 'sync', 'warning', 'mail_account_sync_state', $3, 'upgrade', 4, 'old-last') RETURNING id`,
+      [tenantId, userId, sourceId],
+    );
+    const problemId = inserted.rows[0]?.id;
+    if (!problemId) throw new Error("Missing historical problem");
+    const before = (
+      await db.query<{ row: unknown }>("SELECT to_jsonb(p) AS row FROM semp_problems p WHERE id = $1", [problemId])
+    ).rows[0]?.row;
+    await copyFile(path.join(migrations, migration), path.join(dir, migration));
+    await runMigrations(db, dir);
+    expect(
+      (await db.query<{ row: unknown }>("SELECT to_jsonb(p) AS row FROM semp_problems p WHERE id = $1", [problemId]))
+        .rows[0]?.row,
+    ).toEqual(before);
+    expect((await db.query("SELECT 1 FROM semp_problem_occurrences")).rows).toEqual([]);
+    await runInTenant(tenantId, () =>
+      withTransaction(db, (client) =>
+        raiseProblem(client, {
+          userId,
+          category: "mail",
+          kind: "sync",
+          severity: "warning",
+          sourceTable: "mail_account_sync_state",
+          sourceId,
+          dedupeKey: "upgrade",
+          occurrenceKey: "new-job",
+        }),
+      ),
+    );
+    await runInTenant(tenantId, () =>
+      withTransaction(db, (client) =>
+        raiseProblem(client, {
+          userId,
+          category: "mail",
+          kind: "sync",
+          severity: "warning",
+          sourceTable: "mail_account_sync_state",
+          sourceId,
+          dedupeKey: "upgrade",
+          occurrenceKey: "old-last",
+        }),
+      ),
+    );
+    expect(
+      (
+        await db.query<{ occurrence_count: number }>("SELECT occurrence_count FROM semp_problems WHERE id = $1", [
+          problemId,
+        ])
+      ).rows,
+    ).toEqual([{ occurrence_count: 5 }]);
+    expect(
+      (
+        await db.query<{ occurrence_key: string }>(
+          "SELECT occurrence_key FROM semp_problem_occurrences WHERE problem_id = $1 ORDER BY occurrence_key",
+          [problemId],
+        )
+      ).rows,
+    ).toEqual([{ occurrence_key: "new-job" }, { occurrence_key: "old-last" }]);
+  } catch (error) {
+    failure = { error };
+  }
+  const cleanupErrors: unknown[] = [];
+  for (const cleanup of [
+    async () => scratch?.end(),
+    async () => {
+      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+    },
+    async () => admin.end(),
+    async () => rm(dir, { recursive: true, force: true }),
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (cleanupErrors.length)
+    throw new AggregateError(
+      failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+      "Receipt upgrade cleanup failed",
+    );
+  if (failure) throw failure.error;
+}, 120_000);
 
 it("upgrades a populated search index through the page text migration", async () => {
   const url = process.env.TEST_DATABASE_URL;
