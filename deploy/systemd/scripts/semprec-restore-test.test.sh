@@ -49,24 +49,25 @@ printf "docker %s\\n" "$*" >> "$TEST_STATE/commands"
 fail() { [[ -e "$TEST_STATE/fail-$1" ]]; }
 mkdir -p "$TEST_STATE/resources"
 case "$1" in
+  ps) for f in "$TEST_STATE"/resources/container-*; do [[ -e "$f" ]] && printf "%s\n" "${f##*/container-}"; done; : ;;
+  port) printf "127.0.0.1:15432\n" ;;
+  container) if [[ "$2" == inspect ]]; then if fail unsettled-exec; then printf "[\"held\"]\n"; else echo null; fi; fi ;;
   network)
+    if [[ "$2" == ls ]]; then for f in "$TEST_STATE"/resources/network-*; do [[ -e "$f" ]] && printf "%s\n" "${f##*/network-}"; done; fi
     if [[ "$2" == create ]]; then touch "$TEST_STATE/resources/network-${!#}"; fi
     if [[ "$2" == rm ]]; then rm "$TEST_STATE/resources/network-$3"; fi ;;
   rm)
     if fail docker-rm-once; then rm "$TEST_STATE/fail-docker-rm-once"; exit 31; fi
     rm "$TEST_STATE/resources/container-${!#}" ;;
   run)
-    if [[ "$2" == --detach ]]; then touch "$TEST_STATE/resources/container-$4"; exit 0; fi
+    if [[ "$2" == --detach ]]; then touch "$TEST_STATE/resources/container-$4"; printf "%064d\n" 1; exit 0; fi
     exit 32 ;;
   exec)
     arguments=" $* "
     if [[ "$arguments" == *" pg_isready "* ]]; then ! fail postgres-ready
     elif [[ "$arguments" == *" pg_restore "* && "$arguments" == *" --data-only "* ]]; then cat > /dev/null; ! fail key-restore
     elif [[ "$arguments" == *" pg_restore "* ]]; then cat > /dev/null; ! fail pg-restore
-    elif [[ "$arguments" == *"count(*) FROM tenants WHERE id = ANY("* ]]
-    then if fail ledger-tenant-present; then echo 1; else echo 0; fi
-    elif [[ "$arguments" == *"count(*) FROM tenant_deletions"* ]]
-    then if fail ledger-empty; then echo 0; elif fail ledger-count-mismatch; then echo 3; else echo 2; fi
+    elif [[ "$arguments" == *"CREATE ROLE semprec_restore"* ]]; then :
     elif [[ "$arguments" == *"count(*) FROM tenant_keys"* ]]; then if fail tenant-keys-present; then echo 2; else echo 0; fi
     elif [[ "$arguments" == *"FROM blobs"* ]]; then cat "$TEST_STATE/blob-rows"
     elif [[ "$arguments" == *"octet_length(state) = 0"* ]]; then if fail empty-doc-state; then echo 1; else echo 0; fi
@@ -104,8 +105,14 @@ if [[ -e "$TEST_STATE/fail-blob-size-mismatch" ]]; then printf "corrupted" >> "$
 if [[ -e "$TEST_STATE/fail-blob-hash-mismatch" ]]; then tr "a-z" "A-Z" < "$TEST_BLOBS/opt/semprec/data/files/ab/file-a" > "$target/opt/semprec/data/files/ab/file-a"; fi'
 write_mock curl 'printf "%s\\n" "${!#}" >> "$TEST_STATE/pings"'
 write_mock node '
-shift
-printf "%s DATABASE_URL=%s\\n" "$*" "$DATABASE_URL" >> "$TEST_STATE/results"'
+case "$1" in
+  */validateRestoreLedgerCli.js)
+    if [[ -e "$TEST_STATE/fail-ledger-malformed" || -e "$TEST_STATE/fail-ledger-uppercase" || -e "$TEST_STATE/fail-ledger-count-mismatch" ]]; then exit 41; fi ;;
+  */restoreTenantKeysCli.js)
+    if [[ -e "$TEST_STATE/fail-key-restore-uncertain" ]]; then printf "semprec_restore_uncertain\\n" > "$SEMPREC_RESTORE_RECEIPT"; exit 42; fi
+    if [[ -e "$TEST_STATE/fail-key-restore" ]]; then exit 42; fi ;;
+  *) shift; printf "%s DATABASE_URL=%s\\n" "$*" "$DATABASE_URL" >> "$TEST_STATE/results" ;;
+esac'
 write_mock timeout 'shift; exec "$@"'
 write_mock sleep ':'
 
@@ -152,8 +159,8 @@ assert_never_touches_production() {
     echo "a disposable container ran outside the restore-test network" >&2
     exit 1
   fi
-  if grep '^docker network create ' "$TEST_STATE/commands" | grep -v -q -- '--internal'; then
-    echo "the restore-test network is not internal" >&2
+  if grep '^docker network create ' "$TEST_STATE/commands" | grep -v -q -- '--opt com.docker.network.bridge.enable_ip_masquerade=false'; then
+    echo "the restore-test bridge settings are incorrect" >&2
     exit 1
   fi
 }
@@ -168,11 +175,13 @@ grep -qx "$PING_URL" "$TEST_STATE/pings"
 test "$(count_lines . "$TEST_STATE/results")" -eq 1
 grep -Eq '^passed [0-9]{8}T[0-9]{6}Z-[0-9]+ DATABASE_URL=postgres://semprec_side@' "$TEST_STATE/results"
 grep -q -- '--exit-on-error' "$TEST_STATE/commands"
-# Each restore names its snapshot kind, and the key dump is restored data-only.
+# Each restore names its snapshot kind, and the key import uses the offline owner.
 test "$(count_lines '^restic restore latest ' "$TEST_STATE/commands")" -eq 2
 grep -q '^restic restore latest --path /var/backups/semprec/postgres.dump --target ' "$TEST_STATE/commands"
 grep -q '^restic restore latest --path /var/backups/semprec/tenant-keys.dump --target ' "$TEST_STATE/commands"
-test "$(count_lines '^docker exec .* pg_restore .* --data-only ' "$TEST_STATE/commands")" -eq 1
+test "$(count_lines '^docker exec .* pg_restore .* --data-only ' "$TEST_STATE/commands")" -eq 0
+grep '^docker run ' "$TEST_STATE/commands" | grep -q -- '--publish 127.0.0.1::5432 --env-file '
+! grep '^docker run ' "$TEST_STATE/commands" | grep -q -- 'POSTGRES_HOST_AUTH_METHOD=trust'
 test "$(count_lines '^docker run ' "$TEST_STATE/commands")" -eq 1
 # The disposable server runs with the same lock-table size as production's compose file.
 production_max_locks="$(sed -n 's/^ *command: \["postgres", "-c", "max_locks_per_transaction=\([0-9]*\)"\]$/\1/p' \
@@ -225,7 +234,6 @@ assert_failure docSnapshotsState empty-doc-state
 assert_failure deletionLedger ledger-missing
 assert_failure deletionLedger ledger-malformed
 assert_failure deletionLedger ledger-uppercase
-assert_failure deletionLedger ledger-tenant-present
 assert_failure deletionLedger ledger-count-mismatch
 assert_failure tenantKeysExcluded tenant-keys-present
 assert_failure tenantKeysRestore key-dump-missing
@@ -236,6 +244,19 @@ assert_failure blobObjects blob-size-mismatch
 assert_failure blobObjects blob-hash-mismatch
 # The first container removal fails; the exit path retries it, so nothing is left behind.
 assert_failure cleanup docker-rm-once
+
+# A potentially unfinished owner or daemon exec retains every owned resource for reconciliation.
+for flag in key-restore-uncertain unsettled-exec; do
+  reset_state
+  touch "$TEST_STATE/fail-$flag"
+  if run_restore_test env; then echo 'uncertain cleanup unexpectedly succeeded' >&2; exit 1; fi
+  ! grep -q '^docker rm ' "$TEST_STATE/commands"
+  ! grep -q '^docker network rm ' "$TEST_STATE/commands"
+  ! grep -q '^passed ' "$TEST_STATE/results"
+  test -n "$(ls -A "$TEST_STATE/resources")"
+  # Only synthetic test artifacts are removed here, after verifying the production script preserved them.
+  rm -rf "$TEST_STATE/resources" "$TEST_RESTORE_ROOT"/*
+done
 
 # Missing configuration is itself a failed run.
 reset_state

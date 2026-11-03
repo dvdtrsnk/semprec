@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Monthly restore test (issue #178): restores the newest restic snapshot into a work directory and
-# a disposable PostgreSQL container on an internal Docker network, checks the restored database
+# a disposable PostgreSQL container on a dedicated authenticated loopback bridge, checks the restored database
 # against the restored blob storage directories, and destroys everything it created. It never
 # connects to the production containers or volumes.
 set -euo pipefail
 
 readonly RESTORE_ROOT=/var/tmp
 readonly RESULT_CLI=/opt/semprec/current/backend/packages/data/dist/observability/restoreTestResultCli.js
+readonly KEY_RESTORE_CLI=/opt/semprec/current/backend/packages/data/dist/tenancy/restoreTenantKeysCli.js
+readonly LEDGER_VALIDATOR=/opt/semprec/current/backend/packages/data/dist/tenancy/validateRestoreLedgerCli.js
 readonly POSTGRES_IMAGE=postgres:16-alpine
 readonly RESTORED_DUMP_PATH=var/backups/semprec/postgres.dump
 readonly RESTORED_DELETION_LEDGER_PATH=var/backups/semprec/tenant-deletions.ledger
@@ -28,6 +30,10 @@ WORK_DIRECTORY=
 NETWORK_CREATED=false
 POSTGRES_CREATED=false
 VERIFIED=false
+POSTGRES_ID=
+RESTORE_DATABASE_URL=
+OWNER_RUNNING=false
+PRESERVE_STATE=false
 
 require_environment() {
   local name
@@ -45,17 +51,34 @@ require_environment() {
 # fails, so one stuck resource cannot leave the others behind; the return status reports
 # whether everything is gone.
 destroy_disposable_state() {
-  local status=0
+  local exec_ids names
+  if [[ "$OWNER_RUNNING" == true || "$PRESERVE_STATE" == true ]]; then return 1; fi
   if [[ "$POSTGRES_CREATED" == true ]]; then
-    if docker rm --force --volumes "$POSTGRES_CONTAINER" >/dev/null; then POSTGRES_CREATED=false; else status=1; fi
+    names="$(docker ps --all --filter "name=^/$POSTGRES_CONTAINER$" --format '{{.Names}}')" || return 1
+    if [[ -n "$names" ]]; then
+      [[ "$names" == "$POSTGRES_CONTAINER" ]] || return 1
+      exec_ids="$(docker container inspect --format '{{json .ExecIDs}}' "$POSTGRES_CONTAINER")" || return 1
+      [[ "$exec_ids" == null || "$exec_ids" == '[]' ]] || return 1
+      docker rm --force --volumes "$POSTGRES_CONTAINER" >/dev/null || return 1
+      names="$(docker ps --all --filter "name=^/$POSTGRES_CONTAINER$" --format '{{.Names}}')" || return 1
+      [[ -z "$names" ]] || return 1
+    fi
+    POSTGRES_CREATED=false
   fi
   if [[ "$NETWORK_CREATED" == true ]]; then
-    if docker network rm "$NETWORK_NAME" >/dev/null; then NETWORK_CREATED=false; else status=1; fi
+    names="$(docker network ls --filter "name=^${NETWORK_NAME}$" --format '{{.Name}}')" || return 1
+    if [[ -n "$names" ]]; then
+      [[ "$names" == "$NETWORK_NAME" ]] || return 1
+      docker network rm "$NETWORK_NAME" >/dev/null || return 1
+      names="$(docker network ls --filter "name=^${NETWORK_NAME}$" --format '{{.Name}}')" || return 1
+      [[ -z "$names" ]] || return 1
+    fi
+    NETWORK_CREATED=false
   fi
   if [[ -n "$WORK_DIRECTORY" ]]; then
-    if rm -rf -- "$WORK_DIRECTORY"; then WORK_DIRECTORY=; else status=1; fi
+    rm -rf -- "$WORK_DIRECTORY" || return 1
+    WORK_DIRECTORY=
   fi
-  return "$status"
 }
 
 record_result() {
@@ -103,7 +126,7 @@ on_exit() {
 
 pg_query() {
   docker exec "$POSTGRES_CONTAINER" \
-    psql --host=127.0.0.1 --username=postgres --dbname="$RESTORE_DATABASE" \
+    psql --username=postgres --dbname="$RESTORE_DATABASE" \
     --no-psqlrc --tuples-only --no-align --field-separator=$'\t' --set=ON_ERROR_STOP=1 --command="$1"
 }
 
@@ -133,23 +156,36 @@ restore_snapshot() {
 
 start_postgres() {
   CURRENT_CHECK=postgresStart
-  docker network create --internal "$NETWORK_NAME" >/dev/null
+  local names password env_file mapping port
+  names="$(docker ps --all --filter "name=^/$POSTGRES_CONTAINER$" --format '{{.Names}}')" || fail_check "container lookup failed"
+  [[ -z "$names" ]] || fail_check "restore container identity already exists"
+  names="$(docker network ls --filter "name=^${NETWORK_NAME}$" --format '{{.Name}}')" || fail_check "network lookup failed"
+  [[ -z "$names" ]] || fail_check "restore network identity already exists"
   NETWORK_CREATED=true
+  docker network create --driver bridge --opt com.docker.network.bridge.enable_ip_masquerade=false "$NETWORK_NAME" >/dev/null
+  password="$(openssl rand -hex 32)"
+  [[ "$password" =~ ^[a-f0-9]{64}$ ]] || fail_check "could not generate restore password"
+  env_file="$WORK_DIRECTORY/postgres.env"
+  ( umask 077; printf 'POSTGRES_PASSWORD=%s\nPOSTGRES_DB=%s\n' "$password" "$RESTORE_DATABASE" > "$env_file" )
   POSTGRES_CREATED=true
-  docker run --detach --name "$POSTGRES_CONTAINER" --network "$NETWORK_NAME" \
-    --env POSTGRES_HOST_AUTH_METHOD=trust --env POSTGRES_DB="$RESTORE_DATABASE" \
-    "$POSTGRES_IMAGE" postgres -c max_locks_per_transaction=2048 >/dev/null
-  # TCP rather than the socket: the image's init-time server listens on the socket only and is
-  # restarted before the real one accepts connections.
+  POSTGRES_ID="$(docker run --detach --name "$POSTGRES_CONTAINER" --network "$NETWORK_NAME" \
+    --publish 127.0.0.1::5432 --env-file "$env_file" \
+    "$POSTGRES_IMAGE" postgres -c max_locks_per_transaction=2048)"
+  [[ "$POSTGRES_ID" =~ ^[a-f0-9]{64}$ ]] || fail_check "invalid restore container identity"
   wait_until_ready docker exec "$POSTGRES_CONTAINER" pg_isready --host=127.0.0.1 --username=postgres \
     --dbname="$RESTORE_DATABASE" || fail_check "disposable PostgreSQL did not become ready"
+  mapping="$(docker port "$POSTGRES_CONTAINER" 5432/tcp)" || fail_check "restore port mapping is unavailable"
+  [[ "$mapping" =~ ^127\.0\.0\.1:([0-9]{1,5})$ ]] || fail_check "restore port mapping is not loopback"
+  port="${BASH_REMATCH[1]}"
+  (( 10#$port > 0 && 10#$port <= 65535 )) || fail_check "restore port is invalid"
+  RESTORE_DATABASE_URL="postgresql://postgres:${password}@127.0.0.1:${port}/${RESTORE_DATABASE}"
 }
 
 restore_postgres() {
   CURRENT_CHECK=pgRestore
   # Ownership and grants name production roles the disposable server does not have.
   docker exec --interactive "$POSTGRES_CONTAINER" \
-    pg_restore --host=127.0.0.1 --username=postgres --dbname="$RESTORE_DATABASE" \
+    pg_restore --username=postgres --dbname="$RESTORE_DATABASE" \
     --exit-on-error --no-owner --no-privileges < "$WORK_DIRECTORY/$RESTORED_DUMP_PATH"
 }
 
@@ -175,31 +211,21 @@ check_postgres_contents() {
   [[ "$empty_snapshots" == 0 ]] || fail_check "restored doc_snapshots has empty state"
 }
 
-# The ledger travels in the same snapshot as the dump. It must list only well-formed ids, none of
-# them still present in the restored `tenants`, and exactly as many as the restored
-# `tenant_deletions` holds. Each id is matched against the uuid pattern before it reaches SQL.
+# The later ledger must cover the snapshot tombstones; extra newer IDs remain replay evidence.
 check_deletion_ledger() {
   CURRENT_CHECK=deletionLedger
   local ledger="$WORK_DIRECTORY/$RESTORED_DELETION_LEDGER_PATH"
   [[ -f "$ledger" ]] || fail_check "restored snapshot has no tenant deletion ledger"
-
-  local uuid_pattern='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-  local line ids='' ledger_lines=0
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -n "$line" ]] || continue
-    [[ "$line" =~ $uuid_pattern ]] || fail_check "tenant deletion ledger has a line that is not a lowercase uuid"
-    ids="${ids:+$ids,}$line"
-    ledger_lines=$((ledger_lines + 1))
-  done < "$ledger"
-
-  local resurrected
-  resurrected="$(pg_query "SELECT count(*) FROM tenants WHERE id = ANY('{$ids}'::uuid[])")"
-  [[ "$resurrected" == 0 ]] || fail_check "a tenant in the deletion ledger is present in the restored tenants table"
-
-  local recorded
-  recorded="$(pg_query 'SELECT count(*) FROM tenant_deletions')"
-  [[ "$recorded" =~ ^[0-9]+$ && "$recorded" -eq "$ledger_lines" ]] ||
-    fail_check "tenant deletion ledger line count differs from the restored tenant_deletions table"
+  OWNER_RUNNING=true
+  if DATABASE_URL="$RESTORE_DATABASE_URL" SEMPREC_RESTORE_TARGET_ROLE=semprec_restore \
+      node "$LEDGER_VALIDATOR" --database "$ledger"; then
+    OWNER_RUNNING=false
+  else
+    local owner_status=$?
+    OWNER_RUNNING=false
+    (( owner_status < 128 )) || PRESERVE_STATE=true
+    fail_check "restore ledger validation failed"
+  fi
 }
 
 # Every backup writes the key dump after the main dump, and the main dump holds no tenant_keys data.
@@ -210,15 +236,23 @@ check_tenant_keys_excluded() {
   [[ "$key_rows" == 0 ]] || fail_check "restored main dump contains tenant_keys rows"
 }
 
-# The key snapshot is restored data-only on top of the main dump: the foreign key to tenants proves
-# every key belongs to a restored tenant. Nothing is decrypted, so no master key is involved.
+# Restore the independently retained keys through the scoped offline owner.
 check_tenant_keys_restore() {
   CURRENT_CHECK=tenantKeysRestore
   restic restore latest --path "/$RESTORED_TENANT_KEYS_DUMP_PATH" --target "$WORK_DIRECTORY"
   [[ -s "$WORK_DIRECTORY/$RESTORED_TENANT_KEYS_DUMP_PATH" ]] || fail_check "restored key snapshot has no tenant keys dump"
-  docker exec --interactive "$POSTGRES_CONTAINER" \
-    pg_restore --host=127.0.0.1 --username=postgres --dbname="$RESTORE_DATABASE" \
-    --data-only --exit-on-error --no-owner --no-privileges < "$WORK_DIRECTORY/$RESTORED_TENANT_KEYS_DUMP_PATH"
+  OWNER_RUNNING=true
+  if SEMPREC_RESTORE_ADMIN_URL="$RESTORE_DATABASE_URL" SEMPREC_RESTORE_TARGET_URL="$RESTORE_DATABASE_URL" \
+      SEMPREC_RESTORE_CONTAINER="$POSTGRES_ID" SEMPREC_RESTORE_TARGET_ROLE=semprec_restore \
+      SEMPREC_RESTORE_RECEIPT="$WORK_DIRECTORY/key-restore.receipt" \
+      node "$KEY_RESTORE_CLI" "$WORK_DIRECTORY/$RESTORED_TENANT_KEYS_DUMP_PATH"; then
+    OWNER_RUNNING=false
+  else
+    local owner_status=$?
+    OWNER_RUNNING=false
+    if (( owner_status >= 128 )) || [[ -s "$WORK_DIRECTORY/key-restore.receipt" ]]; then PRESERVE_STATE=true; fi
+    fail_check "offline tenant key restore failed"
+  fi
 }
 
 # restic restores absolute paths under the work directory. A `blobs.storage_key` is relative to
@@ -269,6 +303,11 @@ main() {
   restore_snapshot
   start_postgres
   restore_postgres
+  pg_query "CREATE ROLE semprec_restore NOLOGIN NOSUPERUSER NOBYPASSRLS;
+    GRANT USAGE ON SCHEMA public TO semprec_restore;
+    GRANT SELECT ON public.tenants, public.tenant_deletions TO semprec_restore;
+    GRANT SELECT, INSERT ON public.tenant_keys TO semprec_restore;
+    GRANT EXECUTE ON FUNCTION public.app_tenant_default() TO semprec_restore" >/dev/null
   check_postgres_contents
   check_deletion_ledger
   check_tenant_keys_excluded

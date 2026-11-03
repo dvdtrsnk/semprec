@@ -153,14 +153,16 @@ custom-format dumps, each to a temporary file that is moved into place only when
 - `/var/backups/semprec/postgres.dump`, the whole database except the data of `tenant_keys`
   (`--exclude-table-data=public.tenant_keys`; the table's schema stays);
 - `/var/backups/semprec/tenant-keys.dump`, a `--data-only` dump of `public.tenant_keys` alone,
-  taken after the main dump. Keys are only ever created or deleted, so every credential in the main
-  dump has its key in the key dump. A failing dump fails the run before any restic call.
+  taken after the main dump. Keys can be added or erased between the two observations, so their
+  tenant sets can differ. A failing dump fails the run before any restic call.
 
 Between the key dump and restic it writes `/var/backups/semprec/tenant-deletions.ledger` (also
-through a temporary file and `mv`): one tenant uuid per line, the ids in `tenant_deletions` ordered
-by `completed_at`, read with `psql` in the Postgres container. A failed query fails the run before
-any restic call. The ledger is what lets a restore re-apply deletions recorded after a snapshot
-(see "Re-applying account deletions after a restore").
+through a temporary file and `mv`): one lowercase tenant UUID per line, the ids in
+`tenant_deletions` ordered by `completed_at`, read with `psql` in the Postgres container. The
+file-only validator rejects malformed, duplicate or oversized artifacts before any restic call.
+This is a later replay ledger, not an exact view of the dump's database snapshot; its command
+order provides bounded provenance rather than a shared snapshot guarantee. It lets a restore
+re-apply deletions recorded after an older snapshot (see "Re-applying account deletions after a restore").
 
 It then runs two `restic backup` commands: the main snapshot (the main dump, the ledger and the two blob
 storage directories the `blobs` rows point into, `FILES_STORAGE_DIR` (`/opt/semprec/data/files`)
@@ -180,15 +182,23 @@ the repository within 7 days, measured from the last backup that still held the 
 `--keep-within` is relative to the newest key snapshot, not to the clock, so this bound stops
 advancing while backups do not run.
 
-**Disaster recovery needs both halves.** Restore a main snapshot with
-`restic restore latest --path /var/backups/semprec/postgres.dump`, run `pg_restore` of the main
-dump, then restore the newest key snapshot with
-`restic restore latest --path /var/backups/semprec/tenant-keys.dump` and run
-`pg_restore --data-only` of the key dump into the restored database. A main snapshot older than
-the oldest key snapshot cannot open its tenants' credentials; those users reconnect their mailboxes
-and MCP servers. Main snapshots taken between the introduction of per-tenant keys and this change
-still contain tenant zero's wrapped key inside the dump until they age out; no other tenant
-existed at that time.
+**Disaster recovery needs both halves.** Keep the restored database and all services offline.
+Restore a selected main snapshot and its schema, then restore the newest independent
+`/var/backups/semprec/tenant-keys.dump` snapshot to a protected regular file. Supply the offline
+admin and non-owner target database URLs, the exact 64-character ID of the selected offline
+PostgreSQL container, and a new path in a protected operator-owned directory for the cleanup
+receipt through `SEMPREC_RESTORE_ADMIN_URL`, `SEMPREC_RESTORE_TARGET_URL`,
+`SEMPREC_RESTORE_CONTAINER`, and `SEMPREC_RESTORE_RECEIPT`. The target role must already have
+SELECT on `tenants` and SELECT/INSERT on `tenant_keys`; it must be subject to the target's RLS.
+Run `node /opt/semprec/current/backend/packages/data/dist/tenancy/restoreTenantKeysCli.js <key-dump>`
+with those variables in its environment. It checks the local Docker context and server identity,
+restores the selected table data into an owned staging database, and imports only rows belonging to
+restored tenants. It does not decrypt keys or fall back to an older key artifact. A failure may
+leave a partially populated offline target: recreate it from the main dump before retrying. A
+nonempty receipt identifies staging state whose cleanup was not established; retain it and resolve
+that exact owned state before retrying. If a key is absent, affected credentials remain unavailable
+and users must reconnect. Main snapshots taken between the introduction of per-tenant keys and
+this change still contain tenant zero's wrapped key until they age out; no other tenant existed then.
 
 The backup input inventory is intentionally narrow: the two custom PostgreSQL dumps, the deletion
 ledger and the two blob storage directories only. It excludes `/opt/semprec/shared/env/`, the legacy `/opt/semprec/shared/.env`, `apns-key.p8`, all credentials
@@ -204,29 +214,30 @@ application (`services/semprec-api`), by design.
 
 `semprec-restore-test.timer` runs monthly. Its root-owned service restores the newest main restic
 snapshot (`restic restore latest --path /var/backups/semprec/postgres.dump`, since a bare `latest`
-could pick a key snapshot) into a temporary directory under `/var/tmp`, then starts a disposable PostgreSQL
-container on a new `--internal` Docker network. It never addresses the production Compose
-containers or volumes. The run passes only if all of these hold:
+could pick a key snapshot) into a temporary directory under `/var/tmp`. It starts a disposable
+PostgreSQL container on a dedicated bridge with IP masquerade disabled, a random loopback-only
+port and a generated private password. This is not a claim of universal egress isolation. The
+script never addresses production Compose containers or volumes. The run passes only if all of these hold:
 
 - `pg_restore --exit-on-error` of the restored custom dump succeeds;
 - `items` is non-empty and its newest `updated_at` is at most 48 hours old;
 - `doc_snapshots` is non-empty and no row has an empty `state`;
-- `deletionLedger`: the restored snapshot has `var/backups/semprec/tenant-deletions.ledger`, every
-  non-empty line of it is a lowercase uuid (checked before any line reaches SQL), none of those ids
-  is in the restored `tenants`, and its line count equals the restored `tenant_deletions` row count
-  (an empty ledger with an empty table passes);
+- `deletionLedger`: the bounded strict artifact covers every exact `tenant_deletions` ID in the
+  restored main database, has no duplicate, blank or malformed record, and no restored tenant
+  also has a tombstone. Additional newer ledger IDs are valid replay evidence. This check does
+  not execute replay or activate services;
 - `tenantKeysExcluded`: the restored main database has no `tenant_keys` rows;
-- `tenantKeysRestore`: the newest key snapshot (`--path /var/backups/semprec/tenant-keys.dump`)
-  restores into the same work directory, is non-empty, and `pg_restore --data-only --exit-on-error
-  --no-owner --no-privileges` of it succeeds in the disposable database; its foreign key to
-  `tenants` proves every key belongs to a restored tenant. The test never needs the master key and
-  never decrypts anything;
+- `tenantKeysRestore`: the newest independent key snapshot is imported through the offline owner
+  into the restored database under a narrow non-owner role, with target FK and RLS active. Extra
+  keys for tenants absent from the main snapshot are not inserted. No master key or decryption is
+  used; a missing key remains unavailable;
 - 20 random hashed `blobs` rows (all of them, when fewer exist) each have a restored file with
   exactly the recorded size and SHA-256 hash — looked up by `storage_key` under the restored
   `FILES_STORAGE_DIR` first, then under the restored `MAIL_ATTACHMENTS_DIR`.
 
-The container, the network, and the restored files are removed on every exit path; a cleanup
-that cannot finish fails the run. Only then does a passing run mark the `backup:restoreTest`
+The container, network and restored files are removed after owned operations settle. A running or
+uncertain owner, unresolved staging receipt or failed cleanup retains the owned state for operator
+reconciliation and fails the run. Only then does a passing run mark the `backup:restoreTest`
 observability check `ok` and ping `HEALTHCHECKS_RESTORE_PING_URL`. A failed run marks that check
 `alerting`, writes one `backup_restore_failed` notification through the data layer's
 `writeNotification` (the `restoreTestResultCli.js` of the current release, as `semprec_side`),

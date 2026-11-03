@@ -42,8 +42,11 @@ async function main(): Promise<void> {
   const tenantIds = parseRestoreReplayLedger(await readLedger(path));
   if (mode === "--file-only") return;
   if (!process.env.DATABASE_URL) throw new Error("Restore database is not configured");
+  const targetRole = process.env.SEMPREC_RESTORE_TARGET_ROLE;
+  if (targetRole !== undefined && targetRole !== "semprec_restore") throw new Error("Invalid restore target role");
   const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
+    ...(targetRole ? { options: `-c role=${targetRole}` } : {}),
     connectionTimeoutMillis: 10_000,
     statement_timeout: 60_000,
   });
