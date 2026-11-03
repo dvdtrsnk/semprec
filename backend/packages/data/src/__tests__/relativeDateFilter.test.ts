@@ -90,6 +90,73 @@ describe("date_relative filter", () => {
     expect(fridayItems.items.map((item) => item.properties.title)).toEqual(["friday"]);
   });
 
+  it("combines relative dates, numeric and relation filters with grouped Czech keyset paging", async () => {
+    const related = await cp.createDatabase({ name: "Related" });
+    const { property: relation } = await cp.createRelationProperty({
+      sourceDatabaseId: databaseId,
+      key: "related",
+      name: "Related",
+      targetDatabaseId: related.id,
+    });
+    await cp.createProperty({ databaseId, key: "rank", name: "Rank", type: "number" });
+    await cp.createProperty({
+      databaseId,
+      key: "status",
+      name: "Status",
+      type: "select",
+      config: { options: [{ key: "low" }, { key: "high" }] },
+    });
+    const target = await cp.createItem({ databaseId: related.id, properties: {} });
+    for (const [title, status, rank, due, linked] of [
+      ["Chalupa", "high", 2, "2026-10-22", true],
+      ["Hrad", "high", 2, "2026-10-22", true],
+      ["Řeka", "low", 2, "2026-10-23", true],
+      ["Rybník", "low", 2, "2026-10-23", true],
+      ["unlinked", "high", 2, "2026-10-22", false],
+      ["small", "high", 1, "2026-10-22", true],
+      ["past", "high", 2, "2026-10-21", true],
+    ] as const) {
+      const id = await seed(title, { status, rank, due });
+      if (linked)
+        await cp.createRelation({ relationPropertyId: relation.id, callerItemId: id, targetItemId: target.id });
+    }
+    const view = await cp.createView({
+      databaseId,
+      type: "table",
+      name: "Combined",
+      config: {
+        filter: {
+          type: "and",
+          nodes: [
+            relative("upcoming"),
+            { type: "gte", property: "rank", value: 2 },
+            { type: "relation_is_not_empty", property: "related" },
+          ],
+        },
+        groupBy: "status",
+        groupDirection: "desc",
+        sort: [{ property: "title", direction: "asc" }],
+      },
+    });
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    let exhausted = false;
+    let pages = 0;
+    for (let page = 0; page < 3; page++) {
+      const result = await cp.queryView(view.id, { now: THURSDAY, locale: "cs", limit: 2, cursor });
+      pages++;
+      seen.push(...result.items.map((item) => String(item.properties.title)));
+      if (result.nextCursor === null) {
+        exhausted = true;
+        break;
+      }
+      cursor = result.nextCursor;
+    }
+    expect(seen).toEqual(["Hrad", "Chalupa", "Rybník", "Řeka"]);
+    expect(exhausted).toBe(true);
+    expect(pages).toBe(2);
+  });
+
   it("returns dated past items and never items without a date", async () => {
     await seed("overdue", { due: "2026-10-01" });
     await seed("today", { due: "2026-10-22" });

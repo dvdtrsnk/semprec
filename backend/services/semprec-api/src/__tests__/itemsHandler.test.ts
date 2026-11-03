@@ -133,6 +133,149 @@ describe("item routes (issue #241)", () => {
     await pool?.end();
   });
 
+  it("validates color writes over authenticated REST and preserves legacy colors on unrelated updates", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const database = await chokePoint.createDatabase({ name: "Colors" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "color", name: "Color", type: "color" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "name", name: "Name", type: "text" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: { color: "#FF3B30" } });
+      return { database, item };
+    });
+    const patch = (properties: Record<string, unknown>, ifVersion: string) =>
+      fetch(`${baseUrl}/api/items/${fixture.item.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties, ifVersion }),
+      });
+    for (const color of ["red", "Červená"]) {
+      const response = await patch({ color }, fixture.item.updatedAt);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: { code: "validation_failed", details: { field: "color" } },
+      });
+      expect(
+        (await runInTenant(getTenantZeroId(), () => chokePoint.getItem(fixture.database.id, fixture.item.id)))
+          ?.properties.color,
+      ).toBe("#FF3B30");
+    }
+    const valid = await patch({ color: "#ff3b30" }, fixture.item.updatedAt);
+    expect(valid.status).toBe(200);
+    const changed = await runInTenant(getTenantZeroId(), () =>
+      chokePoint.getItem(fixture.database.id, fixture.item.id),
+    );
+    if (!changed) throw new Error("Missing item");
+    expect(changed.properties.color).toBe("#ff3b30");
+    const clear = await patch({ color: null }, changed.updatedAt);
+    expect(clear.status).toBe(200);
+    // Legacy values predate validation and cannot be written through the current API.
+    await pool.query("UPDATE items SET properties = jsonb_set(properties, '{color}', $1::jsonb) WHERE id = $2", [
+      JSON.stringify("red"),
+      fixture.item.id,
+    ]);
+    const legacy = await runInTenant(getTenantZeroId(), () => chokePoint.getItem(fixture.database.id, fixture.item.id));
+    if (!legacy) throw new Error("Missing legacy item");
+    const unrelated = await patch({ name: "Renamed" }, legacy.updatedAt);
+    expect(unrelated.status).toBe(200);
+    expect(
+      (await runInTenant(getTenantZeroId(), () => chokePoint.getItem(fixture.database.id, fixture.item.id)))?.properties
+        .color,
+    ).toBe("red");
+  });
+
+  it("rejects an invalid proposal color atomically and confirms a valid color", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const idFor = async (module: string) => {
+        const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, module));
+        if (!database) throw new Error(`Missing ${module}`);
+        return database.id;
+      };
+      const inboxDatabaseId = await idFor("inbox");
+      const inboxItemTypesDatabaseId = await idFor("inboxItemTypes");
+      const processingProposalsDatabaseId = await idFor("processingProposals");
+      const projects = await idFor("projects");
+      const type = await chokePoint.createItem({
+        databaseId: inboxItemTypesDatabaseId,
+        properties: { name: "Project", emoji: "P", processingMethod: "database", targetDatabase: "projects" },
+      });
+      const source = await chokePoint.createItem({
+        databaseId: inboxDatabaseId,
+        properties: { text: "Project", date: "2026-08-28", time: "09:00" },
+      });
+      const typeProperty = (await chokePoint.listProperties(inboxDatabaseId)).find(
+        (property) => property.key === "type",
+      );
+      if (!typeProperty) throw new Error("Missing inbox type property");
+      await chokePoint.createRelation({
+        relationPropertyId: typeProperty.id,
+        callerItemId: source.id,
+        targetItemId: type.id,
+      });
+      const tick = createSemprecTickAction(pool, async () => ({ properties: { name: "New Project" } }));
+      await tick(
+        { inboxDatabaseId, inboxItemTypesDatabaseId, processingProposalsDatabaseId },
+        { heartbeatId: "hb", projectItemId: "proj", itemId: source.id },
+      );
+      const cards = await chokePoint.listItems(processingProposalsDatabaseId);
+      if (cards.items.length !== 1 || !cards.items[0]) throw new Error("Expected a proposal card");
+      return { projects, processingProposalsDatabaseId, cardId: cards.items[0].id };
+    });
+    const storeProposal = (color: string) =>
+      runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, (client) =>
+          updateItemWithClient(
+            client,
+            {
+              databaseId: fixture.processingProposalsDatabaseId,
+              itemId: fixture.cardId,
+              propertiesPatch: {
+                proposal: {
+                  entityKind: "database",
+                  target: fixture.projects,
+                  properties: { name: "New Project", color },
+                  operations: [
+                    {
+                      ref: "project",
+                      op: "create",
+                      role: "primary",
+                      databaseKey: "projects",
+                      properties: { name: "New Project", color },
+                    },
+                  ],
+                },
+              },
+            },
+            { allowedSystemKeys: ["proposal"] },
+          ),
+        ),
+      );
+    await storeProposal("red");
+    const beforeCard = await runInTenant(getTenantZeroId(), () =>
+      chokePoint.getItem(fixture.processingProposalsDatabaseId, fixture.cardId),
+    );
+    const before = await runInTenant(getTenantZeroId(), () => chokePoint.listItems(fixture.projects));
+    const confirm = () =>
+      fetch(`${baseUrl}/api/proposals/${fixture.cardId}/confirm`, { method: "POST", headers, body: "{}" });
+    const rejected = await confirm();
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toMatchObject({ error: { code: "validation_failed", details: { field: "color" } } });
+    expect(
+      await runInTenant(getTenantZeroId(), () =>
+        chokePoint.getItem(fixture.processingProposalsDatabaseId, fixture.cardId),
+      ),
+    ).toEqual(beforeCard);
+    expect(await runInTenant(getTenantZeroId(), () => chokePoint.listItems(fixture.projects))).toEqual(before);
+    await storeProposal("#FF3B30");
+    const accepted = await confirm();
+    expect(accepted.status).toBe(200);
+    const projects = await runInTenant(getTenantZeroId(), () => chokePoint.listItems(fixture.projects));
+    expect(
+      projects.items.some((item) => item.properties.name === "New Project" && item.properties.color === "#FF3B30"),
+    ).toBe(true);
+  });
+
   it("validates Books ratings through the PATCH HTTP response", async () => {
     await seedSystem(pool, createViewTypeRegistry());
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };

@@ -11,7 +11,8 @@ import {
   getTestPool,
   resetDatabase,
 } from "@semprec/data/testSupport";
-import { runOnce } from "@semprec/queue";
+import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
+import { countJobsByIdentifier } from "@semprec/queue/testSupport";
 import {
   ApprovalRequiredError,
   ConflictError,
@@ -939,6 +940,88 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(finished!.executionStatus).toBe("succeeded");
       const reloaded = await chokePoint.getDatabase(database.id);
       expect(reloaded?.archivedAt).not.toBeNull();
+    });
+
+    it("recounts dependent rollups after approved database.archive replay through the worker", async () => {
+      const { projects, tasks, project } = await inTenantZero(async () => {
+        const projects = await chokePoint.createDatabase({ name: "Rollup parents" });
+        const tasks = await chokePoint.createDatabase({ name: "Rollup source" });
+        await chokePoint.createProperty({ databaseId: tasks.id, key: "hours", name: "Hours", type: "number" });
+        const { property: relation } = await chokePoint.createRelationProperty({
+          sourceDatabaseId: projects.id,
+          targetDatabaseId: tasks.id,
+          key: "tasks",
+          name: "Tasks",
+        });
+        await chokePoint.createProperty({
+          databaseId: projects.id,
+          key: "taskCount",
+          name: "Count",
+          type: "rollup",
+          config: { relationPropertyKey: "tasks", aggregation: "count" },
+        });
+        await chokePoint.createProperty({
+          databaseId: projects.id,
+          key: "totalHours",
+          name: "Sum",
+          type: "rollup",
+          config: { relationPropertyKey: "tasks", aggregation: "sum", targetPropertyKey: "hours" },
+        });
+        const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
+        for (const hours of [3, 4]) {
+          const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { hours } });
+          await chokePoint.createRelation({
+            relationPropertyId: relation.id,
+            callerItemId: project.id,
+            targetItemId: task.id,
+          });
+        }
+        return { projects, tasks, project };
+      });
+      const taskList = createCoreTaskList(
+        pool,
+        new Map(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        replayApprovedGenericOperation,
+      );
+      const drainUntil = async (count: number, sum: number | null) => {
+        for (let pass = 0; pass < 10; pass++) {
+          await runOnce({ pgPool: pool, taskList });
+          const current = await inTenantZero(() => chokePoint.getItem(projects.id, project.id));
+          const pending = await Promise.all(
+            [
+              CORE_TASK_NAMES.ROLLUP_RECOMPUTE,
+              CORE_TASK_NAMES.ROLLUP_RECOMPUTE_FULL,
+              CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE,
+            ].map((name) => countJobsByIdentifier(pool, name)),
+          );
+          if (
+            current?.computed.taskCount === count &&
+            current.computed.totalHours === sum &&
+            pending.every((n) => n === 0)
+          )
+            return;
+        }
+        throw new Error(`Rollup worker did not reach count ${count} and sum ${String(sum)}`);
+      };
+      await drainUntil(2, 7);
+      const actor = await inTenantZero(() => makeAgentActor());
+      const requestId = await inTenantZero(() =>
+        approveDestructive("database.archive", actor, { databaseId: tasks.id }),
+      );
+      const { outcome, finished } = await inTenantZero(() => replay(requestId));
+      expect(outcome.error).toBe(false);
+      expect(finished?.executionStatus).toBe("succeeded");
+      expect((await chokePoint.getDatabase(tasks.id))?.archivedAt).not.toBeNull();
+      expect(await countJobsByIdentifier(pool, CORE_TASK_NAMES.ROLLUP_RECOMPUTE_FULL)).toBe(2);
+      await drainUntil(0, null);
+      const current = await inTenantZero(() => chokePoint.getItem(projects.id, project.id));
+      expect(current?.computed).toMatchObject({ taskCount: 0, totalHours: null });
     });
 
     it("property.delete: preflight, approve, and replay delete the property exactly once", async () => {
