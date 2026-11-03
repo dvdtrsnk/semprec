@@ -4,6 +4,8 @@ import { bindToTenantZero, getTestPool, inTenantZero, resetDatabase } from "../t
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { ValidationError } from "../errors.js";
+import { withTransaction } from "../db/pool.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 
 // Thursday 22 Oct 2026 in the seeded tenant zone (Europe/Prague).
 const THURSDAY = new Date("2026-10-22T10:00:00Z");
@@ -42,14 +44,15 @@ describe("date_relative filter", () => {
   });
 
   it("matches thisWeek, nextWeek and a day range around Thursday 22 Oct 2026", async () => {
-    for (const day of ["21", "22", "23", "25", "26", "27", "31"]) await seed(`oct${day}`, { due: `2026-10-${day}` });
+    for (const day of ["21", "22", "23", "24", "25", "26", "27", "31"])
+      await seed(`oct${day}`, { due: `2026-10-${day}` });
     await seed("nov1", { due: "2026-11-01" });
     await seed("nov2", { due: "2026-11-02" });
     await seed("undated", {});
 
-    expect(await titles(relative("thisWeek"))).toEqual(["oct22", "oct23", "oct25"]);
+    expect(await titles(relative("thisWeek"))).toEqual(["oct22", "oct23", "oct24", "oct25"]);
     expect(await titles(relative("nextWeek"))).toEqual(["nov1", "oct26", "oct27", "oct31"]);
-    expect(await titles(relative({ fromDays: 2, toDays: 9 }))).toEqual(["oct25", "oct26", "oct27", "oct31"]);
+    expect(await titles(relative({ fromDays: 2, toDays: 9 }))).toEqual(["oct24", "oct25", "oct26", "oct27", "oct31"]);
   });
 
   it("matches a multi-day event through endProperty", async () => {
@@ -65,6 +68,31 @@ describe("date_relative filter", () => {
     await seed("prague-yesterday", { due: "2026-10-21T21:30:00Z" });
     expect(await titles(relative("today"))).toEqual(["prague-morning"]);
     expect(await titles(relative("past"))).toEqual(["prague-yesterday"]);
+  });
+
+  it.each([
+    [
+      "spring",
+      "2026-03-29T10:00:00Z",
+      "2026-03-28T22:59:59Z",
+      "2026-03-28T23:00:00Z",
+      "2026-03-29T21:59:59Z",
+      "2026-03-29T22:00:00Z",
+    ],
+    [
+      "autumn",
+      "2026-10-25T10:00:00Z",
+      "2026-10-24T21:59:59Z",
+      "2026-10-24T22:00:00Z",
+      "2026-10-25T22:59:59Z",
+      "2026-10-25T23:00:00Z",
+    ],
+  ])("evaluates today across the Prague %s clock change", async (_name, clock, before, start, end, after) => {
+    await seed("before", { due: before });
+    await seed("start", { due: start });
+    await seed("end", { due: end });
+    await seed("after", { due: after });
+    expect(await titles(relative("today"), new Date(clock))).toEqual(["end", "start"]);
   });
 
   it("evaluates beforeNow as an instant for timestamps and as a day for date-only values", async () => {
@@ -164,6 +192,27 @@ describe("date_relative filter", () => {
     await seed("undated", {});
     expect(await titles(relative("past"))).toEqual(["overdue"]);
     expect(await titles({ type: "not", node: relative("past") })).toEqual(["empty", "today", "undated"]);
+  });
+
+  it("filters overdue Projects by their real date property and excludes undated projects", async () => {
+    const projects = await inTenantZero(() =>
+      withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects")),
+    );
+    if (!projects) throw new Error("Missing Projects database");
+    const overdue = await cp.createItem({
+      databaseId: projects.id,
+      properties: { name: "Overdue", date: "2026-10-21" },
+    });
+    const today = await cp.createItem({ databaseId: projects.id, properties: { name: "Today", date: "2026-10-22" } });
+    const undated = await cp.createItem({ databaseId: projects.id, properties: { name: "Undated" } });
+    const result = await cp.listItems(projects.id, {
+      filter: { type: "date_relative", property: "date", preset: "past" },
+      now: THURSDAY,
+    });
+    const ids = result.items.map((item) => item.id);
+    expect(ids).toContain(overdue.id);
+    expect(ids).not.toContain(today.id);
+    expect(ids).not.toContain(undated.id);
   });
 
   it("rejects invalid presets and non-date properties with a 400", async () => {
