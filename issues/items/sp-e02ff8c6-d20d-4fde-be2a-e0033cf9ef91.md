@@ -10,10 +10,10 @@ parent: "sp-62331d42-78af-4b93-ae97-d5ccbe3324df"
 assignees: []
 milestone: null
 createdAt: "2026-10-31T17:31:01.910Z"
-updatedAt: "2026-11-03T04:14:25.215Z"
+updatedAt: "2026-11-03T04:21:12.348Z"
 closedAt: null
 source: null
-approval: {"specSha256":"46017d0cccd7431aa71c1994f333502da57b236e6e4240ea1c23cbec01c16d70","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: append-only ADR reconciliation and exact backend evidence scope","at":"2026-11-03T04:14:25.215Z"}
+approval: {"specSha256":"40d7bc2b85aac151d9ef97b7c34bc7270dbe6bde9aaf1372e8dd691c2736f7fe","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: Journal domain refusal preserves established transport envelopes","at":"2026-11-03T04:21:12.348Z"}
 resolution: null
 ---
 **Blocked by:** sp-144a2408-c4a8-4b9f-b68b-a5eec527dba7
@@ -548,7 +548,7 @@ Load `state-writes`, `error-handling` and `testing`.
 
 1. Add `journalItemCreateHook` in the journal module: when the created item's database is the Journal database (owner module `journal`) and the written `properties` lack a `type` or a `period`, throw `ForbiddenError` (HTTP 403) so the insert rolls back. Items created by `getOrCreateJournalItem` carry both keys and pass.
 2. Register it in `backend/packages/data/src/domainWriteHooks.ts`.
-3. Tests: `POST /api/databases/:journalId/items` with `{}` and with a body without properties answers 403 and creates nothing; agent and MCP `item.create` on the Journal answer 403; Inbox capture (which creates a day through `getOrCreateJournalItem`) still works; a repeated `getOrCreateJournalItem` for the same period still returns the existing entry.
+3. Tests: `POST /api/databases/:journalId/items` with `{}` and with a body without properties answers 403 and creates nothing; agent and MCP `item.create` on the Journal are refused by the same `ForbiddenError` (domain status 403, code `forbidden`) through their existing native envelopes: agent `{ error: true, result: "forbidden: ..." }`, authenticated MCP HTTP 200 with JSON-RPC error -32000 and `data.code = "forbidden"`; assert no item row is created; Inbox capture (which creates a day through `getOrCreateJournalItem`) still works; a repeated `getOrCreateJournalItem` for the same period still returns the existing entry.
 4. Fix any existing test fixture that created Journal rows directly without type and period by routing it through `getOrCreateJournalItem`.
 
 #### Touches
@@ -575,7 +575,7 @@ Load `state-writes`, `error-handling` and `testing`.
 #### Acceptance criteria
 
 - When a client posts an item to the Journal database without `type` and `period`, then the answer is 403 and no row is created.
-- When an agent or MCP tool calls `item.create` on the Journal, then it is refused with 403.
+- When an agent or MCP tool calls `item.create` on the Journal, the underlying refusal is `ForbiddenError` with domain status 403 and code `forbidden`, and no item row is created. Preserve each transport: the agent returns an error tool result prefixed `forbidden: `; authenticated MCP returns HTTP 200 with JSON-RPC error -32000 and `data.code = "forbidden"`. REST retains actual HTTP 403.
 - When an Inbox item is captured, then the day entry is still created and the capture succeeds.
 
 ## Touches
