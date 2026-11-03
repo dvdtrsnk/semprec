@@ -17,9 +17,11 @@ import {
   createTestModuleItem,
   createTestProjectItem,
   createTestTenant,
+  ensureMailAccountSyncState,
   getTenantZeroId,
   getTestPool,
   resetDatabase,
+  storeCredential,
 } from "@semprec/data/testSupport";
 import {
   createActionRegistry,
@@ -35,6 +37,7 @@ import {
   createUser,
   getDatabaseByModuleId,
   hashPassword,
+  handleObservabilityCheckSystemTask,
   insertAgentRunEvent,
   listPushSubscriptionsForUser,
   loadFullModuleRegistry,
@@ -52,7 +55,7 @@ import {
   writeNotification,
   type PasswordResetMailer,
 } from "@semprec/data";
-import { AGENT_TASK_NAMES, CORE_TASK_NAMES, runOnce, runWorker, type TaskList } from "@semprec/queue";
+import { AGENT_TASK_NAMES, CORE_TASK_NAMES, enqueueJob, runOnce, runWorker, type TaskList } from "@semprec/queue";
 import { createDispatcher } from "../app.js";
 import { SESSION_COOKIE_NAME } from "../authHandler.js";
 import { ROUTE_MATRIX, ROUTE_TENANCIES, type RouteMatrixEntry } from "../routeMatrix.js";
@@ -2060,6 +2063,66 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     const notifications = await sendOk(a.member, { method: "GET", path: "/api/notifications/unread" });
     expect(readIdArray(notifications, "notifications")).toEqual([a.notificationId]);
   });
+
+  it("projects a safe mailbox stall notification through authenticated tenant-scoped HTTP", async () => {
+    const fixtures = [];
+    for (let i = 0; i < 2; i++) {
+      const tenantId = await createTestTenant(adminPool);
+      await provisionTenant(pool, tenantId);
+      const member = await signUp(tenantId, "member");
+      const mailboxItemId = await runInTenant(tenantId, () => createTestModuleItem(pool, "mailboxes"));
+      await inTenantTransaction(tenantId, async (client) => {
+        await ensureMailAccountSyncState(client, { itemId: mailboxItemId, syncMode: "imap" });
+        await storeCredential(client, {
+          itemId: mailboxItemId,
+          credentialType: "app_password",
+          plaintext: "fake-password",
+        });
+        await enqueueJob(client, CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC, { mailboxItemId }, { maxAttempts: 1 });
+      });
+      fixtures.push({ tenantId, member, mailboxItemId });
+    }
+    const [owner, foreign] = fixtures;
+    if (!owner || !foreign) throw new Error("Expected two mailbox fixtures");
+    const marker = `synthetic-provider-error-${randomUUID()}`;
+    const tasks = createCoreTaskList(pool, createActionRegistry(), undefined, {
+      createImapClient: async () => {
+        throw new Error(marker);
+      },
+    });
+    const sync = tasks[CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC];
+    if (!sync) throw new Error("Missing mail sync task");
+    await runOnce({ pgPool: pool, taskList: { [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: sync } });
+    for (const fixture of fixtures) {
+      const state = await inTenantTransaction(fixture.tenantId, (client) =>
+        client.query<{ last_error: string | null }>(
+          "SELECT last_error FROM mail_account_sync_state WHERE item_id = $1",
+          [fixture.mailboxItemId],
+        ),
+      );
+      expect(state.rows).toEqual([{ last_error: marker }]);
+    }
+    await runAsSystem("mail-stall-http-test", () =>
+      handleObservabilityCheckSystemTask(pool, { job: { id: randomUUID() } }),
+    );
+    for (const [fixture, other] of [
+      [owner, foreign],
+      [foreign, owner],
+    ] as const) {
+      const response = await sendOk(fixture.member, { method: "GET", path: "/api/notifications/unread" });
+      expect(response).not.toContain(marker);
+      expect(response).not.toContain(other.mailboxItemId);
+      const body: unknown = JSON.parse(response);
+      expect(body).toMatchObject({
+        notifications: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "mail_sync_stalled",
+            payload: { mailboxItemId: fixture.mailboxItemId, reason: "other" },
+          }),
+        ]),
+      });
+    }
+  }, 120_000);
 
   it("returns localized active Inbox type fields over authenticated HTTP", async () => {
     for (const [locale, targetLabel] of [
