@@ -17,6 +17,7 @@ import { createRelationPropertyWithClient } from "./relationPropertyWrites.js";
 import { findDependenciesBySourceDatabase } from "../rollup/dependencies.js";
 import { enqueueRollupBackfill } from "../rollup/recompute.js";
 import * as databasesStore from "./databasesStore.js";
+import { requireRollupCoordinationTransaction } from "./databaseRowLocks.js";
 
 /** Archive and restore change which items the rollups over this database count; recount each in the same transaction via its idempotent full job. */
 async function enqueueDependentRollupRecomputes(client: PoolClient, sourceDatabaseId: string): Promise<void> {
@@ -39,6 +40,7 @@ export async function databaseArchiveWithClient(
   id: string,
   actingUserId?: string,
 ): Promise<DatabaseRow> {
+  await requireRollupCoordinationTransaction(client);
   const database = await databasesStore.archiveDatabase(client, id);
   await enqueueDependentRollupRecomputes(client, database.id);
   runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }));
@@ -136,6 +138,7 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedK
     },
     async restoreDatabase(id: string, actingUserId?: string): Promise<DatabaseRow> {
       return withTransaction(pool, async (client) => {
+        await requireRollupCoordinationTransaction(client);
         const database = await databasesStore.restoreDatabase(client, id);
         await enqueueDependentRollupRecomputes(client, database.id);
         runAfterCommit(client, () =>
