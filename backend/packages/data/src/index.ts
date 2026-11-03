@@ -636,3 +636,7 @@ export {
   type MailMovePurpose,
   type MailMoveSource,
 } from "./mail/mailMessageMoveSyncStore.js";
+
+export { handleMailLinkPersonEmailsTask } from "./mail/linkPersonEmailsJob.js";
+
+export type { ConfirmationResult } from "./inbox/proposalActions.js";

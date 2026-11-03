@@ -35,6 +35,7 @@ export interface ExecutedProposalSteps {
   createdItemIds: string[];
   /** One entry per `fileFromAttachment` step, in execution order. */
   fileFromAttachments: FileFromAttachmentResult[];
+  executedSteps: Array<{ ref: string; itemId: string; databaseId: string }>;
 }
 
 interface StepWriteContext {
@@ -444,6 +445,7 @@ export async function executeProposalSteps(
   let primary: Pick<ExecutedProposalSteps, "primaryItemId" | "primaryDatabaseId"> | null = null;
   const createdItemIds: string[] = [];
   const fileFromAttachments: FileFromAttachmentResult[] = [];
+  const executedSteps: ExecutedProposalSteps["executedSteps"] = [];
   const activeSteps = selectActiveSteps(steps);
   await lockUpdatePreconditions(client, activeSteps);
   for (const step of orderByRefDependencies(activeSteps)) {
@@ -457,9 +459,10 @@ export async function executeProposalSteps(
         created: outcome.created,
       });
     }
+    executedSteps.push({ ref: step.ref, itemId: outcome.itemId, databaseId: outcome.databaseId });
     ctx.itemIdsByRef.set(step.ref, outcome.itemId);
     if (step.role === "primary") primary = { primaryItemId: outcome.itemId, primaryDatabaseId: outcome.databaseId };
   }
   if (!primary) throw new ValidationError("Proposal has no primary step to write", { field: "operations" });
-  return { ...primary, createdItemIds, fileFromAttachments };
+  return { ...primary, createdItemIds, fileFromAttachments, executedSteps };
 }

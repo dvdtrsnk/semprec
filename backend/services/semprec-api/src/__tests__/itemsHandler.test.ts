@@ -20,6 +20,7 @@ import {
   registerItemCreateHook,
   registerItemUpdateHook,
   resetDatabase,
+  runMailboxAddressesOwnerCutoverMigration,
   tenantForNextTestUser,
   upsertMailMessageMeta,
 } from "@semprec/data/testSupport";
@@ -390,6 +391,98 @@ describe("item routes (issue #241)", () => {
     const renamed = await patch({ name: "Renamed" }, legacy.updatedAt);
     expect(renamed.status).toBe(200);
     expect(await renamed.json()).toMatchObject({ properties: { name: "Renamed", targetDatabase: "journal" } });
+  });
+
+  it("refuses address edits for fresh and cut-over mailboxes over authenticated REST", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let runtimeServer: Server | undefined;
+    const failures: unknown[] = [];
+    try {
+      const role = await runtime.query<{ name: string; bypass: boolean; superuser: boolean }>(
+        "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+      const dispatch = await createDispatcher(runtime, {
+        passwordResetMailer: noopMailer,
+        appBaseUrl: "http://localhost",
+        setupToken: "unused-setup-token",
+        moduleRegistry,
+        blobStorage: new LocalFsBlobStorageWriter(tmpBlobDir),
+        maxFileSizeBytes: 10 * 1024 * 1024,
+      });
+      runtimeServer = createServer(dispatch);
+      await new Promise<void>((resolve) => runtimeServer?.listen(0, "127.0.0.1", resolve));
+      const address = runtimeServer.address();
+      if (!address || typeof address === "string") throw new Error("Expected runtime server");
+      const base = `http://127.0.0.1:${address.port}`;
+      const mailbox = await runInTenant(getTenantZeroId(), () =>
+        withTransaction(runtime, async (client) => {
+          const db = await getDatabaseByModuleId(client, "mailboxes");
+          if (!db) throw new Error("Mailboxes missing");
+          const item = await createItemWithClient(client, { databaseId: db.id, properties: { name: "Before" } });
+          await updateItemWithClient(
+            client,
+            { databaseId: db.id, itemId: item.id, propertiesPatch: { addresses: "owner@example.test" } },
+            { allowedSystemKeys: ["addresses"] },
+          );
+          return { id: item.id, dbId: db.id };
+        }),
+      );
+      const url = `${base}/api/items/${mailbox.id}`;
+      for (const phase of ["fresh", "cutover"] as const) {
+        if (phase === "cutover") {
+          // Restore the historical property owner before running the real tenant cutover.
+          await pool.query("UPDATE properties SET owner = 'user' WHERE database_id = $1 AND key = 'addresses'", [
+            mailbox.dbId,
+          ]);
+          await runInTenant(getTenantZeroId(), () => runMailboxAddressesOwnerCutoverMigration(runtime));
+        }
+        const before = await fetch(url, { headers });
+        const body = z
+          .object({ updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) })
+          .parse(await before.json());
+        const refused = await fetch(url, {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({ properties: { addresses: "bad@example.test" }, ifVersion: body.updatedAt }),
+        });
+        expect(refused.status).toBe(403);
+        expect(await refused.json()).toMatchObject({ error: { code: "owner_violation" } });
+        const unchanged = z
+          .object({ updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) })
+          .parse(await (await fetch(url, { headers })).json());
+        expect(unchanged).toEqual(body);
+        const allowed = await fetch(url, {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({ properties: { name: `Allowed ${phase}` }, ifVersion: body.updatedAt }),
+        });
+        expect(allowed.status).toBe(200);
+        expect(await allowed.json()).toMatchObject({
+          properties: { name: `Allowed ${phase}`, addresses: "owner@example.test" },
+        });
+      }
+    } catch (error) {
+      failures.push(error);
+    }
+    if (runtimeServer) {
+      try {
+        await new Promise<void>((resolve, reject) =>
+          runtimeServer?.close((error) => (error ? reject(error) : resolve())),
+        );
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    try {
+      await runtime.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "REST test and settlement failed");
   });
 
   it("queues one mailbox sync through REST flag patches", async () => {

@@ -1,4 +1,5 @@
 import { DateTime } from "luxon";
+import { z } from "zod";
 import type { PoolClient } from "pg";
 import { getSystemTimezone } from "../systemSettings.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
@@ -21,6 +22,7 @@ import {
 } from "./inboxTickAction.js";
 import { insertItemOrigins, type ItemOriginSource } from "./itemOriginsStore.js";
 import { executeProposalSteps } from "./proposalSteps.js";
+import { effectiveStepRelations } from "./proposalStepGraph.js";
 import { enqueueJournalInboxRecomputeForProposal } from "./journalInboxCompute.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
@@ -61,6 +63,25 @@ async function resolveResultLabel(client: PoolClient, databaseId: string, item: 
   const titleProperty = properties.find((property) => property.type === "title");
   const value = titleProperty ? item.properties[titleProperty.key] : undefined;
   return typeof value === "string" && value.length > 0 ? value : item.id;
+}
+
+const confirmationResultSchema = z.object({
+  ref: z.string(),
+  itemId: z.string(),
+  databaseKey: z.string().nullable(),
+  label: z.string(),
+  role: z.enum(["primary", "secondary"]),
+  date: z.string().nullable(),
+  linkLabels: z.array(z.string()),
+  followUp: z.enum(["transcriptionQueued", "mcpSyncQueued"]).nullable(),
+  updatedAt: z.string(),
+  blockIds: z.array(z.string()),
+});
+export type ConfirmationResult = z.infer<typeof confirmationResultSchema>;
+
+/** Validates the stored JSON before returning it across the API boundary. */
+export function readConfirmationResults(properties: Record<string, unknown>): ConfirmationResult[] {
+  return z.array(confirmationResultSchema).parse(properties.results ?? []);
 }
 
 /** The Transcripts `event` relation property: the Transcription<->Event edge a transcript card's confirm writes. */
@@ -372,6 +393,8 @@ export async function confirmProposalWithClient(
 
   let resultItemId: string;
   let resultLabel: string;
+  let stepResults: Array<{ ref: string; itemId: string; databaseId: string }> = [];
+  let blockIds: string[] = [];
   if (envelope.entityKind === "database") {
     if (credential) {
       if (targetDatabase?.ownerModuleId !== MCP_SERVERS_MODULE_ID) {
@@ -396,6 +419,7 @@ export async function confirmProposalWithClient(
       created = primaryItem;
       resultDatabaseId = executed.primaryDatabaseId;
       createdItemIds = executed.createdItemIds;
+      stepResults = executed.executedSteps;
     } else {
       created = await createItemWithClient(
         client,
@@ -406,6 +430,7 @@ export async function confirmProposalWithClient(
     }
     await insertItemOrigins(client, createdItemIds, origin);
     resultItemId = created.id;
+    if (!envelope.operations) stepResults = [{ ref: "primary", itemId: created.id, databaseId: created.databaseId }];
     resultLabel = await resolveResultLabel(client, resultDatabaseId, created);
     if (credential) {
       await storeCredential(client, {
@@ -451,6 +476,9 @@ export async function confirmProposalWithClient(
     );
     const [linked] = await itemsStore.getItemsByIds(client, [envelope.target]);
     resultItemId = envelope.target;
+    const [transcript] = await itemsStore.getItemsByIds(client, [transcriptCardEdge.transcriptId]);
+    if (!transcript) throw new Error("Source transcript disappeared during confirm");
+    stepResults = [{ ref: "primary", itemId: transcript.id, databaseId: transcript.databaseId }];
     resultLabel = linked ? await resolveResultLabel(client, linked.databaseId, linked) : envelope.target;
   } else {
     // Safe to cast without a further runtime check here: `assertValidProposalEnvelope`
@@ -465,8 +493,53 @@ export async function confirmProposalWithClient(
     await putBlockWithClient(client, envelope.target, { id: proposal.id, flavour, fields, children }, "user");
     const [targetPage] = await itemsStore.getItemsByIds(client, [envelope.target]);
     resultItemId = envelope.target;
-    resultLabel = targetPage ? await resolveResultLabel(client, targetPage.databaseId, targetPage) : envelope.target;
+    if (!targetPage) throw new Error("Target page disappeared during confirm");
+    stepResults = [{ ref: "primary", itemId: targetPage.id, databaseId: targetPage.databaseId }];
+    blockIds = [proposal.id];
+    resultLabel = await resolveResultLabel(client, targetPage.databaseId, targetPage);
   }
+
+  const idsByRef = new Map(stepResults.map((step) => [step.ref, step.itemId]));
+  const results: ConfirmationResult[] = [];
+  for (const written of stepResults) {
+    const [item] = await itemsStore.getItemsByIds(client, [written.itemId]);
+    const database = await databasesStore.getDatabase(client, written.databaseId);
+    if (!item || !database) throw new Error("Confirmed result item or database disappeared");
+    const step = envelope.operations?.find((operation) => operation.ref === written.ref);
+    const relationValues = step
+      ? Object.values(effectiveStepRelations(step)).flat()
+      : envelope.entityKind === "relation"
+        ? [envelope.target]
+        : Object.values(envelope.relations ?? {}).flat();
+    const targets = relationValues.map((target) => (typeof target === "string" ? target : idsByRef.get(target.ref)));
+    const linked = await itemsStore.getItemsByIds(
+      client,
+      targets.filter((id): id is string => id !== undefined),
+    );
+    const linkedById = new Map(linked.map((item) => [item.id, item]));
+    const linkLabels: string[] = [];
+    for (const targetId of targets) {
+      const target = targetId === undefined ? undefined : linkedById.get(targetId);
+      if (target) linkLabels.push(await resolveResultLabel(client, target.databaseId, target));
+    }
+    const dateValue =
+      database.key === "events" ? item.properties.date : database.key === "journal" ? item.properties.period : null;
+    const date =
+      typeof dateValue === "string" && /^\d{4}-\d{2}-\d{2}(?:$|T)/.test(dateValue) ? dateValue.slice(0, 10) : null;
+    results.push({
+      ref: written.ref,
+      itemId: item.id,
+      databaseKey: database.key,
+      label: await resolveResultLabel(client, database.id, item),
+      role: step?.role ?? "primary",
+      date,
+      linkLabels,
+      followUp: null,
+      updatedAt: item.updatedAt,
+      blockIds: written.ref === "primary" ? blockIds : [],
+    });
+  }
+  results.sort((a, b) => Number(b.role === "primary") - Number(a.role === "primary"));
 
   const updated = await updateItemWithClient(
     client,
@@ -477,11 +550,12 @@ export async function confirmProposalWithClient(
         status: "confirmed",
         resultItemId,
         resultLabel,
+        results,
         history: appendHistoryEntry(proposal.properties.history, "Confirmed by user.", "user"),
       },
     },
     {
-      allowedSystemKeys: ["status", "resultItemId", "resultLabel", "history"],
+      allowedSystemKeys: ["status", "resultItemId", "resultLabel", "results", "history"],
       writer: CONFIRMING_USER_WRITER,
       actingUserId,
     },

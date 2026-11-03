@@ -1,3 +1,4 @@
+import type { ConfirmationResult } from "@semprec/data";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
@@ -55,7 +56,8 @@ export interface AdapterRequestContext {
  * plain confirmation) — a raw JSON `body` sent as-is. Either way, status mapping and error
  * serialization stay the adapter's job, never the handler's.
  */
-export type AdapterHandlerResult = { status: number; item: ItemRow } | { status: number; body: unknown };
+export type AdapterHandlerResult =
+  { status: number; item: ItemRow; results?: ConfirmationResult[] } | { status: number; body: unknown };
 
 export type AdapterHandler = (ctx: AdapterRequestContext) => Promise<AdapterHandlerResult>;
 
@@ -93,7 +95,13 @@ export function createAdapterRequestListener(
         const handled = await handler({ req, identity, params, body });
         // The full item envelope — never an empty 204 — built here because the blob lookup needs the tenant scope.
         return "item" in handled
-          ? { status: handled.status, body: await toItemEnvelopeWithBlobs(pool, handled.item) }
+          ? {
+              status: handled.status,
+              body: {
+                ...(await toItemEnvelopeWithBlobs(pool, handled.item)),
+                ...(handled.results === undefined ? {} : { results: handled.results }),
+              },
+            }
           : handled;
       };
       // The tenant comes from the authenticated session only; the handler and everything it

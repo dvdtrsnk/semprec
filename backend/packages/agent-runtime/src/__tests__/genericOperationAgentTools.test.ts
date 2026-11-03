@@ -9,6 +9,7 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
+  runMailboxAddressesOwnerCutoverMigration,
   upsertMailMessageMeta,
 } from "@semprec/data/testSupport";
 import {
@@ -20,6 +21,7 @@ import {
   getDatabaseByModuleId,
   seedSystem,
   withTransaction,
+  updateItemWithClient,
   type ChokePoint,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
@@ -164,6 +166,81 @@ describe("generic operation AgentTools (issue #220)", () => {
       );
       expect(rows[0]?.body).toBe(raw);
     });
+
+    it("refuses mailbox address edits in fresh and cut-over tenants through the agent tool", async () =>
+      runInTenant(getTenantZeroId(), async () => {
+        const runtime = await createRuntimeRolePool(pool, "semprec_data");
+        const failures: unknown[] = [];
+        try {
+          const role = await runtime.query<{ name: string; bypass: boolean; superuser: boolean }>(
+            "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+          );
+          expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+          const fixture = await withTransaction(runtime, async (client) => {
+            const mailboxes = await getDatabaseByModuleId(client, "mailboxes");
+            const projects = await getDatabaseByModuleId(client, "projects");
+            if (!mailboxes || !projects) throw new Error("Missing mailboxes or projects");
+            const mailbox = await createItemWithClient(client, {
+              databaseId: mailboxes.id,
+              properties: { name: "Before" },
+            });
+            await updateItemWithClient(
+              client,
+              { databaseId: mailboxes.id, itemId: mailbox.id, propertiesPatch: { addresses: "owner@example.test" } },
+              { allowedSystemKeys: ["addresses"] },
+            );
+            const { rows } = await client.query<{ id: string }>(
+              "SELECT id FROM items WHERE database_id = $1 AND properties->>'name' = 'Email'",
+              [projects.id],
+            );
+            if (!rows[0]) throw new Error("Missing Email project");
+            return { mailboxId: mailbox.id, databaseId: mailboxes.id, projectId: rows[0].id };
+          });
+          const run = await createAgentRun(runtime, {
+            projectItemId: fixture.projectId,
+            triggeredBy: "user",
+            task: "edit mailbox",
+          });
+          const tools = createGenericOperationAgentTools(runtime, moduleRegistry, testMetadataResolver);
+          for (const phase of ["fresh", "cutover"] as const) {
+            if (phase === "cutover") {
+              // Restore the historical property owner before the actual tenant cutover.
+              await pool.query("UPDATE properties SET owner = 'user' WHERE database_id = $1 AND key = 'addresses'", [
+                fixture.databaseId,
+              ]);
+              await runMailboxAddressesOwnerCutoverMigration(runtime);
+            }
+            const before = await createChokePoint(runtime).getItem(fixture.databaseId, fixture.mailboxId);
+            if (!before) throw new Error("Mailbox missing");
+            const refused = await tools["item.patch"](run.id, {
+              itemId: fixture.mailboxId,
+              properties: { addresses: "bad@example.test" },
+              ifVersion: before.updatedAt,
+            });
+            expect(refused.error).toBe(true);
+            expect(refused.result).toMatch(/^owner_violation:/);
+            expect(await createChokePoint(runtime).getItem(fixture.databaseId, fixture.mailboxId)).toEqual(before);
+            const allowed = await tools["item.patch"](run.id, {
+              itemId: fixture.mailboxId,
+              properties: { name: `Allowed ${phase}` },
+              ifVersion: before.updatedAt,
+            });
+            expect(allowed.error).toBe(false);
+            expect(
+              (await createChokePoint(runtime).getItem(fixture.databaseId, fixture.mailboxId))?.properties,
+            ).toMatchObject({ name: `Allowed ${phase}`, addresses: "owner@example.test" });
+          }
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          await runtime.end();
+        } catch (error) {
+          failures.push(error);
+        }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1) throw new AggregateError(failures, "Agent test and settlement failed");
+      }));
 
     it("queues one mailbox sync for agent flag patches of two messages", async () =>
       runInTenant(getTenantZeroId(), async () => {

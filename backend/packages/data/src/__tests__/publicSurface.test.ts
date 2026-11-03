@@ -405,6 +405,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "handleGraphChangeNotification",
   "handleHeartbeatSweepTask",
   "handleItemTrashPurgeSweepTask",
+  "handleMailLinkPersonEmailsTask",
   "handleNotificationFanoutTask",
   "handleObservabilityCheckSystemTask",
   "handlePropertyTypeMigrationTask",
