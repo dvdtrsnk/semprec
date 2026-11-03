@@ -1961,8 +1961,8 @@
       "sequence": 20,
       "status": "proposed",
       "title": "[backend-delivery 20/74] Implement data/tenancy, data/auth, data/inbox changes",
-      "bodyCharacters": 57071,
-      "specSha256": "3d8d24654edab99c875221edce31171c1fd2b91cdec5ee7ab8e2e19761882724",
+      "bodyCharacters": 57986,
+      "specSha256": "87e01468c4607803fe3c2f9839224a4cfc9dccab65a4ec92ff5dac03007a4cd7",
       "members": [
         {
           "id": "gh-1087",
@@ -2029,7 +2029,7 @@
         },
         {
           "id": "gh-1482",
-          "specSha256": "069e12010d896b37be19b7bacae96d9dc111fe4daae696e46668dad7d3628485",
+          "specSha256": "2d87350eda1c462a4ea01505a78ea8d9a1c1831193b7337c201e587bf06cc226",
           "parent": "gh-1313",
           "dependencies": [
             "gh-1451"
