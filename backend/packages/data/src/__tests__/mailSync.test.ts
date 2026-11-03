@@ -1,6 +1,7 @@
-import { registerGmailMovePreparer } from "../mail/mailMoveProviderAdapters.js";
-import { drainGmailMoves } from "../mail/mailMessageMoveSync.js";
+import { registerGmailMovePreparer, registerGraphMovePreparer } from "../mail/mailMoveProviderAdapters.js";
+import { drainGmailMoves, drainGraphMoves, drainImapMoves } from "../mail/mailMessageMoveSync.js";
 import { GmailRestClient } from "../mail/gmailRestClient.js";
+import { GraphRestClient } from "../mail/graphRestClient.js";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import "../domainWriteHooks.js";
@@ -12,10 +13,15 @@ import {
   inTenantZero,
   getTestPool,
   resetDatabase,
+  withTenantTransaction,
 } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
-import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
+import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
+import { ensureFolderItem } from "../mail/folderDiscovery.js";
+import { ensureMailFolderSyncState, recordReconcile } from "../mail/mailFolderSyncStateStore.js";
+import { EMAILS_RELATION_CONTEXT } from "../mail/emailsRelationContext.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { withTransaction } from "../db/pool.js";
@@ -110,6 +116,59 @@ const tenantIt = (name: string, fn: () => unknown, timeout?: number) =>
       }),
     timeout,
   );
+
+async function waitForMoveTestSignal<T>(signal: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      signal,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Timed out waiting for owned move test signal")), 10_000);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function holdMoveBaseline(pool: Pool): { reached: Promise<number>; release: () => void } {
+  let release!: () => void;
+  let ready!: (pid: number) => void;
+  const reached = new Promise<number>((resolve) => {
+    ready = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const wrapped = new WeakSet<object>();
+  let held = false;
+  pool.on("acquire", (client) => {
+    if (wrapped.has(client)) return;
+    wrapped.add(client);
+    client.query = new Proxy(client.query.bind(client), {
+      apply(target, thisArg, args: unknown[]) {
+        const result: unknown = Reflect.apply(target, thisArg, args);
+        if (
+          !held &&
+          typeof args[0] === "string" &&
+          args[0].includes("SELECT message_item_id, mailbox_item_id, desired_revision, status, operation_token") &&
+          result instanceof Promise
+        ) {
+          held = true;
+          return result.then(async (value: unknown) => {
+            const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+            if (!pid.rows[0]) throw new Error("Missing baseline backend pid");
+            ready(pid.rows[0].pid);
+            await gate;
+            return value;
+          });
+        }
+        return result;
+      },
+    });
+  });
+  return { reached, release };
+}
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -2362,9 +2421,18 @@ describe("mail sync job error handling (issue #26)", () => {
     "inserted-after-baseline",
     "competing-completion",
     "completed-before-baseline",
+    "competing-in-flight",
   ] as const)
     tenantIt(`runs the real Gmail move phase outside transactions before reconcile: ${scenario}`, async () => {
       const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      let releaseOwner: () => void = () => {};
+      let owner: Promise<void> | undefined;
+      let ownerToken: string | null | undefined;
+      let releaseBaseline: () => void = () => {};
+      let ownerSettlement: Promise<PromiseSettledResult<void>[]> | undefined;
+      let jobSettlement: Promise<PromiseSettledResult<void>[]> | undefined;
+      let primary: { value: unknown } | undefined;
+      const cleanupFailures: unknown[] = [];
       try {
         const moduleIds = {
           emailsDatabaseId: await databaseIdFor("emails"),
@@ -2449,7 +2517,6 @@ describe("mail sync job error handling (issue #26)", () => {
           expect(state[0]).toMatchObject({ operation_phase: "in_flight", operation_step: "modify_labels" });
           return { kind: "acknowledged", inTrash: false, inInbox: false, inSent: false };
         });
-        let releaseBaseline!: () => void;
         let baselineReady!: (pid: number) => void;
         const baselineReached = new Promise<number>((resolve) => {
           baselineReady = resolve;
@@ -2459,7 +2526,11 @@ describe("mail sync job error handling (issue #26)", () => {
         });
         let held = false;
         const wrapped = new WeakSet<object>();
-        if (scenario === "inserted-after-baseline" || scenario === "competing-completion")
+        if (
+          scenario === "inserted-after-baseline" ||
+          scenario === "competing-completion" ||
+          scenario === "competing-in-flight"
+        )
           runtime.on("acquire", (client) => {
             if (wrapped.has(client)) return;
             wrapped.add(client);
@@ -2494,9 +2565,14 @@ describe("mail sync job error handling (issue #26)", () => {
           moduleIds,
           noopStorage,
         );
-        if (scenario === "inserted-after-baseline" || scenario === "competing-completion") {
-          const baselinePid = await baselineReached;
+        jobSettlement = Promise.allSettled([job]);
+        if (
+          scenario === "inserted-after-baseline" ||
+          scenario === "competing-completion" ||
+          scenario === "competing-in-flight"
+        ) {
           try {
+            const baselinePid = await waitForMoveTestSignal(baselineReached);
             const insertPid = await withTransaction(runtime, async (client) => {
               const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
               await recordDesiredMailMessageMove(client, {
@@ -2523,17 +2599,60 @@ describe("mail sync job error handling (issue #26)", () => {
               expect(fetchProvider).toHaveBeenCalledTimes(2);
               expect(await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox))).toEqual([]);
             }
+            if (scenario === "competing-in-flight") {
+              let dispatchReady!: () => void;
+              const dispatched = new Promise<void>((resolve) => {
+                dispatchReady = resolve;
+              });
+              const gate = new Promise<void>((resolve) => {
+                releaseOwner = resolve;
+              });
+              const fetchProvider: typeof fetch = vi
+                .fn()
+                .mockResolvedValueOnce(Response.json({ id: "fake-provider-id", labelIds: ["INBOX"] }))
+                .mockImplementationOnce(async () => {
+                  const state = await withTransaction(runtime, async (client) => ({
+                    pid: (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid,
+                    rows: await listPendingMoves(client, fixture.mailbox),
+                  }));
+                  expect(state.rows).toMatchObject([{ operation_phase: "in_flight" }]);
+                  ownerToken = state.rows[0]?.operation_token;
+                  expect(ownerToken).toBeTypeOf("string");
+                  expect(state.pid).toBeTypeOf("number");
+                  process.stdout.write(`batch18 gmail claimed owner=${state.pid}\n`);
+                  dispatchReady();
+                  await waitForMoveTestSignal(gate);
+                  return Response.json({ id: "fake-provider-id", labelIds: [] });
+                });
+              owner = drainGmailMoves(
+                runtime,
+                fixture.mailbox,
+                new GmailRestClient(async () => "fake-token", fetchProvider),
+              );
+              ownerSettlement = Promise.allSettled([owner]);
+              await waitForMoveTestSignal(dispatched);
+              expect(
+                await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox)),
+              ).toMatchObject([{ operation_phase: "in_flight" }]);
+            }
           } finally {
             releaseBaseline();
           }
         }
-        await job;
+        await waitForMoveTestSignal(job);
         expect(calls).toEqual(
-          scenario === "competing-completion" || scenario === "completed-before-baseline"
+          scenario === "competing-completion" ||
+            scenario === "completed-before-baseline" ||
+            scenario === "competing-in-flight"
             ? ["reconcile"]
             : ["observe", "move", "reconcile"],
         );
-        expect(await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox))).toEqual([]);
+        if (scenario === "competing-in-flight") {
+          expect(await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox))).toMatchObject([
+            { operation_phase: "in_flight", operation_token: ownerToken },
+          ]);
+        } else
+          expect(await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox))).toEqual([]);
         const oldEdges = await withTransaction(runtime, (client) =>
           client.query<{ count: string }>(
             `SELECT count(*)::text AS count FROM item_relations edge JOIN items folder ON
@@ -2550,10 +2669,392 @@ describe("mail sync job error handling (issue #26)", () => {
         );
         if (scenario === "completed-before-baseline") expect(observed.rows[0]?.read).toBe("true");
         else expect(observed.rows[0]?.read).not.toBe("true");
+        expect(
+          (await withTransaction(runtime, (client) => getMailMessageMetaByItemId(client, fixture.message)))
+            ?.providerMessageId,
+        ).toBe("fake-provider-id");
+        if (owner) {
+          releaseOwner();
+          await waitForMoveTestSignal(owner);
+          expect(await withTransaction(runtime, (client) => listPendingMoves(client, fixture.mailbox))).toEqual([]);
+        }
+      } catch (error) {
+        primary = { value: error };
       } finally {
-        await runtime.end();
+        releaseBaseline();
+        releaseOwner();
+        for (const settlement of [ownerSettlement, jobSettlement]) {
+          if (!settlement) continue;
+          for (const result of await settlement) {
+            if (result.status === "rejected") cleanupFailures.push(result.reason);
+          }
+        }
+        try {
+          await runtime.end();
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
       }
+      if (primary && cleanupFailures.length)
+        throw new AggregateError([primary.value, ...cleanupFailures], "Gmail move test and cleanup failed", {
+          cause: primary.value,
+        });
+      if (primary) throw primary.value;
+      if (cleanupFailures.length) throw new AggregateError(cleanupFailures, "Gmail move test cleanup failed");
     });
+
+  for (const provider of ["graph", "imap"] as const)
+    for (const scenario of ["competing-completion", "competing-in-flight", "completed-before-baseline"] as const)
+      tenantIt(`protects ${provider} job observations for ${scenario}`, async () => {
+        const runtime = await createRuntimeRolePool(pool, "semprec_data");
+        let releaseOwner: () => void = () => {};
+        let owner: Promise<void> | undefined;
+        let ownerToken: string | null | undefined;
+        let releaseBaseline: () => void = () => {};
+        let ownerSettlement: Promise<PromiseSettledResult<void>[]> | undefined;
+        let jobSettlement: Promise<PromiseSettledResult<void>[]> | undefined;
+        let primary: { value: unknown } | undefined;
+        const cleanupFailures: unknown[] = [];
+        try {
+          const moduleIds = {
+            emailsDatabaseId: await databaseIdFor("emails"),
+            filesDatabaseId: await databaseIdFor("files"),
+            foldersDatabaseId: await databaseIdFor("folders"),
+            mailboxesDatabaseId: await databaseIdFor("mailboxes"),
+          };
+          const f = await withTransaction(runtime, async (client) => {
+            const emailFolder = await getPropertyByKey(client, moduleIds.emailsDatabaseId, "folder");
+            const mailboxFolder = await getPropertyByKey(client, moduleIds.foldersDatabaseId, "mailbox");
+            if (!emailFolder || !mailboxFolder) throw new Error("Missing mail relations");
+            const mailbox = await createItemWithClient(client, {
+              databaseId: moduleIds.mailboxesDatabaseId,
+              properties: { name: "Mailbox" },
+            });
+            const message = await createItemWithClient(
+              client,
+              { databaseId: moduleIds.emailsDatabaseId, properties: { name: "Message" } },
+              { allowedSystemKeys: ["name"] },
+            );
+            await ensureMailAccountSyncState(client, {
+              itemId: mailbox.id,
+              syncMode: provider === "graph" ? "graph_api" : "imap",
+            });
+            await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "fake" });
+            await upsertMailMessageMeta(client, {
+              itemId: message.id,
+              mailboxItemId: mailbox.id,
+              messageId: "<baseline@example.test>",
+              ...(provider === "graph" ? { providerMessageId: "old-id" } : {}),
+              envelope: {},
+            });
+            const folder = async (path: string, specialPurpose: string, validity: string) => {
+              const id = await ensureFolderItem(client, {
+                foldersDatabaseId: moduleIds.foldersDatabaseId,
+                mailboxItemId: mailbox.id,
+                mailboxRelationPropertyId: mailboxFolder.id,
+                providerId: path,
+                name: path,
+                behavior: "folder",
+                specialPurpose,
+              });
+              if (provider === "imap") {
+                await ensureMailFolderSyncState(client, id);
+                await recordReconcile(client, {
+                  itemId: id,
+                  uidvalidity: validity,
+                  uidnext: path === "Source" ? "1" : "50",
+                  highestmodseq: null,
+                });
+              }
+              return id;
+            };
+            const source = await folder("Source", "inbox", "11");
+            const target = await folder("Destination", "archive", "12");
+            await createRelationWithClient(
+              client,
+              {
+                relationPropertyId: emailFolder.id,
+                callerItemId: message.id,
+                targetItemId: source,
+                ...(provider === "imap" ? { metadata: { uid: 7 } } : {}),
+              },
+              EMAILS_RELATION_CONTEXT,
+            );
+            return {
+              mailbox: mailbox.id,
+              message: message.id,
+              source,
+              target,
+              folderProperty: emailFolder.id,
+              mailboxProperty: mailboxFolder.id,
+            };
+          });
+          const recordIntent = () =>
+            withTransaction(runtime, async (client) => {
+              const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+              await recordDesiredMailMessageMove(client, {
+                messageItemId: f.message,
+                mailboxItemId: f.mailbox,
+                desiredPurpose: "archive",
+                source:
+                  provider === "graph"
+                    ? { provider: "graph", providerMessageId: "old-id" }
+                    : { provider: "imap", folderItemId: f.source, path: "Source", uid: 7, uidValidity: "11" },
+              });
+              await deleteRelationWithClient(
+                client,
+                { relationPropertyId: f.folderProperty, callerItemId: f.message, targetItemId: f.source },
+                EMAILS_RELATION_CONTEXT,
+              );
+              await createRelationWithClient(
+                client,
+                { relationPropertyId: f.folderProperty, callerItemId: f.message, targetItemId: f.target },
+                EMAILS_RELATION_CONTEXT,
+              );
+              return pid;
+            });
+          let dispatchReady!: () => void;
+          const dispatched = new Promise<void>((resolve) => {
+            dispatchReady = resolve;
+          });
+          const ownerGate = new Promise<void>((resolve) => {
+            releaseOwner = resolve;
+          });
+          let dispatchCount = 0;
+          const perform = async () => {
+            dispatchCount++;
+            const state = await withTransaction(runtime, async (client) => ({
+              pid: (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid,
+              rows: await listPendingMoves(client, f.mailbox),
+            }));
+            expect(state.rows).toMatchObject([{ operation_phase: "in_flight" }]);
+            ownerToken = state.rows[0]?.operation_token;
+            expect(ownerToken).toBeTypeOf("string");
+            expect(state.pid).toBeTypeOf("number");
+            process.stdout.write(`batch18 ${provider} move owner=${state.pid}\n`);
+            dispatchReady();
+            if (scenario === "competing-in-flight") await waitForMoveTestSignal(ownerGate);
+          };
+          const runOwner = (): Promise<void> => {
+            if (provider === "graph") {
+              const request: typeof fetch = vi
+                .fn()
+                .mockResolvedValueOnce(Response.json({ id: "old-id", parentFolderId: "Source" }))
+                .mockImplementationOnce(async () => {
+                  await perform();
+                  return Response.json({ id: "new-id" });
+                });
+              return drainGraphMoves(
+                runtime,
+                f.mailbox,
+                new GraphRestClient(async () => "fake-token", request),
+                moduleIds.foldersDatabaseId,
+                f.mailboxProperty,
+              );
+            }
+            const moveClient = {
+              prepareMove: async () => ({ uidValidity: "11", capabilities: new Set(["MOVE"]), found: true }),
+              executeMoveStep: async () => {
+                await perform();
+                return { kind: "acknowledged" as const, targetUid: 27, targetUidValidity: "12" };
+              },
+              close: async () => {},
+            } as unknown as ImapMailClient;
+            return drainImapMoves(
+              runtime,
+              f.mailbox,
+              async () => moveClient,
+              moduleIds.foldersDatabaseId,
+              f.mailboxProperty,
+              f.folderProperty,
+            );
+          };
+          if (scenario === "completed-before-baseline") {
+            await recordIntent();
+            await runOwner();
+          }
+          const graph: GraphMailClient = {
+            observeMoveMessage: async () => ({ kind: "found", id: "old-id", parentFolderId: "Source" }),
+            listFolders: async () => [
+              { id: "Source", displayName: "Source", wellKnownName: "inbox" },
+              { id: "Destination", displayName: "Destination", wellKnownName: "archive" },
+            ],
+            fetchDelta: async () => ({
+              invalidated: false,
+              newDeltaLink: "delta",
+              changes: [
+                {
+                  id: "old-id",
+                  parentFolderId: "Source",
+                  removed: false,
+                  message: {
+                    messageId: "<baseline@example.test>",
+                    envelope: {},
+                    attachments: [],
+                    flags: [IMAP_SEEN_FLAG],
+                  },
+                },
+              ],
+            }),
+            patchMessage: async () => {
+              throw new Error("Unexpected Graph flag mutation");
+            },
+          };
+          registerGraphMovePreparer(graph, async () => async () => {
+            throw new Error("Duplicate Graph move dispatch");
+          });
+          const imap: ImapMailClient = {
+            getCapabilities: async () => new Set(),
+            listFolders: async () => [
+              { path: "Source", specialUse: "\\Inbox" },
+              { path: "Destination", specialUse: "\\Archive" },
+            ],
+            selectFolder: async (path) => ({
+              uidvalidity: path === "Source" ? 11 : 12,
+              uidnext: 50,
+              highestModSeq: null,
+            }),
+            fetchMessagesSince: async (path) =>
+              path === "Source"
+                ? [
+                    {
+                      uid: 7,
+                      message: {
+                        messageId: "<baseline@example.test>",
+                        envelope: {},
+                        attachments: [],
+                        flags: [IMAP_SEEN_FLAG],
+                      },
+                    },
+                  ]
+                : [],
+            fetchVanishedSince: async () => null,
+            fetchAllUids: async () => [7, 27],
+            fetchFlagsChangedSince: async () => [],
+            setMessageFlag: async () => {
+              throw new Error("Unexpected IMAP flag mutation");
+            },
+            appendMessage: async () => {},
+            close: async () => {},
+          };
+          const gate = scenario === "completed-before-baseline" ? undefined : holdMoveBaseline(runtime);
+          if (gate) releaseBaseline = gate.release;
+          const job = handleSyncMailAccountTask(
+            runtime,
+            { mailboxItemId: f.mailbox },
+            { createGraphClient: () => graph, createImapClient: async () => imap },
+            moduleIds,
+            noopStorage,
+          );
+          jobSettlement = Promise.allSettled([job]);
+          if (gate) {
+            try {
+              const baselinePid = await waitForMoveTestSignal(gate.reached);
+              const intentPid = await recordIntent();
+              expect(intentPid).toBeTypeOf("number");
+              expect(intentPid).not.toBe(baselinePid);
+              process.stdout.write(`batch18 ${provider} baseline=${baselinePid} intent=${intentPid}\n`);
+              owner = runOwner();
+              ownerSettlement = Promise.allSettled([owner]);
+              await waitForMoveTestSignal(dispatched);
+              if (scenario === "competing-completion") await waitForMoveTestSignal(owner);
+            } finally {
+              releaseBaseline();
+            }
+          }
+          await waitForMoveTestSignal(job);
+          const rows = await withTransaction(runtime, (client) => listPendingMoves(client, f.mailbox));
+          if (scenario === "competing-in-flight")
+            expect(rows).toMatchObject([{ operation_phase: "in_flight", operation_token: ownerToken }]);
+          else expect(rows).toEqual([]);
+          const observed = await withTransaction(runtime, async (client) => ({
+            item: (
+              await client.query<{ read: string | null }>(
+                "SELECT properties ->> 'read' AS read FROM items WHERE id = $1",
+                [f.message],
+              )
+            ).rows[0],
+            meta: await getMailMessageMetaByItemId(client, f.message),
+            edges: (
+              await client.query<{ folder_id: string; uid: string | null }>(
+                `SELECT CASE WHEN item_a = $1 THEN item_b ELSE item_a END AS folder_id, metadata ->> 'uid' AS uid FROM item_relations WHERE (item_a = $1 OR item_b = $1) AND (item_a = ANY($2::uuid[]) OR item_b = ANY($2::uuid[]))`,
+                [f.message, [f.source, f.target]],
+              )
+            ).rows,
+          }));
+          if (scenario === "completed-before-baseline") expect(observed.item?.read).toBe("true");
+          else {
+            expect(observed.item?.read).not.toBe("true");
+            expect(observed.edges.some((edge) => edge.folder_id === f.source)).toBe(false);
+            expect(observed.edges.some((edge) => edge.folder_id === f.target)).toBe(true);
+          }
+          if (provider === "graph")
+            expect(observed.meta?.providerMessageId).toBe(scenario === "competing-in-flight" ? "old-id" : "new-id");
+          if (provider === "imap" && scenario === "competing-completion")
+            expect(observed.edges.find((edge) => edge.folder_id === f.target)?.uid).toBe("27");
+          if (scenario === "completed-before-baseline")
+            expect(observed.edges.some((edge) => edge.folder_id === f.source)).toBe(true);
+          const foreign = await createTestTenant(pool);
+          const foreignView = await withTenantTransaction(runtime, foreign, async (client) => ({
+            meta: await getMailMessageMetaByItemId(client, f.message),
+            moves: await listPendingMoves(client, f.mailbox),
+          }));
+          expect(foreignView).toEqual({ meta: null, moves: [] });
+          if (owner) {
+            releaseOwner();
+            await waitForMoveTestSignal(owner);
+            expect(await withTransaction(runtime, (client) => listPendingMoves(client, f.mailbox))).toEqual([]);
+          }
+          if (scenario !== "completed-before-baseline") {
+            const final = await withTransaction(runtime, async (client) => ({
+              meta: await getMailMessageMetaByItemId(client, f.message),
+              edge: (
+                await client.query<{ uid: string | null }>(
+                  `SELECT metadata ->> 'uid' AS uid FROM item_relations WHERE (item_a = $1 OR item_b = $1) AND (item_a = $2 OR item_b = $2)`,
+                  [f.message, f.target],
+                )
+              ).rows,
+              validity:
+                provider === "imap"
+                  ? (
+                      await client.query<{ uidvalidity: string | null }>(
+                        "SELECT uidvalidity FROM mail_folder_sync_state WHERE item_id = $1",
+                        [f.target],
+                      )
+                    ).rows[0]?.uidvalidity
+                  : undefined,
+            }));
+            if (provider === "graph") expect(final.meta?.providerMessageId).toBe("new-id");
+            else {
+              expect(final.edge).toEqual([{ uid: "27" }]);
+              expect(final.validity).toBe("12");
+            }
+          }
+          expect(dispatchCount).toBe(1);
+        } catch (error) {
+          primary = { value: error };
+        } finally {
+          releaseBaseline();
+          releaseOwner();
+          for (const settlement of [ownerSettlement, jobSettlement]) {
+            if (!settlement) continue;
+            for (const result of await settlement) {
+              if (result.status === "rejected") cleanupFailures.push(result.reason);
+            }
+          }
+          try {
+            await runtime.end();
+          } catch (error) {
+            cleanupFailures.push(error);
+          }
+        }
+        if (primary && cleanupFailures.length)
+          throw new AggregateError([primary.value, ...cleanupFailures], "Move matrix and cleanup failed", {
+            cause: primary.value,
+          });
+        if (primary) throw primary.value;
+        if (cleanupFailures.length) throw new AggregateError(cleanupFailures, "Move matrix cleanup failed");
+      });
 
   tenantIt(
     "persists last_error and pushes out next_expected_activity_at when a sync pass throws, surviving the aborted transaction's rollback",

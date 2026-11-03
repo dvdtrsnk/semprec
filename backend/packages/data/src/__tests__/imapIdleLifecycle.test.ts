@@ -1,5 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
 import type { Pool } from "pg";
+import type { ImapFlow } from "imapflow";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import {
@@ -9,6 +11,7 @@ import {
   type ImapIdleFolderTarget,
   type ImapIdleTransport,
 } from "../mail/imapIdleLifecycle.js";
+import { createImapFlowIdleTransport } from "../mail/imapIdleClient.js";
 
 let pool: Pool;
 
@@ -48,6 +51,32 @@ class FakeConnection implements ImapIdleConnection {
 
   fail(err: unknown): void {
     this.endResolve(err);
+  }
+}
+
+class OwnedIdleClient extends EventEmitter {
+  falseLogout = false;
+  holdClose = false;
+  closeFailure: Error | undefined;
+  throwUndefined = false;
+  closeCalls = 0;
+  async list(): Promise<Array<{ path: string; specialUse: string }>> {
+    return [{ path: "INBOX", specialUse: "\\Inbox" }];
+  }
+  async mailboxOpen(): Promise<void> {}
+  async logout(): Promise<boolean> {
+    if (this.falseLogout) return false;
+    this.emit("close");
+    return true;
+  }
+  close(): void {
+    this.closeCalls++;
+    if (this.throwUndefined) {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw undefined;
+    }
+    if (this.closeFailure !== undefined) throw this.closeFailure;
+    if (!this.holdClose) this.emit("close");
   }
 }
 
@@ -483,4 +512,108 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     await expect(stopping).rejects.toThrow("IMAP IDLE lifecycle failed unexpectedly");
     expect(errors).toEqual([undefined]);
   });
+
+  it("retries a composed IDLE transport after one already-closed connection error", async () => {
+    const discovery = new OwnedIdleClient();
+    const first = new OwnedIdleClient();
+    const second = new OwnedIdleClient();
+    first.falseLogout = true;
+    const clients = [discovery, first, second];
+    const errors: unknown[] = [];
+    let next = 0;
+    const transport = createImapFlowIdleTransport(async () => {
+      const client = clients[next++];
+      if (!client) throw new Error("Unexpected IDLE connection");
+      return client as unknown as ImapFlow;
+    });
+    const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
+      getCredential: async () => "password",
+      getConnectionLimit: () => 1,
+      reconnectBaseDelayMs: 1,
+      onError: (_id, _folder, error) => errors.push(error),
+    })({ mailboxItemId: "retry-composed", syncMode: "imap" });
+    const original = new Error("private original failure");
+    try {
+      await lifecycle.start();
+      await vi.waitFor(() => expect(first.listenerCount("error")).toBe(1));
+      first.emit("error", original);
+      first.emit("close");
+      await vi.waitFor(() => expect(second.listenerCount("error")).toBe(1));
+      expect(errors).toEqual([original]);
+    } finally {
+      first.emit("close");
+      second.emit("close");
+      await lifecycle.stop();
+    }
+  });
+
+  it.each(["none", "error", "undefined"] as const)(
+    "keeps a composed IDLE owner until public close, close throws=%s",
+    async (closeMode) => {
+      const discovery = new OwnedIdleClient();
+      const active = new OwnedIdleClient();
+      active.falseLogout = true;
+      active.holdClose = true;
+      const closeFailure = new Error("private close failure");
+      if (closeMode === "error") active.closeFailure = closeFailure;
+      if (closeMode === "undefined") active.throwUndefined = true;
+      const clients = [discovery, active];
+      const errors: unknown[] = [];
+      let next = 0;
+      let heldSlots = 0;
+      const transport = createImapFlowIdleTransport(async () => {
+        const client = clients[next++];
+        if (!client) throw new Error("Unexpected IDLE connection");
+        return client as unknown as ImapFlow;
+      });
+      const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
+        getCredential: async () => "password",
+        getConnectionLimit: () => 1,
+        connectionLimiter: {
+          async run(_id, _limit, work) {
+            heldSlots++;
+            try {
+              return await work();
+            } finally {
+              heldSlots--;
+            }
+          },
+        },
+        onError: (_id, _folder, error) => errors.push(error),
+      })({ mailboxItemId: `held-close-${closeMode}`, syncMode: "imap" });
+      const original = new Error("private original failure");
+      let stopping: Promise<unknown> | undefined;
+      try {
+        await lifecycle.start();
+        await vi.waitFor(() => expect(active.listenerCount("error")).toBe(1));
+        active.emit("error", original);
+        await vi.waitFor(() => expect(active.closeCalls).toBe(1));
+        let settled = false;
+        stopping = lifecycle
+          .stop()
+          .catch((error: unknown) => error)
+          .then((error) => {
+            settled = true;
+            return error;
+          });
+        await Promise.resolve();
+        expect(settled).toBe(false);
+        expect(heldSlots).toBe(1);
+        active.emit("close");
+        const result = await stopping;
+        expect(heldSlots).toBe(0);
+        expect(result).toBeInstanceOf(Error);
+        if (closeMode !== "none") {
+          expect(errors[0]).toBeInstanceOf(AggregateError);
+          if (!(errors[0] instanceof AggregateError)) throw new Error("Expected operation and cleanup failures");
+          expect(errors[0].errors).toEqual([original, closeMode === "error" ? closeFailure : undefined]);
+        } else expect(errors).toEqual([original]);
+        expect(JSON.stringify(result)).not.toContain("private");
+      } finally {
+        active.emit("close");
+        if (stopping) await stopping;
+        else await lifecycle.stop().catch(() => {});
+      }
+    },
+  );
 });

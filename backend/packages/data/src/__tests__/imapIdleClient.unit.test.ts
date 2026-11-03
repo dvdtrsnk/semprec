@@ -167,7 +167,71 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     if (!(observed instanceof AggregateError)) throw new Error("expected aggregate");
     expect(observed.errors).toEqual([original, cleanup]);
   });
-  it("detaches end listeners even when logout returns without a close event", async () => {
+  it("retains separately observed discovery error and rejection even when the same object is reused", async () => {
+    const client = new FakeImapFlow();
+    const shared = new Error("private discovery failure");
+    client.list = async () => {
+      client.emit("error", shared);
+      throw shared;
+    };
+    let observed: unknown;
+    try {
+      await createImapFlowIdleTransport(makeFactory([client]).createClient).resolveFolders("mailbox-1", "credential");
+    } catch (error) {
+      observed = error;
+    }
+    expect(observed).toBeInstanceOf(AggregateError);
+    if (!(observed instanceof AggregateError)) throw new Error("expected separate observations");
+    expect(observed.errors).toEqual([shared, shared]);
+  });
+  it("retains a later distinct error event even when it reuses the first error object", async () => {
+    const client = new FakeImapFlow();
+    const shared = new Error("private reused error");
+    client.logout = async () => false;
+    client.close = () => {};
+    const connection = await createImapFlowIdleTransport(makeFactory([client]).createClient).connect(
+      "mailbox-1",
+      "credential",
+      "INBOX",
+      () => {},
+    );
+    const ended = connection.waitForEnd();
+    client.emit("error", shared);
+    expect(await ended).toBe(shared);
+    const cleanup = connection.close().catch((error: unknown) => error);
+    client.emit("error", shared);
+    client.emit("close");
+    expect(await cleanup).toBe(shared);
+  });
+  it("retains a close-time error event before a separate synchronous close failure", async () => {
+    const client = new FakeImapFlow();
+    const original = new Error("private original");
+    const eventFailure = new Error("private event failure");
+    const closeFailure = new Error("private close failure");
+    client.logout = async () => false;
+    client.close = () => {
+      client.emit("error", eventFailure);
+      throw closeFailure;
+    };
+    const connection = await createImapFlowIdleTransport(makeFactory([client]).createClient).connect(
+      "mailbox-1",
+      "credential",
+      "INBOX",
+      () => {},
+    );
+    const ended = connection.waitForEnd();
+    client.emit("error", original);
+    expect(await ended).toBe(original);
+    const pending = connection.close().catch((error: unknown) => error);
+    await Promise.resolve();
+    await Promise.resolve();
+    client.emit("close");
+    const cleanup = await pending;
+    expect(cleanup).toBeInstanceOf(AggregateError);
+    if (!(cleanup instanceof AggregateError)) throw new Error("expected ordered cleanup errors");
+    expect(cleanup.errors).toEqual([eventFailure, closeFailure]);
+  });
+  it("keeps ownership until the public close event after logout returns", async () => {
     const client = new FakeImapFlow();
     client.logout = async () => {};
     const connection = await createImapFlowIdleTransport(makeFactory([client]).createClient).connect(
@@ -176,7 +240,15 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       "INBOX",
       () => {},
     );
-    await connection.close();
+    let settled = false;
+    const closing = connection.close().then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    client.emit("close");
+    await closing;
     await expect(connection.waitForEnd()).resolves.toBeUndefined();
     expect(client.listenerCount("close")).toBe(0);
     expect(client.listenerCount("error")).toBe(0);
@@ -271,6 +343,48 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       vi.useRealTimers();
     }
   });
+  it("diagnoses a false logout received after timeout without releasing pending close observation", async () => {
+    vi.useFakeTimers();
+    const warning = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      const client = new FakeImapFlow();
+      let releaseLogout!: (value: boolean) => void;
+      client.logout = () =>
+        new Promise<boolean>((resolve) => {
+          releaseLogout = resolve;
+        });
+      client.close = () => {};
+      const connection = await createImapFlowIdleTransport(makeFactory([client]).createClient).connect(
+        "mailbox-1",
+        "credential",
+        "private-folder",
+        () => {},
+      );
+      let settled = false;
+      const pending = connection
+        .close()
+        .catch((error: unknown) => error)
+        .then((error) => {
+          settled = true;
+          return error;
+        });
+      await vi.advanceTimersByTimeAsync(10_000);
+      releaseLogout(false);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(warning.mock.calls.map((call) => call[0])).toEqual([
+        { stage: "logout", category: "unresolved" },
+        { stage: "logout", category: "ambiguous" },
+      ]);
+      expect(JSON.stringify(warning.mock.calls)).not.toContain("private-folder");
+      client.emit("close");
+      expect(await pending).toBeInstanceOf(Error);
+    } finally {
+      warning.mockRestore();
+      vi.useRealTimers();
+    }
+  });
   it("waits for a public close after false logout and reuses an already observed close", async () => {
     for (const alreadyClosed of [false, true]) {
       const client = new FakeImapFlow();
@@ -295,6 +409,38 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       }
       await pending;
       expect(settled).toBe(true);
+    }
+  });
+  it("uses the same grace deadline when logout succeeds but public close is still absent", async () => {
+    vi.useFakeTimers();
+    const warning = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      const client = new FakeImapFlow();
+      client.logout = async () => true;
+      const close = vi.spyOn(client, "close").mockImplementation(() => {});
+      const connection = await createImapFlowIdleTransport(makeFactory([client]).createClient).connect(
+        "mailbox-1",
+        "credential",
+        "INBOX",
+        () => {},
+      );
+      let settled = false;
+      const pending = connection
+        .close()
+        .catch((error: unknown) => error)
+        .then((error) => {
+          settled = true;
+          return error;
+        });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+      expect(warning.mock.calls.map((call) => call[0])).toEqual([{ stage: "logout", category: "unresolved" }]);
+      client.emit("close");
+      expect(await pending).toBeInstanceOf(Error);
+    } finally {
+      warning.mockRestore();
+      vi.useRealTimers();
     }
   });
   it("retains diagnostic and synchronous close failures while waiting for the public end", async () => {

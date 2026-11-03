@@ -50,24 +50,61 @@ export type CreateIdleTunedImapFlowClient = (
 const SPECIAL_USE_INBOX = "\\Inbox";
 const SPECIAL_USE_ALL = "\\All";
 
-function endPromiseFor(client: ImapFlow): { promise: Promise<unknown>; settle: (error: unknown) => void } {
-  let settle: (error: unknown) => void = () => {};
+function endPromiseFor(client: ImapFlow): {
+  promise: Promise<unknown>;
+  closed: Promise<void>;
+  secondary: unknown[];
+  claimEnd: () => Promise<unknown>;
+  unclaimedError: () => { value: unknown } | undefined;
+  dispose: () => void;
+} {
+  let resolveEnd!: (error: unknown) => void;
+  let resolveClose!: () => void;
+  let endSettled = false;
+  let closeSettled = false;
+  let claimed = false;
+  let firstError: { value: unknown } | undefined;
+  const secondary: unknown[] = [];
   const promise = new Promise<unknown>((resolve) => {
-    let settled = false;
-    const onError = (error: unknown) => finish(error === undefined ? { failure: undefined } : error);
-    const onClose = () => finish(undefined);
-    const finish = (error: unknown) => {
-      if (settled) return;
-      settled = true;
+    resolveEnd = resolve;
+  });
+  const closed = new Promise<void>((resolve) => {
+    resolveClose = resolve;
+  });
+  const onError = (error: unknown) => {
+    if (endSettled) secondary.push(error);
+    else {
+      firstError = { value: error };
+      endSettled = true;
+      resolveEnd(error === undefined ? { failure: undefined } : error);
+    }
+  };
+  const onClose = () => {
+    if (!endSettled) {
+      endSettled = true;
+      resolveEnd(undefined);
+    }
+    if (!closeSettled) {
+      closeSettled = true;
+      resolveClose();
+    }
+  };
+  client.on("error", onError);
+  client.on("close", onClose);
+  return {
+    promise,
+    closed,
+    secondary,
+    claimEnd: () => {
+      claimed = true;
+      return promise;
+    },
+    unclaimedError: () => (claimed ? undefined : firstError),
+    dispose: () => {
       client.off("error", onError);
       client.off("close", onClose);
-      resolve(error);
-    };
-    settle = finish;
-    client.on("error", onError);
-    client.on("close", onClose);
-  });
-  return { promise, settle };
+    },
+  };
 }
 
 const IDLE_LOGOUT_TIMEOUT_MS = 10_000;
@@ -83,46 +120,57 @@ async function closeClient(client: ImapFlow, ended: ReturnType<typeof endPromise
   } catch (error) {
     logout = Promise.resolve({ kind: "failed", error });
   }
-  let outcome: { kind: "done"; value: unknown } | { kind: "failed"; error: unknown } | { kind: "timeout" };
+  const deadline = new Promise<{ kind: "timeout" }>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: "timeout" }), IDLE_LOGOUT_TIMEOUT_MS);
+  });
+  const failures = ended.secondary;
+  let closeRequested = false;
+  const requestClose = () => {
+    if (closeRequested) return;
+    closeRequested = true;
+    try {
+      client.close();
+    } catch (error) {
+      failures.push(error);
+    }
+  };
+  const diagnose = (category: "ambiguous" | "unresolved") => {
+    try {
+      logger.warn({ stage: "logout", category }, "IMAP IDLE provider cleanup observation");
+    } catch (error) {
+      failures.push(error);
+    }
+  };
   try {
-    outcome = await Promise.race([
-      logout,
-      new Promise<{ kind: "timeout" }>((resolve) => {
-        timer = setTimeout(() => resolve({ kind: "timeout" }), IDLE_LOGOUT_TIMEOUT_MS);
-      }),
-    ]);
+    const outcome = await Promise.race([logout, deadline]);
+    if (outcome.kind === "failed") failures.push(outcome.error);
+    if (outcome.kind === "done" && outcome.value === false) diagnose("ambiguous");
+    if (outcome.kind === "failed" || (outcome.kind === "done" && outcome.value === false)) requestClose();
+    if (outcome.kind === "timeout") {
+      failures.push(new Error("IMAP IDLE logout timed out"));
+      diagnose("unresolved");
+      requestClose();
+      const settled = await logout;
+      if (settled.kind === "failed") failures.unshift(settled.error);
+      else if (settled.value === false) diagnose("ambiguous");
+      await ended.closed;
+    } else {
+      const closeResult = await Promise.race([
+        ended.closed.then(() => "closed" as const),
+        deadline.then(() => "timeout" as const),
+      ]);
+      if (closeResult === "timeout") {
+        failures.push(new Error("IMAP IDLE close observation timed out"));
+        diagnose("unresolved");
+        requestClose();
+        await ended.closed;
+      }
+    }
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-  if (outcome.kind === "done" && outcome.value !== false) return;
-  const failures: unknown[] = [];
-  if (outcome.kind === "failed") failures.push(outcome.error);
-  if (outcome.kind === "timeout") failures.push(new Error("IMAP IDLE logout timed out"));
-  if (outcome.kind === "timeout") {
-    try {
-      logger.warn({ stage: "logout", category: "unresolved" }, "IMAP IDLE provider cleanup observation");
-    } catch (error) {
-      failures.push(error);
-    }
-  }
-  if (outcome.kind === "done") {
-    try {
-      logger.warn({ stage: "logout", category: "ambiguous" }, "IMAP IDLE provider cleanup observation");
-    } catch (error) {
-      failures.push(error);
-    }
-  }
-  try {
-    client.close();
-  } catch (error) {
-    failures.push(error);
-  }
-  if (outcome.kind === "timeout") {
-    const settled = await logout;
-    if (settled.kind === "failed") failures.unshift(settled.error);
-  }
-  const end = await ended.promise;
-  if (end !== undefined) failures.push(end);
+  const unclaimed = ended.unclaimedError();
+  if (unclaimed) failures.unshift(unclaimed.value);
   if (failures.length === 0) return;
   if (failures.length === 1) throw failures[0];
   throw new AggregateError(failures, "IMAP IDLE connection cleanup failed", { cause: failures[0] });
@@ -140,7 +188,7 @@ async function closeAfterFailure(
     // eslint-disable-next-line preserve-caught-error
     throw new AggregateError([original, secondary], "IMAP IDLE operation and cleanup failed", { cause: original });
   } finally {
-    ended.settle(undefined);
+    ended.dispose();
   }
   throw original;
 }
@@ -153,7 +201,7 @@ class ImapFlowIdleConnection implements ImapIdleConnection {
   ) {}
 
   waitForEnd(): Promise<unknown> {
-    return this.ended.promise;
+    return this.ended.claimEnd();
   }
 
   async close(): Promise<void> {
@@ -170,7 +218,7 @@ class ImapFlowIdleConnection implements ImapIdleConnection {
     } catch (error) {
       failures.push(error);
     } finally {
-      this.ended.settle(undefined);
+      this.ended.dispose();
     }
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "IMAP IDLE cleanup failed");
@@ -206,7 +254,7 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
       try {
         await closeClient(client, ended);
       } finally {
-        ended.settle(undefined);
+        ended.dispose();
       }
       return targets.length > 0 ? targets : [{ path: "INBOX" }];
     },
