@@ -22,6 +22,139 @@ import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsA
 const EXAMPLES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "db", "migrationExamples");
 const LONG_TITLE = "a title longer than ten characters";
 
+it("upgrades populated heartbeats and sessions through tick and device migrations", async () => {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("Missing test database URL");
+  const name = `batch16_upgrade_${randomUUID().replaceAll("-", "")}`;
+  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch16-upgrade-"));
+  const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+  let scratch: Pool | undefined;
+  let created = false;
+  let failure: { error: unknown } | undefined;
+  try {
+    // The database name is a fixed prefix followed by UUID hex.
+    await admin.query(`CREATE DATABASE "${name}"`);
+    created = true;
+    const scratchUrl = new URL(url);
+    scratchUrl.pathname = `/${name}`;
+    scratch = new Pool({
+      connectionString: scratchUrl.toString(),
+      connectionTimeoutMillis: 5000,
+      statement_timeout: 30000,
+    });
+    const db = scratch;
+    const files = (await readdir(migrations)).filter((file) => file.endsWith(".sql")).sort();
+    async function advance(through: string): Promise<void> {
+      for (const file of files.filter((entry) => entry <= through)) {
+        await copyFile(path.join(migrations, file), path.join(dir, file));
+      }
+      await runMigrations(db, dir);
+    }
+    await advance("0086_z.sql");
+    const tenant = await db.query<{ id: string }>("SELECT id FROM tenants");
+    const tenantId = tenant.rows[0]?.id;
+    if (!tenantId || tenant.rows.length !== 1) throw new Error("Expected one historical tenant");
+    const databaseId = randomUUID();
+    const projectId = randomUUID();
+    const heartbeatId = randomUUID();
+    const userId = randomUUID();
+    const sessionId = randomUUID();
+    // Current stores depend on later columns; these rows use the actual pre-0087 schema.
+    await runInTenant(tenantId, () =>
+      withTransaction(db, async (client) => {
+        await client.query(
+          "INSERT INTO databases (id, name, owner_module_id, system, tenant_id) VALUES ($1, 'Projects', 'projects', true, $2)",
+          [databaseId, tenantId],
+        );
+        await client.query("SELECT create_items_partition($1::uuid)", [databaseId]);
+        await client.query("INSERT INTO items (id, database_id, tenant_id) VALUES ($1, $2, $3)", [
+          projectId,
+          databaseId,
+          tenantId,
+        ]);
+        await client.query(
+          "INSERT INTO project_heartbeats (id, project_item_id, name, rule, action_id, tenant_id) VALUES ($1, $2, 'Legacy', $3::jsonb, 'core.agentRun', $4)",
+          [heartbeatId, projectId, JSON.stringify({ kind: "interval", minutes: 5 }), tenantId],
+        );
+        await client.query("INSERT INTO users (id, tenant_id, email, password_hash) VALUES ($1, $2, $3, 'unused')", [
+          userId,
+          tenantId,
+          `${userId}@example.test`,
+        ]);
+        await client.query(
+          "INSERT INTO sessions (id, user_id, token_hash, platform, expires_at) VALUES ($1, $2, 'legacy-token', 'ios', now() + interval '1 day')",
+          [sessionId, userId],
+        );
+      }),
+    );
+    await advance("0087_z.sql");
+    const tickSchema = await db.query<{ relrowsecurity: boolean; can_insert: boolean }>(
+      "SELECT relrowsecurity, has_table_privilege('semprec_side', 'semp_threads', 'INSERT') AS can_insert FROM pg_class WHERE oid = 'semp_threads'::regclass",
+    );
+    expect(tickSchema.rows).toEqual([{ relrowsecurity: true, can_insert: true }]);
+    const insertTick = () =>
+      runInTenant(tenantId, () =>
+        withTransaction(db, (client) =>
+          client.query("INSERT INTO semp_threads (tenant_id, kind, heartbeat_id) VALUES ($1, 'tick', $2)", [
+            tenantId,
+            heartbeatId,
+          ]),
+        ),
+      );
+    await insertTick();
+    await expect(insertTick()).rejects.toMatchObject({ code: "23505" });
+    expect(
+      (await db.query<{ name: string }>("SELECT name FROM project_heartbeats WHERE id = $1", [heartbeatId])).rows,
+    ).toEqual([{ name: "Legacy" }]);
+    await advance("0091_z.sql");
+    const legacy = await db.query<{
+      device_id: string | null;
+      device_name: string | null;
+      device_kind: string | null;
+      os_version: string | null;
+      app_version: string | null;
+    }>("SELECT device_id, device_name, device_kind, os_version, app_version FROM sessions WHERE id = $1", [sessionId]);
+    expect(legacy.rows).toEqual([
+      { device_id: null, device_name: null, device_kind: null, os_version: null, app_version: null },
+    ]);
+    const legacyWriter = await withTransaction(db, (client) =>
+      client.query<{ device_kind: string | null }>(
+        "INSERT INTO sessions (user_id, token_hash, platform, expires_at) VALUES ($1, 'legacy-writer', 'web', now() + interval '1 day') RETURNING device_kind",
+        [userId],
+      ),
+    );
+    expect(legacyWriter.rows).toEqual([{ device_kind: null }]);
+    await expect(
+      withTransaction(db, (client) =>
+        client.query("UPDATE sessions SET device_kind = 'phone' WHERE id = $1", [sessionId]),
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+  } catch (error) {
+    failure = { error };
+  }
+  const cleanupErrors: unknown[] = [];
+  for (const cleanup of [
+    async () => scratch?.end(),
+    async () => {
+      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+    },
+    async () => admin.end(),
+    async () => rm(dir, { recursive: true, force: true }),
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (cleanupErrors.length)
+    throw new AggregateError(failure ? [failure.error, ...cleanupErrors] : cleanupErrors, "Upgrade cleanup failed", {
+      cause: failure?.error,
+    });
+  if (failure) throw failure.error;
+}, 120_000);
+
 it("upgrades populated approvals and notifications through the batch 15 additive migrations", async () => {
   const url = process.env.TEST_DATABASE_URL;
   if (!url) throw new Error("Missing test database URL");

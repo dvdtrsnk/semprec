@@ -24,12 +24,14 @@ import {
   LocalFsBlobStorageWriter,
   login,
   provisionTenant,
+  publishSempThreadInvalidation,
   setAgentRunEventHook,
   setDocUpdateHook,
   setInvalidationHook,
   setNotificationCreatedHook,
   setNotificationReadStateHook,
   setSessionRevokedHook,
+  setSempThreadInvalidationHook,
   visitNotification,
   withTransaction,
   writeNotification,
@@ -1070,6 +1072,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     setNotificationCreatedHook(() => {});
     setNotificationReadStateHook(() => {});
     setSessionRevokedHook(() => {});
+    setSempThreadInvalidationHook(() => {});
     if (blobDir !== undefined) await rm(blobDir, { recursive: true, force: true });
     if (previousScope === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
     else process.env.SEMPREC_TENANT_SCOPE = previousScope;
@@ -1086,6 +1089,50 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     } finally {
       vi.restoreAllMocks();
     }
+  });
+
+  it("publishes committed thread invalidations only to the writer's tenant and suppresses rolled-back ones", async () => {
+    const rolledBack = randomUUID();
+    await expect(
+      runInTenant(tenantA.tenantId, () =>
+        withTransaction(pool, async (client) => {
+          publishSempThreadInvalidation(client, tenantA.tenantId, rolledBack);
+          throw new Error("rollback thread invalidation");
+        }),
+      ),
+    ).rejects.toThrow("rollback thread invalidation");
+    const rollbackSentinel = await publishSentinel(tenantA.tenantId);
+    expect(await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(rollbackSentinel))))).toEqual([
+      [],
+      [],
+    ]);
+    await expectNothingReceived(b1, tenantB.tenantId);
+
+    const threadId = randomUUID();
+    await runInTenant(tenantA.tenantId, () =>
+      withTransaction(pool, async (client) => {
+        publishSempThreadInvalidation(client, tenantA.tenantId, threadId);
+      }),
+    );
+    await expectInvalidationInA({ scope: "sempThread", threadId });
+
+    const threadB = randomUUID();
+    await runInTenant(tenantB.tenantId, () =>
+      withTransaction(pool, async (client) => {
+        publishSempThreadInvalidation(client, tenantB.tenantId, threadB);
+      }),
+    );
+    await b1.nextMatching(
+      (frame) =>
+        frame.kind === "text" &&
+        frame.type === "invalidate" &&
+        matches(frame.body, { scope: "sempThread", threadId: threadB }),
+    );
+    const foreignSentinel = await publishSentinel(tenantA.tenantId);
+    expect(await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(foreignSentinel))))).toEqual([
+      [],
+      [],
+    ]);
   });
 
   it("joins actual concurrent logins after an early failure and retains a later failure", async () => {

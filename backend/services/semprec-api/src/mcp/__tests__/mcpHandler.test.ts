@@ -1,5 +1,6 @@
 import type { CollectionMetadataResolver } from "@semprec/data";
 import { createServer, type Server } from "node:http";
+import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
@@ -171,11 +172,94 @@ describe("createMcpRequestListener (issue #220)", () => {
       params: { protocolVersion, capabilities: {}, clientInfo: { name: "c", version: "1" } },
     });
 
+    it("returns the same initialize result for a human session and a real run credential", async () => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+      const human = await authHeader();
+      const sessionRows = await pool.query<{ id: string }>("SELECT id FROM sessions");
+      const callerSessionId = sessionRows.rows[0]?.id;
+      if (!callerSessionId || sessionRows.rows.length !== 1) throw new Error("Expected the caller session");
+      await authHeader();
+      const userId = await tenantZeroUserId();
+      const projectItemId = await createTestProjectItem(pool);
+      const credential = await withTransaction(pool, (client) =>
+        mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.read"], userId }),
+      );
+      const request = initialize("2025-06-18");
+      const snapshot = async () => {
+        const { rows } = await pool.query<{
+          items: unknown;
+          databases: unknown;
+          properties: unknown;
+          users: unknown;
+          runs: unknown;
+          credentials: unknown;
+          sessions: unknown;
+        }>(`
+          SELECT
+            (SELECT coalesce(jsonb_agg(to_jsonb(i) ORDER BY i.id), '[]'::jsonb) FROM items i) AS items,
+            (SELECT coalesce(jsonb_agg(to_jsonb(d) ORDER BY d.id), '[]'::jsonb) FROM databases d) AS databases,
+            (SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id), '[]'::jsonb) FROM properties p) AS properties,
+            (SELECT coalesce(jsonb_agg(to_jsonb(u) - 'password_hash' ORDER BY u.id), '[]'::jsonb) FROM users u) AS users,
+            (SELECT coalesce(jsonb_agg(to_jsonb(r) ORDER BY r.id), '[]'::jsonb) FROM agent_runs r) AS runs,
+            (SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY c.id), '[]'::jsonb) FROM agent_run_mcp_credentials c) AS credentials,
+            (SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY s.id), '[]'::jsonb) FROM sessions s) AS sessions
+        `);
+        if (!rows[0]) throw new Error("Missing persistence snapshot");
+        return rows[0];
+      };
+      const before = await snapshot();
+
+      const humanResponse = await rpc(baseUrl, human, request);
+      const afterHuman = await snapshot();
+      const runResponse = await rpc(baseUrl, { Authorization: `Bearer ${credential.token}` }, request);
+      const afterRun = await snapshot();
+
+      expect(humanResponse.status).toBe(200);
+      expect(runResponse.status).toBe(200);
+      const humanBody: unknown = await humanResponse.json();
+      const runBody: unknown = await runResponse.json();
+      expect(humanBody).toMatchObject({
+        result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "semprec" } },
+      });
+      expect(runBody).toEqual(humanBody);
+      expect(afterHuman.items).toEqual(before.items);
+      expect(afterHuman.databases).toEqual(before.databases);
+      expect(afterHuman.properties).toEqual(before.properties);
+      expect(afterHuman.users).toEqual(before.users);
+      expect(afterHuman.runs).toEqual(before.runs);
+      expect(JSON.stringify(afterHuman.credentials) === JSON.stringify(before.credentials)).toBe(true);
+      // Authentication is allowed to touch the caller's session timestamps and no other fields.
+      const stableSessions = (value: unknown): unknown => {
+        if (!Array.isArray(value)) throw new Error("Expected session snapshot array");
+        return value.map((row: unknown) => {
+          if (typeof row !== "object" || row === null || Array.isArray(row)) throw new Error("Invalid session row");
+          if (!("id" in row) || typeof row.id !== "string") throw new Error("Missing session id");
+          return row.id === callerSessionId
+            ? Object.fromEntries(Object.entries(row).filter(([key]) => key !== "last_seen_at" && key !== "expires_at"))
+            : row;
+        });
+      };
+      expect(
+        JSON.stringify(stableSessions(afterHuman.sessions)) === JSON.stringify(stableSessions(before.sessions)),
+      ).toBe(true);
+      expect(JSON.stringify(afterRun) === JSON.stringify(afterHuman)).toBe(true);
+    });
+
     it.each(["2025-06-18", "2025-03-26", "2024-11-05"])("echoes the supported version %s", async (version) => {
       const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
       servers.push(server);
 
       const res = await rpc(baseUrl, await authHeader(), initialize(version));
+      const manifest: unknown = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8"));
+      if (
+        typeof manifest !== "object" ||
+        manifest === null ||
+        !("version" in manifest) ||
+        typeof manifest.version !== "string"
+      ) {
+        throw new Error("API package version is missing");
+      }
 
       expect(res.status).toBe(200);
       const body = (await res.json()) as JsonRpcResponse;
@@ -183,7 +267,7 @@ describe("createMcpRequestListener (issue #220)", () => {
       expect(body.result).toMatchObject({
         protocolVersion: version,
         capabilities: { tools: {} },
-        serverInfo: { name: "semprec", version: expect.any(String) },
+        serverInfo: { name: "semprec", version: manifest.version },
       });
     });
 
@@ -218,8 +302,11 @@ describe("createMcpRequestListener (issue #220)", () => {
       servers.push(server);
 
       const res = await rpc(baseUrl, {}, initialize("2025-06-18"));
+      const list = await rpc(baseUrl, {}, { jsonrpc: "2.0", id: 7, method: "tools/list" });
 
       expect(res.status).toBe(401);
+      expect(list.status).toBe(res.status);
+      expect(await list.json()).toEqual(await res.json());
     });
 
     it("succeeds for a human session and writes nothing", async () => {
@@ -243,6 +330,8 @@ describe("createMcpRequestListener (issue #220)", () => {
       const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
       servers.push(server);
       const headers = await authHeader();
+      const before = await rpc(baseUrl, headers, { jsonrpc: "2.0", id: 1, method: "tools/list" });
+      const beforeBody: unknown = await before.json();
 
       const res = await rpc(baseUrl, headers, { jsonrpc: "2.0", method });
 
@@ -250,8 +339,11 @@ describe("createMcpRequestListener (issue #220)", () => {
       expect(await res.text()).toBe("");
 
       const list = await rpc(baseUrl, headers, { jsonrpc: "2.0", id: 1, method: "tools/list" });
-      const tools = ((await list.json()) as JsonRpcResponse).result as { tools: { name: string }[] };
-      expect(tools.tools.some((t) => t.name === "semprec.item.create")).toBe(true);
+      const afterBody: unknown = await list.json();
+      expect(beforeBody).toMatchObject({
+        result: { tools: expect.arrayContaining([expect.objectContaining({ name: "semprec.item.create" })]) },
+      });
+      expect(afterBody).toEqual(beforeBody);
     });
 
     it("rejects an unauthenticated notification", async () => {

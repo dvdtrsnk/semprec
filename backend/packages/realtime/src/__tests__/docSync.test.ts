@@ -2,9 +2,16 @@ import * as Y from "yjs";
 import * as encoding from "lib0/encoding";
 import * as decoding from "lib0/decoding";
 import * as syncProtocol from "y-protocols/sync.js";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
-import { createChokePoint, createDocStore, loadYDoc, type ChokePoint, type DocStore } from "@semprec/data";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Pool, PoolClient } from "pg";
+import {
+  createChokePoint,
+  createDocStore,
+  loadYDoc,
+  withTransaction,
+  type ChokePoint,
+  type DocStore,
+} from "@semprec/data";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -489,9 +496,10 @@ describe("createDocSyncRegistry doc:ack (issue #1362)", () => {
   let tenantB: string;
   let docId: string;
 
-  /** Records, at the instant each ack is sent, how many rows `doc_updates` holds for the doc. */
+  /** Starts persistence reads when each ack is sent. */
   class AckSocket extends FakeSocket {
     readonly rowsAtAck: Promise<number>[] = [];
+    readonly textAtAck: Promise<string>[] = [];
     override send(data: Buffer | string): void {
       super.send(data as Buffer);
       if (typeof data === "string" && JSON.parse(data).type === "doc:ack") {
@@ -499,6 +507,9 @@ describe("createDocSyncRegistry doc:ack (issue #1362)", () => {
           pool
             .query<{ count: string }>(`SELECT count(*) FROM doc_updates WHERE doc_id = $1`, [docId])
             .then((r) => Number(r.rows[0]!.count)),
+        );
+        this.textAtAck.push(
+          runInTenant(tenantA, () => loadYDoc(runtimePool, docId)).then((doc) => doc.getText("body").toJSON()),
         );
       }
     }
@@ -560,8 +571,12 @@ describe("createDocSyncRegistry doc:ack (issue #1362)", () => {
 
     await registry.handleBinaryFrame(writer as unknown as never, tenantA, docId, frame(updateBytes("hi"), "edit-1"));
 
+    const observations = await Promise.allSettled([...writer.rowsAtAck, ...writer.textAtAck]);
     expect(acks(writer)).toEqual([{ type: "doc:ack", docId, clientUpdateId: "edit-1" }]);
-    expect(await Promise.all(writer.rowsAtAck)).toEqual([before + 1]);
+    expect(observations).toEqual([
+      { status: "fulfilled", value: before + 1 },
+      { status: "fulfilled", value: "hi" },
+    ]);
     expect(acks(peer)).toEqual([]);
 
     const { rows } = await pool.query<{ id: string }>(
@@ -573,6 +588,100 @@ describe("createDocSyncRegistry doc:ack (issue #1362)", () => {
     expect(decoding.readVarUint(decoder)).toBe(syncProtocol.messageYjsUpdate);
     expect(acks(peer)).toEqual([]);
   });
+
+  it("does not acknowledge before the update transaction commits", async () => {
+    const socket = new FakeSocket();
+    const peer = new FakeSocket();
+    await registry.handleOpen(socket as unknown as never, tenantA, docId);
+    await registry.handleOpen(peer as unknown as never, tenantA, docId);
+    let blocker: PoolClient | undefined;
+    let locked = false;
+    let discardBlocker = false;
+    let triggerCreated = false;
+    let operation: Promise<PromiseSettledResult<void>> | undefined;
+    let failure: { error: unknown } | undefined;
+    const cleanupErrors: unknown[] = [];
+    try {
+      // A deferred trigger blocks the actual COMMIT after the valid update has been inserted.
+      await withTransaction(pool, async (client) => {
+        await client.query(`CREATE FUNCTION batch16_hold_doc_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN PERFORM set_config('lock_timeout', '10s', true);
+          PERFORM pg_advisory_xact_lock(hashtextextended(NEW.doc_id::text, 1602)); RETURN NEW; END $$`);
+        await client.query(`CREATE CONSTRAINT TRIGGER batch16_hold_doc_commit AFTER INSERT ON doc_updates
+          DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION batch16_hold_doc_commit()`);
+      });
+      triggerCreated = true;
+      blocker = await pool.connect();
+      const pid = await blocker.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+      const blockerPid = pid.rows[0]?.pid;
+      if (blockerPid === undefined) throw new Error("Missing gate connection PID");
+      await blocker.query("SELECT pg_advisory_lock(hashtextextended($1::text, 1602))", [docId]);
+      locked = true;
+      operation = registry
+        .handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(updateBytes("gated"), "gate-id"))
+        .then<PromiseSettledResult<void>, PromiseSettledResult<void>>(
+          () => ({ status: "fulfilled", value: undefined }),
+          (reason: unknown) => ({ status: "rejected", reason }),
+        );
+      await vi.waitFor(
+        async () => {
+          const waiting = await pool.query<{ waiting: boolean }>(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))) AS waiting",
+            [blockerPid],
+          );
+          expect(waiting.rows[0]?.waiting).toBe(true);
+        },
+        { timeout: 5000, interval: 25 },
+      );
+      expect(acks(socket)).toEqual([]);
+      expect(acks(peer)).toEqual([]);
+    } catch (error) {
+      failure = { error };
+    }
+    if (locked && blocker) {
+      try {
+        const unlocked = await blocker.query<{ unlocked: boolean }>(
+          "SELECT pg_advisory_unlock(hashtextextended($1::text, 1602)) AS unlocked",
+          [docId],
+        );
+        if (!unlocked.rows[0]?.unlocked) throw new Error("The gate lock was not held");
+      } catch (error) {
+        discardBlocker = true;
+        cleanupErrors.push(error);
+      }
+    }
+    const settled = operation ? await operation : undefined;
+    if (settled?.status === "rejected") cleanupErrors.push(settled.reason);
+    if (blocker) {
+      try {
+        blocker.release(discardBlocker);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (triggerCreated) {
+      try {
+        await withTransaction(pool, async (client) => {
+          await client.query("DROP TRIGGER batch16_hold_doc_commit ON doc_updates");
+          await client.query("DROP FUNCTION batch16_hold_doc_commit()");
+        });
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+        "Gate test cleanup failed",
+        { cause: failure?.error },
+      );
+    if (failure) throw failure.error;
+    expect(settled?.status).toBe("fulfilled");
+    expect(acks(socket)).toEqual([{ type: "doc:ack", docId, clientUpdateId: "gate-id" }]);
+    expect(acks(peer)).toEqual([]);
+    const persisted = await runInTenant(tenantA, () => loadYDoc(runtimePool, docId));
+    expect(persisted.getText("body").toJSON()).toBe("gated");
+  }, 20_000);
 
   it("acknowledges a SyncStep2 message that carries an id", async () => {
     const socket = new FakeSocket();
@@ -592,14 +701,14 @@ describe("createDocSyncRegistry doc:ack (issue #1362)", () => {
     await registry.handleOpen(socket as unknown as never, tenantA, docId);
     const update = updateBytes("once");
 
-    await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(update, "first"));
+    await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(update, "same-id"));
     const stored = await countUpdates();
-    await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(update, "again"));
+    await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(update, "same-id"));
 
     expect(await countUpdates()).toBe(stored);
     expect(acks(socket)).toEqual([
-      { type: "doc:ack", docId, clientUpdateId: "first" },
-      { type: "doc:ack", docId, clientUpdateId: "again" },
+      { type: "doc:ack", docId, clientUpdateId: "same-id" },
+      { type: "doc:ack", docId, clientUpdateId: "same-id" },
     ]);
   });
 
@@ -625,6 +734,19 @@ describe("createDocSyncRegistry doc:ack (issue #1362)", () => {
     const id = "a".repeat(64);
     await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(updateBytes("x"), id));
     expect(acks(socket)).toEqual([{ type: "doc:ack", docId, clientUpdateId: id }]);
+  });
+
+  it("persists an update with a truncated correlation string and sends no ack", async () => {
+    const socket = new FakeSocket();
+    await registry.handleOpen(socket as unknown as never, tenantA, docId);
+    const before = await countUpdates();
+    // Synthetic malformed boundary: the declared varString length exceeds its remaining bytes.
+    const malformed = Buffer.concat([Buffer.from(encodeClientUpdate(updateBytes("truncated"))), Buffer.from([3, 97])]);
+
+    await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, malformed);
+
+    expect(await countUpdates()).toBe(before + 1);
+    expect(acks(socket)).toEqual([]);
   });
 
   it("sends no ack and writes nothing for a document the socket never opened", async () => {
@@ -686,5 +808,40 @@ describe("createDocSyncRegistry doc:ack (issue #1362)", () => {
 
     expect(acks(socket)).toEqual([]);
     expect(await countUpdates()).toBe(before);
+  });
+
+  it("sends no ack when a valid update fails at the persistence insert", async () => {
+    const socket = new FakeSocket();
+    await registry.handleOpen(socket as unknown as never, tenantA, docId);
+    const before = await countUpdates();
+    // Inject a database failure at the actual update-row insertion boundary.
+    await withTransaction(pool, async (client) => {
+      await client.query(
+        "CREATE FUNCTION batch16_reject_doc_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected doc persistence failure'; END $$",
+      );
+      await client.query(
+        "CREATE TRIGGER batch16_reject_doc_update BEFORE INSERT ON doc_updates FOR EACH ROW EXECUTE FUNCTION batch16_reject_doc_update()",
+      );
+    });
+    let failure: { error: unknown } | undefined;
+    try {
+      await expect(
+        registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(updateBytes("valid"), "failed")),
+      ).rejects.toThrow("injected doc persistence failure");
+      expect(acks(socket)).toEqual([]);
+      expect(await countUpdates()).toBe(before);
+    } catch (error) {
+      failure = { error };
+    }
+    try {
+      await withTransaction(pool, async (client) => {
+        await client.query("DROP TRIGGER batch16_reject_doc_update ON doc_updates");
+        await client.query("DROP FUNCTION batch16_reject_doc_update()");
+      });
+    } catch (error) {
+      if (failure) throw new AggregateError([failure.error, error], "Test and cleanup failed", { cause: error });
+      throw error;
+    }
+    if (failure) throw failure.error;
   });
 });

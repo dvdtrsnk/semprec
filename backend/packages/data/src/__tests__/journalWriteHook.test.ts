@@ -9,6 +9,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
+import { ForbiddenError } from "../errors.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -51,9 +52,14 @@ describe("Journal create hook: an entry must carry its type and period", () => {
   it("a create that writes no properties is refused with 403 on type and stores no row", async () => {
     const journalId = await databaseIdFor("journal");
 
-    await expect(chokePoint.createItem({ databaseId: journalId, properties: {} })).rejects.toMatchObject(
-      refusalFor("type"),
-    );
+    let failure: unknown;
+    try {
+      await chokePoint.createItem({ databaseId: journalId, properties: {} });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(ForbiddenError);
+    expect(failure).toMatchObject(refusalFor("type"));
     expect(await entryCount(journalId)).toBe(0);
   });
 

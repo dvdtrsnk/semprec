@@ -43,17 +43,8 @@ export type RealtimeMessage =
  * Postgres caps a NOTIFY payload at ~8000 bytes; every message here stays a couple
  * hundred bytes at most, well under that cap, since none of them carry a durable row's
  * content — see `RealtimeMessage`'s doc comment.
- *
- * `tenantId` pins the envelope's tenant explicitly, for a publisher whose pool is not scoped to the
- * tenant the message belongs to (the agents process writes for any tenant). It is a typed argument
- * of trusted code, never read from the message body. Without it Postgres computes the tenant from
- * the pool's own scope.
  */
-export async function publishRealtimeMessage(
-  pool: Pool | PoolClient,
-  message: RealtimeMessage,
-  tenantId?: string,
-): Promise<void> {
+export async function publishRealtimeMessage(pool: Pool | PoolClient, message: RealtimeMessage): Promise<void> {
   if (message.type === "session_revoked") {
     // Sessions are global identity rows revoked from scopes that are not the owner's tenant, so the
     // tenant comes from the session's user (the same binding the socket gets), not the publisher's scope.
@@ -64,14 +55,6 @@ export async function publishRealtimeMessage(
          'message', $2::json)::text)`,
       [REALTIME_CHANNEL, JSON.stringify(message), message.sessionId],
     );
-    return;
-  }
-  if (tenantId !== undefined) {
-    await pool.query(`SELECT pg_notify($1, json_build_object('tenantId', $3::uuid, 'message', $2::json)::text)`, [
-      REALTIME_CHANNEL,
-      JSON.stringify(message),
-      tenantId,
-    ]);
     return;
   }
   await publishEnveloped(pool, REALTIME_CHANNEL, JSON.stringify(message));

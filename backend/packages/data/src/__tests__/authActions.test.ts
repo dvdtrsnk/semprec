@@ -347,10 +347,12 @@ describe("auth actions (issue #140)", () => {
 
     // Raw SQL: production cannot age a session, and the test needs created_at/expires_at in the past.
     async function setTimes(id: string, createdDaysAgo: number, expiresInDays: number): Promise<void> {
-      await pool.query(
-        `UPDATE sessions SET created_at = now() - make_interval(days => $2::int),
-                             expires_at = now() + make_interval(days => $3::int) WHERE id = $1`,
-        [id, createdDaysAgo, expiresInDays],
+      await withTransaction(pool, (client) =>
+        client.query(
+          `UPDATE sessions SET created_at = now() - make_interval(days => $2::int),
+                               expires_at = now() + make_interval(days => $3::int) WHERE id = $1`,
+          [id, createdDaysAgo, expiresInDays],
+        ),
       );
     }
 
@@ -394,7 +396,7 @@ describe("auth actions (issue #140)", () => {
       expect(rows[0]?.capped).toBe(true);
     });
 
-    it("never moves expires_at earlier, even when the ceiling is already below it", async () => {
+    it("never moves expires_at earlier when it is below the ceiling", async () => {
       const { token, session } = await loginAs("web");
       // Idle window would give now()+30d, but the row already expires later than that.
       await setTimes(session.id, 0, 200);
@@ -403,6 +405,18 @@ describe("auth actions (issue #140)", () => {
       await verifySessionToken(pool, token);
 
       expect(await expiresAtMs(session.id)).toBeGreaterThanOrEqual(before);
+    });
+
+    it("clamps a synthetic above-ceiling expiry to the absolute ceiling", async () => {
+      const { token, session } = await loginAs("web");
+      // Synthetic boundary: production login does not create an expiry beyond the absolute ceiling.
+      await setTimes(session.id, 0, 400);
+      await verifySessionToken(pool, token);
+      const { rows } = await pool.query<{ capped: boolean }>(
+        "SELECT expires_at = created_at + interval '365 days' AS capped FROM sessions WHERE id = $1",
+        [session.id],
+      );
+      expect(rows).toEqual([{ capped: true }]);
     });
 
     it("rejects a token unused for longer than its idle window with 401", async () => {
