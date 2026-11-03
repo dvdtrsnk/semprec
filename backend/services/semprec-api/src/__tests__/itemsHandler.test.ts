@@ -407,7 +407,7 @@ describe("item routes (issue #241)", () => {
         maxFileSizeBytes: 10 * 1024 * 1024,
       });
       runtimeServer = createServer(dispatch);
-      await new Promise<void>((resolve) => runtimeServer?.listen(0, resolve));
+      await new Promise<void>((resolve) => runtimeServer?.listen(0, "127.0.0.1", resolve));
       const address = runtimeServer.address();
       if (!address || typeof address === "string") throw new Error("Expected a bound runtime server");
       const runtimeUrl = `http://127.0.0.1:${address.port}`;

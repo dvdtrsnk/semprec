@@ -145,8 +145,8 @@ async function uploadInChunks(client: GraphRestClient, uploadUrl: string, conten
 }
 
 /**
- * Deletes the draft a failed send left behind. A failure here is logged by its error name and dropped, so the send's own
- * error, the one the caller needs, is the one that propagates.
+ * Deletes the draft a failed send left behind. A failure is reported with a fixed cleanup stage, while the send's own
+ * error remains the one that propagates.
  */
 async function deleteDraftBestEffort(client: GraphRestClient, draftId: string): Promise<void> {
   try {

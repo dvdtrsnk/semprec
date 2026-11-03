@@ -586,6 +586,7 @@ describe("Gmail sendMessage (issue #1637)", () => {
     expect(error).toBeInstanceOf(MailRecipientRejectedError);
     expect(JSON.stringify(error)).not.toContain("PRIVATE");
     expect(warn).toHaveBeenCalledWith({ stage: "send-response" }, "Mail send cleanup failed");
+    expect(stream.locked).toBe(false);
   });
 
   it("rejects a success response that lacks the message or thread id", async () => {

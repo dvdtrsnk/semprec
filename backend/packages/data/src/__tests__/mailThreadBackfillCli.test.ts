@@ -36,7 +36,7 @@ async function runCli(databaseUrl: string, blockEntry: string): Promise<void> {
         secondary.push(killError);
       }
     };
-    const timer = setTimeout(() => stop(new Error("Migration CLI fixture timed out")), 60_000);
+    const timer = setTimeout(() => stop(new Error("Migration CLI fixture timed out")), 40_000);
     const collect = (chunk: Buffer) => {
       bytes += chunk.length;
       if (bytes > 2_000_000) stop(new Error("Migration CLI fixture output exceeded limit"));
@@ -146,4 +146,5 @@ it("runs the compiled migration root twice and queues one keyed mail-thread back
     throw new AggregateError([primary.error, ...cleanup], "CLI fixture and cleanup failed");
   if (primary) throw primary.error;
   if (cleanup.length) throw new AggregateError(cleanup, "CLI fixture cleanup failed");
-}, 120_000);
+  // The 25-second build and two 40-second children leave 75 seconds for owned cleanup before Vitest's deadline.
+}, 180_000);
