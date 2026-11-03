@@ -4,6 +4,7 @@ import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import { currentTenantScope } from "@semprec/shared";
+import { requireAffectedRows } from "../db/pool.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 
 export const MAIL_MOVE_PURPOSES = ["archive", "trash", "inbox", "sent"] as const;
@@ -342,21 +343,27 @@ export async function completeGraphMove(
     [row.message_item_id, row.mailbox_item_id, evidence.sourceId, resultId],
   );
   if (metadata.rowCount !== 1) {
-    await client.query(
-      `UPDATE mail_message_move_sync_state SET operation_phase = 'uncertain', operation_evidence = $3::jsonb,
+    requireAffectedRows(
+      await client.query(
+        `UPDATE mail_message_move_sync_state SET operation_phase = 'uncertain', operation_evidence = $3::jsonb,
          updated_at = now() WHERE tenant_id = app_tenant_default() AND message_item_id = $1 AND operation_token = $2::uuid`,
-      [row.message_item_id, input.token, JSON.stringify(evidence)],
+        [row.message_item_id, input.token, JSON.stringify(evidence)],
+      ),
+      "mail move outcome",
     );
     return "conflict";
   }
   const matched = row.desired_revision === row.captured_revision;
-  await client.query(
-    `UPDATE mail_message_move_sync_state SET source_evidence = $3::jsonb, current_purpose = captured_purpose,
+  requireAffectedRows(
+    await client.query(
+      `UPDATE mail_message_move_sync_state SET source_evidence = $3::jsonb, current_purpose = captured_purpose,
        status = CASE WHEN desired_revision = captured_revision THEN 'done' ELSE 'pending' END,
        operation_token = NULL, captured_revision = NULL, captured_purpose = NULL, operation_phase = NULL,
        operation_step = NULL, operation_evidence = NULL, failure_reason = NULL, updated_at = now()
      WHERE tenant_id = app_tenant_default() AND message_item_id = $1 AND operation_token = $2::uuid`,
-    [row.message_item_id, input.token, JSON.stringify({ provider: "graph", providerMessageId: resultId })],
+      [row.message_item_id, input.token, JSON.stringify({ provider: "graph", providerMessageId: resultId })],
+    ),
+    "mail move outcome",
   );
   return matched ? "confirmed" : "pending";
 }
@@ -405,10 +412,13 @@ export async function completeGmailMove(
           ? !evidence.inTrash && evidence.inSent
           : !evidence.inInbox;
   if (!matches) {
-    await client.query(
-      `UPDATE mail_message_move_sync_state SET operation_phase = 'uncertain', operation_evidence = $3::jsonb,
+    requireAffectedRows(
+      await client.query(
+        `UPDATE mail_message_move_sync_state SET operation_phase = 'uncertain', operation_evidence = $3::jsonb,
        updated_at = now() WHERE tenant_id = app_tenant_default() AND message_item_id = $1 AND operation_token = $2::uuid`,
-      [row.message_item_id, input.token, JSON.stringify(evidence)],
+        [row.message_item_id, input.token, JSON.stringify(evidence)],
+      ),
+      "mail move outcome",
     );
     return "conflict";
   }
@@ -418,21 +428,27 @@ export async function completeGmailMove(
     [row.message_item_id, row.mailbox_item_id, evidence.messageId],
   );
   if (metadata.rowCount !== 1) {
-    await client.query(
-      `UPDATE mail_message_move_sync_state SET operation_phase = 'uncertain', operation_evidence = $3::jsonb,
+    requireAffectedRows(
+      await client.query(
+        `UPDATE mail_message_move_sync_state SET operation_phase = 'uncertain', operation_evidence = $3::jsonb,
        updated_at = now() WHERE tenant_id = app_tenant_default() AND message_item_id = $1 AND operation_token = $2::uuid`,
-      [row.message_item_id, input.token, JSON.stringify(evidence)],
+        [row.message_item_id, input.token, JSON.stringify(evidence)],
+      ),
+      "mail move outcome",
     );
     return "conflict";
   }
   const matched = row.desired_revision === row.captured_revision;
-  await client.query(
-    `UPDATE mail_message_move_sync_state SET current_purpose = captured_purpose,
+  requireAffectedRows(
+    await client.query(
+      `UPDATE mail_message_move_sync_state SET current_purpose = captured_purpose,
        status = CASE WHEN desired_revision = captured_revision THEN 'done' ELSE 'pending' END,
        operation_token = NULL, captured_revision = NULL, captured_purpose = NULL, operation_phase = NULL,
        operation_step = NULL, operation_evidence = NULL, failure_reason = NULL, updated_at = now()
      WHERE tenant_id = app_tenant_default() AND message_item_id = $1 AND operation_token = $2::uuid`,
-    [row.message_item_id, input.token],
+      [row.message_item_id, input.token],
+    ),
+    "mail move outcome",
   );
   return matched ? "confirmed" : "pending";
 }
@@ -499,10 +515,13 @@ export async function completeImapMove(
   const targetMatches = state.rows[0]?.uidvalidity === evidence.targetUidValidity;
   const newer = row.desired_revision !== row.captured_revision;
   if (!targetMatches || (edge && !unchangedEdge) || (!edge && !newer)) {
-    await client.query(
-      `UPDATE mail_message_move_sync_state SET operation_phase = 'uncertain', operation_evidence = $3::jsonb,
+    requireAffectedRows(
+      await client.query(
+        `UPDATE mail_message_move_sync_state SET operation_phase = 'uncertain', operation_evidence = $3::jsonb,
        updated_at = now() WHERE tenant_id = app_tenant_default() AND message_item_id = $1 AND operation_token = $2::uuid`,
-      [row.message_item_id, input.token, JSON.stringify(evidence)],
+        [row.message_item_id, input.token, JSON.stringify(evidence)],
+      ),
+      "mail move outcome",
     );
     return "conflict";
   }
@@ -525,13 +544,16 @@ export async function completeImapMove(
     uid: evidence.targetUid,
     uidValidity: evidence.targetUidValidity,
   };
-  await client.query(
-    `UPDATE mail_message_move_sync_state SET source_evidence = $3::jsonb, current_purpose = captured_purpose,
+  requireAffectedRows(
+    await client.query(
+      `UPDATE mail_message_move_sync_state SET source_evidence = $3::jsonb, current_purpose = captured_purpose,
        status = CASE WHEN desired_revision = captured_revision THEN 'done' ELSE 'pending' END,
        operation_token = NULL, captured_revision = NULL, captured_purpose = NULL, operation_phase = NULL,
        operation_step = NULL, operation_evidence = NULL, failure_reason = NULL, updated_at = now()
      WHERE tenant_id = app_tenant_default() AND message_item_id = $1 AND operation_token = $2::uuid`,
-    [row.message_item_id, input.token, JSON.stringify(source)],
+      [row.message_item_id, input.token, JSON.stringify(source)],
+    ),
+    "mail move outcome",
   );
   return newer ? "pending" : "confirmed";
 }

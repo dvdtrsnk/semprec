@@ -402,6 +402,93 @@ describe("mail move intent store", () => {
     ).toEqual([]);
   });
 
+  it.each([
+    ["acknowledged outcome", false, 0],
+    ["uncertain evidence", true, null],
+  ] as const)("rolls back %s when its state write reports no row", async (_name, conflict, reportedCount) => {
+    const original = await fixture(a);
+    const source = { provider: "graph" as const, providerMessageId: original.source.providerMessageId };
+    const move = await runInTenant(a, () =>
+      withTransaction(pool, (client) =>
+        recordDesiredMailMessageMove(client, { ...original, source, desiredPurpose: "archive" }),
+      ),
+    );
+    const token = randomUUID();
+    await runInTenant(a, () =>
+      withTransaction(pool, (client) =>
+        claimMailMoveStep(client, {
+          messageItemId: original.messageItemId,
+          revision: move.desired_revision,
+          token,
+          step: "move",
+          evidence: { provider: "graph", sourceId: source.providerMessageId, targetFolderId: "archive" },
+        }),
+      ),
+    );
+    if (conflict) {
+      await runInTenant(a, () =>
+        withTransaction(pool, async (client) => {
+          const existing = await getMailMessageMetaByItemId(client, original.messageItemId);
+          if (!existing) throw new Error("missing fixture metadata");
+          await upsertMailMessageMeta(client, {
+            itemId: existing.itemId,
+            mailboxItemId: original.mailboxItemId,
+            messageId: existing.messageId,
+            providerMessageId: "newer-local-id",
+            envelope: {},
+          });
+        }),
+      );
+    }
+    let intercepted = false;
+    await expect(
+      runInTenant(a, () =>
+        withTransaction(pool, async (client) => {
+          const realQuery = client.query.bind(client);
+          const spy = vi.spyOn(client, "query");
+          // The exercised store calls use pg's promise overload.
+          const forward = async (sql: string, values?: unknown[]) => {
+            const result = await realQuery(sql, values);
+            if (
+              sql.includes("UPDATE mail_message_move_sync_state SET") &&
+              (conflict ? sql.includes("operation_phase = 'uncertain'") : sql.includes("source_evidence = $3::jsonb"))
+            ) {
+              intercepted = true;
+              return { ...result, rowCount: reportedCount };
+            }
+            return result;
+          };
+          // pg's final overload returns void; the store uses the promise overload.
+          // eslint-disable-next-line @typescript-eslint/no-misused-promises
+          spy.mockImplementation(forward as typeof client.query);
+          try {
+            return await completeGraphMove(client, {
+              messageItemId: original.messageItemId,
+              token,
+              resultId: "remote-result",
+            });
+          } finally {
+            spy.mockRestore();
+          }
+        }),
+      ),
+    ).rejects.toThrow(`Expected mail move outcome to affect at least one row, got ${reportedCount}`);
+    expect(intercepted).toBe(true);
+    const row = (
+      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, original.mailboxItemId)))
+    )[0];
+    expect(row).toMatchObject({
+      operation_token: token,
+      operation_phase: "in_flight",
+      operation_evidence: { provider: "graph", sourceId: source.providerMessageId },
+      status: "pending",
+    });
+    const metadata = await runInTenant(a, () =>
+      withTransaction(pool, (client) => getMailMessageMetaByItemId(client, original.messageItemId)),
+    );
+    expect(metadata?.providerMessageId).toBe(conflict ? "newer-local-id" : source.providerMessageId);
+  });
+
   it("keeps an acknowledged Graph identity without confirming an A-B-A desire", async () => {
     const original = await fixture(a);
     const input = {
