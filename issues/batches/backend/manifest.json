@@ -1482,8 +1482,8 @@
       "sequence": 15,
       "status": "proposed",
       "title": "[backend-delivery 15/74] Implement agent-runtime, semprec-agents, application changes",
-      "bodyCharacters": 57407,
-      "specSha256": "89bc4c5eb44fa83ee8f3f21c54a7e1b75047a68d4c519dead7f79c4e651f0b2a",
+      "bodyCharacters": 59708,
+      "specSha256": "58aafabdee4729b7d9d665a2d4f4930ea958aedaceeb161655abed09d89b0266",
       "members": [
         {
           "id": "gh-1568",
@@ -1497,7 +1497,7 @@
         },
         {
           "id": "gh-1527",
-          "specSha256": "ed2e7bfc3e51d29b96bc2134810a731c69978cfd1971f0337c6641bfa9b20cd0",
+          "specSha256": "7a997af4137b6cbfaf3bfcf2ed599a3ecd48e9d8609ed1d07b3de1155f185220",
           "parent": "gh-1308",
           "dependencies": [
             "gh-1424",
@@ -1507,7 +1507,7 @@
         },
         {
           "id": "gh-1618",
-          "specSha256": "a3059aceae18b6c55bdd01ff04753c16da8ba441f45d9294d68c1a1e8e9e20d1",
+          "specSha256": "e503d465992c08625b2bcf2327e65713993e9e5d2471b8466bdeb7a5a244ea7f",
           "parent": "gh-1305",
           "dependencies": [
             "gh-1527"
@@ -1516,7 +1516,7 @@
         },
         {
           "id": "gh-1683",
-          "specSha256": "9a6275ab86e67377080d57da7d8d7ce7f060c48e86aca4d7cc699e8b89597c4c",
+          "specSha256": "29a99082b498c25f3ee1762d2f9e5d1a394a66f9da2a29d476bfb991d2667134",
           "parent": "gh-1305",
           "dependencies": [
             "gh-1618"
@@ -1568,7 +1568,7 @@
         },
         {
           "id": "gh-1773",
-          "specSha256": "db1fdb5023dd3c0b76a37d55074bbfb3b6210d2f85e26063fb8cbed76eea6833",
+          "specSha256": "68445aee1a60d1156ac9c2afd6f87d73e6d8d38d05ccb64c335ff2143e235a5a",
           "parent": "gh-1305",
           "dependencies": [
             "gh-1466",
