@@ -2043,8 +2043,8 @@
       "sequence": 21,
       "status": "proposed",
       "title": "[backend-delivery 21/74] Implement data/mail, data/inbox, data/transcription changes",
-      "bodyCharacters": 59992,
-      "specSha256": "7374167c72274744b07c2c9b02ca79946746165d2e7b67d31d5ceaad26b37d2d",
+      "bodyCharacters": 59928,
+      "specSha256": "7532cbfc65922a583e84d1f9ddc48ae6110825b0408f8e47c815fe3abf4bb2e4",
       "members": [
         {
           "id": "gh-1454",
@@ -2124,7 +2124,7 @@
         },
         {
           "id": "gh-1648",
-          "specSha256": "b8cb9d7f71423b5969984a4b9f4a766adde60b0abd5fb034aa0736d7bf95f2e6",
+          "specSha256": "64f8b3de68a5c454c4faa4846ae6b49a011cbfa988526d28bf31fe27e6739a08",
           "parent": "gh-1312",
           "dependencies": [
             "gh-1451",
