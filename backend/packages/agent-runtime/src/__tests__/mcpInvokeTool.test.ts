@@ -612,29 +612,92 @@ describe("MCP invoke adapter (issue #128)", () => {
         );
         const contractServer = startStdioContractServer([SEARCH_TOOL]);
         servers.push(contractServer);
-        const { registration } = await createGrantedTool(contractServer.connectionConfig);
-        const projectItemId = randomUUID();
+        const { registration, server } = await createGrantedTool(contractServer.connectionConfig);
+        const ownFixture = await runInTenant(tenantB, async () => {
+          await seedSystem(runtimePool, createViewTypeRegistry());
+          const serverId = randomUUID();
+          const projectItemId = await withTransaction(runtimePool, async (client) => {
+            const databases = await client.query<{ id: string }>(
+              "SELECT id FROM databases WHERE owner_module_id = 'mcpServers'",
+            );
+            expect(databases.rows).toHaveLength(1);
+            const projects = await client.query<{ id: string }>(
+              "SELECT id FROM items WHERE properties->>'name' = 'Semprec'",
+            );
+            expect(projects.rows).toHaveLength(1);
+            await client.query("INSERT INTO items (id, database_id, properties) VALUES ($1, $2, $3::jsonb)", [
+              serverId,
+              databases.rows[0]!.id,
+              JSON.stringify({ name: "Own server", active: true, connectionConfig: contractServer.connectionConfig }),
+            ]);
+            return projects.rows[0]!.id;
+          });
+          const own = await upsertMcpToolRegistration(runtimePool, {
+            mcpServerItemId: serverId,
+            toolName: SEARCH_TOOL.name,
+            toolSchema: SEARCH_TOOL.inputSchema,
+          });
+          await withTransaction(runtimePool, (client) =>
+            setProjectMcpGrantForAgentPage(client, { projectItemId, mcpToolRegistrationId: own.id, granted: true }),
+          );
+          return { own, serverId, projectItemId };
+        });
+        const { own: ownRegistration, serverId: ownServerId, projectItemId } = ownFixture;
+        await runInTenant(getTenantZeroId(), () =>
+          withTransaction(runtimePool, (client) =>
+            setProjectMcpGrantForAgentPage(client, {
+              projectItemId,
+              mcpToolRegistrationId: registration.id,
+              granted: true,
+            }),
+          ),
+        );
         const run = await runInTenant(tenantB, () =>
           createAgentRun(runtimePool, { projectItemId, triggeredBy: "user", task: "foreign" }),
         );
-        const snapshot = async () =>
-          (
-            await pool.query<{ requests: string; notifications: string; registration: unknown }>(
-              "SELECT (SELECT count(*)::text FROM approval_requests) requests, (SELECT count(*)::text FROM notifications) notifications, (SELECT to_jsonb(r) FROM mcp_tool_registrations r WHERE id = $1) registration",
-              [registration.id],
-            )
-          ).rows[0];
-        const before = await snapshot();
-        expect(before?.registration).toBeTruthy();
         const invoke = (id: string) =>
           runInTenant(tenantB, () =>
             createApprovalGatedMcpInvokeTool(runtimePool, run.id, projectItemId, id)({ query: "test" }),
           );
+        const own = await invoke(ownRegistration.id);
+        expect(own.error).toBe(false);
+        expect(own.approvalRequestId).toBeTruthy();
+        const snapshot = async () => {
+          const rows = await pool.query<{
+            registrations: unknown;
+            servers: unknown;
+            grants: unknown;
+            requests: unknown;
+            notifications: unknown;
+          }>(
+            `SELECT
+              (SELECT jsonb_agg(to_jsonb(r) ORDER BY r.id) FROM mcp_tool_registrations r WHERE r.id = ANY($1::uuid[]) AND r.tenant_id = ANY($5::uuid[])) registrations,
+              (SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM items i WHERE i.id = ANY($2::uuid[]) AND i.tenant_id = ANY($5::uuid[])) servers,
+              (SELECT jsonb_agg(to_jsonb(g) ORDER BY g.project_item_id, g.mcp_tool_registration_id) FROM project_mcp_grants g WHERE g.mcp_tool_registration_id = ANY($1::uuid[]) AND g.tenant_id = ANY($5::uuid[])) grants,
+              (SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM approval_requests a WHERE a.tenant_id = ANY($5::uuid[]) AND (a.agent_run_id = $3::uuid OR a.tenant_id = $4::uuid)) requests,
+              (SELECT jsonb_agg(to_jsonb(n) ORDER BY n.id) FROM notifications n WHERE n.tenant_id = ANY($5::uuid[]) AND n.source_table = 'approval_requests') notifications`,
+            [
+              [registration.id, ownRegistration.id],
+              [server.id, ownServerId],
+              run.id,
+              getTenantZeroId(),
+              [getTenantZeroId(), tenantB],
+            ],
+          );
+          if (rows.rows.length !== 1) throw new Error("Missing snapshot");
+          return rows.rows[0]!;
+        };
+        const afterOwn = await snapshot();
+        expect(afterOwn.registrations).toHaveLength(2);
+        expect(afterOwn.servers).toHaveLength(2);
+        expect(afterOwn.grants).toHaveLength(3);
+        expect(afterOwn.requests).toHaveLength(1);
+        expect(afterOwn.notifications).toHaveLength(1);
         const foreign = await invoke(registration.id);
         const missing = await invoke(randomUUID());
         expect(foreign.error).toBe(true);
         expect(foreign).toEqual(missing);
-        expect(await snapshot()).toEqual(before);
+        expect(await snapshot()).toEqual(afterOwn);
         expect(contractServer.getHandshakeCount()).toBe(0);
       } catch (error) {
         failure = { error };
