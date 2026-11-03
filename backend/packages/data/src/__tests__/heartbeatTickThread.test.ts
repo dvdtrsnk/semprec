@@ -113,6 +113,48 @@ describe("heartbeat runs in their tick thread", () => {
     expect(msgs[0]).toMatchObject({ role: "assistant", status: "error", text: null });
     const { rows: runs } = await pool.query("SELECT status FROM agent_runs WHERE heartbeat_id = $1", [hb.id]);
     expect(runs.map((r) => r.status)).toEqual(["error", "error", "error"]);
+    expect(invalidations).toHaveLength(6);
+    expect(new Set(invalidations)).toEqual(new Set([threads[0].id]));
+  });
+
+  it("leaves the run unfinished when the actual action cannot insert its success message", async () => {
+    const hb = await makeHeartbeat(CORE_AGENT_RUN_ACTION_ID);
+    const action = coreAgentRunAction(pool, async () => ({ result: "done" }));
+    // Inject a database failure at the message insertion boundary reached by the action.
+    await withTransaction(pool, async (client) => {
+      await client.query(
+        "CREATE FUNCTION batch16_reject_tick_message() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected message failure'; END $$",
+      );
+      await client.query(
+        "CREATE TRIGGER batch16_reject_tick_message BEFORE INSERT ON semp_messages FOR EACH ROW EXECUTE FUNCTION batch16_reject_tick_message()",
+      );
+    });
+    let failure: { error: unknown } | undefined;
+    try {
+      await expect(
+        inTenantZero(() => action({ task: "do it" }, { heartbeatId: hb.id, projectItemId: hb.projectItemId })),
+      ).rejects.toThrow("injected message failure");
+      const { rows } = await pool.query<{ status: string; finished_at: Date | null }>(
+        "SELECT status, finished_at FROM agent_runs WHERE heartbeat_id = $1",
+        [hb.id],
+      );
+      expect(rows).toEqual([{ status: "running", finished_at: null }]);
+      const { rows: count } = await pool.query<{ count: string }>("SELECT count(*) FROM semp_messages");
+      expect(count[0]?.count).toBe("0");
+      expect(invalidations).toHaveLength(1);
+    } catch (error) {
+      failure = { error };
+    }
+    try {
+      await withTransaction(pool, async (client) => {
+        await client.query("DROP TRIGGER batch16_reject_tick_message ON semp_messages");
+        await client.query("DROP FUNCTION batch16_reject_tick_message()");
+      });
+    } catch (error) {
+      if (failure) throw new AggregateError([failure.error, error], "Test and cleanup failed");
+      throw error;
+    }
+    if (failure) throw failure.error;
   });
 
   it("failing the message insert leaves the run unfinished", async () => {

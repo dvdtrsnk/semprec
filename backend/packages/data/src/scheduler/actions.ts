@@ -144,16 +144,9 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
     });
 
     await withTraceContext({ agentRunId: run.id }, async () => {
+      let outcome: { result?: string } | void;
       try {
-        const outcome = await runAgent({ agentRunId: run.id, projectItemId: context.projectItemId, task });
-        // The run's close and its assistant message in the tick thread commit together or not at all.
-        await withTransaction(pool, (client) =>
-          finishTickRunWithMessage(client, {
-            thread,
-            agentRunId: run.id,
-            outcome: { status: "done", result: outcome?.result ?? null },
-          }),
-        );
+        outcome = await runAgent({ agentRunId: run.id, projectItemId: context.projectItemId, task });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const errorCode = agentRunErrorCodeOf(err);
@@ -164,7 +157,10 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
         // the queue, with no retries) keeps the pre-existing single-notification behaviour.
         try {
           if (context.isFinalAttempt === false) {
-            await finishAgentRun(pool, run.id, "error", message, errorCode);
+            await withTransaction(pool, async (client) => {
+              const closed = await finishAgentRun(client, run.id, "error", message, errorCode);
+              if (closed) publishSempThreadInvalidation(client, thread.tenantId, thread.id);
+            });
           } else {
             // Same transaction as the source write, per issue #149: a crash between closing the
             // run and writing its `agent_run_error` notification never leaves one without the other.
@@ -187,6 +183,14 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
         }
         throw err;
       }
+      // A failed persistence transaction must not be mistaken for an agent failure.
+      await withTransaction(pool, (client) =>
+        finishTickRunWithMessage(client, {
+          thread,
+          agentRunId: run.id,
+          outcome: { status: "done", result: outcome?.result ?? null },
+        }),
+      );
     });
   };
 }

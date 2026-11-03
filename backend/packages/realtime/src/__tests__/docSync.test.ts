@@ -592,14 +592,14 @@ describe("createDocSyncRegistry doc:ack (issue #1362)", () => {
     await registry.handleOpen(socket as unknown as never, tenantA, docId);
     const update = updateBytes("once");
 
-    await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(update, "first"));
+    await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(update, "same-id"));
     const stored = await countUpdates();
-    await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(update, "again"));
+    await registry.handleBinaryFrame(socket as unknown as never, tenantA, docId, frame(update, "same-id"));
 
     expect(await countUpdates()).toBe(stored);
     expect(acks(socket)).toEqual([
-      { type: "doc:ack", docId, clientUpdateId: "first" },
-      { type: "doc:ack", docId, clientUpdateId: "again" },
+      { type: "doc:ack", docId, clientUpdateId: "same-id" },
+      { type: "doc:ack", docId, clientUpdateId: "same-id" },
     ]);
   });
 
