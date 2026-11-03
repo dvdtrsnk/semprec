@@ -345,6 +345,15 @@ describe("runTenantCutoverMigrations (issue #1007)", () => {
   });
 
   it("continues guidance cutover for another tenant when one tenant's guidance insertion fails", async () => {
+    // Fix the existing tenant timestamps so the real runner visits the failing tenant before the healthy one.
+    await adminPool.query(
+      "UPDATE tenants SET created_at = CASE WHEN id = $1 THEN '2000-01-01T00:00:00Z'::timestamptz ELSE '2001-01-01T00:00:00Z'::timestamptz END WHERE id = ANY($2::uuid[])",
+      [b, [b, zero]],
+    );
+    const ordering = await adminPool.query<{ id: string }>(
+      "SELECT id FROM tenants WHERE status IN ('provisioning','active','suspended') ORDER BY created_at, id",
+    );
+    expect(ordering.rows.map((row) => row.id)).toEqual([b, zero]);
     await runInTenant(zero, () => seedSystem(dataPool));
     await runInTenant(b, () => seedSystem(dataPool));
     const ownerA = await createUser(adminPool, {

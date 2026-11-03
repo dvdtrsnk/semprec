@@ -248,66 +248,121 @@ describe("createInvitationRequestListener (issue #1087)", () => {
     PROVISIONING_TEST_TIMEOUT_MS,
   );
 
-  it("reserves concurrent slow requests before reading bodies and releases validation failures", async () => {
-    const throttle = createClientIpThrottle({ limits: { invitationAccept: { maxEvents: 2, windowSeconds: 3600 } } });
-    const listener = createInvitationRequestListener(dataPool, { trustProxy: true, clientIpThrottle: throttle });
-    let arrivals = 0;
-    let notifyArrived: () => void = () => {};
-    const allArrived = new Promise<void>((resolve) => {
-      notifyArrived = resolve;
-    });
-    const server = createServer((req, res) => {
-      if (++arrivals === 3) notifyArrived();
-      listener(req, res);
-    });
-    servers.push(server);
-    await new Promise<void>((resolve) => server.listen(0, resolve));
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
-    const baseUrl = `http://127.0.0.1:${address.port}`;
-    const ip = "203.0.113.7";
-    const payload = "{}";
-    const requests = Array.from({ length: 3 }, () => {
-      const req = httpRequest(`${baseUrl}/api/invitations/accept`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": String(Buffer.byteLength(payload)),
-          "X-Forwarded-For": ip,
-        },
+  it(
+    "reserves concurrent slow requests before reading bodies and releases validation failures",
+    async () => {
+      const throttle = createClientIpThrottle({ limits: { invitationAccept: { maxEvents: 2, windowSeconds: 3600 } } });
+      const listener = createInvitationRequestListener(dataPool, { trustProxy: true, clientIpThrottle: throttle });
+      let arrivals = 0;
+      let notifyArrived: () => void = () => {};
+      const allArrived = new Promise<void>((resolve) => {
+        notifyArrived = resolve;
       });
-      const status = new Promise<number>((resolve, reject) => {
-        req.on("response", (res) => {
-          res.resume();
-          res.on("end", () => resolve(res.statusCode ?? 0));
-          res.on("error", reject);
+      const server = createServer((req, res) => {
+        if (++arrivals === 3) notifyArrived();
+        listener(req, res);
+      });
+      servers.push(server);
+      await new Promise<void>((resolve) => server.listen(0, resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+      const ip = "203.0.113.7";
+      const otherIp = "198.51.100.9";
+      const otherInvite = await issue("concurrent-other@example.test");
+      const payload = "{}";
+      const requests = Array.from({ length: 3 }, () => {
+        const req = httpRequest(`${baseUrl}/api/invitations/accept`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": String(Buffer.byteLength(payload)),
+            "X-Forwarded-For": ip,
+          },
         });
-        req.on("error", reject);
-        req.setTimeout(5000, () => req.destroy(new Error("request timed out")));
+        const status = new Promise<number>((resolve, reject) => {
+          req.on("response", (res) => {
+            res.resume();
+            res.on("end", () => resolve(res.statusCode ?? 0));
+            res.on("error", reject);
+          });
+          req.on("error", reject);
+          req.setTimeout(30000, () => req.destroy(new Error("request timed out")));
+        });
+        return { req, status };
       });
-      return { req, status };
-    });
-    const settled = Promise.all(requests.map(({ status }) => status));
-    const timeout = setTimeout(() => {
-      for (const { req } of requests) req.destroy(new Error("arrival timeout"));
-    }, 5000);
-    try {
-      for (const { req } of requests) req.flushHeaders();
-      await Promise.race([allArrived, settled]);
-      for (const { req } of requests) req.end(payload);
-      const statuses = await settled;
-      expect(statuses.filter((status) => status === 400)).toHaveLength(2);
-      expect(statuses.filter((status) => status === 429)).toHaveLength(1);
-      expect(throttle.retryAfterSeconds("invitationAccept", ip)).toBeNull();
-      expect((await accept(baseUrl, UNISSUED_TOKEN, PASSWORD, { "X-Forwarded-For": ip })).status).toBe(404);
-      expect((await accept(baseUrl, UNISSUED_TOKEN, PASSWORD, { "X-Forwarded-For": ip })).status).toBe(404);
-      expect((await accept(baseUrl, UNISSUED_TOKEN, PASSWORD, { "X-Forwarded-For": ip })).status).toBe(429);
-    } finally {
+      const settled = Promise.all(requests.map(({ status }) => status));
+      const timeout = setTimeout(() => {
+        for (const { req } of requests) req.destroy(new Error("arrival timeout"));
+      }, 30000);
+      let primary: { error: unknown } | undefined;
+      try {
+        for (const { req } of requests) req.flushHeaders();
+        await Promise.race([allArrived, settled]);
+        const first = await Promise.race(requests.map(({ status }, index) => status.then((code) => ({ code, index }))));
+        expect(first.code).toBe(429);
+        const other = await fetch(`${baseUrl}/api/invitations/accept`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Forwarded-For": otherIp },
+          body: JSON.stringify({ token: otherInvite.token, password: PASSWORD }),
+          signal: AbortSignal.timeout(20000),
+        });
+        await other.arrayBuffer();
+        expect(other.status).toBe(200);
+        for (const [index, { req }] of requests.entries()) if (index !== first.index) req.end(payload);
+        const statuses = await settled;
+        expect(statuses.filter((status) => status === 400)).toHaveLength(2);
+        expect(statuses.filter((status) => status === 429)).toHaveLength(1);
+        expect(throttle.retryAfterSeconds("invitationAccept", ip)).toBeNull();
+        expect((await accept(baseUrl, UNISSUED_TOKEN, PASSWORD, { "X-Forwarded-For": ip })).status).toBe(404);
+        expect((await accept(baseUrl, UNISSUED_TOKEN, PASSWORD, { "X-Forwarded-For": ip })).status).toBe(404);
+        expect((await accept(baseUrl, UNISSUED_TOKEN, PASSWORD, { "X-Forwarded-For": ip })).status).toBe(429);
+      } catch (error) {
+        primary = { error };
+      }
       clearTimeout(timeout);
-      for (const { req } of requests) req.destroy();
-      await Promise.allSettled(requests.map(({ status }) => status));
-    }
-  });
+      const cleanupError = new Error("owned request cleanup");
+      const cleanupFailures: unknown[] = [];
+      for (const { req } of requests) {
+        try {
+          req.destroy(cleanupError);
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
+      }
+      for (const result of await Promise.allSettled(requests.map(({ status }) => status))) {
+        if (
+          result.status === "rejected" &&
+          result.reason !== cleanupError &&
+          (!primary || result.reason !== primary.error)
+        )
+          cleanupFailures.push(result.reason);
+      }
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const deadline = setTimeout(() => reject(new Error("server cleanup timed out")), 5000);
+          server.close((error) => {
+            clearTimeout(deadline);
+            if (error) reject(error);
+            else resolve();
+          });
+          server.closeAllConnections();
+        });
+        servers.splice(servers.indexOf(server), 1);
+      } catch (error) {
+        cleanupFailures.push(error);
+      }
+      if (cleanupFailures.length)
+        throw new AggregateError(
+          primary ? [primary.error, ...cleanupFailures] : cleanupFailures,
+          "Request cleanup failed",
+          { cause: primary?.error },
+        );
+      if (primary?.error instanceof Error) throw primary.error;
+      if (primary) throw new Error("Held request test failed", { cause: primary.error });
+    },
+    PROVISIONING_TEST_TIMEOUT_MS,
+  );
 
   it("answers 500 without the token, the email or the password when a step after the commit fails", async () => {
     const errorLog = vi.spyOn(logger, "error").mockImplementation(() => undefined);
