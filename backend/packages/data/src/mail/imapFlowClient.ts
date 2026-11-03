@@ -618,7 +618,11 @@ export class ImapFlowMailClient implements ImapMailClient {
     let timer: NodeJS.Timeout | undefined;
     try {
       await Promise.race([
-        this.providerCall(() => this.client.append(path, raw, [...flags])),
+        this.providerCall(async () => {
+          const result = await this.client.append(path, raw, [...flags]);
+          if (result === false) throw new Error("IMAP append did not run");
+          return result;
+        }),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error(`IMAP append timed out after ${IMAP_APPEND_TIMEOUT_MS}ms`)),

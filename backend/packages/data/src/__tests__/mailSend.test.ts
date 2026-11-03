@@ -1,8 +1,10 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { simpleParser } from "mailparser";
+import { ImapFlow } from "imapflow";
 import type { Pool, PoolClient } from "pg";
 import { createRuntimeRolePool, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
@@ -23,7 +25,9 @@ import {
   noopMailSendAdapterFactory,
   type SendEmailModuleIds,
 } from "../mail/send.js";
-import type { MailTransport } from "../mail/mailTransport.js";
+import { createSentCopySaver, createSmtpMailTransport, type MailTransport } from "../mail/mailTransport.js";
+import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
+import { upsertMailServerSettings } from "../mail/mailServerSettingsStore.js";
 import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import { reindexPersonEmails } from "../mail/personEmailIndexStore.js";
 import { linkEmailEnvelopeToPeople } from "../mail/personLinkingActions.js";
@@ -692,7 +696,53 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
         }),
       );
 
-      const smtp = recordingTransport();
+      const sentId = (
+        await pool.query<{ id: string }>(
+          `SELECT id FROM items WHERE database_id = $1 AND properties ->> 'specialPurpose' = 'sent'`,
+          [foldersId],
+        )
+      ).rows[0]!.id;
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          {
+            databaseId: foldersId,
+            itemId: sentId,
+            propertiesPatch: { providerId: "Sent" },
+          },
+          { allowedSystemKeys: ["providerId"] },
+        ),
+      );
+      const imapEndpoint = { host: "mail.example.test", port: 993, security: "tls" } as const;
+      const smtpEndpoint = { host: "mail.example.test", port: 465, security: "tls" } as const;
+      await upsertMailServerSettings(pool, mailboxId, { imap: imapEndpoint, smtp: smtpEndpoint, username: "fixture" });
+      const imap = new ImapFlow({ host: "unused.example.test", port: 993, secure: true, logger: false });
+      let accepted: Buffer | undefined;
+      let copied: Buffer | undefined;
+      vi.spyOn(imap, "append").mockImplementation(async (path, raw, flags) => {
+        expect(path).toBe("Sent");
+        expect(flags).toEqual(["\\Seen"]);
+        if (!Buffer.isBuffer(raw)) throw new Error("Expected raw MIME bytes");
+        copied = Buffer.from(raw);
+        return { destination: "Sent", uidValidity: 1n, uid: 7 };
+      });
+      vi.spyOn(imap, "logout").mockResolvedValue(undefined);
+      vi.spyOn(imap, "close").mockImplementation(() => {});
+      const smtp = createSmtpMailTransport(
+        mailboxId,
+        { endpoint: smtpEndpoint, username: "fixture" },
+        { password: "fixture" },
+        () => ({
+          verify: async () => true,
+          sendMail: async (message) => {
+            if (!Buffer.isBuffer(message.raw)) throw new Error("Expected raw MIME bytes");
+            accepted = Buffer.from(message.raw);
+            return { refusedRecipientCount: 0 };
+          },
+          close: () => {},
+        }),
+        createSentCopySaver(pool, mailboxId, { password: "fixture" }, async () => new ImapFlowMailClient(imap)),
+      );
       const result = await sendDraftEmail(
         pool,
         {
@@ -708,12 +758,11 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
         sendAdapters(transportFor(smtp)),
       );
 
-      const sentId = (
-        await pool.query<{ id: string }>(
-          `SELECT id FROM items WHERE database_id = $1 AND properties ->> 'specialPurpose' = 'sent'`,
-          [foldersId],
-        )
-      ).rows[0]!.id;
+      expect(copied).toBeDefined();
+      expect(copied).toEqual(accepted);
+      if (!copied) throw new Error("Sent copy was not appended");
+      const parsed = await simpleParser(copied);
+      expect(parsed.messageId).toBe(result.messageId);
       const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
       const filesId = await databaseIdFor("files");
 
@@ -725,7 +774,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
           attachmentsRelationPropertyId: attachmentsProperty.id,
           folderItemId: sentId,
           mailboxItemId: mailboxId,
-          messageId: result.messageId,
+          messageId: parsed.messageId ?? "",
           subject: "Hello",
           envelope: { from: { address: "me@example.com" }, to: [{ address: "bob@example.com" }] },
           bodyText: "hi bob",

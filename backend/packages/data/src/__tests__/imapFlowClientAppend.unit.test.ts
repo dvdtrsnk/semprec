@@ -1,4 +1,4 @@
-import { ImapFlow } from "imapflow";
+import { ImapFlow, type AppendResponseObject } from "imapflow";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
 
@@ -8,7 +8,7 @@ const APPEND_TIMEOUT_MS = 60_000;
 const raw = Buffer.from("From: me@mail.test\r\nMessage-ID: <one@mail.test>\r\n\r\nhi bob\r\n", "utf8");
 
 /** An `ImapFlowMailClient` over a stub connection whose `append` records its arguments and answers as `append` does. */
-function clientWith(append: () => Promise<unknown>) {
+function clientWith(append: () => Promise<AppendResponseObject | false>) {
   const calls: unknown[][] = [];
   const connection = new ImapFlow({
     host: "unused.example.test",
@@ -19,8 +19,7 @@ function clientWith(append: () => Promise<unknown>) {
   });
   vi.spyOn(connection, "append").mockImplementation(async (...args) => {
     calls.push(args);
-    await append();
-    return false;
+    return append();
   });
   return { client: new ImapFlowMailClient(connection), calls };
 }
@@ -32,7 +31,7 @@ afterEach(() => {
 
 describe("ImapFlowMailClient.appendMessage (issue #1641)", () => {
   it("appends the same bytes to the folder with the given flags, and resolves when the server answers", async () => {
-    const { client, calls } = clientWith(async () => ({ path: "Sent Items", uid: 7 }));
+    const { client, calls } = clientWith(async () => ({ destination: "Sent Items", uid: 7 }));
 
     await expect(client.appendMessage("Sent Items", raw, ["\\Seen"])).resolves.toBeUndefined();
 
@@ -41,6 +40,14 @@ describe("ImapFlowMailClient.appendMessage (issue #1641)", () => {
     expect(path).toBe("Sent Items");
     expect(content).toBe(raw);
     expect(flags).toEqual(["\\Seen"]);
+  });
+
+  it("rejects safely when APPEND did not run", async () => {
+    const { client, calls } = clientWith(async () => false);
+    await expect(client.appendMessage("Sent Items", raw, ["\\Seen"])).rejects.toThrow(
+      "IMAP provider operation failed unexpectedly",
+    );
+    expect(calls).toHaveLength(1);
   });
 
   it("rejects a server refusal with a fixed safe provider error", async () => {
@@ -76,7 +83,7 @@ describe("ImapFlowMailClient.appendMessage (issue #1641)", () => {
 
   it("clears its deadline timer once the server has answered", async () => {
     vi.useFakeTimers();
-    const { client } = clientWith(async () => ({ path: "Sent Items", uid: 7 }));
+    const { client } = clientWith(async () => ({ destination: "Sent Items", uid: 7 }));
 
     await client.appendMessage("Sent Items", raw, ["\\Seen"]);
 
@@ -85,7 +92,7 @@ describe("ImapFlowMailClient.appendMessage (issue #1641)", () => {
 
   it("rejects once the deadline passes without an answer, and not before", async () => {
     vi.useFakeTimers();
-    const { client } = clientWith(() => new Promise<unknown>(() => undefined));
+    const { client } = clientWith(() => new Promise<AppendResponseObject | false>(() => undefined));
 
     let outcome: unknown = "pending";
     client.appendMessage("Sent Items", raw, ["\\Seen"]).then(
