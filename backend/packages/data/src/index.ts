@@ -34,8 +34,11 @@ export {
   type UpdateItemInput,
   type UpdateItemWithClientOptions,
 } from "./chokePoint/itemWrites.js";
+export { createItemWithRelationsWithClient, type InitialItemRelation } from "./chokePoint/itemCreateWithRelations.js";
 export {
   deleteRelationWithClient,
+  setRelationWithClient,
+  type SetRelationInput,
   type CreateRelationInput,
   type UpdateRelationInput,
   type DeleteRelationInput,

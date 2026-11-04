@@ -139,6 +139,31 @@ describe("parseAgentStreamMessage (issue #163)", () => {
 });
 
 describe("parseRealtimeMessage (issue #163)", () => {
+  it("validates every relation invalidation field", () => {
+    const valid = {
+      type: "invalidation",
+      scope: "relation",
+      databaseId: RUN_ID,
+      itemId: RUN_ID,
+      propertyKey: "project",
+      op: "put",
+      userId: RUN_ID,
+    };
+    expect(parseRealtimeMessage(valid)).toEqual(valid);
+    expect(parseRealtimeMessage({ ...valid, propertyKey: null, op: "metadata" })).toMatchObject({
+      propertyKey: null,
+      op: "metadata",
+    });
+    for (const malformed of [
+      { databaseId: "bad" },
+      { itemId: null },
+      { propertyKey: 3 },
+      { propertyKey: undefined },
+      { op: "update" },
+      { userId: "bad" },
+    ])
+      expect(parseRealtimeMessage({ ...valid, ...malformed })).toBeNull();
+  });
   it("rejects an agent-run reference with a malformed eventId", () => {
     expect(parseRealtimeMessage({ type: "agent_run_event", agentRunId: RUN_ID, eventId: "abc" })).toBeNull();
   });

@@ -32,6 +32,15 @@ export type RealtimeMessage =
       userId?: string;
     }
   | { type: "invalidation"; scope: "schema"; databaseId: string; userId?: string }
+  | {
+      type: "invalidation";
+      scope: "relation";
+      databaseId: string;
+      itemId: string;
+      propertyKey: string | null;
+      op: "put" | "delete" | "metadata";
+      userId?: string;
+    }
   | { type: "invalidation"; scope: "sempThread"; threadId: string }
   | { type: "doc_update"; docId: string; updateId: string; createdBy: string }
   | { type: "agent_run_event"; agentRunId: string; eventId: string }
@@ -55,6 +64,16 @@ export async function publishRealtimeMessage(pool: Pool | PoolClient, message: R
          'message', $2::json)::text)`,
       [REALTIME_CHANNEL, JSON.stringify(message), message.sessionId],
     );
+    return;
+  }
+  if (message.type === "invalidation" && message.scope === "relation") {
+    const validated = parseRealtimeMessage(message);
+    if (!validated || validated.type !== "invalidation" || validated.scope !== "relation")
+      throw new Error("Invalid relation invalidation");
+    const serialized = JSON.stringify(validated);
+    const bounded =
+      Buffer.byteLength(serialized, "utf8") <= 7000 ? serialized : JSON.stringify({ ...validated, propertyKey: null });
+    await publishEnveloped(pool, REALTIME_CHANNEL, bounded);
     return;
   }
   await publishEnveloped(pool, REALTIME_CHANNEL, JSON.stringify(message));
@@ -131,6 +150,25 @@ export function parseRealtimeMessage(raw: unknown): RealtimeMessage | null {
 
   switch (value.type) {
     case "invalidation": {
+      if (value.scope === "relation") {
+        if (
+          !isUuid(value.databaseId) ||
+          !isUuid(value.itemId) ||
+          !(value.propertyKey === null || typeof value.propertyKey === "string") ||
+          !(value.op === "put" || value.op === "delete" || value.op === "metadata") ||
+          !(value.userId === undefined || isUuid(value.userId))
+        )
+          return null;
+        return {
+          type: "invalidation",
+          scope: "relation",
+          databaseId: value.databaseId,
+          itemId: value.itemId,
+          propertyKey: value.propertyKey,
+          op: value.op,
+          userId: value.userId,
+        };
+      }
       if (value.scope === "item") {
         if (
           typeof value.databaseId === "string" &&

@@ -10,6 +10,7 @@ import { reindexPersonEmails } from "../../mail/personEmailIndexStore.js";
 import { withTransaction } from "../../db/pool.js";
 import { getSelfPersonId, setSelfPersonId } from "../../selfPerson.js";
 import { runSelfPersonCutoverMigration } from "../selfPersonCutoverMigration.js";
+import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
 
 let admin: Pool;
 let pool: Pool;
@@ -50,6 +51,12 @@ describe("self person tenant cutover", () => {
   beforeAll(async () => {
     admin = getTestPool();
     pool = await createRuntimeRolePool(admin, "semprec_data");
+    const role = await runAsSystem("test:verify-runtime-role", () =>
+      pool.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
   });
   beforeEach(async () => {
     await resetDatabase(admin);
@@ -72,6 +79,15 @@ describe("self person tenant cutover", () => {
       await runSelfPersonCutoverMigration(pool);
       expect(await read()).toBeNull();
     }));
+  it("runs the registered self-person migration through the tenant cutover runner", async () => {
+    const person = await runInTenant(tenant, async () => {
+      const { person } = await createPerson();
+      expect(await read()).toBeNull();
+      return person;
+    });
+    await runTenantCutoverMigrations(pool);
+    expect(await runInTenant(tenant, read)).toBe(person.id);
+  });
   it("adds the missing locked schema, fills a normalized email match once, and preserves a chosen person", async () =>
     runInTenant(tenant, async () => {
       const { person } = await createPerson("OWNER@EXAMPLE.COM");

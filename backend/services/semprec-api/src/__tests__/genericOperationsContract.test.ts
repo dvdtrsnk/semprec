@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+  tenantForNextTestUser,
+} from "@semprec/data/testSupport";
 import {
   createChokePoint,
   createDocStore,
@@ -21,7 +27,7 @@ import {
   type PropertyRow,
   type ViewRow,
 } from "@semprec/data";
-import { GENERIC_OPERATION_NAMES, type GenericOperationName } from "@semprec/shared";
+import { GENERIC_OPERATION_NAMES, runAsSystem, runInTenant, type GenericOperationName } from "@semprec/shared";
 import { createDispatcher } from "../app.js";
 
 const PASSWORD = "s3cret-password";
@@ -94,7 +100,7 @@ async function buildFixtures(): Promise<Fixtures> {
 type ContractCase = (fx: Fixtures, headers: Record<string, string>, baseUrl: string) => Promise<void>;
 
 /**
- * One REST exercise per operation in the closed 31-operation catalog (issue #219's acceptance
+ * One REST exercise per operation in the closed 32-operation catalog (issue #219's acceptance
  * criterion: "a parameterized contract test covers all 28 operations over REST", extended to
  * `property.getByKey` by issue #432). Each case
  * issues the real HTTP request a REST caller would send and asserts only that it reaches
@@ -292,9 +298,14 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     const res = await fetch(`${baseUrl}/api/databases/${fx.database.id}/items`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ properties: { title: "Contract Item" } }),
+      body: JSON.stringify({
+        properties: { title: "Contract Item" },
+        relations: [{ propertyKey: fx.relationProperty.key, targetItemIds: [fx.targetItem.id] }],
+      }),
     });
     expect(res.status).toBe(201);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ properties: { title: "Contract Item" } });
   },
   "item.patch": async (fx, headers, baseUrl) => {
     const res = await fetch(`${baseUrl}/api/items/${fx.itemA.id}`, {
@@ -331,6 +342,23 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { itemA: string; itemB: string };
     expect([body.itemA, body.itemB]).toContain(fx.itemB.id);
+  },
+  "relation.set": async (fx, headers, baseUrl) => {
+    const { property } = await chokePoint.createRelationProperty({
+      sourceDatabaseId: fx.database.id,
+      key: "singleTarget",
+      name: "Single target",
+      targetDatabaseId: fx.targetDatabase.id,
+      cardinality: "one_to_one",
+    });
+    const res = await fetch(`${baseUrl}/api/items/${fx.itemB.id}/relations/${property.key}`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ targetItemId: fx.targetItem.id }),
+    });
+    expect(res.status).toBe(200);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ itemA: fx.itemB.id, itemB: fx.targetItem.id });
   },
   "relation.delete": async (fx, headers, baseUrl) => {
     const res = await fetch(
@@ -418,6 +446,39 @@ describe("generic operation REST contract (issue #219)", () => {
     await pool?.end();
   });
 
+  it("sets, repeats, clears and rejects a multi-valued relation through REST", async () => {
+    const fx = await buildFixtures();
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const { property } = await chokePoint.createRelationProperty({
+      sourceDatabaseId: fx.database.id,
+      targetDatabaseId: fx.targetDatabase.id,
+      key: "singleTarget",
+      name: "Single target",
+      cardinality: "one_to_one",
+    });
+    const set = (key: string, targetItemId: string | null) =>
+      fetch(`${baseUrl}/api/items/${fx.itemB.id}/relations/${key}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ targetItemId }),
+      });
+    const first = await set(property.key, fx.targetItem.id);
+    expect(first.status).toBe(200);
+    const edge: unknown = await first.json();
+    const repeated = await set(property.key, fx.targetItem.id);
+    expect(repeated.status).toBe(200);
+    expect(await repeated.json()).toEqual(edge);
+    const invalid = await set(fx.relationProperty.key, fx.targetItem.id);
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({
+      error: { code: "validation_failed", details: { field: "propertyKey" } },
+    });
+    const clear = await set(property.key, null);
+    expect(clear.status).toBe(200);
+    expect(await clear.json()).toEqual({ deleted: true });
+    expect((await set(property.key, null)).status).toBe(200);
+  });
+
   it("rejects nonempty and non-object item DELETE bodies before dispatch", async () => {
     const fx = await buildFixtures();
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };
@@ -478,6 +539,226 @@ describe("generic operation REST contract (issue #219)", () => {
       const legacy: unknown = await response.json();
       expect(JSON.stringify(legacy)).not.toContain('"relations"');
     }
+  });
+
+  it("expands a tenant's real person, project and area through authenticated REST under RLS", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let runtimeServer: Server | undefined;
+    let failure: { error: unknown } | undefined;
+    const cleanupErrors: unknown[] = [];
+    try {
+      const role = await runAsSystem("test:verify-runtime-role", () =>
+        runtime.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+      const ownTenant = await createTestTenant(pool);
+      const foreignTenant = await createTestTenant(pool);
+      const passwordHash = await hashPassword(PASSWORD);
+      const users = await runAsSystem("test:create-expansion-users", async () => [
+        await createUser(pool, { tenantId: ownTenant, email: `${randomUUID()}@example.test`, passwordHash }),
+        await createUser(pool, { tenantId: foreignTenant, email: `${randomUUID()}@example.test`, passwordHash }),
+      ]);
+      const cp = createChokePoint(runtime);
+      async function fixture(tenantId: string) {
+        return runInTenant(tenantId, async () => {
+          await seedSystem(runtime, createViewTypeRegistry());
+          const databases = await cp.listDatabases();
+          const find = (moduleId: string) => {
+            const database = databases.find((entry) => entry.ownerModuleId === moduleId);
+            if (!database) throw new Error(`Missing ${moduleId} database`);
+            return database;
+          };
+          const people = find("people");
+          const projects = find("projects");
+          const areas = find("areas");
+          const companies = find("companies");
+          const person = await cp.createItem({ databaseId: people.id, properties: { name: "Person" } });
+          const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Project" } });
+          const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Area" } });
+          const company = await cp.createItem({ databaseId: companies.id, properties: { name: "Company" } });
+          async function link(databaseId: string, callerItemId: string, key: string, targetItemId: string) {
+            const property = (await cp.listProperties(databaseId)).find((entry) => entry.key === key);
+            if (!property) throw new Error("Missing fixture relation");
+            await cp.createRelation({ relationPropertyId: property.id, callerItemId, targetItemId });
+          }
+          await link(people.id, person.id, "projects", project.id);
+          await link(people.id, person.id, "companies", company.id);
+          await link(projects.id, project.id, "area", area.id);
+          return { person, project, area, company };
+        });
+      }
+      const own = await fixture(ownTenant);
+      const foreign = await fixture(foreignTenant);
+      const tokens = await Promise.all(
+        users.map((user) => login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" })),
+      );
+      const dispatch = await createDispatcher(runtime, {
+        passwordResetMailer: noopMailer,
+        appBaseUrl: "http://localhost",
+        setupToken: "unused-setup-token",
+        moduleRegistry,
+        blobStorage: new LocalFsBlobStorageWriter(tmpBlobDir),
+        maxFileSizeBytes: 10 * 1024 * 1024,
+      });
+      runtimeServer = createServer(dispatch);
+      const ownedServer = runtimeServer;
+      await new Promise<void>((resolve, reject) => {
+        ownedServer.once("error", reject);
+        ownedServer.listen(0, "127.0.0.1", () => {
+          ownedServer.off("error", reject);
+          resolve();
+        });
+      });
+      const address = ownedServer.address();
+      if (!address || typeof address === "string") throw new Error("Missing REST runtime address");
+      const port = address.port;
+      async function fetchPerson(token: string, id: string) {
+        return fetch(
+          `http://127.0.0.1:${port}/api/items/${id}?include=relations&relations.projects=area&relations.companies=`,
+          {
+            headers: { Authorization: `Bearer ${token}` },
+          },
+        );
+      }
+      const firstToken = tokens[0]?.token;
+      const secondToken = tokens[1]?.token;
+      if (!firstToken || !secondToken) throw new Error("Missing test sessions");
+      for (const [token, expected] of [
+        [firstToken, own],
+        [secondToken, foreign],
+      ] as const) {
+        const response = await fetchPerson(token, expected.person.id);
+        expect(response.status).toBe(200);
+        const body: unknown = await response.json();
+        expect(body).toMatchObject({
+          id: expected.person.id,
+          relations: {
+            companies: [
+              expect.objectContaining({
+                id: expected.company.id,
+                title: "Company",
+                color: expect.stringMatching(/\S/),
+                icon: expect.stringMatching(/\S/),
+              }),
+            ],
+            projects: [
+              expect.objectContaining({
+                id: expected.project.id,
+                title: "Project",
+                color: expect.stringMatching(/\S/),
+                icon: expect.stringMatching(/\S/),
+                properties: {
+                  area: [
+                    expect.objectContaining({
+                      id: expected.area.id,
+                      title: "Area",
+                      color: expect.stringMatching(/\S/),
+                      icon: expect.stringMatching(/\S/),
+                    }),
+                  ],
+                },
+              }),
+            ],
+          },
+          relationsTruncated: [],
+        });
+      }
+      const bareFixture = await runInTenant(ownTenant, async () => {
+        const source = await cp.createDatabase({ name: "Bare expansion source" });
+        const target = await cp.createDatabase({ name: "Bare expansion target" });
+        const caller = await cp.createItem({ databaseId: source.id, properties: {} });
+        const destination = await cp.createItem({ databaseId: target.id, properties: {} });
+        for (let i = 0; i < 5; i++) {
+          const { property } = await cp.createRelationProperty({
+            sourceDatabaseId: source.id,
+            targetDatabaseId: target.id,
+            key: `link${i}`,
+            name: `Link ${i}`,
+          });
+          await cp.createRelation({
+            relationPropertyId: property.id,
+            callerItemId: caller.id,
+            targetItemId: destination.id,
+          });
+        }
+        return { source, target, caller, destination };
+      });
+      const bareUrl = `http://127.0.0.1:${port}/api/items/${bareFixture.caller.id}?include=relations`;
+      const bare = await fetch(bareUrl, { headers: { Authorization: `Bearer ${firstToken}` } });
+      expect(bare.status).toBe(200);
+      const bareBody: unknown = await bare.json();
+      expect(bareBody).toMatchObject({
+        relations: Object.fromEntries(
+          Array.from({ length: 5 }, (_, i) => [
+            `link${i}`,
+            [expect.objectContaining({ id: bareFixture.destination.id })],
+          ]),
+        ),
+      });
+      await runInTenant(ownTenant, () =>
+        cp.createRelationProperty({
+          sourceDatabaseId: bareFixture.source.id,
+          targetDatabaseId: bareFixture.target.id,
+          key: "link5",
+          name: "Link 5",
+        }),
+      );
+      const overLimit = await fetch(bareUrl, { headers: { Authorization: `Bearer ${firstToken}` } });
+      expect(overLimit.status).toBe(400);
+      expect(await overLimit.json()).toMatchObject({
+        error: { code: "validation_failed", details: { field: "include.relations" } },
+      });
+      async function snapshot(tenantId: string) {
+        return runInTenant(tenantId, async () => {
+          const items = await runtime.query<{ id: string; properties: unknown; computed: unknown }>(
+            "SELECT id, properties, computed FROM items ORDER BY id",
+          );
+          const edges = await runtime.query<{ id: string; item_a: string; item_b: string }>(
+            "SELECT id, item_a, item_b FROM item_relations ORDER BY id",
+          );
+          return { items: items.rows, edges: edges.rows };
+        });
+      }
+      const ownBefore = await snapshot(ownTenant);
+      const foreignBefore = await snapshot(foreignTenant);
+      const missing = randomUUID();
+      const denied = await fetchPerson(secondToken, own.person.id);
+      const absent = await fetchPerson(secondToken, missing);
+      expect(denied.status).toBe(404);
+      expect(absent.status).toBe(404);
+      const deniedBody: unknown = await denied.json();
+      const absentBody: unknown = await absent.json();
+      expect(JSON.stringify(deniedBody).replaceAll(own.person.id, "<item>")).toBe(
+        JSON.stringify(absentBody).replaceAll(missing, "<item>"),
+      );
+      expect(await snapshot(ownTenant)).toEqual(ownBefore);
+      expect(await snapshot(foreignTenant)).toEqual(foreignBefore);
+    } catch (error) {
+      failure = { error };
+    } finally {
+      if (runtimeServer?.listening) {
+        const ownedServer = runtimeServer;
+        try {
+          await new Promise<void>((resolve, reject) =>
+            ownedServer.close((error) => (error ? reject(error) : resolve())),
+          );
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      try {
+        await runtime.end();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (failure) {
+      if (cleanupErrors.length > 0) console.error("Expansion REST fixture cleanup also failed");
+      throw failure.error;
+    }
+    if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, "Expansion REST fixture cleanup failed");
   });
 
   it("has exactly one contract case per operation in the closed catalog", () => {

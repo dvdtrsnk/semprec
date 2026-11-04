@@ -286,8 +286,17 @@ export const ItemCreateInputSchema = z
     databaseId: z.string(),
     properties: jsonObject,
     idempotencyKey: z.string().optional(),
+    relations: z
+      .array(z.object({ propertyKey: z.string(), targetItemIds: z.array(canonicalUuid).max(50) }).strict())
+      .max(10)
+      .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    const keys = value.relations?.map((relation) => relation.propertyKey) ?? [];
+    if (new Set(keys).size !== keys.length)
+      ctx.addIssue({ code: "custom", path: ["relations"], message: "Duplicate relation property" });
+  });
 export type ItemCreateInput = z.infer<typeof ItemCreateInputSchema>;
 
 /** `ifVersion` is required here — #37 defines optimistic concurrency only for item property patches; metadata patches (database/property/view) carry no `ifVersion` at all. */
@@ -319,6 +328,15 @@ export const RelationPutInputSchema = z
   })
   .strict();
 export type RelationPutInput = z.infer<typeof RelationPutInputSchema>;
+
+export const RelationSetInputSchema = z
+  .object({
+    relationPropertyId: canonicalUuid,
+    callerItemId: canonicalUuid,
+    targetItemId: canonicalUuid.nullable(),
+  })
+  .strict();
+export type RelationSetInput = z.infer<typeof RelationSetInputSchema>;
 
 /** Same endpoints as `RelationPutInputSchema`, without metadata — idempotent unlink. */
 export const RelationDeleteInputSchema = z
@@ -378,6 +396,7 @@ export interface InputByOperation {
   "item.restore": ItemRestoreInput;
   "database.query": DatabaseQueryInput;
   "relation.put": RelationPutInput;
+  "relation.set": RelationSetInput;
   "relation.delete": RelationDeleteInput;
   "relation.list": RelationListInput;
   "page.restoreVersion": PageRestoreVersionInput;

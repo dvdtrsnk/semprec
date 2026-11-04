@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { z } from "zod";
 import type { ExpandedRelationTarget, ReducedRelationTarget } from "@semprec/shared";
 import type { CollectionMetadataResolver } from "../manifest/collectionMetadata.js";
 import type { ItemRow, PropertyRow } from "../types.js";
@@ -17,8 +18,9 @@ type Edge = {
   property_id: string;
   source_id: string;
   target_id: string;
-  metadata: Record<string, unknown>;
+  metadata: unknown;
 };
+const jsonObject = z.record(z.string(), z.unknown());
 
 function invalid(field: string): never {
   throw new ValidationError("Invalid relation projection", { field });
@@ -83,6 +85,7 @@ export async function expandItemRelations(
      ORDER BY COALESCE(metadata->>'addedAt', id::text), id`,
     [propertyIds, items.map((item) => item.id)],
   );
+  const edgeRows = edges.rows.map((row) => ({ ...row, metadata: jsonObject.parse(row.metadata) }));
   const databases = await client.query<{
     id: string;
     key: string | null;
@@ -98,22 +101,22 @@ export async function expandItemRelations(
   const targetRows = await client.query<{
     id: string;
     database_id: string;
-    properties: Record<string, unknown>;
-    computed: Record<string, unknown>;
+    properties: unknown;
+    computed: unknown;
     updated_at: Date;
   }>(
     `SELECT i.id,i.database_id,i.properties,i.computed,i.updated_at FROM items i
      JOIN databases db ON db.id=i.database_id AND db.archived_at IS NULL
      WHERE i.id=ANY($1::uuid[]) AND i.database_id=ANY($2::uuid[]) AND i.deleted_at IS NULL`,
-    [[...new Set(edges.rows.map((e) => e.target_id))], targetDbIds],
+    [[...new Set(edgeRows.map((e) => e.target_id))], targetDbIds],
   );
   const targets = targetRows.rows.map((row) =>
     projectItemForRead(
       {
         id: row.id,
         databaseId: row.database_id,
-        properties: row.properties,
-        computed: row.computed,
+        properties: jsonObject.parse(row.properties),
+        computed: jsonObject.parse(row.computed),
         updatedAt: row.updated_at.toISOString(),
         deletedAt: null,
       },
@@ -132,7 +135,7 @@ export async function expandItemRelations(
       id: string;
       database_id: string;
       database_key: string | null;
-      properties: Record<string, unknown>;
+      properties: unknown;
       title_key: string | null;
       system: boolean;
       color: string | null;
@@ -159,6 +162,7 @@ export async function expandItemRelations(
       [nestedProperties.map((p) => p.id), targets.map((item) => item.id)],
     );
     for (const row of result.rows) {
+      const properties = jsonObject.parse(row.properties);
       const fallback = options.resolver.resolve({
         key: row.database_key,
         system: row.system,
@@ -169,13 +173,11 @@ export async function expandItemRelations(
         id: row.id,
         databaseKey: row.database_key,
         title:
-          typeof row.properties[row.title_key ?? "name"] === "string"
-            ? String(row.properties[row.title_key ?? "name"])
-            : "",
+          typeof properties[row.title_key ?? "name"] === "string" ? String(properties[row.title_key ?? "name"]) : "",
       };
       for (const key of ["color", "icon"] as const) {
         const has = key === "color" ? row.has_color : row.has_icon;
-        const own = has ? row.properties[key] : undefined;
+        const own = has ? properties[key] : undefined;
         const value = typeof own === "string" && own.trim() !== "" ? own : fallback[key];
         if (typeof value === "string" && value !== "") reduced[key] = value;
       }
@@ -227,7 +229,7 @@ export async function expandItemRelations(
     const relations: Record<string, ExpandedRelationTarget[]> = {};
     const relationsTruncated: string[] = [];
     for (const { property, projection } of selected.get(item.databaseId) ?? []) {
-      const visible = edges.rows.filter(
+      const visible = edgeRows.filter(
         (edge) =>
           edge.source_id === item.id &&
           edge.property_id === property.id &&

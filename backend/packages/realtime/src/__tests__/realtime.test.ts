@@ -15,7 +15,13 @@ import {
   notifySessionRevoked,
 } from "@semprec/data";
 import { createPool, withTransaction } from "@semprec/data";
-import { createTestTenant, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { wireRealtimeHooks } from "../wireHooks.js";
 import { publishRealtimeMessage } from "../pgNotifyPublisher.js";
@@ -47,6 +53,44 @@ describe("realtime", () => {
   afterAll(async () => {
     resetHooks();
     await pool?.end();
+  });
+
+  it("bounds relation notifications while retaining the PostgreSQL tenant envelope and user restriction", async () => {
+    const tenant = await createTestTenant(pool);
+    const scoped = await createRuntimeRolePool(pool, "semprec_data");
+    const listener = await pool.connect();
+    const base = {
+      type: "invalidation",
+      scope: "relation",
+      databaseId: randomUUID(),
+      itemId: randomUUID(),
+      propertyKey: "",
+      op: "metadata",
+      userId: randomUUID(),
+    } as const;
+    const remaining = 7000 - Buffer.byteLength(JSON.stringify(base), "utf8");
+    try {
+      const role = await runAsSystem("test:verify-runtime-role", () =>
+        scoped.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+      await listener.query("LISTEN semprec_events");
+      for (const key of ["normal", "a".repeat(remaining), "a".repeat(remaining + 1), 'ě\\"'.repeat(4000)]) {
+        const received = new Promise<{ payload?: string }>((resolve) => listener.once("notification", resolve));
+        await runInTenant(tenant, () => publishRealtimeMessage(scoped, { ...base, propertyKey: key }));
+        const payload = (await received).payload;
+        if (payload === undefined) throw new Error("Expected notification payload");
+        expect(Buffer.byteLength(payload, "utf8")).toBeLessThan(8000);
+        const expectedKey =
+          Buffer.byteLength(JSON.stringify({ ...base, propertyKey: key }), "utf8") <= 7000 ? key : null;
+        expect(JSON.parse(payload)).toEqual({ tenantId: tenant, message: { ...base, propertyKey: expectedKey } });
+      }
+    } finally {
+      listener.release(true);
+      await scoped.end();
+    }
   });
 
   it("wireRealtimeHooks turns an item-scope invalidation event into a Postgres NOTIFY on the shared channel (issue #161)", async () => {

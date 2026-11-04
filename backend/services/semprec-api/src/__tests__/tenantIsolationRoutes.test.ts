@@ -1430,6 +1430,44 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       // Metadata A's existing edge does not carry, so a foreign replace that landed changes it.
       await relationCases("PUT", { metadata: { writtenBy: "B" } });
     }),
+  "set relation": () =>
+    leavesAUnchanged(async () => {
+      const key = `single${randomUUID().replaceAll("-", "")}`;
+      await sendOk(b.member, {
+        method: "POST",
+        path: `/api/databases/${b.databaseId}/properties`,
+        body: {
+          key,
+          name: "Single link",
+          type: "relation",
+          targetDatabaseId: b.targetDatabaseId,
+          cardinality: "one_to_one",
+          locked: false,
+        },
+      });
+      await sendOk(b.member, {
+        method: "PUT",
+        path: `/api/items/${b.itemId}/relations/${key}`,
+        body: { targetItemId: b.targetItemId },
+      });
+      const before = await sendOk(b.member, {
+        method: "GET",
+        path: `/api/items/${b.itemId}/relations?propertyKey=${key}`,
+      });
+      await expectForeignLikeRandom(b.member, [a.targetItemId], ([targetItemId]) => ({
+        method: "PUT",
+        path: `/api/items/${b.itemId}/relations/${key}`,
+        body: { targetItemId },
+      }));
+      expect(
+        await sendOk(b.member, { method: "GET", path: `/api/items/${b.itemId}/relations?propertyKey=${key}` }),
+      ).toBe(before);
+      await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+        method: "PUT",
+        path: `/api/items/${id}/relations/${key}`,
+        body: { targetItemId: b.targetItemId },
+      }));
+    }),
   "delete relation": () =>
     leavesAUnchanged(async () => {
       await relationCases("DELETE", undefined);
@@ -1946,6 +1984,45 @@ const MCP_CASES = {
       targetItemId,
     }));
   },
+  "relation.set": async (p) => {
+    const key = `single${randomUUID().replaceAll("-", "")}`;
+    const propertyId = readString(
+      await sendOk(b.member, {
+        method: "POST",
+        path: `/api/databases/${b.databaseId}/properties`,
+        body: {
+          key,
+          name: "Single link",
+          type: "relation",
+          targetDatabaseId: b.targetDatabaseId,
+          cardinality: "one_to_one",
+          locked: false,
+        },
+      }),
+      "id",
+    );
+    await p.excludesA({ relationPropertyId: propertyId, callerItemId: b.itemId, targetItemId: b.targetItemId }, [
+      b.itemId,
+      b.targetItemId,
+    ]);
+    const before = await sendOk(b.member, {
+      method: "GET",
+      path: `/api/items/${b.itemId}/relations?propertyKey=${key}`,
+    });
+    await p.foreignLikeRandom([a.targetItemId], ([targetItemId]) => ({
+      relationPropertyId: propertyId,
+      callerItemId: b.itemId,
+      targetItemId,
+    }));
+    expect(await sendOk(b.member, { method: "GET", path: `/api/items/${b.itemId}/relations?propertyKey=${key}` })).toBe(
+      before,
+    );
+    await p.foreignLikeRandom([a.relationPropertyId, a.itemId], ([relationPropertyId, callerItemId]) => ({
+      relationPropertyId,
+      callerItemId,
+      targetItemId: b.targetItemId,
+    }));
+  },
   "relation.delete": async (p) => {
     await p.foreignLikeRandom(
       [a.relationPropertyId, a.itemId, a.targetItemId],
@@ -2005,6 +2082,12 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     adminPool = getTestPool();
     await resetDatabase(adminPool);
     pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const role = await runAsSystem("test:verify-runtime-role", () =>
+      pool.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
     const dispatch = await createDispatcher(pool, {
       passwordResetMailer: noopMailer,
       appBaseUrl: "https://app.example.test",

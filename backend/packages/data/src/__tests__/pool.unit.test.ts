@@ -6,6 +6,7 @@ import {
   requireAffectedRows,
   requireManagedTransaction,
   runAfterCommit,
+  runAfterCommitKeyed,
   withClient,
   withTransaction,
 } from "../db/pool.js";
@@ -126,6 +127,78 @@ describe("withTransaction", () => {
   function sqlCalls(query: ReturnType<typeof vi.fn>): unknown[] {
     return query.mock.calls.map((call) => call[0]);
   }
+
+  it("keeps keyed callbacks in first-registration order with the last payload and isolates callback failures", async () => {
+    const { pool } = fakeClient({});
+    const a = Symbol("a");
+    const b = Symbol("b");
+    const delivered: string[] = [];
+    const spy = vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    try {
+      await withTransaction(pool, async (client) => {
+        runAfterCommitKeyed(client, a, "key", () => delivered.push("old"));
+        runAfterCommit(client, () => delivered.push("ordinary"));
+        runAfterCommitKeyed(client, b, "key", () => {
+          throw new Error("callback failure");
+        });
+        runAfterCommitKeyed(client, a, "other", () => delivered.push("other"));
+        runAfterCommitKeyed(client, a, "key", () => delivered.push("new"));
+      });
+      expect(delivered).toEqual(["new", "ordinary", "other"]);
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("discards keyed state on body and COMMIT failure and on successful same-client reuse", async () => {
+    const failures: Partial<Record<"COMMIT", unknown>> = {};
+    const { pool } = fakeClient(failures);
+    const namespace = Symbol("relation");
+    const delivered: string[] = [];
+    const bodyError = new Error("body");
+    await expect(
+      withTransaction(pool, async (client) => {
+        runAfterCommitKeyed(client, namespace, "key", () => delivered.push("body"));
+        throw bodyError;
+      }),
+    ).rejects.toBe(bodyError);
+    const commitError = new Error("commit");
+    failures.COMMIT = commitError;
+    await expect(
+      withTransaction(pool, async (client) => {
+        runAfterCommitKeyed(client, namespace, "key", () => delivered.push("commit"));
+      }),
+    ).rejects.toBe(commitError);
+    delete failures.COMMIT;
+    await withTransaction(pool, async (client) => {
+      runAfterCommitKeyed(client, namespace, "key", () => delivered.push("first"));
+    });
+    await withTransaction(pool, async (client) => {
+      runAfterCommitKeyed(client, namespace, "key", () => delivered.push("second"));
+    });
+    expect(delivered).toEqual(["first", "second"]);
+  });
+
+  it("refuses unmanaged, mismatched and detached inactive clients", async () => {
+    const { client, pool } = fakeClient({});
+    const other = fakeClient({}).client;
+    const namespace = Symbol("relation");
+    expect(() => runAfterCommitKeyed(client, namespace, "key", () => {})).toThrow();
+    let releaseDetached!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseDetached = resolve;
+    });
+    let detached: Promise<void> | undefined;
+    await withTransaction(pool, async (managed) => {
+      expect(() => runAfterCommitKeyed(other, namespace, "key", () => {})).toThrow();
+      detached = gate.then(() => {
+        expect(() => runAfterCommitKeyed(managed, namespace, "key", () => {})).toThrow();
+      });
+    });
+    releaseDetached();
+    await detached;
+  });
 
   it("refuses a caught rollback-only failure before COMMIT and retains the first error", async () => {
     const { client, pool, query } = fakeClient({});

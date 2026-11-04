@@ -26,6 +26,7 @@ import {
   RelationDeleteInputSchema,
   RelationListInputSchema,
   RelationPutInputSchema,
+  RelationSetInputSchema,
   ViewCreateInputSchema,
   ViewDeleteInputSchema,
   ViewGetInputSchema,
@@ -173,6 +174,10 @@ export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
   "relation.put": {
     input: RelationPutInputSchema,
     invoke: (service, actor, input) => service.putRelation(actor, input),
+  },
+  "relation.set": {
+    input: RelationSetInputSchema,
+    invoke: (service, actor, input) => service.setRelation(actor, input),
   },
   "relation.delete": {
     input: RelationDeleteInputSchema,

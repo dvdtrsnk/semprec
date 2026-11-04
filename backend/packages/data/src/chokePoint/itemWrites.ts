@@ -317,8 +317,16 @@ export async function createItemWithClient(
   input: CreateItemInput,
   options: CreateItemWithClientOptions = {},
 ): Promise<ItemRow> {
+  return (await createItemReportingReplay(client, input, options)).item;
+}
+
+export async function createItemReportingReplay(
+  client: PoolClient,
+  input: CreateItemInput,
+  options: CreateItemWithClientOptions,
+): Promise<{ item: ItemRow; created: boolean }> {
   const replay = await assertDatabaseWritableForCreate(client, input.databaseId, input.idempotencyKey);
-  if (replay) return replay;
+  if (replay) return { item: replay, created: false };
 
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   assertWritableProperties(properties, Object.keys(input.properties ?? {}), options);
@@ -373,7 +381,7 @@ export async function createItemWithClient(
       return itemProperties;
     },
   );
-  if (!created) return item;
+  if (!created) return { item, created: false };
 
   // Domain validation/side effects of a real insert run here, in the same transaction, so a
   // rejection rolls the row back — see docs/adr/2026-10-09-item-create-domain-hooks.md.
@@ -396,7 +404,7 @@ export async function createItemWithClient(
       userId: options.actingUserId,
     }),
   );
-  return item;
+  return { item, created: true };
 }
 
 /**

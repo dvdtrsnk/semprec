@@ -30,6 +30,14 @@ export type InvalidationEvent =
       updatedAt: string;
       userId?: string;
     }
+  | {
+      scope: "relation";
+      databaseId: string;
+      itemId: string;
+      propertyKey: string | null;
+      op: "put" | "delete" | "metadata";
+      userId?: string;
+    }
   | { scope: "schema"; databaseId: string; userId?: string };
 
 export type InvalidationHook = (event: InvalidationEvent) => void;

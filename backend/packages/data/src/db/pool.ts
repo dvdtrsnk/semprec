@@ -15,6 +15,7 @@ interface TransactionOwner {
   client: PoolClient;
   active: boolean;
   failure?: { error: unknown };
+  keyedCallbacks: Map<symbol, Map<string, { callback: () => void }>>;
 }
 
 const transactionOwner = new AsyncLocalStorage<TransactionOwner>();
@@ -271,6 +272,26 @@ export function runAfterCommit(client: PoolClient, callback: () => void): void {
   }
 }
 
+/** Registers one replaceable callback slot owned by the active managed transaction. */
+export function runAfterCommitKeyed(client: PoolClient, namespace: symbol, key: string, callback: () => void): void {
+  requireManagedTransaction(client);
+  const owner = transactionOwner.getStore();
+  if (!owner) throw new Error("Protected relation requires an active managed transaction");
+  let keyed = owner.keyedCallbacks.get(namespace);
+  if (!keyed) {
+    keyed = new Map();
+    owner.keyedCallbacks.set(namespace, keyed);
+  }
+  const slot = keyed.get(key);
+  if (slot) {
+    slot.callback = callback;
+  } else {
+    const next = { callback };
+    keyed.set(key, next);
+    runAfterCommit(client, () => next.callback());
+  }
+}
+
 export interface WithTransactionOptions {
   /** Defaults to READ COMMITTED (a plain `BEGIN`) when omitted. */
   isolation?: TransactionIsolationLevel;
@@ -310,9 +331,10 @@ export async function withTransaction<T>(
     } else {
       await client.query("BEGIN");
     }
+    let owner: TransactionOwner | undefined;
     try {
       if (scope) await client.query(SET_TENANT_SQL, [scopeGucValue(scope), true]);
-      const owner: TransactionOwner = { client, active: true };
+      owner = { client, active: true, keyedCallbacks: new Map() };
       let result: T;
       try {
         result = await transactionOwner.run(owner, () => fn(client));
@@ -346,6 +368,8 @@ export async function withTransaction<T>(
         logger.error({ err: rollbackErr }, "withTransaction: ROLLBACK failed; discarding the connection");
       }
       throw err;
+    } finally {
+      owner?.keyedCallbacks.clear();
     }
   } catch (error) {
     primaryFailure = { error };

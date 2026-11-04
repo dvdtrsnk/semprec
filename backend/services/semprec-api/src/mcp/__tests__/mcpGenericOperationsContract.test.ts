@@ -1,10 +1,13 @@
 import type { CollectionMetadataResolver } from "@semprec/data";
 import { createItemWithClient, getDatabaseByModuleId } from "@semprec/data";
 import { createServer, type Server } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { z } from "zod";
 import {
+  createRuntimeRolePool,
+  createTestTenant,
   createTenantZeroUser,
   getTenantZeroId,
   getTestPool,
@@ -30,10 +33,13 @@ import {
   type ViewRow,
 } from "@semprec/data";
 import { createGenericOperationGateway, type GenericOperationGateway } from "@semprec/application";
+import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
 import {
   CAPABILITY_IDS,
   GENERIC_OPERATION_NAMES,
   OPERATION_METADATA,
+  runAsSystem,
+  runInTenant,
   type CapabilityId,
   type GenericOperationName,
   type InputByOperation,
@@ -140,6 +146,7 @@ interface Fixtures {
   targetDatabase: { id: string };
   targetItem: ItemRow;
   relationProperty: PropertyRow;
+  singleRelationProperty: PropertyRow;
 }
 
 /**
@@ -175,13 +182,31 @@ async function buildFixtures(agentProjectItemId?: string): Promise<Fixtures> {
     targetDatabaseId: targetDatabase.id,
     inverse: { key: "assignedFrom", name: "Assigned From" },
   });
+  const { property: singleRelationProperty } = await chokePoint.createRelationProperty({
+    sourceDatabaseId: database.id,
+    key: "singleTarget",
+    name: "Single target",
+    targetDatabaseId: targetDatabase.id,
+    cardinality: "one_to_one",
+  });
   await chokePoint.createRelation({
     relationPropertyId: relationProperty.id,
     callerItemId: itemA.id,
     targetItemId: targetItem.id,
   });
 
-  return { database, property, itemA, itemB, view, viewActor, targetDatabase, targetItem, relationProperty };
+  return {
+    database,
+    property,
+    itemA,
+    itemB,
+    view,
+    viewActor,
+    targetDatabase,
+    targetItem,
+    relationProperty,
+    singleRelationProperty,
+  };
 }
 
 interface Case {
@@ -192,7 +217,7 @@ interface Case {
 }
 
 /**
- * One `tools/call` case per operation in the closed 31-operation catalog, mirroring
+ * One `tools/call` case per operation in the closed 32-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern one adapter over (the code-review finding on
  * issue #220's diff: parameterized contract tests across all of the then-28 operations were missing for the
  * MCP and AgentTool adapters). Reused across two describe-blocks below: dispatched by a plain
@@ -277,7 +302,11 @@ const CASES: Record<GenericOperationName, Case> = {
   "item.create": {
     tool: (fx) => ({
       name: "semprec.item.create",
-      arguments: { databaseId: fx.database.id, properties: { title: "Contract Item" } },
+      arguments: {
+        databaseId: fx.database.id,
+        properties: { title: "Contract Item" },
+        relations: [{ propertyKey: fx.relationProperty.key, targetItemIds: [fx.targetItem.id] }],
+      },
     }),
   },
   "item.patch": {
@@ -299,6 +328,16 @@ const CASES: Record<GenericOperationName, Case> = {
       name: "semprec.relation.put",
       arguments: {
         relationPropertyId: fx.relationProperty.id,
+        callerItemId: fx.itemB.id,
+        targetItemId: fx.targetItem.id,
+      },
+    }),
+  },
+  "relation.set": {
+    tool: (fx) => ({
+      name: "semprec.relation.set",
+      arguments: {
+        relationPropertyId: fx.singleRelationProperty.id,
         callerItemId: fx.itemB.id,
         targetItemId: fx.targetItem.id,
       },
@@ -470,6 +509,309 @@ describe("generic operation MCP contract (issue #220)", () => {
 
   it("has exactly one contract case per operation in the closed catalog", () => {
     expect(Object.keys(CASES).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
+  });
+
+  it("lists relation.set for a human session", async () => {
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const response = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(response.status).toBe(200);
+    const body: unknown = await response.json();
+    expect(body).toMatchObject({
+      result: { tools: expect.arrayContaining([expect.objectContaining({ name: "semprec.relation.set" })]) },
+    });
+  });
+
+  it("executes relation.set and item.create through MCP under tenant RLS", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let server: Server | undefined;
+    let failure: { error: unknown } | undefined;
+    const cleanupErrors: unknown[] = [];
+    try {
+      const role = await runAsSystem("test:verify-runtime-role", () =>
+        runtime.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+      const ownTenant = await createTestTenant(pool);
+      const foreignTenant = await createTestTenant(pool);
+      const user = await runAsSystem("test:create-mcp-user", () =>
+        createUser(pool, {
+          tenantId: ownTenant,
+          email: `${randomUUID()}@example.test`,
+          passwordHash: "unused-test-hash",
+        }),
+      );
+      const cp = createChokePoint(runtime);
+      async function fixture(tenantId: string) {
+        return runInTenant(tenantId, async () => {
+          await seedSystem(runtime, createViewTypeRegistry());
+          const source = await cp.createDatabase({ name: "MCP runtime source" });
+          const target = await cp.createDatabase({ name: "MCP runtime target" });
+          const { property } = await cp.createRelationProperty({
+            sourceDatabaseId: source.id,
+            targetDatabaseId: target.id,
+            key: "link",
+            name: "Link",
+            cardinality: "one_to_one",
+          });
+          const caller = await cp.createItem({ databaseId: source.id, properties: {} });
+          const first = await cp.createItem({ databaseId: target.id, properties: {} });
+          const second = await cp.createItem({ databaseId: target.id, properties: {} });
+          const third = await cp.createItem({ databaseId: target.id, properties: {} });
+          await cp.setRelation({ relationPropertyId: property.id, callerItemId: caller.id, targetItemId: first.id });
+          return { source, target, property, caller, second, third };
+        });
+      }
+      const own = await fixture(ownTenant);
+      const foreign = await fixture(foreignTenant);
+      const credential = await runInTenant(ownTenant, async () => {
+        const projects = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
+        if (!projects) throw new Error("Missing projects database");
+        const project = await cp.createItem({ databaseId: projects.id, properties: { name: "MCP runtime agent" } });
+        return withTransaction(runtime, (client) =>
+          mintMcpRunCredential(client, {
+            projectItemId: project.id,
+            capabilities: ["core.item.write"],
+            userId: user.id,
+          }),
+        );
+      });
+      const runtimeGateway = createGenericOperationGateway(runtime, testMetadataResolver);
+      server = createServer(createMcpRequestListener(runtime, runtimeGateway, ALL_CAPABILITIES));
+      const ownedServer = server;
+      await new Promise<void>((resolve, reject) => {
+        ownedServer.once("error", reject);
+        ownedServer.listen(0, "127.0.0.1", () => {
+          ownedServer.off("error", reject);
+          resolve();
+        });
+      });
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing MCP runtime address");
+      const port = address.port;
+      const schema = z.object({
+        result: z.object({ content: z.array(z.object({ type: z.string(), text: z.string() })) }).optional(),
+        error: z.object({ code: z.number(), message: z.string(), data: z.unknown().optional() }).optional(),
+      });
+      async function call(name: string, args: unknown) {
+        const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${credential.token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+        });
+        expect(response.status).toBe(200);
+        return schema.parse(await response.json());
+      }
+      const moved = await call("semprec.relation.set", {
+        relationPropertyId: own.property.id,
+        callerItemId: own.caller.id,
+        targetItemId: own.second.id,
+      });
+      expect(moved.error).toBeUndefined();
+      expect(moved.result?.content).toHaveLength(1);
+      expect(await runInTenant(ownTenant, () => cp.listItemRelations(own.caller.id, own.property.id))).toMatchObject([
+        { targetItemId: own.second.id },
+      ]);
+      const created = await call("semprec.item.create", {
+        databaseId: own.source.id,
+        properties: {},
+        relations: [{ propertyKey: "link", targetItemIds: [own.third.id] }],
+      });
+      expect(created.error).toBeUndefined();
+      const content = created.result?.content[0]?.text;
+      if (!content) throw new Error("Missing MCP create result");
+      const parsed = z.object({ id: z.string().uuid() }).parse(JSON.parse(content));
+      expect(await runInTenant(ownTenant, () => cp.listItemRelations(parsed.id, own.property.id))).toMatchObject([
+        { targetItemId: own.third.id },
+      ]);
+      const fileFixture = await runInTenant(ownTenant, async () => {
+        const files = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "files"));
+        const projects = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
+        if (!files || !projects) throw new Error("Missing Files or Projects database");
+        const property = (await cp.listProperties(files.id)).find((entry) => entry.key === "projects");
+        if (!property) throw new Error("Missing Files.projects relation");
+        const project = await cp.createItem({ databaseId: projects.id, properties: { name: "File project" } });
+        return { files, property, project };
+      });
+      const file = await call("semprec.item.create", {
+        databaseId: fileFixture.files.id,
+        properties: { name: "Linked file" },
+        relations: [{ propertyKey: "projects", targetItemIds: [fileFixture.project.id] }],
+      });
+      expect(file.error).toBeUndefined();
+      const fileContent = file.result?.content[0]?.text;
+      if (!fileContent) throw new Error("Missing MCP file result");
+      const fileResult = z.object({ id: z.string().uuid() }).parse(JSON.parse(fileContent));
+      expect(
+        await runInTenant(ownTenant, () => cp.listItemRelations(fileResult.id, fileFixture.property.id)),
+      ).toMatchObject([{ targetItemId: fileFixture.project.id }]);
+      async function snapshot(tenantId: string) {
+        return runInTenant(tenantId, async () => {
+          const items = await runtime.query<{
+            id: string;
+            database_id: string;
+            properties: unknown;
+            computed: unknown;
+            deleted_at: Date | null;
+            updated_at: Date;
+          }>("SELECT id, database_id, properties, computed, deleted_at, updated_at FROM items ORDER BY id");
+          const edges = await runtime.query<{ id: string; item_a: string; item_b: string }>(
+            "SELECT id, item_a, item_b FROM item_relations ORDER BY id",
+          );
+          const approvals = await runtime.query<{ id: string; status: string }>(
+            "SELECT id, status FROM approval_requests ORDER BY id",
+          );
+          return { items: items.rows, edges: edges.rows, approvals: approvals.rows };
+        });
+      }
+      const ownBefore = await snapshot(ownTenant);
+      const foreignBefore = await snapshot(foreignTenant);
+      const relationInProperties = await call("semprec.item.create", {
+        databaseId: own.source.id,
+        properties: { link: own.third.id },
+        relations: [{ propertyKey: "link", targetItemIds: [own.third.id] }],
+      });
+      expect(relationInProperties.error).toMatchObject({ code: -32602, data: { field: "link" } });
+      expect(await snapshot(ownTenant)).toEqual(ownBefore);
+      expect(await snapshot(foreignTenant)).toEqual(foreignBefore);
+      const missing = randomUUID();
+      for (const operation of ["relation.set", "item.create"] as const) {
+        const invoke = (targetItemId: string) =>
+          operation === "relation.set"
+            ? call("semprec.relation.set", {
+                relationPropertyId: own.property.id,
+                callerItemId: own.caller.id,
+                targetItemId,
+              })
+            : call("semprec.item.create", {
+                databaseId: own.source.id,
+                properties: {},
+                relations: [{ propertyKey: "link", targetItemIds: [targetItemId] }],
+              });
+        const denied = await invoke(foreign.third.id);
+        const absent = await invoke(missing);
+        expect(denied.error).toBeDefined();
+        expect(absent.error).toBeDefined();
+        if (!denied.error || !absent.error) throw new Error("Expected MCP refusals");
+        expect(JSON.stringify(denied.error).replaceAll(foreign.third.id, "<target>")).toBe(
+          JSON.stringify(absent.error).replaceAll(missing, "<target>"),
+        );
+        expect(await snapshot(ownTenant)).toEqual(ownBefore);
+        expect(await snapshot(foreignTenant)).toEqual(foreignBefore);
+      }
+      const replayTarget = await runInTenant(ownTenant, async () => {
+        await cp.createProperty({ databaseId: own.source.id, key: "scalar", name: "Scalar", type: "text" });
+        return cp.createItem({ databaseId: own.target.id, properties: {} });
+      });
+      const idempotencyKey = randomUUID();
+      const replayArgs = {
+        databaseId: own.source.id,
+        properties: {},
+        idempotencyKey,
+        relations: [{ propertyKey: "link", targetItemIds: [replayTarget.id] }],
+      };
+      const original = await call("semprec.item.create", replayArgs);
+      expect(original.error).toBeUndefined();
+      const originalText = original.result?.content[0]?.text;
+      if (!originalText) throw new Error("Missing original MCP item");
+      const originalItem = z.object({ id: z.string().uuid() }).parse(JSON.parse(originalText));
+      expect(await runInTenant(ownTenant, () => cp.listItemRelations(originalItem.id, own.property.id))).toMatchObject([
+        { targetItemId: replayTarget.id },
+      ]);
+      await runInTenant(ownTenant, () => cp.deleteProperty(own.property.id));
+      expect(await runInTenant(ownTenant, () => cp.listProperties(own.source.id))).not.toContainEqual(
+        expect.objectContaining({ id: own.property.id }),
+      );
+      const afterDelete = await snapshot(ownTenant);
+      const foreignAfterDelete = await snapshot(foreignTenant);
+      async function jobs() {
+        const result = await pool.query<{ snapshot: string; task_identifier: string }>(
+          "SELECT row_to_json(j)::text AS snapshot, task_identifier FROM graphile_worker.jobs j ORDER BY id",
+        );
+        const payloads: Record<string, string[]> = {};
+        for (const identifier of new Set(result.rows.map((row) => row.task_identifier))) {
+          payloads[identifier] = (await readJobPayloadsByIdentifier(pool, identifier))
+            .map((value) =>
+              createHash("sha256")
+                .update(JSON.stringify(value) ?? "undefined")
+                .digest("hex"),
+            )
+            .sort();
+        }
+        return { rows: result.rows, payloads };
+      }
+      const jobsAfterDelete = await jobs();
+      for (const propertyKey of ["link", "scalar"]) {
+        const replay = await call("semprec.item.create", {
+          ...replayArgs,
+          relations: [{ propertyKey, targetItemIds: [replayTarget.id] }],
+        });
+        expect(replay.error).toBeUndefined();
+        const text = replay.result?.content[0]?.text;
+        if (!text) throw new Error("Missing MCP replay item");
+        expect(z.object({ id: z.string().uuid() }).parse(JSON.parse(text)).id).toBe(originalItem.id);
+        expect(await snapshot(ownTenant)).toEqual(afterDelete);
+        expect(await snapshot(foreignTenant)).toEqual(foreignAfterDelete);
+        expect(await jobs()).toEqual(jobsAfterDelete);
+        const fresh = await call("semprec.item.create", {
+          ...replayArgs,
+          idempotencyKey: randomUUID(),
+          relations: [{ propertyKey, targetItemIds: [replayTarget.id] }],
+        });
+        expect(fresh.error).toMatchObject({ code: -32602, data: { field: "relations" } });
+        expect(await snapshot(ownTenant)).toEqual(afterDelete);
+        expect(await snapshot(foreignTenant)).toEqual(foreignAfterDelete);
+        expect(await jobs()).toEqual(jobsAfterDelete);
+      }
+    } catch (error) {
+      failure = { error };
+    } finally {
+      if (server?.listening) {
+        const ownedServer = server;
+        try {
+          await new Promise<void>((resolve, reject) =>
+            ownedServer.close((error) => (error ? reject(error) : resolve())),
+          );
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      try {
+        await runtime.end();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (failure) {
+      if (cleanupErrors.length > 0) console.error("MCP runtime fixture cleanup also failed");
+      throw failure.error;
+    }
+    if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, "MCP runtime fixture cleanup failed");
+  });
+
+  it("creates the requested initial relation through MCP", async () => {
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const fx = await buildFixtures();
+    const { name, arguments: args } = CASES["item.create"].tool(fx);
+    const response = await rpc(baseUrl, await authHeader(), name, args);
+    expect(response.error).toBeUndefined();
+    const { rows } = await pool.query<{ id: string }>(
+      "SELECT id FROM items WHERE database_id = $1 AND properties->>'title' = $2",
+      [fx.database.id, "Contract Item"],
+    );
+    expect(rows).toHaveLength(1);
+    const created = rows[0];
+    if (!created) throw new Error("Expected created item");
+    expect(await chokePoint.listItemRelations(created.id, fx.relationProperty.id)).toMatchObject([
+      { targetItemId: fx.targetItem.id },
+    ]);
   });
 
   it("forbids MCP database creation with properties but permits a bare create", async () => {

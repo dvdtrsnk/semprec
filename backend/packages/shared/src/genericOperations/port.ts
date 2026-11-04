@@ -14,7 +14,7 @@ import type {
   ViewItem,
 } from "./rows.js";
 
-/** Exhaustive mapped type over the 31 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 32 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
 export interface OutputByOperation {
   "database.list": Page<Database>;
   "database.get": Database;
@@ -49,6 +49,7 @@ export interface OutputByOperation {
   "item.restore": Item;
   "database.query": ItemPage;
   "relation.put": RelationEdge;
+  "relation.set": RelationEdge | null;
   "relation.delete": RelationEdge;
   "relation.list": RelationListEntry[];
   "page.restoreVersion": PageRestoreOutput;
@@ -172,6 +173,11 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["database.query"],
   ): Promise<OutputByOperation["database.query"]>;
+  setRelation(
+    actor: AuthenticatedActor,
+    input: InputByOperation["relation.set"],
+  ): Promise<OutputByOperation["relation.set"]>;
+
   putRelation(
     actor: AuthenticatedActor,
     input: InputByOperation["relation.put"],

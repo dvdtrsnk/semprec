@@ -1,10 +1,18 @@
 import type { CollectionMetadataResolver } from "@semprec/data";
+import { randomUUID } from "node:crypto";
 import { createItemWithClient, getDatabaseByModuleId, withTransaction } from "@semprec/data";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTenantZeroUser,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import {
   createAgentRun,
+  createUser as createPersistedUser,
   createChokePoint,
   createDocStore,
   createViewTypeRegistry,
@@ -16,7 +24,13 @@ import {
   type ViewRow,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
-import { GENERIC_OPERATION_NAMES, OPERATION_METADATA, type GenericOperationName } from "@semprec/shared";
+import {
+  GENERIC_OPERATION_NAMES,
+  OPERATION_METADATA,
+  runAsSystem,
+  runInTenant,
+  type GenericOperationName,
+} from "@semprec/shared";
 import { createGenericOperationAgentTools } from "../tools/generic/genericOperationAgentTools.js";
 
 const testMetadataResolver: CollectionMetadataResolver = {
@@ -56,6 +70,8 @@ interface Fixtures {
   targetDatabase: { id: string };
   targetItem: ItemRow;
   relationProperty: PropertyRow;
+  singleRelationProperty: PropertyRow;
+  secondTarget: ItemRow;
 }
 
 /**
@@ -83,6 +99,7 @@ async function buildFixtures(agentProjectItemId: string): Promise<Fixtures> {
 
   const targetDatabase = await chokePoint.createDatabase({ name: "AgentTools Contract Targets" });
   const targetItem = await chokePoint.createItem({ databaseId: targetDatabase.id, properties: {} });
+  const secondTarget = await chokePoint.createItem({ databaseId: targetDatabase.id, properties: {} });
   const { property: relationProperty } = await chokePoint.createRelationProperty({
     sourceDatabaseId: database.id,
     key: "assignedTo",
@@ -95,8 +112,32 @@ async function buildFixtures(agentProjectItemId: string): Promise<Fixtures> {
     callerItemId: itemA.id,
     targetItemId: targetItem.id,
   });
+  const { property: singleRelationProperty } = await chokePoint.createRelationProperty({
+    sourceDatabaseId: database.id,
+    key: "singleTarget",
+    name: "Single target",
+    targetDatabaseId: targetDatabase.id,
+    cardinality: "one_to_one",
+  });
+  await chokePoint.createRelation({
+    relationPropertyId: singleRelationProperty.id,
+    callerItemId: itemB.id,
+    targetItemId: targetItem.id,
+  });
 
-  return { database, property, itemA, itemB, view, viewActor, targetDatabase, targetItem, relationProperty };
+  return {
+    database,
+    property,
+    itemA,
+    itemB,
+    view,
+    viewActor,
+    targetDatabase,
+    targetItem,
+    relationProperty,
+    singleRelationProperty,
+    secondTarget,
+  };
 }
 
 interface Case {
@@ -106,7 +147,7 @@ interface Case {
 }
 
 /**
- * One AgentTool call per operation in the closed 31-operation catalog, mirroring
+ * One AgentTool call per operation in the closed 32-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern and `mcpGenericOperationsContract.test.ts`'s
  * MCP pattern one adapter over (the code-review finding on issue #220's diff: parameterized
  * contract tests across all of the then-28 operations were missing for the AgentTool adapter). Every
@@ -148,7 +189,13 @@ const CASES: Record<GenericOperationName, Case> = {
     },
   },
   "item.get": { args: (fx) => ({ itemId: fx.itemA.id }) },
-  "item.create": { args: (fx) => ({ databaseId: fx.database.id, properties: { title: "Contract Item" } }) },
+  "item.create": {
+    args: (fx) => ({
+      databaseId: fx.database.id,
+      properties: { title: "Contract Item" },
+      relations: [{ propertyKey: fx.relationProperty.key, targetItemIds: [fx.targetItem.id] }],
+    }),
+  },
   "item.patch": {
     args: (fx) => ({ itemId: fx.itemA.id, properties: { title: "Updated" }, ifVersion: fx.itemA.updatedAt }),
   },
@@ -165,6 +212,13 @@ const CASES: Record<GenericOperationName, Case> = {
       relationPropertyId: fx.relationProperty.id,
       callerItemId: fx.itemB.id,
       targetItemId: fx.targetItem.id,
+    }),
+  },
+  "relation.set": {
+    args: (fx) => ({
+      relationPropertyId: fx.singleRelationProperty.id,
+      callerItemId: fx.itemB.id,
+      targetItemId: fx.secondTarget.id,
     }),
   },
   "relation.delete": {
@@ -233,6 +287,145 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     expect(Object.keys(CASES).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 
+  it("executes relation.set and item.create through AgentTools under tenant RLS", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
+    let cleanupFailure: { error: unknown } | undefined;
+    try {
+      const role = await runAsSystem("test:verify-runtime-role", () =>
+        runtime.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+      const ownTenant = await createTestTenant(pool);
+      const foreignTenant = await createTestTenant(pool);
+      const user = await runAsSystem("test:create-agent-user", () =>
+        createPersistedUser(pool, {
+          tenantId: ownTenant,
+          email: `${randomUUID()}@example.test`,
+          passwordHash: "unused-test-hash",
+        }),
+      );
+      const cp = createChokePoint(runtime);
+      async function fixture(tenantId: string) {
+        return runInTenant(tenantId, async () => {
+          await seedSystem(runtime, createViewTypeRegistry());
+          const source = await cp.createDatabase({ name: "Runtime source" });
+          const target = await cp.createDatabase({ name: "Runtime target" });
+          const { property } = await cp.createRelationProperty({
+            sourceDatabaseId: source.id,
+            targetDatabaseId: target.id,
+            key: "link",
+            name: "Link",
+            cardinality: "one_to_one",
+          });
+          const caller = await cp.createItem({ databaseId: source.id, properties: {} });
+          const first = await cp.createItem({ databaseId: target.id, properties: {} });
+          const second = await cp.createItem({ databaseId: target.id, properties: {} });
+          const third = await cp.createItem({ databaseId: target.id, properties: {} });
+          await cp.setRelation({ relationPropertyId: property.id, callerItemId: caller.id, targetItemId: first.id });
+          return { source, property, caller, first, second, third };
+        });
+      }
+      const own = await fixture(ownTenant);
+      const foreign = await fixture(foreignTenant);
+      const run = await runInTenant(ownTenant, async () => {
+        const projects = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
+        if (!projects) throw new Error("Missing projects database");
+        const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Runtime agent" } });
+        return createAgentRun(runtime, {
+          projectItemId: project.id,
+          userId: user.id,
+          triggeredBy: "user",
+          task: "runtime contract",
+        });
+      });
+      const tools = createGenericOperationAgentTools(runtime, moduleRegistry, testMetadataResolver);
+      await runInTenant(ownTenant, async () => {
+        const moved = await tools["relation.set"](run.id, {
+          relationPropertyId: own.property.id,
+          callerItemId: own.caller.id,
+          targetItemId: own.second.id,
+        });
+        expect(moved.error).toBe(false);
+        expect(moved.approvalRequestId).toBeUndefined();
+        expect(await cp.listItemRelations(own.caller.id, own.property.id)).toMatchObject([
+          { targetItemId: own.second.id },
+        ]);
+        const created = await tools["item.create"](run.id, {
+          databaseId: own.source.id,
+          properties: {},
+          relations: [{ propertyKey: "link", targetItemIds: [own.third.id] }],
+        });
+        expect(created.error).toBe(false);
+        expect(created.approvalRequestId).toBeUndefined();
+        const parsed: unknown = JSON.parse(created.result);
+        if (typeof parsed !== "object" || parsed === null || !("id" in parsed) || typeof parsed.id !== "string")
+          throw new Error("Missing created item id");
+        expect(await cp.listItemRelations(parsed.id, own.property.id)).toMatchObject([{ targetItemId: own.third.id }]);
+      });
+      async function snapshot(tenantId: string) {
+        return runInTenant(tenantId, async () => {
+          const items = await runtime.query<{
+            id: string;
+            database_id: string;
+            properties: unknown;
+            computed: unknown;
+            deleted_at: Date | null;
+            updated_at: Date;
+          }>("SELECT id, database_id, properties, computed, deleted_at, updated_at FROM items ORDER BY id");
+          const edges = await runtime.query<{ id: string; item_a: string; item_b: string }>(
+            "SELECT id, item_a, item_b FROM item_relations ORDER BY id",
+          );
+          const approvals = await runtime.query<{ id: string; status: string }>(
+            "SELECT id, status FROM approval_requests ORDER BY id",
+          );
+          return { items: items.rows, edges: edges.rows, approvals: approvals.rows };
+        });
+      }
+      const ownBefore = await snapshot(ownTenant);
+      const foreignBefore = await snapshot(foreignTenant);
+      const missing = randomUUID();
+      for (const operation of ["relation.set", "item.create"] as const) {
+        const call = (targetItemId: string) =>
+          operation === "relation.set"
+            ? tools[operation](run.id, {
+                relationPropertyId: own.property.id,
+                callerItemId: own.caller.id,
+                targetItemId,
+              })
+            : tools[operation](run.id, {
+                databaseId: own.source.id,
+                properties: {},
+                relations: [{ propertyKey: "link", targetItemIds: [targetItemId] }],
+              });
+        const denied = await runInTenant(ownTenant, () => call(foreign.third.id));
+        const absent = await runInTenant(ownTenant, () => call(missing));
+        expect(denied.error).toBe(true);
+        expect(absent.error).toBe(true);
+        expect(denied.result.replaceAll(foreign.third.id, "<target>")).toBe(
+          absent.result.replaceAll(missing, "<target>"),
+        );
+        expect(await snapshot(ownTenant)).toEqual(ownBefore);
+        expect(await snapshot(foreignTenant)).toEqual(foreignBefore);
+      }
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await runtime.end();
+      } catch (error) {
+        cleanupFailure = { error };
+      }
+    }
+    if (failure) {
+      if (cleanupFailure) console.error("AgentTool runtime fixture cleanup also failed");
+      throw failure.error;
+    }
+    if (cleanupFailure) throw cleanupFailure.error;
+  });
+
   for (const operation of GENERIC_OPERATION_NAMES) {
     const isDestructive = DESTRUCTIVE_OPERATIONS.includes(operation);
     it(`${isDestructive ? "queues an approval request for" : "dispatches"} ${operation} through the AgentTool adapter`, async () => {
@@ -243,6 +436,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
         task: `contract test ${operation}`,
       });
       const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+      expect(Object.keys(tools)).toContain("relation.set");
       const fx = await buildFixtures(projectItemId);
       const testCase = CASES[operation];
       await testCase.prepare?.(fx);
@@ -259,6 +453,22 @@ describe("generic operation AgentTools contract (issue #220)", () => {
         expect(rows[0]!.count).toBe(1);
       } else {
         expect(outcome.error).toBe(false);
+        if (operation === "relation.set") {
+          const relations = await chokePoint.listItemRelations(fx.itemB.id, fx.singleRelationProperty.id);
+          expect(relations).toMatchObject([{ targetItemId: fx.secondTarget.id }]);
+        }
+        if (operation === "item.create") {
+          const { rows } = await pool.query<{ id: string }>(
+            "SELECT id FROM items WHERE database_id = $1 AND properties->>'title' = $2",
+            [fx.database.id, "Contract Item"],
+          );
+          expect(rows).toHaveLength(1);
+          const created = rows[0];
+          if (!created) throw new Error("Expected created item");
+          expect(await chokePoint.listItemRelations(created.id, fx.relationProperty.id)).toMatchObject([
+            { targetItemId: fx.targetItem.id },
+          ]);
+        }
         // A non-destructive call runs without an approval request (docs/adr/2026-09-18-non-destructive-generic-operations-bypass-agent-approval.md).
         const { rows } = await pool.query<{ count: number }>(
           `SELECT count(*)::int AS count FROM approval_requests WHERE agent_run_id = $1`,

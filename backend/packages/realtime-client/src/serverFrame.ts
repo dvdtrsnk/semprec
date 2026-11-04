@@ -62,6 +62,17 @@ export function parseServerFrame(raw: string): OutboundFrame | null {
 
   switch (parsed.type) {
     case "invalidate": {
+      if (parsed.scope === "relation") {
+        const { databaseId, itemId, propertyKey, op } = parsed;
+        if (
+          typeof databaseId !== "string" ||
+          typeof itemId !== "string" ||
+          !(propertyKey === null || typeof propertyKey === "string") ||
+          !(op === "put" || op === "delete" || op === "metadata")
+        )
+          return null;
+        return { type: "invalidate", scope: "relation", databaseId, itemId, propertyKey, op };
+      }
       if (parsed.scope === "item") {
         const { databaseId, itemId, op, updatedAt } = parsed;
         if (typeof databaseId !== "string" || typeof itemId !== "string" || typeof updatedAt !== "string") return null;

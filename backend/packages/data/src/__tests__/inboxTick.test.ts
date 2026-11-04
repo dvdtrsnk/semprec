@@ -195,18 +195,19 @@ describe("Inbox item event dispatch (issue #103)", () => {
   it("a rolled-back item mutation emits no job", async () => {
     const inboxId = await databaseIdFor("inbox");
 
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      await createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-      });
-      await client.query("ROLLBACK");
-    } finally {
-      client.release();
-    }
+    const rollback = new Error("Deliberate rollback");
+    await expect(
+      inTenantZero(() =>
+        withTransaction(pool, async (client) => {
+          await createInboxItemWithClient(client, {
+            inboxDatabaseId: inboxId,
+            date: "2026-08-28",
+            time: "09:00",
+          });
+          throw rollback;
+        }),
+      ),
+    ).rejects.toBe(rollback);
 
     const jobs = await pendingTickJobs();
     expect(jobs).toHaveLength(0);

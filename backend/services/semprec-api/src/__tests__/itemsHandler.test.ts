@@ -1158,6 +1158,64 @@ describe("item routes (issue #241)", () => {
   }
 
   describe("create", () => {
+    it("creates initial relations atomically and replays the idempotency key over REST", async () => {
+      const headers = { ...(await authHeader()), "Content-Type": "application/json", "Idempotency-Key": randomUUID() };
+      const fixture = await runInTenant(getTenantZeroId(), async () => {
+        const source = await chokePoint.createDatabase({ name: "Source" });
+        const target = await chokePoint.createDatabase({ name: "Target" });
+        const { property } = await chokePoint.createRelationProperty({
+          sourceDatabaseId: source.id,
+          targetDatabaseId: target.id,
+          key: "project",
+          name: "Project",
+          cardinality: "one_to_one",
+        });
+        const first = await chokePoint.createItem({ databaseId: target.id, properties: {} });
+        const second = await chokePoint.createItem({ databaseId: target.id, properties: {} });
+        return { source, property, first, second };
+      });
+      const create = (targetItemId: string, key = headers["Idempotency-Key"]) =>
+        fetch(`${baseUrl}/api/databases/${fixture.source.id}/items`, {
+          method: "POST",
+          headers: { ...headers, "Idempotency-Key": key },
+          body: JSON.stringify({
+            properties: {},
+            relations: [{ propertyKey: "project", targetItemIds: [targetItemId] }],
+          }),
+        });
+      const first = await create(fixture.first.id);
+      expect(first.status).toBe(201);
+      const item = z
+        .object({ id: z.string().uuid() })
+        .passthrough()
+        .parse(await first.json());
+      const replay = await create(fixture.second.id);
+      expect(replay.status).toBe(201);
+      expect(
+        z
+          .object({ id: z.string() })
+          .passthrough()
+          .parse(await replay.json()).id,
+      ).toBe(item.id);
+      const replayWithMissingTarget = await create(randomUUID());
+      expect(replayWithMissingTarget.status).toBe(201);
+      expect(z.object({ id: z.string().uuid() }).parse(await replayWithMissingTarget.json()).id).toBe(item.id);
+      expect(
+        await runInTenant(getTenantZeroId(), () => chokePoint.listItemRelations(item.id, fixture.property.id)),
+      ).toMatchObject([{ targetItemId: fixture.first.id }]);
+      const before = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+        fixture.source.id,
+      ]);
+      const refused = await create(randomUUID(), randomUUID());
+      expect(refused.status).toBe(400);
+      expect(
+        (
+          await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+            fixture.source.id,
+          ])
+        ).rows,
+      ).toEqual(before.rows);
+    });
     it("rejects an unauthenticated request", async () => {
       const res = await fetch(`${baseUrl}/api/databases/${randomUUID()}/items`, { method: "POST" });
       expect(res.status).toBe(401);

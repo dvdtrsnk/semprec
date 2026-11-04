@@ -1888,7 +1888,13 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
             if (notification.channel !== "semprec_events" || !notification.payload) return;
             try {
               const payload: unknown = JSON.parse(notification.payload);
-              if (!isRecord(payload) || !isRecord(payload.message) || payload.message.itemId !== source.id) return;
+              if (
+                !isRecord(payload) ||
+                !isRecord(payload.message) ||
+                payload.message.scope !== "item" ||
+                payload.message.itemId !== source.id
+              )
+                return;
               resolve(payload);
             } catch (error) {
               reject(error instanceof Error ? error : new Error("Invalid notification"));
@@ -1941,7 +1947,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
             return result;
           },
         });
-        const itemPublications = (itemId: string): Record<string, unknown>[] => {
+        const publicationsFor = (scope: "item" | "relation", itemId: string): Record<string, unknown>[] => {
           const messages: Record<string, unknown>[] = [];
           for (const call of querySpy.mock.calls) {
             const args: readonly unknown[] = call;
@@ -1949,10 +1955,12 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
             const values: unknown[] = args[1];
             if (values[0] !== "semprec_events" || typeof values[1] !== "string") continue;
             const value: unknown = JSON.parse(values[1]);
-            if (isRecord(value) && value.type === "invalidation" && value.itemId === itemId) messages.push(value);
+            if (isRecord(value) && value.type === "invalidation" && value.scope === scope && value.itemId === itemId)
+              messages.push(value);
           }
           return messages;
         };
+        const itemPublications = (itemId: string) => publicationsFor("item", itemId);
         settlePublications = async () => {
           const errors: unknown[] = [];
           while (settledPublicationCount < publications.length) {
@@ -2057,6 +2065,28 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         });
         observationConsumed = true;
         expect(itemPublications(source.id)).toEqual([expect.objectContaining({ userId: tenantA.userId })]);
+        expect(publicationsFor("relation", source.id)).toEqual([
+          {
+            type: "invalidation",
+            scope: "relation",
+            databaseId: tenantA.databaseId,
+            itemId: source.id,
+            propertyKey: property.key,
+            op: "put",
+            userId: tenantA.userId,
+          },
+        ]);
+        expect(publicationsFor("relation", target.id)).toEqual([
+          {
+            type: "invalidation",
+            scope: "relation",
+            databaseId: tenantA.databaseId,
+            itemId: target.id,
+            propertyKey: null,
+            op: "put",
+            userId: tenantA.userId,
+          },
+        ]);
         querySpy.mockClear();
         if (control === "held-disposal") {
           let finished = false;

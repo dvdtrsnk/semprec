@@ -8,6 +8,7 @@ import {
   NotFoundError,
   ValidationError,
   type Actor,
+  type InitialItemRelation,
   type WriterIdentity,
 } from "@semprec/data";
 import type {
@@ -318,6 +319,25 @@ export function createGenericApplicationService(
     },
 
     async createItem(actor, input) {
+      if (input.relations !== undefined) {
+        const properties = await chokePoint.listProperties(input.databaseId);
+        const relations = input.relations.map<InitialItemRelation>(({ propertyKey, targetItemIds }) => {
+          const property = properties.find((entry) => entry.key === propertyKey && entry.type === "relation");
+          if (!property) return { kind: "unresolved" };
+          return { kind: "resolved", relationPropertyId: property.id, targetItemIds };
+        });
+        return chokePoint.createItemWithRelations(
+          {
+            databaseId: input.databaseId,
+            properties: input.properties,
+            idempotencyKey: input.idempotencyKey,
+            relations,
+          },
+          actor.userId,
+          humanWriterUserIdOf(actor),
+          writerIdentityOf(actor),
+        );
+      }
       return chokePoint.createItem(
         { databaseId: input.databaseId, properties: input.properties, idempotencyKey: input.idempotencyKey },
         actor.userId,
@@ -389,6 +409,10 @@ export function createGenericApplicationService(
     },
 
     // ---- relations ----
+    async setRelation(actor, input) {
+      return chokePoint.setRelation(input, writerIdentityOf(actor), actor.userId);
+    },
+
     async putRelation(actor, input) {
       return chokePoint.createRelation(
         {
