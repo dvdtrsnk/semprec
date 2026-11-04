@@ -124,6 +124,12 @@ describe("Areas property cutover", () => {
         keys,
       ]);
       expect(deleted.rowCount).toBe(keys.length);
+      // The public API cannot restore the former locked system relation definitions.
+      const downgraded = await pool.query(
+        "UPDATE relation_definitions SET cardinality='one_to_one' WHERE property_id_a IN (SELECT id FROM properties WHERE database_id=$1 AND key IN ('company','healthRecord'))",
+        [db.id],
+      );
+      expect(downgraded.rowCount).toBe(2);
       return db.id;
     });
     const unseeded = await createTestTenant(admin);
@@ -137,6 +143,11 @@ describe("Areas property cutover", () => {
         [otherId, keys],
       );
       expect(result.rows).toHaveLength(3);
+      const relations = await pool.query<{ cardinality: string }>(
+        "SELECT cardinality FROM relation_definitions WHERE property_id_a IN (SELECT id FROM properties WHERE database_id=$1 AND key IN ('company','healthRecord'))",
+        [otherId],
+      );
+      expect(relations.rows).toEqual([{ cardinality: "one_to_many" }, { cardinality: "one_to_many" }]);
     });
     await runInTenant(unseeded, async () => {
       await runAreasPropertiesCutoverMigration(pool);
