@@ -293,13 +293,15 @@ export async function createAgentSessionFactoryForRun(
   run: AgentRunRow,
 ): Promise<CreateAgentSession> {
   const tools = await createGenericOperationTools(pool, moduleRegistry, run.id);
+  let moduleTools: typeof tools = [];
   // Read once per run: a locale change applies from the next run, a running one keeps its prompt.
   const instruction = languageInstruction(await getTenantUserLocale(pool));
   let systemPrompt = instruction ? `${AGENT_BASE_SYSTEM_PROMPT}\n${instruction}` : AGENT_BASE_SYSTEM_PROMPT;
 
   if (run.projectItemId) {
     tools.push(...(await createMcpTools(pool, run.id, run.projectItemId)));
-    tools.push(...(await createModuleTools(pool, moduleRegistry, run.id, run.projectItemId)));
+    moduleTools = await createModuleTools(pool, moduleRegistry, run.id, run.projectItemId);
+    tools.push(...moduleTools);
     const transactions = createPoolClientTransactionRunner(pool);
     const override = await createProjectAgentGuidanceSystemPromptOverride(
       (projectItemId) =>
@@ -322,6 +324,7 @@ export async function createAgentSessionFactoryForRun(
     model: gateway.model,
     streamFn,
     tools: uniqueTools,
+    moduleToolNames: new Set(uniqueTools.filter((tool) => moduleTools.includes(tool)).map((tool) => tool.name)),
     toolEventMetadata,
     systemPrompt,
     isBudgetRefusal: gateway.isBudgetRefusal,

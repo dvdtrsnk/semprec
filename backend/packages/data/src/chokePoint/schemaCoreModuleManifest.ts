@@ -1,5 +1,12 @@
 import type { ModuleManifest } from "@semprec/module-registry";
 import { CAPABILITY_IDS } from "@semprec/shared";
+import type { Pool } from "pg";
+import { createHeartbeatTriggerTool } from "../scheduler/heartbeatAgentTools.js";
+import type { HeartbeatRuleKindRegistry } from "../scheduler/rule.js";
+
+export function createGuardedHeartbeatTriggerTool(pool: Pool, ruleKinds: HeartbeatRuleKindRegistry) {
+  return createHeartbeatTriggerTool(pool, ruleKinds, { refuseWhileActive: true });
+}
 
 export {
   createHeartbeatListTool,
@@ -68,7 +75,7 @@ export const manifest: ModuleManifest = {
     },
     {
       name: "heartbeat.trigger",
-      handlerExport: "createHeartbeatTriggerTool",
+      handlerExport: "createGuardedHeartbeatTriggerTool",
       argumentSchemaExport: "heartbeatTriggerArgsSchema",
       approval: "none",
       riskClass: "write",

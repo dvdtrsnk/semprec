@@ -34,7 +34,7 @@ describe("core module manifests (module-contract issue #226)", () => {
     expect(await registry.getAgentTools(new Set())).toEqual([
       { moduleId: "schemaCore", name: "heartbeat.list", handlerExport: "createHeartbeatListTool" },
       { moduleId: "schemaCore", name: "heartbeat.history", handlerExport: "createHeartbeatHistoryTool" },
-      { moduleId: "schemaCore", name: "heartbeat.trigger", handlerExport: "createHeartbeatTriggerTool" },
+      { moduleId: "schemaCore", name: "heartbeat.trigger", handlerExport: "createGuardedHeartbeatTriggerTool" },
     ]);
     const tools = await registry.getAgentToolDefinitions(new Set());
     expect(tools.map((tool) => tool.name)).toEqual(["heartbeat.list", "heartbeat.history", "heartbeat.trigger"]);

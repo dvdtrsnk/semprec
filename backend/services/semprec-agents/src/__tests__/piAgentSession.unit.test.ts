@@ -42,6 +42,39 @@ async function collect(messages: AsyncIterable<AgentMessage>): Promise<AgentMess
 }
 
 describe("createPiAgentSessionFactory (issue #647)", () => {
+  it.each([
+    ["module error", true, true, true],
+    ["module success", true, false, false],
+    ["other tool error", false, true, false],
+  ])("keeps native and model result flags for %s", async (_label, module, returnedError, expectedError) => {
+    const { faux, model, streamFn } = fauxModel();
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("echo", { value: "hi" }, { id: "call-result" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage("continued"),
+    ]);
+    const contexts: Context[] = [];
+    const observed: StreamFn = (m, context, options) => {
+      contexts.push(structuredClone(context));
+      return streamFn(m, context, options);
+    };
+    const tool: AgentTool = {
+      ...echoTool([]),
+      execute: async () => ({ content: [{ type: "text", text: "safe result" }], details: { error: returnedError } }),
+    };
+    const session = createPiAgentSessionFactory({
+      model,
+      streamFn: observed,
+      tools: [tool],
+      toolEventMetadata: new Map(),
+      moduleToolNames: new Set(module ? ["echo"] : []),
+      systemPrompt: "base",
+    })({ task: "run" });
+    const messages = await collect(session.messages());
+    expect(messages.find((message) => message.kind === "tool_result")).toMatchObject({ isError: expectedError });
+    const result = contexts.at(-1)?.messages.find((message) => message.role === "toolResult");
+    expect(result).toMatchObject({ isError: expectedError, content: [{ type: "text", text: "safe result" }] });
+    expect(messages).toContainEqual(expect.objectContaining({ kind: "message", text: "continued" }));
+  });
   it("does not log prompt error content when the consumer stops reading", async () => {
     const { model, streamFn } = fauxModel();
     let listener: ((event: AgentEvent, signal: AbortSignal) => Promise<void> | void) | undefined;

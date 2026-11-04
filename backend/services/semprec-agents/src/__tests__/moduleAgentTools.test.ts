@@ -11,7 +11,9 @@ import {
   createHeartbeat,
   createUser,
   generatePermissionManifest,
+  manualHeartbeatFireJobKey,
   seedSystem,
+  setHeartbeatEnabled,
   withTransaction,
 } from "@semprec/data";
 import { createAgentSessionFactoryForRun } from "../agentSessionComposition.js";
@@ -187,6 +189,7 @@ describe("module agent tools under project ownership", () => {
         expect(options.tools.map((candidate) => candidate.name)).not.toContain("owned_conditional");
         expect(options.tools.map((candidate) => candidate.name)).not.toContain("owned_unknown");
         expect(options.toolEventMetadata.has("owned_inspect")).toBe(false);
+        expect(options.moduleToolNames?.has("owned_inspect")).toBe(true);
         if (!tool) throw new Error("Owned tool missing");
         expect((await tool.execute("call", { value: "hello" })).content).toEqual([{ type: "text", text: "hello" }]);
         expect((await tool.execute("call", { value: "throw" })).content).toEqual([
@@ -205,6 +208,62 @@ describe("module agent tools under project ownership", () => {
         expect((await trigger.execute("trigger", { heartbeatId: heartbeat.id })).details).toMatchObject({
           error: false,
         });
+        const jobs = async (id: string) =>
+          (
+            await admin.query<{ id: string; payload: unknown }>(
+              "SELECT id, payload FROM graphile_worker._private_jobs WHERE key = $1 ORDER BY id",
+              [manualHeartbeatFireJobKey(id)],
+            )
+          ).rows;
+        const beforeQueued = await jobs(heartbeat.id);
+        expect(beforeQueued).toHaveLength(1);
+        const queued = await trigger.execute("trigger-again", { heartbeatId: heartbeat.id });
+        expect(queued.details).toMatchObject({ error: true });
+        expect(JSON.stringify(queued.content)).toContain("already");
+        expect(await jobs(heartbeat.id)).toEqual(beforeQueued);
+        const runningHeartbeat = await withTransaction(pool, (client) =>
+          createHeartbeat(client, {
+            projectItemId: project.id,
+            name: "Running",
+            rule: { kind: "interval", minutes: 5 },
+            actionId: CORE_AGENT_RUN_ACTION_ID,
+            actionConfig: { task: "work" },
+          }),
+        );
+        await createAgentRun(pool, {
+          projectItemId: project.id,
+          heartbeatId: runningHeartbeat.id,
+          triggeredBy: "heartbeat",
+          task: "running",
+        });
+        expect((await trigger.execute("running", { heartbeatId: runningHeartbeat.id })).details).toMatchObject({
+          error: true,
+        });
+        expect(await jobs(runningHeartbeat.id)).toHaveLength(0);
+        const disabled = await withTransaction(pool, (client) =>
+          createHeartbeat(client, {
+            projectItemId: project.id,
+            name: "Disabled",
+            rule: { kind: "interval", minutes: 5 },
+            actionId: CORE_AGENT_RUN_ACTION_ID,
+            actionConfig: { task: "work" },
+          }),
+        );
+        await withTransaction(pool, (client) => setHeartbeatEnabled(client, disabled.id, false));
+        expect((await trigger.execute("disabled", { heartbeatId: disabled.id })).details).toMatchObject({
+          error: true,
+        });
+        expect(await jobs(disabled.id)).toHaveLength(0);
+        const event = await withTransaction(pool, (client) =>
+          createHeartbeat(client, {
+            projectItemId: project.id,
+            name: "Event",
+            rule: { kind: "onItemEvent", databaseId: projects.id, event: "create" },
+            actionId: CORE_AGENT_RUN_ACTION_ID,
+          }),
+        );
+        expect((await trigger.execute("event", { heartbeatId: event.id })).details).toMatchObject({ error: true });
+        expect(await jobs(event.id)).toHaveLength(0);
         expect((await trigger.execute("trigger", { heartbeatId: customHeartbeat.id })).details).toMatchObject({
           error: false,
         });

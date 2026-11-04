@@ -198,6 +198,7 @@ export function createHeartbeatHistoryTool(
 export function createHeartbeatTriggerTool(
   pool: Pool,
   moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+  options: { refuseWhileActive?: boolean } = {},
 ): HeartbeatTriggerTool {
   return async function heartbeatTrigger(currentRunId, rawArgs) {
     const parsedArgs = heartbeatTriggerArgsSchema.safeParse(rawArgs);
@@ -218,7 +219,7 @@ export function createHeartbeatTriggerTool(
             heartbeatId: parsedArgs.data.heartbeatId,
             projectItemId,
             trigger: { triggeredByRunId: currentRunId },
-            refuseWhileActive: false,
+            refuseWhileActive: options.refuseWhileActive ?? false,
           },
           moduleRuleKinds,
         ),
@@ -241,6 +242,7 @@ function refusalForAgentTool(err: unknown, heartbeatId: string): HeartbeatAgentT
   if (err instanceof NotFoundError) return { error: true, result: `Heartbeat ${heartbeatId} not found` };
   if (err instanceof HeartbeatEventTriggeredError) return { error: true, result: HEARTBEAT_EVENT_TRIGGERED_ERROR };
   if (err instanceof HeartbeatDisabledError) return { error: true, result: HEARTBEAT_DISABLED_ERROR };
+  if (err instanceof HeartbeatRunningError) return { error: true, result: HEARTBEAT_RUNNING_MESSAGE };
   return null;
 }
 

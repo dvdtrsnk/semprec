@@ -307,6 +307,70 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     expect(result.error).toBeFalsy();
   });
 
+  it("validates Areas item.patch through the AgentTool under tenant RLS", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
+    let cleanupFailure: { error: unknown } | undefined;
+    try {
+      const tenant = await createTestTenant(pool);
+      const user = await runAsSystem("test:create-area-agent", () =>
+        createPersistedUser(pool, {
+          tenantId: tenant,
+          email: `${randomUUID()}@example.test`,
+          passwordHash: "unused-test-hash",
+        }),
+      );
+      await runInTenant(tenant, async () => {
+        await seedSystem(runtime, createViewTypeRegistry());
+        const cp = createChokePoint(runtime);
+        const areas = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "areas"));
+        const projects = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
+        if (!areas || !projects) throw new Error("System databases missing");
+        const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Agent" } });
+        const run = await createAgentRun(runtime, {
+          projectItemId: project.id,
+          userId: user.id,
+          triggeredBy: "user",
+          task: "update Areas",
+        });
+        const item = await cp.createItem({ databaseId: areas.id, properties: { name: "Area" } });
+        const tools = createGenericOperationAgentTools(runtime, moduleRegistry, testMetadataResolver);
+        const patch = async (properties: Record<string, unknown>) => {
+          const current = await cp.getItem(areas.id, item.id);
+          if (!current) throw new Error("Area missing");
+          return tools["item.patch"](run.id, { itemId: item.id, properties, ifVersion: current.updatedAt });
+        };
+        expect((await patch({ icon: "briefcase", color: "#5856D6" })).error).toBe(false);
+        const before = await cp.getItem(areas.id, item.id);
+        expect(before?.properties).toMatchObject({ icon: "briefcase", color: "#5856D6" });
+        for (const [field, value] of [
+          ["icon", "rocket123"],
+          ["color", "#123456"],
+        ] as const) {
+          const outcome = await patch({ [field]: value });
+          expect(outcome.error).toBe(true);
+          expect(outcome.result).toContain(field);
+          expect(await cp.getItem(areas.id, item.id)).toEqual(before);
+        }
+        expect((await patch({ icon: null, color: null })).error).toBe(false);
+        expect((await cp.getItem(areas.id, item.id))?.properties).toMatchObject({ icon: null, color: null });
+      });
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await runtime.end();
+      } catch (error) {
+        cleanupFailure = { error };
+      }
+    }
+    if (failure) {
+      if (cleanupFailure) console.error("Area AgentTool fixture cleanup also failed");
+      throw failure.error;
+    }
+    if (cleanupFailure) throw cleanupFailure.error;
+  });
+
   it("has exactly one contract case per operation in the closed catalog", () => {
     expect(Object.keys(CASES).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
