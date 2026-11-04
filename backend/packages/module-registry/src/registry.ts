@@ -1,5 +1,6 @@
 import { loadModuleCatalogs, type ModuleCatalogs } from "./catalog.js";
 import { z } from "zod";
+import { CAPABILITY_IDS } from "@semprec/shared";
 import {
   moduleManifestSchema,
   type CustomRouteMethod,
@@ -630,7 +631,11 @@ export class ModuleRegistry {
       manifest.agentTools
         .filter(
           (tool) =>
-            tool.approval === "none" && (tool.capability === undefined || grantedCapabilities.has(tool.capability)),
+            tool.approval === "none" &&
+            (tool.capability === undefined ||
+              (grantedCapabilities.has(tool.capability) &&
+                (manifest.capabilities.includes(tool.capability) ||
+                  CAPABILITY_IDS.some((id) => id === tool.capability)))),
         )
         .map((tool) => {
           const schema = exports[tool.argumentSchemaExport];

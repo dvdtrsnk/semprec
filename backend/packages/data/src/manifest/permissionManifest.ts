@@ -3,7 +3,7 @@ import type { ModuleRegistry } from "@semprec/module-registry";
 import { CAPABILITY_IDS } from "@semprec/shared";
 import { visibleDatabaseIds } from "../chokePoint/itemsStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
-import { heartbeatRuleSchema, type HeartbeatRule } from "../scheduler/rule.js";
+import { parseHeartbeatRule, type AnyHeartbeatRule } from "../scheduler/rule.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
 import { getGrantedMcpAgentTools, type McpAgentToolProjection } from "../mcp/mcpAgentTools.js";
 import { createCatalogResolver, resolveDatabaseName, resolveProperty } from "./catalogResolution.js";
@@ -48,7 +48,7 @@ export interface ManifestHeartbeat {
   id: string;
   name: string;
   actionId: string;
-  rule: HeartbeatRule;
+  rule: AnyHeartbeatRule;
 }
 
 /**
@@ -159,11 +159,17 @@ export async function generatePermissionManifest(
     `SELECT id, name, action_id, rule FROM project_heartbeats WHERE project_item_id = $1`,
     [projectItemId],
   );
+  const ruleKinds = new Map(
+    ((await moduleRegistry?.getHeartbeatRuleKindDefinitions()) ?? []).map((definition) => [
+      definition.kind,
+      { schema: definition.schema, nextFireAt: definition.nextFireAt },
+    ]),
+  );
   const heartbeats = heartbeatRows.map((h) => ({
     id: h.id,
     name: h.name,
     actionId: h.action_id,
-    rule: heartbeatRuleSchema.parse(h.rule),
+    rule: parseHeartbeatRule(h.rule, ruleKinds),
   }));
 
   const { rows: projectRows } = await client.query<{ properties: Record<string, unknown> }>(
@@ -184,21 +190,23 @@ export async function generatePermissionManifest(
   if (moduleRegistry) {
     const visible = new Set(await visibleDatabaseIds(client));
     const core = new Set<string>(CAPABILITY_IDS);
+    const ownership = new Map<string, boolean>();
     for (const declaration of await moduleRegistry.getModuleCapabilityDeclarations()) {
-      if (declaration.databaseKeys.length === 0) continue;
-      const owned = declaration.databaseKeys.every((key) => {
-        const row = databaseRows.find((candidate) => candidate.key === key);
-        return (
-          row !== undefined &&
-          visible.has(row.id) &&
-          !(row.owner_module_id && SEMPREC_READ_ONLY_MODULE_IDS.includes(row.owner_module_id))
-        );
-      });
-      if (owned)
-        for (const capability of declaration.capabilities) {
-          if (!core.has(capability) && !grantedCapabilities.includes(capability)) grantedCapabilities.push(capability);
-        }
+      const owned =
+        declaration.databaseKeys.length > 0 &&
+        declaration.databaseKeys.every((key) => {
+          const row = databaseRows.find((candidate) => candidate.key === key);
+          return (
+            row !== undefined &&
+            visible.has(row.id) &&
+            !(row.owner_module_id && SEMPREC_READ_ONLY_MODULE_IDS.includes(row.owner_module_id))
+          );
+        });
+      for (const capability of declaration.capabilities) {
+        if (!core.has(capability)) ownership.set(capability, (ownership.get(capability) ?? true) && owned);
+      }
     }
+    for (const [capability, owned] of ownership) if (owned) grantedCapabilities.push(capability);
   }
 
   return { projectItemId, databases, heartbeats, capabilities, agentTools, grantedCapabilities };
