@@ -11,6 +11,7 @@ import {
   type CustomRouteDependencies,
 } from "./adapter/customRouteMount.js";
 import { mountRoutes } from "./adapter/routeTable.js";
+import { createSempThreadRoutes } from "./sempThreadsHandler.js";
 import { createAccountExportDownloadListener, createAccountRoutes } from "./accountHandler.js";
 import { createAdminRoutes } from "./adminHandler.js";
 import { createDatabaseRoutes } from "./databasesHandler.js";
@@ -94,6 +95,7 @@ export async function createDispatcher(
   const genericApplicationService = createGenericApplicationService(pool, collectionMetadataResolver);
   const dispatchResourceRoute = mountRoutes(pool, [
     ...createAccountRoutes(pool, options),
+    ...createSempThreadRoutes(pool),
     ...createAdminRoutes(pool, options),
     ...createDatabaseRoutes(genericApplicationService, options.moduleRegistry),
     ...createPropertyRoutes(genericApplicationService, options.moduleRegistry),

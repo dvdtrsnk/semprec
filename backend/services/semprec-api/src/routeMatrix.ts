@@ -68,6 +68,22 @@ const EXAMPLE_ID = "00000000-0000-0000-0000-000000000000";
 
 export const ROUTE_MATRIX: RouteMatrixEntry[] = [
   {
+    name: "semp thread detail",
+    method: "GET",
+    path: `/api/semp/threads/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "semp thread messages",
+    method: "GET",
+    path: `/api/semp/threads/${EXAMPLE_ID}/messages`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "server identity",
     method: "GET",
     path: "/api/server-info",

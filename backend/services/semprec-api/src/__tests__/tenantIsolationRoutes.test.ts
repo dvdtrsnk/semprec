@@ -39,6 +39,7 @@ import {
   getOrCreateJournalItem,
   hashPassword,
   handleObservabilityCheckSystemTask,
+  handleAgentRunEventsRetentionTask,
   insertAgentRunEvent,
   listPushSubscriptionsForUser,
   loadFullModuleRegistry,
@@ -145,6 +146,7 @@ interface TenantFixture {
   heartbeatId: string;
   notificationId: string;
   agentRunId: string;
+  sempThreadId: string;
   /** A bigint, so it is not in `ids`: as a substring it would match any digit. */
   agentRunEventId: string;
   approvalRequestId: string;
@@ -614,6 +616,14 @@ async function seedTenant(): Promise<TenantFixture> {
     };
   });
 
+  const sempThreadId = await inTenantTransaction(tenantId, async (client) => {
+    const { rows } = await client.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
+    const row = rows[0];
+    if (!row) throw new Error("Thread insert returned no row");
+    await client.query("INSERT INTO semp_messages (thread_id, role, text) VALUES ($1, 'user', 'isolation')", [row.id]);
+    return row.id;
+  });
+
   const pushDeviceToken = randomBytes(32).toString("hex");
   const pushSubscriptionId = readString(
     await sendOk(member, {
@@ -670,6 +680,7 @@ async function seedTenant(): Promise<TenantFixture> {
     scoped.mcpServerItemId,
     scoped.mcpToolRegistrationId,
     scoped.agentRunId,
+    sempThreadId,
     scoped.approvalRequestId,
     ...listedDatabaseIds,
   ];
@@ -697,6 +708,7 @@ async function seedTenant(): Promise<TenantFixture> {
     blobContentHash: blob.contentHash,
     projectItemId,
     ...scoped,
+    sempThreadId,
     transcriptItemId,
     proposalItemId,
     mailboxItemId,
@@ -1172,6 +1184,20 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         },
       }));
     }),
+  "semp thread detail": async () => {
+    await expectForeignLikeRandom(b.member, [a.sempThreadId], ([id]) => ({
+      method: "GET",
+      path: `/api/semp/threads/${id}`,
+    }));
+    await sendOk(b.member, { method: "GET", path: `/api/semp/threads/${b.sempThreadId}` });
+  },
+  "semp thread messages": async () => {
+    await expectForeignLikeRandom(b.member, [a.sempThreadId], ([id]) => ({
+      method: "GET",
+      path: `/api/semp/threads/${id}/messages`,
+    }));
+    await sendOk(b.member, { method: "GET", path: `/api/semp/threads/${b.sempThreadId}/messages` });
+  },
   "agent run detail": async () => {
     await expectForeignLikeRandom(b.member, [a.agentRunId], ([id]) => ({
       method: "GET",
@@ -2161,6 +2187,79 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     await adminPool?.end();
     if (originalScopeMode === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
     else process.env.SEMPREC_TENANT_SCOPE = originalScopeMode;
+  });
+
+  it("serves durable thread headers and complete cursor pages", async () => {
+    const fixture = await inTenantTransaction(a.tenantId, async (client) => {
+      const threads = await client.query<{ id: string; kind: string }>(
+        `INSERT INTO semp_threads (kind, subject_inbox_item_id, heartbeat_id, title)
+         VALUES ('chat', NULL, NULL, 'A chat'), ('item', $1, NULL, NULL), ('tick', NULL, $2, NULL)
+         RETURNING id, kind`,
+        [a.itemId, a.heartbeatId],
+      );
+      const chat = threads.rows.find((row) => row.kind === "chat");
+      if (!chat) throw new Error("Missing chat fixture");
+      const messages = await client.query<{ id: string }>(
+        `INSERT INTO semp_messages (thread_id, role, text, created_at)
+         SELECT $1, 'user', 'history', '2020-01-01T00:00:00.123456Z'::timestamptz
+         FROM generate_series(1, 5) RETURNING id`,
+        [chat.id],
+      );
+      return { threads: threads.rows, ids: messages.rows.map((row) => row.id), chatId: chat.id };
+    });
+    await runAsSystem("test:retention", () => handleAgentRunEventsRetentionTask(pool));
+    for (const thread of fixture.threads) {
+      const answer = await send(a.member, { method: "GET", path: `/api/semp/threads/${thread.id}` });
+      expect(answer.status).toBe(200);
+      const body: unknown = JSON.parse(answer.text);
+      expect(body).toMatchObject({
+        id: thread.id,
+        kind: thread.kind,
+        subject: thread.kind === "item" ? { inboxItemId: a.itemId, proposalId: null } : null,
+      });
+      expect(body).toHaveProperty("createdAt");
+      expect(body).toHaveProperty("lastActivityAt");
+      expect(body).not.toHaveProperty("heartbeat");
+    }
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const suffix = cursor === null ? "" : `&before=${encodeURIComponent(cursor)}`;
+      const answer = await send(a.member, {
+        method: "GET",
+        path: `/api/semp/threads/${fixture.chatId}/messages?limit=2${suffix}`,
+      });
+      expect(answer.status).toBe(200);
+      const body: unknown = JSON.parse(answer.text);
+      if (
+        !isRecord(body) ||
+        !Array.isArray(body.rows) ||
+        !(body.nextCursor === null || typeof body.nextCursor === "string")
+      )
+        throw new Error("Invalid message response");
+      for (const row of body.rows) {
+        if (!isRecord(row) || typeof row.id !== "string") throw new Error("Invalid message row");
+        expect(row).toMatchObject({
+          role: "user",
+          text: "history",
+          system: null,
+          context: [],
+          replyToMessageId: null,
+          agentRunId: null,
+          eventFromId: null,
+          status: null,
+        });
+        seen.push(row.id);
+      }
+      cursor = body.nextCursor;
+    } while (cursor !== null && seen.length <= 5);
+    expect(seen).toHaveLength(5);
+    expect(new Set(seen)).toEqual(new Set(fixture.ids));
+    for (const query of ["before=garbage", "limit=0", "limit=101", "limit=1.5"]) {
+      expect(
+        (await send(a.member, { method: "GET", path: `/api/semp/threads/${fixture.chatId}/messages?${query}` })).status,
+      ).toBe(400);
+    }
   });
 
   it("has exactly one case per surface: api entry", () => {
