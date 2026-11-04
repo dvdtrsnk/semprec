@@ -23,3 +23,9 @@ Both are required native adapter evidence for already-specified operations, not 
 Gh-1521 adds an intentionally nullable relation.set output to the generic operation union. The controller authorizes only `backend/packages/agent-runtime/src/__tests__/genericOperationAgentTools.test.ts` to narrow the existing item.patch mock output to a non-null object before `Object.getOwnPropertySymbols` and the existing missing/invalid classification-carrier mutations. Unexpected null or non-object must fail immediately; do not bypass assertions, add unchecked casts/non-null assertions or change production gateway/carrier behavior. Preserve all current carrier count, mutation, privacy and result assertions.
 
 This is a narrow test type-compatibility consequence of the specified relation.set null-on-clear output. All Task/AC and operation contracts remain unchanged; no production API, architecture, error policy, review or gate is added.
+
+## 5. Required item.create-with-relations public-surface expectations
+
+For gh-1590 only, the controller authorizes the existing `backend/packages/data/src/__tests__/publicSurface.test.ts` path to add sorted `createItemWithRelationsWithClient` to the exact runtime-export list and `createItemWithRelations` to the exact choke-point-method list. The Task already requires that write entry point, barrel export and facade. Keep every other expected entry, assertion and frozen type check unchanged. Do not derive expected lists dynamically or relax exact equality.
+
+This permission is separate from gh-1521's relation.set expectations and does not alter either member's Task/AC, public API beyond its required entry point, transaction, rollback, idempotence, owner or relation validation contract. No new architectural decision, review or gate is introduced.
