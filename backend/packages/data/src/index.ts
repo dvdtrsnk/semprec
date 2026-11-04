@@ -28,14 +28,13 @@ export { insertValueLink, type InsertValueLinkInput } from "./chokePoint/valueLi
 export type { ItemValueLinks, ValueLinkEntry, ValueLinkSource } from "./chokePoint/valueLinkReads.js";
 export {
   createItemWithClient,
-  createItemWithRelationsWithClient,
-  type InitialItemRelation,
   updateItemWithClient,
   writeComputedAndAnnounce,
   type CreateItemInput,
   type UpdateItemInput,
   type UpdateItemWithClientOptions,
 } from "./chokePoint/itemWrites.js";
+export { createItemWithRelationsWithClient, type InitialItemRelation } from "./chokePoint/itemCreateWithRelations.js";
 export {
   deleteRelationWithClient,
   setRelationWithClient,

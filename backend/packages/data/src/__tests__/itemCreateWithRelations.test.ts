@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import type { InitialItemRelation } from "../chokePoint/itemWrites.js";
+import { createItemWithRelationsWithClient, type InitialItemRelation } from "../index.js";
 import { createRelationPropertyWithClient } from "../chokePoint/relationPropertyOps.js";
 import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -80,6 +80,53 @@ describe("item.create with relations", () => {
         }),
       ).toEqual(item);
       expect(await cp.listItemRelations(item.id, property.id)).toMatchObject([{ targetItemId: first.id }]);
+    }));
+  it("commits, replays and rolls back the public supplied-client command", async () =>
+    runInTenant(tenant, async () => {
+      const { source, property, first, second } = await fixture();
+      const input = {
+        databaseId: source.id,
+        properties: {},
+        idempotencyKey: "supplied-client",
+        relations: [
+          { kind: "resolved", relationPropertyId: property.id, targetItemIds: [first.id] },
+        ] satisfies InitialItemRelation[],
+      };
+      const created = await withTransaction(pool, (client) => createItemWithRelationsWithClient(client, input));
+      expect(await cp.listItemRelations(created.id, property.id)).toMatchObject([{ targetItemId: first.id }]);
+      const snapshot = async () => ({
+        items: (
+          await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 ORDER BY id", [source.id])
+        ).rows,
+        edges: (
+          await pool.query<{ id: string; item_a: string; item_b: string }>(
+            "SELECT id, item_a, item_b FROM item_relations ORDER BY id",
+          )
+        ).rows,
+      });
+      const committed = await snapshot();
+      const replay = await withTransaction(pool, (client) =>
+        createItemWithRelationsWithClient(client, { ...input, relations: [{ kind: "unresolved" }] }),
+      );
+      expect(replay).toEqual(created);
+      expect(await snapshot()).toEqual(committed);
+      const rollback = new Error("supplied-client rollback");
+      await expect(
+        withTransaction(pool, async (client) => {
+          const item = await createItemWithRelationsWithClient(client, {
+            ...input,
+            idempotencyKey: "supplied-client-rollback",
+            relations: [{ kind: "resolved", relationPropertyId: property.id, targetItemIds: [second.id] }],
+          });
+          const edges = await client.query<{ n: number }>(
+            "SELECT count(*)::int AS n FROM item_relations WHERE item_a = $1 OR item_b = $1",
+            [item.id],
+          );
+          expect(edges.rows).toEqual([{ n: 1 }]);
+          throw rollback;
+        }),
+      ).rejects.toBe(rollback);
+      expect(await snapshot()).toEqual(committed);
     }));
   it("leaves no source item when a target is missing or the single-valued relation lacks exactly one target", async () =>
     runInTenant(tenant, async () => {
