@@ -2334,8 +2334,8 @@
       "sequence": 24,
       "status": "proposed",
       "title": "[backend-delivery 24/74] Implement data/chokePoint, data/projects, module-registry changes",
-      "bodyCharacters": 59896,
-      "specSha256": "fc2da5f58066bb54278d96733ae69d7f1922dbf0efe1f5ba4feeaf7ace08ce48",
+      "bodyCharacters": 59894,
+      "specSha256": "07ad4ab4c02d360164c4d2ece6cafde17cb518bc3652d96ad797337375bf9806",
       "members": [
         {
           "id": "gh-1515",
