@@ -206,7 +206,21 @@ describe("transcription gateway and realtime composition", () => {
       const ready = messages.find((message) => message.type === "ready");
       if (!ready || ready.type !== "ready") throw new Error("Missing gateway readiness");
       process.stderr.write(`batch22 gateway fixture ready=${new Date().toISOString()} pid=${childPid}\n`);
-      const audioGateway = createHttpAudioGatewayClient({ port: ready.port, token });
+      const realAudioGateway = createHttpAudioGatewayClient({ port: ready.port, token });
+      let reachedDiarize = false;
+      let releaseDiarize = () => {};
+      const diarizeAllowed = new Promise<void>((resolve) => {
+        releaseDiarize = resolve;
+      });
+      const audioGateway = {
+        transcribe: (request: Parameters<typeof realAudioGateway.transcribe>[0]) =>
+          realAudioGateway.transcribe(request),
+        async diarize(request: Parameters<typeof realAudioGateway.diarize>[0]) {
+          reachedDiarize = true;
+          await diarizeAllowed;
+          return realAudioGateway.diarize(request);
+        },
+      };
       const probe = await runInTenant(tenant, () =>
         audioGateway.transcribe({
           audio: new Uint8Array([1]),
@@ -337,7 +351,46 @@ describe("transcription gateway and realtime composition", () => {
           createTranscriptionTask(runtime, storage, audioGateway, summary),
         ),
       };
-      await runOnce({ pgPool: admin, taskList });
+      const workerOutcome = runOnce({ pgPool: admin, taskList }).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      let prepareFailure: { error: unknown } | undefined;
+      try {
+        await vi.waitFor(() => expect(reachedDiarize).toBe(true), { timeout: 45_000 });
+        const preparedFile = await runInTenant(tenant, () =>
+          withTransaction(runtime, (client) => getItemById(client, state.files.id, state.file.id)),
+        );
+        const preparedId = z.string().uuid().parse(preparedFile?.computed.create);
+        const prepared = await runInTenant(tenant, () =>
+          withTransaction(runtime, (client) => getItemById(client, state.transcripts.id, preparedId)),
+        );
+        if (!prepared) throw new Error("Missing prepared transcript");
+        expect(prepared.computed.durationSeconds).toBeGreaterThan(1200);
+        expect(prepared.computed.finalizedAt).toBeUndefined();
+        await vi.waitFor(() =>
+          expect(frames).toContainEqual(
+            expect.objectContaining({
+              type: "invalidate",
+              scope: "item",
+              databaseId: state.transcripts.id,
+              itemId: preparedId,
+              op: "update",
+              updatedAt: prepared.updatedAt,
+            }),
+          ),
+        );
+      } catch (error) {
+        prepareFailure = { error };
+      } finally {
+        releaseDiarize();
+      }
+      const workerResult = await workerOutcome;
+      if (prepareFailure) {
+        if (!workerResult.ok) console.error("Worker also failed after the prepare assertion");
+        throw prepareFailure.error;
+      }
+      if (!workerResult.ok) throw workerResult.error;
       const file = await runInTenant(tenant, () =>
         withTransaction(runtime, (client) => getItemById(client, state.files.id, state.file.id)),
       );

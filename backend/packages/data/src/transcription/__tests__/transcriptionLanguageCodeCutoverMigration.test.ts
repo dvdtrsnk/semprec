@@ -11,6 +11,7 @@ import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createTestTenant, createRuntimeRolePool } from "../../testSupport/tenantFixtures.js";
 import { runTranscriptionLanguageCodeCutoverMigration } from "../transcriptionLanguageCodeCutoverMigration.js";
 import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
+import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
 
 describe("transcription language cutover", () => {
   let admin: Pool;
@@ -36,12 +37,14 @@ describe("transcription language cutover", () => {
   async function seed(tenant: string) {
     return runInTenant(tenant, async () => {
       await seedSystem(pool, createViewTypeRegistry());
-      await withTransaction(pool, async (client) => {
+      return withTransaction(pool, async (client) => {
+        const fixtures: { moduleId: string; language: string | null; id: string }[] = [];
         for (const moduleId of ["transcripts", "files"]) {
           const db = await getDatabaseByModuleId(client, moduleId);
           if (!db) throw new Error("Missing seeded database");
           for (const language of ["czech", null, "cs", "unmapped"]) {
             const item = await createItemWithClient(client, { databaseId: db.id, properties: {} });
+            fixtures.push({ moduleId, language, id: item.id });
             await writeComputed(
               client,
               db.id,
@@ -51,6 +54,7 @@ describe("transcription language cutover", () => {
             );
           }
         }
+        return fixtures;
       });
     });
   }
@@ -68,7 +72,7 @@ describe("transcription language cutover", () => {
   it("converts both caches, preserves codes/null/chunks, is idempotent and isolates tenants", async () => {
     const first = await createTestTenant(admin);
     const second = await createTestTenant(admin);
-    await seed(first);
+    const fixtures = await seed(first);
     await seed(second);
     const untouched = await read(second);
     const before = await read(first);
@@ -77,6 +81,15 @@ describe("transcription language cutover", () => {
     try {
       await runInTenant(first, () => runTranscriptionLanguageCodeCutoverMigration(pool));
       const changed = await read(first);
+      for (const fixture of fixtures) {
+        const expected =
+          fixture.language === "czech" ? "cs" : fixture.language === "unmapped" ? null : fixture.language;
+        expect(changed.find((row) => row.id === fixture.id)?.computed).toEqual(
+          fixture.moduleId === "files"
+            ? { asr: { language: expected, chunks: { "0": "preserved" } } }
+            : { language: expected },
+        );
+      }
       expect(changed.map((row) => row.computed)).toEqual(
         expect.arrayContaining([
           { language: "cs" },
@@ -99,6 +112,19 @@ describe("transcription language cutover", () => {
       expect(events).toEqual([]);
     } finally {
       setInvalidationHook(() => {});
+    }
+  });
+  it("runs the registered language migration through the tenant cutover runner", async () => {
+    const tenant = await createTestTenant(admin);
+    const fixtures = await seed(tenant);
+    await runTenantCutoverMigrations(pool);
+    const changed = await read(tenant);
+    const originals = fixtures.filter((entry) => entry.language === "czech");
+    expect(originals).toHaveLength(2);
+    for (const fixture of originals) {
+      expect(changed.find((row) => row.id === fixture.id)?.computed).toEqual(
+        fixture.moduleId === "files" ? { asr: { language: "cs", chunks: { "0": "preserved" } } } : { language: "cs" },
+      );
     }
   });
   it("skips a tenant without seeded databases", async () => {

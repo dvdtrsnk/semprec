@@ -665,6 +665,51 @@ describe("generic operation REST contract (issue #219)", () => {
           relationsTruncated: [],
         });
       }
+      const bareFixture = await runInTenant(ownTenant, async () => {
+        const source = await cp.createDatabase({ name: "Bare expansion source" });
+        const target = await cp.createDatabase({ name: "Bare expansion target" });
+        const caller = await cp.createItem({ databaseId: source.id, properties: {} });
+        const destination = await cp.createItem({ databaseId: target.id, properties: {} });
+        for (let i = 0; i < 5; i++) {
+          const { property } = await cp.createRelationProperty({
+            sourceDatabaseId: source.id,
+            targetDatabaseId: target.id,
+            key: `link${i}`,
+            name: `Link ${i}`,
+          });
+          await cp.createRelation({
+            relationPropertyId: property.id,
+            callerItemId: caller.id,
+            targetItemId: destination.id,
+          });
+        }
+        return { source, target, caller, destination };
+      });
+      const bareUrl = `http://127.0.0.1:${port}/api/items/${bareFixture.caller.id}?include=relations`;
+      const bare = await fetch(bareUrl, { headers: { Authorization: `Bearer ${firstToken}` } });
+      expect(bare.status).toBe(200);
+      const bareBody: unknown = await bare.json();
+      expect(bareBody).toMatchObject({
+        relations: Object.fromEntries(
+          Array.from({ length: 5 }, (_, i) => [
+            `link${i}`,
+            [expect.objectContaining({ id: bareFixture.destination.id })],
+          ]),
+        ),
+      });
+      await runInTenant(ownTenant, () =>
+        cp.createRelationProperty({
+          sourceDatabaseId: bareFixture.source.id,
+          targetDatabaseId: bareFixture.target.id,
+          key: "link5",
+          name: "Link 5",
+        }),
+      );
+      const overLimit = await fetch(bareUrl, { headers: { Authorization: `Bearer ${firstToken}` } });
+      expect(overLimit.status).toBe(400);
+      expect(await overLimit.json()).toMatchObject({
+        error: { code: "validation_failed", details: { field: "include.relations" } },
+      });
       async function snapshot(tenantId: string) {
         return runInTenant(tenantId, async () => {
           const items = await runtime.query<{ id: string; properties: unknown; computed: unknown }>(

@@ -159,9 +159,9 @@ describe("item.create with relations", () => {
         return { items: items.rows[0]?.n, edges: edges.rows[0]?.n };
       };
       const before = await counts();
-      for (const [targetItemId, code] of [
-        [deleted.id, "validation_failed"],
-        [second.id, "cardinality_violation"],
+      for (const [targetItemId, code, status] of [
+        [deleted.id, "validation_failed", 400],
+        [second.id, "cardinality_violation", 409],
       ] as const) {
         await expect(
           cp.createItemWithRelations({
@@ -172,7 +172,7 @@ describe("item.create with relations", () => {
               { kind: "resolved", relationPropertyId: additional.id, targetItemIds: [targetItemId] },
             ],
           }),
-        ).rejects.toMatchObject({ code });
+        ).rejects.toMatchObject({ code, status });
         expect(await counts()).toEqual(before);
       }
     }));

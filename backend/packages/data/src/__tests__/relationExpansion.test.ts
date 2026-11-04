@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
@@ -203,6 +203,52 @@ describe("batched relation expansion", () => {
         });
       }
       expect(await count(people)).toBe(await count(people.slice(0, 1)));
+    }));
+  it("keeps actual database and view query statement counts constant for one or fifty expanded items", async () =>
+    runInTenant(tenant, async () => {
+      const peopleDb = await database("people");
+      const company = await make("companies", { name: "Company" });
+      for (let i = 0; i < 50; i++) {
+        const person = await make("people", { name: `Person ${i}` });
+        await link(person, "companies", company);
+      }
+      const view = await cp.createView({ databaseId: peopleDb.id, name: "People", type: "table" });
+      const wrapped = new Map<PoolClient, PoolClient["query"]>();
+      let statements = 0;
+      const instrument = (client: PoolClient) => {
+        if (wrapped.has(client)) return;
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        wrapped.set(client, client.query);
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        client.query = new Proxy(client.query, {
+          apply(target, receiver, args: unknown[]) {
+            if (typeof args[0] === "string") statements += 1;
+            return Reflect.apply(target, receiver, args);
+          },
+        });
+      };
+      pool.on("acquire", instrument);
+      try {
+        const include = { relations: { companies: [] }, resolver };
+        for (const query of [
+          (limit: number) => cp.queryDatabaseItems(peopleDb.id, { limit }, include),
+          (limit: number) => cp.queryViewItems(view.id, { limit }, include),
+        ]) {
+          statements = 0;
+          const one = await query(1);
+          const oneCount = statements;
+          expect(one.items).toHaveLength(1);
+          expect(one.items[0]).toMatchObject({ relations: { companies: [{ id: company.id }] } });
+          statements = 0;
+          const many = await query(50);
+          expect(many.items).toHaveLength(50);
+          for (const item of many.items) expect(item).toMatchObject({ relations: { companies: [{ id: company.id }] } });
+          expect(statements).toBe(oneCount);
+        }
+      } finally {
+        pool.off("acquire", instrument);
+        for (const [client, query] of wrapped) client.query = query;
+      }
     }));
   it("rejects malformed historical JSON objects at each expansion boundary", async () =>
     runInTenant(tenant, async () => {

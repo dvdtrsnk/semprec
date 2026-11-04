@@ -15,7 +15,7 @@ const DEFAULT_DRAIN_POLL_INTERVAL_MS = 250;
  * regardless of how many redundant invalidations arrive before the client drains.
  */
 export interface InvalidationCoalescer {
-  /** Sends `frame` immediately if `client` has nothing queued and is fully drained; otherwise queues it, replacing any older pending frame for the same (databaseId, itemId). */
+  /** Sends immediately when drained; otherwise replaces pending item frames by (databaseId, itemId) and relation frames by (itemId, propertyKey), including null. */
   enqueue(client: WebSocket, frame: CoalescedFrame): void;
   /** Drops `client`'s queue and stops polling it — called from the socket's own `close` handler. */
   discard(client: WebSocket): void;

@@ -10,6 +10,7 @@ import { reindexPersonEmails } from "../../mail/personEmailIndexStore.js";
 import { withTransaction } from "../../db/pool.js";
 import { getSelfPersonId, setSelfPersonId } from "../../selfPerson.js";
 import { runSelfPersonCutoverMigration } from "../selfPersonCutoverMigration.js";
+import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
 
 let admin: Pool;
 let pool: Pool;
@@ -78,6 +79,15 @@ describe("self person tenant cutover", () => {
       await runSelfPersonCutoverMigration(pool);
       expect(await read()).toBeNull();
     }));
+  it("runs the registered self-person migration through the tenant cutover runner", async () => {
+    const person = await runInTenant(tenant, async () => {
+      const { person } = await createPerson();
+      expect(await read()).toBeNull();
+      return person;
+    });
+    await runTenantCutoverMigrations(pool);
+    expect(await runInTenant(tenant, read)).toBe(person.id);
+  });
   it("adds the missing locked schema, fills a normalized email match once, and preserves a chosen person", async () =>
     runInTenant(tenant, async () => {
       const { person } = await createPerson("OWNER@EXAMPLE.COM");

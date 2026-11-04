@@ -522,28 +522,114 @@ describe("relation invalidations across REST, agent and realtime", () => {
           op: "put",
         }),
       );
-      ownerFrames.length = 0;
-      await expect(
-        runInTenant(tenantA, () =>
-          withTransaction(pool, async (client) => {
-            await deleteRelationWithClient(client, input, undefined, undefined, userA.id);
-            throw new Error("rollback probe");
-          }),
-        ),
-      ).rejects.toThrow("rollback probe");
-      const rollbackMarker = randomUUID();
-      await sentinel(tenantA, userA.id, rollbackMarker);
-      await vi.waitFor(() =>
-        expect(ownerFrames).toContainEqual({ type: "invalidate", scope: "schema", databaseId: rollbackMarker }),
-      );
-      expect(ownerFrames).not.toContainEqual({
-        type: "invalidate",
-        scope: "relation",
-        databaseId: fixture.source.id,
-        itemId: fixture.from.id,
-        propertyKey: "links",
-        op: "delete",
+      // Observe the real publisher's public queries so a later marker cannot overtake an
+      // unexpectedly retained after-commit publication on another pooled connection.
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      const originalQuery = pool.query;
+      let publications: Promise<{ error?: unknown }>[] = [];
+      let relationPublications = 0;
+      const settlePublications = async () => {
+        for (const result of await Promise.all(publications)) if ("error" in result) throw result.error;
+      };
+      pool.query = new Proxy(originalQuery, {
+        apply(target, receiver, args: unknown[]) {
+          const result: unknown = Reflect.apply(target, receiver, args);
+          if (typeof args[0] === "string" && args[0].includes("pg_notify") && result instanceof Promise) {
+            publications.push(
+              result.then(
+                () => ({}),
+                (error: unknown) => ({ error }),
+              ),
+            );
+            if (Array.isArray(args[1]) && typeof args[1][1] === "string" && args[1][1].includes('"scope":"relation"'))
+              relationPublications += 1;
+          }
+          return result;
+        },
       });
+      try {
+        const internal = await runInTenant(tenantA, async () => {
+          const from = await cp.createItem({ databaseId: fixture.source.id, properties: {} });
+          const to = await cp.createItem({ databaseId: fixture.target.id, properties: {} });
+          await cp.createRelation({
+            relationPropertyId: fixture.property.id,
+            callerItemId: from.id,
+            targetItemId: to.id,
+          });
+          return { from, to };
+        });
+        expect(publications.length).toBeGreaterThan(0);
+        expect(relationPublications).toBeGreaterThan(0);
+        await settlePublications();
+        const sourceFrame = {
+          type: "invalidate",
+          scope: "relation",
+          databaseId: fixture.source.id,
+          itemId: internal.from.id,
+          propertyKey: "links",
+          op: "put",
+        };
+        const targetFrame = {
+          type: "invalidate",
+          scope: "relation",
+          databaseId: fixture.target.id,
+          itemId: internal.to.id,
+          propertyKey: "backlinks",
+          op: "put",
+        };
+        await vi.waitFor(() => {
+          for (const frames of [ownerFrames, otherFrames]) {
+            expect(frames).toContainEqual(sourceFrame);
+            expect(frames).toContainEqual(targetFrame);
+          }
+        });
+        const foreignAfterInternal = randomUUID();
+        await sentinel(tenantB, userB.id, foreignAfterInternal);
+        await vi.waitFor(() =>
+          expect(foreignFrames).toContainEqual({
+            type: "invalidate",
+            scope: "schema",
+            databaseId: foreignAfterInternal,
+          }),
+        );
+        expect(foreignFrames).not.toContainEqual(sourceFrame);
+        expect(foreignFrames).not.toContainEqual(targetFrame);
+
+        ownerFrames.length = 0;
+        publications = [];
+        await expect(
+          runInTenant(tenantA, () =>
+            withTransaction(pool, async (client) => {
+              await deleteRelationWithClient(client, input, undefined, undefined, userA.id);
+              throw new Error("rollback probe");
+            }),
+          ),
+        ).rejects.toThrow("rollback probe");
+        await settlePublications();
+        const rollbackMarker = randomUUID();
+        await sentinel(tenantA, userA.id, rollbackMarker);
+        await vi.waitFor(() =>
+          expect(ownerFrames).toContainEqual({ type: "invalidate", scope: "schema", databaseId: rollbackMarker }),
+        );
+        expect(ownerFrames).not.toContainEqual({
+          type: "invalidate",
+          scope: "relation",
+          databaseId: fixture.source.id,
+          itemId: fixture.from.id,
+          propertyKey: "links",
+          op: "delete",
+        });
+        expect(ownerFrames).not.toContainEqual({
+          type: "invalidate",
+          scope: "relation",
+          databaseId: fixture.target.id,
+          itemId: fixture.to.id,
+          propertyKey: "backlinks",
+          op: "delete",
+        });
+      } finally {
+        pool.query = originalQuery;
+      }
     } catch (error) {
       failure = { error };
     } finally {
