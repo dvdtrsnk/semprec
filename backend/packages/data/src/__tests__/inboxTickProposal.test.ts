@@ -22,7 +22,11 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import { filterRecognitionCandidates, RECOGNITION_TARGETS } from "../inbox/inboxRecognition.js";
+import {
+  filterRecognitionCandidates,
+  recognitionClarificationPatch,
+  RECOGNITION_TARGETS,
+} from "../inbox/inboxRecognition.js";
 import {
   assertRelationTargetLinkableWithClient,
   createRelationWithClient,
@@ -710,6 +714,233 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
         proposal: null,
       });
     });
+    it.each([false, true])("handles page target database archive during computation: %s", async (archive) => {
+      const { item } = await fixture();
+      const pageType = await withTransaction(pool, (client) =>
+        createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name: "Page",
+          status: "active",
+          emoji: "P",
+          processingMethod: "pageContent",
+        }),
+      );
+      const api = createChokePoint(pool);
+      const database = await api.createDatabase({ name: "Page target" });
+      const page = await api.createItem({ databaseId: database.id, properties: {} });
+      await runTick(pool, databaseIds, item.id, async () => {
+        if (archive) await api.archiveDatabase(database.id);
+        return {
+          target: page.id,
+          properties: { flavour: "paragraph", fields: { content: "Proposed" } },
+          candidates: [{ typeId: pageType.id, confidence: 0.9 }],
+        };
+      });
+      const card = await findProposalForItem(pool, proposalsId, item.id);
+      if (archive) {
+        expect(card?.properties).toMatchObject({
+          status: "needsClarification",
+          recognizedTypeId: null,
+          proposal: null,
+        });
+      } else {
+        expect(card?.properties).toMatchObject({ status: "proposed", recognizedTypeId: pageType.id });
+      }
+      expect(await withTransaction(pool, (client) => itemsStore.getItemById(client, database.id, page.id))).toEqual(
+        page,
+      );
+      const property = await withTransaction(pool, (client) =>
+        propertiesStore.getPropertyByKey(client, inboxId, "type"),
+      );
+      const definition =
+        property &&
+        (await withTransaction(pool, (client) =>
+          relationsStore.getRelationDefinitionByPropertyId(client, property.id),
+        ));
+      if (!definition) throw new Error("Missing Inbox type definition");
+      expect(
+        await withTransaction(pool, (client) => relationsStore.listRelationsForItem(client, definition.id, item.id)),
+      ).toEqual([]);
+    });
+    it.each([0, 1])("explains a changed selection and a shortage of %s choices in both locales", async (count) => {
+      const choices = count ? [{ typeId: randomUUID(), label: "Available", targetDatabaseKey: "tasks" }] : [];
+      for (const [locale, shortage, changed] of [
+        ["cs", "Jsou dostupné méně než dva platné aktivní typy.", "Vybraný typ nebo cíl není dostupný nebo se změnil."],
+        [
+          "en",
+          "Fewer than two valid active types are available.",
+          "The selected type or destination is unavailable or changed.",
+        ],
+      ] as const) {
+        const patch = await recognitionClarificationPatch(locale, choices, true);
+        expect(patch.reason).toContain(shortage);
+        expect(patch.reason).toContain(changed);
+        expect(patch.reason.length).toBeLessThanOrEqual(500);
+      }
+      const { type, item } = await fixture();
+      const alternative = count
+        ? await withTransaction(pool, (client) =>
+            createInboxTypeWithClient(client, {
+              inboxItemTypesDatabaseId: typesId,
+              name: "Remaining",
+              status: "active",
+              emoji: "R",
+              processingMethod: "database",
+              targetDatabase: "projects",
+            }),
+          )
+        : null;
+      const types = await withTransaction(pool, (client) => itemsStore.listItems(client, typesId, { limit: 200 }));
+      for (const row of types.items) {
+        if (row.id === type.id || row.id === alternative?.id) continue;
+        await withTransaction(pool, (client) =>
+          updateItemWithClient(client, {
+            databaseId: typesId,
+            itemId: row.id,
+            propertiesPatch: { status: "archived" },
+          }),
+        );
+      }
+      await runTick(pool, databaseIds, item.id, async () => {
+        await withTransaction(pool, (client) =>
+          updateItemWithClient(client, {
+            databaseId: typesId,
+            itemId: type.id,
+            propertiesPatch: { status: "archived" },
+          }),
+        );
+        return { properties: { name: "Stale" }, candidates: [{ typeId: type.id, confidence: 0.9 }] };
+      });
+      const card = await findProposalForItem(pool, proposalsId, item.id);
+      expect(card?.properties).toMatchObject({ status: "needsClarification", proposal: null, recognizedTypeId: null });
+      expect(z.array(z.unknown()).parse(card?.properties.typeCandidates)).toHaveLength(count);
+      expect(card?.properties.reason).toEqual(
+        expect.stringContaining("Jsou dostupné méně než dva platné aktivní typy."),
+      );
+      expect(card?.properties.reason).toEqual(
+        expect.stringContaining("Vybraný typ nebo cíl není dostupný nebo se změnil."),
+      );
+    });
+    it("keeps the changed-selection reason without a shortage when two choices remain", async () => {
+      const choices = ["One", "Two"].map((label) => ({
+        typeId: randomUUID(),
+        label,
+        targetDatabaseKey: "tasks",
+      }));
+      const patch = await recognitionClarificationPatch("en", choices, true);
+      expect(patch.reason).toBe("The selected type or destination is unavailable or changed. Please clarify.");
+    });
+    it("clarifies when a direct target resolves to a different historical fixture database", async () => {
+      const { type, item } = await fixture();
+      const api = createChokePoint(pool);
+      const original = await databaseIdFor("tasks");
+      const replacement = await api.createDatabase({ name: "Replacement target" });
+      const originalItems = (await api.listItems(original)).items;
+      const replacementItems = (await api.listItems(replacement.id)).items;
+      let release = () => {};
+      let reached = () => {};
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const ready = new Promise<void>((resolve) => (reached = resolve));
+      const tick = runInTenant(getTenantZeroId(), () =>
+        runTick(pool, databaseIds, item.id, async () => {
+          reached();
+          await gate;
+          return {
+            properties: { name: "Must not move" },
+            candidates: [
+              { targetDatabaseKey: "tasks", confidence: 0.9 },
+              { typeId: type.id, confidence: 0.8 },
+            ],
+          };
+        }),
+      );
+      let failure: { error: unknown } | undefined;
+      let fixtureChanged = false;
+      try {
+        await Promise.race([
+          ready,
+          tick.then(() => {
+            throw new Error("Tick ended before computation barrier");
+          }),
+        ]);
+        // Synthetic historical configuration: no public writer replaces a system module mapping.
+        await runInTenant(getTenantZeroId(), () =>
+          withTransaction(pool, async (client) => {
+            const cleared = await client.query(
+              "UPDATE databases SET owner_module_id = NULL WHERE tenant_id = $1 AND id = $2 AND system = true AND owner_module_id = $3",
+              [getTenantZeroId(), original, "tasks"],
+            );
+            expect(cleared.rowCount).toBe(1);
+            const assigned = await client.query(
+              "UPDATE databases SET system = true, owner_module_id = $3 WHERE tenant_id = $1 AND id = $2 AND system = false AND owner_module_id IS NULL",
+              [getTenantZeroId(), replacement.id, "tasks"],
+            );
+            expect(assigned.rowCount).toBe(1);
+          }),
+        );
+        fixtureChanged = true;
+        const resolved = await runInTenant(getTenantZeroId(), () =>
+          withTransaction(pool, (client) => databasesStore.getDatabaseByModuleId(client, "tasks")),
+        );
+        expect(resolved?.id).toBe(replacement.id);
+        expect(resolved?.id).not.toBe(original);
+        process.stdout.write(`recognition target fixture: original=${original} replacement=${replacement.id}\n`);
+      } catch (error) {
+        failure = { error };
+      } finally {
+        release();
+      }
+      const [settled] = await Promise.allSettled([tick]);
+      if (settled.status === "rejected") failure = combineOverlapFailure(failure, settled.reason);
+      if (!failure) {
+        try {
+          expect((await findProposalForItem(pool, proposalsId, item.id))?.properties).toMatchObject({
+            status: "needsClarification",
+            recognizedTypeId: null,
+            proposal: null,
+          });
+          expect((await api.listItems(original)).items).toEqual(originalItems);
+          expect((await api.listItems(replacement.id)).items).toEqual(replacementItems);
+          const property = await withTransaction(pool, (client) =>
+            propertiesStore.getPropertyByKey(client, inboxId, "type"),
+          );
+          const definition =
+            property &&
+            (await withTransaction(pool, (client) =>
+              relationsStore.getRelationDefinitionByPropertyId(client, property.id),
+            ));
+          if (!definition) throw new Error("Missing Inbox type definition");
+          expect(
+            await withTransaction(pool, (client) =>
+              relationsStore.listRelationsForItem(client, definition.id, item.id),
+            ),
+          ).toEqual([]);
+        } catch (error) {
+          failure = { error };
+        }
+      }
+      if (fixtureChanged) {
+        try {
+          await runInTenant(getTenantZeroId(), () =>
+            withTransaction(pool, async (client) => {
+              const cleared = await client.query(
+                "UPDATE databases SET system = false, owner_module_id = NULL WHERE tenant_id = $1 AND id = $2 AND system = true AND owner_module_id = $3",
+                [getTenantZeroId(), replacement.id, "tasks"],
+              );
+              expect(cleared.rowCount).toBe(1);
+              const restored = await client.query(
+                "UPDATE databases SET owner_module_id = $3 WHERE tenant_id = $1 AND id = $2 AND system = true AND owner_module_id IS NULL",
+                [getTenantZeroId(), original, "tasks"],
+              );
+              expect(restored.rowCount).toBe(1);
+            }),
+          );
+        } catch (error) {
+          failure = combineOverlapFailure(failure, error);
+        }
+      }
+      if (failure) throw failure.error;
+    });
     it("clarifies a direct target archived during computation without writing the target", async () => {
       const { type, item } = await fixture();
       const tasks = await databaseIdFor("tasks");
@@ -1120,7 +1351,9 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       expect(card?.properties.status).toBe("needsClarification");
       expect(card?.properties.proposal).toBeNull();
       expect(z.array(z.unknown()).parse(card?.properties.typeCandidates)).toHaveLength(count);
-      expect(card?.properties.reason).toEqual(expect.any(String));
+      expect(card?.properties.reason).toEqual(
+        expect.stringContaining("Jsou dostupné méně než dva platné aktivní typy."),
+      );
     });
     it("makes no call without text", async () => {
       const { item } = await fixture();

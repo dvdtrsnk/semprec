@@ -747,6 +747,86 @@ describe("createGenericOperationGateway (issue #220)", () => {
     },
   );
 
+  it("releases relation projection reservations after a managed rollback", async () => {
+    const firstPool = await createRuntimeRolePool(pool, "semprec_data");
+    const secondPool = await createRuntimeRolePool(pool, "semprec_data");
+    const delivered: unknown[] = [];
+    let failure: unknown;
+    try {
+      await inTenantZero(async () => {
+        const cp = createChokePoint(firstPool);
+        const source = await cp.createDatabase({ name: "Rollback source" });
+        const target = await cp.createDatabase({ name: "Rollback target" });
+        const { property } = await cp.createRelationProperty({
+          sourceDatabaseId: source.id,
+          targetDatabaseId: target.id,
+          key: "target",
+          name: "Target",
+        });
+        const caller = await cp.createItem({ databaseId: source.id, properties: {} });
+        const destination = await cp.createItem({ databaseId: target.id, properties: {} });
+        const edge = await cp.createRelation({
+          relationPropertyId: property.id,
+          callerItemId: caller.id,
+          targetItemId: destination.id,
+        });
+        const beforeRelations = await cp.listItemRelations(caller.id, property.id);
+        const readEdge = () =>
+          withTransaction(firstPool, (client) =>
+            client.query<{ id: string; metadata: unknown }>("SELECT id, metadata FROM item_relations WHERE id = $1", [
+              edge.id,
+            ]),
+          );
+        const beforeEdge = await readEdge();
+        expect(beforeEdge.rowCount).toBe(1);
+        const check = {
+          operation: "relation.put",
+          input: { relationPropertyId: property.id, callerItemId: caller.id, targetItemId: destination.id },
+        } as const;
+        const counts = async () =>
+          (
+            await pool.query<{ requests: string; messages: string; jobs: string }>(
+              "SELECT (SELECT count(*) FROM approval_requests)::text AS requests, (SELECT count(*) FROM semp_messages)::text AS messages, (SELECT count(*) FROM graphile_worker.jobs)::text AS jobs",
+            )
+          ).rows[0];
+        const before = await counts();
+        const originalError = new Error("forced reservation rollback");
+        let firstPid = 0;
+        let secondPid = 0;
+        setInvalidationHook((event) => delivered.push(event));
+        await expect(
+          withTransaction(firstPool, async (client) => {
+            firstPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+            await computeDestructiveResourceProjection(client, check);
+            throw originalError;
+          }),
+        ).rejects.toBe(originalError);
+        await withTransaction(secondPool, async (client) => {
+          secondPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+          await computeDestructiveResourceProjection(client, check);
+        });
+        expect(firstPid).toBeGreaterThan(0);
+        expect(secondPid).toBeGreaterThan(0);
+        expect(secondPid).not.toBe(firstPid);
+        process.stdout.write(`reservation rollback: first=${firstPid} second=${secondPid}\n`);
+        expect(await cp.listItemRelations(caller.id, property.id)).toEqual(beforeRelations);
+        expect((await readEdge()).rows).toEqual(beforeEdge.rows);
+        expect(await counts()).toEqual(before);
+        expect(delivered).toEqual([]);
+      });
+    } catch (error) {
+      failure = error;
+    }
+    setInvalidationHook(() => {});
+    const cleanup = await Promise.allSettled([firstPool.end(), secondPool.end()]);
+    const errors = [
+      ...(failure === undefined ? [] : [failure]),
+      ...cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])),
+    ];
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, "Reservation test and cleanup failed");
+  });
+
   it("rejects relation reservations outside a managed READ COMMITTED tenant transaction", async () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     try {

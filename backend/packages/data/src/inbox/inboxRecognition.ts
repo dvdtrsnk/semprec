@@ -77,9 +77,11 @@ export async function recognitionClarificationPatch(
   return {
     recognizedTypeId: null,
     typeCandidates: choices,
-    reason: changed
-      ? await recognitionChangedReason(locale)
-      : await recognitionClarificationReason(locale, choices.length, reason),
+    reason: await recognitionClarificationReason(
+      locale,
+      choices.length,
+      changed ? await recognitionChangedReason(locale) : reason,
+    ),
   };
 }
 

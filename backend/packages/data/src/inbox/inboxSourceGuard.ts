@@ -129,6 +129,8 @@ export async function resolveBoundRecognition(
   const targetModule =
     originallySelected?.targetDatabaseKey ?? (best && "targetDatabaseKey" in best ? best.targetDatabaseKey : null);
   const database = targetModule ? await databasesStore.getDatabaseByModuleId(client, targetModule) : null;
+  const pageDatabase = page ? await databasesStore.getDatabase(client, page.databaseId) : null;
+  const [freshPage] = page ? await itemsStore.getItemsByIds(client, [page.id]) : [];
   const changed =
     !!best &&
     best.confidence >= RECOGNITION_CONFIDENCE_THRESHOLD &&
@@ -143,6 +145,11 @@ export async function resolveBoundRecognition(
         binding.type.targetDatabaseKey !== originallySelected.targetDatabaseKey)) ||
       binding?.targetModuleId !== targetModule ||
       (!!targetModule && (!database || !!database.archivedAt || database.id !== binding?.targetDatabaseId)) ||
-      (originallySelected?.processingMethod === "pageContent" && !result.target));
+      (originallySelected?.processingMethod === "pageContent" &&
+        (!page ||
+          !freshPage ||
+          freshPage.databaseId !== page.databaseId ||
+          !pageDatabase ||
+          !!pageDatabase.archivedAt)));
   return { best, choices, selected, database, targetModule, changed };
 }
