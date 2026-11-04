@@ -22,6 +22,7 @@ import {
   DEFAULT_COMPACTION_THRESHOLD,
   JOURNAL_MODULE_ID,
   LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID,
+  MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
   assertTaskListMatchesAffinity,
   beginTenantDeletion,
   createAgentRun,
@@ -63,6 +64,7 @@ import {
   getTestPool,
   resetDatabase,
   storeCredential,
+  upsertMailMessageMeta,
   writePageTextBlocks,
 } from "@semprec/data/testSupport";
 import { createApiActionRegistry } from "../actionRegistryComposition.js";
@@ -701,6 +703,59 @@ const cases: Record<string, TaskCase> = {
           mailboxItemId,
         ]),
       ).toEqual([{ user_id: tenant.userId }]);
+    },
+  },
+  [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const address = `${randomUUID()}@example.test`;
+      const peopleDatabaseId = await requireModuleDatabaseId(tenant, "people");
+      const { itemId } = await createEmail(tenant);
+      const personId = await inTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const role = await client.query<{ name: string; bypass: boolean; superuser: boolean }>(
+            "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+          );
+          expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+          const person = await createItemWithClient(client, {
+            databaseId: peopleDatabaseId,
+            properties: { name: "Mail person", emails: address },
+          });
+          await upsertMailMessageMeta(client, {
+            itemId,
+            mailboxItemId: null,
+            messageId: `<${randomUUID()}@example.test>`,
+            envelope: { from: { address }, to: [{ address }] },
+            migrationStatus: "partial",
+          });
+          return person.id;
+        }),
+      );
+      const action = createApiActionRegistry(pool, moduleRegistry).get(MAIL_REINDEX_PERSON_EMAILS_ACTION_ID);
+      if (!action) throw new Error("Missing person email reindex action");
+      await inTenant(tenant, () =>
+        action({ peopleDatabaseId }, { heartbeatId: "test", projectItemId: "test", itemId: personId }),
+      );
+      expect(await rows(tenant, "SELECT item_id FROM person_email_index WHERE email = $1", [address])).toEqual([
+        { item_id: personId },
+      ]);
+      expect(
+        await rows(tenant, "SELECT id FROM item_relations WHERE item_a = $1 AND item_b = $2", [itemId, personId]),
+      ).toEqual([]);
+      return { personId, addresses: [address] };
+    },
+    async expectDone(tenant, payload) {
+      const personId = requirePayloadString(payload, "personId");
+      const parsed = z.object({ addresses: z.array(z.string()).length(1) }).parse(payload);
+      expect(
+        await rows(
+          tenant,
+          `SELECT p.key FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
+           JOIN properties p ON p.id = d.property_id_a JOIN mail_message_meta m ON m.item_id = r.item_a
+           WHERE r.item_b = $1 AND m.envelope @> $2::jsonb ORDER BY p.key`,
+          [personId, JSON.stringify({ from: { address: parsed.addresses[0] } })],
+        ),
+      ).toEqual([{ key: "recipientsPeople" }, { key: "senderPeople" }]);
     },
   },
   [CORE_TASK_NAMES.MAIL_LEGACY_EMAIL_MIGRATION]: {
@@ -1474,6 +1529,12 @@ describe("background task isolation across two tenants: api runtime (issue #1056
         const random = await runInBObserved(name, randomizedPayload(payload));
 
         expect(foreign).toEqual(random);
+        if (name === CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS) {
+          expect(foreign).toEqual({
+            outcome: { attempts: null, lastError: null },
+            effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
+          });
+        }
         expect(await fingerprint(tenantA)).toEqual(beforeA);
       },
     );
