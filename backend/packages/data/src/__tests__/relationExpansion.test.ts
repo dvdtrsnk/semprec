@@ -227,7 +227,15 @@ describe("batched relation expansion", () => {
           },
         });
       };
+      const restore = (_error: Error, client: PoolClient) => {
+        const original = wrapped.get(client);
+        if (original) {
+          client.query = original;
+          wrapped.delete(client);
+        }
+      };
       pool.on("acquire", instrument);
+      pool.on("release", restore);
       try {
         const include = { relations: { companies: [] }, resolver };
         for (const query of [
@@ -237,17 +245,21 @@ describe("batched relation expansion", () => {
           statements = 0;
           const one = await query(1);
           const oneCount = statements;
+          expect(wrapped.size).toBe(0);
           expect(one.items).toHaveLength(1);
           expect(one.items[0]).toMatchObject({ relations: { companies: [{ id: company.id }] } });
           statements = 0;
           const many = await query(50);
+          expect(wrapped.size).toBe(0);
           expect(many.items).toHaveLength(50);
           for (const item of many.items) expect(item).toMatchObject({ relations: { companies: [{ id: company.id }] } });
           expect(statements).toBe(oneCount);
         }
       } finally {
         pool.off("acquire", instrument);
+        pool.off("release", restore);
         for (const [client, query] of wrapped) client.query = query;
+        wrapped.clear();
       }
     }));
   it("rejects malformed historical JSON objects at each expansion boundary", async () =>
