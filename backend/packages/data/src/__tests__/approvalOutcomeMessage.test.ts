@@ -31,7 +31,7 @@ describe("approval outcome messages", () => {
     await admin.end();
   });
 
-  async function fixture(withThread: boolean) {
+  async function fixture(withThread: boolean, withDescription = true) {
     return runInTenant(tenant(), () =>
       withTransaction(runtime, async (client) => {
         // There is no production chat-thread creation API on this tip.
@@ -45,7 +45,7 @@ describe("approval outcome messages", () => {
           riskClass: "write",
           payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: { secret: "hidden" } },
           resourceSnapshot: { kind: "test", resourceId: randomUUID(), sha256: null },
-          description: { key: "approval.mcpInvoke", params: { toolName: "Visible" } },
+          ...(withDescription ? { description: { key: "approval.mcpInvoke", params: { toolName: "Visible" } } } : {}),
         });
         return { threadId: thread?.id, request };
       }),
@@ -115,6 +115,26 @@ describe("approval outcome messages", () => {
       ).rows,
     ).toEqual([{ role: "system" }]);
   });
+  it("uses empty safe parameters when the request has no description", async () => {
+    const { request } = await fixture(true, false);
+    await runInTenant(tenant(), () =>
+      withTransaction(runtime, (client) =>
+        decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: request.id,
+          decision: "rejected",
+          decidedByUserId: userId,
+        }),
+      ),
+    );
+    expect((await messages()).rows).toEqual([
+      {
+        system_key: "approval.outcome.rejected",
+        system_params: {},
+        context: [{ kind: "approvalRequest", approvalRequestId: request.id }],
+      },
+    ]);
+  });
+
   it("rolls back the decision and message together", async () => {
     const { request } = await fixture(true);
     await expect(
