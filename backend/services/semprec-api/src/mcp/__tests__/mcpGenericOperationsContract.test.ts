@@ -463,6 +463,27 @@ describe("generic operation MCP contract (issue #220)", () => {
     });
   });
 
+  it("keeps and restores project deadlines through MCP", async () => {
+    const databaseId = await projectsDatabaseId();
+    const item = await chokePoint.createItem({
+      databaseId,
+      properties: { name: "Project", status: "inProgress", date: "2026-11-30" },
+    });
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const headers = await authHeader();
+    const patch = async (properties: Record<string, unknown>) => {
+      const current = await chokePoint.getItem(databaseId, item.id);
+      if (!current) throw new Error("Missing project");
+      return rpc(baseUrl, headers, "semprec.item.patch", { itemId: item.id, properties, ifVersion: current.updatedAt });
+    };
+    expect((await patch({ status: "longTerm" })).error).toBeUndefined();
+    expect((await chokePoint.getItem(databaseId, item.id))?.properties.date).toBeNull();
+    expect((await patch({ date: "2027-01-01" })).error).toMatchObject({ code: -32602, data: { field: "date" } });
+    expect((await patch({ status: "inProgress" })).error).toBeUndefined();
+    expect((await chokePoint.getItem(databaseId, item.id))?.properties.date).toBe("2026-11-30");
+  });
+
   it("attributes session MCP relation deletion to its authenticated user", async () => {
     const fx = await buildFixtures();
     await withTransaction(pool, (client) =>

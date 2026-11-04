@@ -72,8 +72,8 @@ describe("Projects kept deadlines", () => {
       expect(restored.properties.date).toBe("2027-01-01");
       expect((await pool.query("SELECT item_id FROM project_kept_dates WHERE item_id=$1", [item.id])).rows).toEqual([]);
     }));
-  it("rolls back a kept date on conflict and isolates tenants", async () =>
-    runInTenant(tenant, async () => {
+  it("rolls back a kept date on conflict and isolates tenants", async () => {
+    const itemId = await runInTenant(tenant, async () => {
       const item = await cp.createItem({
         databaseId,
         properties: { name: "Project", status: "inProgress", date: "2026-11-30" },
@@ -88,12 +88,40 @@ describe("Projects kept deadlines", () => {
       ).rejects.toThrow();
       expect((await pool.query("SELECT item_id FROM project_kept_dates WHERE item_id=$1", [item.id])).rows).toEqual([]);
       await cp.updateItem({ databaseId, itemId: item.id, propertiesPatch: { status: "longTerm" } });
-      const other = await createTestTenant(admin);
-      await runInTenant(other, async () =>
-        expect((await pool.query("SELECT item_id FROM project_kept_dates WHERE item_id=$1", [item.id])).rows).toEqual(
-          [],
-        ),
-      );
       expect((await cp.getItem(databaseId, item.id))?.properties.date).toBeNull();
+      return item.id;
+    });
+    const other = await createTestTenant(admin);
+    await runInTenant(other, async () =>
+      expect((await pool.query("SELECT item_id FROM project_kept_dates WHERE item_id=$1", [itemId])).rows).toEqual([]),
+    );
+  });
+  it("retains the deadline through trash and removes it on purge", async () =>
+    runInTenant(tenant, async () => {
+      const item = await cp.createItem({
+        databaseId,
+        properties: { name: "Project", status: "inProgress", date: "2026-11-30" },
+      });
+      await cp.updateItem({ databaseId, itemId: item.id, propertiesPatch: { status: "longTerm" } });
+      await cp.softDeleteItem(databaseId, item.id);
+      expect(
+        (await pool.query("SELECT item_id FROM project_kept_dates WHERE item_id=$1", [item.id])).rows,
+      ).toHaveLength(1);
+      expect((await cp.purgeExpiredTrashSubtree(item.id, new Date(Date.now() + 60000))).purgedItemIds).toContain(
+        item.id,
+      );
+      expect((await pool.query("SELECT item_id FROM project_kept_dates WHERE item_id=$1", [item.id])).rows).toEqual([]);
+    }));
+  it("does not keep a deadline explicitly cleared on entry or on replay", async () =>
+    runInTenant(tenant, async () => {
+      const input = {
+        databaseId,
+        properties: { name: "Project", status: "inProgress", date: "2026-11-30" },
+        idempotencyKey: "project-once",
+      };
+      const item = await cp.createItem(input);
+      await cp.updateItem({ databaseId, itemId: item.id, propertiesPatch: { status: "longTerm", date: null } });
+      expect((await cp.createItem(input)).id).toBe(item.id);
+      expect((await pool.query("SELECT item_id FROM project_kept_dates WHERE item_id=$1", [item.id])).rows).toEqual([]);
     }));
 });

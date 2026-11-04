@@ -10,6 +10,7 @@ import {
   hashPassword,
   getSystemSettingsDatabaseId,
   getSystemSettingsItemId,
+  getDatabaseByModuleId,
   loadFullModuleRegistry,
   login,
   seedSystem,
@@ -73,6 +74,22 @@ describe("createSchemaRequestListener (issue #147)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("does not expose a kept project deadline in the schema", async () => {
+    const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
+    if (!database) throw new Error("Projects missing");
+    const cp = createChokePoint(pool);
+    const item = await cp.createItem({
+      databaseId: database.id,
+      properties: { name: "Project", status: "inProgress", date: "2042-11-30" },
+    });
+    await cp.updateItem({ databaseId: database.id, itemId: item.id, propertiesPatch: { status: "longTerm" } });
+    const response = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader() });
+    expect(response.status).toBe(200);
+    const body: unknown = await response.json();
+    expect(JSON.stringify(body)).not.toContain("2042-11-30");
+    expect(JSON.stringify(body)).not.toContain("project_kept_dates");
   });
 
   it("projects stored defaults including the unresolved today token", async () => {
