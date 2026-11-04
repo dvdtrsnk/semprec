@@ -29,3 +29,9 @@ This is a narrow test type-compatibility consequence of the specified relation.s
 For gh-1590 only, the controller authorizes the existing `backend/packages/data/src/__tests__/publicSurface.test.ts` path to add sorted `createItemWithRelationsWithClient` to the exact runtime-export list and `createItemWithRelations` to the exact choke-point-method list. The Task already requires that write entry point, barrel export and facade. Keep every other expected entry, assertion and frozen type check unchanged. Do not derive expected lists dynamically or relax exact equality.
 
 This permission is separate from gh-1521's relation.set expectations and does not alter either member's Task/AC, public API beyond its required entry point, transaction, rollback, idempotence, owner or relation validation contract. No new architectural decision, review or gate is introduced.
+
+## 6. Gh-1621 transaction-owned deduplication and payload bounds
+
+Use [[2026-11-04-keyed-after-commit-effects-belong-to-the-managed-invocation]] for the internal keyed callback facility in pool.ts and its focused pool.unit.test.ts controls; relationInvalidation.test.ts already owns actual relation/pooled-client/rollback evidence. No public barrel export or transaction-policy rewrite.
+
+Use [[2026-11-04-oversized-relation-keys-request-a-full-link-refetch]] for an explicit 7000-byte serialized relation-message budget and propertyKey:null full incoming/outgoing-link refetch fallback, preserving all IDs/op/user restriction and PostgreSQL-derived tenant envelope. Existing protocol/publisher/socket/client-contract test paths cover it. Task3/6 and affected Task1/7/AC are reconciled literally; no claim that arbitrary exact keys fit PostgreSQL. All other member requirements stay unchanged.
