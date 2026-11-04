@@ -4,7 +4,7 @@ import type { ItemPreWritePreparation, ItemPreWriteTransform } from "../chokePoi
 import { ValidationError } from "../errors.js";
 import { deleteKeptDate, getKeptDate, upsertKeptDate } from "./projectKeptDateStore.js";
 
-/** Applies the terminal-status rule before assigning or clearing the pinned project order. */
+/** Prepares terminal status, deadline and pinned-order changes without allocating or writing. */
 export const prepareProjectWrite: ItemPreWritePreparation = async ({ stored, patch: original }) => {
   let patch = unpinTerminalProject(stored, original);
   const oldStatus = stored?.properties.status;

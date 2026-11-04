@@ -4,7 +4,7 @@ import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { AREAS_MODULE_ID } from "./tenDatabaseKeys.js";
 import { migrateItemPropertyWithClient } from "../chokePoint/itemMigrationWrites.js";
 
-/** Adds the three missing Areas properties to each scoped tenant's locked system schema. */
+/** Upgrades the scoped tenant's Areas properties, relations and active values. */
 export async function runAreasPropertiesCutoverMigration(pool: Pool): Promise<void> {
   await withTransaction(pool, async (client) => {
     const areas = await getDatabaseByModuleId(client, AREAS_MODULE_ID);

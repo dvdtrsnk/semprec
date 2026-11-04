@@ -658,8 +658,8 @@ export class ModuleRegistry {
   }
 
   /**
-   * `grantedCapabilities` is the set of capabilities actually granted in the current context
-   * (a later module-contract issue wires this to real grants). A tool whose `capability` isn't
+   * `grantedCapabilities` is the set of capabilities actually granted in the current context.
+   * A tool whose `capability` isn't
    * in that set is filtered out entirely, never returned in a denied state.
    */
   async getAgentTools(grantedCapabilities: ReadonlySet<string>): Promise<ModuleAgentToolProjection[]> {

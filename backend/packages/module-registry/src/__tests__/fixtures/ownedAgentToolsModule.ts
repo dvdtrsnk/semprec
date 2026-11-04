@@ -40,6 +40,15 @@ export const manifest: ModuleManifest = {
       approval: "none",
       riskClass: "read",
     },
+    {
+      name: "owned.conditional",
+      handlerExport: "createInspectTool",
+      argumentSchemaExport: "inspectArgsSchema",
+      capability: "owned.read",
+      approval: "unlessProjectPermitted",
+      projectPermission: "examplePermission",
+      riskClass: "write",
+    },
   ],
 };
 export const inspectArgsSchema = z.object({ value: z.string() }).strict();

@@ -184,6 +184,7 @@ describe("module agent tools under project ownership", () => {
           expect.arrayContaining(["heartbeat_list", "heartbeat_trigger"]),
         );
         expect(options.tools.map((candidate) => candidate.name)).not.toContain("owned_gated");
+        expect(options.tools.map((candidate) => candidate.name)).not.toContain("owned_conditional");
         expect(options.tools.map((candidate) => candidate.name)).not.toContain("owned_unknown");
         expect(options.toolEventMetadata.has("owned_inspect")).toBe(false);
         if (!tool) throw new Error("Owned tool missing");
