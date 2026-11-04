@@ -122,6 +122,10 @@ function isArgumentsObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isCallable(value: unknown): value is (...args: unknown[]) => unknown {
+  return typeof value === "function";
+}
+
 type ComposedAgentTool = AgentTool & { toolEventMetadata?: ToolEventMetadata };
 
 async function createModuleTools(
@@ -141,9 +145,9 @@ async function createModuleTools(
     ]),
   );
   return definitions.map((definition) => {
-    if (typeof definition.handler !== "function") throw new Error(`Invalid module tool handler: ${definition.name}`);
+    if (!isCallable(definition.handler)) throw new Error(`Invalid module tool handler: ${definition.name}`);
     const handler: unknown = definition.handler(pool, ruleKinds);
-    if (typeof handler !== "function") throw new Error(`Invalid module tool factory: ${definition.name}`);
+    if (!isCallable(handler)) throw new Error(`Invalid module tool factory: ${definition.name}`);
     return {
       name: toModelToolName(definition.name),
       label: definition.name,
