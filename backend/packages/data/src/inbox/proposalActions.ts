@@ -520,19 +520,48 @@ export async function confirmProposalWithClient(
         : (envelope.relations ?? {});
     const targets: Array<string | undefined> = [];
     if (envelope.entityKind === "relation") targets.push(envelope.target);
-    for (const [key, relationValues] of Object.entries(requestedRelations)) {
-      let retained: Set<string> | undefined;
+    const requests: Array<{ definitionId: string; target: string }> = [];
+    const resolved = new Map<string, Array<string | undefined>>();
+    const definitions = new Map<string, string>();
+    for (const [key, values] of Object.entries(requestedRelations)) {
+      const ids = values.map((value) => (typeof value === "string" ? value : idsByRef.get(value.ref)));
+      resolved.set(key, ids);
       if (reusedFileRefs.has(written.ref)) {
         const property = await propertiesStore.getPropertyByKey(client, written.databaseId, key);
         const definition = property && (await relationsStore.getRelationDefinitionByPropertyId(client, property.id));
         if (!definition) throw new Error(`Missing confirmed relation definition for ${key}`);
-        const edges = await relationsStore.listRelationsForItem(client, definition.id, item.id);
-        retained = new Set(edges.map((edge) => relationsStore.otherSide(edge, item.id)));
+        definitions.set(key, definition.id);
+        for (const target of ids) if (target !== undefined) requests.push({ definitionId: definition.id, target });
       }
-      for (const value of relationValues) {
-        const target = typeof value === "string" ? value : idsByRef.get(value.ref);
-        if (!retained || (target !== undefined && retained.has(target))) targets.push(target);
+    }
+    const retained = new Map<string, Set<string>>();
+    if (requests.length > 0) {
+      const { rows } = await client.query<{ definition_id: string; target_id: string }>(
+        `SELECT r.relation_definition_id AS definition_id,
+                CASE WHEN r.item_a = $3::uuid THEN r.item_b ELSE r.item_a END AS target_id
+         FROM item_relations r
+         JOIN unnest($1::uuid[], $2::uuid[]) AS wanted(definition_id, target_id)
+           ON wanted.definition_id = r.relation_definition_id
+          AND ((r.item_a = $3::uuid AND r.item_b = wanted.target_id)
+            OR (r.item_b = $3::uuid AND r.item_a = wanted.target_id))
+         ORDER BY r.relation_definition_id, r.id FOR SHARE OF r`,
+        [requests.map((request) => request.definitionId), requests.map((request) => request.target), item.id],
+      );
+      for (const row of rows) {
+        const ids = retained.get(row.definition_id) ?? new Set<string>();
+        ids.add(row.target_id);
+        retained.set(row.definition_id, ids);
       }
+    }
+    for (const [key, ids] of resolved) {
+      if (!reusedFileRefs.has(written.ref)) {
+        targets.push(...ids);
+        continue;
+      }
+      const definitionId = definitions.get(key);
+      if (!definitionId) throw new Error(`Missing confirmed relation definition for ${key}`);
+      const existing = retained.get(definitionId);
+      for (const id of ids) if (id !== undefined && existing?.has(id)) targets.push(id);
     }
     const linked = await itemsStore.getItemsByIds(
       client,

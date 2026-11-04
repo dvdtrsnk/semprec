@@ -16,14 +16,14 @@ import { createInboxItemWithClient } from "../inboxStore.js";
 import { insertInboxAttachments, listInboxAttachments } from "../inboxAttachmentsStore.js";
 import * as propertiesStore from "../../chokePoint/propertiesStore.js";
 import * as relationsStore from "../../chokePoint/relationsStore.js";
-import { createRelationWithClient } from "../../chokePoint/relationOps.js";
+import { createRelationWithClient, deleteRelationWithClient } from "../../chokePoint/relationOps.js";
 import { getOrCreateJournalItem } from "../../journal/journalStore.js";
 import { createInboxTypeWithClient, type CreateInboxTypeInput } from "../inboxTypesStore.js";
 import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inboxTickAction.js";
 import { createConfirmProposalRouteHandler, createInboxTypesRouteHandler } from "../inboxRouteHandlers.js";
 import { matchTranscriptToEvent } from "../../transcription/transcriptEventMatch.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../../transcription/transcriptionJob.js";
-import { reviseProposalWithClient } from "../proposalActions.js";
+import { confirmProposalWithClient, reviseProposalWithClient } from "../proposalActions.js";
 import { NotFoundError, ValidationError } from "../../errors.js";
 import type { ItemRow } from "../../types.js";
 
@@ -92,6 +92,187 @@ describe("inbox custom route handlers (issue #239)", () => {
       [proposalsId],
     );
     return rows[0]!.id;
+  }
+
+  async function confirmWhileUnlinkWaits(
+    proposalId: string,
+    relationPropertyId: string,
+    fileId: string,
+    projectId: string,
+  ) {
+    const confirmPool = createPool(process.env.TEST_DATABASE_URL ?? "", {
+      role: "semprec_data",
+      statementTimeoutMs: 8000,
+    });
+    const unlinkPool = createPool(process.env.TEST_DATABASE_URL ?? "", {
+      role: "semprec_data",
+      statementTimeoutMs: 8000,
+    });
+    confirmPool.options.max = 1;
+    unlinkPool.options.max = 1;
+    const failures: unknown[] = [];
+    const identities: Array<{ pid: number; started: string; db: string }> = [];
+    const capture = async (pid: number) => {
+      const { rows } = await pool.query<{ pid: number; started: string; db: string }>(
+        "SELECT pid, backend_start::text AS started, datname AS db FROM pg_stat_activity WHERE pid = $1",
+        [pid],
+      );
+      if (!rows[0]) throw new Error("Missing owned confirm backend");
+      identities.push(rows[0]);
+    };
+    let allowConfirm!: () => void;
+    let allowUnlink!: () => void;
+    let confirmed!: (pid: number) => void;
+    let unlinking!: (pid: number) => void;
+    let unlinked!: () => void;
+    const confirmGate = new Promise<void>((resolve) => {
+      allowConfirm = resolve;
+    });
+    const unlinkGate = new Promise<void>((resolve) => {
+      allowUnlink = resolve;
+    });
+    const confirmReady = new Promise<number>((resolve) => {
+      confirmed = resolve;
+    });
+    const unlinkReady = new Promise<number>((resolve) => {
+      unlinking = resolve;
+    });
+    const unlinkDone = new Promise<void>((resolve) => {
+      unlinked = resolve;
+    });
+    const wait = async <T>(promise: Promise<T>): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("Owned confirm overlap timed out")), 10000);
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    };
+    let confirmWork: Promise<unknown> | undefined;
+    let unlinkWork: Promise<unknown> | undefined;
+    let response: Awaited<ReturnType<ReturnType<typeof createConfirmProposalRouteHandler>>> | undefined;
+    try {
+      for (const runtime of [confirmPool, unlinkPool]) {
+        const role = await runtime.query<{ name: string; bypass: boolean; superuser: boolean }>(
+          "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+        );
+        expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+      }
+      confirmWork = runInTenant(getTenantZeroId(), () =>
+        withTransaction(confirmPool, async (client) => {
+          const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          await confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposalId);
+          confirmed(rows[0]!.pid);
+          await confirmGate;
+        }),
+      );
+      void confirmWork.catch(() => {});
+      const confirmPid = await wait(
+        Promise.race([
+          confirmReady,
+          confirmWork.then(() => {
+            throw new Error("Confirm ended before barrier");
+          }),
+        ]),
+      );
+      await capture(confirmPid);
+      unlinkWork = runInTenant(getTenantZeroId(), () =>
+        withTransaction(unlinkPool, async (client) => {
+          const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          unlinking(rows[0]!.pid);
+          await deleteRelationWithClient(client, { relationPropertyId, callerItemId: fileId, targetItemId: projectId });
+          unlinked();
+          await unlinkGate;
+        }),
+      );
+      void unlinkWork.catch(() => {});
+      const unlinkPid = await wait(
+        Promise.race([
+          unlinkReady,
+          unlinkWork.then(() => {
+            throw new Error("Unlink ended before barrier");
+          }),
+        ]),
+      );
+      await capture(unlinkPid);
+      let blocked = false;
+      for (let i = 0; i < 100; i++) {
+        const { rows } = await pool.query<{ blocked: boolean }>(
+          "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+          [confirmPid, unlinkPid],
+        );
+        if (rows[0]?.blocked) {
+          blocked = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked).toBe(true);
+      allowConfirm();
+      await wait(confirmWork);
+      await wait(
+        Promise.race([
+          unlinkDone,
+          unlinkWork.then(() => {
+            throw new Error("Unlink committed before barrier");
+          }),
+        ]),
+      );
+      response = await runInTenant(getTenantZeroId(), () =>
+        createConfirmProposalRouteHandler(confirmPool)({ params: { id: proposalId }, body: {} }),
+      );
+      if (!("item" in response) || !response.results) throw new Error("Missing committed result");
+      expect(response.results.find((entry) => entry.ref === "file")?.linkLabels).toEqual(["Project"]);
+    } catch (error) {
+      failures.push(error);
+    } finally {
+      allowConfirm();
+      allowUnlink();
+      const pending = [confirmWork, unlinkWork].filter((value): value is Promise<unknown> => value !== undefined);
+      try {
+        const outcomes = await wait(Promise.allSettled(pending));
+        for (const outcome of outcomes) if (outcome.status === "rejected") failures.push(outcome.reason);
+      } catch (error) {
+        failures.push(new AggregateError([error], "Unresolved confirm overlap operations"));
+      }
+      for (const runtime of [confirmPool, unlinkPool]) {
+        try {
+          await wait(runtime.end());
+        } catch (error) {
+          failures.push(new AggregateError([error], "Unresolved confirm overlap pool"));
+        }
+      }
+    }
+    if (failures.length === 0) {
+      for (const identity of identities) {
+        let absent = false;
+        for (let i = 0; i < 100; i++) {
+          const { rows } = await pool.query<{ present: boolean }>(
+            "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz AND datname = $3) AS present",
+            [identity.pid, identity.started, identity.db],
+          );
+          if (rows[0]?.present === false) {
+            absent = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        if (!absent) failures.push(new Error(`Owned confirm backend ${identity.pid} remains active`));
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Confirm overlap or settlement failed");
+    if (!response) throw new Error("Missing overlap result");
+    console.info(
+      "Owned confirm and unlink settlement",
+      JSON.stringify({ identities, blocker: identities[0]?.pid, waiter: identities[1]?.pid, absent: true }),
+    );
+    return response;
   }
 
   describe("createConfirmProposalRouteHandler", () => {
@@ -266,7 +447,7 @@ describe("inbox custom route handlers (issue #239)", () => {
         expect(result.updatedAt).toBe(rows.find((row) => row.id === result.itemId)?.updated_at.toISOString());
     });
 
-    it.each(["created", "reused-empty", "reused-linked"] as const)(
+    it.each(["created", "reused-empty", "reused-linked", "unlink-first", "overlap"] as const)(
       "reports only retained or created file relations: %s",
       async (mode) => {
         const reuse = mode !== "created";
@@ -298,7 +479,7 @@ describe("inbox custom route handlers (issue #239)", () => {
                 properties: { name: "Existing", file: { blobId: blob.id } },
               })
             : null;
-          if (mode === "reused-linked" && existing) {
+          if (["reused-linked", "unlink-first", "overlap"].includes(mode) && existing) {
             const property = await propertiesStore.getPropertyByKey(client, files.id, "projects");
             if (!property) throw new Error("Missing projects relation");
             await createRelationWithClient(client, {
@@ -335,7 +516,14 @@ describe("inbox custom route handlers (issue #239)", () => {
             },
             { allowedSystemKeys: ["proposal"] },
           );
-          return { filesId: files.id, projectId: project.id, existingId: existing?.id };
+          const property = await propertiesStore.getPropertyByKey(client, files.id, "projects");
+          if (!property) throw new Error("Missing projects relation");
+          return {
+            filesId: files.id,
+            projectId: project.id,
+            existingId: existing?.id,
+            relationPropertyId: property.id,
+          };
         });
         const oldFile = fixture.existingId
           ? await pool.query<{ properties: Record<string, unknown>; updated_at: Date }>(
@@ -344,11 +532,54 @@ describe("inbox custom route handlers (issue #239)", () => {
             )
           : null;
         const handler = createConfirmProposalRouteHandler(pool);
-        const result = await handler({ params: { id: proposalId }, body: {} });
+        let unlinkedFirstResult: Awaited<ReturnType<ReturnType<typeof createConfirmProposalRouteHandler>>> | undefined;
+        if (mode === "unlink-first") {
+          const unlinkPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+          const failures: unknown[] = [];
+          try {
+            const role = await unlinkPool.query<{ name: string; bypass: boolean; superuser: boolean }>(
+              "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+            );
+            expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+            await runInTenant(getTenantZeroId(), () =>
+              withTransaction(unlinkPool, (client) =>
+                deleteRelationWithClient(client, {
+                  relationPropertyId: fixture.relationPropertyId,
+                  callerItemId: fixture.existingId!,
+                  targetItemId: fixture.projectId,
+                }),
+              ),
+            );
+            unlinkedFirstResult = await runInTenant(getTenantZeroId(), () =>
+              createConfirmProposalRouteHandler(unlinkPool)({ params: { id: proposalId }, body: {} }),
+            );
+          } catch (error) {
+            failures.push(error);
+          }
+          try {
+            await unlinkPool.end();
+          } catch (error) {
+            failures.push(error);
+          }
+          if (failures.length === 1) throw failures[0];
+          if (failures.length > 1) throw new AggregateError(failures, "Unlink control or settlement failed");
+        }
+        const result =
+          mode === "overlap"
+            ? await confirmWhileUnlinkWaits(
+                proposalId,
+                fixture.relationPropertyId,
+                fixture.existingId!,
+                fixture.projectId,
+              )
+            : mode === "unlink-first"
+              ? unlinkedFirstResult
+              : await handler({ params: { id: proposalId }, body: {} });
+        if (!result) throw new Error("Missing confirmation result");
         if (!("item" in result) || !result.results) throw new Error("Missing results");
         const file = result.results.find((entry) => entry.ref === "file");
         if (!file) throw new Error("Missing file result");
-        expect(file.linkLabels).toEqual(mode === "reused-empty" ? [] : ["Project"]);
+        expect(file.linkLabels).toEqual(mode === "reused-empty" || mode === "unlink-first" ? [] : ["Project"]);
         if (reuse) {
           expect(file.itemId).toBe(fixture.existingId);
           const unchanged = await pool.query<{ properties: Record<string, unknown>; updated_at: Date }>(
@@ -366,7 +597,9 @@ describe("inbox custom route handlers (issue #239)", () => {
             relationsStore.otherSide(edge, file.itemId),
           );
         });
-        expect(edges).toEqual(mode === "reused-empty" ? [] : [fixture.projectId]);
+        expect(edges).toEqual(
+          mode === "reused-empty" || mode === "unlink-first" || mode === "overlap" ? [] : [fixture.projectId],
+        );
         expect(result.item.properties.results).toEqual(result.results);
         const replay = await handler({ params: { id: proposalId }, body: {} });
         if (!("item" in replay)) throw new Error("Missing replay");

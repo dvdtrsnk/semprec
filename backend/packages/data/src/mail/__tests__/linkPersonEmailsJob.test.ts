@@ -186,16 +186,24 @@ describe("historical mail links for newly claimed addresses", () => {
     });
   }
 
-  function ownedPool(role: boolean): { pool: Pool; active: Set<PoolClient> } {
+  function ownedPool(role: boolean): { pool: Pool; active: Set<PoolClient>; errors: unknown[] } {
     const pool = createPool(process.env.TEST_DATABASE_URL ?? "", {
       ...(role ? { role: "semprec_data" as const } : {}),
       statementTimeoutMs: 8000,
     });
     pool.options.max = role ? 1 : 3;
     const active = new Set<PoolClient>();
-    pool.on("acquire", (client: PoolClient) => active.add(client));
+    const observed = new WeakSet<PoolClient>();
+    const errors: unknown[] = [];
+    pool.on("acquire", (client: PoolClient) => {
+      active.add(client);
+      if (!observed.has(client)) {
+        observed.add(client);
+        client.on("error", (error: unknown) => errors.push(error));
+      }
+    });
     pool.on("release", (_error: Error | undefined, client: PoolClient) => active.delete(client));
-    return { pool, active };
+    return { pool, active, errors };
   }
   async function bounded<T>(promise: Promise<T>, ms = 10000): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -214,13 +222,33 @@ describe("historical mail links for newly claimed addresses", () => {
     operations: Array<Promise<unknown>>,
     pools: Array<ReturnType<typeof ownedPool>>,
     failures: unknown[],
-  ): Promise<void> {
+    firstDeadlineMs = 10000,
+    ownedSession?: { pid: number; started: string; db: string; cancelled?: boolean },
+  ): Promise<{ operationsSettled: boolean; poolsSettled: boolean; poolFailures: boolean }> {
     const settled = Promise.allSettled(operations);
     let outcomes: PromiseSettledResult<unknown>[] | undefined;
+    let poolEnds: PromiseSettledResult<void>[] | undefined;
+    let ending: Promise<PromiseSettledResult<void>[]> | undefined;
     try {
-      outcomes = await bounded(settled);
+      outcomes = await bounded(settled, firstDeadlineMs);
     } catch (error) {
       failures.push(error);
+      // end() closes admission first; only clients owned by these test pools are discarded.
+      ending = Promise.allSettled(pools.map((owned) => owned.pool.end()));
+      if (!ownedSession) failures.push(new Error("Unresolved owned backend identity after interruption"));
+      if (ownedSession) {
+        try {
+          const cancelled = await admin.query<{ cancelled: boolean }>(
+            "SELECT pg_cancel_backend(pid) AS cancelled FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz AND datname = $3",
+            [ownedSession.pid, ownedSession.started, ownedSession.db],
+          );
+          if (cancelled.rows.length !== 1 || !cancelled.rows[0]?.cancelled)
+            throw new Error("Owned backend cancellation was not confirmed", { cause: error });
+          ownedSession.cancelled = true;
+        } catch (cancelError) {
+          failures.push(new AggregateError([cancelError], "Owned backend cancellation failed"));
+        }
+      }
       for (const owned of pools)
         for (const client of owned.active) {
           try {
@@ -232,17 +260,23 @@ describe("historical mail links for newly claimed addresses", () => {
       try {
         outcomes = await bounded(settled);
       } catch (settlementError) {
-        failures.push(settlementError);
+        failures.push(new AggregateError([settlementError], "Unresolved owned operations after interruption"));
       }
     }
     if (outcomes) for (const outcome of outcomes) if (outcome.status === "rejected") failures.push(outcome.reason);
-    for (const owned of pools) {
-      try {
-        await bounded(owned.pool.end());
-      } catch (error) {
-        failures.push(error);
-      }
+    ending ??= Promise.allSettled(pools.map((owned) => owned.pool.end()));
+    try {
+      poolEnds = await bounded(ending);
+    } catch (error) {
+      failures.push(new AggregateError([error], "Unresolved owned pool settlement"));
     }
+    if (poolEnds) for (const outcome of poolEnds) if (outcome.status === "rejected") failures.push(outcome.reason);
+    for (const owned of pools) failures.push(...owned.errors);
+    return {
+      operationsSettled: outcomes !== undefined,
+      poolsSettled: poolEnds !== undefined,
+      poolFailures: poolEnds?.some((outcome) => outcome.status === "rejected") ?? false,
+    };
   }
   async function backendPid(pool: Pool): Promise<number> {
     const { rows } = await pool.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
@@ -261,27 +295,115 @@ describe("historical mail links for newly claimed addresses", () => {
     throw new Error(`Owned backend ${waiter} did not block on ${blocker}`);
   }
 
-  it("bounds an owned barrier and retains the primary and settlement failures", async () => {
+  it("interrupts an owned in-flight query and observes backend and pool settlement", async () => {
     const owned = ownedPool(true);
-    const client = await owned.pool.connect();
-    const primary = new Error("primary barrier failure");
+    const primary = new Error("primary failure");
     const failures: unknown[] = [primary, undefined];
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    let setupFailed = false;
+    let ownedSession: { pid: number; started: string; db: string; cancelled?: boolean } | undefined;
+    let settlement: Awaited<ReturnType<typeof finishOwned>> | undefined;
+    let operation: Promise<unknown> | undefined;
+    let ownedClient: PoolClient | undefined;
     try {
-      await expect(bounded(gate, 10)).rejects.toThrow("Owned overlap deadline exceeded");
+      const client = await owned.pool.connect();
+      ownedClient = client;
+      const ownedPid = await client.query<{ pid: number; db: string }>(
+        "SELECT pg_backend_pid() AS pid, current_database() AS db",
+      );
+      if (!ownedPid.rows[0]) throw new Error("Missing checked-out backend PID");
+      const identity = await admin.query<{ pid: number; started: string; db: string }>(
+        "SELECT pid, backend_start::text AS started, datname AS db FROM pg_stat_activity WHERE pid = $1 AND datname = $2",
+        [ownedPid.rows[0].pid, ownedPid.rows[0].db],
+      );
+      ownedSession = identity.rows[0];
+      if (!ownedSession) throw new Error("Missing owned session identity");
+      operation = client.query("SELECT pg_sleep(30)");
+      void operation.catch(() => {});
+      let observed = false;
+      for (let i = 0; i < 100; i++) {
+        const { rows } = await admin.query<{ active: boolean }>(
+          `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz
+           AND datname = $3 AND state = 'active' AND wait_event = 'PgSleep') AS active`,
+          [ownedSession.pid, ownedSession.started, ownedSession.db],
+        );
+        if (rows[0]?.active) {
+          observed = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (!observed) {
+        const state = await admin.query<{
+          pid: number;
+          started: string;
+          db: string;
+          state: string;
+          wait: string | null;
+        }>(
+          "SELECT pid, backend_start::text AS started, datname AS db, state, wait_event AS wait FROM pg_stat_activity WHERE pid = $1",
+          [ownedSession.pid],
+        );
+        throw new Error(`Owned query not observed: ${JSON.stringify({ ownedSession, state: state.rows })}`);
+      }
+    } catch (error) {
+      setupFailed = true;
+      failures.push(error);
+      if (!operation && ownedClient) {
+        try {
+          ownedClient.release(true);
+        } catch (releaseError) {
+          failures.push(releaseError);
+        }
+      }
     } finally {
-      release();
-      client.release();
+      settlement = await finishOwned(operation ? [operation] : [], [owned], failures, 30, ownedSession);
     }
-    const secondary = new Error("settlement failure");
-    const rejected = Promise.reject(secondary);
-    void rejected.catch(() => {});
-    await finishOwned([gate, rejected], [owned], failures);
-    expect(failures).toEqual([primary, undefined, secondary]);
+    if (setupFailed) throw new AggregateError(failures, "Owned query setup failed");
+    expect(failures[0]).toBe(primary);
+    expect(failures[1]).toBeUndefined();
+    expect(
+      failures.some((error) => error instanceof Error && error.message === "Owned overlap deadline exceeded"),
+    ).toBe(true);
+    expect(failures.some((error) => error instanceof Error && error.message.includes("Unresolved owned"))).toBe(false);
+    expect(
+      failures.some((error) => error instanceof Error && error.message === "Owned backend cancellation failed"),
+    ).toBe(false);
     expect(owned.active.size).toBe(0);
+    expect(settlement).toEqual({ operationsSettled: true, poolsSettled: true, poolFailures: false });
+    if (!ownedSession) throw new AggregateError(failures, "Missing owned session identity");
+    let absent = false;
+    for (let i = 0; i < 100; i++) {
+      const after = await admin.query<{ active: boolean }>(
+        "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz AND datname = $3) AS active",
+        [ownedSession.pid, ownedSession.started, ownedSession.db],
+      );
+      if (after.rows[0]?.active === false) {
+        absent = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(absent).toBe(true);
+    expect(ownedSession.cancelled).toBe(true);
+    expect(failures.length).toBeGreaterThanOrEqual(4);
+    for (const error of failures.slice(2)) {
+      expect(error).toBeInstanceOf(Error);
+      if (!(error instanceof Error)) throw new Error("Unexpected non-error during forced settlement");
+      expect(error.message).toMatch(
+        /Owned overlap deadline exceeded|Connection terminated|canceling statement due to user request/i,
+      );
+    }
+    console.info(
+      "Owned backend cancellation and settlement",
+      JSON.stringify({
+        ...ownedSession,
+        absent,
+        settlement,
+        failures: failures
+          .slice(2)
+          .map((error) => (error instanceof Error ? { name: error.name, message: error.message } : null)),
+      }),
+    );
   });
 
   it("installs the envelope containment index through the migration runner", async () => {
@@ -575,11 +697,22 @@ describe("historical mail links for newly claimed addresses", () => {
     await claim("removed@example.com");
     await drain();
     expect(await edges(historical)).toEqual(["recipientsPeople", "senderPeople"]);
+    await claim("");
     const message = await ingest({
       from: { address: "removed@example.com" },
       to: [{ address: "removed@example.com" }],
     });
-    await claim("removed@example.com\nwakeup@example.com");
+    await claim("removed@example.com");
+    const oldQueued = await admin.query<{ payload: unknown }>(
+      "SELECT payload FROM graphile_worker._private_jobs WHERE key = $1",
+      [`mail-link-person-emails:${oldPerson}`],
+    );
+    expect(oldQueued.rows).toHaveLength(1);
+    expect(oldQueued.rows[0]?.payload).toEqual({
+      traceId: expect.any(String),
+      tenantId: tenant(),
+      payload: { personId: oldPerson, addresses: ["removed@example.com"] },
+    });
     await claim("");
     personId = await runInTenant(tenant(), () =>
       withTransaction(
