@@ -2331,7 +2331,8 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
     for (let i = 0; i < 33; i += 1) docIds.push(await createTestDoc());
 
     const openedDocIds = new Set<string>();
-    client.on("message", (data: RawData) => {
+    client.on("message", (data: RawData, isBinary: boolean) => {
+      if (!isBinary) return;
       const frame = parseBinaryFrame(messageBuffer(data));
       const docId = frame ? decodeDocId(frame.docId) : null;
       if (docId) openedDocIds.add(docId);

@@ -1,6 +1,8 @@
 import type { AgentRunEventRow, NotificationRow } from "@semprec/data";
 import { isClientUpdateId, type AgentDeltaChunk, type OutboundFrame } from "@semprec/realtime";
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function isNonNullObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -62,6 +64,23 @@ export function parseServerFrame(raw: string): OutboundFrame | null {
 
   switch (parsed.type) {
     case "invalidate": {
+      if (parsed.scope === "doc") {
+        const { docId, itemId, databaseId, lastEditedAt } = parsed;
+        if (
+          typeof docId !== "string" ||
+          !UUID_PATTERN.test(docId) ||
+          typeof itemId !== "string" ||
+          !UUID_PATTERN.test(itemId) ||
+          typeof databaseId !== "string" ||
+          !UUID_PATTERN.test(databaseId) ||
+          typeof lastEditedAt !== "string" ||
+          !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(lastEditedAt) ||
+          !Number.isFinite(Date.parse(lastEditedAt)) ||
+          new Date(lastEditedAt).toISOString() !== lastEditedAt
+        )
+          return null;
+        return { type: "invalidate", scope: "doc", docId, itemId, databaseId, lastEditedAt };
+      }
       if (parsed.scope === "relation") {
         const { databaseId, itemId, propertyKey, op } = parsed;
         if (

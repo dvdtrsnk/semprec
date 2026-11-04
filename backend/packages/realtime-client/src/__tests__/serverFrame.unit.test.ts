@@ -1,6 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { parseServerFrame } from "../serverFrame.js";
 
+describe("document invalidation frames", () => {
+  const frame = {
+    type: "invalidate",
+    scope: "doc",
+    docId: "2f1d6a9e-3c1b-4f0e-9a52-7d3b8c1e4a60",
+    itemId: "2f1d6a9e-3c1b-4f0e-9a52-7d3b8c1e4a61",
+    databaseId: "2f1d6a9e-3c1b-4f0e-9a52-7d3b8c1e4a62",
+    lastEditedAt: "2026-11-04T10:00:00.000Z",
+  };
+  it("parses a complete document frame", () => {
+    expect(parseServerFrame(JSON.stringify(frame))).toEqual(frame);
+  });
+  it.each([
+    { ...frame, docId: "bad" },
+    { ...frame, itemId: null },
+    { ...frame, databaseId: "bad" },
+    { ...frame, lastEditedAt: "not a date" },
+    { ...frame, lastEditedAt: "2026-02-30T10:00:00.000Z" },
+    { type: "invalidate", scope: "doc" },
+  ])("rejects malformed document fields", (value) => {
+    expect(parseServerFrame(JSON.stringify(value))).toBeNull();
+  });
+});
+
 describe("parseServerFrame sempThread invalidation (issue #1395)", () => {
   const threadId = "2f1d6a9e-3c1b-4f0e-9a52-7d3b8c1e4a60";
 
