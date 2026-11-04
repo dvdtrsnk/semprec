@@ -107,3 +107,7 @@ Gh-1589 explicitly requires faktury to find Faktura_2026-10.pdf, but PostgreSQL 
 ## Journal read route contract
 
 Gh-1537 may add exactly the journal period read -> packages/data/src/journal/journalRouteHandlers.ts mapping to the API ROUTE_HANDLER_FILES table in chokePointWriteBoundary.unit.test.ts. Gh-1541 retains its separate write-route mapping permission. Preserve exhaustive key equality, scanned-owner and write-boundary assertions; run the complete existing unit file. This is necessary route catalog maintenance, not a scanner exception or extra production scope.
+
+## Journal ensure and actual sync
+
+Gh-1541 may extend only the existing API tenantIsolationRealtime.test.ts with actual authenticated PUT ensure -> returned docId -> real /api/sync doc-open evidence on its non-bypass business pool. Reuse its production dispatcher/upgrade composition, own success, foreign/random refusal and ordered no-effect controls, bounded owned cleanup. No new production sync/auth hooks, cross-package private imports or dependency changes. This test permission supplements Journal data and REST isolation evidence rather than treating them as socket proof.
