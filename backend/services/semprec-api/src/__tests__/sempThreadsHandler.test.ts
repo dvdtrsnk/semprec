@@ -53,6 +53,65 @@ describe("durable Semp thread history", () => {
     await pool?.end();
     await admin?.end();
   });
+  it("projects system message fields and rejects malformed ids", async () => {
+    const tenant = await createTestTenant(admin);
+    const email = `${randomUUID()}@example.test`;
+    const user = await createUser(admin, {
+      tenantId: tenant,
+      email,
+      passwordHash: await hashPassword("thread-test-password"),
+    });
+    const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+    const fixture = await runInTenant(tenant, async () => {
+      const thread = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
+      const threadId = thread.rows[0]?.id;
+      if (!threadId || thread.rowCount !== 1) throw new Error("Missing thread");
+      const run = await createAgentRun(pool, {
+        triggeredBy: "user",
+        unit: "session",
+        task: "history",
+        userId: user.id,
+        threadId,
+      });
+      const original = await pool.query<{ id: string }>(
+        "INSERT INTO semp_messages (thread_id, role, text) VALUES ($1, 'user', 'hello') RETURNING id",
+        [threadId],
+      );
+      const replyId = original.rows[0]?.id;
+      if (!replyId || original.rowCount !== 1) throw new Error("Missing user message");
+      const system = await pool.query<{ id: string }>(
+        `INSERT INTO semp_messages (thread_id, role, system_key, system_params, context, reply_to_message_id, agent_run_id, event_from_id, status)
+        VALUES ($1, 'system', 'system.test', '{"count":2}'::jsonb, '[{"ref":"x"}]'::jsonb, $2, $3, 123, 'done') RETURNING id`,
+        [threadId, replyId, run.id],
+      );
+      const id = system.rows[0]?.id;
+      if (!id || system.rowCount !== 1) throw new Error("Missing system message");
+      return { threadId, id, replyId, runId: run.id };
+    });
+    const headers = { authorization: `Bearer ${session.token}` };
+    const response = await fetch(`${baseUrl}/api/semp/threads/${fixture.threadId}/messages`, { headers });
+    expect(response.status).toBe(200);
+    const body: unknown = await response.json();
+    expect(body).toMatchObject({
+      rows: expect.arrayContaining([
+        {
+          id: fixture.id,
+          role: "system",
+          text: null,
+          system: { key: "system.test", params: { count: 2 } },
+          context: [{ ref: "x" }],
+          replyToMessageId: fixture.replyId,
+          agentRunId: fixture.runId,
+          eventFromId: "123",
+          status: "done",
+          createdAt: expect.any(String),
+        },
+      ]),
+    });
+    for (const suffix of ["", "/messages"]) {
+      expect((await fetch(`${baseUrl}/api/semp/threads/not-a-uuid${suffix}`, { headers })).status).toBe(400);
+    }
+  });
   it("returns old thread history after the real retention task removes an eligible event", async () => {
     const tenant = await createTestTenant(admin);
     const email = `${randomUUID()}@example.test`;

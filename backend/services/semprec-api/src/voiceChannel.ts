@@ -237,7 +237,7 @@ export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChan
       }
       busy = true;
       Promise.resolve()
-        .then(operation)
+        .then(() => (ws.readyState === WebSocket.OPEN ? operation() : undefined))
         .then(
           (accepted) => {
             if (accepted === false) fail("overloaded", BACKPRESSURE_CLOSE_CODE);
