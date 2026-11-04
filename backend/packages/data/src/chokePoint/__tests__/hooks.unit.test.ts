@@ -89,6 +89,16 @@ describe("changed relation hook registry", () => {
     await expect(runRelationEdgeChangedHooks(context)).rejects.toThrow("hook failed");
     expect(later).not.toHaveBeenCalled();
   });
+  it("allows a different edge in the same client and releases both guards", async () => {
+    const seen: string[] = [];
+    registerRelationEdgeChangedHook(async (current) => {
+      seen.push(current.itemB);
+      if (current.itemB === "b") await runRelationEdgeChangedHooks({ ...current, itemB: "c" });
+    });
+    await runRelationEdgeChangedHooks(context);
+    await runRelationEdgeChangedHooks(context);
+    expect(seen).toEqual(["b", "c", "b", "c"]);
+  });
 });
 
 describe("chokePoint/hooks item-update registry", () => {

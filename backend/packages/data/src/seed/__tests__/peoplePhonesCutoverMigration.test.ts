@@ -39,7 +39,8 @@ describe("People phones cutover", () => {
       const seeded = (await cp.listProperties(databaseId)).find((p) => p.key === "phones");
       expect(seeded).toMatchObject({ type: "longText", owner: "user", config: {} });
       // Locked schema cannot be removed through the public property API; model an older tenant.
-      await pool.query("DELETE FROM properties WHERE database_id=$1 AND key='phones'", [databaseId]);
+      const removed = await pool.query("DELETE FROM properties WHERE database_id=$1 AND key='phones'", [databaseId]);
+      expect(removed.rowCount).toBe(1);
       await runPeoplePhonesCutoverMigration(pool);
       const inserted = (await cp.listProperties(databaseId)).find((p) => p.key === "phones");
       expect(inserted).toMatchObject({ type: "longText", owner: "user", config: {} });

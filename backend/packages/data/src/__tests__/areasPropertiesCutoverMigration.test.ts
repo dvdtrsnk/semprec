@@ -32,10 +32,11 @@ async function properties() {
 }
 async function remove(keysToRemove = keys) {
   // Fixture for a tenant seeded by an older release; the runtime cannot remove locked schema via the public API.
-  await pool.query("DELETE FROM properties WHERE database_id = $1 AND key = ANY($2::text[])", [
+  const deleted = await pool.query("DELETE FROM properties WHERE database_id = $1 AND key = ANY($2::text[])", [
     databaseId,
     keysToRemove,
   ]);
+  expect(deleted.rowCount).toBe(keysToRemove.length);
 }
 describe("Areas property cutover", () => {
   beforeAll(async () => {
@@ -118,7 +119,11 @@ describe("Areas property cutover", () => {
       await seedSystem(pool);
       const db = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
       if (!db) throw new Error("Areas missing");
-      await pool.query("DELETE FROM properties WHERE database_id = $1 AND key = ANY($2::text[])", [db.id, keys]);
+      const deleted = await pool.query("DELETE FROM properties WHERE database_id = $1 AND key = ANY($2::text[])", [
+        db.id,
+        keys,
+      ]);
+      expect(deleted.rowCount).toBe(keys.length);
       return db.id;
     });
     const unseeded = await createTestTenant(admin);
@@ -177,10 +182,11 @@ describe("Areas property cutover", () => {
       expect(fresh.properties.active).toBe(true);
       await cp.softDeleteItem(databaseId, cleared.id);
       // A legacy row predates the create default; the generic writer cannot remove a stored key.
-      await pool.query("UPDATE items SET properties=properties - 'active' WHERE database_id=$1 AND id=$2", [
-        databaseId,
-        missing.id,
-      ]);
+      const legacy = await pool.query(
+        "UPDATE items SET properties=properties - 'active' WHERE database_id=$1 AND id=$2",
+        [databaseId, missing.id],
+      );
+      expect(legacy.rowCount).toBe(1);
       await runAreasPropertiesCutoverMigration(pool);
       const rows = await pool.query<{ id: string; properties: Record<string, unknown>; updated_at: Date }>(
         "SELECT id, properties, updated_at FROM items WHERE database_id=$1 ORDER BY id",
@@ -218,10 +224,11 @@ describe("Areas property cutover", () => {
       if (!property) throw new Error("Company relation missing");
       await cp.createRelation({ relationPropertyId: property.id, callerItemId: area.id, targetItemId: company.id });
       // Recreate the former schema state; changing a locked system relation is not a public operation.
-      await pool.query(
+      const downgraded = await pool.query(
         `UPDATE relation_definitions SET cardinality='one_to_one' WHERE property_id_a IN (SELECT id FROM properties WHERE database_id=$1 AND key IN ('company','healthRecord'))`,
         [areas.id],
       );
+      expect(downgraded.rowCount).toBe(2);
       const before = await pool.query<{ id: string; cardinality: string }>(
         "SELECT id, cardinality FROM relation_definitions ORDER BY id",
       );
@@ -239,6 +246,43 @@ describe("Areas property cutover", () => {
       expect((await pool.query("SELECT id, cardinality FROM relation_definitions ORDER BY id")).rows).toEqual(
         after.rows,
       );
+    });
+  });
+  it("backfills a suspended tenant and its active property through the maintained-tenant fan-out", async () => {
+    const suspended = await createTestTenant(admin, { status: "suspended" });
+    const fixture = await runInTenant(suspended, async () => {
+      await seedSystem(pool);
+      const cp = createChokePoint(pool);
+      const areas = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
+      if (!areas) throw new Error("Areas missing");
+      const item = await cp.createItem({ databaseId: areas.id, properties: { name: "Legacy" } });
+      // Reconstruct the old locked schema and row, which the public API cannot produce.
+      const property = await pool.query(
+        "UPDATE properties SET config=config - 'default' WHERE database_id=$1 AND key='active'",
+        [areas.id],
+      );
+      const legacy = await pool.query(
+        "UPDATE items SET properties=properties - 'active' WHERE database_id=$1 AND id=$2",
+        [areas.id, item.id],
+      );
+      expect(property.rowCount).toBe(1);
+      expect(legacy.rowCount).toBe(1);
+      return { areas, item };
+    });
+    await runAsSystem("Areas active cutover test", () => runTenantCutoverMigrations(pool));
+    await runInTenant(suspended, async () => {
+      const property = await pool.query<{ config: Record<string, unknown> }>(
+        "SELECT config FROM properties WHERE database_id=$1 AND key='active'",
+        [fixture.areas.id],
+      );
+      expect(property.rows[0]?.config.default).toBe(true);
+      const cp = createChokePoint(pool);
+      expect((await cp.getItem(fixture.areas.id, fixture.item.id))?.properties.active).toBe(true);
+      const before = await pool.query("SELECT id, properties, updated_at FROM items WHERE id=$1", [fixture.item.id]);
+      await runAreasPropertiesCutoverMigration(pool);
+      expect(
+        (await pool.query("SELECT id, properties, updated_at FROM items WHERE id=$1", [fixture.item.id])).rows,
+      ).toEqual(before.rows);
     });
   });
 });

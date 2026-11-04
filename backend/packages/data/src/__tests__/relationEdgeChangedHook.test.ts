@@ -21,6 +21,7 @@ let pool: Pool;
 let cp: ChokePoint;
 let tenant: string;
 let input: { relationPropertyId: string; callerItemId: string; targetItemId: string };
+let inversePropertyId: string;
 let calls: RelationEdgeChangedHookContext[];
 let behavior: (context: RelationEdgeChangedHookContext) => Promise<void>;
 
@@ -42,12 +43,15 @@ describe("relation edge changed hooks", () => {
     await runInTenant(tenant, async () => {
       const source = await cp.createDatabase({ name: "Source" });
       const target = await cp.createDatabase({ name: "Target" });
-      const { property } = await cp.createRelationProperty({
+      const { property, inverseProperty } = await cp.createRelationProperty({
         sourceDatabaseId: source.id,
         targetDatabaseId: target.id,
         key: "link",
         name: "Link",
+        inverse: { key: "backlink", name: "Backlink" },
       });
+      if (!inverseProperty) throw new Error("Inverse relation missing");
+      inversePropertyId = inverseProperty.id;
       const a = await cp.createItem({ databaseId: source.id });
       const b = await cp.createItem({ databaseId: target.id });
       input = { relationPropertyId: property.id, callerItemId: a.id, targetItemId: b.id };
@@ -69,6 +73,7 @@ describe("relation edge changed hooks", () => {
         onBehalfOfUserId: "user",
       };
       const edge = await cp.createRelation({ ...input, metadata: { value: 1 } }, writer);
+      await cp.createRelation({ ...input, metadata: { value: 3 } }, writer);
       await cp.updateRelation({ ...input, metadata: { value: 2 } }, writer);
       await withTransaction(pool, (client) => deleteRelationWithClient(client, input, undefined, writer));
       await withTransaction(pool, (client) => deleteRelationWithClient(client, input, undefined, writer));
@@ -90,6 +95,15 @@ describe("relation edge changed hooks", () => {
           itemA: edge.itemA,
           itemB: edge.itemB,
           metadata: { value: 1 },
+          actor: writer,
+        },
+        {
+          op: "create",
+          relationDefinitionId: edge.relationDefinitionId,
+          propertyId: input.relationPropertyId,
+          itemA: edge.itemA,
+          itemB: edge.itemB,
+          metadata: { value: 3 },
           actor: writer,
         },
         {
@@ -147,5 +161,16 @@ describe("relation edge changed hooks", () => {
         await createRelationWithClient(client, input);
       };
       await expect(cp.createRelation(input)).rejects.toThrow("Recursive relation edge change");
+    }));
+  it("reports stored side ordering for a write through the inverse property", async () =>
+    runInTenant(tenant, async () => {
+      const edge = await cp.createRelation({
+        relationPropertyId: inversePropertyId,
+        callerItemId: input.targetItemId,
+        targetItemId: input.callerItemId,
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({ propertyId: inversePropertyId, itemA: edge.itemA, itemB: edge.itemB });
+      expect(edge).toMatchObject({ itemA: input.callerItemId, itemB: input.targetItemId });
     }));
 });
