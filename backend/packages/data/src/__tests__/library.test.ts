@@ -706,6 +706,20 @@ describe("Books year and ISBN tenant cutover", () => {
     ]);
     return rows;
   }
+  it("seeds both Books fields for a fresh tenant through the runtime role", async () =>
+    runInTenant(tenantId, async () => {
+      const properties = await snapshot();
+      expect(properties.find((property) => property.key === "year")).toMatchObject({
+        type: "number",
+        owner: "user",
+        name: null,
+      });
+      expect(properties.find((property) => property.key === "isbn")).toMatchObject({
+        type: "text",
+        owner: "user",
+        name: null,
+      });
+    }));
   it("runs the registered cutover on a populated tenant and leaves it unchanged on a second run", async () => {
     await runInTenant(tenantId, async () => {
       // Recreate the older schema shape; the current seed always creates both properties.
