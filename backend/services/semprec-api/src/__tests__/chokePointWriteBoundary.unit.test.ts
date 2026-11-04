@@ -42,6 +42,8 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "mcp tool registration reclassify": "services/semprec-api/src/mcpAgentPageHandler.ts",
   "confirm proposal": "packages/data/src/inbox/inboxRouteHandlers.ts",
   "inbox types": "packages/data/src/inbox/inboxRouteHandlers.ts",
+  "journal period read": "packages/data/src/journal/journalRouteHandlers.ts",
+  "journal period ensure": "packages/data/src/journal/journalRouteHandlers.ts",
   "create transcription": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
   "transcription rerun": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
   "transcript speakers": "packages/data/src/transcription/transcriptionRouteHandlers.ts",

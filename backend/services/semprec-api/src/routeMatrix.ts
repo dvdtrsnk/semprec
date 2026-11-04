@@ -275,6 +275,22 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "journal period ensure",
+    method: "PUT",
+    path: "/api/journal/periods/day/2026-10-16/doc",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "journal period read",
+    method: "GET",
+    path: "/api/journal/periods/day/2026-10-16",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "create transcription",
     method: "POST",
     path: "/api/transcriptions",

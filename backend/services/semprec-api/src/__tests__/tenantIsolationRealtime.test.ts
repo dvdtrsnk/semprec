@@ -1091,6 +1091,29 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     }
   });
 
+  it("opens an ensured Journal page over the authenticated sync route only in its own tenant", async () => {
+    const response = await fetch(`${baseUrl}/api/journal/periods/day/2026-10-16/doc`, {
+      method: "PUT",
+      headers: { Cookie: a1Cookie, Origin: baseUrl, "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(response.status).toBe(200);
+    const body: unknown = await response.json();
+    if (!isRecord(body) || typeof body.docId !== "string") throw new Error("Missing ensured document id");
+    const docId = body.docId;
+    const before = await countDocUpdates(tenantA, docId);
+    // The PUT may have emitted its item invalidation before the doc-open response.
+    const sentinel = await publishSentinel(tenantA.tenantId);
+    await a1.drainUntil(isSentinel(sentinel));
+    await openDoc(a1, docId);
+    const foreign = await b1AfterForeignDocFrame({ type: "doc:open", docId });
+    const random = await b1AfterForeignDocFrame({ type: "doc:open", docId: randomUUID() });
+    expect(foreign).toEqual(random);
+    b1.sendBinary(buildBinaryFrame(docId, yjsUpdateMessage("foreign")));
+    await expectNothingReceived(b1, tenantB.tenantId);
+    expect(await countDocUpdates(tenantA, docId)).toBe(before);
+  });
+
   it("publishes committed thread invalidations only to the writer's tenant and suppresses rolled-back ones", async () => {
     const rolledBack = randomUUID();
     await expect(

@@ -36,6 +36,7 @@ import {
   createPendingApprovalRequest,
   createUser,
   getDatabaseByModuleId,
+  getOrCreateJournalItem,
   hashPassword,
   handleObservabilityCheckSystemTask,
   insertAgentRunEvent,
@@ -1076,6 +1077,44 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: {},
       }));
     }),
+  "journal period ensure": async () => {
+    const request = { method: "PUT", path: "/api/journal/periods/day/2032-08-15/doc", body: {} };
+    const owner = await sendOk(a.member, request);
+    const [other, repeat] = await Promise.all([sendOk(b.member, request), sendOk(b.member, request)]);
+    expect(readString(other, "itemId")).toBe(readString(repeat, "itemId"));
+    expect(readString(other, "docId")).toBe(readString(repeat, "docId"));
+    expect(readString(other, "itemId")).not.toBe(readString(owner, "itemId"));
+    expect(readString(other, "docId")).not.toBe(readString(owner, "docId"));
+    const counts = await inTenantTransaction(b.tenantId, async (client) => {
+      const journal = await getDatabaseByModuleId(client, "journal");
+      if (!journal) throw new Error("Journal not seeded");
+      return client.query<{ items: number; docs: number }>(
+        `SELECT (SELECT count(*)::int FROM items WHERE database_id = $1 AND properties ->> 'type' = 'day' AND properties ->> 'period' = $2 AND deleted_at IS NULL) AS items,
+                (SELECT count(*)::int FROM docs WHERE item_id = $3) AS docs`,
+        [journal.id, "2032-08-15", readString(other, "itemId")],
+      );
+    });
+    expect(counts.rows).toEqual([{ items: 1, docs: 1 }]);
+    const invalid = await send(b.member, { method: "PUT", path: "/api/journal/periods/week/2027-W53/doc", body: {} });
+    expect(invalid.status).toBe(400);
+    expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
+  },
+  "journal period read": async () => {
+    const createPeriod = async (tenant: TenantFixture) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const journal = await getDatabaseByModuleId(client, "journal");
+        if (!journal) throw new Error("Journal not seeded");
+        return getOrCreateJournalItem(client, journal.id, "day", new Date("2026-10-16T12:00:00Z"), "Europe/Prague");
+      });
+    const ownA = await createPeriod(a);
+    const ownB = await createPeriod(b);
+    const response = await sendOk(b.member, { method: "GET", path: "/api/journal/periods/day/2026-10-16" });
+    expect(readString(response, "item", "id")).toBe(ownB.id);
+    expect(response).not.toContain(ownA.id);
+    const invalid = await send(b.member, { method: "GET", path: "/api/journal/periods/week/2027-W53" });
+    expect(invalid.status).toBe(400);
+    expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
+  },
   "create transcription": () =>
     leavesAUnchanged(async () => {
       await expectForeignLikeRandom(b.member, [a.fileItemId], ([fileItemId]) => ({

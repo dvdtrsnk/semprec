@@ -320,6 +320,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "enqueueRollupRecompute",
   "enqueueTranscriptionJob",
   "ensureItemAutomation",
+  "ensureJournalPeriodDoc",
   "eventEnd",
   "executeMcpInvocation",
   "failGatewayCall",

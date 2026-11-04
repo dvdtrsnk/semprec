@@ -126,3 +126,37 @@ export async function getOrCreateDoc(client: Queryable, itemId: string, kind: Do
 export async function deleteDocByItemId(client: Queryable, itemId: string): Promise<void> {
   await client.query(`DELETE FROM docs WHERE item_id = $1`, [itemId]);
 }
+
+export interface PageStateRead {
+  itemId: string;
+  snapshot: Buffer | null;
+  updates: Buffer[];
+}
+
+/** Reads selected page snapshots and updates in one statement without compaction. */
+export async function readPageStatesForItems(client: Queryable, itemIds: string[]): Promise<PageStateRead[]> {
+  if (itemIds.length === 0) return [];
+  const { rows } = await client.query<{ item_id: string; kind: number; bytes: unknown }>(
+    `WITH selected AS (SELECT d.id, d.item_id FROM docs d WHERE d.item_id = ANY($1::uuid[]) AND d.kind = 'page')
+     SELECT selected.item_id, 0 AS kind, 0::bigint AS seq, s.state AS bytes
+     FROM selected LEFT JOIN doc_snapshots s ON s.doc_id = selected.id
+     UNION ALL
+     SELECT selected.item_id, 1 AS kind, u.id AS seq, u.update AS bytes
+     FROM selected JOIN doc_updates u ON u.doc_id = selected.id
+     ORDER BY item_id, kind, seq`,
+    [itemIds],
+  );
+  const pages = new Map<string, PageStateRead>();
+  for (const row of rows) {
+    if (row.bytes !== null && !Buffer.isBuffer(row.bytes)) throw new Error("Invalid page state bytes");
+    let page = pages.get(row.item_id);
+    if (!page) {
+      page = { itemId: row.item_id, snapshot: null, updates: [] };
+      pages.set(row.item_id, page);
+    }
+    if (row.kind === 0) page.snapshot = row.bytes;
+    else if (row.kind === 1 && row.bytes !== null) page.updates.push(row.bytes);
+    else throw new Error("Invalid page state row");
+  }
+  return [...pages.values()];
+}
