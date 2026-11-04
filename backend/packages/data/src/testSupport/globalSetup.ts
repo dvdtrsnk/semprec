@@ -136,7 +136,9 @@ export default async function setup(): Promise<() => Promise<void>> {
       await bootstrap.end();
     } catch (error) {
       if (bootstrapFailure) {
-        throw new AggregateError([bootstrapFailure.error, error], "Test database bootstrap and client cleanup failed");
+        throw new AggregateError([bootstrapFailure.error, error], "Test database bootstrap and client cleanup failed", {
+          cause: error,
+        });
       }
       throw error;
     }
