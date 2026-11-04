@@ -211,6 +211,7 @@ export async function lockRelationSnapshotEdgesNowait(
   callerId: string,
   side: "a" | "b",
 ): Promise<ItemRelationRow[]> {
+  // The interpolated column is chosen only from these two fixed SQL identifiers.
   const { rows } = await client.query<Record<string, unknown>>(
     `SELECT id, relation_definition_id, item_a, item_b, metadata FROM item_relations
      WHERE relation_definition_id = $1 AND ${side === "a" ? "item_a" : "item_b"} = $2
