@@ -103,3 +103,7 @@ The actual searchItems uses a LEFT JOIN without a live-item predicate. Gh-1741 t
 ## Required filename match
 
 Gh-1589 explicitly requires faktury to find Faktura_2026-10.pdf, but PostgreSQL treats that filename as a file lexeme. The existing generic document owner may retain the original Files title/name already admitted by searchFields and append its letters/digits-tokenized copy. This is limited to that Files title, preserving original text and other property projections, body/page_text, vector/query/config semantics and searchFields admission. Prove the actual Hunspell + real Files write/index/query hit, prefix control and unrelated-file negative in already authorized tests; preserve the original failed development run. No new owner, public helper or architectural pattern.
+
+## Journal read route contract
+
+Gh-1537 may add exactly the journal period read -> packages/data/src/journal/journalRouteHandlers.ts mapping to the API ROUTE_HANDLER_FILES table in chokePointWriteBoundary.unit.test.ts. Gh-1541 retains its separate write-route mapping permission. Preserve exhaustive key equality, scanned-owner and write-boundary assertions; run the complete existing unit file. This is necessary route catalog maintenance, not a scanner exception or extra production scope.
