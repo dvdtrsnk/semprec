@@ -241,7 +241,7 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     await drainQueue();
 
     const items = await computedInboxItems(dayId);
-    expect(items![0]!.status).toBe("confirmed");
+    expect(items![0]).toMatchObject({ status: "confirmed", processing: "confirmed", proposalSummary: null });
   });
 
   it("updates the cached status after a proposal is rejected", async () => {
@@ -269,7 +269,7 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     await drainQueue();
 
     const items = await computedInboxItems(dayId);
-    expect(items![0]!.status).toBe("rejected");
+    expect(items![0]).toMatchObject({ status: "rejected", processing: "rejected", proposalSummary: null });
   });
 
   it("updates the cached status after a proposal is revised", async () => {

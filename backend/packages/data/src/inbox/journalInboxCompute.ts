@@ -162,8 +162,8 @@ async function databaseKeyOf(client: PoolClient, databaseId: string): Promise<st
  * item is its primary step's `itemId` when that step updates or links. Project and area are the relation
  * targets of the primary step (or of a single-step envelope) that belong to the Projects or Areas database,
  * whichever relation key carries them. Follow-ups are the active non-primary steps. The items are read in one
- * batch; a deleted item is unknown. `documentKind` stays null until a card stores a document recognition result,
- * which the attachment recognition of issue #1965 is to write.
+ * batch; a deleted item is unknown. No persisted document recognition contract currently exists;
+ * integration is tracked with future attachment extraction and summary delivery.
  */
 async function buildProposalSummary(
   client: PoolClient,
