@@ -15,3 +15,7 @@ Member-specific Touches now permit only the actual required REST/MCP/AgentTool/k
 ## Execution
 
 Preserve every other Task/AC and member ordering. Reconcile recovered production code before rebuilding it. Follow the parent throughput directive: grouped coherent development checks, early small changed-contract checks, one complete R1 plus same-reviewer focused R2, then parent direct finite closure. Final validation uses one actual unchanged verify with explicit outcomes and no redundant full pre-pass. Prior candidate-local exceptions never transfer. Gh-1086 remains unchanged OPEN/BLOCKED release-only. Concrete new architecture/scope seams go to the parent in grouped form while unaffected implementation continues autonomously.
+
+## Seed catalog artifact copy
+
+Gh-1515 and gh-1535 add seed labels. Current data build uses cp -r src/seed/i18n dist/seed/i18n; an existing destination nests i18n and can leave direct runtime catalogs stale. Reuse the selected flat-copy pattern already applied to library, notifications and Inbox: only replace this seed segment with mkdir -p dist/seed/i18n && cp src/seed/i18n/*.json dist/seed/i18n/. Preserve all other build segments, package exports and dependencies. Prove clean and repeat refresh with a stale direct-output control in owned staging and source/direct filename/hash parity; do not clean shared ignored dist. This is exact packaging scope for these new labels, not a new loader or general catalog sweep.
