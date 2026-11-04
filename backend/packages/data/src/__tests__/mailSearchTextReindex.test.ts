@@ -196,75 +196,88 @@ describe("mail search text rebuild", () => {
       mailRoot = join(directory, "cross-root-mail");
     const filesStorage = new LocalFsBlobStorageWriter(filesRoot),
       mailStorage = new LocalFsBlobStorageWriter(mailRoot);
-    const fixture = await runInTenant(tenant, async () => {
-      const db = async (key: string) => {
-        const row = await withTransaction(pool, (client) => getDatabaseByModuleId(client, key));
-        if (!row) throw new Error(`Missing ${key}`);
-        return row.id;
-      };
-      const emails = await db("emails"),
-        files = await db("files"),
-        folders = await db("folders");
-      const properties = await createChokePoint(pool).listProperties(emails);
-      const folderProperty = properties.find((p) => p.key === "folder"),
-        attachmentProperty = properties.find((p) => p.key === "attachments");
-      if (!folderProperty || !attachmentProperty) throw new Error("Missing relations");
-      const folder = await withTransaction(pool, (client) =>
-        createItemWithClient(
-          client,
-          { databaseId: folders, properties: { name: "INBOX" } },
-          { allowedSystemKeys: ["name"] },
-        ),
-      );
-      const bytes = pdf("Crossrootneedle");
-      const uploaded = await ingestUploadedFile(pool, {
-        filesDatabaseId: files,
-        filename: "invoice.pdf",
-        contentType: "application/pdf",
-        source: Readable.from(bytes),
-        storageKeyPrefix: "files",
-        maxBytes: 1024 * 1024,
-        storage: filesStorage,
-      });
-      const mail = await withTransaction(pool, (client) =>
-        ingestEmailMessage(client, {
-          emailsDatabaseId: emails,
+    const foreignTenant = await createTestTenant(admin);
+    await runInTenant(foreignTenant, () => seedSystem(pool));
+    const makeFixture = async (tenantId: string, marker: string) =>
+      runInTenant(tenantId, async () => {
+        const db = async (key: string) => {
+          const row = await withTransaction(pool, (client) => getDatabaseByModuleId(client, key));
+          if (!row) throw new Error(`Missing ${key}`);
+          return row.id;
+        };
+        const emails = await db("emails"),
+          files = await db("files"),
+          folders = await db("folders");
+        const properties = await createChokePoint(pool).listProperties(emails);
+        const folderProperty = properties.find((p) => p.key === "folder"),
+          attachmentProperty = properties.find((p) => p.key === "attachments");
+        if (!folderProperty || !attachmentProperty) throw new Error("Missing relations");
+        const folder = await withTransaction(pool, (client) =>
+          createItemWithClient(
+            client,
+            { databaseId: folders, properties: { name: "INBOX" } },
+            { allowedSystemKeys: ["name"] },
+          ),
+        );
+        const bytes = pdf(marker);
+        const uploaded = await ingestUploadedFile(pool, {
           filesDatabaseId: files,
-          folderRelationPropertyId: folderProperty.id,
-          attachmentsRelationPropertyId: attachmentProperty.id,
-          folderItemId: folder.id,
-          mailboxItemId: randomUUID(),
-          storage: mailStorage,
-          storageKeyPrefix: "mail",
-          messageId: "<crossroot@example.test>",
-          subject: "Cross root",
-          envelope: {},
-          attachments: [
-            {
-              filename: "invoice.pdf",
-              contentType: "application/pdf",
-              contentId: null,
-              disposition: "attachment",
-              openStream: () => Readable.from(bytes),
-            },
-          ],
-        }),
-      );
-      const attached = await withTransaction(pool, (client) =>
-        client.query<{ blob_id: string }>("SELECT blob_id FROM mail_attachments WHERE message_item_id = $1", [
-          mail.itemId,
-        ]),
-      );
-      expect(attached.rows).toEqual([{ blob_id: uploaded.blob.id }]);
-      expect(await readFile(join(filesRoot, uploaded.blob.storageKey))).toEqual(bytes);
-      await expect(readFile(join(mailRoot, uploaded.blob.storageKey))).rejects.toMatchObject({ code: "ENOENT" });
-      const search = async () =>
-        (
-          await withTransaction(pool, (client) => searchItems(client, { databaseId: emails, query: "Crossrootneedle" }))
-        ).map((row) => row.itemId);
-      expect(await search()).toContain(mail.itemId);
-      return { itemId: mail.itemId, search };
-    });
+          filename: "invoice.pdf",
+          contentType: "application/pdf",
+          source: Readable.from(bytes),
+          storageKeyPrefix: "files",
+          maxBytes: 1024 * 1024,
+          storage: filesStorage,
+        });
+        const mail = await withTransaction(pool, (client) =>
+          ingestEmailMessage(client, {
+            emailsDatabaseId: emails,
+            filesDatabaseId: files,
+            folderRelationPropertyId: folderProperty.id,
+            attachmentsRelationPropertyId: attachmentProperty.id,
+            folderItemId: folder.id,
+            mailboxItemId: randomUUID(),
+            storage: mailStorage,
+            storageKeyPrefix: "mail",
+            messageId: "<crossroot@example.test>",
+            subject: "Cross root",
+            envelope: {},
+            attachments: [
+              {
+                filename: "invoice.pdf",
+                contentType: "application/pdf",
+                contentId: null,
+                disposition: "attachment",
+                openStream: () => Readable.from(bytes),
+              },
+            ],
+          }),
+        );
+        const attached = await withTransaction(pool, (client) =>
+          client.query<{ blob_id: string }>("SELECT blob_id FROM mail_attachments WHERE message_item_id = $1", [
+            mail.itemId,
+          ]),
+        );
+        expect(attached.rows).toEqual([{ blob_id: uploaded.blob.id }]);
+        expect(await readFile(join(filesRoot, uploaded.blob.storageKey))).toEqual(bytes);
+        await expect(readFile(join(mailRoot, uploaded.blob.storageKey))).rejects.toMatchObject({ code: "ENOENT" });
+        const search = async (query: string) =>
+          (await withTransaction(pool, (client) => searchItems(client, { databaseId: emails, query }))).map(
+            (row) => row.itemId,
+          );
+        expect(await search(marker)).toContain(mail.itemId);
+        await withTransaction(pool, (client) =>
+          reindexItemSearch(client, {
+            itemId: mail.itemId,
+            databaseId: emails,
+            text: "stale fixture",
+          }),
+        );
+        expect(await search(marker)).not.toContain(mail.itemId);
+        return { itemId: mail.itemId, search };
+      });
+    const fixture = await makeFixture(tenant, "Crossrootneedle");
+    const foreign = await makeFixture(foreignTenant, "Foreigncrossneedle");
     const tasks = createApiCoreTaskList(
       pool,
       createActionRegistry(),
@@ -281,7 +294,10 @@ describe("mail search text rebuild", () => {
     if (!handler) throw new Error("Missing task");
     await runAsSystem("test cross-root enqueue", () => enqueueMailSearchTextReindex(admin));
     await runOnce({ pgPool: admin }, { [CORE_TASK_NAMES.MAIL_SEARCH_TEXT_REINDEX]: handler });
-    expect(await runInTenant(tenant, fixture.search)).toContain(fixture.itemId);
+    expect(await runInTenant(tenant, () => fixture.search("Crossrootneedle"))).toContain(fixture.itemId);
+    expect(await runInTenant(tenant, () => fixture.search("Foreigncrossneedle"))).toEqual([]);
+    expect(await runInTenant(foreignTenant, () => foreign.search("Foreigncrossneedle"))).toContain(foreign.itemId);
+    expect(await runInTenant(foreignTenant, () => foreign.search("Crossrootneedle"))).toEqual([]);
   });
 
   it("rebuilds an active tenant while a populated suspended tenant remains unchanged", async () => {

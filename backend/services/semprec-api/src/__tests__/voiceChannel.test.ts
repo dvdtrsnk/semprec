@@ -731,18 +731,33 @@ describe("voice channel", () => {
     expect(closes).toBe(1);
   });
   it("closes a real paused reader at the voice buffer bound", async () => {
-    await start({ handler });
     const user = await identity(),
       other = await identity();
+    const senders = new Map<string, VoiceSender>();
+    await start({
+      handler: {
+        ...handler,
+        onStart(identity, _frame, sender) {
+          senders.set(identity.userId, sender);
+          sender.sendControl({ type: "ready" });
+        },
+      },
+    });
     const ws = await connect(user.session.token),
       otherWs = await connect(other.session.token);
+    let received = 0;
+    otherWs.on("message", (_data, binary) => {
+      if (binary) received++;
+    });
     const otherReady = message(otherWs);
     otherWs.send(JSON.stringify({ type: "start", language: "en" }));
     expect(JSON.parse((await otherReady).toString())).toMatchObject({ type: "ready" });
     const ready = message(ws);
     ws.send(JSON.stringify({ type: "start", language: "en" }));
     await ready;
-    if (!lastSender) throw new Error("Missing sender");
+    const slowSender = senders.get(user.user.id),
+      healthySender = senders.get(other.user.id);
+    if (!slowSender || !healthySender) throw new Error("Missing sender");
     const done = closed(ws);
     ws.pause();
     const chunk = Buffer.alloc(4800),
@@ -750,16 +765,19 @@ describe("voice channel", () => {
     let sent = 0,
       refused = false;
     while (sent < 4000 && Date.now() < deadline) {
-      if (!lastSender.sendAudio(chunk)) {
+      if (!slowSender.sendAudio(chunk)) {
         refused = true;
         break;
       }
+      expect(healthySender.sendAudio(chunk)).toBe(true);
       sent++;
+      if (sent % 4 === 0) await new Promise<void>((resolve) => setImmediate(resolve));
     }
     ws.resume();
     expect(refused, `pressure not reached after ${sent} frames`).toBe(true);
     expect(await done).toBe(1013);
     expect(otherWs.readyState).toBe(WebSocket.OPEN);
+    await vi.waitFor(() => expect(received).toBe(sent));
     const otherClosed = closed(otherWs);
     otherWs.close();
     await otherClosed;
