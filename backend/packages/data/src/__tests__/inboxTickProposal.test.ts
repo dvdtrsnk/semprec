@@ -1629,6 +1629,35 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     await withTransaction(pool, (client) => itemsStore.restoreItem(client, inboxId, itemId));
   }
 
+  it.each(["confirmed", "rejected"] as const)(
+    "leaves a %s card unchanged when its source is restored",
+    async (status) => {
+      const { item } = await createTypedItem("Buy milk");
+      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+      const proposal = await findProposalForItem(pool, proposalsId, item.id);
+      if (!proposal) throw new Error("Expected proposal");
+      await withTransaction(pool, (client) =>
+        itemsStore.updateItemProperties(client, {
+          databaseId: proposalsId,
+          itemId: proposal.id,
+          propertiesPatch: { status },
+        }),
+      );
+      const chokePoint = createChokePoint(pool);
+      await runInTenant(getTenantZeroId(), () => chokePoint.softDeleteItem(inboxId, item.id));
+      await runTick(pool, databaseIds, item.id, async () => {
+        throw new Error("computeProposal must not run for a deleted source");
+      });
+      const beforeRestore = await findProposalForItem(pool, proposalsId, item.id);
+      expect(beforeRestore?.properties.status).toBe(status);
+      await runInTenant(getTenantZeroId(), () => chokePoint.restoreItem(inboxId, item.id));
+      await runTick(pool, databaseIds, item.id, async () => {
+        throw new Error("computeProposal must not run for a locked card");
+      });
+      expect(await findProposalForItem(pool, proposalsId, item.id)).toEqual(beforeRestore);
+    },
+  );
+
   it("restoring an unchanged source returns its invalid card to proposed with no reason and no recompute", async () => {
     const { item } = await createTypedItem("Buy milk");
     await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
@@ -1670,6 +1699,41 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       throw new Error("computeProposal must not be called for a deleted source");
     });
     await restoreSource(item.id);
+
+    const computedFor: unknown[] = [];
+    await runTick(pool, databaseIds, item.id, async (input) => {
+      computedFor.push(input.sourceItem.properties.text);
+      return { properties: { name: "Buy milk and eggs" } };
+    });
+
+    expect(computedFor).toEqual(["Buy milk and eggs"]);
+    const recomputed = await findProposalForItem(pool, proposalsId, item.id);
+    expect(recomputed!.properties.status).toBe("proposed");
+    expect(recomputed!.properties.invalidReason).toBeNull();
+    expect(recomputed!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs" }));
+    expect(recomputed!.properties.proposal).toEqual({
+      entityKind: "database",
+      target: await databaseIdFor("tasks"),
+      properties: { name: "Buy milk and eggs" },
+    });
+  });
+
+  it("a historical text change while trashed is recomputed when the source is restored", async () => {
+    const { type, item } = await createTypedItem("Buy milk");
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const chokePoint = createChokePoint(pool);
+    await runInTenant(getTenantZeroId(), () => chokePoint.softDeleteItem(inboxId, item.id));
+    await runTick(pool, databaseIds, item.id, async () => {
+      throw new Error("computeProposal must not be called for a deleted source");
+    });
+    // Historical persisted state only: the supported writer refuses edits to trashed items.
+    const changed = await pool.query(
+      `UPDATE items SET properties = jsonb_set(properties, '{text}', to_jsonb($1::text))
+       WHERE tenant_id = $2 AND database_id = $3 AND id = $4 AND deleted_at IS NOT NULL`,
+      ["Buy milk and eggs", getTenantZeroId(), inboxId, item.id],
+    );
+    expect(changed.rowCount).toBe(1);
+    await runInTenant(getTenantZeroId(), () => chokePoint.restoreItem(inboxId, item.id));
 
     const computedFor: unknown[] = [];
     await runTick(pool, databaseIds, item.id, async (input) => {
