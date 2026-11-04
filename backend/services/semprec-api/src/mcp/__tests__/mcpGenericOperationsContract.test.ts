@@ -428,6 +428,41 @@ describe("generic operation MCP contract (issue #220)", () => {
     await pool?.end();
   });
 
+  it("validates Areas create and patch through MCP", async () => {
+    const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
+    if (!database) throw new Error("Areas not seeded");
+    const item = await chokePoint.createItem({ databaseId: database.id, properties: { name: "Area" } });
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const headers = await authHeader();
+    for (const [field, value] of [
+      ["icon", "rocket123"],
+      ["color", "#123456"],
+    ] as const) {
+      const created = await rpc(baseUrl, headers, "semprec.item.create", {
+        databaseId: database.id,
+        properties: { name: "Invalid", [field]: value },
+      });
+      expect(created.error).toMatchObject({ code: -32602, data: { field } });
+      const updated = await rpc(baseUrl, headers, "semprec.item.patch", {
+        itemId: item.id,
+        properties: { [field]: value },
+        ifVersion: item.updatedAt,
+      });
+      expect(updated.error).toMatchObject({ code: -32602, data: { field } });
+    }
+    const accepted = await rpc(baseUrl, headers, "semprec.item.patch", {
+      itemId: item.id,
+      properties: { icon: "briefcase", color: "#5856D6" },
+      ifVersion: item.updatedAt,
+    });
+    expect(accepted.error).toBeUndefined();
+    expect((await chokePoint.getItem(database.id, item.id))?.properties).toMatchObject({
+      icon: "briefcase",
+      color: "#5856D6",
+    });
+  });
+
   it("attributes session MCP relation deletion to its authenticated user", async () => {
     const fx = await buildFixtures();
     await withTransaction(pool, (client) =>

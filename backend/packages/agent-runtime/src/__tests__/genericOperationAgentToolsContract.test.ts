@@ -283,6 +283,30 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     await pool?.end();
   });
 
+  it("validates Areas writes through the actual agent tools", async () => {
+    const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
+    if (!database) throw new Error("Areas not seeded");
+    const projectItemId = await createProjectItem();
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "validate Areas" });
+    const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+    for (const [field, value] of [
+      ["icon", "rocket123"],
+      ["color", "#123456"],
+    ] as const) {
+      const result = await tools["item.create"](run.id, {
+        databaseId: database.id,
+        properties: { name: "Invalid", [field]: value },
+      });
+      expect(result.error).toBe(true);
+      expect(result.result).toContain(field);
+    }
+    const result = await tools["item.create"](run.id, {
+      databaseId: database.id,
+      properties: { name: "Valid", icon: "briefcase", color: "#5856D6" },
+    });
+    expect(result.error).toBeFalsy();
+  });
+
   it("has exactly one contract case per operation in the closed catalog", () => {
     expect(Object.keys(CASES).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });

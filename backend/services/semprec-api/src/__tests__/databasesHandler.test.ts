@@ -128,6 +128,21 @@ describe("database routes (issue #240)", () => {
     expect(res.status).toBe(401);
   });
 
+  it("returns Czech labels for Areas properties", async () => {
+    const areas = (await chokePoint.listDatabases()).find((database) => database.key === "areas");
+    if (!areas) throw new Error("expected Areas database from seedSystem");
+    const response = await fetch(`${baseUrl}/api/databases/${areas.id}/properties`, {
+      headers: await authHeader("cs"),
+    });
+    expect(response.status).toBe(200);
+    const body = z
+      .object({ properties: z.array(z.object({ key: z.string(), label: z.string() })) })
+      .parse(await response.json());
+    expect(
+      ["icon", "color", "position"].map((key) => body.properties.find((property) => property.key === key)?.label),
+    ).toEqual(["Ikona", "Barva", "Pořadí"]);
+  });
+
   it("returns 400 validation_failed naming 'id' for a non-UUID database id", async () => {
     const headers = await authHeader();
     const res = await fetch(`${baseUrl}/api/databases/foo`, { headers });

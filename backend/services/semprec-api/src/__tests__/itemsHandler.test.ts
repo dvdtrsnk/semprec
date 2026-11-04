@@ -136,6 +136,47 @@ describe("item routes (issue #241)", () => {
     await pool?.end();
   });
 
+  it("validates Areas icon and color through authenticated PATCH", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
+      if (!database) throw new Error("Missing Areas database");
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: { name: "Area" } });
+      return { database, item };
+    });
+    const patch = async (properties: Record<string, unknown>) => {
+      const current = await runInTenant(getTenantZeroId(), () =>
+        chokePoint.getItem(fixture.database.id, fixture.item.id),
+      );
+      if (!current) throw new Error("Missing Areas item");
+      return fetch(`${baseUrl}/api/items/${fixture.item.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties, ifVersion: current.updatedAt }),
+      });
+    };
+    const valid = await patch({ icon: "briefcase", color: "#5856D6" });
+    expect(valid.status).toBe(200);
+    expect(
+      (await runInTenant(getTenantZeroId(), () => chokePoint.getItem(fixture.database.id, fixture.item.id)))
+        ?.properties,
+    ).toMatchObject({ icon: "briefcase", color: "#5856D6" });
+    for (const [field, value] of [
+      ["icon", "rocket123"],
+      ["color", "#123456"],
+    ] as const) {
+      const response = await patch({ [field]: value });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: "validation_failed", details: { field } } });
+    }
+    expect((await patch({ icon: null, color: null })).status).toBe(200);
+    expect(
+      (await runInTenant(getTenantZeroId(), () => chokePoint.getItem(fixture.database.id, fixture.item.id)))
+        ?.properties,
+    ).toMatchObject({ icon: null, color: null });
+  });
+
   it("validates color writes over authenticated REST and preserves legacy colors on unrelated updates", async () => {
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };
     const fixture = await runInTenant(getTenantZeroId(), async () => {
