@@ -13,6 +13,7 @@ import {
 } from "@semprec/data";
 import type { SyncServer } from "@semprec/realtime";
 import type { Logger } from "@semprec/shared";
+import { createVoiceChannel, type VoiceChannel } from "../voiceChannel.js";
 import { createSyncUpgradeHandler } from "../syncHandler.js";
 import { createGracefulShutdown } from "../shutdown.js";
 
@@ -45,12 +46,17 @@ function createCapturingLogger(): { logger: Logger; lines: CapturedLine[] } {
 async function startServer(pool: Pool): Promise<{
   server: Server;
   syncServer: SyncServer;
+  voiceServer: VoiceChannel;
   tenantDeactivationListener: TenantDeactivationListener;
   wsBaseUrl: string;
 }> {
   const syncServer = await createSyncUpgradeHandler(pool);
+  const voiceServer = createVoiceChannel(pool, {
+    handler: { onStart() {}, onAudio() {}, onControl() {}, onClose() {} },
+  });
   const tenantDeactivationListener = await startTenantDeactivationListener(pool, async (tenantId) => {
     syncServer.closeTenant(tenantId);
+    voiceServer.closeTenant(tenantId);
   });
   const server = createServer((_req, res) => {
     res.statusCode = 404;
@@ -62,12 +68,16 @@ async function startServer(pool: Pool): Promise<{
       syncServer.handleUpgrade(req, socket, head);
       return;
     }
+    if (pathname === "/api/voice") {
+      voiceServer.handleUpgrade(req, socket, head);
+      return;
+    }
     socket.destroy();
   });
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
-  return { server, syncServer, tenantDeactivationListener, wsBaseUrl: `ws://127.0.0.1:${address.port}` };
+  return { server, syncServer, voiceServer, tenantDeactivationListener, wsBaseUrl: `ws://127.0.0.1:${address.port}` };
 }
 
 async function openAuthenticatedClient(pool: Pool, wsBaseUrl: string): Promise<WebSocket> {
@@ -105,7 +115,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
   });
 
   it("settles well under the drain bound and delivers close code 1012 to a connected client", async () => {
-    const { server, syncServer, tenantDeactivationListener, wsBaseUrl } = await startServer(dedicatedPool);
+    const { server, syncServer, voiceServer, tenantDeactivationListener, wsBaseUrl } = await startServer(dedicatedPool);
     const client = await openAuthenticatedClient(dedicatedPool, wsBaseUrl);
     const closeCode = new Promise<number>((resolve) => {
       client.once("close", (code: number) => resolve(code));
@@ -118,6 +128,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
       server,
       tenantDeactivationListener,
       syncServer,
+      voiceServer,
       queueRuntime: { stop },
       mailLiveSync: { stop: async () => {} },
       pool: dedicatedPool,
@@ -133,8 +144,48 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
     expect(lines.at(-1)).toMatchObject({ level: "info", obj: { signal: "SIGTERM", timedOut: false } });
   });
 
+  it("closes a live voice socket before draining the HTTP server", async () => {
+    const { server, syncServer, voiceServer, tenantDeactivationListener, wsBaseUrl } = await startServer(dedicatedPool);
+    const user = await createUser(dedicatedPool, {
+      tenantId: await tenantForNextTestUser(dedicatedPool),
+      email: "voice@example.com",
+      passwordHash: await hashPassword(PASSWORD),
+    });
+    const { token } = await login(dedicatedPool, {
+      email: user.email,
+      password: PASSWORD,
+      platform: "ios",
+      ip: "127.0.0.1",
+    });
+    const client = new WebSocket(`${wsBaseUrl}/api/voice`, { headers: { Authorization: `Bearer ${token}` } });
+    await new Promise<void>((resolve, reject) => {
+      client.once("open", resolve);
+      client.once("error", reject);
+    });
+    const code = new Promise<number>((resolve) => client.once("close", resolve));
+    const { logger } = createCapturingLogger();
+    await createGracefulShutdown({
+      server,
+      tenantDeactivationListener,
+      syncServer,
+      voiceServer,
+      queueRuntime: { stop: async () => {} },
+      mailLiveSync: { stop: async () => {} },
+      pool: dedicatedPool,
+      logger,
+    })("SIGTERM");
+    expect(await code).toBe(1012);
+    expect(server.listening).toBe(false);
+    expect(dedicatedPool.ended).toBe(true);
+  });
+
   it("still drains, stops the queue runtime and ends the pool when syncServer.close() rejects", async () => {
-    const { server, syncServer: realSyncServer, tenantDeactivationListener } = await startServer(dedicatedPool);
+    const {
+      server,
+      syncServer: realSyncServer,
+      voiceServer,
+      tenantDeactivationListener,
+    } = await startServer(dedicatedPool);
     const closeError = new Error("sync close failed");
     // Releases the real server's LISTEN client first so the pool can still end within its bound, then rejects.
     const syncServer = {
@@ -150,6 +201,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
       server,
       tenantDeactivationListener,
       syncServer,
+      voiceServer,
       queueRuntime: { stop },
       mailLiveSync: { stop: async () => {} },
       pool: dedicatedPool,
@@ -168,7 +220,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
   });
 
   it("with no sync client connected, drains, stops the queue runtime and ends the pool as before", async () => {
-    const { server, syncServer, tenantDeactivationListener } = await startServer(dedicatedPool);
+    const { server, syncServer, voiceServer, tenantDeactivationListener } = await startServer(dedicatedPool);
     const stop = vi.fn(async () => {});
     const { logger, lines } = createCapturingLogger();
 
@@ -176,6 +228,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
       server,
       tenantDeactivationListener,
       syncServer,
+      voiceServer,
       queueRuntime: { stop },
       mailLiveSync: { stop: async () => {} },
       pool: dedicatedPool,
@@ -214,6 +267,7 @@ describe("semprec-api graceful shutdown closes the tenant deactivation listener 
     const {
       server,
       syncServer: realSyncServer,
+      voiceServer,
       tenantDeactivationListener: realListener,
     } = await startServer(dedicatedPool);
     const order: string[] = [];
@@ -238,6 +292,7 @@ describe("semprec-api graceful shutdown closes the tenant deactivation listener 
       server,
       tenantDeactivationListener,
       syncServer,
+      voiceServer,
       queueRuntime: { stop: async () => {} },
       mailLiveSync: { stop: async () => {} },
       pool: dedicatedPool,

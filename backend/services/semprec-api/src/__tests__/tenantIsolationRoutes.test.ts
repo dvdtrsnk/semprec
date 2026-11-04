@@ -1,4 +1,5 @@
 import { createServer, type Server } from "node:http";
+import { WebSocket } from "ws";
 import { randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,6 +60,7 @@ import {
 } from "@semprec/data";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, enqueueJob, runOnce, runWorker, type TaskList } from "@semprec/queue";
 import { createDispatcher } from "../app.js";
+import { createVoiceChannel, type VoiceIdentity } from "../voiceChannel.js";
 import { SESSION_COOKIE_NAME } from "../authHandler.js";
 import { ROUTE_MATRIX, ROUTE_TENANCIES, type RouteMatrixEntry } from "../routeMatrix.js";
 
@@ -2259,6 +2261,55 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
       expect(
         (await send(a.member, { method: "GET", path: `/api/semp/threads/${fixture.chatId}/messages?${query}` })).status,
       ).toBe(400);
+    }
+  });
+
+  it("isolates voice identities and deactivation across tenants", async () => {
+    const identities: VoiceIdentity[] = [];
+    const voice = createVoiceChannel(pool, {
+      handler: {
+        onStart(identity, _frame, sender) {
+          identities.push(identity);
+          sender.sendControl({ type: "ready" });
+        },
+        onAudio() {},
+        onControl() {},
+        onClose() {},
+      },
+    });
+    const voiceHttp = createServer((_req, res) => res.writeHead(404).end());
+    voiceHttp.on("upgrade", (req, socket, head) => voice.handleUpgrade(req, socket, head));
+    await new Promise<void>((resolve) => voiceHttp.listen(0, "127.0.0.1", resolve));
+    const address = voiceHttp.address();
+    if (!address || typeof address === "string") throw new Error("Missing voice address");
+    const open = async (member: Member) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${address.port}/api/voice`, { headers: member.headers });
+      await new Promise<void>((resolve, reject) => {
+        ws.once("open", resolve);
+        ws.once("error", reject);
+      });
+      const ready = new Promise<void>((resolve) => ws.once("message", () => resolve()));
+      ws.send(JSON.stringify({ type: "start", language: "en" }));
+      await ready;
+      return ws;
+    };
+    try {
+      const first = await open(a.member),
+        second = await open(b.member);
+      expect(identities).toMatchObject([
+        { tenantId: a.tenantId, userId: a.member.userId },
+        { tenantId: b.tenantId, userId: b.member.userId },
+      ]);
+      const firstClosed = new Promise<number>((resolve) => first.once("close", resolve));
+      voice.closeTenant(a.tenantId);
+      expect(await firstClosed).toBe(4401);
+      expect(second.readyState).toBe(WebSocket.OPEN);
+      const secondClosed = new Promise<void>((resolve) => second.once("close", () => resolve()));
+      second.close();
+      await secondClosed;
+    } finally {
+      await voice.close();
+      await new Promise<void>((resolve) => voiceHttp.close(() => resolve()));
     }
   });
 

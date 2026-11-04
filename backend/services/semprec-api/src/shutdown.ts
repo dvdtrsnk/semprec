@@ -18,6 +18,7 @@ export interface CreateGracefulShutdownOptions {
   /** The tenant deactivation listener; closed first, so no deactivation handler runs against a closing sync server or mail root. */
   tenantDeactivationListener: { close(): Promise<void> };
   syncServer: { close(): Promise<void> };
+  voiceServer: { close(): Promise<void> };
   queueRuntime: QueueRuntimeHandle;
   mailLiveSync: { stop(): Promise<void> };
   pool: Pool;
@@ -143,7 +144,8 @@ function closeListener(listener: { close(): Promise<void> }, logger: Logger, sig
  * `semprec-ai-gateway`'s.
  */
 export function createGracefulShutdown(options: CreateGracefulShutdownOptions): (signal: string) => Promise<void> {
-  const { server, tenantDeactivationListener, syncServer, queueRuntime, mailLiveSync, pool, logger } = options;
+  const { server, tenantDeactivationListener, syncServer, voiceServer, queueRuntime, mailLiveSync, pool, logger } =
+    options;
   const drainTimeoutMs = options.drainTimeoutMs ?? SHUTDOWN_DRAIN_TIMEOUT_MS;
 
   let shutdownPromise: Promise<void> | null = null;
@@ -157,6 +159,12 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
       await syncServer.close();
     } catch (err) {
       logger.error({ err, signal }, "syncServer.close() failed");
+    }
+
+    try {
+      await voiceServer.close();
+    } catch (err) {
+      logger.error({ err, signal }, "voiceServer.close() failed");
     }
 
     const timedOut = await drainServer(server, drainTimeoutMs, logger, signal);

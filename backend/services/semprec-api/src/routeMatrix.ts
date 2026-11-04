@@ -793,6 +793,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     admin: true,
   },
   {
+    name: "voice (WS upgrade)",
+    method: "GET",
+    path: "/api/voice",
+    surface: "ws",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "sync (WS upgrade)",
     method: "GET",
     path: "/api/sync",

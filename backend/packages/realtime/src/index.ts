@@ -30,3 +30,5 @@ export {
   type AgentDeltaChunk,
   type BinaryFrame,
 } from "./protocolV1.js";
+
+export { sendWithBackpressure, BACKPRESSURE_CLOSE_CODE } from "./backpressure.js";
