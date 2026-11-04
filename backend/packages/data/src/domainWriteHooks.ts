@@ -25,7 +25,7 @@ import {
 } from "./chokePoint/hooks.js";
 import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "./mcp/mcpServerWriteHook.js";
 import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.js";
-import { TASKS_MODULE_ID, PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
+import { FILES_MODULE_ID, TASKS_MODULE_ID, PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
 import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHook.js";
 import { prepareTaskWrite, taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
@@ -40,6 +40,7 @@ import { inboxItemCreateHook } from "./inbox/inboxCreateHook.js";
 import { inboxTypeItemCreateHook, inboxTypeItemUpdateHook } from "./inbox/inboxTypeWriteHook.js";
 import { inboxTypeEdgeDeleteHook, inboxTypeEdgeWriteHook } from "./inbox/inboxSourceWriteHook.js";
 import { blobReferenceItemCreateHook, blobReferenceItemUpdateHook } from "./blobs/blobReferenceWriteHook.js";
+import { filesItemPreWriteTransform } from "./blobs/filesItemPreWriteTransform.js";
 
 registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform, async (context) => ({
   patch: await prepareTaskWrite(context),
@@ -50,6 +51,10 @@ registerItemPreWriteTransform(BOOKS_MODULE_ID, booksPreWriteTransform, async (co
   deferredKeys: [],
 }));
 registerItemPreWriteTransform(PROJECTS_MODULE_ID, projectWriteTransform, prepareProjectWrite);
+registerItemPreWriteTransform(FILES_MODULE_ID, filesItemPreWriteTransform, async ({ stored, patch }) => ({
+  patch,
+  deferredKeys: stored === null && !Object.hasOwn(patch, "type") && Object.hasOwn(patch, "file") ? ["type"] : [],
+}));
 registerItemCreateHook(blobReferenceItemCreateHook);
 registerItemUpdateHook(blobReferenceItemUpdateHook);
 registerItemCreateHook(mcpServerItemCreateHook);

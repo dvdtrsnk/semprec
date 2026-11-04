@@ -28,6 +28,13 @@ export interface ProposalComputationInput {
 
 export interface ProposalComputationResult {
   candidates?: RecognitionCandidate[];
+  /** Server-derived identity of the candidate and destination used to normalize recognition output. */
+  recognitionBinding?: {
+    candidate: RecognitionCandidate;
+    type: RecognitionType | null;
+    targetModuleId: string | null;
+    targetDatabaseId: string | null;
+  };
   /** The target page id, for `entityKind: 'pageContent'` — ignored otherwise, since a `'database'` target is always the type's resolved `targetDatabase` id. */
   target?: string;
   properties: Record<string, unknown>;

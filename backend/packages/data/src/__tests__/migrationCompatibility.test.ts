@@ -28,6 +28,74 @@ import { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
 const EXAMPLES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "db", "migrationExamples");
 const LONG_TITLE = "a title longer than ten characters";
 
+it("adds unverified classification without changing populated historical blobs", async () => {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("Missing test database URL");
+  const name = `batch23_blobs_${randomUUID().replaceAll("-", "")}`;
+  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch23-blobs-"));
+  const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+  const migration = "0131_blob_detected_mime_type.sql";
+  let scratch: Pool | undefined;
+  let created = false;
+  let failure: { error: unknown } | undefined;
+  try {
+    await admin.query(`CREATE DATABASE "${name}"`);
+    created = true;
+    const scratchUrl = new URL(url);
+    scratchUrl.pathname = `/${name}`;
+    scratch = new Pool({
+      connectionString: scratchUrl.toString(),
+      connectionTimeoutMillis: 5000,
+      statement_timeout: 30000,
+    });
+    for (const file of (await readdir(migrations))
+      .filter((entry) => entry.endsWith(".sql") && entry < migration)
+      .sort())
+      await copyFile(path.join(migrations, file), path.join(dir, file));
+    await runMigrations(scratch, dir);
+    const tenant = await scratch.query<{ id: string }>("SELECT id FROM tenants");
+    const tenantId = tenant.rows[0]?.id;
+    if (!tenantId || tenant.rows.length !== 1) throw new Error("Expected historical tenant");
+    await scratch.query(
+      "INSERT INTO blobs (tenant_id, mime_type, byte_size, storage_key, content_hash) VALUES ($1, $2, $3, $4, $5)",
+      [tenantId, "image/png", 12, "historical-key", "historical-hash"],
+    );
+    const before = await scratch.query<{ row: unknown }>("SELECT to_jsonb(b) AS row FROM blobs b");
+    await copyFile(path.join(migrations, migration), path.join(dir, migration));
+    await runMigrations(scratch, dir);
+    const after = await scratch.query<{ row: unknown; detected_mime_type: string | null }>(
+      "SELECT to_jsonb(b) - 'detected_mime_type' AS row, detected_mime_type FROM blobs b",
+    );
+    expect(after.rows).toEqual(before.rows.map(({ row }) => ({ row, detected_mime_type: null })));
+    await runMigrations(scratch, dir);
+    expect((await scratch.query("SELECT detected_mime_type FROM blobs")).rows).toEqual([{ detected_mime_type: null }]);
+  } catch (error) {
+    failure = { error };
+  }
+  const cleanupErrors: unknown[] = [];
+  for (const cleanup of [
+    async () => scratch?.end(),
+    async () => {
+      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+    },
+    async () => admin.end(),
+    async () => rm(dir, { recursive: true, force: true }),
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (cleanupErrors.length)
+    throw new AggregateError(
+      failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+      "Blob upgrade cleanup failed",
+    );
+  if (failure) throw failure.error;
+}, 120_000);
+
 it("preserves populated users when the display name migration runs", async () => {
   const url = process.env.TEST_DATABASE_URL;
   if (!url) throw new Error("Missing test database URL");

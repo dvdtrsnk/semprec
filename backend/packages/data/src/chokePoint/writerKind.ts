@@ -12,6 +12,8 @@ export interface WriterIdentity {
   agentProjectItemId?: string;
   /** The user whose session or run made the write; set on every `agent` value. */
   onBehalfOfUserId?: string;
+  /** Set by the approved executor only for its revalidated mutation. */
+  approvedRequestId?: string;
 }
 
 /** The conservative default for internal code that passes no writer. */

@@ -63,4 +63,26 @@ export async function recognitionClarificationReason(
   return (count < 2 ? `${shortage} ${reason?.trim() || fallback}` : reason?.trim() || fallback).slice(0, 500);
 }
 
+export async function recognitionChangedReason(locale: "cs" | "en"): Promise<string> {
+  const catalogs = await loadModuleCatalogs(import.meta.url);
+  return resolveCatalogLabel(undefined, catalogs[locale], catalogs.en, "inbox.recognition.changed");
+}
+
+export async function recognitionClarificationPatch(
+  locale: "cs" | "en",
+  choices: ReturnType<typeof clarificationTypes>,
+  changed: boolean,
+  reason?: string,
+) {
+  return {
+    recognizedTypeId: null,
+    typeCandidates: choices,
+    reason: await recognitionClarificationReason(
+      locale,
+      choices.length,
+      changed ? await recognitionChangedReason(locale) : reason,
+    ),
+  };
+}
+
 export const RECOGNITION_CARD_KEYS = ["recognizedTypeId", "typeCandidates", "reason"] as const;

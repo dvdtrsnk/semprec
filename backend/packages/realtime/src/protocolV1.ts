@@ -84,6 +84,7 @@ export type OutboundFrame =
       updatedAt: string;
     }
   | { type: "invalidate"; scope: "schema"; databaseId: string }
+  | { type: "invalidate"; scope: "doc"; docId: string; itemId: string; databaseId: string; lastEditedAt: string }
   | {
       type: "invalidate";
       scope: "relation";

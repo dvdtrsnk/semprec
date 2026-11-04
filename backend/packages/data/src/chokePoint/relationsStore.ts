@@ -1,4 +1,5 @@
 import { DatabaseError, type PoolClient } from "pg";
+import { z } from "zod";
 import { requireSingleRow } from "../db/pool.js";
 import { CardinalityViolationError, NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRelationRow, RelationDefinitionRow } from "../types.js";
@@ -201,6 +202,30 @@ export async function tryLockRelationDefinition(client: PoolClient, definitionId
   );
   if (typeof rows[0]?.locked !== "boolean") throw new Error("Missing relation admission result");
   return rows[0].locked;
+}
+
+/** Locks the addressed source side of a relation snapshot in deterministic edge order. */
+export async function lockRelationSnapshotEdgesNowait(
+  client: PoolClient,
+  definitionId: string,
+  callerId: string,
+  side: "a" | "b",
+): Promise<ItemRelationRow[]> {
+  // The interpolated column is chosen only from these two fixed SQL identifiers.
+  const { rows } = await client.query<Record<string, unknown>>(
+    `SELECT id, relation_definition_id, item_a, item_b, metadata FROM item_relations
+     WHERE relation_definition_id = $1 AND ${side === "a" ? "item_a" : "item_b"} = $2
+     ORDER BY id FOR UPDATE NOWAIT`,
+    [definitionId, callerId],
+  );
+  const schema = z.object({
+    id: z.string(),
+    relation_definition_id: z.string(),
+    item_a: z.string(),
+    item_b: z.string(),
+    metadata: z.record(z.string(), z.unknown()),
+  });
+  return rows.map((row) => mapItemRelationRow(schema.parse(row)));
 }
 
 export async function lockExistingRelationNowait(

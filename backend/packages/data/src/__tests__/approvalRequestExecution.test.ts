@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
 import {
   createTenantZeroUser,
@@ -30,6 +30,7 @@ import {
 } from "../mcp/approvalRequestsStore.js";
 import { decideAndEnqueueApprovalRequest } from "../mcp/approvalDecisionAction.js";
 import { approvalConflictReason } from "../mcp/approvalConflictReason.js";
+import { handleApprovalRequestExecuteTask } from "../mcp/approvalRequestExecution.js";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 
@@ -118,7 +119,14 @@ describe("approval request decide+execute (issue #131)", () => {
     const contractServer = startStdioContractServer([SEARCH_TOOL]);
     servers.push(contractServer);
     const { server, registration, projectItemId } = await createGrantedTool(contractServer);
-    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", projectItemId });
+    // No production chat-thread creator exists on this tip.
+    const thread = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
+    const run = await createAgentRun(pool, {
+      triggeredBy: "user",
+      task: "test",
+      projectItemId,
+      threadId: thread.rows[0]!.id,
+    });
     const request = await createPendingApprovalRequest(pool, {
       agentRunId: run.id,
       toolName: SEARCH_TOOL.name,
@@ -151,6 +159,28 @@ describe("approval request decide+execute (issue #131)", () => {
     expect(finished!.executedAt).not.toBeNull();
     expect(finished!.executionError).toBe(false);
     expect(finished!.executionResult).toBe(JSON.stringify({ name: "search_web", arguments: { query: "semprec" } }));
+    const messages = await pool.query<{ system_key: string; context: unknown }>(
+      "SELECT system_key, context FROM semp_messages WHERE thread_id = $1",
+      [thread.rows[0]!.id],
+    );
+    expect(messages.rows).toEqual([
+      {
+        system_key: "approval.outcome.executed",
+        context: [{ kind: "approvalRequest", approvalRequestId: request.id }],
+      },
+    ]);
+    await inTenantZero(() =>
+      enqueueJob(pool, CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE, { approvalRequestId: request.id }),
+    );
+    await drainQueue();
+    expect(
+      (
+        await pool.query<{ system_key: string; context: unknown }>(
+          "SELECT system_key, context FROM semp_messages WHERE thread_id = $1",
+          [thread.rows[0]!.id],
+        )
+      ).rows,
+    ).toEqual(messages.rows);
   });
 
   it("never executes a rejected request", async () => {
@@ -253,7 +283,9 @@ describe("approval request decide+execute (issue #131)", () => {
     const contractServer = startStdioContractServer([SEARCH_TOOL]);
     servers.push(contractServer);
     const { server, registration } = await createGrantedTool(contractServer);
-    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    // No production chat-thread creator exists on this tip.
+    const thread = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", threadId: thread.rows[0]!.id });
     const request = await createPendingApprovalRequest(pool, {
       agentRunId: run.id,
       toolName: SEARCH_TOOL.name,
@@ -292,6 +324,109 @@ describe("approval request decide+execute (issue #131)", () => {
     expect(approvalConflictReason(finished!.executionStatus, finished!.executionResult)).toEqual({
       key: "approval.conflict.other",
     });
+    const messages = await pool.query<{ system_key: string; context: unknown }>(
+      "SELECT system_key, context FROM semp_messages WHERE thread_id = $1",
+      [thread.rows[0]!.id],
+    );
+    expect(messages.rows).toEqual([
+      {
+        system_key: "approval.outcome.conflict",
+        context: [{ kind: "approvalRequest", approvalRequestId: request.id }],
+      },
+    ]);
+  });
+
+  it("does not post a discarded MCP outcome after a concurrent stale settlement", async () => {
+    const contractServer = startStdioContractServer([SEARCH_TOOL]);
+    servers.push(contractServer);
+    const { server, registration, projectItemId } = await createGrantedTool(contractServer);
+    // No production chat-thread creator exists on this tip.
+    const thread = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
+    const run = await createAgentRun(pool, {
+      triggeredBy: "user",
+      task: "test",
+      projectItemId,
+      threadId: thread.rows[0]!.id,
+    });
+    const request = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: SEARCH_TOOL.name,
+      riskClass: "unclassified",
+      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: request.id,
+          decision: "approved",
+          decidedByUserId: run.actorUserId,
+        }),
+      ),
+    );
+    let reached!: () => void;
+    let release!: () => void;
+    const atOutcome = new Promise<void>((resolve) => (reached = resolve));
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let paused = false;
+    const observed = new Proxy(pool, {
+      get(target, property, receiver) {
+        if (property !== "connect") {
+          const value: unknown = Reflect.get(target, property, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return async () => {
+          const client: PoolClient = await target.connect();
+          return new Proxy(client, {
+            get(clientTarget, key, clientReceiver) {
+              if (key !== "query") {
+                const value: unknown = Reflect.get(clientTarget, key, clientReceiver);
+                return typeof value === "function" ? value.bind(clientTarget) : value;
+              }
+              return async (...args: unknown[]) => {
+                if (
+                  !paused &&
+                  typeof args[0] === "string" &&
+                  args[0].includes("SET execution_error = $2, execution_result_jsonb")
+                ) {
+                  paused = true;
+                  reached();
+                  await gate;
+                }
+                return Reflect.apply(clientTarget.query.bind(clientTarget), clientTarget, args);
+              };
+            },
+          });
+        };
+      },
+    });
+    const first = inTenantZero(() => handleApprovalRequestExecuteTask(observed, { approvalRequestId: request.id }));
+    try {
+      await atOutcome;
+      expect(contractServer.getLastToolCall()?.name).toBe(SEARCH_TOOL.name);
+      // Age only the claimed fixture so a second real handler can settle the unknown outcome.
+      const aged = await pool.query(
+        "UPDATE approval_requests SET executed_at = now() - interval '11 minutes' WHERE id = $1 AND status = 'approved' AND execution_status = 'queued' AND executed_at IS NOT NULL",
+        [request.id],
+      );
+      expect(aged.rowCount).toBe(1);
+      await inTenantZero(() => handleApprovalRequestExecuteTask(pool, { approvalRequestId: request.id }));
+    } finally {
+      release();
+      await first;
+    }
+    await contractServer.waitForChildExit();
+    expect((await getApprovalRequest(pool, request.id))?.executionStatus).toBe("conflict");
+    const messages = await pool.query<{ system_key: string; context: unknown }>(
+      "SELECT system_key, context FROM semp_messages WHERE thread_id = $1",
+      [thread.rows[0]!.id],
+    );
+    expect(messages.rows).toEqual([
+      {
+        system_key: "approval.outcome.conflict",
+        context: [{ kind: "approvalRequest", approvalRequestId: request.id }],
+      },
+    ]);
   });
 
   it("fails retriably without calling the tool when a claim is less than 10 minutes old", async () => {
@@ -374,7 +509,14 @@ describe("approval request decide+execute (issue #131)", () => {
     const contractServer = startStdioContractServer([SEARCH_TOOL]);
     servers.push(contractServer);
     const { server, registration, projectItemId } = await createGrantedTool(contractServer);
-    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", projectItemId });
+    // No production chat-thread creator exists on this tip.
+    const thread = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
+    const run = await createAgentRun(pool, {
+      triggeredBy: "user",
+      task: "test",
+      projectItemId,
+      threadId: thread.rows[0]!.id,
+    });
     const request = await createPendingApprovalRequest(pool, {
       agentRunId: run.id,
       toolName: SEARCH_TOOL.name,
@@ -394,7 +536,7 @@ describe("approval request decide+execute (issue #131)", () => {
       ),
     );
 
-    return { contractServer, server, registration, projectItemId, request };
+    return { contractServer, server, registration, projectItemId, request, threadId: thread.rows[0]!.id };
   }
 
   it("records a conflict and calls no tool when the project's grant was revoked after approval", async () => {
@@ -491,7 +633,7 @@ describe("approval request decide+execute (issue #131)", () => {
   });
 
   it("records a callFailed outcome kind when the tool call itself errors", async () => {
-    const { request, server } = await approveAndSetUp({ query: "semprec", __forceError: true });
+    const { request, server, threadId } = await approveAndSetUp({ query: "semprec", __forceError: true });
 
     await drainQueue();
 
@@ -504,5 +646,15 @@ describe("approval request decide+execute (issue #131)", () => {
     expect(approvalConflictReason(finished!.executionStatus, finished!.executionResult)).toEqual({
       key: "approval.outcome.failed",
     });
+    const messages = await pool.query<{ system_key: string; context: unknown }>(
+      "SELECT system_key, context FROM semp_messages WHERE thread_id = $1",
+      [threadId],
+    );
+    expect(messages.rows).toEqual([
+      {
+        system_key: "approval.outcome.conflict",
+        context: [{ kind: "approvalRequest", approvalRequestId: request.id }],
+      },
+    ]);
   });
 });

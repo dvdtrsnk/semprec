@@ -41,6 +41,11 @@ export interface FilesRequestListenerOptions {
  * (`authenticateRequest`), maps a `ChokePointError` through the same `errorContract.ts` this
  * adapter's other routes use, just without the JSON-body step.
  *
+ * A form that delays filing until Save can instead upload bytes with `POST /api/blobs`, then
+ * create a Files item through the generic item-create operation with `file: { blobId }` and
+ * initial relations. Cancelling after upload creates no Files item; unreferenced blobs are
+ * collected after their grace period. Reusing a deduplicated blob creates a separate item.
+ *
  * `maxFileSizeMb` is enforced twice, per the issue's Task: first cheaply from `Content-Length`
  * when the client sent one (rejecting before a single byte of the body is read), and always
  * through `ingestUploadedFile`'s streaming byte counter — a missing, chunked, or dishonest

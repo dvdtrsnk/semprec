@@ -485,6 +485,87 @@ describe("item routes (issue #241)", () => {
     if (failures.length > 1) throw new AggregateError(failures, "REST test and settlement failed");
   });
 
+  it("refuses generic reason edits while allowing a user-owned field through the runtime route", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let runtimeServer: Server | undefined;
+    const failures: unknown[] = [];
+    try {
+      const role = await runtime.query<{ name: string; bypass: boolean; superuser: boolean }>(
+        "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+      const dispatch = await createDispatcher(runtime, {
+        passwordResetMailer: noopMailer,
+        appBaseUrl: "http://localhost",
+        setupToken: "unused-setup-token",
+        moduleRegistry,
+        blobStorage: new LocalFsBlobStorageWriter(tmpBlobDir),
+        maxFileSizeBytes: 10 * 1024 * 1024,
+      });
+      runtimeServer = createServer(dispatch);
+      await new Promise<void>((resolve) => runtimeServer?.listen(0, "127.0.0.1", resolve));
+      const address = runtimeServer.address();
+      if (!address || typeof address === "string") throw new Error("Expected runtime server");
+      const base = `http://127.0.0.1:${address.port}`;
+      const fixture = await runInTenant(getTenantZeroId(), async () => {
+        const proposals = await withTransaction(runtime, (client) =>
+          getDatabaseByModuleId(client, "processingProposals"),
+        );
+        if (!proposals) throw new Error("Processing proposals missing");
+        const card = await withTransaction(runtime, (client) =>
+          createItemWithClient(
+            client,
+            { databaseId: proposals.id, properties: { kind: "inbox", reason: "Original" } },
+            { allowedSystemKeys: ["kind", "reason"] },
+          ),
+        );
+        const api = createChokePoint(runtime);
+        const database = await api.createDatabase({ name: "User fields" });
+        await api.createProperty({ databaseId: database.id, key: "note", name: "Note", type: "text" });
+        const item = await api.createItem({ databaseId: database.id, properties: { note: "before" } });
+        return { card, item };
+      });
+      const cardUrl = `${base}/api/items/${fixture.card.id}`;
+      const schema = z.object({ updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) });
+      const before = schema.parse(await (await fetch(cardUrl, { headers })).json());
+      const refused = await fetch(cardUrl, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties: { reason: "Injected" }, ifVersion: before.updatedAt }),
+      });
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toMatchObject({ error: { code: "owner_violation" } });
+      expect(schema.parse(await (await fetch(cardUrl, { headers })).json())).toEqual(before);
+      const allowed = await fetch(`${base}/api/items/${fixture.item.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties: { note: "after" }, ifVersion: fixture.item.updatedAt }),
+      });
+      expect(allowed.status).toBe(200);
+      expect(await allowed.json()).toMatchObject({ properties: { note: "after" } });
+    } catch (error) {
+      failures.push(error);
+    }
+    if (runtimeServer) {
+      try {
+        await new Promise<void>((resolve, reject) =>
+          runtimeServer?.close((error) => (error ? reject(error) : resolve())),
+        );
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    try {
+      await runtime.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "REST test and settlement failed");
+  });
+
   it("queues one mailbox sync through REST flag patches", async () => {
     await seedSystem(pool, createViewTypeRegistry());
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };

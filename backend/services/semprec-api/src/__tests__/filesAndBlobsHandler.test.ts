@@ -15,6 +15,7 @@ import {
   createApiCoreTaskList,
   createItemWithClient,
   getDatabaseByModuleId,
+  getSystemTimezone,
   createViewTypeRegistry,
   hashPassword,
   loadFullModuleRegistry,
@@ -35,6 +36,22 @@ const PNG_IMAGE = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==",
   "base64",
 );
+function zipEntry(name: string): Buffer {
+  const header = Buffer.alloc(30);
+  header.write("PK\x03\x04", 0, "latin1");
+  header.writeUInt16LE(name.length, 26);
+  return Buffer.concat([header, Buffer.from(name, "latin1")]);
+}
+function tenantDay(zone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: zone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((entry) => entry.type === type)?.value;
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
 
 const noopMailer: PasswordResetMailer = {
   async sendPasswordResetEmail() {},
@@ -189,13 +206,6 @@ describe("files and blobs routes (issue #158)", () => {
       bytes.write("ftyp", 4, "latin1");
       bytes.write(brand, 8, "latin1");
       return bytes;
-    }
-
-    function zipEntry(name: string): Buffer {
-      const header = Buffer.alloc(30);
-      header.write("PK\x03\x04", 0, "latin1");
-      header.writeUInt16LE(name.length, 26);
-      return Buffer.concat([header, Buffer.from(name, "latin1")]);
     }
 
     it("enqueues transcription through the heartbeat after an audio upload", async () => {
@@ -360,6 +370,70 @@ describe("files and blobs routes (issue #158)", () => {
       }
     }
 
+    it.each([
+      [PNG_IMAGE, "image/png", "png"],
+      [Buffer.from("%PDF-1.7 document"), "application/pdf", "pdf"],
+      [Buffer.from("ID3audio"), "audio/mpeg", "audio"],
+      [
+        zipEntry("word/document.xml"),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "docx",
+      ],
+    ])(
+      "uploads bytes then creates a separate Files item with an initial project relation",
+      async (bytes, mime, type) => {
+        await withFixtureStorage(tmpBlobDir, async () => {
+          const headers = await authHeader();
+          const upload = await fetch(`${baseUrl}/api/blobs`, {
+            method: "POST",
+            headers: { ...headers, "Content-Type": mime },
+            body: bytes,
+          });
+          expect(upload.status).toBe(201);
+          const blob = z
+            .object({ blobId: z.string().uuid() })
+            .passthrough()
+            .parse(await upload.json());
+          const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
+          const projects = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
+          if (!files || !projects) throw new Error("Missing system databases");
+          const project = await createChokePoint(pool).createItem({
+            databaseId: projects.id,
+            properties: { name: "Project" },
+          });
+          const zone = await withTransaction(pool, (client) => getSystemTimezone(client));
+          const before = tenantDay(zone);
+          const response = await fetch(`${baseUrl}/api/databases/${files.id}/items`, {
+            method: "POST",
+            headers: { ...headers, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              properties: { name: "New file", file: { blobId: blob.blobId } },
+              relations: [{ propertyKey: "projects", targetItemIds: [project.id] }],
+            }),
+          });
+          expect(response.status).toBe(201);
+          const created = z
+            .object({ id: z.string().uuid(), properties: z.record(z.string(), z.unknown()) })
+            .passthrough()
+            .parse(await response.json());
+          expect(created.properties).toMatchObject({
+            name: "New file",
+            file: { blobId: blob.blobId },
+            type,
+          });
+          expect([before, tenantDay(zone)]).toContain(created.properties.date);
+          const read = await fetch(`${baseUrl}/api/items/${created.id}`, { headers });
+          expect(read.status).toBe(200);
+          expect(await read.json()).toMatchObject({ id: created.id, properties: { type } });
+          const relations = await fetch(`${baseUrl}/api/items/${created.id}/relations?propertyKey=projects`, {
+            headers,
+          });
+          expect(relations.status).toBe(200);
+          expect(await relations.json()).toMatchObject({ relations: [{ targetItemId: project.id }] });
+        });
+      },
+    );
+
     it("rejects an unauthenticated request", async () => {
       expect((await uploadBlob("png", "image/png", false)).status).toBe(401);
     });
@@ -410,8 +484,8 @@ describe("files and blobs routes (issue #158)", () => {
       await vi.waitFor(async () => expect(await storedFileCount()).toBe(1));
     });
 
-    it("rejects a non-image Content-Type with 400 on the Content-Type field and stores nothing", async () => {
-      const res = await uploadBlob("hello", "text/plain");
+    it("rejects a malformed Content-Type with 400 on the Content-Type field and stores nothing", async () => {
+      const res = await uploadBlob("hello", "text/plain; broken");
       expect(res.status).toBe(400);
       const body = (await res.json()) as ErrorBody;
       expect(body.error.details).toMatchObject({ field: "Content-Type" });

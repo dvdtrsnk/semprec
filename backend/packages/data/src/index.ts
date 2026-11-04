@@ -37,6 +37,7 @@ export {
 export { createItemWithRelationsWithClient, type InitialItemRelation } from "./chokePoint/itemCreateWithRelations.js";
 export {
   deleteRelationWithClient,
+  createRelationWithClient,
   setRelationWithClient,
   type SetRelationInput,
   type CreateRelationInput,
@@ -56,6 +57,8 @@ export { propertyDeleteWithClient } from "./chokePoint/propertyOps.js";
 export { viewDeleteWithClient } from "./chokePoint/viewOps.js";
 export { itemDeleteWithClient } from "./chokePoint/itemTrash.js";
 export { SYSTEM_WRITER, type WriterIdentity, type WriterKind } from "./chokePoint/writerKind.js";
+export { requireApprovalForWrite } from "./chokePoint/writeApproval.js";
+export { postApprovalOutcomeMessage } from "./mcp/approvalOutcomeMessage.js";
 export type { CreateDatabaseInput } from "./chokePoint/databasesStore.js";
 export { getDatabaseByModuleId } from "./chokePoint/databasesStore.js";
 export type { CreatePropertyInput } from "./chokePoint/propertiesStore.js";
@@ -391,7 +394,18 @@ export {
 export { runDocHistoryCutoverMigration } from "./docs/docHistoryCutoverMigration.js";
 export { manifest as docsModuleManifest } from "./docs/docsModuleManifest.js";
 
-export * from "./blobs/blobsStore.js";
+export {
+  tenantBlobStorageKey,
+  createBlob,
+  getBlob,
+  lockBlobById,
+  getBlobByContentHash,
+  findOrCreateBlob,
+  deleteBlobIfUnreferenced,
+  listStandaloneBlobIdsCreatedBefore,
+  deleteDerivedBlob,
+  type CreateBlobInput,
+} from "./blobs/blobsStore.js";
 export type { IngestUploadedFileInput, IngestUploadedFileResult } from "./blobs/fileUploadStore.js";
 export { ingestUploadedFile, ingestUploadedBlob } from "./blobs/fileUploadStore.js";
 export { sweepUnreferencedBlobs, handleBlobsUnreferencedSweepTask } from "./blobs/unreferencedBlobSweep.js";

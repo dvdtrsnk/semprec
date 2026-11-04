@@ -17,6 +17,7 @@ import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createActionRegistry, type ActionRegistry } from "../scheduler/actions.js";
+import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import {
   createSemprecTickAction,
   semprecTickActionConfigSchema,
@@ -497,5 +498,37 @@ describe("Inbox item event dispatch (issue #103)", () => {
     expect(await pendingTickJobs()).toHaveLength(0);
     const { items } = await inTenantZero(() => chokePoint.listItems(movies.id));
     expect(items.map((row) => row.id)).toEqual([movie.id]);
+  });
+
+  it("restoring a non-Inbox item triggers only its database's update heartbeat", async () => {
+    const watched = await inTenantZero(() => chokePoint.createDatabase({ name: "Watched" }));
+    const other = await inTenantZero(() => chokePoint.createDatabase({ name: "Other" }));
+    const { rows } = await pool.query<{ project_item_id: string }>(
+      "SELECT DISTINCT project_item_id FROM project_heartbeats WHERE action_id = $1",
+      [SEMPREC_TICK_ACTION_ID],
+    );
+    expect(rows).toHaveLength(1);
+    const projectItemId = rows[0]?.project_item_id;
+    if (!projectItemId) throw new Error("Seeded tick heartbeat missing");
+    const [heartbeat, otherHeartbeat] = await inTenantZero(() =>
+      withTransaction(pool, async (client) => {
+        const create = (databaseId: string) =>
+          createHeartbeat(client, {
+            projectItemId,
+            name: "Update",
+            rule: { kind: "onItemEvent", databaseId, event: "update" },
+            actionId: SEMPREC_TICK_ACTION_ID,
+          });
+        return [await create(watched.id), await create(other.id)] as const;
+      }),
+    );
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: watched.id, properties: {} }));
+    await inTenantZero(() => chokePoint.softDeleteItem(watched.id, item.id));
+    expect(await pendingTickJobs()).toHaveLength(0);
+    await inTenantZero(() => chokePoint.restoreItem(watched.id, item.id));
+    const jobs = await pendingTickJobs();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.payload.payload).toMatchObject({ heartbeatId: heartbeat.id, itemId: item.id });
+    expect(jobs[0]?.payload.payload.heartbeatId).not.toBe(otherHeartbeat.id);
   });
 });

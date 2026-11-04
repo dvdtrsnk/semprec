@@ -2,7 +2,7 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import type { Pool, PoolClient } from "pg";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
-import { getNotificationById } from "@semprec/data";
+import { getDocById, getItemsByIds, getNotificationById, withTransaction } from "@semprec/data";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   AGENT_STREAM_CHANNEL,
@@ -18,6 +18,7 @@ import { createDocSyncRegistry } from "./docSync.js";
 import { decodeDocId, parseBinaryFrame, parseInboundFrame, type OutboundFrame } from "./protocolV1.js";
 import { sendWithBackpressure } from "./backpressure.js";
 import { createInvalidationCoalescer } from "./invalidationCoalescer.js";
+import { createDocInvalidationThrottle } from "./docInvalidationThrottle.js";
 
 /** The identity every `WS /api/sync` socket is associated with for its whole lifetime. */
 export interface SyncIdentity {
@@ -283,6 +284,31 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     }
   }
 
+  async function resolveDocInvalidation(tenantId: string, docId: string) {
+    return runInTenant(tenantId, () =>
+      withTransaction(pool, async (client) => {
+        const doc = await getDocById(client, docId);
+        if (!doc) return null;
+        const [item] = await getItemsByIds(client, [doc.itemId]);
+        if (!item) return null;
+        return {
+          type: "invalidate",
+          scope: "doc",
+          docId,
+          itemId: item.id,
+          databaseId: item.databaseId,
+          lastEditedAt: doc.lastEditedAt,
+        } as const;
+      }),
+    );
+  }
+
+  const docInvalidations = createDocInvalidationThrottle(
+    resolveDocInvalidation,
+    (tenantId, frame) => sendToTenant(tenantId, frame),
+    () => logger.error({ stage: "doc_invalidation" }, "Sync server failed to invalidate a document"),
+  );
+
   /** Closes every currently connected socket with `code`/`reason` — never a per-stream drop. */
   function closeAll(code: number, reason: string): void {
     for (const client of wss.clients) {
@@ -447,6 +473,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
           return;
         }
         case "doc_update": {
+          docInvalidations.enqueue(tenantId, parsed.docId);
           docSync.fanOutDocUpdate(tenantId, parsed.docId, parsed.updateId).catch((err: unknown) => {
             logger.error({ err }, "Sync server failed to fan out a doc update");
           });
@@ -555,6 +582,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     },
     async close() {
       closed = true;
+      const docInvalidationsClosed = docInvalidations.close();
       detachListenClient();
       // A controlled (deploy) shutdown (issue #242's Task) sends every client a real 1012 close
       // frame rather than `terminate()`ing them: the whole point is telling each one "reconnect
@@ -563,7 +591,14 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
       // wait on these clients finishing their handshake — an unresponsive one is hard-dropped by
       // `ws`'s own close timeout rather than hanging this method.
       closeAll(SERVICE_RESTART_CLOSE_CODE, "server shutting down");
-      await new Promise<void>((resolve, reject) => wss.close((err) => (err ? reject(err) : resolve())));
+      const results = await Promise.allSettled([
+        new Promise<void>((resolve, reject) => wss.close((err) => (err ? reject(err) : resolve()))),
+        docInvalidationsClosed,
+      ]);
+      const failures: unknown[] = [];
+      for (const result of results) if (result.status === "rejected") failures.push(result.reason);
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Sync server shutdown failed");
     },
   };
 }

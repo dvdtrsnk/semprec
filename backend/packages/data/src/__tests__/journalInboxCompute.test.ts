@@ -241,7 +241,7 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     await drainQueue();
 
     const items = await computedInboxItems(dayId);
-    expect(items![0]!.status).toBe("confirmed");
+    expect(items![0]).toMatchObject({ status: "confirmed", processing: "confirmed", proposalSummary: null });
   });
 
   it("updates the cached status after a proposal is rejected", async () => {
@@ -269,7 +269,7 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     await drainQueue();
 
     const items = await computedInboxItems(dayId);
-    expect(items![0]!.status).toBe("rejected");
+    expect(items![0]).toMatchObject({ status: "rejected", processing: "rejected", proposalSummary: null });
   });
 
   it("updates the cached status after a proposal is revised", async () => {
@@ -583,6 +583,27 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
         targetItemId: page.id,
         targetItemName: "Scan",
         targetDatabaseKey: "files",
+      });
+    });
+
+    it("uses a target's declared title instead of an unrelated name property", async () => {
+      const item = await captureItem("Buy milk", await createType("Task", "☑️", "tasks"));
+      const dayId = await journalDayIdFor(item.id);
+      const database = await chokePoint.createDatabase({ name: "Custom pages" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "headline", name: "Headline", type: "title" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "name", name: "Name", type: "text" });
+      const page = await chokePoint.createItem({
+        databaseId: database.id,
+        properties: { headline: "Actual title", name: "Different name" },
+      });
+      await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+      await setCardProposal(await cardIdFor(item.id), { entityKind: "pageContent", target: page.id, properties: {} });
+
+      await recomputeJournalInboxDay(pool, dayId);
+
+      expect((await computedInboxItems(dayId))![0]!.proposalSummary).toMatchObject({
+        targetItemId: page.id,
+        targetItemName: "Actual title",
       });
     });
 
