@@ -113,6 +113,71 @@ it("retains native call events for a module tool without inventing generic or MC
   }
 });
 
+it("keeps the earlier generic tool when a module name collides in a composed session", async () => {
+  const pool = new Pool();
+  const faux = fauxProvider();
+  const registry = new ModuleRegistry(() => new Set());
+  vi.spyOn(registry, "getAgentToolDefinitions").mockResolvedValue([
+    {
+      moduleId: "fixture",
+      name: "item.patch",
+      argumentSchema: { type: "object", properties: {} },
+      handler: () => async () => ({ error: false, result: "module" }),
+      parseArguments: (value) => ({ success: true, data: value }),
+    },
+  ]);
+  const warn = vi.spyOn(logger, "warn");
+  let tools: AgentTool[] = [];
+  vi.spyOn(piSession, "createPiAgentSessionFactory").mockImplementation((options) => {
+    tools = options.tools;
+    return () => ({ async *messages() {} });
+  });
+  const run: AgentRunRow = {
+    id: "run-1",
+    projectItemId: "project-1",
+    parentRunId: null,
+    heartbeatId: null,
+    heartbeatOccurrenceId: null,
+    retryOfRunId: null,
+    attempt: 1,
+    threadId: null,
+    triggeredBy: "user",
+    unit: "invocation",
+    task: "run",
+    status: "running",
+    result: null,
+    errorCode: null,
+    errorDetail: null,
+    startedAt: "2026-10-27T00:00:00Z",
+    finishedAt: null,
+    actorUserId: "user-1",
+  };
+  fixtures.operations = ["item.patch"];
+  fixtures.grants = [];
+  try {
+    await createAgentSessionFactoryForRun(
+      pool,
+      registry,
+      {
+        model: faux.getModel(),
+        streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+        isBudgetRefusal: () => false,
+      },
+      run,
+    );
+    expect(tools.filter((tool) => tool.name === "item_patch")).toHaveLength(1);
+    const tool = tools.find((candidate) => candidate.name === "item_patch");
+    if (!tool) throw new Error("Generic tool missing");
+    expect((await tool.execute("call", {})).content).toEqual([{ type: "text", text: "patched" }]);
+    expect(warn).toHaveBeenCalledWith(
+      { toolName: "item_patch" },
+      "Agent tool name collides with an earlier tool; skipped",
+    );
+  } finally {
+    await pool.end();
+  }
+});
+
 const fixtures = vi.hoisted(() => ({
   grants: [] as McpToolGrantForProject[],
   operations: ["item.patch"] as string[],
