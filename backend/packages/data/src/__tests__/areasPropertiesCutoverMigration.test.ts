@@ -216,36 +216,53 @@ describe("Areas property cutover", () => {
       const cp = createChokePoint(pool);
       const areas = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
       const companies = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "companies"));
-      if (!areas || !companies) throw new Error("Databases missing");
+      const healthRecords = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "healthRecords"));
+      if (!areas || !companies || !healthRecords) throw new Error("Databases missing");
       const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Area" } });
       const company = await cp.createItem({ databaseId: companies.id, properties: { name: "Company" } });
+      const record = await cp.createItem({ databaseId: healthRecords.id, properties: { name: "Record" } });
       const props = await cp.listProperties(areas.id);
       const property = props.find((p) => p.key === "company");
       if (!property) throw new Error("Company relation missing");
+      const healthProperty = props.find((p) => p.key === "healthRecord");
+      if (!healthProperty) throw new Error("Health relation missing");
       await cp.createRelation({ relationPropertyId: property.id, callerItemId: area.id, targetItemId: company.id });
+      await cp.createRelation({
+        relationPropertyId: healthProperty.id,
+        callerItemId: area.id,
+        targetItemId: record.id,
+      });
       // Recreate the former schema state; changing a locked system relation is not a public operation.
       const downgraded = await pool.query(
         `UPDATE relation_definitions SET cardinality='one_to_one' WHERE property_id_a IN (SELECT id FROM properties WHERE database_id=$1 AND key IN ('company','healthRecord'))`,
         [areas.id],
       );
       expect(downgraded.rowCount).toBe(2);
-      const before = await pool.query<{ id: string; cardinality: string }>(
-        "SELECT id, cardinality FROM relation_definitions ORDER BY id",
+      const before = await pool.query<{ id: string; cardinality: string; xmin: string }>(
+        "SELECT id, cardinality, xmin::text AS xmin FROM relation_definitions ORDER BY id",
       );
       const edges = await cp.listItemRelations(area.id, property.id);
+      const healthEdges = await cp.listItemRelations(area.id, healthProperty.id);
       await runAreasPropertiesCutoverMigration(pool);
-      const after = await pool.query<{ id: string; cardinality: string }>(
-        "SELECT id, cardinality FROM relation_definitions ORDER BY id",
+      const after = await pool.query<{ id: string; cardinality: string; xmin: string }>(
+        "SELECT id, cardinality, xmin::text AS xmin FROM relation_definitions ORDER BY id",
       );
       expect(after.rows.filter((row, index) => row.cardinality !== before.rows[index]?.cardinality)).toHaveLength(2);
+      expect(after.rows.filter((row, index) => row.xmin !== before.rows[index]?.xmin)).toHaveLength(2);
       expect(await cp.listItemRelations(area.id, property.id)).toEqual(edges);
+      expect(await cp.listItemRelations(area.id, healthProperty.id)).toEqual(healthEdges);
       const inverse = (await cp.listProperties(companies.id)).find((p) => p.key === "area");
       if (!inverse) throw new Error("Inverse missing");
       expect((await cp.listItemRelations(company.id, inverse.id))?.map((edge) => edge.targetItemId)).toContain(area.id);
-      await runAreasPropertiesCutoverMigration(pool);
-      expect((await pool.query("SELECT id, cardinality FROM relation_definitions ORDER BY id")).rows).toEqual(
-        after.rows,
+      const healthInverse = (await cp.listProperties(healthRecords.id)).find((p) => p.key === "area");
+      if (!healthInverse) throw new Error("Health inverse missing");
+      expect((await cp.listItemRelations(record.id, healthInverse.id))?.map((edge) => edge.targetItemId)).toContain(
+        area.id,
       );
+      await runAreasPropertiesCutoverMigration(pool);
+      expect(
+        (await pool.query("SELECT id, cardinality, xmin::text AS xmin FROM relation_definitions ORDER BY id")).rows,
+      ).toEqual(after.rows);
     });
   });
   it("backfills a suspended tenant and its active property through the maintained-tenant fan-out", async () => {
@@ -271,8 +288,8 @@ describe("Areas property cutover", () => {
     });
     await runAsSystem("Areas active cutover test", () => runTenantCutoverMigrations(pool));
     await runInTenant(suspended, async () => {
-      const property = await pool.query<{ config: Record<string, unknown> }>(
-        "SELECT config FROM properties WHERE database_id=$1 AND key='active'",
+      const property = await pool.query<{ config: Record<string, unknown>; xmin: string }>(
+        "SELECT config, xmin::text AS xmin FROM properties WHERE database_id=$1 AND key='active'",
         [fixture.areas.id],
       );
       expect(property.rows[0]?.config.default).toBe(true);
@@ -280,6 +297,13 @@ describe("Areas property cutover", () => {
       expect((await cp.getItem(fixture.areas.id, fixture.item.id))?.properties.active).toBe(true);
       const before = await pool.query("SELECT id, properties, updated_at FROM items WHERE id=$1", [fixture.item.id]);
       await runAreasPropertiesCutoverMigration(pool);
+      expect(
+        (
+          await pool.query("SELECT config, xmin::text AS xmin FROM properties WHERE database_id=$1 AND key='active'", [
+            fixture.areas.id,
+          ])
+        ).rows,
+      ).toEqual(property.rows);
       expect(
         (await pool.query("SELECT id, properties, updated_at FROM items WHERE id=$1", [fixture.item.id])).rows,
       ).toEqual(before.rows);

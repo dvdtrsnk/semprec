@@ -44,7 +44,18 @@ describe("People phones cutover", () => {
       await runPeoplePhonesCutoverMigration(pool);
       const inserted = (await cp.listProperties(databaseId)).find((p) => p.key === "phones");
       expect(inserted).toMatchObject({ type: "longText", owner: "user", config: {} });
+      const version = await pool.query(
+        "SELECT xmin::text AS xmin FROM properties WHERE database_id=$1 AND key='phones'",
+        [databaseId],
+      );
       await runPeoplePhonesCutoverMigration(pool);
+      expect(
+        (
+          await pool.query("SELECT xmin::text AS xmin FROM properties WHERE database_id=$1 AND key='phones'", [
+            databaseId,
+          ])
+        ).rows,
+      ).toEqual(version.rows);
       expect((await cp.listProperties(databaseId)).find((p) => p.key === "phones")).toEqual(inserted);
       const person = await cp.createItem({
         databaseId,
