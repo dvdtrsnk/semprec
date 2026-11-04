@@ -34,6 +34,13 @@ export class ConflictError extends ChokePointError {
   }
 }
 
+export class ApprovalResourceBusyError extends ChokePointError {
+  constructor() {
+    super(409, "approval_resource_busy", "Approval resource is busy");
+    this.name = "ApprovalResourceBusyError";
+  }
+}
+
 export class ValueLinkBusyError extends ChokePointError {
   constructor() {
     super(409, "value_link_busy", "Value-link relation is busy");
@@ -127,6 +134,18 @@ export class ApprovalRequiredError extends ChokePointError {
   constructor(message: string, details: { approvalRequestId: string; link: string }) {
     super(403, "approval_required", message, details);
     this.name = "ApprovalRequiredError";
+  }
+}
+
+export interface ApprovalWriteReason {
+  kind: string;
+}
+
+/** Internal refusal of a flagged write; the gateway creates the approval after rollback. */
+export class ApprovalRequiredForWrite extends Error {
+  constructor(readonly reasons: readonly ApprovalWriteReason[]) {
+    super("The flagged write requires approval");
+    this.name = "ApprovalRequiredForWrite";
   }
 }
 

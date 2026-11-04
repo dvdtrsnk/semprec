@@ -10,6 +10,9 @@
 // - A description never carries argument values (an MCP request only names its server and tool).
 // - `endsInheritance` is omitted here; the value-link work (#1713, #1791) fills it later.
 // Templates and params:
+//   approval.itemPatch        {itemName, databaseKey, databaseName}
+//   approval.relationPut      {fromItemName, fromDatabaseKey, toItemName, toDatabaseKey}
+//   approval.relationSet      {fromItemName, fromDatabaseKey, propertyName}
 //   approval.itemDelete       {itemName, databaseKey, databaseName, projectName?, linkedCount, restorableDays}
 //   approval.propertyDelete   {propertyName, databaseKey, databaseName, affectedCount}
 //   approval.databaseArchive  {databaseName, affectedCount}
@@ -71,7 +74,7 @@ async function countLiveItems(client: PoolClient, databaseId: string, propertyKe
 }
 
 /**
- * The description of one of the six destructive generic operations, read on the same client (and
+ * The description of a generic operation, read on the same client (and
  * so in the same transaction) as the request insert that stores it.
  */
 export async function buildDestructiveApprovalDescription(
@@ -79,6 +82,49 @@ export async function buildDestructiveApprovalDescription(
   check: DestructiveOperationCheck | PageRestoreCheck,
 ): Promise<ApprovalDescription> {
   switch (check.operation) {
+    case "item.patch": {
+      const item = await requireItem(client, check.input.itemId);
+      const database = await requireDatabase(client, item.databaseId);
+      return {
+        key: "approval.itemPatch",
+        params: {
+          itemName: await nameOf(client, item),
+          databaseKey: database.key,
+          databaseName: databaseDisplayName(database),
+        },
+      };
+    }
+    case "relation.put": {
+      const from = await requireItem(client, check.input.callerItemId);
+      const to = await requireItem(client, check.input.targetItemId);
+      const [fromDatabase, toDatabase] = await Promise.all([
+        requireDatabase(client, from.databaseId),
+        requireDatabase(client, to.databaseId),
+      ]);
+      return {
+        key: "approval.relationPut",
+        params: {
+          fromItemName: await nameOf(client, from),
+          fromDatabaseKey: fromDatabase.key,
+          toItemName: await nameOf(client, to),
+          toDatabaseKey: toDatabase.key,
+        },
+      };
+    }
+    case "relation.set": {
+      const from = await requireItem(client, check.input.callerItemId);
+      const database = await requireDatabase(client, from.databaseId);
+      const property = await propertiesStore.getProperty(client, check.input.relationPropertyId);
+      if (!property) throw new NotFoundError(`Property ${check.input.relationPropertyId} not found`);
+      return {
+        key: "approval.relationSet",
+        params: {
+          fromItemName: await nameOf(client, from),
+          fromDatabaseKey: database.key,
+          propertyName: property.name ?? property.key,
+        },
+      };
+    }
     case "page.restoreVersion": {
       const item = await requireItem(client, check.input.itemId);
       const database = await requireDatabase(client, item.databaseId);

@@ -7,6 +7,7 @@ import {
   type ApprovalRequestDecision,
 } from "./approvalRequestsStore.js";
 import { resolveNotificationsBySource } from "../notifications/notificationsStore.js";
+import { postApprovalOutcomeMessage } from "./approvalOutcomeMessage.js";
 
 export interface DecideAndEnqueueResult {
   outcome: "decided" | "unchanged";
@@ -58,6 +59,7 @@ export async function decideAndEnqueueApprovalRequest(
       { jobKey: `approval-request-execute-${request.id}`, jobKeyMode: "preserve_run_at" },
     );
   }
+  if (request.status === "rejected") await postApprovalOutcomeMessage(client, request, "rejected");
 
   await resolveNotificationsBySource(client, { sourceTable: "approval_requests", sourceId: request.id });
 

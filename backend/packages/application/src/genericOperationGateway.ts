@@ -2,6 +2,8 @@ import type { CollectionMetadataResolver } from "@semprec/data";
 import type { Pool, PoolClient } from "pg";
 import {
   ApprovalRequiredError,
+  ApprovalResourceBusyError,
+  ApprovalRequiredForWrite,
   ChokePointError,
   ForbiddenError,
   NotFoundError,
@@ -13,6 +15,7 @@ import {
   approvalNotificationBody,
   buildDestructiveApprovalDescription,
   databaseArchiveWithClient,
+  createRelationWithClient,
   deleteRelationWithClient,
   getAgentRun,
   getApprovalRequest,
@@ -21,9 +24,12 @@ import {
   itemDeleteWithClient,
   markApprovalRequestExecutionSucceeded,
   propertyDeleteWithClient,
+  postApprovalOutcomeMessage,
   restorePageVersionWithClient,
+  setRelationWithClient,
   terminalizeApprovalRequestAsConflict,
   viewDeleteWithClient,
+  updateItemWithClient,
   withTransaction,
   writeNotification,
   type Actor,
@@ -49,9 +55,17 @@ import {
 } from "@semprec/shared";
 import { createGenericApplicationService, toActor } from "./genericApplicationService.js";
 
-/** The six destructive operations: issue #89's five, plus `page.restoreVersion` (issue #1617). Every other catalog entry never reaches this gate (`OPERATION_METADATA[...].requiresApproval` is `false`). */
+/** Operations whose approval snapshots and transactional replay are supported. */
 type DestructiveOperationName =
-  "database.archive" | "property.delete" | "view.delete" | "item.delete" | "relation.delete" | "page.restoreVersion";
+  | "database.archive"
+  | "property.delete"
+  | "view.delete"
+  | "item.delete"
+  | "relation.delete"
+  | "page.restoreVersion"
+  | "item.patch"
+  | "relation.put"
+  | "relation.set";
 
 function isDestructiveOperationName(operation: GenericOperationName): operation is DestructiveOperationName {
   return (
@@ -60,7 +74,10 @@ function isDestructiveOperationName(operation: GenericOperationName): operation 
     operation === "view.delete" ||
     operation === "item.delete" ||
     operation === "relation.delete" ||
-    operation === "page.restoreVersion"
+    operation === "page.restoreVersion" ||
+    operation === "item.patch" ||
+    operation === "relation.put" ||
+    operation === "relation.set"
   );
 }
 
@@ -87,6 +104,15 @@ function buildDestructiveCheck(operation: DestructiveOperationName, input: unkno
       return { operation, input: input as { viewId: string }, actor };
     case "item.delete":
       return { operation, input: input as { itemId: string } };
+    case "item.patch":
+      return { operation, input: input as { itemId: string } };
+    case "relation.put":
+      return { operation, input: input as { relationPropertyId: string; callerItemId: string; targetItemId: string } };
+    case "relation.set":
+      return {
+        operation,
+        input: input as { relationPropertyId: string; callerItemId: string; targetItemId: string | null },
+      };
     case "relation.delete":
       return {
         operation,
@@ -106,6 +132,25 @@ async function executeDestructiveWithClient(
   writer: WriterIdentity,
 ): Promise<unknown> {
   switch (operation) {
+    case "item.patch": {
+      const { item } = currentResource as { item: { databaseId: string } };
+      const patch = input as InputByOperation["item.patch"];
+      return updateItemWithClient(
+        client,
+        { databaseId: item.databaseId, itemId: patch.itemId, propertiesPatch: patch.properties },
+        { writer, queueAffinity: createActionQueueAffinity() },
+      );
+    }
+    case "relation.put":
+      return createRelationWithClient(
+        client,
+        input as InputByOperation["relation.put"],
+        undefined,
+        writer,
+        actingUserId,
+      );
+    case "relation.set":
+      return setRelationWithClient(client, input as InputByOperation["relation.set"], writer, actingUserId);
     case "page.restoreVersion": {
       // Authored `user`: the approver's decision is the user's (issue #1617).
       const { itemId, at } = input as { itemId: string; at: string };
@@ -218,13 +263,10 @@ async function invokeBinding<K extends GenericOperationName>(
  * the current `agent_run` row first — the same check execution later repeats — so a request whose
  * actor can never pass that check at execution time is rejected here instead of being queued for a
  * human to approve something that can only end in `owner_violation`. Only then runs the exact
- * resource authorization (`computeDestructiveResourceProjection` — existence/ownership/locked/
- * archive/version, the same checks the destructive command itself would run) that a direct call to
- * this operation would run, and only on success — in the same transaction — inserts the pending
+ * resource projection and its guards before, in the same transaction, inserting the pending
  * approval request plus its `approval_pending` notification, carrying the resulting
- * `resourceSnapshot`. An unauthorized, not-found, locked, or archived call therefore never creates
- * a row or a notification at all: the caller sees the domain `ChokePointError` thrown, propagated
- * out of this transaction (which rolls back), rather than a queued request nobody can act on.
+ * `resourceSnapshot`. For a flagged non-destructive write the original transaction has already
+ * reached the flag after its preceding write guards; replay also runs the actual writer's guards.
  */
 async function preflightDestructiveApproval(
   pool: Pool,
@@ -355,7 +397,29 @@ export function createGenericOperationGateway(
         });
       }
 
-      return invokeBinding(service, operation, actor, input);
+      try {
+        return await invokeBinding(service, operation, actor, input);
+      } catch (err) {
+        if (!(err instanceof ApprovalRequiredForWrite)) throw err;
+        if (
+          !isDestructiveOperationName(operation) ||
+          actor.runId === undefined ||
+          actor.agentProjectItemId === undefined
+        )
+          throw err;
+        const request = await preflightDestructiveApproval(
+          pool,
+          operation,
+          actor,
+          input,
+          options?.reason ?? null,
+          options?.toolCallId ?? null,
+        );
+        throw new ApprovalRequiredError(`Operation '${operation}' requires human approval before it can run.`, {
+          approvalRequestId: request.id,
+          link: `?page=approvals&id=${request.id}`,
+        });
+      }
     },
   };
 }
@@ -381,12 +445,9 @@ export function createGenericOperationGateway(
  *   (`owner_violation` on drift, same as before), re-authorizes the resource with the exact same
  *   `computeDestructiveResourceProjection` check the request-time preflight ran, and requires the
  *   freshly computed `resourceSnapshot` to equal the one persisted at approval time;
- * - a snapshot mismatch, or any `ChokePointError` raised while revalidating (`not_found`,
- *   `owner_violation`, `schema_locked`, `property_locked`, `database_archived`,
- *   `version_conflict`, `validation_failed`, or any other code this catalog's checks might ever
- *   raise), terminalizes the request as `conflict` and commits — no mutation ever runs. Only an
- *   infrastructure failure (a lost connection, a bug) propagates out of the transaction, rolling
- *   it back so the row stays `queued` for graphile's own retry.
+ * - a snapshot mismatch or revalidation domain error terminalizes the request as `conflict`
+ *   before mutation. A transient approval reservation refusal or infrastructure failure escapes,
+ *   so the transaction rolls back and the row stays `queued` for graphile's own retry.
  * - on a clean revalidation, executes the same `*WithClient` function the choke-point's own public
  *   API delegates to, on this same transaction and client, then marks `succeeded` and commits — the
  *   mutation and its terminal-state write land in the same commit, so a crash before commit rolls
@@ -401,6 +462,7 @@ export async function replayApprovedGenericOperation(
     if (!locked || !isGenericOperationApprovalRequestPayload(locked.payload)) {
       throw new NotFoundError(`Approval request '${request.id}' not found`);
     }
+    const lockedPayload = locked.payload;
 
     if (
       locked.executionStatus === "succeeded" ||
@@ -413,70 +475,80 @@ export async function replayApprovedGenericOperation(
       throw new ForbiddenError(`Approval request '${request.id}' is not approved and queued for execution`);
     }
 
-    // Every domain failure from here on (a malformed/no-longer-valid stored payload, drifted
-    // actor provenance, or the resource's own authorization) is a terminal conflict, not a
-    // reason to roll back and leave the row `queued` forever for graphile to retry
-    // indefinitely against a request that can never revalidate cleanly — only an
-    // infrastructure failure (a lost connection, a bug) should escape this transaction.
-    try {
-      const { actor, operationName, canonicalInput } = locked.payload;
-      const operation = assertGenericOperationName(operationName);
-      if (!isDestructiveOperationName(operation)) {
-        throw new ValidationError(
-          `Operation '${operation}' in approval request payload is not a destructive operation`,
+    // Only revalidation errors become terminal conflicts. A mutation error must escape so
+    // the managed transaction discards writes and its registered after-commit effects.
+    const checked = await (async () => {
+      try {
+        const { actor, operationName, canonicalInput } = lockedPayload;
+        const operation = assertGenericOperationName(operationName);
+        if (!isDestructiveOperationName(operation)) {
+          throw new ValidationError(
+            `Operation '${operation}' in approval request payload is not a supported operation`,
+          );
+        }
+        const input = parseInput(operation, canonicalInput);
+        const run = await getAgentRun(client, locked.agentRunId, true);
+        if (
+          !run ||
+          locked.agentRunId !== actor.runId ||
+          run.projectItemId !== actor.agentProjectItemId ||
+          run.actorUserId !== actor.userId
+        ) {
+          throw new ForbiddenError(
+            `Approval request '${request.id}' no longer matches its run's persisted provenance`,
+            undefined,
+            "owner_violation",
+          );
+        }
+        const dataActor = toActor({ userId: actor.userId, agentProjectItemId: actor.agentProjectItemId });
+        const { currentResource, snapshot } = await projectCheck(
+          client,
+          buildDestructiveCheck(operation, input, dataActor),
         );
+        if (
+          snapshot.kind !== locked.resourceSnapshot.kind ||
+          snapshot.resourceId !== locked.resourceSnapshot.resourceId ||
+          snapshot.sha256 !== locked.resourceSnapshot.sha256
+        ) {
+          return { kind: "conflict" as const, details: { currentResource } };
+        }
+        return { kind: "ready" as const, operation, input, actor, dataActor, currentResource };
+      } catch (err) {
+        if (err instanceof ApprovalResourceBusyError) throw err;
+        if (err instanceof ChokePointError) {
+          return {
+            kind: "conflict" as const,
+            details: { reason: err.code, currentResource: currentResourceFromErrorDetails(err.details) },
+          };
+        }
+        throw err;
       }
-      const input = parseInput(operation, canonicalInput);
-
-      const run = await getAgentRun(client, locked.agentRunId, true);
-      if (
-        !run ||
-        locked.agentRunId !== actor.runId ||
-        run.projectItemId !== actor.agentProjectItemId ||
-        run.actorUserId !== actor.userId
-      ) {
-        throw new ForbiddenError(
-          `Approval request '${request.id}' no longer matches its run's persisted provenance`,
-          undefined,
-          "owner_violation",
-        );
-      }
-
-      const dataActor = toActor({ userId: actor.userId, agentProjectItemId: actor.agentProjectItemId });
-      const check = buildDestructiveCheck(operation, input, dataActor);
-      const { currentResource, snapshot } = await projectCheck(client, check);
-
-      if (
-        snapshot.kind !== locked.resourceSnapshot.kind ||
-        snapshot.resourceId !== locked.resourceSnapshot.resourceId ||
-        snapshot.sha256 !== locked.resourceSnapshot.sha256
-      ) {
-        return await terminalizeApprovalRequestAsConflict(client, locked.id, { currentResource });
-      }
-
-      const result = await executeDestructiveWithClient(
-        client,
-        operation,
-        input,
-        dataActor,
-        actor.userId,
-        currentResource,
-        {
-          writerKind: "agent",
-          agentRunId: locked.agentRunId,
-          agentProjectItemId: actor.agentProjectItemId,
-          onBehalfOfUserId: actor.userId,
-        },
-      );
-      return await markApprovalRequestExecutionSucceeded(client, locked.id, result);
-    } catch (err) {
-      if (err instanceof ChokePointError) {
-        return await terminalizeApprovalRequestAsConflict(client, locked.id, {
-          reason: err.code,
-          currentResource: currentResourceFromErrorDetails(err.details),
-        });
-      }
-      throw err;
+    })();
+    if (checked.kind === "conflict") {
+      const outcome = await terminalizeApprovalRequestAsConflict(client, locked.id, checked.details);
+      await postApprovalOutcomeMessage(client, locked, "conflict");
+      return outcome;
     }
+    const { operation, input, actor, dataActor, currentResource } = checked;
+    const result = await executeDestructiveWithClient(
+      client,
+      operation,
+      input,
+      dataActor,
+      actor.userId,
+      currentResource,
+      {
+        writerKind: "agent",
+        agentRunId: locked.agentRunId,
+        agentProjectItemId: actor.agentProjectItemId,
+        onBehalfOfUserId: actor.userId,
+        ...(operation === "item.patch" || operation === "relation.put" || operation === "relation.set"
+          ? { approvedRequestId: locked.id }
+          : {}),
+      },
+    );
+    const outcome = await markApprovalRequestExecutionSucceeded(client, locked.id, result);
+    await postApprovalOutcomeMessage(client, locked, "executed");
+    return outcome;
   });
 }

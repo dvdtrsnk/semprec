@@ -11,10 +11,13 @@ import type { WriteNotificationInput } from "./notify.js";
 /** Body catalog key per description key (`notifications/i18n/{cs,en}.json`, `notification.approval_pending.body.*`). */
 const BODY_KEY_BY_DESCRIPTION_KEY = new Map<string, string>([
   ["approval.itemDelete", "approval.itemDelete"],
+  ["approval.itemPatch", "approval.itemPatch"],
   ["approval.propertyDelete", "approval.propertyDelete"],
   ["approval.databaseArchive", "approval.databaseArchive"],
   ["approval.viewDelete", "approval.viewDelete"],
   ["approval.relationDelete", "approval.relationDelete"],
+  ["approval.relationPut", "approval.relationPut"],
+  ["approval.relationSet", "approval.relationSet"],
   ["approval.pageRestore", "approval.pageRestore"],
   ["approval.mcpInvoke", "approval.mcpInvoke"],
 ]);

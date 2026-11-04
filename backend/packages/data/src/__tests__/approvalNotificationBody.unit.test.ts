@@ -6,6 +6,9 @@ import { approvalNotificationBody } from "../notifications/approvalNotificationB
 
 const paramsByKey: Record<string, string[]> = {
   "approval.itemDelete": ["itemName", "databaseKey", "databaseName", "projectName", "linkedCount", "restorableDays"],
+  "approval.itemPatch": ["itemName", "databaseKey", "databaseName"],
+  "approval.relationPut": ["fromItemName", "fromDatabaseKey", "toItemName", "toDatabaseKey"],
+  "approval.relationSet": ["fromItemName", "fromDatabaseKey", "propertyName"],
   "approval.propertyDelete": ["propertyName", "databaseKey", "databaseName", "affectedCount"],
   "approval.databaseArchive": ["databaseName", "affectedCount"],
   "approval.viewDelete": ["viewName", "databaseName"],
@@ -74,5 +77,27 @@ describe("approval notification body", () => {
     expect(() => approvalNotificationBody({ ...mcp, description: { key: "approval.unknown", params: {} } })).toThrow(
       /no body entry/,
     );
+  });
+  it.each([
+    ["item.patch", "approval.itemPatch"],
+    ["relation.put", "approval.relationPut"],
+    ["relation.set", "approval.relationSet"],
+  ] as const)("renders %s from the safe snapshot without arguments", (operationName, key) => {
+    const body = approvalNotificationBody({
+      riskClass: "write",
+      description: { key, params: { itemName: "Visible name" } },
+      payload: {
+        operationName,
+        canonicalInput: { secret: "private value" },
+        actor: { runId: "run", agentProjectItemId: "project", userId: "user" },
+        resourceSnapshot: { kind: "test", resourceId: "id", sha256: null },
+      },
+    });
+    expect(body).toEqual({
+      bodyKey: key,
+      bodyParams: { itemName: "Visible name" },
+      bodySuffixKey: "notification.body.canUndo",
+    });
+    expect(JSON.stringify(body)).not.toContain("private value");
   });
 });
