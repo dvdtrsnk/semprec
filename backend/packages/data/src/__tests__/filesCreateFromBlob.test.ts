@@ -12,7 +12,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { ingestUploadedBlob } from "../blobs/fileUploadStore.js";
 import { sweepUnreferencedBlobs } from "../blobs/unreferencedBlobSweep.js";
-import { getSystemTimezone } from "../systemSettings.js";
+import { getSystemSettingsDatabaseId, getSystemSettingsItemId, getSystemTimezone } from "../systemSettings.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 
@@ -103,6 +103,29 @@ describe("Files creation from standalone blobs", () => {
       expect(await api.listItemRelations(created.id, property.id)).toMatchObject([{ targetItemId: project.id }]);
     });
   });
+  it("uses the tenant timezone when the local day differs from UTC", async () => {
+    const uploaded = await upload(owner, "%PDF-1.4\ntimezone");
+    await runInTenant(owner, async () => {
+      const api = createChokePoint(runtime);
+      const settings = await withTransaction(runtime, async (client) => ({
+        databaseId: await getSystemSettingsDatabaseId(client),
+        itemId: await getSystemSettingsItemId(client),
+      }));
+      await api.updateItem({ ...settings, propertiesPatch: { timezone: "Pacific/Kiritimati" } });
+      const files = await db("files");
+      const clock = vi.spyOn(DateTime, "now").mockReturnValue(DateTime.fromISO("2026-01-01T12:30:00.000Z"));
+      try {
+        const item = await api.createItem({
+          databaseId: files.id,
+          properties: { name: "Timezone", file: { blobId: uploaded.blob.id } },
+        });
+        expect(item.properties.date).toBe("2026-01-02");
+      } finally {
+        clock.mockRestore();
+      }
+    });
+  });
+
   it("does not infer a file type absent from the tenant's current select options", async () => {
     const uploaded = await upload(owner, "%PDF-1.4\nunsupported-option");
     await runInTenant(owner, async () => {
