@@ -1,0 +1,45 @@
+# Batch 23 specification reconciliation
+
+## 1. Flagged-write descriptions and notification consumers
+
+The owner-delegated controller confirms that adding the three approval-gated write kinds also requires extending the existing same-client description owner. The notification body helper rejects an unknown key and rolls back request creation; a description-only change is insufficient. Authorize only the extra gh-1713 paths listed in its refreshed Touches. Keep every existing template and undo/risk rule unchanged, and do not edit the accepted notification ADR body.
+
+Use three distinct English camelCase keys with these exact snapshot parameters:
+
+- `approval.itemPatch`: `{itemName, databaseKey, databaseName}`. Action: update the named item in the named database. Never include patch values.
+- `approval.relationPut`: `{fromItemName, fromDatabaseKey, toItemName, toDatabaseKey}`. Action: link the two named items. Never include edge metadata values.
+- `approval.relationSet`: `{fromItemName, fromDatabaseKey, propertyName}`. Action: change the named relation of the named source. This neutral action covers a target replacement and clearing with null without pretending that clearing links to an unnamed target. The existing single-request detail owns argument display; do not invent a fourth template or display raw arguments.
+
+Names use the existing declared-title resolver and legacy name/null fallback; database keys remain canonical and nullable. PropertyName uses the stored display name or canonical property key, never its UUID. Build descriptions on the request insert's client/transaction and preserve snapshotted values across later renames. Add English and Czech action entries, the three exact body-map entries and parameter/privacy/undo tests. Unrecognized keys must still throw; NULL descriptions and existing producers keep their behavior. This adds no production flag, risk class, argument disclosure, schema column, client work or inheritance-break template.
+
+## 2. Existing writer exports and approved replay identity
+
+The supported testSupport entry already exports registerRelationEdgeWriteHook and related hook types. Reuse it; no new registration export, package subpath or global hook-reset mechanism is authorized. Scope fixture hooks to their own resources and deactivate them during owned test cleanup, not before replay. Existing production hooks remain registered.
+
+Export the existing createRelationWithClient through the root data barrel so the application executor uses the actual supplied-client writer. Preserve its signature, checks, managed transaction and side effects. PublicSurface may add exactly this required writer, ApprovalRequiredForWrite and requireApprovalForWrite to its sorted runtime list; the separate gh-1772 helper entry below is separately authorized. Do not weaken exact export/facade assertions.
+
+Approved replay must retain writerKind agent, run/project/user provenance and the same active flag hook. Add optional server-only approvedRequestId to WriterIdentity. Only the existing approved executor sets it, on the writer object passed to its one revalidated mutation, after locking an approved+queued request and validating stored actor and resource snapshot. It is not a generic run flag, persisted actor field, client input, capability or permission to skip authorization. Ordinary actor-to-writer conversion never sets it; never copy it from REST/MCP/tool bodies. Do not use a process-global or pooled-client bypass, impersonate a user/system writer, disable hooks for replay or widen request schemas.
+
+Place requireApprovalForWrite in the narrow shared chokePoint/writeApproval.ts helper. It requires the caller's active managed transaction, defers a flagged agent with a run unless that exact execution writer carries the server-proven approved request ID, and otherwise preserves the current user/system/no-run behavior. The marker exists only in that mutation's arguments and must not be propagated into an unrelated nested write. There is no ambient scope or retained client state. Errors.ts owns the typed refusal as originally required. Record this bounded approved-execution provenance in the new gh-1713 narrowing ADR before implementation; all previously accepted ADR bodies remain unchanged.
+
+Test actual request/approval/replay while the same hook remains active, exactly-once redelivery, conflict/rollback, and a later independent unapproved call which still defers. Verify no public input can supply the marker and that identity remains agent in the replay hook. No production reason kind is added by this batch. If an actual call path cannot satisfy the single-mutation marker ownership, report its exact path rather than broaden the bypass.
+
+## 3. Outcome messages use the thread owner and canonical reference
+
+Gh-1772 requires a reusable thread-owned system-message writer, but the recovered tick-only writer is not such an API. Add only semp/sempMessagesStore.ts and the named focused integration test. The MCP outcome module calls this owner on its own transaction client; it never inserts/updates semp_messages directly. The owner inserts a system_key/system_params message, stores the existing canonical reference `{kind: "approvalRequest", approvalRequestId}` in context and updates the existing thread's last_activity_at transactionally. Keep the shared closed reference schema unchanged; the Task's shorter id spelling was shorthand, not a second wire format.
+
+Resolve the actual requesting run's tenant-scoped thread; no thread means no message. Use the existing locked request/decision/execution terminal transition as the idempotence authority and post only when that outcome was newly recorded. Repeated/discarded outcomes post nothing. No new generic idempotency table/index, turn, run, job or realtime publication is added. A changed decision/execution and its message roll back together. Cover owner-positive, no-thread, repeated and rollback paths with actual stored canonical refs. The separately authorized publicSurface entry is only postApprovalOutcomeMessage if exported for the application caller; keep the thread-owned leaf writer internal to data.
+
+## 4. Files derivation stays in its owning module
+
+Gh-1661 must not make itemWrites import the blobs domain. Use the existing per-module pre-write transform registry: add blobs/filesItemPreWriteTransform.ts and register it for Files in domainWriteHooks.ts. It derives an omitted type on create from the visible blob's content-derived stored MIME through the existing filesTypeForMimeType; preserve explicit type/date behavior, ordinary value validation and idempotent create semantics. No external reads, new detector, owner bypass or unrelated update transform is authorized. Reuse the existing blob-owned reference hook's stable FOR KEY SHARE validation and collection coordination; do not add a second lock protocol or bypass missing/foreign equivalence.
+
+Files date today is already present in seedTenDatabases and propertyDefaultsCutoverMigration. Audit and prove those existing registered paths; do not add a duplicate schema migration or edit unrelated defaults. The refreshed Touches allows the existing defaults cutover only for this Files date requirement if a concrete repair is needed. Existing data/API tests prove standalone upload, create with relation, cancellation/collection, unchanged earlier identical file, foreign/random refusal and explicit date. Add the required flow documentation only in the existing filesHandler.ts upload docblock; no handler behavior change is authorized by that documentation permission.
+
+## 5. Document frame parser and binary test reader
+
+For gh-1625, authorize the existing realtime-client serverFrame.unit.test.ts only for valid doc invalidations and malformed UUID/timestamp/shape controls. Also authorize the existing realtime syncServer.test.ts only to make the open-document-cap binary reader respect ws isBinary before parseBinaryFrame. Its current binary parser accepts a text buffer as a spurious document ID after the new text invalidation; preserve all 32/33 cap, subscription and connection assertions and do not suppress actual binary traffic. Retain the original failed development run. Run both complete affected files and include them in the final plan.
+
+The real 100-update leading/trailing, latest timestamp, tenant/unsubscribed socket, missing document and shutdown obligations remain. A fake-timer unit test and one real write are distinct partial scenarios, not a claim that the whole requirement is proven. No new review round, timer policy, timeout increase, frame filter in production or gate exception is granted.
+
+All sections are exact member-specific scope decisions under the controller ADR. They preserve other Task/AC and out-of-scope boundaries, prior handovers, production gate and review budget. The locale seam is not adjudicated by these sections. Source files remain owned by the worker and excluded from this metadata commit. No acceptance, merge or runtime PASS is claimed.
