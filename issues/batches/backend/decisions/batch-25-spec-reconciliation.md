@@ -43,16 +43,16 @@ gh-1396/1399 and the production gate retain their ownership.
 ## Search and reindex ownership
 
 Gh-1589 owns the shared vector/query/phone shape and full non-Emails reindex
-after false-to-true activation. Add phones to the explicit People searchFields
+at every successful deploy, retaining body/page_text. Add phones to the explicit People searchFields
 and update the former negative contract to actual normalized-phone positives.
 The missing-only and full generic backfill keys already differ; preserve them
-and the ordinary missing-only deploy default. Do not replace Emails rows here.
+and the ordinary missing-only helper default for other callers. Do not replace Emails rows here.
 
 Gh-1591 owns new mail ingest text. Gh-1741 alone owns full existing-mail rebuild
 and one deploy enqueue after queue readiness, including transition deploys.
 Expose that same enqueue owner for later activation. Existing Graphile replace
 schedules a successor behind a running same-key job, while pending work
-coalesces; use one existing named queue to prevent overlapping full rebuilds.
+coalesces; use stable global named queue mail-search-text-reindex to prevent overlapping full rebuilds.
 Do not use unsafe_dedupe, change the queue wrapper, or modify the legacy
 missing-only mail sweep. Test held-running replacement through the real worker.
 Preserve active-tenant mail traversal versus maintained-tenant generic traversal
@@ -83,3 +83,19 @@ autonomous; concrete new scope or architectural conflict is grouped for parent.
 Local-only feature/backend-delivery integration remains separate from release.
 Gh-1086 stays byte-identical OPEN/BLOCKED. No push, deploy, live account/provider,
 web/mobile work or environment teardown is authorized.
+
+## Existing mail vector writer
+
+The actual reindexItemSearch in mail/search.ts owns one INSERT/upsert used by ingest and rebuild. Gh-1591 and gh-1741 now explicitly permit the combined czech/czech_simple vector there, not a new writer or an early gh-1589 Emails rewrite. Preserve query/rank/operator code and the legacy sweep itself; its future writes naturally use the same common writer. The full-reindex unchanged AC also requires unchanged vector/database upserts not to rewrite updated_at; a guarded conflict update supplies that no-op without changing genuine vector writes. Prove both changed-vector and unchanged-vector behavior in the already named ingest/reindex tests, including updated_at/xmin repeat identity where relevant. No separate test matrix, public export, query rewrite or generic indexing sweep is authorized.
+
+The phrase existing named queue means reuse the existing Graphile facility, not a preexisting business queue. The new system task uses stable global queue name mail-search-text-reindex for both current and successor executions; normal replace keeps its successor behavior. Do not reuse a tenant lane for a system-wide fan-out or create a new lock/queue subsystem. Source and aggregate specifications are reapproved coherently; no accepted ADR body changes.
+
+## Preserve page projections and recover interrupted deploys
+
+The initial DELETE instruction in gh-1589 is unsafe for the current0120 projection columns: backfill reads page_text from the very row deletion would destroy. The approved migration now creates czech_simple without deleting index rows or clearing body/page_text. It does not take over gh-1658 page conversion. Existing full non-Emails backfill preserves those columns while recomputing vectors. Every successful deploy enqueues that full pass after queue readiness, with existing coalescing/full key and bounded tenant/page execution. This deliberately accepts a full bounded pass per deploy, avoiding a new receipt/generation store and ensuring the next successful deploy retries prior activation/schema/enqueue failures even when activation already committed. The previous transition-only enqueue plan is replaced; missing-only helper defaults and existing distinct keys remain for other callers. No automatic retry of a failed deploy is claimed.
+
+Gh-1741 follows its non-deleted traversal and existing trash lifecycle. Its conflicting AC is explicitly reconciled to search-visible exclusion: soft-deleted mail is not returned from real search, while a retained index row is left unchanged until normal hard purge. This preserves attachment projection for restore and avoids adding a derived-row cleanup, new restore hook or locking protocol. Test a genuinely ingested/indexed mail then production soft-delete, job, actual negative search with positive live control and preserved row; restore retains prior attachment search. Do not present skipped-deleted behavior as physical removal. The existing mail writer handles repeated identical vectors atomically, not a stale job-side precheck. No accepted ADR body is changed.
+
+## Live mail visibility and available body
+
+The actual searchItems uses a LEFT JOIN without a live-item predicate. Gh-1741 therefore narrowly admits its real same-database non-deleted item filter, retaining query/rank/operators. Its exact czechHunspellSearch and mailSync harness permissions replace phantom random index IDs with real Emails items while retaining current behavioral assertions; no blanket search-test rewrite. Ingest currently stores HTML preferentially but indexes text/plain preferentially. Historical rebuild uses the available stored body, converting HTML as specified; it cannot reproduce a divergent discarded text/plain part. No ingest persistence redesign or exact historical multipart parity is claimed.
