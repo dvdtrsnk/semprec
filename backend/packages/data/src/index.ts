@@ -394,7 +394,18 @@ export {
 export { runDocHistoryCutoverMigration } from "./docs/docHistoryCutoverMigration.js";
 export { manifest as docsModuleManifest } from "./docs/docsModuleManifest.js";
 
-export * from "./blobs/blobsStore.js";
+export {
+  tenantBlobStorageKey,
+  createBlob,
+  getBlob,
+  lockBlobById,
+  getBlobByContentHash,
+  findOrCreateBlob,
+  deleteBlobIfUnreferenced,
+  listStandaloneBlobIdsCreatedBefore,
+  deleteDerivedBlob,
+  type CreateBlobInput,
+} from "./blobs/blobsStore.js";
 export type { IngestUploadedFileInput, IngestUploadedFileResult } from "./blobs/fileUploadStore.js";
 export { ingestUploadedFile, ingestUploadedBlob } from "./blobs/fileUploadStore.js";
 export { sweepUnreferencedBlobs, handleBlobsUnreferencedSweepTask } from "./blobs/unreferencedBlobSweep.js";
