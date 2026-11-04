@@ -10,6 +10,9 @@ import {
   getTestPool,
   resetDatabase,
   tenantForNextTestUser,
+  registerRelationEdgeChangedHook,
+  clearHooksForTests,
+  type RelationEdgeChangedHookContext,
 } from "@semprec/data/testSupport";
 import {
   createChokePoint,
@@ -443,7 +446,32 @@ describe("generic operation REST contract (issue #219)", () => {
   });
 
   afterAll(async () => {
+    clearHooksForTests();
     await pool?.end();
+  });
+
+  it("reports a changed edge for REST relation deletion", async () => {
+    const fx = await buildFixtures();
+    const calls: RelationEdgeChangedHookContext[] = [];
+    registerRelationEdgeChangedHook(async (context) => {
+      calls.push(context);
+    });
+    const response = await fetch(
+      `${baseUrl}/api/items/${fx.itemA.id}/relations/${fx.relationProperty.key}/${fx.targetItem.id}`,
+      {
+        method: "DELETE",
+        headers: await authHeader(),
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      op: "delete",
+      propertyId: fx.relationProperty.id,
+      itemA: fx.itemA.id,
+      itemB: fx.targetItem.id,
+      writer: { writerKind: "user" },
+    });
   });
 
   it("sets, repeats, clears and rejects a multi-valued relation through REST", async () => {

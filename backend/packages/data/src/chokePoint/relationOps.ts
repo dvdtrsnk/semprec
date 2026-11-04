@@ -1,6 +1,8 @@
 // Owns the choke point's relation edge writes: linking, re-linking (metadata replacement) and
 // unlinking two items, the endpoint checks those writes run, and the transaction-scoped
 // `*RelationWithClient` functions that internal callers and the approved-operation executor use.
+// Successful writes through these functions, including REST, agent and internal callers, run
+// changed-edge hooks in the same transaction after rollup work is enqueued.
 // A domain's own edge-metadata rule (e.g. the Transcripts speaker-edge rule) runs through
 // `runRelationEdgeWriteHooks` (./hooks.ts), never a direct import of the domain — relation
 // property and relation definition management does not belong here, and neither does any other
@@ -31,7 +33,7 @@ import {
   type RelationEdgeContext,
   type SystemRelationWriteContext,
 } from "./relationEdgeContext.js";
-import { runRelationEdgeDeleteHooks, runRelationEdgeWriteHooks } from "./hooks.js";
+import { runRelationEdgeChangedHooks, runRelationEdgeDeleteHooks, runRelationEdgeWriteHooks } from "./hooks.js";
 import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
 
 import { breakValueLinksForRelationEdge, VALUE_LINKS_OWNER_PROCESS } from "./valueLinkWrites.js";
@@ -353,6 +355,16 @@ export async function createRelationWithClient(
       });
     }
     await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
+    await runRelationEdgeChangedHooks({
+      client,
+      op: "create",
+      relationDefinitionId: edge.relationDefinitionId,
+      propertyId: input.relationPropertyId,
+      itemA: edge.itemA,
+      itemB: edge.itemB,
+      metadata: edge.metadata,
+      writer,
+    });
     await announceRelation(client, edgeContext, input, "put", input.actingUserId ?? actingUserId);
     return edge;
   });
@@ -406,6 +418,16 @@ export async function updateRelationWithClient(
       });
     }
     await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
+    await runRelationEdgeChangedHooks({
+      client,
+      op: "update",
+      relationDefinitionId: edge.relationDefinitionId,
+      propertyId: input.relationPropertyId,
+      itemA: edge.itemA,
+      itemB: edge.itemB,
+      metadata: edge.metadata,
+      writer,
+    });
     await announceRelation(client, edgeContext, input, "metadata", input.actingUserId ?? actingUserId);
     return edge;
   });
@@ -527,6 +549,17 @@ export async function deleteRelationWithClient(
       await announceRelation(client, edgeContext, input, "delete", input.actingUserId ?? actingUserId);
     }
     await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
+    if (edge)
+      await runRelationEdgeChangedHooks({
+        client,
+        op: "delete",
+        relationDefinitionId: edge.relationDefinitionId,
+        propertyId: input.relationPropertyId,
+        itemA: edge.itemA,
+        itemB: edge.itemB,
+        metadata: edge.metadata,
+        writer,
+      });
     return edge;
   });
 }

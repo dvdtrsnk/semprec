@@ -73,6 +73,19 @@ export interface RelationEdgeDeleteHookContext {
 
 export type RelationEdgeDeleteHook = (context: RelationEdgeDeleteHookContext) => Promise<void>;
 
+export interface RelationEdgeChangedHookContext {
+  client: PoolClient;
+  op: "create" | "update" | "delete";
+  relationDefinitionId: string;
+  propertyId: string;
+  itemA: string;
+  itemB: string;
+  metadata: Record<string, unknown>;
+  writer: WriterIdentity;
+}
+
+export type RelationEdgeChangedHook = (context: RelationEdgeChangedHookContext) => Promise<void>;
+
 /**
  * Context of a pre-write transform: the properties a create or update is about to store. A transform runs
  * before the row is written, so it sees the locked current row in `stored` on update and `null` on create.
@@ -103,6 +116,8 @@ const itemCreateHooks = new Set<ItemCreateHook>();
 const itemUpdateHooks = new Set<ItemUpdateHook>();
 const relationEdgeWriteHooks = new Set<RelationEdgeWriteHook>();
 const relationEdgeDeleteHooks = new Set<RelationEdgeDeleteHook>();
+const relationEdgeChangedHooks = new Set<RelationEdgeChangedHook>();
+const activeChangedEdges = new WeakMap<PoolClient, Set<string>>();
 /** Keyed by owning module id; each module's transforms keep their registration order. */
 const itemPreWriteTransforms = new Map<string, ItemPreWriteTransform[]>();
 const itemPreWritePreparations = new Map<string, Map<ItemPreWriteTransform, ItemPreWritePreparation>>();
@@ -122,6 +137,10 @@ export function registerRelationEdgeWriteHook(hook: RelationEdgeWriteHook): void
 
 export function registerRelationEdgeDeleteHook(hook: RelationEdgeDeleteHook): void {
   relationEdgeDeleteHooks.add(hook);
+}
+
+export function registerRelationEdgeChangedHook(hook: RelationEdgeChangedHook): void {
+  relationEdgeChangedHooks.add(hook);
 }
 
 /**
@@ -193,6 +212,20 @@ export async function runRelationEdgeDeleteHooks(context: RelationEdgeDeleteHook
   }
 }
 
+export async function runRelationEdgeChangedHooks(context: RelationEdgeChangedHookContext): Promise<void> {
+  const key = JSON.stringify([context.relationDefinitionId, context.itemA, context.itemB]);
+  const active = activeChangedEdges.get(context.client) ?? new Set<string>();
+  if (active.has(key)) throw new Error(`Recursive relation edge change: ${key}`);
+  activeChangedEdges.set(context.client, active);
+  active.add(key);
+  try {
+    for (const hook of relationEdgeChangedHooks) await hook(context);
+  } finally {
+    active.delete(key);
+    if (active.size === 0) activeChangedEdges.delete(context.client);
+  }
+}
+
 /**
  * Runs a module's pre-write transforms sequentially, in registration order, each receiving the previous
  * output, and returns the final patch. Returns `context.patch` unchanged when the module has none. The first
@@ -218,6 +251,7 @@ export function clearHooksForTests(): void {
   itemUpdateHooks.clear();
   relationEdgeWriteHooks.clear();
   relationEdgeDeleteHooks.clear();
+  relationEdgeChangedHooks.clear();
   itemReadProjections.clear();
   itemPreWriteTransforms.clear();
   itemPreWritePreparations.clear();

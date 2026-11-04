@@ -5,10 +5,13 @@ import {
   hasItemPreWriteTransform,
   registerItemPreWriteTransform,
   registerItemUpdateHook,
+  registerRelationEdgeChangedHook,
+  runRelationEdgeChangedHooks,
   runItemPreWriteTransforms,
   runItemUpdateHooks,
   type ItemPreWriteTransformContext,
   type ItemUpdateHookContext,
+  type RelationEdgeChangedHookContext,
 } from "../hooks.js";
 import { ValidationError } from "../../errors.js";
 import { SYSTEM_WRITER } from "../writerKind.js";
@@ -43,6 +46,50 @@ const CONTEXT: ItemUpdateHookContext = {
   propertiesPatch: {},
   writer: SYSTEM_WRITER,
 };
+
+describe("changed relation hook registry", () => {
+  beforeEach(() => clearHooksForTests());
+  const context: RelationEdgeChangedHookContext = {
+    client: offlineClient,
+    op: "create",
+    relationDefinitionId: "definition",
+    propertyId: "property",
+    itemA: "a",
+    itemB: "b",
+    metadata: {},
+    writer: SYSTEM_WRITER,
+  };
+  it("deduplicates and runs hooks in registration order", async () => {
+    const calls: number[] = [];
+    const first = async () => {
+      calls.push(1);
+    };
+    registerRelationEdgeChangedHook(first);
+    registerRelationEdgeChangedHook(first);
+    registerRelationEdgeChangedHook(async () => {
+      calls.push(2);
+    });
+    await runRelationEdgeChangedHooks(context);
+    expect(calls).toEqual([1, 2]);
+  });
+  it("propagates errors and releases the recursion guard", async () => {
+    registerRelationEdgeChangedHook(async () => runRelationEdgeChangedHooks(context));
+    await expect(runRelationEdgeChangedHooks(context)).rejects.toThrow("Recursive relation edge change");
+    clearHooksForTests();
+    await expect(runRelationEdgeChangedHooks(context)).resolves.toBeUndefined();
+  });
+  it("stops after the first rejection", async () => {
+    const later = vi.fn();
+    registerRelationEdgeChangedHook(async () => {
+      throw new Error("hook failed");
+    });
+    registerRelationEdgeChangedHook(async () => {
+      later();
+    });
+    await expect(runRelationEdgeChangedHooks(context)).rejects.toThrow("hook failed");
+    expect(later).not.toHaveBeenCalled();
+  });
+});
 
 describe("chokePoint/hooks item-update registry", () => {
   beforeEach(() => {
