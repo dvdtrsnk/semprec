@@ -124,9 +124,25 @@ export default async function setup(): Promise<() => Promise<void>> {
     process.once("SIGINT", onSignal);
     process.once("SIGTERM", onSignal);
 
-    await pg.createDatabase("semprec_test");
+    const bootstrap = pg.getPgClient("postgres", "127.0.0.1");
+    let bootstrapFailure: { error: unknown } | undefined;
+    try {
+      await bootstrap.connect();
+      await bootstrap.query('CREATE DATABASE "semprec_test"');
+    } catch (error) {
+      bootstrapFailure = { error };
+    }
+    try {
+      await bootstrap.end();
+    } catch (error) {
+      if (bootstrapFailure) {
+        throw new AggregateError([bootstrapFailure.error, error], "Test database bootstrap and client cleanup failed");
+      }
+      throw error;
+    }
+    if (bootstrapFailure) throw bootstrapFailure.error;
 
-    const connectionString = `postgresql://postgres:postgres@localhost:${port}/semprec_test`;
+    const connectionString = `postgresql://postgres:postgres@127.0.0.1:${port}/semprec_test`;
     process.env.TEST_DATABASE_URL = connectionString;
     // Existing suites call data-layer functions without a tenant scope, and an unset mode is strict
     // since issue #1067. The isolation suites of #1053, #1054 and #1056 set `strict` for themselves
