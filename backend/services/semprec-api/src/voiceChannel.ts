@@ -86,6 +86,7 @@ export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChan
   const identities = new Map<WebSocket, VoiceIdentity>();
   const users = new Map<string, WebSocket>();
   const pending = new Set<Duplex>();
+  const cleanup = new Set<Promise<void>>();
   const tenantClosures = new Map<string, number>();
   let generation = 0,
     closed = false;
@@ -174,10 +175,16 @@ export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChan
       clearInterval(heartbeat);
       identities.delete(ws);
       if (users.get(identity.userId) === ws) users.delete(identity.userId);
-      if (options.handler)
-        Promise.resolve()
+      if (options.handler) {
+        const work = Promise.resolve()
           .then(() => options.handler?.onClose(identity))
-          .catch(() => logger.warn("Voice handler close failed"));
+          .then(
+            () => {},
+            () => logger.warn("Voice handler close failed"),
+          )
+          .finally(() => cleanup.delete(work));
+        cleanup.add(work);
+      }
     });
     if (!options.handler) {
       fail("unavailable", 1011);
@@ -326,10 +333,25 @@ export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChan
         }, 1000);
         wss.close((err) => {
           if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          if (err) rejectClose(err);
-          else resolve();
+          if (err) {
+            settled = true;
+            clearTimeout(timer);
+            rejectClose(err);
+            return;
+          }
+          Promise.all([...cleanup])
+            .then(() => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              resolve();
+            })
+            .catch((error: unknown) => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              rejectClose(error instanceof Error ? error : new Error("Voice cleanup failed", { cause: error }));
+            });
         });
       });
       return closing;

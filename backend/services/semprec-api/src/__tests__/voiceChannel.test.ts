@@ -295,6 +295,39 @@ describe("voice channel", () => {
     expect(await ended).toBe(1006);
     closeSpy.mockRestore();
   });
+  it("waits for handler cleanup without allowing it to block shutdown indefinitely", async () => {
+    let release: (() => void) | undefined;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await start({ handler: { ...handler, onClose: () => pending } });
+    const user = await identity(),
+      ws = await connect(user.session.token);
+    const ended = closed(ws),
+      first = voice.close();
+    await ended;
+    let finished = false;
+    void first.then(() => {
+      finished = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(finished).toBe(false);
+    release?.();
+    await first;
+    expect(finished).toBe(true);
+  });
+  it("bounds shutdown even when handler cleanup never settles", async () => {
+    await start({ handler: { ...handler, onClose: () => new Promise<void>(() => {}) } });
+    const user = await identity(),
+      ws = await connect(user.session.token);
+    const ended = closed(ws),
+      started = Date.now(),
+      first = voice.close();
+    expect(voice.close()).toBe(first);
+    expect(await ended).toBe(1012);
+    await first;
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
   it("sends a stable error and closes if no handler is configured", async () => {
     await start();
     const user = await identity();
