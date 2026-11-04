@@ -2,6 +2,8 @@
   "collection.custom.searchPlaceholder": "Hledat ve sbírce",
   "database.areas.name": "Oblasti",
   "database.areas.searchPlaceholder": "Hledat v Oblastech",
+  "property.areas.events.name": "Události",
+  "property.events.area.name": "Oblast",
   "property.areas.name.name": "Název",
   "property.areas.active.name": "Aktivní",
   "property.areas.note.name": "Poznámka",

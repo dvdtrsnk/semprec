@@ -294,6 +294,14 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "one_to_many",
     inverse: { key: "area", name: "Hub" },
   });
+  await relate({
+    sourceDatabaseId: areas.id,
+    key: "events",
+    name: "Events",
+    targetDatabaseId: events.id,
+    cardinality: "one_to_many",
+    inverse: { key: "area", name: "Area" },
+  });
   // Areas <-> Companies: an area can contain several companies.
   await relate({
     sourceDatabaseId: areas.id,

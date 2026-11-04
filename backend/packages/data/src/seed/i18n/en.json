@@ -2,6 +2,8 @@
   "collection.custom.searchPlaceholder": "Search collection",
   "database.areas.name": "Areas",
   "database.areas.searchPlaceholder": "Search areas",
+  "property.areas.events.name": "Events",
+  "property.events.area.name": "Area",
   "property.areas.name.name": "Name",
   "property.areas.active.name": "Active",
   "property.areas.note.name": "Note",
