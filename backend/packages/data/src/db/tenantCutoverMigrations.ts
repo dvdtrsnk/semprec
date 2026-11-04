@@ -18,6 +18,7 @@ import { runMailboxAddressesOwnerCutoverMigration } from "../mail/mailboxAddress
 import { runEmailsSenderPeopleCardinalityCutoverMigration } from "../mail/emailsSenderPeopleCardinalityCutoverMigration.js";
 import { runMailDraftsAndSentReadBackfill } from "../mail/mailDraftsAndSentReadBackfill.js";
 import { runMailDatabaseKeysCutoverMigration } from "../mail/mailDatabaseKeysCutoverMigration.js";
+import { runPeoplePhonesCutoverMigration } from "../seed/peoplePhonesCutoverMigration.js";
 
 /**
  * Runs the data-driven post-migration cutovers — the ones that read and write tenant rows — once
@@ -48,5 +49,6 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runLibraryBooksYearIsbnCutoverMigration(pool);
     await runAreasPropertiesCutoverMigration(pool);
     await runProjectsPinnedOrderCutoverMigration(pool);
+    await runPeoplePhonesCutoverMigration(pool);
   });
 }

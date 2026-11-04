@@ -1,4 +1,6 @@
 import { loadModuleCatalogs, type ModuleCatalogs } from "./catalog.js";
+import { z } from "zod";
+import { CAPABILITY_IDS } from "@semprec/shared";
 import {
   moduleManifestSchema,
   type CustomRouteMethod,
@@ -38,6 +40,14 @@ export interface ModuleAgentToolProjection {
   moduleId: string;
   name: string;
   handlerExport: string;
+}
+
+export interface ModuleAgentToolDefinition {
+  moduleId: string;
+  name: string;
+  handler: unknown;
+  argumentSchema: Record<string, unknown>;
+  parseArguments: (value: unknown) => { success: true; data: unknown } | { success: false };
 }
 
 export interface ModuleTaskProjection {
@@ -251,6 +261,10 @@ export class ModuleRegistry {
   private assertExportsExist(path: string, manifest: ModuleManifest, imported: Record<string, unknown>): void {
     for (const tool of manifest.agentTools) {
       this.requireFunctionExport(imported, tool.handlerExport, path, `agent tool "${tool.name}"`);
+      const schema = this.requireExport(imported, tool.argumentSchemaExport, path, `agent tool "${tool.name}"`);
+      if (!(schema instanceof z.ZodType))
+        throw new Error(`Module at "${path}" agent tool "${tool.name}" has invalid argument schema`);
+      z.toJSONSchema(schema);
     }
     for (const task of manifest.taskNames ?? []) {
       this.requireExport(imported, task.payloadSchemaExport, path, `task "${task.name}"`);
@@ -601,9 +615,51 @@ export class ModuleRegistry {
     return [...new Set(active.flatMap((loaded) => loaded.manifest.capabilities))];
   }
 
+  async getModuleCapabilityDeclarations(): Promise<
+    { moduleId: string; capabilities: string[]; databaseKeys: string[] }[]
+  > {
+    const active = await this.getActiveModules();
+    return active.map(({ manifest }) => ({
+      moduleId: manifest.id,
+      capabilities: [...manifest.capabilities],
+      databaseKeys: manifest.databases.map((db) => db.key),
+    }));
+  }
+
+  async getAgentToolDefinitions(grantedCapabilities: ReadonlySet<string>): Promise<ModuleAgentToolDefinition[]> {
+    const active = await this.getActiveModules();
+    return active.flatMap(({ manifest, exports }) =>
+      manifest.agentTools
+        .filter(
+          (tool) =>
+            tool.approval === "none" &&
+            (tool.capability === undefined ||
+              (grantedCapabilities.has(tool.capability) &&
+                (manifest.capabilities.includes(tool.capability) ||
+                  CAPABILITY_IDS.some((id) => id === tool.capability)))),
+        )
+        .map((tool) => {
+          const schema = exports[tool.argumentSchemaExport];
+          const handler = exports[tool.handlerExport];
+          if (!(schema instanceof z.ZodType) || typeof handler !== "function")
+            throw new Error(`Invalid agent tool exports for ${tool.name}`);
+          return {
+            moduleId: manifest.id,
+            name: tool.name,
+            handler,
+            argumentSchema: z.toJSONSchema(schema),
+            parseArguments: (value: unknown) => {
+              const result = schema.safeParse(value);
+              return result.success ? { success: true as const, data: result.data } : { success: false as const };
+            },
+          };
+        }),
+    );
+  }
+
   /**
-   * `grantedCapabilities` is the set of capabilities actually granted in the current context
-   * (a later module-contract issue wires this to real grants). A tool whose `capability` isn't
+   * `grantedCapabilities` is the set of capabilities actually granted in the current context.
+   * A tool whose `capability` isn't
    * in that set is filtered out entirely, never returned in a denied state.
    */
   async getAgentTools(grantedCapabilities: ReadonlySet<string>): Promise<ModuleAgentToolProjection[]> {

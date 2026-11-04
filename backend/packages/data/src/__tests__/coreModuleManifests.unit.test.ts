@@ -34,8 +34,14 @@ describe("core module manifests (module-contract issue #226)", () => {
     expect(await registry.getAgentTools(new Set())).toEqual([
       { moduleId: "schemaCore", name: "heartbeat.list", handlerExport: "createHeartbeatListTool" },
       { moduleId: "schemaCore", name: "heartbeat.history", handlerExport: "createHeartbeatHistoryTool" },
-      { moduleId: "schemaCore", name: "heartbeat.trigger", handlerExport: "createHeartbeatTriggerTool" },
+      { moduleId: "schemaCore", name: "heartbeat.trigger", handlerExport: "createGuardedHeartbeatTriggerTool" },
     ]);
+    const tools = await registry.getAgentToolDefinitions(new Set());
+    expect(tools.map((tool) => tool.name)).toEqual(["heartbeat.list", "heartbeat.history", "heartbeat.trigger"]);
+    const trigger = tools.find((tool) => tool.name === "heartbeat.trigger");
+    if (!trigger) throw new Error("Heartbeat trigger missing");
+    expect(trigger.parseArguments({ heartbeatId: "00000000-0000-4000-8000-000000000000" }).success).toBe(true);
+    expect(trigger.parseArguments({ heartbeatId: "not-a-uuid" }).success).toBe(false);
     expect(await registry.getMigrations()).toEqual([{ moduleId: "schemaCore", migration: "0001_core_schema.sql" }]);
   });
 

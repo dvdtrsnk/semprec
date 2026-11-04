@@ -17,6 +17,8 @@ import {
   listMcpToolGrantsForProject,
   projectAgentGuidanceStore,
   withClient,
+  withTransaction,
+  generatePermissionManifest,
   type AgentRunRow,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
@@ -120,7 +122,54 @@ function isArgumentsObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-type ComposedAgentTool = AgentTool & { toolEventMetadata: ToolEventMetadata };
+function isCallable(value: unknown): value is (...args: unknown[]) => unknown {
+  return typeof value === "function";
+}
+
+type ComposedAgentTool = AgentTool & { toolEventMetadata?: ToolEventMetadata };
+
+async function createModuleTools(
+  pool: Pool,
+  registry: ModuleRegistry,
+  runId: string,
+  projectItemId: string,
+): Promise<ComposedAgentTool[]> {
+  const manifest = await withTransaction(pool, (client) =>
+    generatePermissionManifest(client, projectItemId, { moduleRegistry: registry }),
+  );
+  const definitions = await registry.getAgentToolDefinitions(new Set(manifest.grantedCapabilities));
+  const ruleKinds = new Map(
+    (await registry.getHeartbeatRuleKindDefinitions()).map((definition) => [
+      definition.kind,
+      { schema: definition.schema, nextFireAt: definition.nextFireAt },
+    ]),
+  );
+  return definitions.map((definition) => {
+    if (!isCallable(definition.handler)) throw new Error(`Invalid module tool handler: ${definition.name}`);
+    const handler: unknown = definition.handler(pool, ruleKinds);
+    if (!isCallable(handler)) throw new Error(`Invalid module tool factory: ${definition.name}`);
+    return {
+      name: toModelToolName(definition.name),
+      label: definition.name,
+      description: `Semprec module tool '${definition.name}'.`,
+      parameters: Type.Unsafe(definition.argumentSchema),
+      async execute(_toolCallId, params) {
+        const parsed = definition.parseArguments(params);
+        if (!parsed.success)
+          return { content: [{ type: "text", text: "Invalid tool arguments." }], details: { error: true } };
+        try {
+          const result: unknown = await handler(runId, parsed.data);
+          if (!isArgumentsObject(result) || typeof result.result !== "string" || typeof result.error !== "boolean")
+            throw new Error("Invalid module tool result");
+          return { content: [{ type: "text", text: result.result }], details: { error: result.error } };
+        } catch {
+          logger.warn({ toolName: definition.name }, "Module tool execution failed");
+          return { content: [{ type: "text", text: "Module tool failed." }], details: { error: true } };
+        }
+      },
+    } satisfies ComposedAgentTool;
+  });
+}
 
 async function createGenericOperationTools(
   pool: Pool,
@@ -244,12 +293,15 @@ export async function createAgentSessionFactoryForRun(
   run: AgentRunRow,
 ): Promise<CreateAgentSession> {
   const tools = await createGenericOperationTools(pool, moduleRegistry, run.id);
+  let moduleTools: typeof tools = [];
   // Read once per run: a locale change applies from the next run, a running one keeps its prompt.
   const instruction = languageInstruction(await getTenantUserLocale(pool));
   let systemPrompt = instruction ? `${AGENT_BASE_SYSTEM_PROMPT}\n${instruction}` : AGENT_BASE_SYSTEM_PROMPT;
 
   if (run.projectItemId) {
     tools.push(...(await createMcpTools(pool, run.id, run.projectItemId)));
+    moduleTools = await createModuleTools(pool, moduleRegistry, run.id, run.projectItemId);
+    tools.push(...moduleTools);
     const transactions = createPoolClientTransactionRunner(pool);
     const override = await createProjectAgentGuidanceSystemPromptOverride(
       (projectItemId) =>
@@ -265,11 +317,14 @@ export async function createAgentSessionFactoryForRun(
     gateway.streamFn(model, context, { ...options, headers: { ...options?.headers, [AGENT_RUN_ID_HEADER]: run.id } });
 
   const uniqueTools = withUniqueNames(tools);
-  const toolEventMetadata = new Map(uniqueTools.map((tool) => [tool.name, tool.toolEventMetadata]));
+  const toolEventMetadata = new Map(
+    uniqueTools.flatMap((tool) => (tool.toolEventMetadata ? [[tool.name, tool.toolEventMetadata] as const] : [])),
+  );
   return createPiAgentSessionFactory({
     model: gateway.model,
     streamFn,
     tools: uniqueTools,
+    moduleToolNames: new Set(uniqueTools.filter((tool) => moduleTools.includes(tool)).map((tool) => tool.name)),
     toolEventMetadata,
     systemPrompt,
     isBudgetRefusal: gateway.isBudgetRefusal,

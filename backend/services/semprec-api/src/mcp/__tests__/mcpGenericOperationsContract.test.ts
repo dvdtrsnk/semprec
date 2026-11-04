@@ -428,6 +428,62 @@ describe("generic operation MCP contract (issue #220)", () => {
     await pool?.end();
   });
 
+  it("validates Areas create and patch through MCP", async () => {
+    const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
+    if (!database) throw new Error("Areas not seeded");
+    const item = await chokePoint.createItem({ databaseId: database.id, properties: { name: "Area" } });
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const headers = await authHeader();
+    for (const [field, value] of [
+      ["icon", "rocket123"],
+      ["color", "#123456"],
+    ] as const) {
+      const created = await rpc(baseUrl, headers, "semprec.item.create", {
+        databaseId: database.id,
+        properties: { name: "Invalid", [field]: value },
+      });
+      expect(created.error).toMatchObject({ code: -32602, data: { field } });
+      const updated = await rpc(baseUrl, headers, "semprec.item.patch", {
+        itemId: item.id,
+        properties: { [field]: value },
+        ifVersion: item.updatedAt,
+      });
+      expect(updated.error).toMatchObject({ code: -32602, data: { field } });
+    }
+    const accepted = await rpc(baseUrl, headers, "semprec.item.patch", {
+      itemId: item.id,
+      properties: { icon: "briefcase", color: "#5856D6" },
+      ifVersion: item.updatedAt,
+    });
+    expect(accepted.error).toBeUndefined();
+    expect((await chokePoint.getItem(database.id, item.id))?.properties).toMatchObject({
+      icon: "briefcase",
+      color: "#5856D6",
+    });
+  });
+
+  it("keeps and restores project deadlines through MCP", async () => {
+    const databaseId = await projectsDatabaseId();
+    const item = await chokePoint.createItem({
+      databaseId,
+      properties: { name: "Project", status: "inProgress", date: "2026-11-30" },
+    });
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const headers = await authHeader();
+    const patch = async (properties: Record<string, unknown>) => {
+      const current = await chokePoint.getItem(databaseId, item.id);
+      if (!current) throw new Error("Missing project");
+      return rpc(baseUrl, headers, "semprec.item.patch", { itemId: item.id, properties, ifVersion: current.updatedAt });
+    };
+    expect((await patch({ status: "longTerm" })).error).toBeUndefined();
+    expect((await chokePoint.getItem(databaseId, item.id))?.properties.date).toBeNull();
+    expect((await patch({ date: "2027-01-01" })).error).toMatchObject({ code: -32602, data: { field: "date" } });
+    expect((await patch({ status: "inProgress" })).error).toBeUndefined();
+    expect((await chokePoint.getItem(databaseId, item.id))?.properties.date).toBe("2026-11-30");
+  });
+
   it("attributes session MCP relation deletion to its authenticated user", async () => {
     const fx = await buildFixtures();
     await withTransaction(pool, (client) =>

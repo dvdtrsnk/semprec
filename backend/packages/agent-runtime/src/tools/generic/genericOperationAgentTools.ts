@@ -11,6 +11,7 @@ import {
 import type { ModuleRegistry } from "@semprec/module-registry";
 import {
   GENERIC_OPERATION_NAMES,
+  CAPABILITY_IDS,
   type AuthenticatedActor,
   type CapabilityId,
   type GenericOperationName,
@@ -103,7 +104,9 @@ async function resolveAgentContext(
 
   return {
     actor: { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId },
-    grantedCapabilities: new Set(manifest.grantedCapabilities),
+    grantedCapabilities: new Set(
+      CAPABILITY_IDS.filter((capability) => manifest.grantedCapabilities.includes(capability)),
+    ),
   };
 }
 

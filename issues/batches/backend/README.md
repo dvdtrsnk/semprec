@@ -168,7 +168,7 @@ reported by the ordinary validator; they are not silently repaired by batching.
 | 21 | [[backend-delivery 21/74] Implement data/mail, data/inbox, data/transcription changes](../../items/sp-3f9fb92f-ea6b-468c-8243-1fb711c94aa7.md) | 11 | 59916 |
 | 22 | [[backend-delivery 22/74] Implement application, data/chokePoint, shared/genericOperations changes](../../items/sp-0a8b4be1-3039-4f6d-87b4-e1b673eab967.md) | 7 | 59348 |
 | 23 | [[backend-delivery 23/74] Implement data/inbox, data/chokePoint, application changes](../../items/sp-10dd52f3-6bf6-481a-9f7d-14dece9c5e1e.md) | 9 | 59951 |
-| 24 | [[backend-delivery 24/74] Implement data/chokePoint, data/projects, module-registry changes](../../items/sp-534ed947-bd78-4bb4-aacb-737a414a57d0.md) | 10 | 57689 |
+| 24 | [[backend-delivery 24/74] Implement data/chokePoint, data/projects, module-registry changes](../../items/sp-534ed947-bd78-4bb4-aacb-737a414a57d0.md) | 10 | 59894 |
 | 25 | [[backend-delivery 25/74] Implement data/journal, data/mail, data/docs changes](../../items/sp-c057efef-e07e-4a64-86c8-303526adcf3e.md) | 10 | 55845 |
 | 26 | [[backend-delivery 26/74] Implement data/tasks, application/projectAgentGuidance, data/guidanceDrift changes](../../items/sp-55495258-ecea-4313-a8ff-863910f68f23.md) | 7 | 55920 |
 | 27 | [[backend-delivery 27/74] Implement data/chokePoint, data/derived, data/mail changes](../../items/sp-71e6d1cf-1d2d-44f9-aa27-fa5e9557cc57.md) | 9 | 57050 |

@@ -48,6 +48,136 @@ describe("withUniqueNames (issue #1074)", () => {
   });
 });
 
+it("retains native call events for a module tool without inventing generic or MCP identity", async () => {
+  const pool = new Pool();
+  const faux = fauxProvider();
+  const registry = new ModuleRegistry(() => new Set());
+  vi.spyOn(registry, "getAgentToolDefinitions").mockResolvedValue([
+    {
+      moduleId: "fixture",
+      name: "fixture.inspect",
+      argumentSchema: { type: "object", properties: {} },
+      handler: () => async () => ({ error: false, result: "ok" }),
+      parseArguments: (value) => ({ success: true, data: value }),
+    },
+  ]);
+  const run: AgentRunRow = {
+    id: "run-1",
+    projectItemId: "project-1",
+    parentRunId: null,
+    heartbeatId: null,
+    heartbeatOccurrenceId: null,
+    retryOfRunId: null,
+    attempt: 1,
+    threadId: null,
+    triggeredBy: "user",
+    unit: "invocation",
+    task: "run",
+    status: "running",
+    result: null,
+    errorCode: null,
+    errorDetail: null,
+    startedAt: "2026-10-27T00:00:00Z",
+    finishedAt: null,
+    actorUserId: "user-1",
+  };
+  fixtures.operations = [];
+  fixtures.grants = [];
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall("fixture_inspect", {}, { id: "module-call" })], { stopReason: "toolUse" }),
+    fauxAssistantMessage("done"),
+  ]);
+  try {
+    const factory = await createAgentSessionFactoryForRun(
+      pool,
+      registry,
+      {
+        model: faux.getModel(),
+        streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+        isBudgetRefusal: () => false,
+      },
+      run,
+    );
+    const events = [];
+    for await (const event of factory({ task: run.task }).messages())
+      if (event.kind === "tool_use" || event.kind === "tool_result") events.push(event);
+    expect(events).toHaveLength(2);
+    for (const event of events) {
+      expect(event).toMatchObject({ name: "fixture_inspect", toolCallId: "module-call" });
+      expect(event).not.toHaveProperty("operation");
+      expect(event).not.toHaveProperty("mcp");
+    }
+  } finally {
+    fixtures.operations = ["item.patch"];
+    await pool.end();
+  }
+});
+
+it("keeps the earlier generic tool when a module name collides in a composed session", async () => {
+  const pool = new Pool();
+  const faux = fauxProvider();
+  const registry = new ModuleRegistry(() => new Set());
+  vi.spyOn(registry, "getAgentToolDefinitions").mockResolvedValue([
+    {
+      moduleId: "fixture",
+      name: "item.patch",
+      argumentSchema: { type: "object", properties: {} },
+      handler: () => async () => ({ error: false, result: "module" }),
+      parseArguments: (value) => ({ success: true, data: value }),
+    },
+  ]);
+  const warn = vi.spyOn(logger, "warn");
+  let tools: AgentTool[] = [];
+  vi.spyOn(piSession, "createPiAgentSessionFactory").mockImplementation((options) => {
+    tools = options.tools;
+    return () => ({ async *messages() {} });
+  });
+  const run: AgentRunRow = {
+    id: "run-1",
+    projectItemId: "project-1",
+    parentRunId: null,
+    heartbeatId: null,
+    heartbeatOccurrenceId: null,
+    retryOfRunId: null,
+    attempt: 1,
+    threadId: null,
+    triggeredBy: "user",
+    unit: "invocation",
+    task: "run",
+    status: "running",
+    result: null,
+    errorCode: null,
+    errorDetail: null,
+    startedAt: "2026-10-27T00:00:00Z",
+    finishedAt: null,
+    actorUserId: "user-1",
+  };
+  fixtures.operations = ["item.patch"];
+  fixtures.grants = [];
+  try {
+    await createAgentSessionFactoryForRun(
+      pool,
+      registry,
+      {
+        model: faux.getModel(),
+        streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+        isBudgetRefusal: () => false,
+      },
+      run,
+    );
+    expect(tools.filter((tool) => tool.name === "item_patch")).toHaveLength(1);
+    const tool = tools.find((candidate) => candidate.name === "item_patch");
+    if (!tool) throw new Error("Generic tool missing");
+    expect((await tool.execute("call", {})).content).toEqual([{ type: "text", text: "patched" }]);
+    expect(warn).toHaveBeenCalledWith(
+      { toolName: "item_patch" },
+      "Agent tool name collides with an earlier tool; skipped",
+    );
+  } finally {
+    await pool.end();
+  }
+});
+
 const fixtures = vi.hoisted(() => ({
   grants: [] as McpToolGrantForProject[],
   operations: ["item.patch"] as string[],
@@ -62,6 +192,8 @@ vi.mock("@semprec/data", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@semprec/data")>()),
   createCollectionMetadataResolver: async () => testMetadataResolver,
   withClient: async (_pool: Pool, fn: (client: Client) => Promise<unknown>) => fn(new Client()),
+  withTransaction: async (_pool: Pool, fn: (client: Client) => Promise<unknown>) => fn(new Client()),
+  generatePermissionManifest: async () => ({ grantedCapabilities: [] }),
   listMcpToolGrantsForProject: async () => fixtures.grants,
   getTenantUserLocale: async () => fixtures.locale,
 }));

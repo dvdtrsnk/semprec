@@ -136,6 +136,112 @@ describe("item routes (issue #241)", () => {
     await pool?.end();
   });
 
+  it("validates Areas icon and color through authenticated PATCH", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
+      if (!database) throw new Error("Missing Areas database");
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: { name: "Area" } });
+      return { database, item };
+    });
+    const patch = async (properties: Record<string, unknown>) => {
+      const current = await runInTenant(getTenantZeroId(), () =>
+        chokePoint.getItem(fixture.database.id, fixture.item.id),
+      );
+      if (!current) throw new Error("Missing Areas item");
+      return fetch(`${baseUrl}/api/items/${fixture.item.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties, ifVersion: current.updatedAt }),
+      });
+    };
+    const valid = await patch({ icon: "briefcase", color: "#5856D6" });
+    expect(valid.status).toBe(200);
+    expect(
+      (await runInTenant(getTenantZeroId(), () => chokePoint.getItem(fixture.database.id, fixture.item.id)))
+        ?.properties,
+    ).toMatchObject({ icon: "briefcase", color: "#5856D6" });
+    for (const [field, value] of [
+      ["icon", "rocket123"],
+      ["color", "#123456"],
+    ] as const) {
+      const response = await patch({ [field]: value });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: "validation_failed", details: { field } } });
+    }
+    expect((await patch({ icon: null, color: null })).status).toBe(200);
+    expect(
+      (await runInTenant(getTenantZeroId(), () => chokePoint.getItem(fixture.database.id, fixture.item.id)))
+        ?.properties,
+    ).toMatchObject({ icon: null, color: null });
+  });
+
+  it("writes and reads People phones through item routes", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const database = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) => getDatabaseByModuleId(client, "people")),
+    );
+    if (!database) throw new Error("People missing");
+    const created = await fetch(`${baseUrl}/api/databases/${database.id}/items`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ properties: { name: "Person", phones: "777 123 456" } }),
+    });
+    expect(created.status).toBe(201);
+    const item = z.object({ id: z.string() }).parse(await created.json());
+    const response = await fetch(`${baseUrl}/api/items/${item.id}`, { headers });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ properties: { phones: "777 123 456" } });
+  });
+
+  it("hides a kept project deadline in REST reads and the search index", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
+      if (!database) throw new Error("Projects missing");
+      const item = await chokePoint.createItem({
+        databaseId: database.id,
+        properties: { name: "Distinctiveproject", status: "inProgress", date: "2042-11-30" },
+      });
+      return { database, item };
+    });
+    const patch = async (properties: Record<string, unknown>) => {
+      const item = await runInTenant(getTenantZeroId(), () => chokePoint.getItem(fixture.database.id, fixture.item.id));
+      if (!item) throw new Error("Project missing");
+      return fetch(`${baseUrl}/api/items/${item.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties, ifVersion: item.updatedAt }),
+      });
+    };
+    const changed = await patch({ status: "longTerm" });
+    expect(changed.status).toBe(200);
+    expect(await changed.json()).toMatchObject({ properties: { status: "longTerm", date: null } });
+    const rejected = await patch({ date: "2043-01-01" });
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toMatchObject({ error: { code: "validation_failed", details: { field: "date" } } });
+    const read = await fetch(`${baseUrl}/api/items/${fixture.item.id}`, { headers });
+    expect(read.status).toBe(200);
+    const body: unknown = await read.json();
+    expect(body).toMatchObject({ properties: { date: null } });
+    expect(JSON.stringify(body)).not.toContain("2042-11-30");
+    const index = await runInTenant(getTenantZeroId(), () =>
+      pool.query<{ name_match: boolean; date_match: boolean }>(
+        `SELECT search_vector @@ websearch_to_tsquery('czech', 'Distinctiveproject') AS name_match,
+       search_vector @@ websearch_to_tsquery('czech', '2042-11-30') AS date_match
+       FROM item_search_index WHERE item_id=$1`,
+        [fixture.item.id],
+      ),
+    );
+    expect(index.rows).toEqual([{ name_match: true, date_match: false }]);
+    const restored = await patch({ status: "inProgress" });
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toMatchObject({ properties: { date: "2042-11-30" } });
+  });
+
   it("validates color writes over authenticated REST and preserves legacy colors on unrelated updates", async () => {
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };
     const fixture = await runInTenant(getTenantZeroId(), async () => {

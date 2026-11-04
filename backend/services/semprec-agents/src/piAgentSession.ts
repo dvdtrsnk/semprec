@@ -16,6 +16,7 @@ export interface PiAgentSessionFactoryOptions {
   model: Model<Api>;
   streamFn: StreamFn;
   tools: AgentTool[];
+  moduleToolNames?: ReadonlySet<string>;
   toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>;
   /** The default prompt a session's `systemPromptOverride` receives, and the one used without it. */
   systemPrompt: string;
@@ -253,6 +254,20 @@ export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOption
 
     const piAgent = new Agent({
       streamFn: options.streamFn,
+      afterToolCall: async (context) => {
+        const details: unknown = context.result.details;
+        if (
+          !context.isError &&
+          options.moduleToolNames?.has(context.toolCall.name) &&
+          typeof details === "object" &&
+          details !== null &&
+          "error" in details &&
+          details.error === true
+        ) {
+          return { isError: true };
+        }
+        return undefined;
+      },
       initialState: {
         systemPrompt: sessionOptions.systemPromptOverride?.(options.systemPrompt) ?? options.systemPrompt,
         model: options.model,

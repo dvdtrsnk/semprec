@@ -2,10 +2,20 @@ import { requireSingleRow } from "../db/pool.js";
 import type { ItemRow } from "../types.js";
 import type { ItemPreWritePreparation, ItemPreWriteTransform } from "../chokePoint/hooks.js";
 import { ValidationError } from "../errors.js";
+import { deleteKeptDate, getKeptDate, upsertKeptDate } from "./projectKeptDateStore.js";
 
-/** Applies the terminal-status rule before assigning or clearing the pinned project order. */
+/** Prepares terminal status, deadline and pinned-order changes without allocating or writing. */
 export const prepareProjectWrite: ItemPreWritePreparation = async ({ stored, patch: original }) => {
-  const patch = unpinTerminalProject(stored, original);
+  let patch = unpinTerminalProject(stored, original);
+  const oldStatus = stored?.properties.status;
+  const status = Object.hasOwn(patch, "status") ? patch.status : oldStatus;
+  if (status === "longTerm" && Object.hasOwn(patch, "date") && patch.date != null) {
+    throw new ValidationError("Long-term projects have no deadline", { field: "date" });
+  }
+  const entering = status === "longTerm" && oldStatus !== "longTerm";
+  const restoring = oldStatus === "longTerm" && status !== "longTerm" && !Object.hasOwn(patch, "date");
+  if (entering && !Object.hasOwn(patch, "date")) patch = { ...patch, date: null };
+  const deferredKeys = restoring ? ["date"] : [];
   const pinned = Object.hasOwn(patch, "pinned") ? patch.pinned : stored?.properties.pinned;
   if (pinned !== true) {
     return {
@@ -13,16 +23,33 @@ export const prepareProjectWrite: ItemPreWritePreparation = async ({ stored, pat
         Object.hasOwn(patch, "pinnedOrder") || stored?.properties.pinnedOrder != null
           ? { ...patch, pinnedOrder: null }
           : patch,
-      deferredKeys: [],
+      deferredKeys,
     };
   }
-  if (Object.hasOwn(patch, "pinnedOrder") || stored?.properties.pinnedOrder != null) return { patch, deferredKeys: [] };
-  return { patch, deferredKeys: ["pinnedOrder"] };
+  if (Object.hasOwn(patch, "pinnedOrder") || stored?.properties.pinnedOrder != null) return { patch, deferredKeys };
+  return { patch, deferredKeys: [...deferredKeys, "pinnedOrder"] };
 };
 
 export const projectWriteTransform: ItemPreWriteTransform = async (context) => {
   const prepared = await prepareProjectWrite(context);
-  if (prepared.deferredKeys.length === 0) return prepared.patch;
+  let patch = prepared.patch;
+  const stored = context.stored;
+  const status = Object.hasOwn(context.patch, "status") ? context.patch.status : stored?.properties.status;
+  if (
+    stored &&
+    status === "longTerm" &&
+    stored.properties.status !== "longTerm" &&
+    !Object.hasOwn(context.patch, "date") &&
+    stored.properties.date != null
+  ) {
+    await upsertKeptDate(context.client, stored.id, stored.properties.date);
+  }
+  if (stored && stored.properties.status === "longTerm" && status !== "longTerm") {
+    if (prepared.deferredKeys.includes("date"))
+      patch = { ...patch, date: await getKeptDate(context.client, stored.id) };
+    await deleteKeptDate(context.client, stored.id);
+  }
+  if (!prepared.deferredKeys.includes("pinnedOrder")) return patch;
   await context.client.query(
     "SELECT pg_advisory_xact_lock(hashtextextended('projects-pinned-order:' || $1::text, 0))",
     [context.database.id],
@@ -34,7 +61,7 @@ export const projectWriteTransform: ItemPreWriteTransform = async (context) => {
     [context.database.id],
   );
   const position = requireSingleRow(rows, "next pinned project order").next_order;
-  return { ...prepared.patch, pinnedOrder: position };
+  return { ...patch, pinnedOrder: position };
 };
 
 function unpinTerminalProject(stored: ItemRow | null, patch: Record<string, unknown>): Record<string, unknown> {

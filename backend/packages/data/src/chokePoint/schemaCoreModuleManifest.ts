@@ -1,10 +1,20 @@
 import type { ModuleManifest } from "@semprec/module-registry";
 import { CAPABILITY_IDS } from "@semprec/shared";
+import type { Pool } from "pg";
+import { createHeartbeatTriggerTool } from "../scheduler/heartbeatAgentTools.js";
+import type { HeartbeatRuleKindRegistry } from "../scheduler/rule.js";
+
+export function createGuardedHeartbeatTriggerTool(pool: Pool, ruleKinds: HeartbeatRuleKindRegistry) {
+  return createHeartbeatTriggerTool(pool, ruleKinds, { refuseWhileActive: true });
+}
 
 export {
   createHeartbeatListTool,
   createHeartbeatHistoryTool,
   createHeartbeatTriggerTool,
+  heartbeatListArgsSchema,
+  heartbeatHistoryArgsSchema,
+  heartbeatTriggerArgsSchema,
 } from "../scheduler/heartbeatAgentTools.js";
 export {
   createRegisterPushSubscriptionRouteHandler,
@@ -49,9 +59,27 @@ export const manifest: ModuleManifest = {
   databases: [],
   capabilities: [...CAPABILITY_IDS],
   agentTools: [
-    { name: "heartbeat.list", handlerExport: "createHeartbeatListTool" },
-    { name: "heartbeat.history", handlerExport: "createHeartbeatHistoryTool" },
-    { name: "heartbeat.trigger", handlerExport: "createHeartbeatTriggerTool" },
+    {
+      name: "heartbeat.list",
+      handlerExport: "createHeartbeatListTool",
+      argumentSchemaExport: "heartbeatListArgsSchema",
+      approval: "none",
+      riskClass: "read",
+    },
+    {
+      name: "heartbeat.history",
+      handlerExport: "createHeartbeatHistoryTool",
+      argumentSchemaExport: "heartbeatHistoryArgsSchema",
+      approval: "none",
+      riskClass: "read",
+    },
+    {
+      name: "heartbeat.trigger",
+      handlerExport: "createGuardedHeartbeatTriggerTool",
+      argumentSchemaExport: "heartbeatTriggerArgsSchema",
+      approval: "none",
+      riskClass: "write",
+    },
   ],
   migrations: ["0001_core_schema.sql"],
   customRoutes: [

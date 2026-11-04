@@ -64,6 +64,14 @@ describe("ModuleRegistry.loadModule", () => {
     );
   });
 
+  it("rejects a module tool whose argument schema cannot be projected", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await expect(registry.loadModule(fixturePath("invalidToolSchemaModule.js"))).rejects.toThrow(
+      /invalid argument schema/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
+  });
+
   it("rejects a task descriptor missing queueAffinity", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     await expect(registry.loadModule(fixturePath("missingQueueAffinityTaskModule.js"))).rejects.toThrow(
@@ -303,6 +311,32 @@ describe("ModuleRegistry projections", () => {
       { moduleId: "fixture-good", name: "fixtureGood.doThing", handlerExport: "handleDoThing" },
     ]);
     expect(await registry.getAgentTools(new Set())).toEqual([]);
+    const definitions = await registry.getAgentToolDefinitions(new Set(["fixtureGood.send"]));
+    expect(definitions.map((tool) => tool.name)).toEqual(["fixtureGood.doThing"]);
+    expect(definitions[0]?.parseArguments({}).success).toBe(true);
+    expect(definitions[0]?.argumentSchema).toMatchObject({ type: "object" });
+    expect(await registry.getAgentToolDefinitions(new Set())).toEqual([]);
+  });
+
+  it("requires a safe explicit classification and the permission for conditional approval", () => {
+    const base = { name: "sample", handlerExport: "handler", argumentSchemaExport: "schema" };
+    const valid = (tool: unknown) =>
+      moduleManifestSchema.safeParse({
+        id: "sample",
+        version: "1",
+        name: "Sample",
+        removable: true,
+        systemProject: false,
+        databases: [],
+        capabilities: [],
+        agentTools: [tool],
+      }).success;
+    expect(valid(base)).toBe(false);
+    expect(valid({ ...base, approval: "none", riskClass: "destructive" })).toBe(false);
+    expect(valid({ ...base, approval: "none", riskClass: "unclassified" })).toBe(false);
+    expect(valid({ ...base, approval: "none", riskClass: "write" })).toBe(true);
+    expect(valid({ ...base, approval: "unlessProjectPermitted" })).toBe(false);
+    expect(valid({ ...base, approval: "unlessProjectPermitted", projectPermission: "allowed" })).toBe(true);
   });
 
   it("re-evaluates activation on every call instead of caching it at load time", async () => {

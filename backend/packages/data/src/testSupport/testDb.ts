@@ -30,10 +30,13 @@ export {
   registerItemUpdateHook,
   registerRelationEdgeWriteHook,
   registerRelationEdgeDeleteHook,
+  registerRelationEdgeChangedHook,
+  clearHooksForTests,
   type ItemCreateHookContext,
   type ItemUpdateHookContext,
   type RelationEdgeWriteHookContext,
   type RelationEdgeDeleteHookContext,
+  type RelationEdgeChangedHookContext,
 } from "../chokePoint/hooks.js";
 
 /**
