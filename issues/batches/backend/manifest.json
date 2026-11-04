@@ -2157,8 +2157,8 @@
       "sequence": 22,
       "status": "proposed",
       "title": "[backend-delivery 22/74] Implement application, data/chokePoint, shared/genericOperations changes",
-      "bodyCharacters": 59908,
-      "specSha256": "7f514cefe824c4a45a49a6f52daa1b2d81be3ce44fa96d02736e341b0ac45880",
+      "bodyCharacters": 59348,
+      "specSha256": "77016e6a65aee9705f5b1aff7177672362eea470cd7b5a426711743cd3ae7ea7",
       "members": [
         {
           "id": "gh-1469",
@@ -2219,7 +2219,7 @@
         },
         {
           "id": "gh-1621",
-          "specSha256": "852934873be933df80956deba06f6ca87900d1647ad8b78560cd95bb88e6089a",
+          "specSha256": "47e7f8df68ff35c59cef0c0183acfe375acb03c2309fecad1ade6f32630d03c0",
           "parent": "gh-1327",
           "dependencies": [
             "gh-1590"
