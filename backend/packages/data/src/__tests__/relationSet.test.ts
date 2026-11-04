@@ -226,16 +226,19 @@ describe("relation.set", () => {
 
   it("rolls back the deletion when a one-to-one target belongs to another item", async () =>
     runInTenant(tenant, async () => {
-      const databases = await cp.listDatabases();
-      const areas = databases.find((db) => db.ownerModuleId === "areas");
-      const companies = databases.find((db) => db.ownerModuleId === "companies");
-      if (!areas || !companies) throw new Error("Missing seeded databases");
-      const property = (await cp.listProperties(areas.id)).find((entry) => entry.key === "company");
-      if (!property) throw new Error("Missing area company property");
-      const a = await cp.createItem({ databaseId: areas.id, properties: { name: "A" } });
-      const b = await cp.createItem({ databaseId: areas.id, properties: { name: "B" } });
-      const first = await cp.createItem({ databaseId: companies.id, properties: { name: "First" } });
-      const second = await cp.createItem({ databaseId: companies.id, properties: { name: "Second" } });
+      const source = await cp.createDatabase({ name: "Rollback source" });
+      const target = await cp.createDatabase({ name: "Rollback target" });
+      const { property } = await cp.createRelationProperty({
+        sourceDatabaseId: source.id,
+        targetDatabaseId: target.id,
+        key: "target",
+        name: "Target",
+        cardinality: "one_to_one",
+      });
+      const a = await cp.createItem({ databaseId: source.id, properties: {} });
+      const b = await cp.createItem({ databaseId: source.id, properties: {} });
+      const first = await cp.createItem({ databaseId: target.id, properties: {} });
+      const second = await cp.createItem({ databaseId: target.id, properties: {} });
       const firstEdge = await cp.setRelation({
         relationPropertyId: property.id,
         callerItemId: a.id,

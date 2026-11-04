@@ -432,6 +432,8 @@ describe("item search create/update hooks", () => {
           if (descriptor.key === "events" && property.key === "place") continue;
           // An area's icon is a closed key validated by the area write hook, not searchable free text.
           if (descriptor.key === "areas" && property.key === "icon") continue;
+          // Phone numbers are deliberately excluded from People search (asserted below).
+          if (descriptor.key === "people" && property.key === "phones") continue;
           expect(descriptor.searchFields).toContain(property.key);
         }
       }
