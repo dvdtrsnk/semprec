@@ -12,6 +12,9 @@ export const manifest: ModuleManifest = {
     { key: "ownedTwo", name: "Two" },
   ],
   capabilities: ["owned.read"],
+  heartbeatRuleKinds: [
+    { kind: "owned.periodic", schemaExport: "periodicRuleSchema", nextFireAtExport: "nextPeriodic" },
+  ],
   agentTools: [
     {
       name: "owned.inspect",
@@ -40,6 +43,10 @@ export const manifest: ModuleManifest = {
   ],
 };
 export const inspectArgsSchema = z.object({ value: z.string() }).strict();
+export const periodicRuleSchema = z.object({ kind: z.literal("owned.periodic") }).strict();
+export function nextPeriodic(_rule: unknown, _timezone: string, after: Date): Date {
+  return new Date(after.getTime() + 60000);
+}
 export function createInspectTool() {
   return async (_runId: string, args: { value: string }) => {
     if (args.value === "throw") throw new Error("private fixture detail");

@@ -88,6 +88,25 @@ describe("module agent tools under project ownership", () => {
         new URL("../../../../packages/module-registry/src/__tests__/fixtures/readOnlyAgentModule.js", import.meta.url)
           .href,
       );
+      const ruleKinds = new Map(
+        (await registry.getHeartbeatRuleKindDefinitions()).map((definition) => [
+          definition.kind,
+          { schema: definition.schema, nextFireAt: definition.nextFireAt },
+        ]),
+      );
+      const customHeartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId: project.id,
+            name: "Module rule",
+            rule: { kind: "owned.periodic" },
+            actionId: CORE_AGENT_RUN_ACTION_ID,
+            actionConfig: { task: "work" },
+          },
+          ruleKinds,
+        ),
+      );
       const granted = async () =>
         (
           await withTransaction(pool, (client) =>
@@ -154,11 +173,16 @@ describe("module agent tools under project ownership", () => {
         const list = options.tools.find((candidate) => candidate.name === "heartbeat_list");
         const trigger = options.tools.find((candidate) => candidate.name === "heartbeat_trigger");
         if (!list || !trigger) throw new Error("Heartbeat tools missing");
-        expect((await list.execute("list", {})).details).toMatchObject({ error: false });
+        const listed = await list.execute("list", {});
+        expect(listed.details).toMatchObject({ error: false });
+        expect(JSON.stringify(listed.content)).toContain(customHeartbeat.id);
         expect((await trigger.execute("trigger", { heartbeatId: foreignHeartbeat.id })).details).toMatchObject({
           error: true,
         });
         expect((await trigger.execute("trigger", { heartbeatId: heartbeat.id })).details).toMatchObject({
+          error: false,
+        });
+        expect((await trigger.execute("trigger", { heartbeatId: customHeartbeat.id })).details).toMatchObject({
           error: false,
         });
       } finally {

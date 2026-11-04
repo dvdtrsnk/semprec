@@ -264,6 +264,7 @@ export class ModuleRegistry {
       const schema = this.requireExport(imported, tool.argumentSchemaExport, path, `agent tool "${tool.name}"`);
       if (!(schema instanceof z.ZodType))
         throw new Error(`Module at "${path}" agent tool "${tool.name}" has invalid argument schema`);
+      z.toJSONSchema(schema);
     }
     for (const task of manifest.taskNames ?? []) {
       this.requireExport(imported, task.payloadSchemaExport, path, `task "${task.name}"`);
