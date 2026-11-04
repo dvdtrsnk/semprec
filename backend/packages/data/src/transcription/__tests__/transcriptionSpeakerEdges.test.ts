@@ -504,7 +504,25 @@ describe("Transcript speaker mappings (issue #185)", () => {
                   listValueLinksByItemIds(client, [transcriptId]),
                 ),
               ).toEqual(beforeLinks);
-              expect(events).toEqual([]);
+              expect(events).toEqual([
+                {
+                  scope: "relation",
+                  databaseId: transcriptsId,
+                  itemId: transcriptId,
+                  propertyKey: "speakers",
+                  op: "put",
+                  userId: undefined,
+                },
+                {
+                  scope: "relation",
+                  databaseId: peopleId,
+                  itemId: personId,
+                  propertyKey: null,
+                  op: "put",
+                  userId: undefined,
+                },
+              ]);
+              events.length = 0;
               await expectAttempt(
                 { speaker: "SPEAKER_99" },
                 {
