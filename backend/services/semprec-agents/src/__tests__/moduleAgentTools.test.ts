@@ -115,6 +115,28 @@ describe("module agent tools under project ownership", () => {
         ).grantedCapabilities;
       expect(await granted()).not.toContain("owned.read");
       expect(await granted()).not.toContain("empty.read");
+      let deniedOptions: PiAgentSessionFactoryOptions | undefined;
+      const deniedSpy = vi.spyOn(piSession, "createPiAgentSessionFactory").mockImplementation((value) => {
+        deniedOptions = value;
+        return () => ({ async *messages() {} });
+      });
+      try {
+        const faux = fauxProvider();
+        await createAgentSessionFactoryForRun(
+          pool,
+          registry,
+          {
+            model: faux.getModel(),
+            streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+            isBudgetRefusal: () => false,
+          },
+          run,
+        );
+        if (!deniedOptions) throw new Error("Session was not composed");
+        expect(deniedOptions.tools.map((tool) => tool.name)).not.toContain("owned_inspect");
+      } finally {
+        deniedSpy.mockRestore();
+      }
       const inbox = (await cp.listDatabases()).find((database) => database.ownerModuleId === "inbox");
       if (!inbox?.ownerProjectItemId) throw new Error("Owned Inbox missing");
       const inboxProjectId = inbox.ownerProjectItemId;
