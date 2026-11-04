@@ -1,7 +1,12 @@
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { getDatabaseByKey, getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
-import { confirmProposalWithClient, type ConfirmProposalCredentialInput } from "./proposalActions.js";
+import {
+  confirmProposalWithClient,
+  readConfirmationResults,
+  type ConfirmationResult,
+  type ConfirmProposalCredentialInput,
+} from "./proposalActions.js";
 import { listActiveInboxTypes, type InboxTypeSummary } from "./inboxTypesStore.js";
 import { INBOX_ITEM_TYPES_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { CREDENTIAL_TYPES, type CredentialType } from "../credentials/externalCredentialsStore.js";
@@ -29,7 +34,8 @@ interface CustomRouteRequestContext {
   identity?: { user: { id: string } };
 }
 
-type CustomRouteResult = { status: number; item: ItemRow } | { status: number; body: unknown };
+type CustomRouteResult =
+  { status: number; item: ItemRow; results?: ConfirmationResult[] } | { status: number; body: unknown };
 
 function requireParam(params: Record<string, string>, name: string): string {
   const value = params[name];
@@ -84,7 +90,7 @@ export function createConfirmProposalRouteHandler(pool: Pool) {
       const processingProposalsDatabaseId = await resolveDatabaseIdByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
       return confirmProposalWithClient(client, { processingProposalsDatabaseId }, proposalId, credential, actingUserId);
     });
-    return { status: 200, item };
+    return { status: 200, item, results: readConfirmationResults(item.properties) };
   };
 }
 

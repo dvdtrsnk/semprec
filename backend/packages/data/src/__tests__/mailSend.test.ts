@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { simpleParser } from "mailparser";
 import { ImapFlow } from "imapflow";
 import type { Pool, PoolClient } from "pg";
@@ -13,7 +13,10 @@ import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { generatePermissionManifest } from "../manifest/permissionManifest.js";
 import { createEmailDraft } from "../mail/draft.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
+import { runMailboxAddressesOwnerCutoverMigration } from "../mail/mailboxAddressesOwnerCutoverMigration.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
+import { ensureFolderItem } from "../mail/folderDiscovery.js";
+import { reindexItemSearch, searchItems } from "../mail/search.js";
 import {
   getMailMessageMetaByItemId,
   getMailMessageMetaByMailboxAndMessageId,
@@ -1454,6 +1457,25 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
   });
 
   describe("people linking of sent mail (issue #1480)", () => {
+    let ownerPool: Pool;
+
+    beforeEach(async () => {
+      ownerPool = pool;
+      pool = await createRuntimeRolePool(ownerPool, "semprec_data");
+      const role = await pool.query<{ name: string; bypass: boolean; superuser: boolean }>(
+        "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+      chokePoint = createChokePoint(pool);
+    });
+
+    afterEach(async () => {
+      const runtimePool = pool;
+      pool = ownerPool;
+      chokePoint = createChokePoint(pool);
+      await runtimePool.end();
+    });
+
     /** A Person whose `emails` property and `person_email_index` rows both list the given addresses. */
     async function personOwning(name: string, addresses: string[]): Promise<string> {
       const peopleId = await databaseIdFor("people");
@@ -1522,6 +1544,109 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       );
       return rows.map((row) => row.person_id);
     }
+
+    tenantIt("reads and sends from a historically user-owned mailbox after the owner cutover", async () => {
+      // Recreate the pre-cutover schema; the earlier release binary is not run here.
+      await ownerPool.query("UPDATE properties SET owner = 'user' WHERE database_id = $1 AND key = 'addresses'", [
+        mailboxesId,
+      ]);
+      await chokePoint.updateItem({
+        databaseId: mailboxesId,
+        itemId: mailboxId,
+        propertiesPatch: { addresses: "me@example.com" },
+      });
+      const before = await chokePoint.getItem(mailboxesId, mailboxId);
+      expect(before?.properties.addresses).toBe("me@example.com");
+      await runMailboxAddressesOwnerCutoverMigration(pool);
+      const after = await chokePoint.getItem(mailboxesId, mailboxId);
+      expect(after?.properties.addresses).toBe(before?.properties.addresses);
+      const transport = recordingTransport();
+      const draftId = await newDraftWithSubject("Legacy mailbox");
+      await sendDraftEmail(
+        pool,
+        {
+          mailboxItemId: mailboxId,
+          draftItemId: draftId,
+          actor: { type: "user" },
+          from: { address: "me@example.com" },
+          to: [{ address: "bob@example.com" }],
+          subject: "Legacy mailbox",
+          bodyText: "hi",
+        },
+        moduleIds,
+        sendAdapters(transportFor(transport)),
+      );
+      expect(transport.sent).toHaveLength(1);
+      expect(transport.sent[0]!.envelope.from).toBe("me@example.com");
+      expect((await chokePoint.getItem(emailsId, draftId))?.properties.read).toBe(true);
+    });
+
+    tenantIt("actual send preserves read and unscoped unread search returns only an inbox message", async () => {
+      const sentId = await sendMail({ to: ["bob@example.com"] });
+      const inboxMessageId = await withTransaction(pool, async (client) => {
+        const mailboxProperty = await client.query<{ id: string }>(
+          "SELECT id FROM properties WHERE database_id = $1 AND key = 'mailbox'",
+          [foldersId],
+        );
+        const attachments = await client.query<{ id: string }>(
+          "SELECT id FROM properties WHERE database_id = $1 AND key = 'attachments'",
+          [emailsId],
+        );
+        const mailboxPropertyId = mailboxProperty.rows[0]?.id;
+        const attachmentsId = attachments.rows[0]?.id;
+        if (!mailboxPropertyId || !attachmentsId) throw new Error("Missing mail properties");
+        const folder = await ensureFolderItem(client, {
+          foldersDatabaseId: foldersId,
+          mailboxItemId: mailboxId,
+          mailboxRelationPropertyId: mailboxPropertyId,
+          providerId: "INBOX",
+          name: "INBOX",
+          behavior: "folder",
+          specialPurpose: "inbox",
+        });
+        const received = await ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: await databaseIdFor("files"),
+          folderRelationPropertyId,
+          attachmentsRelationPropertyId: attachmentsId,
+          folderItemId: folder,
+          mailboxItemId: mailboxId,
+          messageId: "<unread-positive@example.test>",
+          subject: "Unread positive",
+          envelope: {},
+          bodyText: "hello",
+          attachments: [],
+          storage: {
+            async writeStream() {
+              throw new Error("Unexpected attachment write");
+            },
+            async delete() {
+              throw new Error("Unexpected attachment delete");
+            },
+            readStream() {
+              throw new Error("Unexpected attachment read");
+            },
+          },
+          storageKeyPrefix: "test",
+        });
+        // Drafts are indexed by the normal search indexer; establish the sent item as a positive searchable row.
+        await reindexItemSearch(client, { itemId: sentId, databaseId: emailsId, text: "Sent positive" });
+        return received.itemId;
+      });
+      const { rows } = await pool.query<{ read: boolean | null }>(
+        "SELECT (properties ->> 'read')::boolean AS read FROM items WHERE id = $1",
+        [sentId],
+      );
+      expect(rows).toEqual([{ read: true }]);
+      const unread = await withTransaction(pool, (client) =>
+        searchItems(client, { databaseId: emailsId, query: "is:unread" }),
+      );
+      expect(unread.map((row) => row.itemId)).toEqual([inboxMessageId]);
+      const searchable = await withTransaction(pool, (client) =>
+        searchItems(client, { databaseId: emailsId, query: "Sent positive" }),
+      );
+      expect(searchable.map((row) => row.itemId)).toContain(sentId);
+    });
 
     tenantIt("a sent message to an address a person owns gets a recipientsPeople edge to that person", async () => {
       const bob = await personOwning("Bob", ["bob@example.com"]);

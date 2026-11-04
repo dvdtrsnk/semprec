@@ -14,6 +14,8 @@ import {
   ConflictError,
   NotFoundError,
   createChokePoint,
+  createBlob,
+  withTransaction,
   createUser,
   hashPassword,
   login,
@@ -471,6 +473,112 @@ describe("adapter route (issue #238)", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as ItemRow;
     expect(body).toEqual({ ...SAMPLE_ITEM, properties: { title: "Hello" } });
+  });
+
+  it("adds typed results alongside the unchanged flat item envelope", async () => {
+    const token = await tokenFor("result@example.com");
+    const results = [
+      {
+        ref: "primary",
+        itemId: SAMPLE_ITEM.id,
+        databaseKey: null,
+        label: "Hello",
+        role: "primary" as const,
+        date: null,
+        linkLabels: [],
+        followUp: null,
+        updatedAt: SAMPLE_ITEM.updatedAt,
+        blockIds: [],
+      },
+    ];
+    const resultServer = createServer(
+      asVoid(createAdapterRequestListener(pool, async () => ({ status: 200, item: SAMPLE_ITEM, results }))),
+    );
+    await new Promise<void>((resolve) => resultServer.listen(0, resolve));
+    const failures: unknown[] = [];
+    try {
+      const address = resultServer.address();
+      if (!address || typeof address === "string") throw new Error("Expected bound TCP address");
+      const response = await fetch(`http://127.0.0.1:${address.port}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(response.status).toBe(200);
+      const body: unknown = await response.json();
+      expect(body).toEqual({ ...SAMPLE_ITEM, results });
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await new Promise<void>((resolve, reject) => resultServer.close((error) => (error ? reject(error) : resolve())));
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Adapter test and settlement failed");
+  });
+
+  it("keeps blob metadata identical when typed results are added", async () => {
+    const token = await tokenFor("result-blob@example.com");
+    const item = await runInTenant(getTenantZeroId(), async () => {
+      const chokePoint = createChokePoint(pool);
+      const database = await chokePoint.createDatabase({ name: "Blob result" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "file", name: "File", type: "file" });
+      const blob = await withTransaction(pool, (client) =>
+        createBlob(client, {
+          mimeType: "application/pdf",
+          byteSize: 12,
+          storageKey: `${getTenantZeroId()}/files/12345678-1234-1234-1234-123456789012-report.pdf`,
+        }),
+      );
+      return chokePoint.createItem({ databaseId: database.id, properties: { file: { blobId: blob.id } } });
+    });
+    const results = [
+      {
+        ref: "primary",
+        itemId: item.id,
+        databaseKey: null,
+        label: item.id,
+        role: "primary" as const,
+        date: null,
+        linkLabels: [],
+        followUp: null,
+        updatedAt: item.updatedAt,
+        blockIds: [],
+      },
+    ];
+    const resultServer = createServer(
+      asVoid(
+        createAdapterRequestListener(pool, async ({ req }) =>
+          req.url === "/result" ? { status: 200, item, results } : { status: 200, item },
+        ),
+      ),
+    );
+    await new Promise<void>((resolve) => resultServer.listen(0, resolve));
+    const failures: unknown[] = [];
+    try {
+      const address = resultServer.address();
+      if (!address || typeof address === "string") throw new Error("Expected bound TCP address");
+      const base = `http://127.0.0.1:${address.port}`;
+      const headers = { Authorization: `Bearer ${token}` };
+      const normal: unknown = await (await fetch(base, { headers })).json();
+      const extended: unknown = await (await fetch(`${base}/result`, { headers })).json();
+      expect(normal).toMatchObject({
+        id: item.id,
+        properties: item.properties,
+        blobs: { file: { byteSize: 12, mimeType: "application/pdf" } },
+      });
+      expect(extended).toEqual({ ...(typeof normal === "object" && normal !== null ? normal : {}), results });
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await new Promise<void>((resolve, reject) => resultServer.close((error) => (error ? reject(error) : resolve())));
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Adapter test and settlement failed");
   });
 
   it("rejects an invalid body with validation_failed", async () => {

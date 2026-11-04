@@ -1308,6 +1308,98 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     expect(await readMatch(transcript.id)).toEqual({ eventIds: [eventId], cards: [] });
   });
 
+  async function ownedTranscriptionJobs(fileIds: string[]): Promise<string[]> {
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT j.id::text FROM graphile_worker._private_jobs j
+       JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+       WHERE t.identifier = $1 AND j.payload->'payload'->>'fileItemId' = ANY($2::text[]) ORDER BY j.id`,
+      [CORE_TASK_NAMES.TRANSCRIPTION_JOB, fileIds],
+    );
+    return rows.map((row) => row.id);
+  }
+
+  async function assertTranscriptionsSettled(runtime: Pool, fileIds: string[], jobIds: string[]): Promise<void> {
+    const remaining = await pool.query<{ id: string }>(
+      "SELECT id::text FROM graphile_worker.jobs WHERE id = ANY($1::bigint[])",
+      [jobIds],
+    );
+    expect(remaining.rows).toEqual([]);
+    const rows = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(runtime, (client) =>
+        client.query<{ file_id: string; transcript_status: string; automation_status: string }>(
+          `SELECT f.id AS file_id, t.properties->>'status' AS transcript_status, a.status AS automation_status
+         FROM items f JOIN items t ON t.id = (f.computed->>'create')::uuid
+         JOIN item_automation a ON a.item_id = t.id WHERE f.id = ANY($1::uuid[]) ORDER BY f.id`,
+          [fileIds],
+        ),
+      ),
+    );
+    expect(rows.rows).toHaveLength(fileIds.length);
+    expect(new Set(rows.rows.map((row) => row.file_id))).toEqual(new Set(fileIds));
+    for (const row of rows.rows) expect(row).toMatchObject({ transcript_status: "done", automation_status: "done" });
+  }
+
+  it("the queued worker links two recordings to one Event without a proposal card", async () => {
+    const first = await createSourceFile();
+    const second = await createSourceFile();
+    const eventId = await createEvent(FIXTURE_CREATION_TIME);
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const failures: unknown[] = [];
+    try {
+      const role = await runtime.query<{ name: string; bypass: boolean; superuser: boolean }>(
+        "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+      const task = registerTask(
+        CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+        createTranscriptionTask(runtime, blobStorage, gatewayClient, summaryClient),
+      );
+      await inTenantZero(async () => {
+        await enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: first.file.id });
+        await enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: second.file.id });
+      });
+      const fileIds = [first.file.id, second.file.id];
+      const jobIds = await ownedTranscriptionJobs(fileIds);
+      expect(jobIds).toHaveLength(2);
+      await runOnce({ pgPool: pool, taskList: { [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: task } });
+      await assertTranscriptionsSettled(runtime, fileIds, jobIds);
+      const result = await runInTenant(getTenantZeroId(), () =>
+        withTransaction(runtime, async (client) => {
+          const { rows } = await client.query<{ file_id: string; transcript_id: string; event_id: string }>(
+            `SELECT f.id AS file_id, t.id AS transcript_id,
+            CASE WHEN r.item_a = t.id THEN r.item_b ELSE r.item_a END AS event_id
+           FROM items f JOIN items t ON t.id = (f.computed->>'create')::uuid
+           JOIN item_relations r ON r.item_a = t.id OR r.item_b = t.id
+           JOIN relation_definitions d ON d.id = r.relation_definition_id
+           JOIN properties p ON p.id IN (d.property_id_a, d.property_id_b)
+           JOIN databases db ON db.id = p.database_id AND db.owner_module_id = 'transcripts'
+           WHERE f.id = ANY($1::uuid[]) AND p.key = 'event' ORDER BY f.id`,
+            [[first.file.id, second.file.id]],
+          );
+          const cards = await client.query<{ n: number }>(
+            `SELECT count(*)::int AS n FROM items i JOIN databases d ON d.id = i.database_id
+           WHERE d.owner_module_id = 'processingProposals' AND i.deleted_at IS NULL`,
+          );
+          return { rows, cards: cards.rows };
+        }),
+      );
+      expect(result.rows).toHaveLength(2);
+      expect(new Set(result.rows.map((row) => row.file_id))).toEqual(new Set([first.file.id, second.file.id]));
+      expect(new Set(result.rows.map((row) => row.transcript_id)).size).toBe(2);
+      expect(result.rows.map((row) => row.event_id)).toEqual([eventId, eventId]);
+      expect(result.cards).toEqual([{ n: 0 }]);
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await runtime.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Transcription worker test or cleanup failed");
+  });
+
   it("creates one transcript card when no Event matches, and a rerun converges on it", async () => {
     const { file } = await createSourceFile();
     const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
@@ -1392,6 +1484,65 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     expect(await countSpeakerEdges()).toBe(0);
     const transcript = await readTranscript(file.id);
     expect(transcript.properties.status).toBe("done");
+  });
+
+  it("the queued runtime worker stores aiProposal and version on Event and speaker cards", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const failures: unknown[] = [];
+    try {
+      const role = await runtime.query<{ name: string; bypass: boolean; superuser: boolean }>(
+        "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+      const first = await createSourceFile();
+      const task = registerTask(
+        CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+        createTranscriptionTask(runtime, blobStorage, gatewayClient, summaryClient),
+      );
+      await inTenantZero(() => enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: first.file.id }));
+      const firstJobs = await ownedTranscriptionJobs([first.file.id]);
+      expect(firstJobs).toHaveLength(1);
+      await runOnce({ pgPool: pool, taskList: { [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: task } });
+      await assertTranscriptionsSettled(runtime, [first.file.id], firstJobs);
+      const eventId = await createEvent(FIXTURE_CREATION_TIME);
+      const aliceId = await createParticipant(eventId, "Alice");
+      summaryClient.speakerMappings = [{ speaker: "SPEAKER_01", personId: aliceId }];
+      const second = await createSourceFile();
+      await inTenantZero(() => enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: second.file.id }));
+      const secondJobs = await ownedTranscriptionJobs([second.file.id]);
+      expect(secondJobs).toHaveLength(1);
+      await runOnce({ pgPool: pool, taskList: { [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: task } });
+      await assertTranscriptionsSettled(runtime, [second.file.id], secondJobs);
+      const cards = await runInTenant(getTenantZeroId(), () =>
+        withTransaction(runtime, async (client) => {
+          const { rows } = await client.query<{ properties: unknown }>(
+            `SELECT i.properties FROM items i JOIN databases d ON d.id = i.database_id
+           WHERE d.owner_module_id = 'processingProposals' AND i.deleted_at IS NULL`,
+          );
+          return rows.map((row) =>
+            z.object({ proposal: z.unknown(), aiProposal: z.unknown(), aiVersion: z.number() }).parse(row.properties),
+          );
+        }),
+      );
+      expect(cards).toHaveLength(2);
+      for (const card of cards) {
+        expect(card.aiProposal).toEqual(card.proposal);
+        expect(card.aiVersion).toBe(1);
+      }
+      expect(cards.map((card) => z.object({ entityKind: z.string() }).parse(card.proposal).entityKind).sort()).toEqual([
+        "database",
+        "relation",
+      ]);
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await runtime.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Worker card test or cleanup failed");
   });
 
   it("leaves the row processing when the speaker suggestion fails, then suggests on retry", async () => {

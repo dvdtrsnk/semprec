@@ -5,6 +5,7 @@ import { getTenantZeroId, tenantZeroSessionOptions } from "./tenantFixtures.js";
 // credential plus its sync-state row) without adding either writer to the production entry point.
 export { storeCredential } from "../credentials/externalCredentialsStore.js";
 export { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
+export { runMailboxAddressesOwnerCutoverMigration } from "../mail/mailboxAddressesOwnerCutoverMigration.js";
 export { ensureFolderItem } from "../mail/folderDiscovery.js";
 export { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
 export {

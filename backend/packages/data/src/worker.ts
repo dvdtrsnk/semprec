@@ -1,3 +1,4 @@
+import { handleMailLinkPersonEmailsTask } from "./mail/linkPersonEmailsJob.js";
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
 import { withTransaction } from "./db/pool.js";
@@ -134,6 +135,9 @@ export function createCoreTaskList(
   },
 ): TaskList {
   const handlers: TaskList = {
+    [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]: async (payload) => {
+      await handleMailLinkPersonEmailsTask(pool, payload);
+    },
     [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: async (payload) => {
       await handleItemSearchBackfillTask(pool, payload);
     },

@@ -998,31 +998,24 @@ async function writeComputeFailure(
   if (existing) {
     const locked = await lockUnlockedProposal(client, config, existing);
     if (!locked) return;
+    const history = appendHistoryEntry(locked.properties.history, message);
     await updateItemWithClient(
       client,
       {
         databaseId: config.processingProposalsDatabaseId,
         itemId: locked.id,
         ifVersion: locked.updatedAt,
-        propertiesPatch: {
-          fingerprint: null,
-          status: "computeFailed",
-          history: appendHistoryEntry(locked.properties.history, message),
-        },
+        propertiesPatch: { fingerprint: null, status: "computeFailed", history },
       },
       { allowedSystemKeys: ["fingerprint", "status", "history"] },
     );
   } else {
+    const history = appendHistoryEntry([], message);
     const proposal = await createItemWithClient(
       client,
       {
         databaseId: config.processingProposalsDatabaseId,
-        properties: {
-          kind: "inbox",
-          fingerprint: null,
-          history: appendHistoryEntry([], message),
-          status: "computeFailed",
-        },
+        properties: { kind: "inbox", fingerprint: null, history, status: "computeFailed" },
       },
       { allowedSystemKeys: ["kind", "fingerprint", "history", "status"] },
     );
@@ -1091,7 +1084,14 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
       // queue retries the job.
       if (reason !== "budget_exceeded" && context.isFinalAttempt !== true) throw err;
       logger.warn({ sourceItemId, reason }, "Recording a failed proposal computation on the card");
-      await withTickWriteTransaction(pool, (client) => writeComputeFailure(client, config, snapshot, reason));
+      try {
+        await withTickWriteTransaction(pool, (client) => writeComputeFailure(client, config, snapshot, reason));
+      } catch (writeError) {
+        // Both caught errors are preserved in the aggregate; its cause identifies the failed write.
+        throw new AggregateError([err, writeError], "Proposal computation and failure recording both failed", {
+          cause: writeError,
+        });
+      }
       return;
     }
     if (snapshot.recognition) {

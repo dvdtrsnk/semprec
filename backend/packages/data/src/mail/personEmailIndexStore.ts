@@ -37,6 +37,15 @@ export async function reindexPersonEmails(
   personItemId: string,
   addresses: string[],
 ): Promise<ReindexPersonEmailsResult> {
+  const { conflicts } = await reindexPersonEmailsWithClaims(client, personItemId, addresses);
+  return { conflicts };
+}
+
+export async function reindexPersonEmailsWithClaims(
+  client: Queryable,
+  personItemId: string,
+  addresses: string[],
+): Promise<ReindexPersonEmailsResult & { claimed: string[] }> {
   const normalized = [...new Set(addresses.map(normalizeEmailAddress).filter((a) => a.length > 0))];
 
   const { rows: existing } = await client.query<{ email: string; item_id: string }>(
@@ -51,14 +60,16 @@ export async function reindexPersonEmails(
     normalized,
   ]);
 
+  const claimed: string[] = [];
   if (toClaim.length > 0) {
-    await client.query(
-      `INSERT INTO person_email_index (email, item_id) SELECT unnest($1::text[]), $2 ON CONFLICT DO NOTHING`,
+    const { rows } = await client.query<{ email: string }>(
+      `INSERT INTO person_email_index (email, item_id) SELECT unnest($1::text[]), $2 ON CONFLICT DO NOTHING RETURNING email`,
       [toClaim, personItemId],
     );
+    claimed.push(...rows.map((row) => row.email));
   }
 
-  return { conflicts: [...ownedByOther] };
+  return { conflicts: [...ownedByOther], claimed };
 }
 
 export interface MailContact {

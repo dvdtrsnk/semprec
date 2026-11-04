@@ -1055,6 +1055,13 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(answer.text).not.toContain("foreign-contact@example.com");
   },
   "mailbox removal impact": async () => {
+    const own = await send(b.member, {
+      method: "GET",
+      path: entryPath("mailbox removal impact", b.mailboxItemId),
+    });
+    expect(own.status).toBe(200);
+    const ownBody: unknown = JSON.parse(own.text);
+    expect(ownBody).toEqual({ messages: 0, drafts: 0, threads: 0, attachmentsKept: 0 });
     const answer = await expectForeignLikeRandom(b.member, [a.mailboxItemId], ([id]) => ({
       method: "GET",
       path: entryPath("mailbox removal impact", id!),
@@ -2107,6 +2114,49 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     });
     const parsed: unknown = JSON.parse(changed);
     expect(parsed).toMatchObject({ properties: { [a.propertyKey]: "allowed" } });
+  });
+
+  it("returns flat confirmed results and an unchanged replay through authenticated HTTP", async () => {
+    const proposalId = await runInTenant(a.tenantId, () =>
+      withTransaction(pool, async (client) => {
+        const proposals = await getDatabaseByModuleId(client, "processingProposals");
+        const tasks = await getDatabaseByModuleId(client, "tasks");
+        if (!proposals || !tasks) throw new Error("Missing proposal or task database");
+        const item = await createItemWithClient(
+          client,
+          {
+            databaseId: proposals.id,
+            properties: {
+              status: "proposed",
+              kind: "inbox",
+              proposal: { entityKind: "database", target: tasks.id, properties: { name: "Confirmed task" } },
+            },
+          },
+          { allowedSystemKeys: ["status", "kind", "proposal"] },
+        );
+        return item.id;
+      }),
+    );
+    const path = `/api/proposals/${proposalId}/confirm`;
+    const foreign = await expectForeignLikeRandom(b.member, [proposalId], ([id]) => ({
+      method: "POST",
+      path: `/api/proposals/${id}/confirm`,
+      body: {},
+    }));
+    expect(foreign.status).toBe(404);
+    const first = await send(a.member, { method: "POST", path, body: {} });
+    expect(first.status).toBe(200);
+    const firstBody: unknown = JSON.parse(first.text);
+    expect(firstBody).toMatchObject({
+      id: proposalId,
+      properties: { status: "confirmed" },
+      results: [{ ref: "primary", databaseKey: "tasks", role: "primary", followUp: null, blockIds: [] }],
+    });
+    expect(firstBody).not.toHaveProperty("item");
+    const replay = await send(a.member, { method: "POST", path, body: {} });
+    expect(replay.status).toBe(200);
+    const replayBody: unknown = JSON.parse(replay.text);
+    expect(replayBody).toEqual(firstBody);
   });
 
   it("lists A's own approval request and unread notification for A", async () => {

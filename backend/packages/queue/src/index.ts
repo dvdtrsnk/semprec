@@ -53,6 +53,7 @@ export const CORE_TASK_NAMES = {
   // Issue #1570: threads stored mail that has no thread (sent messages before #1474) and merges copies of one
   // Message-ID that were split across threads.
   MAIL_THREAD_BACKFILL: "mailThreadBackfill",
+  MAIL_LINK_PERSON_EMAILS: "mailLinkPersonEmails",
   HEARTBEAT_SWEEP: "heartbeatSweep",
   // Issue #222: the API-runtime half of `heartbeatFire`'s split for every deterministic
   // heartbeat action (including library processing); the agent-session half is
@@ -135,6 +136,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "api",
   [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: "api",
   [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: "api",
+  [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]: "api",
   [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: "api",
   [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: "api",
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: "api",
@@ -193,6 +195,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "system",
   [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: "system",
   [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: "system",
+  [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]: "tenant",
   [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: "system",
   [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: "tenant",
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: "tenant",
