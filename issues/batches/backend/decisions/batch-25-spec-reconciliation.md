@@ -99,3 +99,7 @@ Gh-1741 follows its non-deleted traversal and existing trash lifecycle. Its conf
 ## Live mail visibility and available body
 
 The actual searchItems uses a LEFT JOIN without a live-item predicate. Gh-1741 therefore narrowly admits its real same-database non-deleted item filter, retaining query/rank/operators. Its exact czechHunspellSearch and mailSync harness permissions replace phantom random index IDs with real Emails items while retaining current behavioral assertions; no blanket search-test rewrite. Ingest currently stores HTML preferentially but indexes text/plain preferentially. Historical rebuild uses the available stored body, converting HTML as specified; it cannot reproduce a divergent discarded text/plain part. No ingest persistence redesign or exact historical multipart parity is claimed.
+
+## Required filename match
+
+Gh-1589 explicitly requires faktury to find Faktura_2026-10.pdf, but PostgreSQL treats that filename as a file lexeme. The existing generic document owner may retain the original Files title/name already admitted by searchFields and append its letters/digits-tokenized copy. This is limited to that Files title, preserving original text and other property projections, body/page_text, vector/query/config semantics and searchFields admission. Prove the actual Hunspell + real Files write/index/query hit, prefix control and unrelated-file negative in already authorized tests; preserve the original failed development run. No new owner, public helper or architectural pattern.
