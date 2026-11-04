@@ -195,7 +195,9 @@ export async function generatePermissionManifest(
       const owned =
         declaration.databaseKeys.length > 0 &&
         declaration.databaseKeys.every((key) => {
-          const row = databaseRows.find((candidate) => candidate.key === key);
+          const row = databaseRows.find(
+            (candidate) => candidate.key === key || (candidate.key === null && candidate.owner_module_id === key),
+          );
           return (
             row !== undefined &&
             visible.has(row.id) &&

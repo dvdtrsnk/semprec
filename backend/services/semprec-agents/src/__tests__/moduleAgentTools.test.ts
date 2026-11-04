@@ -96,7 +96,7 @@ describe("module agent tools under project ownership", () => {
         ).grantedCapabilities;
       expect(await granted()).not.toContain("owned.read");
       expect(await granted()).not.toContain("empty.read");
-      const inbox = (await cp.listDatabases()).find((database) => database.key === "inbox");
+      const inbox = (await cp.listDatabases()).find((database) => database.ownerModuleId === "inbox");
       if (!inbox?.ownerProjectItemId) throw new Error("Owned Inbox missing");
       const inboxProjectId = inbox.ownerProjectItemId;
       const inboxGrant = await withTransaction(pool, (client) =>
