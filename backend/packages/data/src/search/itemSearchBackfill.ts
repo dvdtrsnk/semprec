@@ -47,7 +47,8 @@ export async function handleItemSearchBackfillTask(pool: Pool, payload: unknown)
        ORDER BY i.id LIMIT $4`,
       [databases.map((db) => db.id), options.afterItemId ?? null, options.onlyMissing, CHUNK_SIZE],
     );
-    for (const row of rows) await indexItem(client, row.id, { onlyMissing: options.onlyMissing });
+    for (const row of rows)
+      await indexItem(client, row.id, { onlyMissing: options.onlyMissing, preserveBody: !options.onlyMissing });
     const last = rows.at(-1);
     if (rows.length === CHUNK_SIZE && last) {
       await enqueueItemSearchBackfill(client, { ...options, afterItemId: last.id });

@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { openBlobFromRoots } from "../blobs/openBlobFromRoots.js";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { withTransaction } from "../db/pool.js";
@@ -40,12 +41,21 @@ interface AttachmentRow {
   content_type: string;
 }
 
-async function attachmentText(storage: BlobStorageWriter, attachment: AttachmentRow): Promise<string | null> {
+async function attachmentText(
+  storage: BlobStorageWriter,
+  alternate: BlobStorageWriter,
+  attachment: AttachmentRow,
+): Promise<string | null> {
   if (!isTextExtractableContentType(attachment.content_type)) return null;
   try {
     const chunks: Buffer[] = [];
     let size = 0;
-    for await (const chunk of storage.readStream(attachment.storage_key)) {
+    const stream = await openBlobFromRoots({ primary: storage, alternate, storageKey: attachment.storage_key });
+    if (!stream) {
+      logger.warn("Mail attachment search extraction could not find stored bytes");
+      return null;
+    }
+    for await (const chunk of stream) {
       if (!Buffer.isBuffer(chunk)) throw new Error("Attachment stream returned a non-buffer chunk");
       size += chunk.length;
       if (size > MAX_ATTACHMENT_BYTES) throw new Error("Attachment exceeds extraction limit");
@@ -63,7 +73,11 @@ async function attachmentText(storage: BlobStorageWriter, attachment: Attachment
 }
 
 /** Rebuilds active tenants' live messages in independently committed keyset pages. */
-export async function handleMailSearchTextReindexTask(pool: Pool, storage: BlobStorageWriter): Promise<void> {
+export async function handleMailSearchTextReindexTask(
+  pool: Pool,
+  storage: BlobStorageWriter,
+  alternate: BlobStorageWriter,
+): Promise<void> {
   await forEachActiveTenant(pool, async () => {
     let after: string | null = null;
     for (;;) {
@@ -87,7 +101,7 @@ export async function handleMailSearchTextReindexTask(pool: Pool, storage: BlobS
           );
           const extractedTexts: string[] = [];
           for (const attachment of attachments.rows) {
-            const text = await attachmentText(storage, attachment);
+            const text = await attachmentText(storage, alternate, attachment);
             if (text) extractedTexts.push(text);
           }
           await reindexItemSearch(client, {

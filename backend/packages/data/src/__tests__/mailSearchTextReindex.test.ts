@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -7,8 +7,9 @@ import { ZipFile } from "yazl";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES, runWorker } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob, runOnce, runWorker } from "@semprec/queue";
 import "../domainWriteHooks.js";
+import { ingestUploadedFile } from "../blobs/fileUploadStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
@@ -20,7 +21,13 @@ import { reindexItemSearch, searchItems } from "../mail/search.js";
 import { createApiCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 
 let admin: Pool;
 let pool: Pool;
@@ -113,6 +120,9 @@ describe("mail search text rebuild", () => {
       concurrency: 2,
       noHandleSignals: true,
       taskList: {
+        [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: async () => {
+          events.push("probe");
+        },
         [name]: async (payload, helpers) => {
           const number = events.filter((event) => event.startsWith("start")).length + 1;
           events.push(`start${number}`);
@@ -135,13 +145,185 @@ describe("mail search text rebuild", () => {
         }),
       ]);
       await runAsSystem("test mail successor", () => enqueueMailSearchTextReindex(admin));
+      const queued = await admin.query<{
+        key: string | null;
+        running: boolean;
+        due: boolean;
+        queue_name: string | null;
+        queue_locked: boolean;
+      }>(
+        `SELECT j.key, j.locked_at IS NOT NULL AS running, j.run_at <= now() AS due, q.queue_name,
+                q.locked_at IS NOT NULL AS queue_locked
+           FROM graphile_worker._private_jobs j JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+           LEFT JOIN graphile_worker._private_job_queues q ON q.id = j.job_queue_id
+          WHERE t.identifier = $1 ORDER BY j.id`,
+        [name],
+      );
+      await runAsSystem("test free worker probe", () =>
+        enqueueJob(admin, CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP, {}),
+      );
+      await vi.waitFor(() => expect(events).toContain("probe"), { timeout: 10000 });
+      expect(events).not.toContain("start2");
+      expect(queued.rows).toEqual([
+        expect.objectContaining({
+          key: null,
+          running: true,
+          queue_name: "mail-search-text-reindex",
+          queue_locked: true,
+        }),
+        expect.objectContaining({
+          key: "mail-search-text-reindex",
+          running: false,
+          due: true,
+          queue_name: "mail-search-text-reindex",
+          queue_locked: true,
+        }),
+      ]);
       release();
-      await vi.waitFor(() => expect(events).toEqual(["start1", "end1", "start2", "end2"]), { timeout: 15000 });
+      await vi.waitFor(
+        () => expect(events.filter((event) => event !== "probe")).toEqual(["start1", "end1", "start2", "end2"]),
+        { timeout: 15000 },
+      );
     } finally {
       if (timer) clearTimeout(timer);
       release();
       await runner.stop();
     }
+  });
+
+  it("rebuilds a deduplicated attachment stored in the Files root through the real worker", async () => {
+    const filesRoot = join(directory, "cross-root-files"),
+      mailRoot = join(directory, "cross-root-mail");
+    const filesStorage = new LocalFsBlobStorageWriter(filesRoot),
+      mailStorage = new LocalFsBlobStorageWriter(mailRoot);
+    const fixture = await runInTenant(tenant, async () => {
+      const db = async (key: string) => {
+        const row = await withTransaction(pool, (client) => getDatabaseByModuleId(client, key));
+        if (!row) throw new Error(`Missing ${key}`);
+        return row.id;
+      };
+      const emails = await db("emails"),
+        files = await db("files"),
+        folders = await db("folders");
+      const properties = await createChokePoint(pool).listProperties(emails);
+      const folderProperty = properties.find((p) => p.key === "folder"),
+        attachmentProperty = properties.find((p) => p.key === "attachments");
+      if (!folderProperty || !attachmentProperty) throw new Error("Missing relations");
+      const folder = await withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: folders, properties: { name: "INBOX" } },
+          { allowedSystemKeys: ["name"] },
+        ),
+      );
+      const bytes = pdf("Crossrootneedle");
+      const uploaded = await ingestUploadedFile(pool, {
+        filesDatabaseId: files,
+        filename: "invoice.pdf",
+        contentType: "application/pdf",
+        source: Readable.from(bytes),
+        storageKeyPrefix: "files",
+        maxBytes: 1024 * 1024,
+        storage: filesStorage,
+      });
+      const mail = await withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: emails,
+          filesDatabaseId: files,
+          folderRelationPropertyId: folderProperty.id,
+          attachmentsRelationPropertyId: attachmentProperty.id,
+          folderItemId: folder.id,
+          mailboxItemId: randomUUID(),
+          storage: mailStorage,
+          storageKeyPrefix: "mail",
+          messageId: "<crossroot@example.test>",
+          subject: "Cross root",
+          envelope: {},
+          attachments: [
+            {
+              filename: "invoice.pdf",
+              contentType: "application/pdf",
+              contentId: null,
+              disposition: "attachment",
+              openStream: () => Readable.from(bytes),
+            },
+          ],
+        }),
+      );
+      const attached = await withTransaction(pool, (client) =>
+        client.query<{ blob_id: string }>("SELECT blob_id FROM mail_attachments WHERE message_item_id = $1", [
+          mail.itemId,
+        ]),
+      );
+      expect(attached.rows).toEqual([{ blob_id: uploaded.blob.id }]);
+      expect(await readFile(join(filesRoot, uploaded.blob.storageKey))).toEqual(bytes);
+      await expect(readFile(join(mailRoot, uploaded.blob.storageKey))).rejects.toMatchObject({ code: "ENOENT" });
+      const search = async () =>
+        (
+          await withTransaction(pool, (client) => searchItems(client, { databaseId: emails, query: "Crossrootneedle" }))
+        ).map((row) => row.itemId);
+      expect(await search()).toContain(mail.itemId);
+      return { itemId: mail.itemId, search };
+    });
+    const tasks = createApiCoreTaskList(
+      pool,
+      createActionRegistry(),
+      undefined,
+      undefined,
+      mailStorage,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      filesStorage,
+    );
+    const handler = tasks[CORE_TASK_NAMES.MAIL_SEARCH_TEXT_REINDEX];
+    if (!handler) throw new Error("Missing task");
+    await runAsSystem("test cross-root enqueue", () => enqueueMailSearchTextReindex(admin));
+    await runOnce({ pgPool: admin }, { [CORE_TASK_NAMES.MAIL_SEARCH_TEXT_REINDEX]: handler });
+    expect(await runInTenant(tenant, fixture.search)).toContain(fixture.itemId);
+  });
+
+  it("rebuilds an active tenant while a populated suspended tenant remains unchanged", async () => {
+    const other = await createTestTenant(admin, { status: "suspended" });
+    await runInTenant(other, () => seedSystem(pool));
+    const make = async (id: string, subject: string) =>
+      runInTenant(id, async () => {
+        const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "emails"));
+        if (!database) throw new Error("Missing emails database");
+        const item = await withTransaction(pool, (client) =>
+          createItemWithClient(
+            client,
+            { databaseId: database.id, properties: { name: subject } },
+            { allowedSystemKeys: ["name"] },
+          ),
+        );
+        await withTransaction(pool, (client) =>
+          reindexItemSearch(client, { itemId: item.id, databaseId: database.id, text: "stale fixture" }),
+        );
+        const read = async () =>
+          (
+            await withTransaction(pool, (client) =>
+              client.query<{ vector: string; updated_at: string; xmin: string }>(
+                "SELECT search_vector::text AS vector, updated_at::text, xmin::text AS xmin FROM item_search_index WHERE item_id = $1",
+                [item.id],
+              ),
+            )
+          ).rows;
+        return { itemId: item.id, read, before: await read() };
+      });
+    const active = await make(tenant, "Active rebuild marker");
+    const suspended = await make(other, "Suspended retained marker");
+    await handleMailSearchTextReindexTask(
+      pool,
+      new LocalFsBlobStorageWriter(directory),
+      new LocalFsBlobStorageWriter(directory),
+    );
+    const activeAfter = await runInTenant(tenant, active.read);
+    expect(activeAfter).toHaveLength(1);
+    expect(activeAfter).not.toEqual(active.before);
+    expect(activeAfter[0]?.vector).toContain("active");
+    expect(await runInTenant(other, suspended.read)).toEqual(suspended.before);
   });
 
   it("rebuilds live mail from stored PDF bytes, preserves deleted rows and repeats without changes", async () => {
@@ -224,8 +406,8 @@ describe("mail search text rebuild", () => {
       const index = async () =>
         (
           await withTransaction(pool, (client) =>
-            client.query<{ item_id: string; vector: string; updated_at: string }>(
-              "SELECT item_id, search_vector::text AS vector, updated_at::text FROM item_search_index WHERE item_id = ANY($1::uuid[]) ORDER BY item_id",
+            client.query<{ item_id: string; vector: string; updated_at: string; xmin: string }>(
+              "SELECT item_id, search_vector::text AS vector, updated_at::text, xmin::text AS xmin FROM item_search_index WHERE item_id = ANY($1::uuid[]) ORDER BY item_id",
               [[live.itemId, deleted.itemId, missing.itemId]],
             ),
           )
@@ -239,9 +421,15 @@ describe("mail search text rebuild", () => {
         before: await index(),
       };
     });
-    await handleMailSearchTextReindexTask(pool, storage);
+    await handleMailSearchTextReindexTask(pool, storage, storage);
     await runInTenant(tenant, async () => {
       const after = await fixture.index();
+      const changed = after.find((row) => row.item_id === fixture.live);
+      const stale = fixture.before.find((row) => row.item_id === fixture.live);
+      if (!changed || !stale) throw new Error("Missing live index row");
+      expect(changed.vector).not.toBe(stale.vector);
+      expect(changed.xmin).not.toBe(stale.xmin);
+      expect(new Date(changed.updated_at).getTime()).toBeGreaterThan(new Date(stale.updated_at).getTime());
       expect(after.find((row) => row.item_id === fixture.deleted)).toEqual(
         fixture.before.find((row) => row.item_id === fixture.deleted),
       );
@@ -256,7 +444,7 @@ describe("mail search text rebuild", () => {
       expect(await search("missingrebuild")).toContain(fixture.missing);
       fixture.before = after;
     });
-    await handleMailSearchTextReindexTask(pool, storage);
+    await handleMailSearchTextReindexTask(pool, storage, storage);
     await runInTenant(tenant, async () => {
       expect(await fixture.index()).toEqual(fixture.before);
       await createChokePoint(pool).restoreItem(fixture.emails, fixture.deleted);

@@ -215,7 +215,7 @@ export function createCoreTaskList(
       await handleMailThreadBackfillTask(pool);
     },
     [CORE_TASK_NAMES.MAIL_SEARCH_TEXT_REINDEX]: async () => {
-      await handleMailSearchTextReindexTask(pool, mailBlobStorage);
+      await handleMailSearchTextReindexTask(pool, mailBlobStorage, filesBlobStorage);
     },
     [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: async () => {
       await handleMailSearchReindexSweepTask(pool);

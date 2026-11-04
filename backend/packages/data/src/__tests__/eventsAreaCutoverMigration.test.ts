@@ -145,6 +145,7 @@ describe("Events and Areas cutover", () => {
       await runInTenant(tenant, () => seedSystem(pool, createViewTypeRegistry()));
       await removeSyntheticPair(tenant);
     }
+    // createTestTenant returns a database-generated UUID, the closed value interpolated into this fixture DDL.
     await admin.query(`CREATE FUNCTION batch25_fail_area() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN IF NEW.tenant_id = '${failedTenant}'::uuid AND NEW.key = 'events' THEN RAISE EXCEPTION 'fixture failure'; END IF; RETURN NEW; END $$`);
     await admin.query(

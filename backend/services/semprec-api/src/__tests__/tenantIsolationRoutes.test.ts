@@ -1187,17 +1187,21 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       }));
     }),
   "semp thread detail": async () => {
-    await expectForeignLikeRandom(b.member, [a.sempThreadId], ([id]) => ({
+    const answer = await expectForeignLikeRandom(b.member, [a.sempThreadId], ([id]) => ({
       method: "GET",
       path: `/api/semp/threads/${id}`,
     }));
+    expect(answer.status).toBe(404);
+    expect(readString(answer.text, "error", "code")).toBe("not_found");
     await sendOk(b.member, { method: "GET", path: `/api/semp/threads/${b.sempThreadId}` });
   },
   "semp thread messages": async () => {
-    await expectForeignLikeRandom(b.member, [a.sempThreadId], ([id]) => ({
+    const answer = await expectForeignLikeRandom(b.member, [a.sempThreadId], ([id]) => ({
       method: "GET",
       path: `/api/semp/threads/${id}/messages`,
     }));
+    expect(answer.status).toBe(404);
+    expect(readString(answer.text, "error", "code")).toBe("not_found");
     await sendOk(b.member, { method: "GET", path: `/api/semp/threads/${b.sempThreadId}/messages` });
   },
   "agent run detail": async () => {

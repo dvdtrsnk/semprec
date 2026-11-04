@@ -12,6 +12,7 @@ import {
   createUser,
   generatePermissionManifest,
   manualHeartbeatFireJobKey,
+  resolveModuleAgentToolsForRun,
   seedSystem,
   setHeartbeatEnabled,
   withTransaction,
@@ -202,6 +203,12 @@ describe("module agent tools under project ownership", () => {
         const listed = await list.execute("list", {});
         expect(listed.details).toMatchObject({ error: false });
         expect(JSON.stringify(listed.content)).toContain(customHeartbeat.id);
+        const resolved = await resolveModuleAgentToolsForRun(pool, registry, run.id, project.id);
+        const resolvedList = resolved.find((candidate) => candidate.name === "heartbeat.list");
+        if (!resolvedList) throw new Error("Resolved heartbeat tool missing");
+        const expectedList = await resolvedList.invoke({});
+        expect(expectedList.error).toBe(false);
+        expect(listed.content).toEqual([{ type: "text", text: expectedList.result }]);
         expect((await trigger.execute("trigger", { heartbeatId: foreignHeartbeat.id })).details).toMatchObject({
           error: true,
         });

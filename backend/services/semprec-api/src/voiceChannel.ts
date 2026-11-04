@@ -84,9 +84,18 @@ function bytes(data: RawData): Buffer {
 export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChannel {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 });
   const identities = new Map<WebSocket, VoiceIdentity>();
-  const users = new Map<string, WebSocket>();
+  interface Slot {
+    ws: WebSocket;
+    identity: VoiceIdentity;
+    active: Promise<void> | null;
+    cleanupStarted: boolean;
+    failures: Array<"operation" | "cleanup">;
+    settled: Promise<void>;
+    resolveSettled: () => void;
+  }
+  const users = new Map<string, Slot>();
+  const slots = new Set<Slot>();
   const pending = new Set<Duplex>();
-  const cleanup = new Set<Promise<void>>();
   const tenantClosures = new Map<string, number>();
   let generation = 0,
     closed = false;
@@ -105,7 +114,13 @@ export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChan
   const revalidate = options.revalidate ?? ((id: string) => isSessionActive(pool, id));
   function attach(ws: WebSocket, identity: VoiceIdentity): void {
     identities.set(ws, identity);
-    users.set(identity.userId, ws);
+    let resolveSettled!: () => void;
+    const settled = new Promise<void>((resolve) => {
+      resolveSettled = resolve;
+    });
+    const slot: Slot = { ws, identity, active: null, cleanupStarted: false, failures: [], settled, resolveSettled };
+    users.set(identity.userId, slot);
+    slots.add(slot);
     let started = false,
       busy = false,
       checking = false;
@@ -174,17 +189,22 @@ export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChan
       clearTimeout(duration);
       clearInterval(heartbeat);
       identities.delete(ws);
-      if (users.get(identity.userId) === ws) users.delete(identity.userId);
-      if (options.handler) {
-        const work = Promise.resolve()
-          .then(() => options.handler?.onClose(identity))
-          .then(
-            () => {},
-            () => logger.warn("Voice handler close failed"),
-          )
-          .finally(() => cleanup.delete(work));
-        cleanup.add(work);
-      }
+      if (slot.cleanupStarted) return;
+      slot.cleanupStarted = true;
+      Promise.resolve(slot.active)
+        .then(() => options.handler?.onClose(identity))
+        .then(
+          () => {
+            if (users.get(identity.userId) === slot) users.delete(identity.userId);
+            slots.delete(slot);
+            slot.resolveSettled();
+          },
+          (err: unknown) => {
+            slot.failures.push("cleanup");
+            logger.warn({ errorName: err instanceof Error ? err.name : typeof err }, "Voice handler close failed");
+            slot.resolveSettled();
+          },
+        );
     });
     if (!options.handler) {
       fail("unavailable", 1011);
@@ -192,6 +212,7 @@ export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChan
     }
     const handler = options.handler;
     ws.on("message", (data, binary) => {
+      if (ws.readyState !== WebSocket.OPEN) return;
       if (busy) {
         fail("overloaded", BACKPRESSURE_CLOSE_CODE);
         return;
@@ -242,22 +263,37 @@ export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChan
           operation = () => handler.onControl(identity, frame);
         }
       }
-      busy = true;
-      Promise.resolve()
-        .then(() => (ws.readyState === WebSocket.OPEN ? operation() : undefined))
-        .then(
-          (accepted) => {
-            if (accepted === false) fail("overloaded", BACKPRESSURE_CLOSE_CODE);
-            else if (ending && ws.readyState === WebSocket.OPEN) {
-              sender.sendControl({ type: "end" });
-              ws.close(1000, "end");
-            }
-          },
-          () => fail("unavailable", 1011),
-        )
-        .finally(() => {
-          busy = false;
-        });
+      const completed = (accepted: void | boolean) => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        if (accepted === false) fail("overloaded", BACKPRESSURE_CLOSE_CODE);
+        else if (ending) {
+          sender.sendControl({ type: "end" });
+          ws.close(1000, "end");
+        }
+      };
+      const failed = (err: unknown) => {
+        slot.failures.push("operation");
+        logger.warn({ errorName: err instanceof Error ? err.name : typeof err }, "Voice handler operation failed");
+        if (ws.readyState === WebSocket.OPEN) fail("unavailable", 1011);
+      };
+      try {
+        const result = operation();
+        if (result instanceof Promise) {
+          busy = true;
+          const active = result
+            .then(completed)
+            .catch(failed)
+            .finally(() => {
+              busy = false;
+            });
+          slot.active = active;
+          void active.then(() => {
+            if (slot.active === active) slot.active = null;
+          });
+        } else completed(result);
+      } catch (err) {
+        failed(err);
+      }
     });
   }
   return {
@@ -323,34 +359,37 @@ export function createVoiceChannel(pool: Pool, options: Options = {}): VoiceChan
       for (const socket of pending) socket.destroy();
       pending.clear();
       for (const ws of wss.clients) if (ws.readyState === WebSocket.OPEN) ws.close(1012, "server shutting down");
+      const owned = [...slots];
       closing = new Promise<void>((resolve, rejectClose) => {
-        let settled = false;
+        let finished = false;
+        let serverError: Error | undefined;
+        const errors = (timedOut: boolean): Error[] => {
+          const result: Error[] = [];
+          if (serverError) result.push(serverError);
+          for (const slot of owned)
+            for (const failure of slot.failures) result.push(new Error(`Voice handler ${failure} failed`));
+          if (timedOut) result.push(new Error("Voice shutdown timed out with unsettled work"));
+          return result;
+        };
+        const finish = (timedOut: boolean) => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timer);
+          const failures = errors(timedOut);
+          if (failures.length) rejectClose(new AggregateError(failures, "Voice shutdown did not settle cleanly"));
+          else resolve();
+        };
         const timer = setTimeout(() => {
-          if (settled) return;
-          settled = true;
           for (const ws of wss.clients) ws.terminate();
-          resolve();
+          finish(true);
         }, 1000);
         wss.close((err) => {
-          if (settled) return;
-          if (err) {
-            settled = true;
-            clearTimeout(timer);
-            rejectClose(err);
-            return;
-          }
-          Promise.all([...cleanup])
-            .then(() => {
-              if (settled) return;
-              settled = true;
-              clearTimeout(timer);
-              resolve();
-            })
+          if (err) serverError = err;
+          Promise.all(owned.map((slot) => slot.settled))
+            .then(() => finish(false))
             .catch((error: unknown) => {
-              if (settled) return;
-              settled = true;
-              clearTimeout(timer);
-              rejectClose(error instanceof Error ? error : new Error("Voice cleanup failed", { cause: error }));
+              serverError = error instanceof Error ? error : new Error("Voice settlement failed", { cause: error });
+              finish(false);
             });
         });
       });

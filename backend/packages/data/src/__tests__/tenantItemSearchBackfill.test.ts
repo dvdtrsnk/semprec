@@ -758,6 +758,44 @@ describe("tenant item search backfill task", () => {
     });
   });
 
+  it("retains distinct legacy body and page projections during a full queued rebuild", async () => {
+    const fixtures = await runInTenant(tenant, async () => {
+      const withPage = await task("With page");
+      const withoutPage = await task("Without page");
+      for (const [item, body, page] of [
+        [withPage, "Legacy body needle", "Different page needle"],
+        [withoutPage, "Only body needle", null],
+      ] as const) {
+        const result = await withTransaction(pool, (client) =>
+          client.query("UPDATE item_search_index SET body = $2, page_text = $3 WHERE item_id = $1", [
+            item.id,
+            body,
+            page,
+          ]),
+        );
+        expect(result.rowCount).toBe(1);
+      }
+      return { withPage, withoutPage };
+    });
+    await runAsSystem("test full legacy rebuild", () => runItemSearchBackfillCutover(pool, false));
+    await runQueuedBackfill();
+    await runInTenant(tenant, async () => {
+      for (const [item, body, page] of [
+        [fixtures.withPage, "Legacy body needle", "Different page needle"],
+        [fixtures.withoutPage, "Only body needle", null],
+      ] as const) {
+        const result = await withTransaction(pool, (client) =>
+          client.query<{ body: string | null; page_text: string | null }>(
+            "SELECT body, page_text FROM item_search_index WHERE item_id = $1",
+            [item.id],
+          ),
+        );
+        expect(result.rows).toEqual([{ body, page_text: page }]);
+        expect(await has(item.id, body)).toBe(true);
+      }
+    });
+  });
+
   it("enqueues once per maintained tenant on each deploy and preserves the missing-only contract", async () => {
     const statuses = ["provisioning", "suspended", "deleting"] as const;
     const ids: string[] = [tenant];

@@ -60,12 +60,15 @@ async function relatedTitles(
  * Read in its own statement after the item lock, not joined into the locking query: a join read taken before the
  * lock could miss a page-text write that committed while this call was waiting for the lock.
  */
-async function storedPageText(client: PoolClient, itemId: string): Promise<string | null> {
-  const { rows } = await client.query<{ page_text: string | null }>(
-    `SELECT page_text FROM item_search_index WHERE item_id = $1`,
+async function storedProjection(
+  client: PoolClient,
+  itemId: string,
+): Promise<{ body: string | null; pageText: string | null }> {
+  const { rows } = await client.query<{ body: string | null; page_text: string | null }>(
+    `SELECT body, page_text FROM item_search_index WHERE item_id = $1`,
     [itemId],
   );
-  return rows[0]?.page_text ?? null;
+  return { body: rows[0]?.body ?? null, pageText: rows[0]?.page_text ?? null };
 }
 
 /**
@@ -76,7 +79,7 @@ async function storedPageText(client: PoolClient, itemId: string): Promise<strin
 export async function indexItem(
   client: PoolClient,
   itemId: string,
-  options: { onlyMissing?: boolean; pageText?: string } = {},
+  options: { onlyMissing?: boolean; pageText?: string; preserveBody?: boolean } = {},
 ): Promise<void> {
   const databaseIds = await visibleDatabaseIds(client);
   const { rows } = await client.query<SearchItemDbRow>(
@@ -111,7 +114,11 @@ export async function indexItem(
     ["area"],
     [],
   );
-  const pageText = options.pageText ?? (await storedPageText(client, item.id));
+  const stored =
+    options.pageText === undefined || options.preserveBody
+      ? await storedProjection(client, item.id)
+      : { body: null, pageText: null };
+  const pageText = options.pageText ?? stored.pageText;
   const itemInput = { properties: jsonObject.parse(item.properties), computed: jsonObject.parse(item.computed) };
   const document = buildItemSearchDocument({
     item: itemInput,
@@ -123,6 +130,7 @@ export async function indexItem(
     locale,
     catalogs,
   });
+  const searchDocument = options.preserveBody && stored.body ? `${document} ${stored.body}` : document;
   const body = buildItemSearchBody({ item: itemInput, databaseKey: item.owner_module_id, pageText });
   // SEARCH_VECTOR_SQL is a closed SQL constant; all values, including the missing-only guard, are bound.
   // An item write leaves the stored `page_text` column as it is; only the page-text job (`$7`) replaces it.
@@ -130,18 +138,20 @@ export async function indexItem(
     `INSERT INTO item_search_index (item_id, database_id, search_vector, body, page_text, updated_at)
      VALUES ($1, $2, ${SEARCH_VECTOR_SQL}, $4, $5, now())
      ON CONFLICT (item_id) DO UPDATE SET search_vector = EXCLUDED.search_vector,
-       database_id = EXCLUDED.database_id, body = EXCLUDED.body,
+       database_id = EXCLUDED.database_id,
+       body = CASE WHEN $8::boolean THEN item_search_index.body ELSE EXCLUDED.body END,
        page_text = CASE WHEN $7::boolean THEN EXCLUDED.page_text ELSE item_search_index.page_text END,
        updated_at = now()
      WHERE NOT $6::boolean`,
     [
       item.id,
       item.database_id,
-      document,
+      searchDocument,
       body,
       pageText ?? null,
       options.onlyMissing ?? false,
       options.pageText !== undefined,
+      options.preserveBody ?? false,
     ],
   );
   if (!options.onlyMissing) requireAffectedRows(result, "item search index upsert");

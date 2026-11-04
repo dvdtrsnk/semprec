@@ -37,6 +37,7 @@ describe("shared item search query", () => {
       const both = await cp.createItem({ databaseId: database.id, properties: { name: "Faktura koupelna" } });
       const search = async (text: string): Promise<string[]> => {
         const query = buildItemSearchQuery(text, 2);
+        // The builder emits only fixed SQL operators and numbered bind placeholders; text stays in params.
         const { rows } = await withTransaction(pool, (client) =>
           client.query<{ item_id: string }>(
             `SELECT item_id FROM item_search_index WHERE database_id = $1 AND search_vector @@ ${query.sql} ORDER BY item_id`,

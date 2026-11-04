@@ -1,6 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { Socket } from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { WebSocket } from "ws";
@@ -29,6 +30,8 @@ let lastIdentity: VoiceIdentity | undefined;
 let lastSender: VoiceSender | undefined;
 const audio: Buffer[] = [];
 const controls: string[] = [];
+const wireChunks: Buffer[] = [];
+let expectedCloseFailure = false;
 const handler: VoiceSessionHandler = {
   onStart(identity, _frame, sender) {
     lastIdentity = identity;
@@ -48,7 +51,10 @@ async function start(options: Parameters<typeof createVoiceChannel>[1] = {}) {
   server = createServer((_req, res) => {
     res.writeHead(404).end();
   });
-  server.on("upgrade", (req, socket, head) => voice.handleUpgrade(req, socket, head));
+  server.on("upgrade", (req, socket, head) => {
+    socket.on("data", (chunk: Buffer) => wireChunks.push(Buffer.from(chunk)));
+    voice.handleUpgrade(req, socket, head);
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("No address");
@@ -117,10 +123,16 @@ describe("voice channel", () => {
     lastSender = undefined;
     audio.length = 0;
     controls.length = 0;
+    wireChunks.length = 0;
+    expectedCloseFailure = false;
   });
   afterEach(async () => {
     vi.restoreAllMocks();
-    await voice?.close();
+    try {
+      await voice?.close();
+    } catch (error) {
+      if (!expectedCloseFailure) throw error;
+    }
     if (server?.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
   });
   afterAll(async () => {
@@ -290,7 +302,8 @@ describe("voice channel", () => {
     const startTime = Date.now();
     const first = voice.close();
     expect(voice.close()).toBe(first);
-    await first;
+    expectedCloseFailure = true;
+    await expect(first).rejects.toThrow("Voice shutdown did not settle cleanly");
     expect(Date.now() - startTime).toBeLessThan(3000);
     expect(await ended).toBe(1006);
     closeSpy.mockRestore();
@@ -316,8 +329,12 @@ describe("voice channel", () => {
     await first;
     expect(finished).toBe(true);
   });
-  it("bounds shutdown even when handler cleanup never settles", async () => {
-    await start({ handler: { ...handler, onClose: () => new Promise<void>(() => {}) } });
+  it("bounds shutdown even when handler cleanup remains pending", async () => {
+    let release: (() => void) | undefined;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await start({ handler: { ...handler, onClose: () => pending } });
     const user = await identity(),
       ws = await connect(user.session.token);
     const ended = closed(ws),
@@ -325,8 +342,10 @@ describe("voice channel", () => {
       first = voice.close();
     expect(voice.close()).toBe(first);
     expect(await ended).toBe(1012);
-    await first;
+    expectedCloseFailure = true;
+    await expect(first).rejects.toThrow("Voice shutdown did not settle cleanly");
     expect(Date.now() - started).toBeLessThan(3000);
+    release?.();
   });
   it("sends a stable error and closes if no handler is configured", async () => {
     await start();
@@ -389,6 +408,361 @@ describe("voice channel", () => {
     release?.();
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(lastIdentity).toBeUndefined();
+  });
+  it("admits only one user when two real authentications complete together", async () => {
+    let release: (() => void) | undefined;
+    let entered = 0;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await start({
+      handler,
+      authenticate: async (req) => {
+        const i = await authenticateRequest(pool, req);
+        entered++;
+        await gate;
+        return { tenantId: i.tenantId, userId: i.user.id, sessionId: i.session.id };
+      },
+    });
+    const user = await identity();
+    const first = connect(user.session.token),
+      second = connect(user.session.token);
+    await vi.waitFor(() => expect(entered).toBe(2));
+    release?.();
+    const [a, b] = await Promise.all([first, second]);
+    const refusedOne = await Promise.race([
+      closed(a).then((code) => ({ ws: a, code })),
+      closed(b).then((code) => ({ ws: b, code })),
+    ]);
+    expect(refusedOne.code).toBe(1008);
+    expect(JSON.parse(await message(refusedOne.ws))).toEqual({ type: "error", code: "sessionLimit" });
+    const winner = refusedOne.ws === a ? b : a;
+    expect(winner.readyState).toBe(WebSocket.OPEN);
+    const winnerClosed = closed(winner);
+    winner.close();
+    await winnerClosed;
+    const replacement = await connect(user.session.token),
+      done = closed(replacement);
+    replacement.close();
+    await done;
+  });
+  it("accepts two coalesced audio frames with a synchronous handler", async () => {
+    await start({ handler });
+    const user = await identity(),
+      ws = await connect(user.session.token);
+    const ready = message(ws);
+    ws.send(JSON.stringify({ type: "start", language: "en" }));
+    await ready;
+    wireChunks.length = 0;
+    const socket: unknown = Reflect.get(ws, "_socket");
+    if (!(socket instanceof Socket)) throw new Error("Missing client TCP socket");
+    const packet = Buffer.concat([Buffer.from([1]), Buffer.alloc(640)]);
+    socket.cork();
+    ws.send(packet);
+    ws.send(packet);
+    socket.uncork();
+    await vi.waitFor(() => expect(audio).toHaveLength(2));
+    expect(wireChunks.some((chunk) => chunk.length >= 2 * (packet.length + 8))).toBe(true);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    const done = closed(ws);
+    ws.close();
+    await done;
+  });
+  it("closes genuine pending and explicitly declined audio without queueing", async () => {
+    let release: (() => void) | undefined, entered: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const seen = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    await start({
+      handler: {
+        ...handler,
+        onAudio() {
+          entered?.();
+          return gate;
+        },
+      },
+    });
+    const user = await identity(),
+      ws = await connect(user.session.token);
+    const ready = message(ws);
+    ws.send(JSON.stringify({ type: "start", language: "cs" }));
+    await ready;
+    ws.send(Buffer.concat([Buffer.from([1]), Buffer.alloc(640)]));
+    await seen;
+    const code = closed(ws);
+    ws.send(Buffer.concat([Buffer.from([1]), Buffer.alloc(640)]));
+    expect(await code).toBe(1013);
+    release?.();
+  });
+  it.each([
+    ["start", "peer"],
+    ["audio", "tenant"],
+    ["control", "shutdown"],
+  ] as const)("settles an active %s before cleanup after %s", async (kind, ending) => {
+    let release: (() => void) | undefined, entered: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const seen = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const target = await identity(),
+      other = await identity();
+    let targetSender: VoiceSender | undefined,
+      cleanupCount = 0;
+    const hold = () => {
+      entered?.();
+      return gate;
+    };
+    await start({
+      handler: {
+        onStart(identity, _frame, sender) {
+          if (identity.userId !== target.user.id) {
+            sender.sendControl({ type: "ready" });
+            return;
+          }
+          targetSender = sender;
+          if (kind === "start") return hold();
+          sender.sendControl({ type: "ready" });
+        },
+        onAudio(identity) {
+          if (identity.userId === target.user.id && kind === "audio") return hold();
+        },
+        onControl(identity) {
+          if (identity.userId === target.user.id && kind === "control") return hold();
+        },
+        onClose(identity) {
+          if (identity.userId === target.user.id) cleanupCount++;
+        },
+      },
+    });
+    const ws = await connect(target.session.token);
+    const ready = kind === "start" ? null : message(ws);
+    ws.send(JSON.stringify({ type: "start", language: "en" }));
+    if (ready) await ready;
+    if (kind === "audio") ws.send(Buffer.concat([Buffer.from([1]), Buffer.alloc(640)]));
+    if (kind === "control") ws.send(JSON.stringify({ type: "stop" }));
+    await seen;
+    const otherWs = await connect(other.session.token),
+      otherClosed = closed(otherWs);
+    otherWs.close();
+    await otherClosed;
+    const closedTarget = closed(ws);
+    let shutdown: Promise<void> | undefined;
+    if (ending === "peer") ws.close();
+    else if (ending === "tenant") voice.closeTenant(target.tenantId);
+    else shutdown = voice.close();
+    await closedTarget;
+    expect(cleanupCount).toBe(0);
+    if (!targetSender) throw new Error("Missing sender");
+    expect(targetSender.sendControl({ type: "ready" })).toBe(false);
+    if (ending !== "shutdown") {
+      const duplicate = await connect(target.session.token),
+        denied = message(duplicate),
+        deniedCode = closed(duplicate);
+      expect(JSON.parse(await denied)).toEqual({ type: "error", code: "sessionLimit" });
+      expect(await deniedCode).toBe(1008);
+    }
+    release?.();
+    await vi.waitFor(() => expect(cleanupCount).toBe(1));
+    if (shutdown) await shutdown;
+    else {
+      const replacement = await connect(target.session.token),
+        done = closed(replacement);
+      replacement.close();
+      await done;
+    }
+  });
+  it("keeps admission until delayed cleanup settles after peer close", async () => {
+    const user = await identity();
+    let release: (() => void) | undefined,
+      cleanupStarted = 0;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await start({
+      handler: {
+        ...handler,
+        onClose() {
+          cleanupStarted++;
+          return gate;
+        },
+      },
+    });
+    const ws = await connect(user.session.token),
+      done = closed(ws);
+    ws.close();
+    await done;
+    await vi.waitFor(() => expect(cleanupStarted).toBe(1));
+    const duplicate = await connect(user.session.token),
+      denied = message(duplicate),
+      deniedCode = closed(duplicate);
+    expect(JSON.parse(await denied)).toEqual({ type: "error", code: "sessionLimit" });
+    expect(await deniedCode).toBe(1008);
+    release?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const replacement = await connect(user.session.token),
+      replacementClosed = closed(replacement);
+    replacement.close();
+    await replacementClosed;
+  });
+  it("reports a hung operation without concurrent cleanup and cleans up after late completion", async () => {
+    const user = await identity();
+    let release: (() => void) | undefined,
+      entered: (() => void) | undefined,
+      closes = 0;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const seen = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    await start({
+      handler: {
+        ...handler,
+        onStart(_identity, _frame, sender) {
+          lastSender = sender;
+          entered?.();
+          return gate;
+        },
+        onClose() {
+          closes++;
+        },
+      },
+    });
+    const ws = await connect(user.session.token);
+    ws.send(JSON.stringify({ type: "start", language: "en" }));
+    await seen;
+    const closedSocket = closed(ws),
+      first = voice.close();
+    expectedCloseFailure = true;
+    expect(await closedSocket).toBe(1012);
+    await expect(first).rejects.toThrow("Voice shutdown did not settle cleanly");
+    expect(closes).toBe(0);
+    if (!lastSender) throw new Error("Missing sender");
+    expect(lastSender.sendControl({ type: "ready" })).toBe(false);
+    release?.();
+    await vi.waitFor(() => expect(closes).toBe(1));
+  });
+  it("reports operation and cleanup failures together", async () => {
+    const user = await identity();
+    let rejectOperation: ((error: Error) => void) | undefined, entered: (() => void) | undefined;
+    const gate = new Promise<void>((_resolve, reject) => {
+      rejectOperation = reject;
+    });
+    const seen = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let closes = 0;
+    await start({
+      handler: {
+        ...handler,
+        onStart() {
+          entered?.();
+          return gate;
+        },
+        onClose() {
+          closes++;
+          throw new Error("private cleanup");
+        },
+      },
+    });
+    const ws = await connect(user.session.token);
+    ws.send(JSON.stringify({ type: "start", language: "en" }));
+    await seen;
+    const done = closed(ws),
+      first = voice.close();
+    expectedCloseFailure = true;
+    await done;
+    rejectOperation?.(new Error("private operation"));
+    const error: unknown = await first.catch((value: unknown) => value);
+    if (!(error instanceof AggregateError)) throw new Error("Expected aggregate error");
+    expect(error.errors.map((value: unknown) => (value instanceof Error ? value.message : "invalid"))).toEqual([
+      "Voice handler operation failed",
+      "Voice handler cleanup failed",
+    ]);
+    expect(closes).toBe(1);
+  });
+  it("closes when a handler declines audio", async () => {
+    await start({ handler: { ...handler, onAudio: () => false } });
+    const user = await identity(),
+      ws = await connect(user.session.token);
+    const ready = message(ws);
+    ws.send(JSON.stringify({ type: "start", language: "en" }));
+    await ready;
+    const done = closed(ws);
+    ws.send(Buffer.concat([Buffer.from([1]), Buffer.alloc(640)]));
+    expect(await done).toBe(1013);
+  });
+  it("retains admission after rejected cleanup and reports shutdown failure", async () => {
+    const user = await identity(),
+      other = await identity();
+    let closes = 0;
+    await start({
+      handler: {
+        ...handler,
+        onClose(identity) {
+          if (identity.userId === user.user.id) {
+            closes++;
+            throw new Error("private cleanup detail");
+          }
+        },
+      },
+    });
+    const ws = await connect(user.session.token),
+      done = closed(ws);
+    ws.close();
+    await done;
+    await vi.waitFor(() => expect(closes).toBe(1));
+    const duplicate = await connect(user.session.token),
+      denied = message(duplicate),
+      deniedCode = closed(duplicate);
+    expect(JSON.parse(await denied)).toEqual({ type: "error", code: "sessionLimit" });
+    expect(await deniedCode).toBe(1008);
+    const independent = await connect(other.session.token),
+      independentClosed = closed(independent);
+    independent.close();
+    await independentClosed;
+    expectedCloseFailure = true;
+    await expect(voice.close()).rejects.toThrow("Voice shutdown did not settle cleanly");
+    expect(closes).toBe(1);
+  });
+  it("closes a real paused reader at the voice buffer bound", async () => {
+    await start({ handler });
+    const user = await identity(),
+      other = await identity();
+    const ws = await connect(user.session.token),
+      otherWs = await connect(other.session.token);
+    const otherReady = message(otherWs);
+    otherWs.send(JSON.stringify({ type: "start", language: "en" }));
+    expect(JSON.parse((await otherReady).toString())).toMatchObject({ type: "ready" });
+    const ready = message(ws);
+    ws.send(JSON.stringify({ type: "start", language: "en" }));
+    await ready;
+    if (!lastSender) throw new Error("Missing sender");
+    const done = closed(ws);
+    ws.pause();
+    const chunk = Buffer.alloc(4800),
+      deadline = Date.now() + 3000;
+    let sent = 0,
+      refused = false;
+    while (sent < 4000 && Date.now() < deadline) {
+      if (!lastSender.sendAudio(chunk)) {
+        refused = true;
+        break;
+      }
+      sent++;
+    }
+    ws.resume();
+    expect(refused, `pressure not reached after ${sent} frames`).toBe(true);
+    expect(await done).toBe(1013);
+    expect(otherWs.readyState).toBe(WebSocket.OPEN);
+    const otherClosed = closed(otherWs);
+    otherWs.close();
+    await otherClosed;
   });
   it("rejects authentication finishing after deactivation", async () => {
     let release: (() => void) | undefined;
