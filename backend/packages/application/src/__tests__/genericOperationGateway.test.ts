@@ -458,6 +458,21 @@ describe("createGenericOperationGateway (issue #220)", () => {
               };
             },
           });
+          let replayPid = 0;
+          const observedReplayPool = new Proxy(runtime, {
+            get(targetPool, property, receiver) {
+              if (property !== "connect") {
+                const value: unknown = Reflect.get(targetPool, property, receiver);
+                return typeof value === "function" ? value.bind(targetPool) : value;
+              }
+              return async () => {
+                const client = await targetPool.connect();
+                const identity = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+                replayPid = identity.rows[0]!.pid;
+                return client;
+              };
+            },
+          });
           const normalFirst = ordinary(createChokePoint(heldPool));
           try {
             await commitReached;
@@ -478,11 +493,14 @@ describe("createGenericOperationGateway (issue #220)", () => {
             }
             let busy: unknown;
             try {
-              await replayApprovedGenericOperation(runtime, firstRequest);
+              await replayApprovedGenericOperation(observedReplayPool, firstRequest);
               expect.unreachable("Expected busy reservation");
             } catch (error) {
               busy = error;
             }
+            expect(replayPid).toBeGreaterThan(0);
+            expect(replayPid).not.toBe(normalPid);
+            process.stdout.write(`reservation normal-first ${kind}: holder=${normalPid} contender=${replayPid}\n`);
             expect(busy).toBeInstanceOf(ApprovalResourceBusyError);
             expect(busy).toMatchObject({
               status: 409,
@@ -548,15 +566,21 @@ describe("createGenericOperationGateway (issue #220)", () => {
               await foreignWork;
             }
             if (kind === "upsert") {
+              let protectedPid = 0;
               await expect(
-                withTransaction(runtime, (client) =>
-                  createRelationWithClient(
+                withTransaction(runtime, async (client) => {
+                  const identity = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+                  protectedPid = identity.rows[0]!.pid;
+                  return createRelationWithClient(
                     client,
                     { relationPropertyId: pair.property.id, callerItemId: caller.id, targetItemId: second.id },
                     { ownerProcess: VALUE_LINKS_OWNER_PROCESS },
-                  ),
-                ),
+                  );
+                }),
               ).rejects.toBeInstanceOf(ValueLinkBusyError);
+              expect(protectedPid).toBeGreaterThan(0);
+              expect(protectedPid).not.toBe(approvalPid);
+              process.stdout.write(`reservation protected: holder=${approvalPid} contender=${protectedPid}\n`);
               const protectedEdges = await cp.listItemRelations(caller.id, pair.property.id);
               expect(protectedEdges).toHaveLength(1);
             }
@@ -570,6 +594,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
               ]);
               expect(result.rows[0]?.blocked).toContain(approvalPid);
             });
+            process.stdout.write(`reservation approval-first ${kind}: holder=${approvalPid} contender=${normalPid}\n`);
           } finally {
             releaseApproval();
             await replay;
