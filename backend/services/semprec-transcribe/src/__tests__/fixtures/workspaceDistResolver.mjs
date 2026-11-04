@@ -20,6 +20,7 @@ const entries = new Map([
   ["@semprec/credentials", join(backend, "packages/credentials/dist/index.js")],
   ["@semprec/realtime", join(backend, "packages/realtime/dist/index.js")],
   ["@semprec/ai-gateway-client", join(backend, "packages/ai-gateway-client/dist/index.js")],
+  ["@semprec/ai-gateway", join(backend, "packages/ai-gateway/dist/index.js")],
 ]);
 
 export function resolve(specifier, context, nextResolve) {

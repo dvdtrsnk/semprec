@@ -566,6 +566,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "set relation",
+    method: "PUT",
+    path: `/api/items/${EXAMPLE_ID}/relations/exampleKey`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "create/replace relation",
     method: "PUT",
     path: `/api/items/${EXAMPLE_ID}/relations/exampleKey/${EXAMPLE_ID}`,

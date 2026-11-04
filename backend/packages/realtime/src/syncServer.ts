@@ -158,7 +158,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   const invalidationCoalescer = createInvalidationCoalescer();
 
   function deliver(client: WebSocket, frame: OutboundFrame): void {
-    if (frame.type === "invalidate" && frame.scope === "item") {
+    if (frame.type === "invalidate" && (frame.scope === "item" || frame.scope === "relation")) {
       invalidationCoalescer.enqueue(client, frame);
       return;
     }
@@ -395,6 +395,21 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
           if (parsed.scope === "sempThread") {
             // Tenant-wide, best effort, no replay: the client refetches the thread.
             sendToTenant(tenantId, { type: "invalidate", scope: "sempThread", threadId: parsed.threadId });
+            return;
+          }
+          if (parsed.scope === "relation") {
+            sendToTenant(
+              tenantId,
+              {
+                type: "invalidate",
+                scope: "relation",
+                databaseId: parsed.databaseId,
+                itemId: parsed.itemId,
+                propertyKey: parsed.propertyKey,
+                op: parsed.op,
+              },
+              parsed.userId,
+            );
             return;
           }
           const frame: OutboundFrame =

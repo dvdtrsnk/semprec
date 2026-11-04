@@ -28,6 +28,8 @@ export { insertValueLink, type InsertValueLinkInput } from "./chokePoint/valueLi
 export type { ItemValueLinks, ValueLinkEntry, ValueLinkSource } from "./chokePoint/valueLinkReads.js";
 export {
   createItemWithClient,
+  createItemWithRelationsWithClient,
+  type InitialItemRelation,
   updateItemWithClient,
   writeComputedAndAnnounce,
   type CreateItemInput,
@@ -36,6 +38,8 @@ export {
 } from "./chokePoint/itemWrites.js";
 export {
   deleteRelationWithClient,
+  setRelationWithClient,
+  type SetRelationInput,
   type CreateRelationInput,
   type UpdateRelationInput,
   type DeleteRelationInput,

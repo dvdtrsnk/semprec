@@ -1,5 +1,5 @@
 /**
- * The closed 31-operation catalog (issues #252, #1404, #1617). Every other file in `genericOperations` is
+ * The closed 32-operation catalog (issues #252, #1404, #1617). Every other file in `genericOperations` is
  * keyed off this exact list — adding or removing an operation means touching this array and
  * letting the compile-time exhaustiveness checks in `schemas.ts`, `port.ts`, `capabilities.ts`,
  * and `bindings.ts` point at whatever is now missing or extra.
@@ -35,6 +35,7 @@ export const GENERIC_OPERATION_NAMES = [
   "item.restore",
   "database.query",
   "relation.put",
+  "relation.set",
   "relation.delete",
   "relation.list",
   "page.restoreVersion",

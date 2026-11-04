@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import { withTransaction } from "../../db/pool.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
@@ -10,6 +10,7 @@ import { writeComputed } from "../../chokePoint/itemsStore.js";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createTestTenant, createRuntimeRolePool } from "../../testSupport/tenantFixtures.js";
 import { runTranscriptionLanguageCodeCutoverMigration } from "../transcriptionLanguageCodeCutoverMigration.js";
+import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
 
 describe("transcription language cutover", () => {
   let admin: Pool;
@@ -17,6 +18,12 @@ describe("transcription language cutover", () => {
   beforeAll(async () => {
     admin = getTestPool();
     pool = await createRuntimeRolePool(admin, "semprec_data");
+    const role = await runAsSystem("test:verify-runtime-role", () =>
+      pool.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
   });
   beforeEach(async () => {
     await resetDatabase(admin);
@@ -65,27 +72,34 @@ describe("transcription language cutover", () => {
     await seed(second);
     const untouched = await read(second);
     const before = await read(first);
-    await runInTenant(first, () => runTranscriptionLanguageCodeCutoverMigration(pool));
-    const changed = await read(first);
-    expect(changed.map((row) => row.computed)).toEqual(
-      expect.arrayContaining([
-        { language: "cs" },
-        { language: null },
-        { asr: { language: "cs", chunks: { "0": "preserved" } } },
-        { asr: { language: null, chunks: { "0": "preserved" } } },
-      ]),
-    );
-    expect(JSON.stringify(changed)).not.toContain("czech");
-    expect(JSON.stringify(changed)).not.toContain("unmapped");
-    expect(changed).toHaveLength(8);
-    for (const row of before.filter(
-      (row) => !JSON.stringify(row.computed).includes("czech") && !JSON.stringify(row.computed).includes("unmapped"),
-    )) {
-      expect(changed.find((current) => current.id === row.id)).toEqual(row);
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      await runInTenant(first, () => runTranscriptionLanguageCodeCutoverMigration(pool));
+      const changed = await read(first);
+      expect(changed.map((row) => row.computed)).toEqual(
+        expect.arrayContaining([
+          { language: "cs" },
+          { language: null },
+          { asr: { language: "cs", chunks: { "0": "preserved" } } },
+          { asr: { language: null, chunks: { "0": "preserved" } } },
+        ]),
+      );
+      expect(JSON.stringify(changed)).not.toContain("czech");
+      expect(JSON.stringify(changed)).not.toContain("unmapped");
+      expect(changed).toHaveLength(8);
+      for (const row of before.filter(
+        (row) => !JSON.stringify(row.computed).includes("czech") && !JSON.stringify(row.computed).includes("unmapped"),
+      )) {
+        expect(changed.find((current) => current.id === row.id)).toEqual(row);
+      }
+      expect(await read(second)).toEqual(untouched);
+      await runInTenant(first, () => runTranscriptionLanguageCodeCutoverMigration(pool));
+      expect(await read(first)).toEqual(changed);
+      expect(events).toEqual([]);
+    } finally {
+      setInvalidationHook(() => {});
     }
-    expect(await read(second)).toEqual(untouched);
-    await runInTenant(first, () => runTranscriptionLanguageCodeCutoverMigration(pool));
-    expect(await read(first)).toEqual(changed);
   });
   it("skips a tenant without seeded databases", async () => {
     const tenant = await createTestTenant(admin);

@@ -22,6 +22,7 @@ import {
   RelationDeleteInputSchema,
   RelationListInputSchema,
   RelationPutInputSchema,
+  RelationSetInputSchema,
   PageRestoreVersionInputSchema,
   ViewCreateInputSchema,
   ViewDeleteInputSchema,
@@ -63,6 +64,7 @@ const ALL_SCHEMAS = [
   ItemRestoreInputSchema,
   DatabaseQueryInputSchema,
   RelationPutInputSchema,
+  RelationSetInputSchema,
   RelationDeleteInputSchema,
   RelationListInputSchema,
   PageRestoreVersionInputSchema,
@@ -454,4 +456,44 @@ it("names the offending relation include field in schema failures", () => {
     if (parsed.success) throw new Error("Expected invalid relation include");
     expect(validationIssueField(parsed.error.issues)).toBe(field);
   }
+});
+
+describe("RelationSetInputSchema", () => {
+  it("accepts an edge or clear and rejects missing and extra fields", () => {
+    const input = {
+      relationPropertyId: "00000000-0000-4000-8000-000000000001",
+      callerItemId: "00000000-0000-4000-8000-000000000002",
+      targetItemId: "00000000-0000-4000-8000-000000000003",
+    };
+    expect(RelationSetInputSchema.safeParse(input).success).toBe(true);
+    expect(RelationSetInputSchema.safeParse({ ...input, targetItemId: null }).success).toBe(true);
+    expect(
+      RelationSetInputSchema.safeParse({
+        relationPropertyId: input.relationPropertyId,
+        callerItemId: input.callerItemId,
+      }).success,
+    ).toBe(false);
+    expect(RelationSetInputSchema.safeParse({ ...input, metadata: {} }).success).toBe(false);
+  });
+});
+
+describe("item.create initial relations", () => {
+  it("enforces strict entries, unique keys and bounded target lists", () => {
+    const id = "00000000-0000-4000-8000-000000000001";
+    const relation = { propertyKey: "project", targetItemIds: [id] };
+    const base = { databaseId: id, properties: {} };
+    expect(ItemCreateInputSchema.safeParse({ ...base, relations: [relation] }).success).toBe(true);
+    expect(ItemCreateInputSchema.safeParse({ ...base, relations: [relation, relation] }).success).toBe(false);
+    expect(
+      ItemCreateInputSchema.safeParse({
+        ...base,
+        relations: Array.from({ length: 11 }, (_, i) => ({ ...relation, propertyKey: `key${i}` })),
+      }).success,
+    ).toBe(false);
+    expect(
+      ItemCreateInputSchema.safeParse({ ...base, relations: [{ ...relation, targetItemIds: Array(51).fill(id) }] })
+        .success,
+    ).toBe(false);
+    expect(ItemCreateInputSchema.safeParse({ ...base, relations: [{ ...relation, extra: true }] }).success).toBe(false);
+  });
 });

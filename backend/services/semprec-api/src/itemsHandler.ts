@@ -104,6 +104,7 @@ export function createItemRoutes(
           databaseId,
           properties: body.properties ?? {},
           idempotencyKey,
+          relations: body.relations,
         });
         return { status: 201, body: await toItemEnvelopeWithBlobs(pool, item) };
       },
@@ -236,6 +237,32 @@ export function createItemRoutes(
           relationPropertyId,
         });
         return { status: 200, body: { relations } };
+      },
+    },
+    {
+      method: "PUT",
+      path: "/api/items/:id/relations/:propertyKey",
+      handler: async (ctx) => {
+        const id = requireUuidParam(ctx.params, "id");
+        const propertyKey = requireStringParam(ctx.params, "propertyKey");
+        const actor = restActor(ctx.identity.user.id);
+        const resolution = await resolveRelationProperty(service, actor, id, propertyKey);
+        if ("conflict" in resolution) return resolution.conflict;
+        const body = requireJsonObjectBody(ctx.body);
+        if (Object.keys(body).some((key) => key !== "targetItemId"))
+          throw new ValidationError("Unexpected relation set field", { field: "targetItemId" });
+        try {
+          const edge = await dispatchGenericOperation(service, "relation.set", actor, {
+            relationPropertyId: resolution.property.id,
+            callerItemId: id,
+            targetItemId: body.targetItemId,
+          });
+          return { status: 200, body: edge ? toRelationEnvelope(edge) : { deleted: true } };
+        } catch (error) {
+          if (error instanceof ValidationError && error.message === "Relation property is not single-valued")
+            throw new ValidationError(error.message, { field: "propertyKey" });
+          throw error;
+        }
       },
     },
     {

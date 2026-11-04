@@ -11,7 +11,8 @@
 // - docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
 // - docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
 import type { PoolClient } from "pg";
-import { requireManagedTransaction, withTransaction } from "../db/pool.js";
+import { requireManagedTransaction, runAfterCommitKeyed, withTransaction } from "../db/pool.js";
+import { notifyInvalidation, type InvalidationEvent } from "../realtimeHook.js";
 import { CardinalityViolationError, NotFoundError, ValidationError } from "../errors.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import * as databasesStore from "./databasesStore.js";
@@ -19,6 +20,7 @@ import type { ItemRelationRow } from "../types.js";
 import { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import * as itemsStore from "./itemsStore.js";
+import * as propertiesStore from "./propertiesStore.js";
 import * as relationsStore from "./relationsStore.js";
 import {
   assertRelationDatabasesNotArchived,
@@ -45,6 +47,7 @@ export interface CreateRelationInput {
   callerItemId: string;
   targetItemId: string;
   metadata?: Record<string, unknown>;
+  actingUserId?: string;
 }
 
 export interface UpdateRelationInput {
@@ -52,6 +55,48 @@ export interface UpdateRelationInput {
   callerItemId: string;
   targetItemId: string;
   metadata: Record<string, unknown>;
+  actingUserId?: string;
+}
+
+const RELATION_INVALIDATION_NAMESPACE = Symbol("relation invalidation");
+
+async function announceRelation(
+  client: PoolClient,
+  context: RelationEdgeContext,
+  input: { relationPropertyId: string; callerItemId: string; targetItemId: string },
+  op: "put" | "delete" | "metadata",
+  userId?: string,
+): Promise<void> {
+  const otherId =
+    context.reldef.propertyIdA === input.relationPropertyId ? context.reldef.propertyIdB : context.reldef.propertyIdA;
+  const other = otherId === null ? null : await propertiesStore.getProperty(client, otherId);
+  if (otherId !== null && !other) throw new Error("Relation counterpart property is missing");
+  const events: Extract<InvalidationEvent, { scope: "relation" }>[] = [
+    {
+      scope: "relation",
+      databaseId: context.property.databaseId,
+      itemId: input.callerItemId,
+      propertyKey: context.property.key,
+      op,
+      userId,
+    },
+    {
+      scope: "relation",
+      databaseId: context.targetDatabaseId,
+      itemId: input.targetItemId,
+      propertyKey: other?.key ?? null,
+      op,
+      userId,
+    },
+  ];
+  for (const event of events) {
+    runAfterCommitKeyed(
+      client,
+      RELATION_INVALIDATION_NAMESPACE,
+      JSON.stringify([event.itemId, event.propertyKey]),
+      () => notifyInvalidation(event),
+    );
+  }
 }
 
 /** Rejects a dangling, soft-deleted, or wrong-database endpoint with `validation_failed` — PostgreSQL foreign keys cannot enforce this because `items` has a partitioned composite primary key. */
@@ -304,10 +349,11 @@ export async function createRelationWithClient(
         itemA,
         itemB,
         writerKind: writer.writerKind,
-        actingUserId,
+        actingUserId: input.actingUserId ?? actingUserId,
       });
     }
     await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
+    await announceRelation(client, edgeContext, input, "put", input.actingUserId ?? actingUserId);
     return edge;
   });
 }
@@ -318,6 +364,7 @@ export async function updateRelationWithClient(
   input: UpdateRelationInput,
   context?: SystemRelationWriteContext,
   writer: WriterIdentity = SYSTEM_WRITER,
+  actingUserId?: string,
 ): Promise<RelationEdge> {
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
   await assertRelationDatabasesNotArchived(client, edgeContext);
@@ -359,11 +406,73 @@ export async function updateRelationWithClient(
       });
     }
     await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
+    await announceRelation(client, edgeContext, input, "metadata", input.actingUserId ?? actingUserId);
     return edge;
   });
 }
 
 export type DeleteRelationInput = Omit<CreateRelationInput, "metadata">;
+
+export interface SetRelationInput {
+  relationPropertyId: string;
+  callerItemId: string;
+  targetItemId: string | null;
+}
+
+/** Replace the single-valued side of a relation within the caller's transaction. */
+export async function setRelationWithClient(
+  client: PoolClient,
+  input: SetRelationInput,
+  writer: WriterIdentity = SYSTEM_WRITER,
+  actingUserId?: string,
+): Promise<RelationEdge | null> {
+  requireManagedTransaction(client);
+  input = {
+    relationPropertyId: input.relationPropertyId.toLowerCase(),
+    callerItemId: input.callerItemId.toLowerCase(),
+    targetItemId: input.targetItemId?.toLowerCase() ?? null,
+  };
+  const edgeContext = await loadWritableRelationEdgeContext(client, input.relationPropertyId, undefined);
+  const sideA = edgeContext.reldef.propertyIdA === input.relationPropertyId;
+  if (
+    edgeContext.reldef.cardinality !== "one_to_one" &&
+    !(edgeContext.reldef.cardinality === "one_to_many" && !sideA)
+  ) {
+    throw new ValidationError("Relation property is not single-valued", { field: "relationPropertyId" });
+  }
+  const caller = await itemsStore.lockItemById(client, edgeContext.property.databaseId, input.callerItemId);
+  if (!caller || caller.deletedAt) {
+    throw new ValidationError("Relation caller does not exist or is deleted", { field: "callerItemId" });
+  }
+  if (input.targetItemId !== null) {
+    await assertRelationEndpointValid(client, edgeContext.targetDatabaseId, input.targetItemId, "targetItemId");
+  }
+  const edges = await relationsStore.listRelationsForItem(client, edgeContext.reldef.id, input.callerItemId);
+  const existing = edges.find((edge) => (sideA ? edge.itemA : edge.itemB) === input.callerItemId);
+  const oldTarget = existing ? (sideA ? existing.itemB : existing.itemA) : null;
+  if (existing && oldTarget !== null && oldTarget === input.targetItemId) {
+    await runRelationEdgeWriteHooks({
+      client,
+      edgeContext,
+      callerItemId: input.callerItemId,
+      targetItemId: oldTarget,
+      metadata: existing.metadata,
+      writer,
+    });
+    return existing;
+  }
+  if (existing && oldTarget !== null) {
+    await deleteRelationWithClient(client, { ...input, targetItemId: oldTarget }, undefined, writer, actingUserId);
+  }
+  if (input.targetItemId === null) return null;
+  return createRelationWithClient(
+    client,
+    { ...input, targetItemId: input.targetItemId },
+    undefined,
+    writer,
+    actingUserId,
+  );
+}
 
 /**
  * The relation-unlinking counterpart to `createRelationWithClient` above, factored out for the
@@ -413,8 +522,9 @@ export async function deleteRelationWithClient(
         itemA,
         itemB,
         writerKind: writer.writerKind,
-        actingUserId,
+        actingUserId: input.actingUserId ?? actingUserId,
       });
+      await announceRelation(client, edgeContext, input, "delete", input.actingUserId ?? actingUserId);
     }
     await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
     return edge;
@@ -424,6 +534,13 @@ export async function deleteRelationWithClient(
 export function createRelationOps(deps: Pick<ChokePointDeps, "pool">) {
   const { pool } = deps;
   return {
+    async setRelation(
+      input: SetRelationInput,
+      writer?: WriterIdentity,
+      actingUserId?: string,
+    ): Promise<RelationEdge | null> {
+      return withTransaction(pool, (client) => setRelationWithClient(client, input, writer, actingUserId));
+    },
     async createRelation(
       input: CreateRelationInput,
       writer?: WriterIdentity,

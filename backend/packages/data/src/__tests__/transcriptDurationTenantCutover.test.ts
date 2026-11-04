@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { createChokePoint } from "../chokePoint/chokePoint.js";
+import { createComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import { getItemById, writeComputed } from "../chokePoint/itemsStore.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
@@ -15,11 +17,35 @@ describe("transcript duration tenant cutover", () => {
   beforeAll(async () => {
     admin = getTestPool();
     pool = await createRuntimeRolePool(admin, "semprec_data");
+    const role = await runAsSystem("test:verify-runtime-role", () =>
+      pool.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
   });
   beforeEach(async () => resetDatabase(admin));
   afterAll(async () => {
     await pool.end();
     await admin.end();
+  });
+
+  it("reserves durationSeconds and finalizedAt in the computed-key registry", async () => {
+    const tenant = await createTestTenant(admin);
+    await runInTenant(tenant, async () => {
+      const registry = createComputedKeyRegistry();
+      await seedSystem(pool, undefined, registry);
+      const cp = createChokePoint(pool, registry);
+      const database = await cp.createDatabase({ name: "Registry control" });
+      expect(
+        await cp.createProperty({ databaseId: database.id, key: "ordinary", name: "Ordinary", type: "number" }),
+      ).toMatchObject({ key: "ordinary" });
+      for (const key of ["durationSeconds", "finalizedAt"]) {
+        await expect(cp.createProperty({ databaseId: database.id, key, name: key, type: "number" })).rejects.toThrow(
+          /declared module cache key/i,
+        );
+      }
+    });
   });
 
   it("runs the registered backfill for each maintained tenant and leaves existing values unchanged on replay", async () => {

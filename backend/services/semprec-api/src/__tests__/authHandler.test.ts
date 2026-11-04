@@ -1293,6 +1293,12 @@ describe("self person HTTP contract", () => {
   beforeEach(async () => {
     admin ??= getTestPool();
     runtime ??= await createRuntimeRolePool(admin, "semprec_data");
+    const runtimeRole = await runAsSystem("test:verify-runtime-role", () =>
+      runtime.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(runtimeRole.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
     await resetDatabase(admin);
     tenantId = await createTestTenant(admin);
     const other = await createTestTenant(admin);

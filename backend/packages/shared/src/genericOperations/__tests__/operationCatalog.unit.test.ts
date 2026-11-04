@@ -45,6 +45,7 @@ const EXPECTED_ROWS: Record<
   "item.restore": { schema: schemas.ItemRestoreInputSchema, method: "restoreItem" },
   "database.query": { schema: schemas.DatabaseQueryInputSchema, method: "queryDatabase" },
   "relation.put": { schema: schemas.RelationPutInputSchema, method: "putRelation" },
+  "relation.set": { schema: schemas.RelationSetInputSchema, method: "setRelation" },
   "relation.delete": { schema: schemas.RelationDeleteInputSchema, method: "deleteRelation" },
   "relation.list": { schema: schemas.RelationListInputSchema, method: "listRelations" },
   "page.restoreVersion": { schema: schemas.PageRestoreVersionInputSchema, method: "restorePageVersion" },
@@ -202,6 +203,12 @@ const EXPECTED_METADATA: Record<
     riskClass: "write",
     reversible: true,
   },
+  "relation.set": {
+    requiresCapability: "core.item.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
   "relation.delete": {
     requiresCapability: "core.item.write",
     requiresApproval: true,
@@ -223,14 +230,14 @@ const EXPECTED_METADATA: Record<
 };
 
 describe("GENERIC_OPERATION_NAMES", () => {
-  it("has exactly 31 entries with no duplicates", () => {
-    expect(GENERIC_OPERATION_NAMES).toHaveLength(31);
-    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(31);
+  it("has exactly 32 entries with no duplicates", () => {
+    expect(GENERIC_OPERATION_NAMES).toHaveLength(32);
+    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(32);
   });
 });
 
 describe("GENERIC_OPERATION_BINDINGS", () => {
-  it("has exactly the 31 catalog rows and no others", () => {
+  it("has exactly the 32 catalog rows and no others", () => {
     expect(Object.keys(GENERIC_OPERATION_BINDINGS).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 

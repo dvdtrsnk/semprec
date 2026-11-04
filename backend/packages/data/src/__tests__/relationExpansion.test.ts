@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { expandItemRelations } from "../chokePoint/relationExpansion.js";
@@ -43,6 +43,12 @@ describe("batched relation expansion", () => {
   beforeAll(async () => {
     admin = getTestPool();
     pool = await createRuntimeRolePool(admin, "semprec_data");
+    const role = await runAsSystem("test:verify-runtime-role", () =>
+      pool.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
     cp = createChokePoint(pool);
   });
   beforeEach(async () => {
@@ -97,12 +103,23 @@ describe("batched relation expansion", () => {
       );
       expect(result?.relationsTruncated).toEqual(["companies"]);
     }));
+  it("orders dated edges by their addedAt metadata", async () =>
+    runInTenant(tenant, async () => {
+      const person = await make("people", { name: "Person" });
+      const later = await make("companies", { name: "Later" });
+      const earlier = await make("companies", { name: "Earlier" });
+      await link(person, "companies", later, { addedAt: "2026-01-02T00:00:00.000Z" });
+      await link(person, "companies", earlier, { addedAt: "2026-01-01T00:00:00.000Z" });
+      const [result] = await expand([person], { companies: [] });
+      expect(result?.relations?.companies?.map((target) => target.id)).toEqual([earlier.id, later.id]);
+    }));
   it("supports a one-way relation, projected visible blob maps and database appearance defaults", async () =>
     runInTenant(tenant, async () => {
       const source = await cp.createDatabase({ name: "Source" });
       const target = await cp.createDatabase({ name: "Target" });
       await cp.createProperty({ databaseId: target.id, key: "name", name: "Name", type: "title" });
       await cp.createProperty({ databaseId: target.id, key: "cover", name: "Cover", type: "image" });
+      await cp.createProperty({ databaseId: target.id, key: "attachment", name: "Attachment", type: "file" });
       const relation = await cp.createRelationProperty({
         sourceDatabaseId: source.id,
         key: "targets",
@@ -112,10 +129,13 @@ describe("batched relation expansion", () => {
       const blob = await withTransaction(pool, (client) =>
         createBlob(client, { storageKey: `${randomUUID()}-cover.png`, mimeType: "image/png", byteSize: 15 }),
       );
+      const attachment = await withTransaction(pool, (client) =>
+        createBlob(client, { storageKey: `legacy-${randomUUID()}`, mimeType: "application/pdf", byteSize: 19 }),
+      );
       const a = await cp.createItem({ databaseId: source.id, properties: {} });
       const b = await cp.createItem({
         databaseId: target.id,
-        properties: { name: "Target", cover: { blobId: blob.id } },
+        properties: { name: "Target", cover: { blobId: blob.id }, attachment: { blobId: attachment.id } },
       });
       await cp.createRelation({ relationPropertyId: relation.property.id, callerItemId: a.id, targetItemId: b.id });
       const [result] = await expand([a], { targets: ["cover"] });
@@ -128,6 +148,16 @@ describe("batched relation expansion", () => {
           blobs: { cover: { blobId: blob.id, mimeType: "image/png", byteSize: 15, filename: "cover.png" } },
         },
       ]);
+      expect(result?.relations?.targets?.[0]?.blobs).not.toHaveProperty("attachment");
+      const [withAttachment] = await expand([a], { targets: ["attachment"] });
+      expect(withAttachment?.relations?.targets).toMatchObject([
+        {
+          id: b.id,
+          properties: { attachment: { blobId: attachment.id } },
+          blobs: { attachment: { blobId: attachment.id, mimeType: "application/pdf", byteSize: 19, filename: null } },
+        },
+      ]);
+      expect(withAttachment?.relations?.targets?.[0]?.blobs).not.toHaveProperty("cover");
       expect((await expand([a], { targets: [] }))[0]?.relations?.targets?.[0]).not.toHaveProperty("blobs");
       await cp.archiveDatabase(target.id);
       expect((await expand([a], { targets: [] }))[0]?.relations?.targets).toEqual([]);
@@ -173,6 +203,40 @@ describe("batched relation expansion", () => {
         });
       }
       expect(await count(people)).toBe(await count(people.slice(0, 1)));
+    }));
+  it("rejects malformed historical JSON objects at each expansion boundary", async () =>
+    runInTenant(tenant, async () => {
+      const person = await make("people", { name: "Person" });
+      const company = await make("companies", { name: "Company" });
+      const edge = await link(person, "companies", company);
+      expect((await expand([person], { companies: [] }))[0]?.relations?.companies).toMatchObject([{ id: company.id }]);
+      await pool.query("UPDATE item_relations SET metadata = '[]'::jsonb WHERE id = $1", [edge.id]);
+      await expect(expand([person], { companies: [] })).rejects.toThrow();
+      await pool.query("UPDATE item_relations SET metadata = '{}'::jsonb WHERE id = $1", [edge.id]);
+      await pool.query("UPDATE items SET properties = '[]'::jsonb WHERE database_id = $1 AND id = $2", [
+        company.databaseId,
+        company.id,
+      ]);
+      await expect(expand([person], { companies: [] })).rejects.toThrow();
+      await pool.query(
+        "UPDATE items SET properties = $3::jsonb, computed = '[]'::jsonb WHERE database_id = $1 AND id = $2",
+        [company.databaseId, company.id, JSON.stringify(company.properties)],
+      );
+      await expect(expand([person], { companies: [] })).rejects.toThrow();
+      await pool.query("UPDATE items SET computed = '{}'::jsonb WHERE database_id = $1 AND id = $2", [
+        company.databaseId,
+        company.id,
+      ]);
+      const project = await make("projects", { name: "Project" });
+      const area = await make("areas", { name: "Area" });
+      await link(person, "projects", project);
+      await link(project, "area", area);
+      expect((await expand([person], { projects: ["area"] }))[0]?.relations?.projects).toHaveLength(1);
+      await pool.query("UPDATE items SET properties = '[]'::jsonb WHERE database_id = $1 AND id = $2", [
+        area.databaseId,
+        area.id,
+      ]);
+      await expect(expand([person], { projects: ["area"] })).rejects.toThrow();
     }));
   it("validates relation keys even for empty database and view pages", async () =>
     runInTenant(tenant, async () => {

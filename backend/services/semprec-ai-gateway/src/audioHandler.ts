@@ -77,7 +77,24 @@ interface AudioRequestBody {
 }
 
 /** Canonical padded standard base64, as produced by `Buffer#toString("base64")`. */
-const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+function isBase64(value: string): boolean {
+  if (value.length % 4 !== 0) return false;
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  const dataLength = value.length - padding;
+  for (let index = 0; index < dataLength; index += 1) {
+    const code = value.charCodeAt(index);
+    if (
+      !(code >= 65 && code <= 90) &&
+      !(code >= 97 && code <= 122) &&
+      !(code >= 48 && code <= 57) &&
+      code !== 43 &&
+      code !== 47
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 function validateBody(raw: unknown): AudioRequestBody {
   if (typeof raw !== "object" || raw === null) throw new ValidationError("Request body must be a JSON object");
@@ -101,7 +118,7 @@ function validateBody(raw: unknown): AudioRequestBody {
 
   // Buffer.from(..., "base64") never throws — it silently drops invalid characters — so the
   // format is checked up front instead of forwarding garbled bytes to the provider.
-  if (!BASE64_PATTERN.test(body.audioBase64)) {
+  if (!isBase64(body.audioBase64)) {
     throw new ValidationError("'audioBase64' is not valid base64", { field: "audioBase64" });
   }
 

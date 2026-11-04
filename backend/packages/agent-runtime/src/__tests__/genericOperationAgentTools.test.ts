@@ -576,6 +576,7 @@ describe("generic operation AgentTools (issue #220)", () => {
           vi.spyOn(gateway, "invoke").mockImplementation(async (...call) => {
             const output = await invoke(...call);
             if (call[0] === "item.patch") {
+              if (output === null || typeof output !== "object") throw new Error("Expected item.patch object output");
               const symbols = Object.getOwnPropertySymbols(output);
               expect(symbols).toHaveLength(1);
               if (mode === "missing") Reflect.deleteProperty(output, symbols[0]!);

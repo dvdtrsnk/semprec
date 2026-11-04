@@ -31,7 +31,7 @@ import {
   tenantForNextTestUser,
 } from "@semprec/data/testSupport";
 import { randomUUID } from "node:crypto";
-import { runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   AGENT_STREAM_CHANNEL,
   parseAgentStreamEnvelope,
@@ -536,6 +536,63 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
     clientA.close();
     clientB.close();
     clientU.close();
+  });
+
+  it("routes a PostgreSQL-enveloped relation invalidation to the acting user's tenant sockets", async () => {
+    const userA = await createTestUser();
+    const userB = await createTestUser();
+    const otherTenant = await createTestTenant(pool);
+    identityByToken.set("a", { tenantId: getTenantZeroId(), userId: userA, sessionId: "session-a" });
+    identityByToken.set("b", { tenantId: getTenantZeroId(), userId: userB, sessionId: "session-b" });
+    identityByToken.set("u", { tenantId: otherTenant, userId: userA, sessionId: "session-u" });
+    const clientA = await connect("a");
+    const clientB = await connect("b");
+    const clientU = await connect("u");
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const received: string[] = [];
+    const others: string[] = [];
+    clientA.on("message", (data) => received.push(messageText(data)));
+    clientB.on("message", (data) => others.push(messageText(data)));
+    clientU.on("message", (data) => others.push(messageText(data)));
+    const databaseId = randomUUID();
+    const itemId = randomUUID();
+    try {
+      const role = await runAsSystem("test:verify-runtime-role", () =>
+        runtime.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+      await runInTenant(getTenantZeroId(), () =>
+        publishRealtimeMessage(runtime, {
+          type: "invalidation",
+          scope: "relation",
+          databaseId,
+          itemId,
+          propertyKey: 'ě\\"'.repeat(4000),
+          op: "put",
+          userId: userA,
+        }),
+      );
+      await vi.waitFor(() => expect(received).toHaveLength(1));
+      const first = received[0];
+      if (first === undefined) throw new Error("Expected relation invalidation");
+      expect(JSON.parse(first)).toEqual({
+        type: "invalidate",
+        scope: "relation",
+        databaseId,
+        itemId,
+        propertyKey: null,
+        op: "put",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(others).toEqual([]);
+    } finally {
+      clientA.close();
+      clientB.close();
+      clientU.close();
+      await runtime.end();
+    }
   });
 
   it("delivers a sempThread invalidation committed through the hook only to sockets of its own tenant (issue #1395)", async () => {

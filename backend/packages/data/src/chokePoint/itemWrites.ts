@@ -31,6 +31,8 @@ import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import * as relationsStore from "./relationsStore.js";
+import { createRelationWithClient } from "./relationOps.js";
+import { assertRelationPropertyWritable } from "./relationEdgeContext.js";
 import { findDependenciesBySource } from "../rollup/dependencies.js";
 import { enqueueRollupRecompute } from "../rollup/recompute.js";
 import { triggerOnItemEventHeartbeats, recomputeAllForTimezoneChange } from "../scheduler/schedulerStore.js";
@@ -317,8 +319,16 @@ export async function createItemWithClient(
   input: CreateItemInput,
   options: CreateItemWithClientOptions = {},
 ): Promise<ItemRow> {
+  return (await createItemReportingReplay(client, input, options)).item;
+}
+
+async function createItemReportingReplay(
+  client: PoolClient,
+  input: CreateItemInput,
+  options: CreateItemWithClientOptions,
+): Promise<{ item: ItemRow; created: boolean }> {
   const replay = await assertDatabaseWritableForCreate(client, input.databaseId, input.idempotencyKey);
-  if (replay) return replay;
+  if (replay) return { item: replay, created: false };
 
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   assertWritableProperties(properties, Object.keys(input.properties ?? {}), options);
@@ -373,7 +383,7 @@ export async function createItemWithClient(
       return itemProperties;
     },
   );
-  if (!created) return item;
+  if (!created) return { item, created: false };
 
   // Domain validation/side effects of a real insert run here, in the same transaction, so a
   // rejection rolls the row back — see docs/adr/2026-10-09-item-create-domain-hooks.md.
@@ -396,6 +406,45 @@ export async function createItemWithClient(
       userId: options.actingUserId,
     }),
   );
+  return { item, created: true };
+}
+
+export type InitialItemRelation =
+  { kind: "resolved"; relationPropertyId: string; targetItemIds: string[] } | { kind: "unresolved" };
+
+export async function createItemWithRelationsWithClient(
+  client: PoolClient,
+  input: CreateItemInput & { relations: InitialItemRelation[] },
+  options: CreateItemWithClientOptions = {},
+): Promise<ItemRow> {
+  const { item, created } = await createItemReportingReplay(client, input, options);
+  if (!created) return item;
+  for (const relation of input.relations) {
+    if (relation.kind === "unresolved") throw new ValidationError("Unknown relation property", { field: "relations" });
+    const property = await propertiesStore.getProperty(client, relation.relationPropertyId);
+    const definition = await relationsStore.getRelationDefinitionByPropertyId(client, relation.relationPropertyId);
+    if (!property || property.databaseId !== input.databaseId || property.type !== "relation" || !definition)
+      throw new ValidationError("Invalid initial relation", { field: "relations" });
+    assertRelationPropertyWritable(property, undefined);
+    const single =
+      definition.cardinality === "one_to_one" ||
+      (definition.cardinality === "one_to_many" && definition.propertyIdB === property.id);
+    if (single && relation.targetItemIds.length !== 1)
+      throw new ValidationError("Single-valued relation requires one target", { field: "relations" });
+    for (const targetItemId of relation.targetItemIds) {
+      await createRelationWithClient(
+        client,
+        {
+          relationPropertyId: relation.relationPropertyId,
+          callerItemId: item.id,
+          targetItemId,
+        },
+        undefined,
+        options.writer,
+        options.actingUserId,
+      );
+    }
+  }
   return item;
 }
 
@@ -621,6 +670,22 @@ export async function lockItemForObservedMailFlags(
 export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAffinity">) {
   const { pool, queueAffinity } = deps;
   return {
+    async createItemWithRelations(
+      input: CreateItemInput & { relations: InitialItemRelation[] },
+      actingUserId?: string,
+      humanWriterUserId?: string,
+      writer?: WriterIdentity,
+    ): Promise<ItemRow> {
+      return withTransaction(pool, async (client) => {
+        const item = await createItemWithRelationsWithClient(client, input, {
+          queueAffinity,
+          actingUserId,
+          humanWriterUserId,
+          writer,
+        });
+        return (await projectItemsForRead(client, [item]))[0]!;
+      });
+    },
     async createItem(
       input: CreateItemInput,
       actingUserId?: string,

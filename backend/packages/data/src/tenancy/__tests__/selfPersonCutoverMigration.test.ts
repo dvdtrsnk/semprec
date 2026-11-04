@@ -50,6 +50,12 @@ describe("self person tenant cutover", () => {
   beforeAll(async () => {
     admin = getTestPool();
     pool = await createRuntimeRolePool(admin, "semprec_data");
+    const role = await runAsSystem("test:verify-runtime-role", () =>
+      pool.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
   });
   beforeEach(async () => {
     await resetDatabase(admin);
