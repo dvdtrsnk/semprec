@@ -60,6 +60,7 @@
   "property.people.relationship.option.client": "Client",
   "property.people.relationship.option.neighbor": "Neighbor",
   "property.people.contact.name": "Contact",
+  "property.people.phones.name": "Phones",
   "property.people.contact.option.phone": "Phone",
   "property.people.contact.option.email": "Email",
   "property.people.projects.name": "Projects",

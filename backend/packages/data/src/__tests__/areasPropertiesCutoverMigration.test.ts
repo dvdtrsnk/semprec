@@ -146,4 +146,99 @@ describe("Areas property cutover", () => {
       expect((await properties()).map((p) => p.key)).not.toContain("icon");
     });
   });
+  it.each([
+    ["company", "companies"],
+    ["healthRecord", "healthRecords"],
+  ])("allows multiple %s targets while retaining the single inverse", async (key, targetModule) =>
+    runInTenant(tenant, async () => {
+      const cp = createChokePoint(pool);
+      const target = await withTransaction(pool, (client) => getDatabaseByModuleId(client, targetModule));
+      if (!target) throw new Error("Target missing");
+      const property = (await cp.listProperties(databaseId)).find((p) => p.key === key);
+      if (!property) throw new Error("Relation missing");
+      const area = await cp.createItem({ databaseId, properties: { name: "Area" } });
+      const other = await cp.createItem({ databaseId, properties: { name: "Other" } });
+      const one = await cp.createItem({ databaseId: target.id, properties: { name: "One" } });
+      const two = await cp.createItem({ databaseId: target.id, properties: { name: "Two" } });
+      await cp.createRelation({ relationPropertyId: property.id, callerItemId: area.id, targetItemId: one.id });
+      await cp.createRelation({ relationPropertyId: property.id, callerItemId: area.id, targetItemId: two.id });
+      await expect(
+        cp.createRelation({ relationPropertyId: property.id, callerItemId: other.id, targetItemId: one.id }),
+      ).rejects.toMatchObject({ status: 409, code: "cardinality_violation" });
+    }),
+  );
+  it("backfills absent and null active values including trash, preserves false and is repeatable", async () =>
+    runInTenant(tenant, async () => {
+      const cp = createChokePoint(pool);
+      const fresh = await cp.createItem({ databaseId, properties: { name: "Fresh" } });
+      const missing = await cp.createItem({ databaseId, properties: { name: "Missing" } });
+      const cleared = await cp.createItem({ databaseId, properties: { name: "Cleared", active: null } });
+      const disabled = await cp.createItem({ databaseId, properties: { name: "Disabled", active: false } });
+      expect(fresh.properties.active).toBe(true);
+      await cp.softDeleteItem(databaseId, cleared.id);
+      // A legacy row predates the create default; the generic writer cannot remove a stored key.
+      await pool.query("UPDATE items SET properties=properties - 'active' WHERE database_id=$1 AND id=$2", [
+        databaseId,
+        missing.id,
+      ]);
+      await runAreasPropertiesCutoverMigration(pool);
+      const rows = await pool.query<{ id: string; properties: Record<string, unknown>; updated_at: Date }>(
+        "SELECT id, properties, updated_at FROM items WHERE database_id=$1 ORDER BY id",
+        [databaseId],
+      );
+      expect(rows.rows.find((row) => row.id === missing.id)?.properties.active).toBe(true);
+      expect(rows.rows.find((row) => row.id === cleared.id)?.properties.active).toBe(true);
+      expect(rows.rows.find((row) => row.id === disabled.id)?.properties.active).toBe(false);
+      await runAreasPropertiesCutoverMigration(pool);
+      expect(
+        (
+          await pool.query("SELECT id, properties, updated_at FROM items WHERE database_id=$1 ORDER BY id", [
+            databaseId,
+          ])
+        ).rows,
+      ).toEqual(rows.rows);
+      const overview = await cp.queryDatabaseItems(databaseId, {
+        filter: { type: "equals", property: "active", value: true },
+      });
+      expect(overview.items.map((item) => item.id)).toEqual(expect.arrayContaining([fresh.id, missing.id]));
+      expect(overview.items.map((item) => item.id)).not.toContain(disabled.id);
+    }));
+  it("upgrades suspended tenant relations without changing edges or unrelated definitions", async () => {
+    const suspended = await createTestTenant(admin, { status: "suspended" });
+    await runInTenant(suspended, async () => {
+      await seedSystem(pool);
+      const cp = createChokePoint(pool);
+      const areas = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
+      const companies = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "companies"));
+      if (!areas || !companies) throw new Error("Databases missing");
+      const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Area" } });
+      const company = await cp.createItem({ databaseId: companies.id, properties: { name: "Company" } });
+      const props = await cp.listProperties(areas.id);
+      const property = props.find((p) => p.key === "company");
+      if (!property) throw new Error("Company relation missing");
+      await cp.createRelation({ relationPropertyId: property.id, callerItemId: area.id, targetItemId: company.id });
+      // Recreate the former schema state; changing a locked system relation is not a public operation.
+      await pool.query(
+        `UPDATE relation_definitions SET cardinality='one_to_one' WHERE property_id_a IN (SELECT id FROM properties WHERE database_id=$1 AND key IN ('company','healthRecord'))`,
+        [areas.id],
+      );
+      const before = await pool.query<{ id: string; cardinality: string }>(
+        "SELECT id, cardinality FROM relation_definitions ORDER BY id",
+      );
+      const edges = await cp.listItemRelations(area.id, property.id);
+      await runAreasPropertiesCutoverMigration(pool);
+      const after = await pool.query<{ id: string; cardinality: string }>(
+        "SELECT id, cardinality FROM relation_definitions ORDER BY id",
+      );
+      expect(after.rows.filter((row, index) => row.cardinality !== before.rows[index]?.cardinality)).toHaveLength(2);
+      expect(await cp.listItemRelations(area.id, property.id)).toEqual(edges);
+      const inverse = (await cp.listProperties(companies.id)).find((p) => p.key === "area");
+      if (!inverse) throw new Error("Inverse missing");
+      expect((await cp.listItemRelations(company.id, inverse.id))?.map((edge) => edge.targetItemId)).toContain(area.id);
+      await runAreasPropertiesCutoverMigration(pool);
+      expect((await pool.query("SELECT id, cardinality FROM relation_definitions ORDER BY id")).rows).toEqual(
+        after.rows,
+      );
+    });
+  });
 });

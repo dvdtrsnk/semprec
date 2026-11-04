@@ -176,6 +176,7 @@ export async function seedTenDatabasesInTransaction(
     // Canonical values stay plain English camelCase per the canonical-keys skill; the
     // mock's emoji (📞/✉️) is presentational and belongs to the not-yet-built i18n/UI layer.
     { key: "contact", name: "Contact", type: "select", owner: "user", config: selectConfig(["phone", "email"]) },
+    { key: "phones", name: "Phones", type: "longText", owner: "user" },
   ]);
 
   const files = await createDb(client, FILES_MODULE_ID);
@@ -293,13 +294,13 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "one_to_many",
     inverse: { key: "area", name: "Hub" },
   });
-  // Areas <-> Companies: explicit bidirectional, 1:1 per the issue.
+  // Areas <-> Companies: an area can contain several companies.
   await relate({
     sourceDatabaseId: areas.id,
     key: "company",
     name: "Company",
     targetDatabaseId: companies.id,
-    cardinality: "one_to_one",
+    cardinality: "one_to_many",
     inverse: { key: "area", name: "Area" },
   });
   // Fix: Areas <-> Health records was one-directional (from Areas) in the mock; unified to bidirectional.
@@ -308,7 +309,7 @@ export async function seedTenDatabasesInTransaction(
     key: "healthRecord",
     name: "Health record",
     targetDatabaseId: healthRecords.id,
-    cardinality: "one_to_one",
+    cardinality: "one_to_many",
     inverse: { key: "area", name: "Area" },
   });
   // Fix: Projects <-> Companies was a free-form select ("Osobní"/"MeguMethod") in the mock;

@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { AREAS_MODULE_ID } from "./tenDatabaseKeys.js";
+import { migrateItemPropertyWithClient } from "../chokePoint/itemMigrationWrites.js";
 
 /** Adds the three missing Areas properties to each scoped tenant's locked system schema. */
 export async function runAreasPropertiesCutoverMigration(pool: Pool): Promise<void> {
@@ -24,6 +25,29 @@ export async function runAreasPropertiesCutoverMigration(pool: Pool): Promise<vo
          VALUES ($1, $2, NULL, $3, '{}'::jsonb, false, 'user', NULL)`,
         [areas.id, key, type],
       );
+    }
+    await client.query(
+      `UPDATE relation_definitions SET cardinality = 'one_to_many'
+       WHERE property_id_a IN (SELECT id FROM properties WHERE database_id = $1 AND key IN ('company', 'healthRecord'))
+         AND cardinality = 'one_to_one'`,
+      [areas.id],
+    );
+    await client.query(
+      `UPDATE properties SET config = jsonb_set(config, '{default}', 'true'::jsonb)
+       WHERE database_id = $1 AND key = 'active' AND config->'default' IS DISTINCT FROM 'true'::jsonb`,
+      [areas.id],
+    );
+    const items = await client.query<{ id: string }>(
+      `SELECT id FROM items WHERE database_id = $1 AND (NOT properties ? 'active' OR properties->'active' = 'null'::jsonb) FOR UPDATE`,
+      [areas.id],
+    );
+    for (const item of items.rows) {
+      await migrateItemPropertyWithClient(client, {
+        databaseId: areas.id,
+        itemId: item.id,
+        key: "active",
+        change: { kind: "set", value: true },
+      });
     }
   });
 }

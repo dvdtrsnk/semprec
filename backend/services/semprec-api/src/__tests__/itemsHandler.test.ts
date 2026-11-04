@@ -177,6 +177,25 @@ describe("item routes (issue #241)", () => {
     ).toMatchObject({ icon: null, color: null });
   });
 
+  it("writes and reads People phones through item routes", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const database = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) => getDatabaseByModuleId(client, "people")),
+    );
+    if (!database) throw new Error("People missing");
+    const created = await fetch(`${baseUrl}/api/items`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ databaseId: database.id, properties: { name: "Person", phones: "777 123 456" } }),
+    });
+    expect(created.status).toBe(201);
+    const item = z.object({ id: z.string() }).parse(await created.json());
+    const response = await fetch(`${baseUrl}/api/items/${item.id}`, { headers });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ properties: { phones: "777 123 456" } });
+  });
+
   it("validates color writes over authenticated REST and preserves legacy colors on unrelated updates", async () => {
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };
     const fixture = await runInTenant(getTenantZeroId(), async () => {
