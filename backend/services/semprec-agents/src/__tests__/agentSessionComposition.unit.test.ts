@@ -193,7 +193,25 @@ vi.mock("@semprec/data", async (importOriginal) => ({
   createCollectionMetadataResolver: async () => testMetadataResolver,
   withClient: async (_pool: Pool, fn: (client: Client) => Promise<unknown>) => fn(new Client()),
   withTransaction: async (_pool: Pool, fn: (client: Client) => Promise<unknown>) => fn(new Client()),
-  generatePermissionManifest: async () => ({ grantedCapabilities: [] }),
+  resolveModuleAgentToolsForRun: async (pool: Pool, registry: ModuleRegistry, runId: string) => {
+    const isCallable = (value: unknown): value is (...args: unknown[]) => unknown => typeof value === "function";
+    const definitions = await registry.getAgentToolDefinitions(new Set());
+    return definitions.map((definition) => ({
+      name: definition.name,
+      argumentSchema: definition.argumentSchema,
+      acceptsArguments: (args: unknown) => definition.parseArguments(args).success,
+      invoke: async (args: unknown) => {
+        const parsed = definition.parseArguments(args);
+        if (!parsed.success || !isCallable(definition.handler)) throw new Error("Invalid fixture");
+        const handler: unknown = definition.handler(pool, new Map());
+        if (!isCallable(handler)) throw new Error("Invalid fixture handler");
+        const result: unknown = await handler(runId, parsed.data);
+        if (typeof result !== "object" || result === null || !("result" in result) || !("error" in result))
+          throw new Error("Invalid fixture result");
+        return result;
+      },
+    }));
+  },
   listMcpToolGrantsForProject: async () => fixtures.grants,
   getTenantUserLocale: async () => fixtures.locale,
 }));

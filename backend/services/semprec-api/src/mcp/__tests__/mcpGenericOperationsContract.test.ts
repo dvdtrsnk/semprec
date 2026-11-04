@@ -1,3 +1,4 @@
+import { ModuleRegistry } from "@semprec/module-registry";
 import type { CollectionMetadataResolver } from "@semprec/data";
 import { createItemWithClient, getDatabaseByModuleId } from "@semprec/data";
 import { createServer, type Server } from "node:http";
@@ -106,7 +107,9 @@ async function createProjectItem(): Promise<string> {
 }
 
 async function startServer(): Promise<{ server: Server; baseUrl: string }> {
-  const server = createServer(createMcpRequestListener(pool, gateway, ALL_CAPABILITIES));
+  const server = createServer(
+    await createMcpRequestListener(pool, gateway, ALL_CAPABILITIES, new ModuleRegistry(() => new Set())),
+  );
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
@@ -639,7 +642,9 @@ describe("generic operation MCP contract (issue #220)", () => {
         );
       });
       const runtimeGateway = createGenericOperationGateway(runtime, testMetadataResolver);
-      server = createServer(createMcpRequestListener(runtime, runtimeGateway, ALL_CAPABILITIES));
+      server = createServer(
+        await createMcpRequestListener(runtime, runtimeGateway, ALL_CAPABILITIES, new ModuleRegistry(() => new Set())),
+      );
       const ownedServer = server;
       await new Promise<void>((resolve, reject) => {
         ownedServer.once("error", reject);

@@ -601,6 +601,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "resolveMcpRunCredential",
   "resolveMergedThreadId",
   "resolveModelDisplayName",
+  "resolveModuleAgentToolsForRun",
   "resolveNotificationsBySource",
   "resolveOperationLabel",
   "resolveProblem",

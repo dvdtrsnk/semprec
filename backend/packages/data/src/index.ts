@@ -661,3 +661,5 @@ export { handleMailLinkPersonEmailsTask } from "./mail/linkPersonEmailsJob.js";
 export type { ConfirmationResult } from "./inbox/proposalActions.js";
 
 export { getSempThread, listSempThreadMessages } from "./sempThreads/sempThreadsStore.js";
+
+export { resolveModuleAgentToolsForRun } from "./agentTools/moduleAgentTools.js";

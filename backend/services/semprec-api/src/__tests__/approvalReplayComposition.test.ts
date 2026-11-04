@@ -1,3 +1,4 @@
+import { ModuleRegistry } from "@semprec/module-registry";
 import type { CollectionMetadataResolver } from "@semprec/data";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
@@ -265,7 +266,9 @@ describe("createApiQueueRuntime generic-operation approval replay (issue #646)",
       requireApprovalForWrite(client, writer, [{ kind: "testReason" }]);
     });
     const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-    const server = createServer(createMcpRequestListener(pool, gateway, ALL_CAPABILITIES));
+    const server = createServer(
+      await createMcpRequestListener(pool, gateway, ALL_CAPABILITIES, new ModuleRegistry(() => new Set())),
+    );
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
       const address = server.address();

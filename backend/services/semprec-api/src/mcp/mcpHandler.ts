@@ -8,6 +8,7 @@ import {
   UnauthorizedError,
   ValidationError,
   resolveMcpRunCredential,
+  resolveModuleAgentToolsForRun,
 } from "@semprec/data";
 import {
   CAPABILITY_IDS,
@@ -19,6 +20,7 @@ import {
   type CapabilityId,
   type GenericOperationName,
 } from "@semprec/shared";
+import type { ModuleRegistry } from "@semprec/module-registry";
 import type { GenericOperationGateway } from "@semprec/application";
 import { toPublicErrorBody } from "../adapter/errorContract.js";
 import { extractBearerToken, PayloadTooLargeError, readJsonBody, sendJson } from "../adapter/http.js";
@@ -94,11 +96,15 @@ interface JsonRpcRequestBody {
  * is intersected against it, so a credential can only ever narrow what a process already grants,
  * never widen it.
  */
-export function createMcpRequestListener(
+export async function createMcpRequestListener(
   pool: Pool,
   gateway: GenericOperationGateway,
   grantedCapabilities: ReadonlySet<CapabilityId>,
+  registry: ModuleRegistry,
 ) {
+  const activeNames = await registry.getActiveAgentToolNames();
+  const collision = activeNames.find((name) => (GENERIC_OPERATION_NAMES as readonly string[]).includes(name));
+  if (collision) throw new Error(`Module tool collides with generic operation: ${collision}`);
   async function resolveActor(
     req: IncomingMessage,
   ): Promise<{ actor: AuthenticatedActor; capabilities: ReadonlySet<CapabilityId>; tenantId: string }> {
@@ -194,6 +200,18 @@ export function createMcpRequestListener(
             name: toMcpToolName(operation),
             inputSchema: operationInputJsonSchema(operation),
           }));
+          if (actor.runId && actor.agentProjectItemId) {
+            const modules = await resolveModuleAgentToolsForRun(
+              pool,
+              registry,
+              actor.runId,
+              actor.agentProjectItemId,
+              effectiveCapabilities,
+            );
+            tools.push(
+              ...modules.map((tool) => ({ name: `${MCP_TOOL_PREFIX}${tool.name}`, inputSchema: tool.argumentSchema })),
+            );
+          }
           sendJson(res, 200, rpcResult(rpcId, { tools }));
           return;
         }
@@ -202,13 +220,33 @@ export function createMcpRequestListener(
           const params = rpc.params as { name?: unknown; arguments?: unknown } | undefined;
           const toolName = typeof params?.name === "string" ? params.name : undefined;
           const operation = toolName !== undefined ? fromMcpToolName(toolName) : null;
-          if (operation === null) {
-            sendJson(res, 200, rpcError(rpcId, -32601, `Unknown tool '${toolName ?? ""}'`));
-            return;
-          }
           try {
-            const output = await gateway.invoke(operation, actor, effectiveCapabilities, params?.arguments ?? {});
-            sendJson(res, 200, rpcResult(rpcId, { content: [{ type: "text", text: JSON.stringify(output) }] }));
+            if (operation !== null) {
+              const output = await gateway.invoke(operation, actor, effectiveCapabilities, params?.arguments ?? {});
+              sendJson(res, 200, rpcResult(rpcId, { content: [{ type: "text", text: JSON.stringify(output) }] }));
+            } else {
+              const modules =
+                actor.runId && actor.agentProjectItemId
+                  ? await resolveModuleAgentToolsForRun(
+                      pool,
+                      registry,
+                      actor.runId,
+                      actor.agentProjectItemId,
+                      effectiveCapabilities,
+                    )
+                  : [];
+              const tool = modules.find((entry) => `${MCP_TOOL_PREFIX}${entry.name}` === toolName);
+              if (!tool) {
+                sendJson(res, 200, rpcError(rpcId, -32601, `Unknown tool '${toolName ?? ""}'`));
+                return;
+              }
+              const output = await tool.invoke(params?.arguments ?? {});
+              sendJson(
+                res,
+                200,
+                rpcResult(rpcId, { content: [{ type: "text", text: output.result }], isError: output.error }),
+              );
+            }
           } catch (err) {
             if (err instanceof NotFoundError) {
               sendJson(res, 200, rpcError(rpcId, -32601, `Unknown tool '${toolName}'`));

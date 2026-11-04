@@ -17,8 +17,7 @@ import {
   listMcpToolGrantsForProject,
   projectAgentGuidanceStore,
   withClient,
-  withTransaction,
-  generatePermissionManifest,
+  resolveModuleAgentToolsForRun,
   type AgentRunRow,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
@@ -122,10 +121,6 @@ function isArgumentsObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isCallable(value: unknown): value is (...args: unknown[]) => unknown {
-  return typeof value === "function";
-}
-
 type ComposedAgentTool = AgentTool & { toolEventMetadata?: ToolEventMetadata };
 
 async function createModuleTools(
@@ -134,41 +129,27 @@ async function createModuleTools(
   runId: string,
   projectItemId: string,
 ): Promise<ComposedAgentTool[]> {
-  const manifest = await withTransaction(pool, (client) =>
-    generatePermissionManifest(client, projectItemId, { moduleRegistry: registry }),
+  const definitions = await resolveModuleAgentToolsForRun(pool, registry, runId, projectItemId);
+  return definitions.map(
+    (definition) =>
+      ({
+        name: toModelToolName(definition.name),
+        label: definition.name,
+        description: `Semprec module tool '${definition.name}'.`,
+        parameters: Type.Unsafe(definition.argumentSchema),
+        async execute(_toolCallId, params) {
+          if (!definition.acceptsArguments(params))
+            return { content: [{ type: "text", text: "Invalid tool arguments." }], details: { error: true } };
+          try {
+            const result = await definition.invoke(params);
+            return { content: [{ type: "text", text: result.result }], details: { error: result.error } };
+          } catch {
+            logger.warn({ toolName: definition.name }, "Module tool execution failed");
+            return { content: [{ type: "text", text: "Module tool failed." }], details: { error: true } };
+          }
+        },
+      }) satisfies ComposedAgentTool,
   );
-  const definitions = await registry.getAgentToolDefinitions(new Set(manifest.grantedCapabilities));
-  const ruleKinds = new Map(
-    (await registry.getHeartbeatRuleKindDefinitions()).map((definition) => [
-      definition.kind,
-      { schema: definition.schema, nextFireAt: definition.nextFireAt },
-    ]),
-  );
-  return definitions.map((definition) => {
-    if (!isCallable(definition.handler)) throw new Error(`Invalid module tool handler: ${definition.name}`);
-    const handler: unknown = definition.handler(pool, ruleKinds);
-    if (!isCallable(handler)) throw new Error(`Invalid module tool factory: ${definition.name}`);
-    return {
-      name: toModelToolName(definition.name),
-      label: definition.name,
-      description: `Semprec module tool '${definition.name}'.`,
-      parameters: Type.Unsafe(definition.argumentSchema),
-      async execute(_toolCallId, params) {
-        const parsed = definition.parseArguments(params);
-        if (!parsed.success)
-          return { content: [{ type: "text", text: "Invalid tool arguments." }], details: { error: true } };
-        try {
-          const result: unknown = await handler(runId, parsed.data);
-          if (!isArgumentsObject(result) || typeof result.result !== "string" || typeof result.error !== "boolean")
-            throw new Error("Invalid module tool result");
-          return { content: [{ type: "text", text: result.result }], details: { error: result.error } };
-        } catch {
-          logger.warn({ toolName: definition.name }, "Module tool execution failed");
-          return { content: [{ type: "text", text: "Module tool failed." }], details: { error: true } };
-        }
-      },
-    } satisfies ComposedAgentTool;
-  });
 }
 
 async function createGenericOperationTools(

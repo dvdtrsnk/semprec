@@ -1,3 +1,4 @@
+import { ModuleRegistry } from "@semprec/module-registry";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -363,7 +364,9 @@ describe("createMcpAgentPageRequestListener", () => {
       const gateway = createGenericOperationGateway(pool, {
         resolve: () => ({ icon: null, color: null, overviewOrder: null, switcherOrder: null, clientVisible: true }),
       });
-      const mcp = createServer(createMcpRequestListener(pool, gateway, new Set(CAPABILITY_IDS)));
+      const mcp = createServer(
+        await createMcpRequestListener(pool, gateway, new Set(CAPABILITY_IDS), new ModuleRegistry(() => new Set())),
+      );
       await new Promise<void>((resolve) => mcp.listen(0, resolve));
       try {
         const address = mcp.address();

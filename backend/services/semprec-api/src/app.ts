@@ -111,7 +111,7 @@ export async function createDispatcher(
   const mcpGateway = createGenericOperationGateway(pool, collectionMetadataResolver);
   const registeredModuleCapabilities = await options.moduleRegistry.getCapabilities();
   const mcpGrantedCapabilities = new Set(CAPABILITY_IDS.filter((id) => registeredModuleCapabilities.includes(id)));
-  const mcpListener = createMcpRequestListener(pool, mcpGateway, mcpGrantedCapabilities);
+  const mcpListener = await createMcpRequestListener(pool, mcpGateway, mcpGrantedCapabilities, options.moduleRegistry);
   const mcpAgentPageListener = createMcpAgentPageRequestListener(pool);
   const approvalRequestsListener = createApprovalRequestsRequestListener(pool);
   const agentRunListener = createAgentRunRequestListener(pool);
