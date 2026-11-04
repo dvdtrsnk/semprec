@@ -123,3 +123,34 @@ The aggregate-only introductory execution prose is shortened without removing me
 Gh-1543 may add only semp thread detail and semp thread messages -> services/semprec-api/src/sempThreadsHandler.ts in the existing API ROUTE_HANDLER_FILES table. Preserve exhaustive key equality, scanned-handler and write-boundary checks and run the whole existing unit file; prior missing-mapping development failure remains recorded.
 
 Gh-1546 follows [[2026-11-05-voice-transport-oversize-closes-before-application-errors]]: retain ws maxPayload16KiB and transport close1009 without requiring an application error frame when the library rejects the oversized message before delivery. Never raise the bound merely to send JSON. Delivered invalid/unknown controls and text exceeding4KiB within the transport bound retain sanitized error-before-close when writable. Real transport oversize and application-invalid cases remain separate evidence; rejected frames never reach the handler port. All other accepted voice limits/ownership remain, and earlier accepted ADR bodies stay byte-identical.
+
+## R1 handler settlement
+
+R1 on11486231 is complete NOT CLEAR and its report/ledger stay immutable. Gh-1546 follows [[2026-11-05-voice-admission-retained-until-handler-settlement]]: transport close stops dispatch/sends but does not release live handler work. Join active callback, then exactly-once cleanup, then release only after successful cleanup. Shutdown deadline or rejected cleanup retains fail-closed admission and reports failure; never claim an uncooperative Promise was cancelled. Later completion still performs cleanup; other users remain independent. Synchronous callbacks are invoked/settled synchronously so transport-coalesced valid frames do not create false pressure. No provider/turn/distributed cancellation or new unbounded audio queue. Earlier accepted ADR bodies stay byte-identical. Aggregate-only trace instructions are shortened with the same Task/AC, production/SHA/scenario/log/verdict fields and final gate obligations.
+
+## R1 cross-root lookup and body finding disposition
+
+R1-2 is accepted: the existing gh-1741 job and worker use the existing
+openBlobFromRoots reader with both already configured roots, scoped to the
+selected tenant-visible attachment key. This reuses its ENOENT-only fallback
+without changing helper semantics, storage layout or blob ownership. Its
+original export ADR documents the deduplicated layout, not export error
+policy for this job: gh-1741 retains its specified best-effort extraction
+failure handling. Prove real Files upload followed by mail ingest of identical
+bytes and successful attachment search after rebuild, plus missing-in-both and
+foreign-tenant controls. No new root export, location field or blob writer.
+
+R1-3 is rejected as stated, not fixed by inventing MIME provenance. The exact
+plain-text <invoice> counterexample is not searchable immediately after actual
+ingest either: PostgreSQL classifies the bracketed token as a tag without
+lexemes. The bounded script-content alternative likewise contributes no raw
+lexeme. Both real before/rebuild/after controls had no hit before or after,
+and raw versus converted czech/czech_simple vectors agreed on those inputs.
+Their diagnostic tests exited 1 because the required precondition was false;
+these are not passing regression tests or proof that every possible input is
+equivalent. Keep the original R1 report and both diagnostic failures. No new
+schema, inferred body format, raw-markup augmentation or altered HTML converter
+is authorized on this evidence. Retain the existing available-stored-body
+contract and its disclosed loss of discarded multipart text/plain; do not claim
+exact historical body parity. The focused R2 receives this reasoned disposition
+and the exact logs without replacing the original finding history.
