@@ -2440,12 +2440,12 @@
       "sequence": 25,
       "status": "proposed",
       "title": "[backend-delivery 25/74] Implement data/journal, data/mail, data/docs changes",
-      "bodyCharacters": 55845,
-      "specSha256": "44c3d35783929418fc7318fd6fc3496ea25b09aac2193a4d71ec6953dcf58576",
+      "bodyCharacters": 57543,
+      "specSha256": "6570dfbbe022977f62bb65fc36f3e1934ce17d00d189e18817f1debdcd0c1048",
       "members": [
         {
           "id": "gh-1589",
-          "specSha256": "20b205984229eb5fef995b37fef9ea2bf8b9d298038ba1517508645b2e100697",
+          "specSha256": "ad72ae1d6cd9632b7b69ebbae888f6223d94c151e85e5fe73dbfb1507321615d",
           "parent": "gh-1323",
           "dependencies": [
             "gh-1535"
@@ -2463,7 +2463,7 @@
         },
         {
           "id": "gh-1741",
-          "specSha256": "eba0767a3c48e69ad7f454483863c285bc42c42ad9221d610458562f806d2007",
+          "specSha256": "369ee0648d14b4fe504c0526f5852fc301a7ab48bef8a8f4d47d15b395018cb2",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1591",
@@ -2484,7 +2484,7 @@
         },
         {
           "id": "gh-1541",
-          "specSha256": "e7828cb9c9f264600142315288ec37f736fc5c5fd89cff8caaede3d9aa994e0c",
+          "specSha256": "e9e98557e44512343bbb8012b11c90903b5d2c8ff5da8d864255ad4ca51ab8e9",
           "parent": "gh-1320",
           "dependencies": [
             "gh-1537"
@@ -2503,7 +2503,7 @@
         },
         {
           "id": "gh-1543",
-          "specSha256": "b970a0d59198edd623b1b27f1fdf586cf669fb2b9980762abf1746c10bbabc86",
+          "specSha256": "89aa963b61ba45868f412e51a045b3c407414efeba59d0d30424ebd69aeb020f",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1367",
@@ -2513,7 +2513,7 @@
         },
         {
           "id": "gh-1580",
-          "specSha256": "4f6d9f7075ed6077a73fea8845435701196c6c4f7da5cfe19f07ab22018424a6",
+          "specSha256": "bb73500120d097c935f7fe2c94ef3dc86c59bc3e0eaf9e6e10a715e733b157af",
           "parent": "gh-1301",
           "dependencies": [
             "gh-1523"
@@ -2531,7 +2531,7 @@
         },
         {
           "id": "gh-1546",
-          "specSha256": "26fc9d8f3f9e1770b94b1822602ef64de2b53f4b4438f8101d6649464889f01d",
+          "specSha256": "ea7702074f86e011388fd701a86d95e354415bb9eef3d3d1600623849939860f",
           "parent": "gh-1307",
           "dependencies": [
             "gh-1371",
