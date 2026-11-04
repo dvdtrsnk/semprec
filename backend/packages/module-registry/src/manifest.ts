@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RISK_CLASSES, type RiskClass } from "@semprec/shared";
 
 /**
  * Which long-lived runtime (issue #91's two graphile-worker composition roots) a module task
@@ -92,7 +93,11 @@ export interface ModuleDataMigrationDescriptor {
 export interface ModuleAgentToolDescriptor {
   name: string;
   handlerExport: string;
+  argumentSchemaExport: string;
   capability?: string;
+  approval: "none" | "always" | "unlessProjectPermitted";
+  riskClass?: RiskClass;
+  projectPermission?: string;
 }
 
 /**
@@ -302,11 +307,27 @@ const moduleDataMigrationDescriptorSchema = z.object({
   converterExport: z.string().min(1),
 });
 
-const moduleAgentToolDescriptorSchema = z.object({
-  name: z.string().min(1),
-  handlerExport: z.string().min(1),
-  capability: z.string().min(1).optional(),
-});
+const moduleAgentToolDescriptorSchema = z
+  .object({
+    name: z.string().min(1),
+    handlerExport: z.string().min(1),
+    argumentSchemaExport: z.string().min(1),
+    capability: z.string().min(1).optional(),
+    approval: z.enum(["none", "always", "unlessProjectPermitted"]),
+    riskClass: z.enum(RISK_CLASSES).optional(),
+    projectPermission: z.string().min(1).optional(),
+  })
+  .superRefine((tool, ctx) => {
+    if (
+      tool.approval === "none" &&
+      tool.riskClass !== undefined &&
+      tool.riskClass !== "read" &&
+      tool.riskClass !== "write"
+    )
+      ctx.addIssue({ code: "custom", message: "Unsafe risk class cannot use approval none", path: ["riskClass"] });
+    if (tool.approval === "unlessProjectPermitted" && !tool.projectPermission)
+      ctx.addIssue({ code: "custom", message: "Project permission is required", path: ["projectPermission"] });
+  });
 
 /** `path` must live under the flat `/api` namespace the issue's Task requires every custom route to mount into. */
 const moduleCustomRouteDescriptorSchema = z.object({

@@ -17,6 +17,8 @@ import {
   listMcpToolGrantsForProject,
   projectAgentGuidanceStore,
   withClient,
+  withTransaction,
+  generatePermissionManifest,
   type AgentRunRow,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
@@ -120,7 +122,50 @@ function isArgumentsObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-type ComposedAgentTool = AgentTool & { toolEventMetadata: ToolEventMetadata };
+type ComposedAgentTool = AgentTool & { toolEventMetadata?: ToolEventMetadata };
+
+async function createModuleTools(
+  pool: Pool,
+  registry: ModuleRegistry,
+  runId: string,
+  projectItemId: string,
+): Promise<ComposedAgentTool[]> {
+  const manifest = await withTransaction(pool, (client) =>
+    generatePermissionManifest(client, projectItemId, { moduleRegistry: registry }),
+  );
+  const definitions = await registry.getAgentToolDefinitions(new Set(manifest.grantedCapabilities));
+  const ruleKinds = new Map(
+    (await registry.getHeartbeatRuleKindDefinitions()).map((definition) => [
+      definition.kind,
+      { schema: definition.schema, nextFireAt: definition.nextFireAt },
+    ]),
+  );
+  return definitions.map((definition) => {
+    if (typeof definition.handler !== "function") throw new Error(`Invalid module tool handler: ${definition.name}`);
+    const handler: unknown = definition.handler(pool, ruleKinds);
+    if (typeof handler !== "function") throw new Error(`Invalid module tool factory: ${definition.name}`);
+    return {
+      name: toModelToolName(definition.name),
+      label: definition.name,
+      description: `Semprec module tool '${definition.name}'.`,
+      parameters: Type.Unsafe(definition.argumentSchema),
+      async execute(_toolCallId, params) {
+        const parsed = definition.parseArguments(params);
+        if (!parsed.success)
+          return { content: [{ type: "text", text: "Invalid tool arguments." }], details: { error: true } };
+        try {
+          const result: unknown = await handler(runId, parsed.data);
+          if (!isArgumentsObject(result) || typeof result.result !== "string" || typeof result.error !== "boolean")
+            throw new Error("Invalid module tool result");
+          return { content: [{ type: "text", text: result.result }], details: { error: result.error } };
+        } catch {
+          logger.warn({ toolName: definition.name }, "Module tool execution failed");
+          return { content: [{ type: "text", text: "Module tool failed." }], details: { error: true } };
+        }
+      },
+    } satisfies ComposedAgentTool;
+  });
+}
 
 async function createGenericOperationTools(
   pool: Pool,
@@ -250,6 +295,7 @@ export async function createAgentSessionFactoryForRun(
 
   if (run.projectItemId) {
     tools.push(...(await createMcpTools(pool, run.id, run.projectItemId)));
+    tools.push(...(await createModuleTools(pool, moduleRegistry, run.id, run.projectItemId)));
     const transactions = createPoolClientTransactionRunner(pool);
     const override = await createProjectAgentGuidanceSystemPromptOverride(
       (projectItemId) =>
@@ -265,7 +311,9 @@ export async function createAgentSessionFactoryForRun(
     gateway.streamFn(model, context, { ...options, headers: { ...options?.headers, [AGENT_RUN_ID_HEADER]: run.id } });
 
   const uniqueTools = withUniqueNames(tools);
-  const toolEventMetadata = new Map(uniqueTools.map((tool) => [tool.name, tool.toolEventMetadata]));
+  const toolEventMetadata = new Map(
+    uniqueTools.flatMap((tool) => (tool.toolEventMetadata ? [[tool.name, tool.toolEventMetadata] as const] : [])),
+  );
   return createPiAgentSessionFactory({
     model: gateway.model,
     streamFn,

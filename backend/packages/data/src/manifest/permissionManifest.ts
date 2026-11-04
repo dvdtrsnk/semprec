@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import type { ModuleRegistry } from "@semprec/module-registry";
-import { CAPABILITY_IDS, type CapabilityId } from "@semprec/shared";
+import { CAPABILITY_IDS } from "@semprec/shared";
 import { visibleDatabaseIds } from "../chokePoint/itemsStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { heartbeatRuleSchema, type HeartbeatRule } from "../scheduler/rule.js";
@@ -74,14 +74,11 @@ export interface PermissionManifest {
   /** A project run's granted MCP tools (issue #126) — the manifest's fourth source, alongside databases/heartbeats/capabilities. */
   agentTools: McpAgentToolProjection[];
   /**
-   * The generic-operation capability ids (#252's `CAPABILITY_IDS`) granted to this run (issue
-   * #220): every active module's registered capability, narrowed to the eight this catalog
-   * defines. `packages/agent-runtime`'s generic AgentTool factories construct only the subset of
-   * the 30 operations whose `OPERATION_METADATA.requiresCapability` appears here — an ungranted
-   * one is absent from the run's tool list, not present-but-forbidden. Empty when `moduleRegistry`
-   * isn't supplied (matching every other `moduleRegistry`-gated field on this manifest).
+   * Active core capabilities plus module capabilities admitted by the run project's database
+   * ownership, per the owned-databases module-tools ADR. The generic adapter intersects this
+   * list with its closed core catalog. Empty without a module registry.
    */
-  grantedCapabilities: CapabilityId[];
+  grantedCapabilities: string[];
 }
 
 export interface GeneratePermissionManifestOptions {
@@ -183,7 +180,26 @@ export async function generatePermissionManifest(
   const grantedModuleCapabilities = moduleRegistry
     ? new Set(await moduleRegistry.getCapabilities())
     : new Set<string>();
-  const grantedCapabilities = CAPABILITY_IDS.filter((id) => grantedModuleCapabilities.has(id));
+  const grantedCapabilities: string[] = CAPABILITY_IDS.filter((id) => grantedModuleCapabilities.has(id));
+  if (moduleRegistry) {
+    const visible = new Set(await visibleDatabaseIds(client));
+    const core = new Set<string>(CAPABILITY_IDS);
+    for (const declaration of await moduleRegistry.getModuleCapabilityDeclarations()) {
+      if (declaration.databaseKeys.length === 0) continue;
+      const owned = declaration.databaseKeys.every((key) => {
+        const row = databaseRows.find((candidate) => candidate.key === key);
+        return (
+          row !== undefined &&
+          visible.has(row.id) &&
+          !(row.owner_module_id && SEMPREC_READ_ONLY_MODULE_IDS.includes(row.owner_module_id))
+        );
+      });
+      if (owned)
+        for (const capability of declaration.capabilities) {
+          if (!core.has(capability) && !grantedCapabilities.includes(capability)) grantedCapabilities.push(capability);
+        }
+    }
+  }
 
   return { projectItemId, databases, heartbeats, capabilities, agentTools, grantedCapabilities };
 }

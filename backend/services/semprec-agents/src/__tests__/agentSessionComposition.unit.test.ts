@@ -62,6 +62,8 @@ vi.mock("@semprec/data", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@semprec/data")>()),
   createCollectionMetadataResolver: async () => testMetadataResolver,
   withClient: async (_pool: Pool, fn: (client: Client) => Promise<unknown>) => fn(new Client()),
+  withTransaction: async (_pool: Pool, fn: (client: Client) => Promise<unknown>) => fn(new Client()),
+  generatePermissionManifest: async () => ({ grantedCapabilities: [] }),
   listMcpToolGrantsForProject: async () => fixtures.grants,
   getTenantUserLocale: async () => fixtures.locale,
 }));

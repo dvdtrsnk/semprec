@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { ModuleManifest } from "../../manifest.js";
 
 export const manifest: ModuleManifest = {
@@ -8,7 +9,17 @@ export const manifest: ModuleManifest = {
   systemProject: false,
   databases: [],
   capabilities: [],
-  agentTools: [{ name: "fixtureGood.doThing", handlerExport: "handleDoThing" }],
+  agentTools: [
+    {
+      name: "fixtureGood.doThing",
+      handlerExport: "handleDoThing",
+      argumentSchemaExport: "toolArgsSchema",
+      approval: "none",
+      riskClass: "read",
+    },
+  ],
 };
 
 export function handleDoThing(): void {}
+
+export const toolArgsSchema = z.object({});
