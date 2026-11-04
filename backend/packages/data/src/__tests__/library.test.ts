@@ -2,8 +2,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { runOnce } from "@semprec/queue";
-import { runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import { runLibraryBooksYearIsbnCutoverMigration } from "../library/libraryBooksYearIsbnCutoverMigration.js";
+import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { generateSchemaProjection } from "../manifest/schemaProjection.js";
 import {
@@ -705,6 +706,22 @@ describe("Books year and ISBN tenant cutover", () => {
     ]);
     return rows;
   }
+  it("runs the registered cutover on a populated tenant and leaves it unchanged on a second run", async () => {
+    await runInTenant(tenantId, async () => {
+      // Recreate the older schema shape; the current seed always creates both properties.
+      await runtime.query("DELETE FROM properties WHERE database_id = $1 AND key = ANY($2::text[])", [
+        booksId,
+        ["year", "isbn"],
+      ]);
+    });
+    const run = () => runAsSystem("test Books cutover", () => runTenantCutoverMigrations(runtime));
+    await run();
+    const upgraded = await runInTenant(tenantId, snapshot);
+    expect(upgraded.find((property) => property.key === "year")).toMatchObject({ type: "number", owner: "user" });
+    expect(upgraded.find((property) => property.key === "isbn")).toMatchObject({ type: "text", owner: "user" });
+    await run();
+    expect(await runInTenant(tenantId, snapshot)).toEqual(upgraded);
+  });
   it("adds both missing properties to the locked schema once and preserves existing properties", async () =>
     runInTenant(tenantId, async () => {
       // Direct fixture SQL recreates the schema of an older build.
