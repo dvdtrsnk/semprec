@@ -64,6 +64,14 @@ describe("ModuleRegistry.loadModule", () => {
     );
   });
 
+  it("rejects a module tool whose argument schema cannot be projected", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await expect(registry.loadModule(fixturePath("invalidToolSchemaModule.js"))).rejects.toThrow(
+      /invalid argument schema/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
+  });
+
   it("rejects a task descriptor missing queueAffinity", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     await expect(registry.loadModule(fixturePath("missingQueueAffinityTaskModule.js"))).rejects.toThrow(

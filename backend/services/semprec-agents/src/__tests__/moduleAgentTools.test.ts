@@ -194,4 +194,29 @@ describe("module agent tools under project ownership", () => {
       expect(manifest.grantedCapabilities).not.toContain("owned.read");
     });
   });
+  it("does not widen a shared capability when one declaring module is not owned", async () =>
+    runInTenant(tenant, async () => {
+      await seedSystem(pool);
+      const cp = createChokePoint(pool);
+      const projects = (await cp.listDatabases()).find((db) => db.key === "projects");
+      if (!projects) throw new Error("Projects missing");
+      const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Owner" } });
+      const registry = new ModuleRegistry(() => new Set(["fixture-good", "fixture-second"]));
+      await registry.loadModule(
+        new URL("../../../../packages/module-registry/src/__tests__/fixtures/goodModule.js", import.meta.url).href,
+      );
+      await registry.loadModule(
+        new URL("../../../../packages/module-registry/src/__tests__/fixtures/secondModule.js", import.meta.url).href,
+      );
+      await cp.createDatabase({ name: null, key: "fixtureGoodItems", system: true, ownerProjectItemId: project.id });
+      const granted = async () =>
+        (
+          await withTransaction(pool, (client) =>
+            generatePermissionManifest(client, project.id, { moduleRegistry: registry }),
+          )
+        ).grantedCapabilities;
+      expect(await granted()).not.toContain("fixtureGood.send");
+      await cp.createDatabase({ name: null, key: "fixtureSecondItems", system: true, ownerProjectItemId: project.id });
+      expect(await granted()).toContain("fixtureGood.send");
+    }));
 });

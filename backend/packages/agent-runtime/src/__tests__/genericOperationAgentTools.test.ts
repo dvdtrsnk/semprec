@@ -24,7 +24,7 @@ import {
   updateItemWithClient,
   type ChokePoint,
 } from "@semprec/data";
-import type { ModuleRegistry } from "@semprec/module-registry";
+import { ModuleRegistry } from "@semprec/module-registry";
 import { GENERIC_OPERATION_NAMES, runInTenant } from "@semprec/shared";
 import {
   TOOL_CHANGE_VALUE_MAX_LENGTH,
@@ -621,6 +621,40 @@ describe("generic operation AgentTools (issue #220)", () => {
   });
 
   describe("listGrantedGenericOperationAgentTools", () => {
+    it("intersects admitted module strings with the closed core capability catalog", async () => {
+      const projectItemId = await createProjectItem();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "check capabilities" });
+      for (const key of ["ownedOne", "ownedTwo"]) {
+        await chokePoint.createDatabase({ name: null, key, system: true, ownerProjectItemId: projectItemId });
+      }
+      const registry = new ModuleRegistry(() => new Set(["schemaCore", "ownedTools"]));
+      await registry.loadModule(
+        new URL("../../../data/src/chokePoint/schemaCoreModuleManifest.js", import.meta.url).href,
+      );
+      await registry.loadModule(
+        new URL("../../../module-registry/src/__tests__/fixtures/ownedAgentToolsModule.js", import.meta.url).href,
+      );
+      const original = application.createGenericOperationGateway;
+      let seen: ReadonlySet<string> | undefined;
+      const spy = vi.spyOn(application, "createGenericOperationGateway").mockImplementation((...args) => {
+        const gateway = original(...args);
+        const list = gateway.listOperations.bind(gateway);
+        vi.spyOn(gateway, "listOperations").mockImplementation((capabilities) => {
+          seen = capabilities;
+          return list(capabilities);
+        });
+        return gateway;
+      });
+      try {
+        expect(
+          (await listGrantedGenericOperationAgentTools(pool, registry, run.id, testMetadataResolver)).sort(),
+        ).toEqual([...GENERIC_OPERATION_NAMES].sort());
+        expect(seen?.has("owned.read")).toBe(false);
+        expect(seen?.has("core.item.read")).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+    });
     it("returns [] for a run with no project context", async () => {
       const run = await createAgentRun(pool, { triggeredBy: "user", task: "no project" });
 
