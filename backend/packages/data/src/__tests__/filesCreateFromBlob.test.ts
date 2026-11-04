@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { DateTime } from "luxon";
 import { runAsSystem, runInTenant } from "@semprec/shared";
@@ -103,6 +103,195 @@ describe("Files creation from standalone blobs", () => {
       expect(await api.listItemRelations(created.id, property.id)).toMatchObject([{ targetItemId: project.id }]);
     });
   });
+  it("does not infer a file type absent from the tenant's current select options", async () => {
+    const uploaded = await upload(owner, "%PDF-1.4\nunsupported-option");
+    await runInTenant(owner, async () => {
+      const api = createChokePoint(runtime);
+      const files = await db("files");
+      const property = (await api.listProperties(files.id)).find((entry) => entry.key === "type");
+      if (!property) throw new Error("Files type property missing");
+      // Model a historical schema whose locked select did not yet contain the PDF option.
+      const changed = await withTransaction(runtime, (client) =>
+        client.query(
+          "UPDATE properties SET config = jsonb_set(config, '{options}', $1::jsonb) WHERE tenant_id = $2 AND id = $3",
+          [JSON.stringify([{ key: "jpg" }]), owner, property.id],
+        ),
+      );
+      expect(changed.rowCount).toBe(1);
+      const item = await api.createItem({
+        databaseId: files.id,
+        properties: { name: "Unmatched", file: { blobId: uploaded.blob.id } },
+      });
+      expect(item.properties.type).toBeUndefined();
+      expect(item.properties.file).toEqual({ blobId: uploaded.blob.id });
+    });
+  });
+
+  it("reserves the type property and re-reads committed options in either order", async () => {
+    const uploaded = await upload(owner, "%PDF-1.4\noverlap");
+    await runInTenant(owner, async () => {
+      const api = createChokePoint(runtime);
+      const files = await db("files");
+      const property = (await api.listProperties(files.id)).find((entry) => entry.key === "type");
+      if (!property) throw new Error("Files type property missing");
+      const withoutPdf = JSON.stringify([{ key: "jpg" }]);
+      const withPdf = JSON.stringify([{ key: "pdf" }, { key: "jpg" }]);
+      const sql =
+        "UPDATE properties SET config = jsonb_set(config, '{options}', $1::jsonb) WHERE tenant_id = $2 AND id = $3";
+      async function updateOptions(client: import("pg").PoolClient, options: string) {
+        const result = await client.query(sql, [options, owner, property!.id]);
+        expect(result.rowCount).toBe(1);
+      }
+      async function blockedBy(contender: () => number, holder: () => number) {
+        await vi.waitFor(async () => {
+          expect(contender()).toBeGreaterThan(0);
+          expect(holder()).toBeGreaterThan(0);
+          const result = await admin.query<{ blocked: number[] }>("SELECT pg_blocking_pids($1) AS blocked", [
+            contender(),
+          ]);
+          expect(result.rows[0]?.blocked).toContain(holder());
+        });
+      }
+      async function joined(body: () => Promise<void>, release: () => void, actors: Promise<unknown>[]) {
+        const errors: unknown[] = [];
+        try {
+          await body();
+        } catch (error) {
+          errors.push(error);
+        } finally {
+          release();
+          for (const result of await Promise.allSettled(actors))
+            if (result.status === "rejected") errors.push(result.reason);
+        }
+        if (errors.length === 1) throw errors[0];
+        if (errors.length > 1) throw new AggregateError(errors, "Files overlap and settlement failed");
+      }
+      let releaseFirst!: () => void;
+      let readyFirst!: () => void;
+      const firstGate = new Promise<void>((resolve) => (releaseFirst = resolve));
+      const firstReady = new Promise<void>((resolve) => (readyFirst = resolve));
+      let configPid = 0;
+      let createPid = 0;
+      const configFirst = withTransaction(runtime, async (client) => {
+        await client.query("SET LOCAL statement_timeout = '5s'");
+        configPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+        // Fixture only: the public API correctly refuses changes to this locked schema.
+        await updateOptions(client, withoutPdf);
+        readyFirst();
+        await firstGate;
+      });
+      const observePool = (onPid: (pid: number) => void, beforeCommit?: () => Promise<void>) =>
+        new Proxy(runtime, {
+          get(target, key, receiver) {
+            if (key !== "connect") {
+              const value: unknown = Reflect.get(target, key, receiver);
+              return typeof value === "function" ? value.bind(target) : value;
+            }
+            return async () => {
+              const client = await target.connect();
+              onPid((await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid);
+              return new Proxy(client, {
+                get(clientTarget, field, clientReceiver) {
+                  if (field !== "query") {
+                    const value: unknown = Reflect.get(clientTarget, field, clientReceiver);
+                    return typeof value === "function" ? value.bind(clientTarget) : value;
+                  }
+                  return async (...args: unknown[]) => {
+                    if (args[0] === "COMMIT" && beforeCommit) await beforeCommit();
+                    const result: unknown = await Reflect.apply(
+                      clientTarget.query.bind(clientTarget),
+                      clientTarget,
+                      args,
+                    );
+                    if (args[0] === "BEGIN") await clientTarget.query("SET LOCAL statement_timeout = '5s'");
+                    return result;
+                  };
+                },
+              });
+            };
+          },
+        });
+      void configFirst.catch(() => {});
+      const actors: Promise<unknown>[] = [configFirst];
+      await joined(
+        async () => {
+          await Promise.race([
+            firstReady,
+            configFirst.then(() => {
+              throw new Error("Config holder ended before barrier");
+            }),
+          ]);
+          const create = createChokePoint(observePool((pid) => (createPid = pid))).createItem({
+            databaseId: files.id,
+            properties: { name: "After config", file: { blobId: uploaded.blob.id } },
+          });
+          actors.push(create);
+          void create.catch(() => {});
+          await blockedBy(
+            () => createPid,
+            () => configPid,
+          );
+          process.stdout.write(`Files option config-first: holder=${configPid} contender=${createPid}\n`);
+          releaseFirst();
+          expect((await create).properties.type).toBeUndefined();
+        },
+        releaseFirst,
+        actors,
+      );
+
+      await withTransaction(runtime, (client) => updateOptions(client, withPdf));
+      let releaseSecond!: () => void;
+      let readySecond!: () => void;
+      const secondGate = new Promise<void>((resolve) => (releaseSecond = resolve));
+      const secondReady = new Promise<void>((resolve) => (readySecond = resolve));
+      let updatePid = 0;
+      createPid = 0;
+      const createFirst = createChokePoint(
+        observePool(
+          (pid) => (createPid = pid),
+          async () => {
+            readySecond();
+            await secondGate;
+          },
+        ),
+      ).createItem({ databaseId: files.id, properties: { name: "Before config", file: { blobId: uploaded.blob.id } } });
+      void createFirst.catch(() => {});
+      const secondActors: Promise<unknown>[] = [createFirst];
+      await joined(
+        async () => {
+          await Promise.race([
+            secondReady,
+            createFirst.then(() => {
+              throw new Error("Create holder ended before barrier");
+            }),
+          ]);
+          const update = withTransaction(runtime, async (client) => {
+            await client.query("SET LOCAL statement_timeout = '5s'");
+            updatePid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+            await updateOptions(client, withoutPdf);
+          });
+          secondActors.push(update);
+          void update.catch(() => {});
+          await blockedBy(
+            () => updatePid,
+            () => createPid,
+          );
+          process.stdout.write(`Files option create-first: holder=${createPid} contender=${updatePid}\n`);
+          releaseSecond();
+          expect((await createFirst).properties.type).toBe("pdf");
+          await update;
+          const latest = await api.createItem({
+            databaseId: files.id,
+            properties: { name: "After update", file: { blobId: uploaded.blob.id } },
+          });
+          expect(latest.properties.type).toBeUndefined();
+        },
+        releaseSecond,
+        secondActors,
+      );
+    });
+  });
+
   it("collects an unfiled upload after the grace period without creating a Files item", async () => {
     const uploaded = await upload(owner, "%PDF-1.4\ncancel");
     await runInTenant(owner, async () => {
