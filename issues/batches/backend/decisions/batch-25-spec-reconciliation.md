@@ -111,3 +111,9 @@ Gh-1537 may add exactly the journal period read -> packages/data/src/journal/jou
 ## Journal ensure and actual sync
 
 Gh-1541 may extend only the existing API tenantIsolationRealtime.test.ts with actual authenticated PUT ensure -> returned docId -> real /api/sync doc-open evidence on its non-bypass business pool. Reuse its production dispatcher/upgrade composition, own success, foreign/random refusal and ordered no-effect controls, bounded owned cleanup. No new production sync/auth hooks, cross-package private imports or dependency changes. This test permission supplements Journal data and REST isolation evidence rather than treating them as socket proof.
+
+## Voice production dependencies and shared send gate
+
+The API directly owns its new WebSocketServer and therefore promotes the existing ws dependency from development to runtime without changing its version. Its lockfile permission covers only mechanically required importer/derived metadata changes, not upgrades, unrelated dependency changes or a module reinstall. The realtime root may explicitly export only sendWithBackpressure and BACKPRESSURE_CLOSE_CODE; there is no existing realtime exact surface catalog to update. Keep its existing 4 MB send gate unchanged. The voice owner enforces its ADR 256 KiB outgoing bound, including the pending payload, before delegating to that gate, using the existing close code. No private cross-package import or generic threshold API. Existing voice tests cover actual wire lifecycle and deterministic pressure boundary without pretending a stub proves a real stalled network peer. This applies existing module/runtime dependency rules and the accepted voice limit, not a new architecture.
+
+The aggregate-only introductory execution prose is shortened without removing member requirements or snapshots, retaining sequential one-writer/backend-only scope, history reconciliation, normal approval and final gates while staying under its body limit.
