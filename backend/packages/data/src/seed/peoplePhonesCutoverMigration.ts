@@ -9,7 +9,7 @@ export async function runPeoplePhonesCutoverMigration(pool: Pool): Promise<void>
     if (!people) return;
     await client.query(
       `INSERT INTO properties (database_id, key, name, type, config, locked, owner, owner_process)
-       VALUES ($1, 'phones', 'Phones', 'longText', '{}'::jsonb, false, 'user', NULL)
+       VALUES ($1, 'phones', NULL, 'longText', '{}'::jsonb, false, 'user', NULL)
        ON CONFLICT (database_id, key) DO NOTHING`,
       [people.id],
     );

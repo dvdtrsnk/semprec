@@ -184,10 +184,10 @@ describe("item routes (issue #241)", () => {
       withTransaction(pool, (client) => getDatabaseByModuleId(client, "people")),
     );
     if (!database) throw new Error("People missing");
-    const created = await fetch(`${baseUrl}/api/items`, {
+    const created = await fetch(`${baseUrl}/api/databases/${database.id}/items`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ databaseId: database.id, properties: { name: "Person", phones: "777 123 456" } }),
+      body: JSON.stringify({ properties: { name: "Person", phones: "777 123 456" } }),
     });
     expect(created.status).toBe(201);
     const item = z.object({ id: z.string() }).parse(await created.json());
