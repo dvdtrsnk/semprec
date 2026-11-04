@@ -54,7 +54,7 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
     ]);
     const contexts: Context[] = [];
     const observed: StreamFn = (m, context, options) => {
-      contexts.push(structuredClone(context));
+      contexts.push({ ...context, messages: structuredClone(context.messages) });
       return streamFn(m, context, options);
     };
     const tool: AgentTool = {
