@@ -19,10 +19,9 @@ export type {
 } from "./inboxTickSnapshot.js";
 import { listActiveInboxTypes } from "./inboxTypesStore.js";
 import {
-  filterRecognitionCandidates,
   validRecognitionTypes,
-  clarificationTypes,
-  recognitionClarificationReason,
+  recognitionClarificationPatch,
+  recognitionChangedReason,
   RECOGNITION_CONFIDENCE_THRESHOLD,
   RECOGNITION_CARD_KEYS,
 } from "./inboxRecognition.js";
@@ -71,7 +70,7 @@ import { assertNoRefCycle, selectActiveSteps, stepError } from "./proposalStepGr
 import { appendHistoryEntry } from "./proposalHistory.js";
 import { isSerializationFailure, isTickWriteTransaction } from "./tickTransaction.js";
 import { withTickTransaction, withTickWriteTransaction } from "./tickTransaction.js";
-import { tryLockInboxType } from "./inboxSourceGuard.js";
+import { tryLockInboxType, resolveBoundRecognition } from "./inboxSourceGuard.js";
 import { CardinalityViolationError, ValidationError } from "../errors.js";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
@@ -627,7 +626,7 @@ async function invalidateProposalForDeletedSource(
 /**
  * True when a card's stored `proposal` envelope passes the check the tick applies to a computed
  * envelope before storing it (`assertValidProposalEnvelope`). A card with no envelope, or one
- * that no longer parses, does not pass. Any other error propagates.
+ * that no longer parses or violates relation cardinality, does not pass. Other errors propagate.
  */
 async function storedEnvelopeStillValid(client: PoolClient, proposal: ItemRow): Promise<boolean> {
   const parsed = proposalEnvelopeSchema.safeParse(proposal.properties.proposal);
@@ -636,7 +635,7 @@ async function storedEnvelopeStillValid(client: PoolClient, proposal: ItemRow): 
     await assertValidProposalEnvelope(client, parsed.data);
     return true;
   } catch (err) {
-    if (err instanceof ValidationError) return false;
+    if (err instanceof ValidationError || err instanceof CardinalityViolationError) return false;
     throw err;
   }
 }
@@ -899,7 +898,7 @@ async function writeTickResult(
   client: PoolClient,
   config: SemprecTickActionConfig,
   snapshot: TickSnapshot,
-  envelope: ProposalEnvelope,
+  envelope: ProposalEnvelope | null,
   reason: string | null,
   recognitionPatch: Record<string, unknown> = {},
   invalidProposal = false,
@@ -907,8 +906,10 @@ async function writeTickResult(
   const current = await currentSourceFingerprint(client, config, snapshot);
   if (!current) return;
   const { item, fingerprint } = current;
+  const missingTarget = envelope === null;
 
   try {
+    if (!envelope) throw new ValidationError("Page target needs clarification");
     if (invalidProposal) throw new ValidationError("Proposal needs clarification");
     envelope = await prepareComputedUpdates(client, envelope, snapshot.item.properties.date);
     await assertValidProposalEnvelope(client, envelope);
@@ -926,6 +927,7 @@ async function writeTickResult(
       existingForClarification,
       `Computed proposal failed validation: ${err.message}`,
       fingerprint,
+      missingTarget ? { reason: await recognitionChangedReason(toManifestLocale(snapshot.locale)) } : {},
     );
     return;
   }
@@ -1025,26 +1027,12 @@ async function writeComputeFailure(
 }
 
 /**
- * Registered as an `onItemEvent` ('create'/'update'/'delete') heartbeat action on the Inbox
- * database (issue #103): re-reads the item by id at run time — never trusting anything about
- * its content from the job payload — so when several rapid edits collapse onto one pending
- * job (the heartbeat-fire job key's replace semantics), the single tick that eventually runs
- * reflects whatever state is current at that moment, not a stale snapshot from whichever edit
- * enqueued it.
+ * The Inbox `onItemEvent` heartbeat re-reads the item by id, including when rapid edits coalesce.
  *
  * Runs in three phases, per `docs/adr/2026-09-10-bracket-non-transactional-calls-with-staleness-checked-transactions.md`:
- * a read transaction (`readTickSnapshot`) that either resolves the tick with no AI call (deleted
- * source → `invalid`, unrecognized type → `needsClarification`, a locked or unchanged-fingerprint
- * existing proposal → no-op; a restored source's `sourceDeleted` card → `proposed` or
- * `needsClarification` before the fingerprint gate, issue #1604) or returns a snapshot; the
- * injected, LLM-backed `computeProposal` call outside any transaction; and a write transaction
- * (`writeTickResult`) that re-validates the
- * snapshot against the source item's current state before writing — a `confirmed`/`rejected`
- * (locked) proposal is never recomputed, and a source that changed while the call was in flight
- * makes this tick write nothing (the next tick, already enqueued, produces the up-to-date card).
- * A computed envelope that fails destination validation lands in `needsClarification` rather
- * than being stored as `proposed`. Every create, revise, or status change appends one
- * `{ author: 'ai', message, at }` history entry (issue #104).
+ * a read transaction resolves no-call cases or returns a snapshot; the model call runs outside a
+ * transaction; the write transaction revalidates the source and preserves locked cards. A changed
+ * source causes a nonwrite. Invalid envelopes become `needsClarification`; card changes append AI history.
  *
  * A gateway failure (`AiGatewayFailedError`) from `computeProposal` is recorded on the card as
  * `computeFailed` (issue #1485) when its reason is `budget_exceeded` or the call is the final queue
@@ -1097,21 +1085,17 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
     if (snapshot.recognition) {
       await withTickWriteTransaction(pool, async (client) => {
         if (!(await currentSourceFingerprint(client, config, snapshot))) return;
-        const catalog = validRecognitionTypes(await listActiveInboxTypes(client, config.inboxItemTypesDatabaseId));
-        const candidates = filterRecognitionCandidates(result.candidates, catalog);
-        const best = candidates[0];
-        if (!best || best.confidence < RECOGNITION_CONFIDENCE_THRESHOLD) {
-          const choices = clarificationTypes(candidates, catalog);
+        const selection = await resolveBoundRecognition(client, config.inboxItemTypesDatabaseId, snapshot, result);
+        if (!selection) return;
+        const { best, choices, selected, database, targetModule, changed } = selection;
+        if (!best || best.confidence < RECOGNITION_CONFIDENCE_THRESHOLD || changed) {
           const existing = snapshot.existingProposal ?? (await findExistingProposal(client, config, snapshot.item.id));
-          const patch = {
-            recognizedTypeId: null,
-            typeCandidates: choices,
-            reason: await recognitionClarificationReason(
-              toManifestLocale(snapshot.locale),
-              choices.length,
-              result.reason,
-            ),
-          };
+          const patch = await recognitionClarificationPatch(
+            toManifestLocale(snapshot.locale),
+            choices,
+            changed,
+            result.reason,
+          );
           await writeNeedsClarification(
             client,
             config,
@@ -1123,14 +1107,11 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
           );
           return;
         }
-        const selected = "typeId" in best ? catalog.find((type) => type.id === best.typeId) : undefined;
-        const target = selected?.targetDatabaseKey ?? ("targetDatabaseKey" in best ? best.targetDatabaseKey : null);
-        const database = target ? await databasesStore.getDatabaseByModuleId(client, target) : null;
         const resolved = {
           ...snapshot,
           entityKind: selected?.processingMethod === "pageContent" ? ("pageContent" as const) : ("database" as const),
           targetDatabaseId: database?.id,
-          targetModuleId: target ?? undefined,
+          targetModuleId: targetModule ?? undefined,
         };
         await writeTickResult(
           client,
@@ -1144,7 +1125,8 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
       });
       return;
     }
-    const envelope = buildProposalEnvelope(snapshot, result);
+    const envelope =
+      snapshot.entityKind === "pageContent" && !result.target ? null : buildProposalEnvelope(snapshot, result);
 
     await withTickWriteTransaction(pool, (client) =>
       writeTickResult(

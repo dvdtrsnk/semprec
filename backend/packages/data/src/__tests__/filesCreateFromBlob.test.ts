@@ -82,6 +82,8 @@ describe("Files creation from standalone blobs", () => {
         databaseId: files.id,
         properties: { name: "Earlier", file: { blobId: firstUpload.blob.id }, date: "2001-01-01", type: "jpg" },
       });
+      const earlierBefore = await api.getItem(files.id, earlier.id);
+      const earlierRelations = await api.listItemRelations(earlier.id, property.id);
       const duplicate = await upload(owner, "%PDF-1.4\nshared");
       expect(duplicate.blob.id).toBe(firstUpload.blob.id);
       const zone = await withTransaction(runtime, (client) => getSystemTimezone(client));
@@ -95,11 +97,8 @@ describe("Files creation from standalone blobs", () => {
       expect(created.id).not.toBe(earlier.id);
       expect(created.properties.type).toBe("pdf");
       expect([before, after]).toContain(created.properties.date);
-      expect((await api.getItem(files.id, earlier.id))?.properties).toMatchObject({
-        name: "Earlier",
-        date: "2001-01-01",
-        type: "jpg",
-      });
+      expect(await api.getItem(files.id, earlier.id)).toEqual(earlierBefore);
+      expect(await api.listItemRelations(earlier.id, property.id)).toEqual(earlierRelations);
       expect(await api.listItemRelations(created.id, property.id)).toMatchObject([{ targetItemId: project.id }]);
     });
   });
@@ -113,7 +112,9 @@ describe("Files creation from standalone blobs", () => {
       }));
       await api.updateItem({ ...settings, propertiesPatch: { timezone: "Pacific/Kiritimati" } });
       const files = await db("files");
-      const clock = vi.spyOn(DateTime, "now").mockReturnValue(DateTime.fromISO("2026-01-01T12:30:00.000Z"));
+      const clockTime = DateTime.fromISO("2026-01-01T12:30:00.000Z");
+      if (!clockTime.isValid) throw new Error("Invalid test time");
+      const clock = vi.spyOn(DateTime, "now").mockReturnValue(clockTime);
       try {
         const item = await api.createItem({
           databaseId: files.id,
@@ -123,6 +124,73 @@ describe("Files creation from standalone blobs", () => {
       } finally {
         clock.mockRestore();
       }
+    });
+  });
+
+  it("classifies fresh duplicate bytes without changing historical metadata or the earlier file", async () => {
+    const bytes = "%PDF-1.4\nhistorical";
+    const uploaded = await upload(owner, bytes);
+    await runInTenant(owner, async () => {
+      const api = createChokePoint(runtime);
+      const files = await db("files");
+      const projects = await db("projects");
+      const project = await api.createItem({ databaseId: projects.id, properties: { name: "Existing project" } });
+      const property = (await api.listProperties(files.id)).find((entry) => entry.key === "projects");
+      if (!property) throw new Error("Files project relation missing");
+      const earlier = await api.createItemWithRelations({
+        databaseId: files.id,
+        properties: { name: "Existing", file: { blobId: uploaded.blob.id }, type: "jpg" },
+        relations: [{ kind: "resolved", relationPropertyId: property.id, targetItemIds: [project.id] }],
+      });
+      // Historical fixture: legacy MIME could have come from the upload header, before verified detection existed.
+      const changed = await runtime.query(
+        "UPDATE blobs SET mime_type = $1, detected_mime_type = NULL WHERE tenant_id = $2 AND id = $3",
+        ["image/png", owner, uploaded.blob.id],
+      );
+      expect(changed.rowCount).toBe(1);
+      const beforeBlob = await runtime.query<{ row: unknown }>(
+        "SELECT to_jsonb(b) - 'detected_mime_type' AS row FROM blobs b WHERE tenant_id = $1 AND id = $2",
+        [owner, uploaded.blob.id],
+      );
+      const beforeItem = await api.getItem(files.id, earlier.id);
+      const beforeEdges = await api.listItemRelations(earlier.id, property.id);
+      const unverified = await api.createItem({
+        databaseId: files.id,
+        properties: { name: "Unverified", file: { blobId: uploaded.blob.id } },
+      });
+      expect(unverified.properties.type).toBeUndefined();
+      const duplicate = await upload(owner, bytes);
+      expect(duplicate.blob.id).toBe(uploaded.blob.id);
+      const afterBlob = await runtime.query<{ row: unknown; detected_mime_type: string | null }>(
+        "SELECT to_jsonb(b) - 'detected_mime_type' AS row, detected_mime_type FROM blobs b WHERE tenant_id = $1 AND id = $2",
+        [owner, uploaded.blob.id],
+      );
+      expect(afterBlob.rows).toEqual([{ row: beforeBlob.rows[0]?.row, detected_mime_type: "application/pdf" }]);
+      const fresh = await api.createItem({
+        databaseId: files.id,
+        properties: { name: "Fresh", file: { blobId: uploaded.blob.id } },
+      });
+      expect(fresh.properties.type).toBe("pdf");
+      expect(await api.getItem(files.id, earlier.id)).toEqual(beforeItem);
+      expect(await api.listItemRelations(earlier.id, property.id)).toEqual(beforeEdges);
+    });
+  });
+
+  it("leaves an unknown detected type unset and preserves an explicit type", async () => {
+    const uploaded = await upload(owner, "unknown bytes");
+    await runInTenant(owner, async () => {
+      const api = createChokePoint(runtime);
+      const files = await db("files");
+      const unknown = await api.createItem({
+        databaseId: files.id,
+        properties: { name: "Unknown", file: { blobId: uploaded.blob.id } },
+      });
+      const explicit = await api.createItem({
+        databaseId: files.id,
+        properties: { name: "Explicit", file: { blobId: uploaded.blob.id }, type: "jpg" },
+      });
+      expect(unknown.properties.type).toBeUndefined();
+      expect(explicit.properties.type).toBe("jpg");
     });
   });
 

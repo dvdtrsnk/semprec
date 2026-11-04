@@ -331,7 +331,21 @@ export function createProposalComputation({
     return {
       ...normalizeOperations(filtered.value, targets ?? [], targetModule ?? undefined),
       ...(filtered.invalidItem ? { invalidProposal: "workspaceReference" as const } : {}),
-      ...(input.recognition ? { candidates } : {}),
+      ...(input.recognition
+        ? {
+            candidates,
+            ...(best
+              ? {
+                  recognitionBinding: {
+                    candidate: best,
+                    type: selected ?? null,
+                    targetModuleId: targetModule ?? null,
+                    targetDatabaseId: targetDatabaseId ?? null,
+                  },
+                }
+              : {}),
+          }
+        : {}),
     };
   };
 }

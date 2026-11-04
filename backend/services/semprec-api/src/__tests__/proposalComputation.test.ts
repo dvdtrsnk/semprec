@@ -531,6 +531,97 @@ describe("createProposalComputation (issue #1434)", () => {
     expect(gateway.openTransactionsDuringCall).toEqual([0]);
   });
 
+  it("does not reuse a model proposal after its selected type changes during the actual computation", async () => {
+    const cp = createChokePoint(pool);
+    const selected = await inTenantZero(() =>
+      cp.createItem({
+        databaseId: config.inboxItemTypesDatabaseId,
+        properties: {
+          name: "Task",
+          emoji: "T",
+          status: "active",
+          processingMethod: "database",
+          targetDatabase: "tasks",
+        },
+      }),
+    );
+    const alternate = await inTenantZero(() =>
+      cp.createItem({
+        databaseId: config.inboxItemTypesDatabaseId,
+        properties: {
+          name: "Project",
+          emoji: "P",
+          status: "active",
+          processingMethod: "database",
+          targetDatabase: "projects",
+        },
+      }),
+    );
+    const item = await inTenantZero(() =>
+      cp.createItem({
+        databaseId: config.inboxDatabaseId,
+        properties: { text: "Recognize", date: "2026-08-28", time: "09:00" },
+      }),
+    );
+    const tasks = await databaseIdFor("tasks");
+    const before = await inTenantZero(() => cp.listItems(tasks));
+    const response = stubGateway({
+      properties: { name: "Wrong destination" },
+      candidates: [
+        { typeId: selected.id, confidence: 0.9 },
+        { typeId: alternate.id, confidence: 0.8 },
+      ],
+    });
+    const gateway: AiGatewayClientPort = {
+      async complete(input) {
+        await inTenantZero(() =>
+          cp.updateItem({
+            databaseId: config.inboxItemTypesDatabaseId,
+            itemId: selected.id,
+            propertiesPatch: { targetDatabase: "projects" },
+          }),
+        );
+        return response.complete(input);
+      },
+    };
+    await runTick(pool, gateway, item.id);
+    expect((await proposalCards())[0]).toMatchObject({
+      status: "needsClarification",
+      proposal: null,
+      recognizedTypeId: null,
+    });
+    expect((await inTenantZero(() => cp.listItems(tasks))).items).toEqual(before.items);
+    const typeProperty = (await cp.listProperties(config.inboxDatabaseId)).find((property) => property.key === "type");
+    if (!typeProperty) throw new Error("Missing Inbox type property");
+    expect(await inTenantZero(() => cp.listItemRelations(item.id, typeProperty.id))).toEqual([]);
+  });
+
+  it("clarifies an actual page-content computation that omits its target", async () => {
+    const cp = createChokePoint(pool);
+    const type = await inTenantZero(() =>
+      cp.createItem({
+        databaseId: config.inboxItemTypesDatabaseId,
+        properties: { name: "Page", emoji: "P", status: "active", processingMethod: "pageContent" },
+      }),
+    );
+    const item = await inTenantZero(() =>
+      cp.createItem({
+        databaseId: config.inboxDatabaseId,
+        properties: { text: "Page", date: "2026-08-28", time: "09:00" },
+      }),
+    );
+    await runTick(
+      pool,
+      stubGateway({ properties: { flavour: "paragraph" }, candidates: [{ typeId: type.id, confidence: 0.9 }] }),
+      item.id,
+    );
+    expect((await proposalCards())[0]).toMatchObject({
+      status: "needsClarification",
+      proposal: null,
+      recognizedTypeId: null,
+    });
+  });
+
   it("issues no write statement and calls the gateway with no transaction open", async () => {
     const itemId = await createTaskItem("Buy milk");
     const statements: string[] = [];

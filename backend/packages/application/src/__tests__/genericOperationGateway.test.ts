@@ -189,7 +189,11 @@ describe("createGenericOperationGateway (issue #220)", () => {
         }
       });
       try {
-        const input = { relationPropertyId: property.id, callerItemId: caller.id, targetItemId: second.id };
+        const input = {
+          relationPropertyId: property.id.toUpperCase(),
+          callerItemId: caller.id,
+          targetItemId: second.id,
+        };
         let requestId = "";
         try {
           await gateway.invoke("relation.set", actor, ALL_CAPABILITIES, input);
@@ -221,6 +225,11 @@ describe("createGenericOperationGateway (issue #220)", () => {
         if (!request || !isGenericOperationApprovalRequestPayload(request.payload))
           throw new Error("Expected generic request");
         const typed = { ...request, payload: request.payload };
+        const baselineActivity = new Date("2020-01-01T00:00:00.000Z");
+        await pool.query("UPDATE semp_threads SET last_activity_at = $2 WHERE id = $1", [
+          thread.rows[0]!.id,
+          baselineActivity,
+        ]);
         jobCount = await countJobsByIdentifier(pool, CORE_TASK_NAMES.ROLLUP_RECOMPUTE);
         setInvalidationHook((event) => delivered.push(event));
         failMutation = true;
@@ -248,6 +257,70 @@ describe("createGenericOperationGateway (issue #220)", () => {
         );
         expect(messages.rows[0]?.count).toBe("0");
         failMutation = false;
+        const outcomeError = new Error("forced outcome rollback");
+        let sawOutcome = false;
+        const failAfterOutcomePool = new Proxy(pool, {
+          get(targetPool, key, receiver) {
+            if (key !== "connect") {
+              const value: unknown = Reflect.get(targetPool, key, receiver);
+              return typeof value === "function" ? value.bind(targetPool) : value;
+            }
+            return async () => {
+              const client = await targetPool.connect();
+              return new Proxy(client, {
+                get(targetClient, field, clientReceiver) {
+                  if (field !== "query") {
+                    const value: unknown = Reflect.get(targetClient, field, clientReceiver);
+                    return typeof value === "function" ? value.bind(targetClient) : value;
+                  }
+                  return async (...args: unknown[]) => {
+                    const result: unknown = await Reflect.apply(
+                      targetClient.query.bind(targetClient),
+                      targetClient,
+                      args,
+                    );
+                    if (typeof args[0] === "string" && args[0].includes("UPDATE semp_threads SET last_activity_at")) {
+                      const inserted = await targetClient.query<{ count: string }>(
+                        "SELECT count(*)::text AS count FROM semp_messages WHERE thread_id = $1",
+                        [thread.rows[0]!.id],
+                      );
+                      const activity = await targetClient.query<{ last_activity_at: Date }>(
+                        "SELECT last_activity_at FROM semp_threads WHERE id = $1",
+                        [thread.rows[0]!.id],
+                      );
+                      sawOutcome =
+                        inserted.rows[0]?.count === "1" &&
+                        (activity.rows[0]?.last_activity_at.getTime() ?? 0) > baselineActivity.getTime();
+                      throw outcomeError;
+                    }
+                    return result;
+                  };
+                },
+              });
+            };
+          },
+        });
+        await expect(replayApprovedGenericOperation(failAfterOutcomePool, typed)).rejects.toBe(outcomeError);
+        expect(sawOutcome).toBe(true);
+        expect(
+          (
+            await pool.query<{ last_activity_at: Date }>("SELECT last_activity_at FROM semp_threads WHERE id = $1", [
+              thread.rows[0]!.id,
+            ])
+          ).rows[0]?.last_activity_at,
+        ).toEqual(baselineActivity);
+        expect((await getApprovalRequest(pool, requestId))?.executionStatus).toBe("queued");
+        expect(await chokePoint.listItemRelations(caller.id, property.id)).toMatchObject([{ targetItemId: first.id }]);
+        expect(
+          (
+            await pool.query<{ count: string }>(
+              "SELECT count(*)::text AS count FROM semp_messages WHERE thread_id = $1",
+              [thread.rows[0]!.id],
+            )
+          ).rows[0]?.count,
+        ).toBe("0");
+        expect(await countJobsByIdentifier(pool, CORE_TASK_NAMES.ROLLUP_RECOMPUTE)).toBe(jobCount);
+        expect(delivered).toEqual([]);
         expect((await replayApprovedGenericOperation(pool, typed)).error).toBe(false);
         expect((await replayApprovedGenericOperation(pool, typed)).error).toBe(false);
         expect(delivered.length).toBeGreaterThan(0);
@@ -268,6 +341,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         ]);
         expect(seen).toEqual([
           { writerKind: "agent", approvedRequestId: undefined },
+          { writerKind: "agent", approvedRequestId: requestId },
           { writerKind: "agent", approvedRequestId: requestId },
           { writerKind: "agent", approvedRequestId: requestId },
         ]);
@@ -474,8 +548,14 @@ describe("createGenericOperationGateway (issue #220)", () => {
             },
           });
           const normalFirst = ordinary(createChokePoint(heldPool));
+          let normalFailure: { error: unknown } | undefined;
           try {
-            await commitReached;
+            await Promise.race([
+              commitReached,
+              normalFirst.then(() => {
+                throw new Error("Ordinary writer ended before its commit barrier");
+              }),
+            ]);
             expect(normalPid).toBeGreaterThan(0);
             if (kind === "insert") {
               const count = async () =>
@@ -523,10 +603,21 @@ describe("createGenericOperationGateway (issue #220)", () => {
               executionStatus: "queued",
               executionResult: null,
             });
+          } catch (error) {
+            normalFailure = { error };
           } finally {
             releaseCommit();
-            await normalFirst;
           }
+          const [normalSettled] = await Promise.allSettled([normalFirst]);
+          if (normalSettled.status === "rejected") {
+            if (normalFailure && normalFailure.error !== normalSettled.reason)
+              throw new AggregateError(
+                [normalFailure.error, normalSettled.reason],
+                "Ordinary contender and cleanup failed",
+              );
+            throw normalSettled.reason;
+          }
+          if (normalFailure) throw normalFailure.error;
           expect(await countJobsByIdentifier(pool, CORE_TASK_NAMES.ROLLUP_RECOMPUTE)).toBeGreaterThan(baselineJobs);
           expect(delivered.length).toBeGreaterThan(0);
           const conflict = await replayApprovedGenericOperation(runtime, firstRequest);
@@ -554,8 +645,14 @@ describe("createGenericOperationGateway (issue #220)", () => {
           pauseApproval = true;
           const replay = replayApprovedGenericOperation(runtime, secondRequest);
           let normalLater: ReturnType<typeof ordinary> | undefined;
+          let approvalFailure: { error: unknown } | undefined;
           try {
-            await atApproval;
+            await Promise.race([
+              atApproval,
+              replay.then(() => {
+                throw new Error("Approval replay ended before its mutation barrier");
+              }),
+            ]);
             if (kind === "insert") {
               await cp.createRelation({
                 relationPropertyId: unrelatedPair.property.id,
@@ -587,6 +684,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
             normalPid = 0;
             // This gate is already open; the proxy still records the actual contender backend.
             normalLater = ordinary(createChokePoint(heldPool));
+            void normalLater.catch(() => {});
             await vi.waitFor(async () => {
               expect(normalPid).toBeGreaterThan(0);
               const result = await pool.query<{ blocked: number[] }>("SELECT pg_blocking_pids($1) AS blocked", [
@@ -595,11 +693,18 @@ describe("createGenericOperationGateway (issue #220)", () => {
               expect(result.rows[0]?.blocked).toContain(approvalPid);
             });
             process.stdout.write(`reservation approval-first ${kind}: holder=${approvalPid} contender=${normalPid}\n`);
+          } catch (error) {
+            approvalFailure = { error };
           } finally {
             releaseApproval();
-            await replay;
-            if (normalLater) await normalLater;
           }
+          const settled = await Promise.allSettled(normalLater ? [replay, normalLater] : [replay]);
+          const failures: unknown[] = approvalFailure ? [approvalFailure.error] : [];
+          for (const result of settled) {
+            if (result.status === "rejected" && !failures.includes(result.reason)) failures.push(result.reason);
+          }
+          if (failures.length === 1) throw failures[0];
+          if (failures.length > 1) throw new AggregateError(failures, "Approval contender and cleanup failed");
           expect((await getApprovalRequest(runtime, secondRequest.id))?.executionStatus).toBe("succeeded");
           const outcomes = await pool.query<{ system_key: string }>(
             "SELECT system_key FROM semp_messages WHERE thread_id = $1 ORDER BY created_at, id",
@@ -758,76 +863,344 @@ describe("createGenericOperationGateway (issue #220)", () => {
     }
   });
 
-  it("snapshots and replays a flagged item patch without the original version guard", async () => {
-    const database = await chokePoint.createDatabase({ name: "Flag patch" });
-    await chokePoint.createProperty({ databaseId: database.id, key: "note", name: "Note", type: "text" });
-    const item = await chokePoint.createItem({ databaseId: database.id, properties: { note: "before" } });
-    const projectItemId = randomUUID();
-    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "patch item" });
-    const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-    const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-    let active = true;
-    registerItemUpdateHook(async ({ client, item: changed, writer }) => {
-      if (active && changed.id === item.id) requireApprovalForWrite(client, writer, [{ kind: "testReason" }]);
-    });
-    try {
-      let requestId = "";
-      try {
-        await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
-          itemId: item.id,
-          properties: { note: "after" },
-          ifVersion: item.updatedAt,
-        });
-        expect.unreachable("Expected approval");
-      } catch (err) {
-        if (!(err instanceof ApprovalRequiredError)) throw err;
-        requestId = err.details.approvalRequestId;
-      }
-      expect((await chokePoint.findItem(item.id))?.properties.note).toBe("before");
-      const pending = await getApprovalRequest(pool, requestId);
-      expect(pending?.description).toEqual({
-        key: "approval.itemPatch",
-        params: { itemName: null, databaseKey: database.key, databaseName: "Flag patch" },
+  it.each(["archive-first", "approval-first"] as const)(
+    "reserves an item patch against archive in %s order",
+    async (order) =>
+      inTenantZero(async () => {
+        const scoped = await createRuntimeRolePool(pool, "semprec_data");
+        let active = true;
+        let release!: () => void;
+        let reached!: () => void;
+        const gate = new Promise<void>((resolve) => (release = resolve));
+        const barrier = new Promise<void>((resolve) => (reached = resolve));
+        let approvalPid = 0;
+        let archivePid = 0;
+        let replayPid = 0;
+        let pause = false;
+        const cp = createChokePoint(scoped);
+        try {
+          const db = await cp.createDatabase({ name: "Archive reservation" });
+          await cp.createProperty({ databaseId: db.id, key: "note", name: "Note", type: "text" });
+          const item = await cp.createItem({ databaseId: db.id, properties: { note: "before" } });
+          const projectItemId = randomUUID();
+          const run = await createAgentRun(scoped, { projectItemId, triggeredBy: "user", task: "patch" });
+          const actor: AuthenticatedActor = {
+            userId: run.actorUserId,
+            runId: run.id,
+            agentProjectItemId: projectItemId,
+          };
+          registerItemUpdateHook(async ({ client, item: changed, writer }) => {
+            if (!active || changed.id !== item.id) return;
+            requireApprovalForWrite(client, writer, [{ kind: "testReason" }]);
+            if (pause && writer.approvedRequestId) {
+              approvalPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+              reached();
+              await gate;
+            }
+          });
+          const gateway = createGenericOperationGateway(scoped, testMetadataResolver);
+          const input = { itemId: item.id, properties: { note: "after" }, ifVersion: item.updatedAt };
+          let requestId = "";
+          try {
+            await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, input);
+            expect.unreachable("Expected approval");
+          } catch (error) {
+            if (!(error instanceof ApprovalRequiredError)) throw error;
+            requestId = error.details.approvalRequestId;
+          }
+          await withTransaction(scoped, (client) =>
+            decideAndEnqueueApprovalRequest(client, {
+              approvalRequestId: requestId,
+              decision: "approved",
+              decidedByUserId: run.actorUserId,
+            }),
+          );
+          const request = await getApprovalRequest(scoped, requestId);
+          if (!request || !isGenericOperationApprovalRequestPayload(request.payload))
+            throw new Error("Missing request");
+          const typed = { ...request, payload: request.payload };
+          const observedReplayPool = new Proxy(scoped, {
+            get(target, key, receiver) {
+              if (key !== "connect") {
+                const value: unknown = Reflect.get(target, key, receiver);
+                return typeof value === "function" ? value.bind(target) : value;
+              }
+              return async () => {
+                const client = await target.connect();
+                replayPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+                return client;
+              };
+            },
+          });
+          const archivePool = new Proxy(scoped, {
+            get(target, key, receiver) {
+              if (key !== "connect") {
+                const value: unknown = Reflect.get(target, key, receiver);
+                return typeof value === "function" ? value.bind(target) : value;
+              }
+              return async () => {
+                const client = await target.connect();
+                archivePid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+                return new Proxy(client, {
+                  get(inner, field, receiver2) {
+                    if (field !== "query") {
+                      const value: unknown = Reflect.get(inner, field, receiver2);
+                      return typeof value === "function" ? value.bind(inner) : value;
+                    }
+                    return async (...args: unknown[]) => {
+                      if (order === "archive-first" && args[0] === "COMMIT") {
+                        reached();
+                        await gate;
+                      }
+                      return Reflect.apply(inner.query.bind(inner), inner, args);
+                    };
+                  },
+                });
+              };
+            },
+          });
+          if (order === "archive-first") {
+            const archive = createChokePoint(archivePool).archiveDatabase(db.id);
+            let failure: { error: unknown } | undefined;
+            try {
+              await Promise.race([
+                barrier,
+                archive.then(() => {
+                  throw new Error("Archive ended before barrier");
+                }),
+              ]);
+              await expect(replayApprovedGenericOperation(observedReplayPool, typed)).rejects.toBeInstanceOf(
+                ApprovalResourceBusyError,
+              );
+              expect(replayPid).toBeGreaterThan(0);
+              expect(replayPid).not.toBe(archivePid);
+              process.stdout.write(`item archive-first: holder=${archivePid} contender=${replayPid}\n`);
+              const beforeCount = (
+                await scoped.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests")
+              ).rows[0]?.count;
+              await expect(gateway.invoke("item.patch", actor, ALL_CAPABILITIES, input)).rejects.toBeInstanceOf(
+                ApprovalResourceBusyError,
+              );
+              expect(
+                (await scoped.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests")).rows[0]
+                  ?.count,
+              ).toBe(beforeCount);
+              await expect(
+                withTransaction(scoped, async (client) => {
+                  try {
+                    await computeDestructiveResourceProjection(client, {
+                      operation: "item.patch",
+                      input: { itemId: item.id },
+                    });
+                  } catch (error) {
+                    expect(error).toBeInstanceOf(ApprovalResourceBusyError);
+                  }
+                }),
+              ).rejects.toBeInstanceOf(ApprovalResourceBusyError);
+              expect((await getApprovalRequest(scoped, requestId))?.executionStatus).toBe("queued");
+            } catch (error) {
+              failure = { error };
+            } finally {
+              release();
+            }
+            const [done] = await Promise.allSettled([archive]);
+            if (done.status === "rejected") {
+              if (failure && failure.error !== done.reason) throw new AggregateError([failure.error, done.reason]);
+              throw done.reason;
+            }
+            if (failure) throw failure.error;
+            expect((await replayApprovedGenericOperation(scoped, typed)).error).toBe(true);
+            expect((await getApprovalRequest(scoped, requestId))?.executionStatus).toBe("conflict");
+            expect((await cp.getItem(db.id, item.id))?.properties.note).toBe("before");
+          } else {
+            pause = true;
+            const replay = replayApprovedGenericOperation(scoped, typed);
+            let archive: Promise<unknown> | undefined;
+            let failure: { error: unknown } | undefined;
+            try {
+              await Promise.race([
+                barrier,
+                replay.then(() => {
+                  throw new Error("Replay ended before barrier");
+                }),
+              ]);
+              archive = createChokePoint(archivePool).archiveDatabase(db.id);
+              void archive.catch(() => {});
+              await vi.waitFor(async () => {
+                expect(archivePid).toBeGreaterThan(0);
+                const blocked = await pool.query<{ pids: number[] }>("SELECT pg_blocking_pids($1) AS pids", [
+                  archivePid,
+                ]);
+                expect(blocked.rows[0]?.pids).toContain(approvalPid);
+              });
+              process.stdout.write(`item approval-first: holder=${approvalPid} contender=${archivePid}\n`);
+            } catch (error) {
+              failure = { error };
+            } finally {
+              release();
+            }
+            const results = await Promise.allSettled(archive ? [replay, archive] : [replay]);
+            const errors: unknown[] = failure ? [failure.error] : [];
+            for (const result of results)
+              if (result.status === "rejected" && !errors.includes(result.reason)) errors.push(result.reason);
+            if (errors.length === 1) throw errors[0];
+            if (errors.length > 1) throw new AggregateError(errors);
+            expect((await getApprovalRequest(scoped, requestId))?.executionStatus).toBe("succeeded");
+            expect((await cp.getItem(db.id, item.id))?.properties.note).toBe("after");
+          }
+        } finally {
+          active = false;
+          release();
+          await scoped.end();
+        }
+      }),
+  );
+
+  it("snapshots and replays a flagged item patch without the original version guard", async () =>
+    inTenantZero(async () => {
+      const database = await chokePoint.createDatabase({ name: "Flag patch" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "note", name: "Note", type: "text" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "headline", name: "Headline", type: "title" });
+      const item = await chokePoint.createItem({
+        databaseId: database.id,
+        properties: { note: "before", headline: "Patch title" },
       });
-      expect(JSON.stringify(pending?.description)).not.toContain("after");
-      expect(JSON.stringify(pending?.description)).not.toContain(item.id);
-      expect(pending?.resourceSnapshot.kind).toBe("item_patch");
-      await inTenantZero(() =>
-        withTransaction(pool, (client) =>
-          decideAndEnqueueApprovalRequest(client, {
-            approvalRequestId: requestId,
-            decision: "approved",
-            decidedByUserId: run.actorUserId,
-          }),
-        ),
-      );
-      // Simulate a stored stale client token without changing the snapshotted resource.
-      await pool.query(
-        "UPDATE approval_requests SET payload = jsonb_set(payload, '{canonicalInput,ifVersion}', to_jsonb($2::text)) WHERE id = $1",
-        [requestId, "2000-01-01T00:00:00.000Z"],
-      );
-      const request = await getApprovalRequest(pool, requestId);
-      if (!request || !isGenericOperationApprovalRequestPayload(request.payload))
-        throw new Error("Expected generic request");
-      expect((await replayApprovedGenericOperation(pool, { ...request, payload: request.payload })).error).toBe(false);
-      expect((await chokePoint.findItem(item.id))?.properties.note).toBe("after");
-    } finally {
-      active = false;
-    }
-  });
+      const projectItemId = randomUUID();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "patch item" });
+      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+      let active = true;
+      registerItemUpdateHook(async ({ client, item: changed, writer }) => {
+        if (active && changed.id === item.id) requireApprovalForWrite(client, writer, [{ kind: "testReason" }]);
+      });
+      try {
+        let requestId = "";
+        try {
+          await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
+            itemId: item.id,
+            properties: { note: "after" },
+            ifVersion: item.updatedAt,
+          });
+          expect.unreachable("Expected approval");
+        } catch (err) {
+          if (!(err instanceof ApprovalRequiredError)) throw err;
+          requestId = err.details.approvalRequestId;
+        }
+        expect((await chokePoint.findItem(item.id))?.properties.note).toBe("before");
+        const pending = await getApprovalRequest(pool, requestId);
+        expect(pending?.description).toEqual({
+          key: "approval.itemPatch",
+          params: { itemName: "Patch title", databaseKey: database.key, databaseName: "Flag patch" },
+        });
+        expect(JSON.stringify(pending?.description)).not.toContain("after");
+        expect(JSON.stringify(pending?.description)).not.toContain(item.id);
+        expect(pending?.resourceSnapshot.kind).toBe("item_patch");
+        await inTenantZero(() =>
+          withTransaction(pool, (client) =>
+            decideAndEnqueueApprovalRequest(client, {
+              approvalRequestId: requestId,
+              decision: "approved",
+              decidedByUserId: run.actorUserId,
+            }),
+          ),
+        );
+        // Simulate a stored stale client token without changing the snapshotted resource.
+        await pool.query(
+          "UPDATE approval_requests SET payload = jsonb_set(payload, '{canonicalInput,ifVersion}', to_jsonb($2::text)) WHERE id = $1",
+          [requestId, "2000-01-01T00:00:00.000Z"],
+        );
+        const request = await getApprovalRequest(pool, requestId);
+        if (!request || !isGenericOperationApprovalRequestPayload(request.payload))
+          throw new Error("Expected generic request");
+        expect((await replayApprovedGenericOperation(pool, { ...request, payload: request.payload })).error).toBe(
+          false,
+        );
+        expect((await chokePoint.findItem(item.id))?.properties.note).toBe("after");
+        await chokePoint.updateItem({
+          databaseId: database.id,
+          itemId: item.id,
+          propertiesPatch: { headline: "Renamed" },
+        });
+        expect((await getApprovalRequest(pool, requestId))?.description).toEqual(pending?.description);
+      } finally {
+        active = false;
+      }
+    }));
+
+  it("keeps a flagged relation-set description after the source is renamed", async () =>
+    inTenantZero(async () => {
+      const source = await chokePoint.createDatabase({ name: "Named source" });
+      const target = await chokePoint.createDatabase({ name: "Named target" });
+      await chokePoint.createProperty({ databaseId: source.id, key: "headline", name: "Headline", type: "title" });
+      const { property } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: source.id,
+        targetDatabaseId: target.id,
+        key: "target",
+        name: "Target",
+        cardinality: "one_to_one",
+      });
+      const caller = await chokePoint.createItem({ databaseId: source.id, properties: { headline: "Original title" } });
+      const destination = await chokePoint.createItem({ databaseId: target.id, properties: {} });
+      const projectItemId = randomUUID();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "link" });
+      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+      let active = true;
+      registerRelationEdgeWriteHook(async ({ client, edgeContext, writer }) => {
+        if (active && edgeContext.property.id === property.id)
+          requireApprovalForWrite(client, writer, [{ kind: "testReason" }]);
+      });
+      try {
+        let requestId = "";
+        try {
+          await createGenericOperationGateway(pool, testMetadataResolver).invoke(
+            "relation.set",
+            actor,
+            ALL_CAPABILITIES,
+            {
+              relationPropertyId: property.id,
+              callerItemId: caller.id,
+              targetItemId: destination.id,
+            },
+          );
+          expect.unreachable("Expected approval");
+        } catch (error) {
+          if (!(error instanceof ApprovalRequiredError)) throw error;
+          requestId = error.details.approvalRequestId;
+        }
+        const description = (await getApprovalRequest(pool, requestId))?.description;
+        expect(description).toEqual({
+          key: "approval.relationSet",
+          params: { fromItemName: "Original title", fromDatabaseKey: source.key, propertyName: "Target" },
+        });
+        await chokePoint.updateItem({
+          databaseId: source.id,
+          itemId: caller.id,
+          propertiesPatch: { headline: "Renamed" },
+        });
+        expect((await getApprovalRequest(pool, requestId))?.description).toEqual(description);
+      } finally {
+        active = false;
+      }
+    }));
 
   it("snapshots and replays a flagged relation put", async () =>
     inTenantZero(async () => {
       const source = await chokePoint.createDatabase({ name: "Put source" });
       const target = await chokePoint.createDatabase({ name: "Put target" });
+      await chokePoint.createProperty({ databaseId: source.id, key: "headline", name: "Headline", type: "title" });
+      await chokePoint.createProperty({ databaseId: source.id, key: "name", name: "Name", type: "text" });
+      await chokePoint.createProperty({ databaseId: target.id, key: "name", name: "Name", type: "text" });
       const { property } = await chokePoint.createRelationProperty({
         sourceDatabaseId: source.id,
         targetDatabaseId: target.id,
         key: "target",
         name: "Target",
       });
-      const caller = await chokePoint.createItem({ databaseId: source.id, properties: {} });
-      const destination = await chokePoint.createItem({ databaseId: target.id, properties: {} });
+      const caller = await chokePoint.createItem({
+        databaseId: source.id,
+        properties: { headline: "Declared title", name: "Other name" },
+      });
+      const destination = await chokePoint.createItem({ databaseId: target.id, properties: { name: "Fallback name" } });
       const projectItemId = randomUUID();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "link items" });
       const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
@@ -848,7 +1221,12 @@ describe("createGenericOperationGateway (issue #220)", () => {
           throw new Error("Expected generic request");
         expect(request.description).toEqual({
           key: "approval.relationPut",
-          params: { fromItemName: null, fromDatabaseKey: source.key, toItemName: null, toDatabaseKey: target.key },
+          params: {
+            fromItemName: "Declared title",
+            fromDatabaseKey: source.key,
+            toItemName: "Fallback name",
+            toDatabaseKey: target.key,
+          },
         });
         expect(JSON.stringify(request.description)).not.toContain(destination.id);
         expect(request.resourceSnapshot.kind).toBe("relation_put");
@@ -858,6 +1236,17 @@ describe("createGenericOperationGateway (issue #220)", () => {
         expect(await chokePoint.listItemRelations(caller.id, property.id)).toMatchObject([
           { targetItemId: destination.id },
         ]);
+        await chokePoint.updateItem({
+          databaseId: source.id,
+          itemId: caller.id,
+          propertiesPatch: { headline: "Renamed" },
+        });
+        await chokePoint.updateItem({
+          databaseId: target.id,
+          itemId: destination.id,
+          propertiesPatch: { name: "Renamed" },
+        });
+        expect((await getApprovalRequest(pool, requestId))?.description).toEqual(request.description);
       } finally {
         active = false;
       }

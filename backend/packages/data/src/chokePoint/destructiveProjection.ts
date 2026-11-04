@@ -83,9 +83,28 @@ export async function computeDestructiveResourceProjection(
 ): Promise<DestructiveResourceProjection> {
   switch (check.operation) {
     case "item.patch": {
+      requireManagedTransaction(client);
+      const scope = currentTenantScope();
+      if (scope?.kind !== "tenant") throw new Error("Item approval requires a tenant scope");
+      const transaction = await client.query<{ isolation: string; tenant: string | null }>(
+        "SELECT current_setting('transaction_isolation') AS isolation, nullif(current_setting('app.tenant_id', true), '') AS tenant",
+      );
+      if (transaction.rows[0]?.isolation !== "read committed" || transaction.rows[0]?.tenant !== scope.tenantId)
+        throw new Error("Item approval requires a tenant-scoped READ COMMITTED transaction");
       const [visible] = await itemsStore.getItemsByIds(client, [check.input.itemId]);
       if (!visible) throw new NotFoundError(`Item ${check.input.itemId} not found`);
-      const item = await itemsStore.lockItemById(client, visible.databaseId, visible.id);
+      let item: Awaited<ReturnType<typeof itemsStore.lockItemByIdNowait>>;
+      try {
+        await client.query("SELECT id FROM databases WHERE id = $1 FOR SHARE NOWAIT", [visible.databaseId]);
+        item = await itemsStore.lockItemByIdNowait(client, visible.databaseId, visible.id);
+      } catch (error) {
+        if (error instanceof DatabaseError && error.code === "55P03") {
+          const busy = new ApprovalResourceBusyError();
+          markManagedTransactionRollbackOnly(client, busy);
+          throw busy;
+        }
+        throw error;
+      }
       if (!item || item.deletedAt) throw new NotFoundError(`Item ${check.input.itemId} not found`);
       const database = await databasesStore.getDatabase(client, item.databaseId);
       if (!database) throw new NotFoundError(`Database ${item.databaseId} not found`);
@@ -103,7 +122,8 @@ export async function computeDestructiveResourceProjection(
       );
       if (transaction.rows[0]?.isolation !== "read committed" || transaction.rows[0]?.tenant !== scope.tenantId)
         throw new Error("Relation approval requires a tenant-scoped READ COMMITTED transaction");
-      const initial = await loadRelationEdgeContext(client, check.input.relationPropertyId);
+      const relationPropertyId = check.input.relationPropertyId.toLowerCase();
+      const initial = await loadRelationEdgeContext(client, relationPropertyId);
       await assertRelationDatabasesNotArchived(client, initial);
       assertRelationPropertyWritable(initial.property, undefined);
       const callerId = check.input.callerItemId.toLowerCase();
@@ -125,7 +145,7 @@ export async function computeDestructiveResourceProjection(
         await client.query("SELECT id FROM databases WHERE id = ANY($1::uuid[]) ORDER BY id FOR SHARE NOWAIT", [
           [initial.property.databaseId, initial.targetDatabaseId],
         ]);
-        context = await loadRelationEdgeContext(client, check.input.relationPropertyId);
+        context = await loadRelationEdgeContext(client, relationPropertyId);
         if (
           context.reldef.id !== initial.reldef.id ||
           context.property.databaseId !== initial.property.databaseId ||

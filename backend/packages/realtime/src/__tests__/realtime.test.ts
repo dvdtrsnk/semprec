@@ -157,8 +157,12 @@ describe("realtime", () => {
         });
         const started = performance.now();
         await runInTenant(owner, () =>
+          docs.putBlock(fixture.item.id, { id: "burst-leading", flavour: "page" }, "user"),
+        );
+        await vi.waitFor(() => expect(ownerFrames).toHaveLength(1));
+        await runInTenant(owner, () =>
           Promise.all(
-            Array.from({ length: 100 }, (_, index) =>
+            Array.from({ length: 99 }, (_, index) =>
               docs.putBlock(fixture.item.id, { id: `burst-${index}`, flavour: "page" }, "user"),
             ),
           ),
@@ -168,8 +172,7 @@ describe("realtime", () => {
         expect(arrivals[99]! - arrivals[0]!).toBeLessThan(1000);
         const lastWrite = await runInTenant(owner, () => docs.getDoc(fixture.item.id));
         await new Promise((resolve) => setTimeout(resolve, 1200));
-        expect(ownerFrames.length).toBeGreaterThan(0);
-        expect(ownerFrames.length).toBeLessThanOrEqual(2);
+        expect(ownerFrames).toHaveLength(2);
         expect(ownerFrames.at(-1)).toMatchObject({
           type: "invalidate",
           scope: "doc",

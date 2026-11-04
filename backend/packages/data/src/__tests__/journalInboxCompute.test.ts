@@ -586,6 +586,27 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
       });
     });
 
+    it("uses a target's declared title instead of an unrelated name property", async () => {
+      const item = await captureItem("Buy milk", await createType("Task", "☑️", "tasks"));
+      const dayId = await journalDayIdFor(item.id);
+      const database = await chokePoint.createDatabase({ name: "Custom pages" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "headline", name: "Headline", type: "title" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "name", name: "Name", type: "text" });
+      const page = await chokePoint.createItem({
+        databaseId: database.id,
+        properties: { headline: "Actual title", name: "Different name" },
+      });
+      await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+      await setCardProposal(await cardIdFor(item.id), { entityKind: "pageContent", target: page.id, properties: {} });
+
+      await recomputeJournalInboxDay(pool, dayId);
+
+      expect((await computedInboxItems(dayId))![0]!.proposalSummary).toMatchObject({
+        targetItemId: page.id,
+        targetItemName: "Actual title",
+      });
+    });
+
     it("reads the existing item of a primary update step as the target", async () => {
       const item = await captureItem("Invoice scan", await createType("File", "📄", "files"));
       const dayId = await journalDayIdFor(item.id);

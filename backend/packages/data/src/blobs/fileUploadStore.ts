@@ -6,7 +6,7 @@ import { safeStorageFilename } from "../mail/attachments.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { findFileItemByBlobId } from "../chokePoint/itemsStore.js";
-import { findOrCreateBlob, lockBlobById, tenantBlobStorageKey } from "./blobsStore.js";
+import { findOrCreateBlob, lockBlobById, recordDetectedBlobMimeType, tenantBlobStorageKey } from "./blobsStore.js";
 import { ValidationError } from "../errors.js";
 import type { BlobRow, ItemRow } from "../types.js";
 import { logger } from "./logger.js";
@@ -122,6 +122,7 @@ export async function ingestUploadedFile(
       if (!(await lockBlobById(client, blob.id))) {
         throw new ValidationError("Invalid blob reference", { field: "file" });
       }
+      await recordDetectedBlobMimeType(client, blob.id, detected?.mimeType ?? UNKNOWN_CONTENT_MIME);
       const existing = await findFileItemByBlobId(client, input.filesDatabaseId, blob.id);
       if (existing) return { item: existing, blob, created: false };
 
@@ -201,6 +202,7 @@ export async function ingestUploadedBlob(
       if (!(await lockBlobById(client, blob.id))) {
         throw new ValidationError("Invalid blob reference", { field: "blobId" });
       }
+      await recordDetectedBlobMimeType(client, blob.id, detected?.mimeType ?? UNKNOWN_CONTENT_MIME);
       if (blob.storageKey === storageKey) return { blob, created: true };
       // A dedup hit: the bytes just streamed duplicate the existing blob's; drop them once this commits.
       runAfterCommit(client, () => {

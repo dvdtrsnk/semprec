@@ -200,6 +200,8 @@ async function buildProposalSummary(
   const area = related.find((item) => item.databaseId === databases.areas.id) ?? null;
 
   const targetItem = targetItemId ? (itemsById.get(targetItemId) ?? null) : null;
+  const [targetLabel] = targetItem ? await databasesStore.listDatabaseLabelsByIds(client, [targetItem.databaseId]) : [];
+  const targetTitle = targetLabel?.titlePropertyKey ? targetItem?.properties[targetLabel.titlePropertyKey] : undefined;
   let targetDatabaseKey: string | null = null;
   if (envelope.entityKind === "database") {
     targetDatabaseKey = await databaseKeyOf(client, envelope.target);
@@ -221,7 +223,7 @@ async function buildProposalSummary(
     documentKind: null,
     targetDatabaseKey,
     targetItemId,
-    targetItemName: targetItem ? stringOrNull(targetItem.properties.name) : null,
+    targetItemName: targetItem ? (stringOrNull(targetTitle) ?? stringOrNull(targetItem.properties.name)) : null,
     projectItemId: project?.id ?? null,
     projectName: project ? stringOrNull(project.properties.name) : null,
     areaItemId: area?.id ?? null,

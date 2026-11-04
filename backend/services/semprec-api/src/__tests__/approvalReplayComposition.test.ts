@@ -10,6 +10,8 @@ import {
   getTenantZeroId,
   getTestPool,
   inTenantZero,
+  createRuntimeRolePool,
+  createTestTenant,
   registerRelationEdgeWriteHook,
   resetDatabase,
 } from "@semprec/data/testSupport";
@@ -29,7 +31,7 @@ import {
   withTransaction,
 } from "@semprec/data";
 import { createGenericOperationGateway } from "@semprec/application";
-import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
+import { CAPABILITY_IDS, runInTenant, type AuthenticatedActor } from "@semprec/shared";
 import { createApiQueueRuntime, type ApiQueueRuntime } from "../queueRuntime.js";
 import { createMcpRequestListener } from "../mcp/mcpHandler.js";
 
@@ -147,6 +149,99 @@ describe("createApiQueueRuntime generic-operation approval replay (issue #646)",
     );
     await waitFor(async () => (await countJobsByIdentifier(pool, CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE)) === 0);
     expect(await getApprovalRequest(pool, requestId)).toEqual(finished);
+  });
+
+  it("executes tenant-scoped outcomes through the real worker with a non-bypass role", async () => {
+    const owner = getTenantZeroId();
+    const foreign = await createTestTenant(pool);
+    await runInTenant(foreign, () =>
+      createAuthUser(pool, { email: "foreign-approval@example.test", passwordHash: "test", tenantId: foreign }),
+    );
+    const scoped = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const role = await scoped.query<{ bypass: boolean; superuser: boolean }>(
+        "SELECT rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ bypass: false, superuser: false }]);
+      async function fixture(tenantId: string) {
+        return runInTenant(tenantId, async () => {
+          const cp = createChokePoint(scoped);
+          const database = await cp.createDatabase({ name: "Approval tenant" });
+          const item = await cp.createItem({ databaseId: database.id, properties: {} });
+          const thread = await withTransaction(scoped, (client) =>
+            client.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id"),
+          );
+          const projectItemId = randomUUID();
+          const run = await createAgentRun(scoped, {
+            projectItemId,
+            triggeredBy: "user",
+            task: "delete",
+            threadId: thread.rows[0]!.id,
+          });
+          const actor: AuthenticatedActor = {
+            userId: run.actorUserId,
+            runId: run.id,
+            agentProjectItemId: projectItemId,
+          };
+          let requestId = "";
+          try {
+            await createGenericOperationGateway(scoped, testMetadataResolver).invoke(
+              "item.delete",
+              actor,
+              ALL_CAPABILITIES,
+              { itemId: item.id },
+            );
+            expect.unreachable("Expected approval");
+          } catch (error) {
+            if (!(error instanceof ApprovalRequiredError)) throw error;
+            requestId = error.details.approvalRequestId;
+          }
+          await withTransaction(scoped, (client) =>
+            decideAndEnqueueApprovalRequest(client, {
+              approvalRequestId: requestId,
+              decision: "approved",
+              decidedByUserId: run.actorUserId,
+            }),
+          );
+          return { requestId, threadId: thread.rows[0]!.id };
+        });
+      }
+      const a = await fixture(owner);
+      const b = await fixture(foreign);
+      runtime = await createApiQueueRuntime(scoped, await loadFullModuleRegistry());
+      await waitFor(async () => {
+        const states = await Promise.all([
+          runInTenant(owner, () => getApprovalRequest(scoped, a.requestId)),
+          runInTenant(foreign, () => getApprovalRequest(scoped, b.requestId)),
+        ]);
+        return states.every((request) => request?.executionStatus === "succeeded");
+      });
+      for (const [tenantId, own, other] of [
+        [owner, a, b],
+        [foreign, b, a],
+      ] as const) {
+        await runInTenant(tenantId, async () => {
+          const messages = await scoped.query<{ system_key: string; context: unknown }>(
+            "SELECT system_key, context FROM semp_messages WHERE thread_id = $1",
+            [own.threadId],
+          );
+          expect(messages.rows).toEqual([
+            {
+              system_key: "approval.outcome.executed",
+              context: [{ kind: "approvalRequest", approvalRequestId: own.requestId }],
+            },
+          ]);
+          expect(
+            (await scoped.query("SELECT id FROM semp_messages WHERE thread_id = $1", [other.threadId])).rows,
+          ).toEqual([]);
+          expect(await getApprovalRequest(scoped, other.requestId)).toBeNull();
+        });
+      }
+    } finally {
+      await runtime?.stop();
+      runtime = undefined;
+      await scoped.end();
+    }
   });
 
   it("executes a flagged relation write from a human MCP session without an approval request", async () => {

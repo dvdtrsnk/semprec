@@ -15,21 +15,22 @@ export interface BlobUploadRequestListenerOptions {
   maxFileSizeBytes: number;
 }
 
-/** A bare `image/<subtype>` media type, parameters already removed. */
-const IMAGE_MEDIA_TYPE = /^image\/[a-z0-9][a-z0-9.+-]*$/;
+/** A media type with optional token or quoted-string parameters. */
+const MEDIA_TYPE =
+  /^[!#$%&'*+.^_`|~0-9a-z-]+\/[!#$%&'*+.^_`|~0-9a-z-]+(?:\s*;\s*[!#$%&'*+.^_`|~0-9a-z-]+\s*=\s*(?:[!#$%&'*+.^_`|~0-9a-z-]+|"(?:[^"\\\r\n]|\\[^\r\n])*"))*\s*$/i;
 
-/** The lowercased media type of a `Content-Type` header, or a `ValidationError` when it is not an image. */
-function requireImageMediaType(contentType: string): string {
+/** Returns the lowercased media type after validating the complete header. */
+function requireMediaType(contentType: string): string {
   const mediaType = (contentType.split(";")[0] ?? "").trim().toLowerCase();
-  if (!IMAGE_MEDIA_TYPE.test(mediaType)) {
-    throw new ValidationError("'Content-Type' must be an image type", { field: "Content-Type" });
+  if (!MEDIA_TYPE.test(contentType.trim())) {
+    throw new ValidationError("'Content-Type' must be a media type", { field: "Content-Type" });
   }
   return mediaType;
 }
 
 /**
- * `POST /api/blobs`: streams an image body into a standalone blob (no Files item) for use in an
- * image property. Same shape as `createFilesRequestListener`: bespoke listener so the body is
+ * `POST /api/blobs`: streams a body into a standalone blob without creating a Files item.
+ * Same shape as `createFilesRequestListener`: bespoke listener so the body is
  * streamed, not buffered; authenticated through `authenticateRequest`; `maxFileSizeMb` enforced
  * from `Content-Length` first and always by the streaming counter. The content type is validated
  * before any byte is read, so a rejected request leaves nothing in storage.
@@ -50,7 +51,7 @@ export function createBlobUploadRequestListener(pool: Pool, options: BlobUploadR
           }
         }
 
-        const mimeType = requireImageMediaType(requireHeader(req, "Content-Type"));
+        const mimeType = requireMediaType(requireHeader(req, "Content-Type"));
         const { blob, created } = await ingestUploadedBlob(pool, {
           mimeType,
           source: req,

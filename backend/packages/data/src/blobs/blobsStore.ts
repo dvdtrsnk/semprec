@@ -1,6 +1,7 @@
 import { visibleDatabaseIds } from "../chokePoint/itemsStore.js";
 import type { Queryable } from "../db/pool.js";
-import { requireSingleRow } from "../db/pool.js";
+import { requireManagedTransaction, requireSingleRow } from "../db/pool.js";
+import type { PoolClient } from "pg";
 import type { BlobRow } from "../types.js";
 import { ValidationError } from "../errors.js";
 
@@ -77,6 +78,25 @@ export async function lockBlobById(client: Queryable, id: string): Promise<boole
     [id],
   );
   return rows.length > 0;
+}
+
+/** Reads only content classification previously recorded by the upload owner. */
+export async function getDetectedBlobMimeType(client: Queryable, id: string): Promise<string | null> {
+  const { rows } = await client.query<{ detected_mime_type: string | null }>(
+    "SELECT detected_mime_type FROM blobs WHERE tenant_id = app_tenant_default() AND id = $1",
+    [id],
+  );
+  return rows[0]?.detected_mime_type ?? null;
+}
+
+/** Called after the upload owner has locked a visible blob and detected freshly streamed bytes. */
+export async function recordDetectedBlobMimeType(client: PoolClient, id: string, mimeType: string): Promise<void> {
+  requireManagedTransaction(client);
+  const result = await client.query(
+    "UPDATE blobs SET detected_mime_type = $2 WHERE tenant_id = app_tenant_default() AND id = $1 AND detected_mime_type IS NULL",
+    [id, mimeType],
+  );
+  if (result.rowCount !== 0 && result.rowCount !== 1) throw new Error("Unexpected blob classification update count");
 }
 
 /**
