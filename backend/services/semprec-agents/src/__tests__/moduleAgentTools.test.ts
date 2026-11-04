@@ -164,7 +164,34 @@ describe("module agent tools under project ownership", () => {
       } finally {
         spy.mockRestore();
       }
-      await cp.archiveDatabase(one.id);
+      // Historical system databases can be archived in storage, but the public API refuses it.
+      const archived = await pool.query("UPDATE databases SET archived_at=now() WHERE id=$1", [one.id]);
+      expect(archived.rowCount).toBe(1);
       expect(await granted()).not.toContain("owned.read");
     }));
+  it("does not treat another tenant's module databases as project grants", async () => {
+    const foreign = await createTestTenant(admin);
+    const cp = createChokePoint(pool);
+    await runInTenant(foreign, async () => {
+      await seedSystem(pool);
+      const projects = (await cp.listDatabases()).find((db) => db.key === "projects");
+      if (!projects) throw new Error("Projects missing");
+      const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Foreign" } });
+      for (const key of ["ownedOne", "ownedTwo"]) {
+        await cp.createDatabase({ name: null, key, system: true, ownerProjectItemId: project.id });
+      }
+    });
+    await runInTenant(tenant, async () => {
+      await seedSystem(pool);
+      const projects = (await cp.listDatabases()).find((db) => db.key === "projects");
+      if (!projects) throw new Error("Projects missing");
+      const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Own" } });
+      const registry = new ModuleRegistry(() => new Set(["ownedTools"]));
+      await registry.loadModule(fixturePath);
+      const manifest = await withTransaction(pool, (client) =>
+        generatePermissionManifest(client, project.id, { moduleRegistry: registry }),
+      );
+      expect(manifest.grantedCapabilities).not.toContain("owned.read");
+    });
+  });
 });
