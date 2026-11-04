@@ -462,6 +462,20 @@ describe("createGenericOperationGateway (issue #220)", () => {
           try {
             await commitReached;
             expect(normalPid).toBeGreaterThan(0);
+            if (kind === "insert") {
+              const count = async () =>
+                (await runtime.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests"))
+                  .rows[0]?.count;
+              const before = await count();
+              await expect(
+                gateway.invoke("relation.put", actor, ALL_CAPABILITIES, {
+                  relationPropertyId: pair.property.id,
+                  callerItemId: caller.id,
+                  targetItemId: first.id,
+                }),
+              ).rejects.toBeInstanceOf(ApprovalResourceBusyError);
+              expect(await count()).toBe(before);
+            }
             let busy: unknown;
             try {
               await replayApprovedGenericOperation(runtime, firstRequest);
