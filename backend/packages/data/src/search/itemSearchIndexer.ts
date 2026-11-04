@@ -10,8 +10,7 @@ import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { AREAS_MODULE_ID, COMPANIES_MODULE_ID, PEOPLE_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { buildItemSearchBody, buildItemSearchDocument } from "./itemSearchDocument.js";
 
-// The generic index's vector construction is owned here, ready for #1589's replacement.
-const SEARCH_VECTOR_SQL = "to_tsvector('czech', $3)";
+const SEARCH_VECTOR_SQL = "to_tsvector('czech', $3) || to_tsvector('czech_simple', $3)";
 const jsonObject = z.record(z.string(), z.unknown());
 
 interface SearchItemDbRow {

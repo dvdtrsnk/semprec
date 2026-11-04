@@ -15,6 +15,7 @@ import { runItemSearchBackfillCutover } from "../search/itemSearchBackfill.js";
 import { enqueueMailGmailPseudoFolderCleanup } from "../mail/gmailPseudoFolderCleanupJob.js";
 import { enqueueMailMessagePreviewBackfill } from "../mail/mailMessagePreviewBackfillJob.js";
 import { enqueueMailThreadBackfill } from "../mail/mailThreadBackfillJob.js";
+import { enqueueMailSearchTextReindex } from "../mail/mailSearchTextReindexJob.js";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -49,10 +50,11 @@ try {
     // invocation point, matching testSupport/globalSetup.ts's test-time call to the same two functions.
     await ensureQueueSchema(pool);
     await grantQueueSchemaPrivileges(pool);
-    await runItemSearchBackfillCutover(tenantPool);
+    await runItemSearchBackfillCutover(tenantPool, false);
     await enqueueMailMessagePreviewBackfill(pool);
     await enqueueMailGmailPseudoFolderCleanup(pool);
     await enqueueMailThreadBackfill(pool);
+    await enqueueMailSearchTextReindex(pool);
     // Issue #222: needs graphile_worker's own schema/functions, which don't exist until the two
     // calls above create them — unlike the cutover migrations above, which run before them.
     await runHeartbeatFireQueueSplitMigration(pool);

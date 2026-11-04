@@ -18,10 +18,13 @@ export interface ReindexItemSearchInput {
 }
 
 export async function reindexItemSearch(client: Queryable, input: ReindexItemSearchInput): Promise<void> {
+  // A repeat rebuild keeps the timestamp when both vector and database are unchanged.
   await client.query(
     `INSERT INTO item_search_index (item_id, database_id, search_vector, updated_at)
-     VALUES ($1, $2, to_tsvector('czech', $3), now())
-     ON CONFLICT (item_id) DO UPDATE SET search_vector = EXCLUDED.search_vector, database_id = EXCLUDED.database_id, updated_at = now()`,
+     VALUES ($1, $2, to_tsvector('czech', $3) || to_tsvector('czech_simple', $3), now())
+     ON CONFLICT (item_id) DO UPDATE SET search_vector = EXCLUDED.search_vector, database_id = EXCLUDED.database_id, updated_at = now()
+     WHERE item_search_index.search_vector IS DISTINCT FROM EXCLUDED.search_vector
+        OR item_search_index.database_id IS DISTINCT FROM EXCLUDED.database_id`,
     [input.itemId, input.databaseId, input.text],
   );
 }
@@ -219,7 +222,7 @@ export async function searchItems(client: Queryable, input: SearchItemsInput): P
   const { rows } = await client.query<{ item_id: string; rank: number }>(
     `SELECT s.item_id, ${rankWithRecency} AS rank
      FROM item_search_index s
-     LEFT JOIN items i ON i.id = s.item_id AND i.database_id = s.database_id
+     JOIN items i ON i.id = s.item_id AND i.database_id = s.database_id AND i.deleted_at IS NULL
      WHERE ${conditions.join(" AND ")}
      ORDER BY rank DESC
      LIMIT $${params.length}`,

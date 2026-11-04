@@ -25,6 +25,7 @@ import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { recomputeJournalInboxDay } from "../inbox/journalInboxCompute.js";
 import { reindexItemSearch } from "../mail/search.js";
 import { indexItem } from "../search/itemSearchIndexer.js";
+import { buildItemSearchQuery } from "../search/itemSearchQuery.js";
 import {
   enqueueItemSearchBackfill,
   handleItemSearchBackfillTask,
@@ -419,6 +420,25 @@ describe("item search create/update hooks", () => {
     });
   });
 
+  it("indexes normalized People phone numbers for spaced and unspaced queries", async () => {
+    await runInTenant(tenant, async () => {
+      const person = await cp.createItem({
+        databaseId: await db("people"),
+        properties: { name: "Person", phones: "777 123 456" },
+      });
+      for (const text of ["777123456", "777 123 456"]) {
+        const query = buildItemSearchQuery(text, 2);
+        const result = await withTransaction(pool, (client) =>
+          client.query<{ matched: boolean }>(
+            `SELECT search_vector @@ ${query.sql} AS matched FROM item_search_index WHERE item_id = $1`,
+            [person.id, ...query.params],
+          ),
+        );
+        expect(result.rows[0]?.matched).toBe(true);
+      }
+    });
+  });
+
   it("declares seeded title/text/select fields and the requested relation fields for all ten databases", async () => {
     await runInTenant(tenant, async () => {
       expect(manifest.databases).toHaveLength(10);
@@ -432,15 +452,13 @@ describe("item search create/update hooks", () => {
           if (descriptor.key === "events" && property.key === "place") continue;
           // An area's icon is a closed key validated by the area write hook, not searchable free text.
           if (descriptor.key === "areas" && property.key === "icon") continue;
-          // Phone numbers are deliberately excluded from People search (asserted below).
-          if (descriptor.key === "people" && property.key === "phones") continue;
           expect(descriptor.searchFields).toContain(property.key);
         }
       }
       expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("place");
       expect(manifest.databases.find((d) => d.key === "areas")?.searchFields).not.toContain("icon");
       expect(manifest.databases.find((d) => d.key === "people")?.searchFields).toContain("emails");
-      expect(manifest.databases.find((d) => d.key === "people")?.searchFields).not.toContain("phones");
+      expect(manifest.databases.find((d) => d.key === "people")?.searchFields).toContain("phones");
       for (const [key, fields] of Object.entries({
         tasks: ["project"],
         events: ["project", "people"],
@@ -703,6 +721,41 @@ describe("tenant item search backfill task", () => {
       /row-level security/,
     );
     expect(await readJobPayloadsByIdentifier(admin, taskName)).toEqual([]);
+  });
+
+  it("full and missing-only deploy jobs retain distinct keys and preserve stored page text", async () => {
+    const item = await runInTenant(tenant, async () => {
+      const created = await task("Rebuild target");
+      await withTransaction(pool, (client) => indexItem(client, created.id, { pageText: "Retained page projection" }));
+      await withTransaction(pool, (client) =>
+        reindexItemSearch(client, { itemId: created.id, databaseId: created.databaseId, text: "Stale vector" }),
+      );
+      return created;
+    });
+    await runAsSystem("test missing-only enqueue", () => runItemSearchBackfillCutover(pool));
+    await runAsSystem("test full enqueue", () => runItemSearchBackfillCutover(pool, false));
+    const jobs = await readJobPayloadsByIdentifier(admin, taskName);
+    expect(jobs).toHaveLength(2);
+    expect(jobs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tenantId: tenant, payload: { onlyMissing: true } }),
+        expect.objectContaining({ tenantId: tenant, payload: { onlyMissing: false } }),
+      ]),
+    );
+    // Both jobs share a serial lane; each runOnce drains one available job on that lane.
+    await runQueuedBackfill();
+    await runQueuedBackfill();
+    await runInTenant(tenant, async () => {
+      expect(await has(item.id, "Rebuild target")).toBe(true);
+      expect(await has(item.id, "Stale vector")).toBe(false);
+      const result = await withTransaction(pool, (client) =>
+        client.query<{ body: string; page_text: string }>(
+          "SELECT body, page_text FROM item_search_index WHERE item_id = $1",
+          [item.id],
+        ),
+      );
+      expect(result.rows[0]).toEqual({ body: "Retained page projection", page_text: "Retained page projection" });
+    });
   });
 
   it("enqueues once per maintained tenant on each deploy and preserves the missing-only contract", async () => {

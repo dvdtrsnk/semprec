@@ -118,7 +118,7 @@ export const manifest: ModuleManifest = {
         ],
       },
       name: "People",
-      searchFields: ["name", "relationship", "contact", "emails", "companies"],
+      searchFields: ["name", "relationship", "contact", "emails", "phones", "companies"],
       icon: "person",
       color: "#5856D6",
       overviewOrder: 3,

@@ -56,9 +56,9 @@ export async function handleItemSearchBackfillTask(pool: Pool, payload: unknown)
 }
 
 /** Deploy calls this after queue schema grants, using the semprec_data pool so RLS applies. */
-export async function runItemSearchBackfillCutover(pool: Pool): Promise<void> {
+export async function runItemSearchBackfillCutover(pool: Pool, onlyMissing = true): Promise<void> {
   await assertRowSecurityActive(pool);
   await forEachMaintainedTenant(pool, async () => {
-    await withTransaction(pool, (client) => enqueueItemSearchBackfill(client, { onlyMissing: true }));
+    await withTransaction(pool, (client) => enqueueItemSearchBackfill(client, { onlyMissing }));
   });
 }
