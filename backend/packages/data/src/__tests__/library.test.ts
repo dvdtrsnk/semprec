@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { CORE_TASK_NAMES, enqueueJob, runOnce, runWorker } from "@semprec/queue";
 import { runAsSystem, runInTenant } from "@semprec/shared";
@@ -614,6 +614,113 @@ describe("library module (issue #25)", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it.each(["release", "commit"] as const)(
+    "retains committed cover bytes when the transaction %s acknowledgement fails",
+    async (failurePoint) => {
+      const root = await mkdtemp(join(tmpdir(), "semprec-library-cover-commit-"));
+      const storage = new LocalFsBlobStorageWriter(root);
+      const failures: unknown[] = [];
+      const originals = new Map<
+        PoolClient,
+        { query: PropertyDescriptor | undefined; release: PropertyDescriptor | undefined }
+      >();
+      let injected = false;
+      const onAcquire = (client: PoolClient) => {
+        if (originals.has(client)) return;
+        const queryDescriptor = Object.getOwnPropertyDescriptor(client, "query");
+        const releaseDescriptor = Object.getOwnPropertyDescriptor(client, "release");
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        const query = client.query;
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        const release = client.release;
+        originals.set(client, { query: queryDescriptor, release: releaseDescriptor });
+        let committed = false;
+        Object.defineProperty(client, "query", {
+          configurable: true,
+          writable: true,
+          value: (...args: unknown[]) => {
+            const result: unknown = Reflect.apply(query, client, args);
+            if (args[0] !== "COMMIT" || injected) return result;
+            if (!(result instanceof Promise)) throw new Error("Expected asynchronous commit");
+            return result.then((value: unknown) => {
+              committed = true;
+              if (failurePoint === "commit" && !injected) {
+                injected = true;
+                throw new Error("commit acknowledgement failed");
+              }
+              return value;
+            });
+          },
+        });
+        Object.defineProperty(client, "release", {
+          configurable: true,
+          writable: true,
+          value: (...args: unknown[]) => {
+            Reflect.apply(release, client, args);
+            if (committed && failurePoint === "release" && !injected) {
+              injected = true;
+              throw new Error("client release failed");
+            }
+          },
+        });
+      };
+      try {
+        const booksId = await getDatabaseIdByModule("books");
+        const item = await inTenantZero(() =>
+          chokePoint.createItem({ databaseId: booksId, properties: { name: "Book" } }),
+        );
+        await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+        const bytes = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+        pool.on("acquire", onAcquire);
+        const work = inTenantZero(() =>
+          handleProcessLibraryMetadataTask(
+            pool,
+            { itemId: item.id, databaseId: booksId, config: { source: "openLibrary", coverKey: "cover" } },
+            async () => ({ status: "found", cover: { mimeType: "image/jpeg", bytes } }),
+            undefined,
+            storage,
+          ),
+        );
+        if (failurePoint === "release") await expect(work).resolves.toBeUndefined();
+        else await expect(work).rejects.toThrow("Library metadata processing failed");
+        expect(injected).toBe(true);
+        pool.off("acquire", onAcquire);
+        for (const [client, original] of originals) {
+          for (const key of ["query", "release"] as const) {
+            const descriptor = original[key];
+            if (descriptor) Object.defineProperty(client, key, descriptor);
+            else Reflect.deleteProperty(client, key);
+          }
+        }
+        originals.clear();
+        const updated = await chokePoint.getItem(booksId, item.id);
+        const reference = z.object({ blobId: z.uuid() }).parse(updated?.properties.cover);
+        const row = await pool.query<{ storage_key: string }>("SELECT storage_key FROM blobs WHERE id = $1", [
+          reference.blobId,
+        ]);
+        expect(row.rows).toHaveLength(1);
+        expect(await readFile(join(root, row.rows[0]!.storage_key))).toEqual(bytes);
+      } catch (error) {
+        failures.push(error);
+      }
+      pool.off("acquire", onAcquire);
+      for (const [client, original] of originals) {
+        for (const key of ["query", "release"] as const) {
+          const descriptor = original[key];
+          if (descriptor) Object.defineProperty(client, key, descriptor);
+          else Reflect.deleteProperty(client, key);
+        }
+      }
+      try {
+        await rm(root, { recursive: true, force: true });
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Cover acknowledgement test and cleanup failed");
+    },
+  );
 
   it("records found and not-found outcomes and invalidates status-only changes", async () => {
     const databaseId = await getDatabaseIdByModule("books");

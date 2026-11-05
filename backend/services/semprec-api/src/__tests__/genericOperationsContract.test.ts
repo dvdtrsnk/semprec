@@ -791,10 +791,9 @@ describe("generic operation REST contract (issue #219)", () => {
       failures.push(error);
     }
     if (ownedServer) {
+      const server = ownedServer;
       try {
-        await new Promise<void>((resolve, reject) =>
-          ownedServer!.close((error) => (error ? reject(error) : resolve())),
-        );
+        await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
       } catch (error) {
         failures.push(error);
       }

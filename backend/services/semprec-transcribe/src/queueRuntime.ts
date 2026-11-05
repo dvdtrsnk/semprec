@@ -59,11 +59,15 @@ export async function createTranscribeQueueRuntime(
   try {
     createRunner = await runWorker({ pgPool: pool, taskList: createTaskList, noHandleSignals: true, concurrency: 1 });
   } catch (error) {
+    let stopFailure: { error: unknown } | undefined;
     try {
       await runner.stop();
     } catch (cleanupError) {
+      stopFailure = { error: cleanupError };
+    }
+    if (stopFailure) {
       throw new AggregateError(
-        [error, cleanupError],
+        [error, stopFailure.error],
         "Failed to start transcription create worker and stop pipeline worker",
         { cause: error },
       );
@@ -77,7 +81,10 @@ export async function createTranscribeQueueRuntime(
         const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
         if (failures.length > 0)
           throw new AggregateError(
-            failures.map((failure) => failure.reason),
+            failures.map((failure) => {
+              const reason: unknown = failure.reason;
+              return reason;
+            }),
             "Failed to stop transcription workers",
             { cause: failures[0]?.reason },
           );

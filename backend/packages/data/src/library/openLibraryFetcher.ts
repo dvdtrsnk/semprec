@@ -35,7 +35,7 @@ export async function fetchLibraryJson(
       await response.body?.cancel();
       return { error: response.status === 429 ? "rateLimited" : "sourceUnavailable" };
     }
-    const reader = response.body?.getReader();
+    const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = response.body?.getReader();
     if (!reader) return { error: "invalidResponse" };
     const chunks: Uint8Array[] = [];
     let size = 0;
@@ -80,7 +80,7 @@ export async function downloadLibraryCover(url: string): Promise<DownloadedLibra
       await response.body?.cancel();
       return undefined;
     }
-    const reader = response.body?.getReader();
+    const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = response.body?.getReader();
     if (!reader) return undefined;
     const chunks: Uint8Array[] = [];
     let length = 0;

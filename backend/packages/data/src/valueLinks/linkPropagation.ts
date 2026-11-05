@@ -86,7 +86,7 @@ export async function readRuleValues(
     return (await listRelationsForItem(client, definition.id, itemId)).map((edge) => otherSide(edge, itemId));
   const value = item.properties[property.key];
   if (value === undefined || value === null || value === "") return [];
-  return property.type === "multi_select" && Array.isArray(value) ? value : [value];
+  return property.type === "multi_select" && Array.isArray(value) ? z.array(z.unknown()).parse(value) : [value];
 }
 
 export async function readTargetValues(
