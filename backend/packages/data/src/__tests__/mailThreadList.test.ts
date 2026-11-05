@@ -9,6 +9,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { withTransaction } from "../db/pool.js";
+import { runMigrations } from "../db/migrate.js";
 import { LocalFsBlobStorageWriter } from "../mail/blobStorage.js";
 import { createEmailDraft } from "../mail/draft.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
@@ -137,6 +138,29 @@ describe("mail thread list", () => {
     return { cp, db, property, boxA, boxB, folders, ingest };
   }
   const list = (url = "/api/mail/threads") => createMailThreadListRouteHandler(runtime)({ req: { url } });
+  it("keeps the tenant-thread index on migration replay with populated mail", async () => {
+    const id = await runInTenant(tenant, async () => {
+      const f = await setup();
+      return (await f.ingest({ id: "<migration@example.test>" })).itemId;
+    });
+    const index = await admin.query<{ indexdef: string }>(
+      "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'mail_message_meta_tenant_thread_idx'",
+    );
+    expect(index.rows).toHaveLength(1);
+    expect(index.rows[0]?.indexdef).toContain("(tenant_id, thread_id)");
+    await runAsSystem("replay mail thread index migration", () => runMigrations(admin));
+    const persisted = await runInTenant(tenant, () =>
+      runtime.query<{ item_id: string }>(
+        "SELECT item_id FROM mail_message_meta WHERE tenant_id = app_tenant_default() AND item_id = $1",
+        [id],
+      ),
+    );
+    expect(persisted.rows).toEqual([{ item_id: id }]);
+    const applied = await admin.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM schema_migrations WHERE id = '0135_mail_message_meta_tenant_thread_idx.sql'",
+    );
+    expect(applied.rows).toEqual([{ n: 1 }]);
+  });
   it("aggregates a conversation, deduplicates mailbox copies and ignores provider and Semp drafts", async () => {
     await runInTenant(tenant, async () => {
       const f = await setup();
