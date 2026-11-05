@@ -134,8 +134,13 @@ metadata is not independently verified calendar invitation truth. Self not in
 participants has NULL status. Keep the self Person even with an empty stored
 name (name is then an empty string, not an invented identity); named-participant
 filtering remains for ordinary Event candidates. Exclude already mapped/deleted
-persons and deduplicate self/participant by actual ID. Use existing title when
-it is a string, otherwise NULL; add no People property.
+persons and deduplicate self/participant by actual ID. alternatives[].title is
+always NULL in v1, as the original product decision requires. The earlier
+read-existing-string wording was an unintended expansion and is withdrawn;
+do not read or expose an incidental stored title or add a People property.
+Existing scoped speaker tests may use a narrowly checked tenant/item historical
+JSON fixture to prove an incidental string title is ignored; this is not a
+supported production title writer.
 
 With zero candidates do not call the model. Localized reason key
 transcript.speaker.noCandidatesReason has en No matching people are available.
@@ -144,8 +149,14 @@ answer use transcript.speaker.uncertainReason: en The speaker could not be
 identified confidently.; cs Mluvčího se nepodařilo spolehlivě určit.
 A valid model explanation retains its requested-language short text. Put only
 these keys in existing transcription cs/en catalogs. Quotes are actual source
-segments, up to three; use two or three when available, fewer when the speaker
-has fewer utterances. Never fabricate or duplicate quotes to meet a count.
+segments with at least six words, up to three: select the longest eligible
+segments, then present them in time order and shorten each to 140 characters.
+Available means eligible segments, not all utterances. Use two or three when
+eligible; with one or zero eligible segments keep one or an empty quotes array,
+even if many shorter utterances exist. Do not use short fallback segments,
+concatenate, fabricate or duplicate quotes to meet a count. firstStartsAt still
+uses the actual first segment regardless of quote eligibility. This clarifies
+the original six-word rule without changing the source Task or AC.
 
 Only the transcription build-copy segment changes to
 mkdir -p dist/transcription/i18n followed by
