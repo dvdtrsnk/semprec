@@ -209,11 +209,15 @@ describe("link rule propagation", () => {
       withTransaction(data, async (client) => {
         const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
         if (!pid.rows[0]) throw new Error("Missing holder PID");
-        await updateItemWithClient(client, {
-          databaseId: fixture.projects.id,
-          itemId: fixture.target.id,
-          propertiesPatch: { name: "User choice" },
-        });
+        await updateItemWithClient(
+          client,
+          {
+            databaseId: fixture.projects.id,
+            itemId: fixture.target.id,
+            propertiesPatch: { name: "User choice" },
+          },
+          { writer: { writerKind: "user" } },
+        );
         signal(pid.rows[0].pid);
         await gate;
       }),
