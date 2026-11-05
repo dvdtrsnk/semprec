@@ -340,9 +340,15 @@ describe("mail thread list", () => {
           [legacy.itemId],
         );
         expect(cleared.rowCount).toBe(1);
-        const result = await client.query<{ item_id: string; thread_id: string; expected: string }>(
+        const result = await client.query<{
+          item_id: string;
+          thread_id: string;
+          ingested: string | null;
+          updated: string;
+        }>(
           `SELECT m.item_id, m.thread_id,
-          to_char(COALESCE(NULLIF(i.properties->>'date', '')::timestamptz, m.ingested_at, i.updated_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS expected
+          to_char(m.ingested_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ingested,
+          to_char(i.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated
           FROM mail_message_meta m JOIN items i ON i.tenant_id = m.tenant_id AND i.id = m.item_id
           WHERE m.tenant_id = app_tenant_default() AND m.item_id = ANY($1::uuid[])`,
           [[dated.itemId, ingested.itemId, legacy.itemId]],
@@ -361,12 +367,20 @@ describe("mail thread list", () => {
       }
       expect(cursor).toBeNull();
       expect(seen).toHaveLength(3);
-      for (const row of expected)
-        expect(seen).toContainEqual(expect.objectContaining({ threadId: row.thread_id, lastMessageAt: row.expected }));
-      expect(
-        seen.find((row) => row.threadId === expected.find((entry) => entry.item_id === dated.itemId)?.thread_id)
-          ?.lastMessageAt,
-      ).toBe("2024-01-01T00:00:00.000000Z");
+      const dateRow = expected.find((entry) => entry.item_id === dated.itemId);
+      const ingestRow = expected.find((entry) => entry.item_id === ingested.itemId);
+      const legacyRow = expected.find((entry) => entry.item_id === legacy.itemId);
+      if (!dateRow || !ingestRow || !legacyRow || !ingestRow.ingested) throw new Error("Missing timestamp fixture");
+      expect(legacyRow.ingested).toBeNull();
+      expect(seen).toContainEqual(
+        expect.objectContaining({ threadId: dateRow.thread_id, lastMessageAt: "2024-01-01T00:00:00.000000Z" }),
+      );
+      expect(seen).toContainEqual(
+        expect.objectContaining({ threadId: ingestRow.thread_id, lastMessageAt: ingestRow.ingested }),
+      );
+      expect(seen).toContainEqual(
+        expect.objectContaining({ threadId: legacyRow.thread_id, lastMessageAt: legacyRow.updated }),
+      );
     });
   });
 });
