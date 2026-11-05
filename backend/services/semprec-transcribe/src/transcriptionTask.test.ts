@@ -332,8 +332,20 @@ describe("transcription step 0", () => {
     const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
     const projects = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
     if (!files || !projects) throw new Error("Recording databases were not seeded");
+    const storageKey = `source/${randomUUID()}.m4a`;
+    await blobStorage.writeStream(storageKey, Readable.from(audioFixture));
+    const blob = await withTransaction(pool, (client) =>
+      createBlob(client, {
+        mimeType: "audio/mp4",
+        byteSize: audioFixture.byteLength,
+        storageKey,
+      }),
+    );
     const [file, project] = await withTransaction(pool, async (client) => [
-      await createItemWithClient(client, { databaseId: files.id, properties: { name: "Recording" } }),
+      await createItemWithClient(client, {
+        databaseId: files.id,
+        properties: { name: "Recording", file: { blobId: blob.id } },
+      }),
       await createItemWithClient(client, { databaseId: projects.id, properties: { name: "Chosen project" } }),
     ]);
     await inTenantZero(() =>
@@ -369,6 +381,21 @@ describe("transcription step 0", () => {
       transcriptId,
     ]);
     expect(links.rowCount).toBe(0);
+    if (trashed) {
+      await inTenantZero(() =>
+        createTranscriptionTask(
+          pool,
+          blobStorage,
+          gatewayClient,
+          summaryClient,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT),
+      );
+      const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
+      if (!transcripts) throw new Error("Transcripts missing");
+      expect(
+        (await withTransaction(pool, (client) => getItemById(client, transcripts.id, transcriptId)))?.properties.status,
+      ).toBe("done");
+    }
   });
 
   it("converges concurrent fast creates on the same checkpoint and transcript", async () => {

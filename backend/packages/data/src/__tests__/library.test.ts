@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspect } from "node:util";
+import { Readable } from "node:stream";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
@@ -25,6 +26,7 @@ import {
 } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { createBlob, tenantBlobStorageKey } from "../blobs/blobsStore.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { LocalFsBlobStorageWriter, type BlobStorageWriter } from "../mail/blobStorage.js";
@@ -887,6 +889,68 @@ describe("library module (issue #25)", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("preserves deduplicated bytes owned by the other storage root", async () => {
+    const filesRoot = await mkdtemp(join(tmpdir(), "semprec-library-files-root-"));
+    const mailRoot = await mkdtemp(join(tmpdir(), "semprec-library-mail-root-"));
+    const failures: unknown[] = [];
+    try {
+      const files = new LocalFsBlobStorageWriter(filesRoot);
+      const mail = new LocalFsBlobStorageWriter(mailRoot);
+      const removed: string[] = [];
+      const storage: BlobStorageWriter = {
+        writeStream: (...args) => files.writeStream(...args),
+        async delete(key) {
+          removed.push(key);
+          await files.delete(key);
+        },
+        readStream: (key, range) => files.readStream(key, range),
+      };
+      const bytes = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+      const key = await inTenantZero(() => tenantBlobStorageKey(pool, "mail/fixture-cover.jpg"));
+      const written = await mail.writeStream(key, Readable.from([bytes]));
+      const canonical = await inTenantZero(() =>
+        withTransaction(pool, (client) =>
+          createBlob(client, {
+            mimeType: "image/jpeg",
+            storageKey: key,
+            ...written,
+          }),
+        ),
+      );
+      const books = await getDatabaseIdByModule("books");
+      const book = await inTenantZero(() => chokePoint.createItem({ databaseId: books, properties: { name: "Book" } }));
+      await withTransaction(pool, (client) => ensureItemAutomation(client, book.id));
+      await inTenantZero(() =>
+        handleProcessLibraryMetadataTask(
+          pool,
+          { itemId: book.id, databaseId: books, config: { source: "openLibrary", coverKey: "cover" } },
+          async () => ({ status: "found", cover: { mimeType: "image/jpeg", bytes } }),
+          undefined,
+          storage,
+        ),
+      );
+      expect((await chokePoint.getItem(books, book.id))?.properties.cover).toEqual({ blobId: canonical.id });
+      expect(removed).toHaveLength(1);
+      expect(removed[0]).not.toBe(key);
+      expect(await readFile(join(mailRoot, key))).toEqual(bytes);
+      const row = await pool.query<{ storage_key: string }>("SELECT storage_key FROM blobs WHERE id = $1", [
+        canonical.id,
+      ]);
+      expect(row.rows).toEqual([{ storage_key: key }]);
+    } catch (error) {
+      failures.push(error);
+    }
+    for (const root of [filesRoot, mailRoot]) {
+      try {
+        await rm(root, { recursive: true, force: true });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Cross-root cover test and cleanup failed");
   });
 
   it.each(["release", "commit"] as const)(
