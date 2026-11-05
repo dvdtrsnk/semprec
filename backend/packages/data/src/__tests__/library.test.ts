@@ -255,6 +255,23 @@ describe("library module (issue #25)", () => {
     expect((await chokePoint.getItem(databaseId, locked.id))?.properties).not.toHaveProperty("author");
   });
 
+  it("preserves an author entered while the metadata fetch is in flight", async () => {
+    const databaseId = await getDatabaseIdByModule("books");
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Book" } }));
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+    await inTenantZero(() =>
+      handleProcessLibraryMetadataTask(
+        pool,
+        { itemId: item.id, databaseId, config: { source: "openLibrary", coverKey: "cover", authorKey: "author" } },
+        async () => {
+          await chokePoint.updateItem({ databaseId, itemId: item.id, propertiesPatch: { author: "User" } });
+          return { author: "Fetched" };
+        },
+      ),
+    );
+    expect((await chokePoint.getItem(databaseId, item.id))?.properties.author).toBe("User");
+  });
+
   it("skips an invalid movie type while applying other metadata", async () => {
     const databaseId = await getDatabaseIdByModule("movies");
     const item = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Film" } }));
@@ -792,6 +809,40 @@ describe("Books year and ISBN tenant cutover", () => {
     ]);
     return rows;
   }
+  it("upgrades the populated tenant through the registered runner without changing another tenant", async () => {
+    const other = await createTestTenant(admin);
+    await runInTenant(other, () => seedSystem(runtime));
+    const oldConfig = async () =>
+      runtime.query(
+        `UPDATE project_heartbeats SET action_config = (action_config - 'authorKey' - 'yearKey' - 'isbnKey' - 'typeKey') || '{"source":"none"}'::jsonb
+       WHERE action_id = ANY($1::text[])`,
+        [[LIBRARY_METADATA_TRIGGER_ACTION_ID, LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID]],
+      );
+    const snapshotConfigs = async () =>
+      (
+        await runtime.query<{ id: string; action_config: Record<string, unknown>; xmin: string }>(
+          `SELECT id, action_config, xmin::text FROM project_heartbeats WHERE action_id = ANY($1::text[]) ORDER BY id`,
+          [[LIBRARY_METADATA_TRIGGER_ACTION_ID, LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID]],
+        )
+      ).rows;
+    await runInTenant(tenantId, oldConfig);
+    await runInTenant(other, oldConfig);
+    const otherBefore = await runInTenant(other, snapshotConfigs);
+    await runInTenant(tenantId, () => runLibraryHeartbeatConfigCutoverMigration(runtime));
+    const scoped = await runInTenant(tenantId, snapshotConfigs);
+    expect(scoped).toHaveLength(4);
+    expect(scoped.filter((row) => row.action_config.source === "openLibrary")).toHaveLength(2);
+    expect(scoped.filter((row) => row.action_config.source === "tmdb")).toHaveLength(2);
+    expect(await runInTenant(other, snapshotConfigs)).toEqual(otherBefore);
+    await runAsSystem("test registered library heartbeat cutover", () => runTenantCutoverMigrations(runtime));
+    const otherAfter = await runInTenant(other, snapshotConfigs);
+    expect(otherAfter.filter((row) => row.action_config.source === "openLibrary")).toHaveLength(2);
+    expect(otherAfter.filter((row) => row.action_config.source === "tmdb")).toHaveLength(2);
+    await runAsSystem("test registered library heartbeat cutover again", () => runTenantCutoverMigrations(runtime));
+    expect(await runInTenant(other, snapshotConfigs)).toEqual(otherAfter);
+    expect(await runInTenant(tenantId, snapshotConfigs)).toEqual(scoped);
+  });
+
   it("seeds both Books fields for a fresh tenant through the runtime role", async () =>
     runInTenant(tenantId, async () => {
       const properties = await snapshot();
