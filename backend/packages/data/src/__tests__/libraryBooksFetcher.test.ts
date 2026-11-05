@@ -155,12 +155,32 @@ describe("library book source responses", () => {
       status: "notFound",
       source: "googleBooks",
     });
-    for (const body of [{}, { error: "provider failure" }, { kind: "books#volumes", totalItems: "0" }]) {
+    expect(await fetchGoogleBooks(item, fixture({ kind: "books#volumes", totalItems: 0, items: [] }))).toMatchObject({
+      status: "notFound",
+      source: "googleBooks",
+    });
+    for (const body of [
+      {},
+      { error: "provider failure" },
+      { kind: "books#volumes", totalItems: "0" },
+      { kind: "books#volumes", totalItems: 3 },
+      { kind: "books#volumes", totalItems: 3, items: [] },
+    ]) {
       expect(await fetchGoogleBooks(item, fixture(body))).toMatchObject({
         status: "error",
         errorCode: "invalidResponse",
         source: "googleBooks",
       });
     }
+    expect(
+      await fetchGoogleBooks(
+        item,
+        fixture({
+          kind: "books#volumes",
+          totalItems: 1,
+          items: [{ volumeInfo: { title: "First" } }, { volumeInfo: { title: "Second" } }],
+        }),
+      ),
+    ).toMatchObject({ status: "found", source: "googleBooks" });
   });
 });

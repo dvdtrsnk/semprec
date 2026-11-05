@@ -44,7 +44,8 @@ export async function fetchGoogleBooks(
   const response = await fetchLibraryJson(fetcher, url.toString());
   if ("error" in response) return { status: "error", errorCode: response.error, source: "googleBooks" };
   const parsed = responseSchema.safeParse(response.value);
-  if (!parsed.success) return { status: "error", errorCode: "invalidResponse", source: "googleBooks" };
+  if (!parsed.success || (parsed.data.totalItems > 0 && !parsed.data.items?.length))
+    return { status: "error", errorCode: "invalidResponse", source: "googleBooks" };
   const docs = (parsed.data.items ?? []).map(({ volumeInfo: info }) => {
     const year = /^\d{4}/.exec(info.publishedDate ?? "")?.[0];
     const thumbnail = info.imageLinks?.thumbnail;

@@ -5,6 +5,7 @@ import { ModuleRegistry, type ModuleManifest } from "@semprec/module-registry";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
+import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { withTransaction } from "../db/pool.js";
@@ -175,6 +176,77 @@ describe("value link via-edge union", () => {
         ?.filter((edge) => edge.relationPropertyId === targetProperty)
         .map((edge) => edge.targetItemId);
       expect(remaining).toEqual([secondCompany.id]);
+    });
+  });
+
+  it("rolls back the inherited write and its transaction-visible downstream job", async () => {
+    await runInTenant(tenant, async () => {
+      const cp = createChokePoint(data);
+      const dbs = await cp.listDatabases();
+      const areas = dbs.find((db) => db.ownerModuleId === "areas");
+      const projects = dbs.find((db) => db.ownerModuleId === "projects");
+      if (!areas || !projects) throw new Error("Fixture databases missing");
+      const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Source" } });
+      const project = await cp.createItem({ databaseId: projects.id, properties: {} });
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
+      if (!via) throw new Error("Fixture relation missing");
+      const before = await cp.getItem(projects.id, project.id);
+      const key = `valueLinksPropagate:${tenant}:fixtureChain.hop2:${project.id}:2`;
+      const task = CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE;
+      const events: InvalidationEvent[] = [];
+      const failure = new Error("fixture rollback");
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await expect(
+          withTransaction(data, async (client) => {
+            const jobs = () =>
+              client.query<{ key: string; task_identifier: string; payload: unknown }>(
+                "SELECT key, task_identifier, payload FROM graphile_worker.jobs WHERE key = $1",
+                [key],
+              );
+            expect((await jobs()).rows).toEqual([]);
+            await createRelationWithClient(client, {
+              relationPropertyId: via.id,
+              callerItemId: project.id,
+              targetItemId: area.id,
+            });
+            expect(
+              (
+                await client.query<{ name: string }>("SELECT properties->>'name' AS name FROM items WHERE id = $1", [
+                  project.id,
+                ])
+              ).rows,
+            ).toEqual([{ name: "Source" }]);
+            expect((await client.query("SELECT id FROM value_links WHERE item_id = $1", [project.id])).rowCount).toBe(
+              1,
+            );
+            expect((await jobs()).rows).toEqual([
+              {
+                key,
+                task_identifier: task,
+                payload: expect.objectContaining({
+                  tenantId: tenant,
+                  payload: { ruleKey: "fixtureChain.hop2", sourceItemId: project.id, hop: 2 },
+                }),
+              },
+            ]);
+            throw failure;
+          }),
+        ).rejects.toBe(failure);
+        expect(await cp.getItem(projects.id, project.id)).toEqual(before);
+        expect(await cp.listItemRelations(project.id)).toEqual([]);
+        expect(
+          (
+            await withTransaction(data, (client) =>
+              client.query("SELECT id FROM value_links WHERE item_id = $1", [project.id]),
+            )
+          ).rowCount,
+        ).toBe(0);
+        expect((await admin.query("SELECT key FROM graphile_worker.jobs WHERE key = $1", [key])).rows).toEqual([]);
+        expect(events.filter((event) => event.scope === "item" && event.itemId === project.id)).toEqual([]);
+      } finally {
+        setInvalidationHook(() => {});
+      }
     });
   });
 

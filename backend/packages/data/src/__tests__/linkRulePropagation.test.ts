@@ -131,7 +131,7 @@ describe("link rule propagation", () => {
     });
   });
 
-  it("rolls back the via edge, inherited value, link and queued propagation together", async () => {
+  it("rolls back the via edge, inherited value and link without invalidation", async () => {
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
       const databases = await cp.listDatabases();
