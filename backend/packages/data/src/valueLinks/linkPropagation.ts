@@ -2,9 +2,8 @@ import { isDeepStrictEqual } from "node:util";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import { currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
+import { createLogger, currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
 import { withTransaction, runAfterCommit } from "../db/pool.js";
-import { logger } from "../logger.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import { tenantLane } from "../tenancy/tenantLane.js";
 import { getItemById, lockItemById } from "../chokePoint/itemsStore.js";
@@ -24,6 +23,7 @@ const payloadSchema = z
   .object({ ruleKey: z.string().min(1), sourceItemId: z.uuid(), hop: z.number().int().min(1).max(5) })
   .strict();
 const PAGE_SIZE = 100;
+const logger = createLogger("value-links");
 
 export async function enqueueLinkPropagation(
   client: PoolClient,

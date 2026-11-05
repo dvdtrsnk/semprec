@@ -12,7 +12,8 @@ import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js"
 import { findOrCreateBlob, lockBlobById } from "../blobs/blobsStore.js";
 import { LocalFsBlobStorageWriter, resolveBlobStorageDir, type BlobStorageWriter } from "../mail/blobStorage.js";
 import { disposeLibraryCover, prepareLibraryCover, type DownloadedLibraryCover } from "./libraryCoverStorage.js";
-import { logger } from "../logger.js";
+import { createLogger } from "@semprec/shared";
+
 import { assertSupportedLibraryMetadataSource } from "./libraryMetadataConfig.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import { getTenantUserId } from "../auth/usersStore.js";
@@ -30,6 +31,8 @@ import {
 import { raiseProblem } from "../semp/sempProblemsStore.js";
 import { automationProblemKey } from "../semp/sourceProblemKeys.js";
 import type { ItemRow } from "../types.js";
+
+const logger = createLogger("library-metadata");
 
 /**
  * Config-driven mapping (issue #25): which property keys this run is allowed to write,

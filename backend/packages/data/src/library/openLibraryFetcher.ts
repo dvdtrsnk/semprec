@@ -1,10 +1,13 @@
 import { z } from "zod";
 import { createOutboundHttp } from "../net/outboundAddressPolicy.js";
-import { logger } from "../logger.js";
+import { createLogger } from "@semprec/shared";
+
 import { isBaselineOutboundUrl } from "../net/storedOutboundUrl.js";
 import { MAX_LIBRARY_COVER_BYTES, type DownloadedLibraryCover } from "./libraryCoverStorage.js";
 import type { ItemRow } from "../types.js";
 import type { LibraryMetadataFetchResult } from "./libraryMetadataJob.js";
+
+const logger = createLogger("library-metadata");
 
 const documentSchema = z.object({
   title: z.string(),

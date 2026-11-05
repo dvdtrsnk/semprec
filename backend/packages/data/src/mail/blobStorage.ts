@@ -4,7 +4,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Transform, type Readable } from "node:stream";
-import { logger } from "../logger.js";
+import { logger } from "./logger.js";
 
 /**
  * Where an attachment's bytes actually land — swappable so a later ops issue can supply a
