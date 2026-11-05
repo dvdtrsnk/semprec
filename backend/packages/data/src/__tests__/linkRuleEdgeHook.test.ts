@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import type { Pool } from "pg";
 import { ModuleRegistry, type ModuleManifest } from "@semprec/module-registry";
 import { runAsSystem, runInTenant } from "@semprec/shared";
-import { runOnce } from "@semprec/queue";
+import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import * as registryLoader from "../manifest/fullModuleRegistry.js";
@@ -167,9 +167,23 @@ describe("value link via-edge union", () => {
       return { cp, ids, items, firstEdge: edges[0]! };
     });
     const tasks = createCoreTaskList(data, createActionRegistry());
-    await runOnce({ pgPool: data, taskList: tasks });
+    const taskName = CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE;
+    const handler = tasks[taskName];
+    if (!handler) throw new Error("Registered propagation handler missing");
+    const drain = async () => {
+      for (let pass = 0; pass < 8; pass++) {
+        await runOnce({ pgPool: data, taskList: { [taskName]: handler } });
+        const remaining = await admin.query<{ count: string }>(
+          "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE task_identifier = $1",
+          [taskName],
+        );
+        if (remaining.rows[0]?.count === "0") return;
+      }
+      throw new Error("Propagation queue did not drain");
+    };
+    await drain();
     await runInTenant(tenant, () => fixture.cp.createRelation(fixture.firstEdge));
-    await runOnce({ pgPool: data, taskList: tasks });
+    await drain();
     await runInTenant(tenant, async () => {
       for (let index = 1; index <= 5; index++)
         expect((await fixture.cp.getItem(fixture.ids[index]!, fixture.items[index]!.id))?.properties.name).toBe(
