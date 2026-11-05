@@ -117,3 +117,29 @@ corrected source. Test actual proposal formation/confirmation without predicted
 completedAt, direct caller refusal, ordinary user-key preconditions and retained
 Tasks behavior. Existing ADR bodies, source AC and the six aggregate AC stay
 unchanged. This decision applies their existing rules, not a new architecture.
+
+## System-area refusal follows each existing transport
+
+Gh1997 requires the same actual refusal and live-item preservation through all
+three transports. Its literal common HTTP403/field requirement is corrected to
+the existing envelopes: REST HTTP403/details.field systemActive; authenticated
+MCP HTTP200 with JSON-RPC -32000, data.code forbidden and
+data.details.field systemActive; AgentTool error true with its existing
+forbidden-prefixed result and no approval request. The latter does not expose
+status or details.field, so do not attribute lower-layer values to its output.
+Follow [[2026-09-18-mcp-json-rpc-transport-for-the-generic-operation-catalog]].
+No adapter, error schema or destructive-projection behavior changes. Test actual
+transport calls and unchanged item, not a substitute owner-only call. The first
+provisional parent message incorrectly named MCP -32001/direct data.field; that
+is the approval-required envelope and was corrected before this refreeze.
+
+## Relink transition stays with the existing SQL owner
+
+Gh1587 may add one checked tenant-scoped reactivation method to valueLinksStore.ts
+for the existing link reserved by valueLinkOps. It returns the row to on and
+clears broken_by/broken_at within the same caller transaction as the value write.
+Use existing row-result validation and affected-row checking. Keep SQL out of
+the new operation coordinator, do not export the helper from the public barrel,
+and introduce no lock, source rewrite or propagation behavior. Existing actual
+relink/rollback/no-effect tests remain the evidence owners. Per-member permissions
+and the six original aggregate criteria stay separate and unchanged.
