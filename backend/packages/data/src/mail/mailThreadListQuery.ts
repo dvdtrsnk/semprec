@@ -33,12 +33,12 @@ WITH schema_ids AS (
   FROM properties p JOIN relation_definitions rd ON p.id IN (rd.property_id_a, rd.property_id_b)
   WHERE p.database_id = (SELECT emails FROM schema_ids) AND p.key = 'folder'
 ), own_addresses AS (
-  SELECT DISTINCT lower(btrim(a.address)) AS address
+  SELECT DISTINCT lower(btrim(a.address, E' \\t\\n\\r')) AS address
   FROM items i CROSS JOIN LATERAL regexp_split_to_table(
     CASE WHEN jsonb_typeof(i.properties->'addresses') = 'string' THEN i.properties->>'addresses' ELSE '' END,
     E'[,\\n\\r]+') a(address)
   WHERE i.tenant_id = app_tenant_default() AND i.database_id = (SELECT mailboxes FROM schema_ids)
-    AND i.deleted_at IS NULL AND btrim(a.address) <> ''
+    AND i.deleted_at IS NULL AND btrim(a.address, E' \\t\\n\\r') <> ''
 ), copies AS (
   SELECT m.thread_id, m.item_id, m.message_id, m.mailbox_item_id, m.envelope, m.preview_text,
     COALESCE(NULLIF(i.properties->>'date', '')::timestamptz, m.ingested_at, i.updated_at) AS activity,
@@ -46,7 +46,7 @@ WITH schema_ids AS (
     COALESCE(i.properties->'read' = 'true'::jsonb, false) AS is_read,
     COALESCE(i.properties->'flagged' = 'true'::jsonb, false) AS flagged,
     EXISTS (SELECT 1 FROM mail_attachments a WHERE a.tenant_id = m.tenant_id AND a.message_item_id = m.item_id) AS attached,
-    EXISTS (SELECT 1 FROM own_addresses o WHERE o.address = lower(btrim(m.envelope->'from'->>'address'))) AS own,
+    EXISTS (SELECT 1 FROM own_addresses o WHERE o.address = lower(btrim(m.envelope->'from'->>'address', E' \\t\\n\\r'))) AS own,
     COALESCE(f.has_sent, false) AS has_sent
   FROM mail_message_meta m
   JOIN items i ON i.tenant_id = m.tenant_id AND i.id = m.item_id AND i.database_id = (SELECT emails FROM schema_ids)
@@ -89,7 +89,7 @@ SELECT jsonb_build_object(
   'project', NULL, 'company', NULL, 'hasSempDraft', false
 ) AS thread
 FROM page p
-LEFT JOIN person_email_index pei ON pei.tenant_id = app_tenant_default() AND pei.email = lower(btrim(p.envelope->'from'->>'address'))
+LEFT JOIN person_email_index pei ON pei.tenant_id = app_tenant_default() AND pei.email = lower(btrim(p.envelope->'from'->>'address', E' \\t\\n\\r'))
 LEFT JOIN items person ON person.tenant_id = app_tenant_default() AND person.database_id = (SELECT people FROM schema_ids) AND person.id = pei.item_id AND person.deleted_at IS NULL
 LEFT JOIN LATERAL (
   SELECT jsonb_agg(jsonb_build_object('id', box.id, 'name', COALESCE(box.properties->>'name', ''), 'provider', box.properties->>'provider') ORDER BY box.id) AS value

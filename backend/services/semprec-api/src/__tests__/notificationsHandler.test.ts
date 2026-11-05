@@ -162,6 +162,9 @@ describe("createNotificationsRequestListener", () => {
       expect(firstResponse.headers.get("cache-control")).toBe("no-store");
       const first = schema.parse(await firstResponse.json());
       expect(first.resolved).toHaveLength(500);
+      const offsetResponse = await request("2000-01-01T01:00:00+01:00");
+      expect(offsetResponse.status).toBe(200);
+      expect(schema.parse(await offsetResponse.json())).toEqual(first);
       expect(first.nextCursor?.since).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/);
       if (!first.nextCursor) throw new Error("Missing cursor");
       const exactTime = first.nextCursor.since;
@@ -195,6 +198,7 @@ describe("createNotificationsRequestListener", () => {
         "",
         "?since=invalid",
         "?since=2026-02-29T00%3A00%3A00Z",
+        "?since=2026-01-01T00%3A00%3A00%2B16%3A00",
         "?since=2026-01-01T00%3A00%3A00.1234567Z",
         "?since=2026-01-01T00%3A00%3A00Z&afterId=invalid",
       ]) {

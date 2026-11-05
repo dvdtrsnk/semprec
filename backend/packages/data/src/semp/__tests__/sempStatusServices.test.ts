@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createUser } from "../../auth/usersStore.js";
+import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { withTransaction } from "../../db/pool.js";
 import { ensureMailAccountSyncState, recordGmailActivity } from "../../mail/mailAccountSyncStateStore.js";
@@ -134,5 +135,17 @@ describe("Semp status services", () => {
       detail: { lastTestAt: "2026-03-01T00:00:00.000Z", ok: false },
     });
     expect(JSON.stringify(report)).not.toContain("tenantKeysRestore");
+  });
+  it("reports the latest actual agent run activity", async () => {
+    await runInTenant(own, async () => {
+      await withTransaction(data, (client) =>
+        createAgentRun(client, { triggeredBy: "user", userId: user, task: "First" }),
+      );
+      const latest = await withTransaction(data, (client) =>
+        createAgentRun(client, { triggeredBy: "user", userId: user, task: "Second" }),
+      );
+      const agents = (await getSempStatusReport(data)).services.find((service) => service.key === "agents");
+      expect(agents?.lastActivityAt).toBe(latest.startedAt);
+    });
   });
 });

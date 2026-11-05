@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import type { Pool, PoolClient } from "pg";
 import { randomUUID } from "node:crypto";
 import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
@@ -247,6 +248,11 @@ describe("Semp status report", () => {
         ]),
       );
       expect(JSON.stringify(report)).not.toContain("raw-secret");
+      const persisted = await data.query<Record<string, unknown>>(
+        "SELECT enabled FROM project_heartbeats WHERE id = $1",
+        [heartbeat.id],
+      );
+      expect(z.object({ enabled: z.boolean() }).parse(persisted.rows[0]).enabled).toBe(true);
       await withTransaction(data, (client) => setHeartbeatEnabled(client, heartbeat.id, false));
       expect((await getSempStatusReport(data)).problems[0]?.actions).not.toContainEqual({
         kind: "disableHeartbeat",
