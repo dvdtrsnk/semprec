@@ -141,11 +141,7 @@ async function uploadMedia(headers: Record<string, string>, request: Diarization
     created = await fetch(`${PYANNOTE_API_URL}/media/input`, {
       method: "POST",
       headers: { ...headers, "content-type": "application/json" },
-      body: JSON.stringify({
-        url: mediaKey,
-        ...(request.numSpeakers && "exact" in request.numSpeakers ? { numSpeakers: request.numSpeakers.exact } : {}),
-        ...(request.numSpeakers && "min" in request.numSpeakers ? { minSpeakers: request.numSpeakers.min } : {}),
-      }),
+      body: JSON.stringify({ url: mediaKey }),
       signal: requestSignal(request.signal),
     });
   } catch (err) {
@@ -188,7 +184,11 @@ export function createPyannoteDiarizationProvider(apiKey: string): DiarizationPr
         created = await fetch(`${PYANNOTE_API_URL}/diarize`, {
           method: "POST",
           headers: { ...headers, "content-type": "application/json" },
-          body: JSON.stringify({ url: mediaKey }),
+          body: JSON.stringify({
+            url: mediaKey,
+            ...(request.numSpeakers && "exact" in request.numSpeakers ? { numSpeakers: request.numSpeakers.exact } : {}),
+            ...(request.numSpeakers && "min" in request.numSpeakers ? { minSpeakers: request.numSpeakers.min } : {}),
+          }),
           signal: requestSignal(request.signal),
         });
       } catch (err) {
