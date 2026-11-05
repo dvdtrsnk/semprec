@@ -318,6 +318,7 @@ describe("POST /api/recordings through the dispatcher", () => {
     const consumed = await runTranscriptionFixture(
       { mode: "consume", tenantId: tenantA, storageRoot: root, fileItemId: uploaded.fileItemId },
       admin,
+      true,
     );
     expect(consumed.result.diarizeCalls).toBeGreaterThan(0);
     expect(consumed.result.transcribeCalls).toBeGreaterThan(0);
