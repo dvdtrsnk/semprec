@@ -62,7 +62,15 @@ describe("People relationship options tenant cutover", () => {
     const run = () => runAsSystem("People relationship cutover test", () => runTenantCutoverMigrations(data));
     await run();
     const first = await relationship(populated);
-    expect(first.config.options.map((option) => option.key)).toEqual([...original, ...added]);
+    expect(first.config.options.map((option) => option.key)).toEqual([
+      "client",
+      "closeFriend",
+      "parent",
+      "girlfriend",
+      "therapist",
+      "neighbor",
+      ...added,
+    ]);
     expect(first.config).toEqual((await relationship(fresh)).config);
     await run();
     expect(await relationship(populated)).toEqual(first);

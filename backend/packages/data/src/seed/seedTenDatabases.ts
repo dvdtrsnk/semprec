@@ -127,7 +127,7 @@ export async function seedTenDatabasesInTransaction(
       name: "Status",
       type: "select",
       owner: "user",
-      config: { ...selectConfig(["inProgress", "done", "archived", "longTerm"]), default: "inProgress" },
+      config: { ...selectConfig(["inProgress", "longTerm", "done", "archived"]), default: "inProgress" },
     },
     { key: "date", name: "Date", type: "date", owner: "user" },
     { key: "color", name: "Color", type: "color", owner: "user" },
@@ -201,11 +201,11 @@ export async function seedTenDatabasesInTransaction(
       type: "select",
       owner: "user",
       config: selectConfig([
-        "parent",
-        "therapist",
-        "closeFriend",
-        "girlfriend",
         "client",
+        "closeFriend",
+        "parent",
+        "girlfriend",
+        "therapist",
         "neighbor",
         "colleague",
         "craftsman",
@@ -236,7 +236,7 @@ export async function seedTenDatabasesInTransaction(
   const events = await createDb(client, EVENTS_MODULE_ID);
   await createProps(client, events.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
-    { key: "type", name: "Type", type: "select", owner: "user", config: selectConfig(["event", "standup", "meeting"]) },
+    { key: "type", name: "Type", type: "select", owner: "user", config: selectConfig(["meeting", "standup", "event"]) },
     { key: "date", name: "Date", type: "date", owner: "user", config: { includeTime: true } },
     // Calendar time model (wall-clock values in the tenant time zone); no `timeFrom` means all-day.
     { key: "endDate", name: "End date", type: "date", owner: "user" },
@@ -254,7 +254,7 @@ export async function seedTenDatabasesInTransaction(
   await createProps(client, healthRecords.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "date", name: "Date", type: "date", owner: "user" },
-    { key: "status", name: "Status", type: "select", owner: "user", config: selectConfig(["resolved", "monitoring"]) },
+    { key: "status", name: "Status", type: "select", owner: "user", config: selectConfig(["monitoring", "resolved"]) },
     // Stays text, not a relation to People: also covers pets, which don't and shouldn't
     // exist in the People database.
     { key: "subject", name: "Subject", type: "text", owner: "user" },
