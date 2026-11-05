@@ -6,6 +6,7 @@ import { runTranscriptionLanguageCodeCutoverMigration } from "../transcription/t
 import { runTranscriptDurationBackfillCutoverMigration } from "../transcription/transcriptDurationBackfillCutoverMigration.js";
 import { runPropertyDefaultsCutoverMigration } from "../seed/propertyDefaultsCutoverMigration.js";
 import type { Pool } from "pg";
+import { runEventsAreaCutoverMigration } from "../events/eventsAreaCutoverMigration.js";
 import { assertRowSecurityActive, forEachMaintainedTenant } from "../tenancy/provisionTenant.js";
 import { runFilesTypeOptionsCutoverMigration } from "../blobs/filesTypeOptionsCutoverMigration.js";
 import { runTranscriptsCatalogCutoverMigration } from "../transcription/transcriptsCatalogCutoverMigration.js";
@@ -40,6 +41,7 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
     await runFilesTypeOptionsCutoverMigration(pool);
     await runEventsCalendarPropertiesCutoverMigration(pool);
+    await runEventsAreaCutoverMigration(pool);
     await runProjectAgentGuidanceCutoverMigration(pool);
     await runProcessingProposalsCardStateCutoverMigration(pool);
     await runMailboxAddressesOwnerCutoverMigration(pool);

@@ -17,6 +17,10 @@ import {
   TASKS_MODULE_ID,
   TRANSCRIPTS_MODULE_ID,
 } from "./tenDatabaseKeys.js";
+export {
+  createJournalPeriodReadRouteHandler,
+  createJournalPeriodEnsureRouteHandler,
+} from "../journal/journalRouteHandlers.js";
 export { backfillTaskTimeProperties } from "../tasks/deriveTaskTime.js";
 
 export {
@@ -118,7 +122,7 @@ export const manifest: ModuleManifest = {
         ],
       },
       name: "People",
-      searchFields: ["name", "relationship", "contact", "emails", "companies"],
+      searchFields: ["name", "relationship", "contact", "emails", "phones", "companies"],
       icon: "person",
       color: "#5856D6",
       overviewOrder: 3,
@@ -195,6 +199,20 @@ export const manifest: ModuleManifest = {
     },
   ],
   customRoutes: [
+    {
+      name: "ensureJournalPeriodDoc",
+      method: "PUT",
+      path: "/api/journal/periods/:type/:period/doc",
+      handlerExport: "createJournalPeriodEnsureRouteHandler",
+      justification: "transactional-semantics",
+    },
+    {
+      name: "readJournalPeriod",
+      method: "GET",
+      path: "/api/journal/periods/:type/:period",
+      handlerExport: "createJournalPeriodReadRouteHandler",
+      justification: "single-consumer-read",
+    },
     {
       name: "createTranscription",
       method: "POST",

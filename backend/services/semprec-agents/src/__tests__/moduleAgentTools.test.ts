@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { fauxProvider } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
@@ -12,6 +12,7 @@ import {
   createUser,
   generatePermissionManifest,
   manualHeartbeatFireJobKey,
+  resolveModuleAgentToolsForRun,
   seedSystem,
   setHeartbeatEnabled,
   withTransaction,
@@ -202,6 +203,12 @@ describe("module agent tools under project ownership", () => {
         const listed = await list.execute("list", {});
         expect(listed.details).toMatchObject({ error: false });
         expect(JSON.stringify(listed.content)).toContain(customHeartbeat.id);
+        const resolved = await resolveModuleAgentToolsForRun(pool, registry, run.id, project.id);
+        const resolvedList = resolved.find((candidate) => candidate.name === "heartbeat.list");
+        if (!resolvedList) throw new Error("Resolved heartbeat tool missing");
+        const expectedList = await resolvedList.invoke({});
+        expect(expectedList.error).toBe(false);
+        expect(listed.content).toEqual([{ type: "text", text: expectedList.result }]);
         expect((await trigger.execute("trigger", { heartbeatId: foreignHeartbeat.id })).details).toMatchObject({
           error: true,
         });
@@ -270,6 +277,34 @@ describe("module agent tools under project ownership", () => {
       } finally {
         spy.mockRestore();
       }
+      const faux = fauxProvider();
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("heartbeat_list", {}, { id: "list-session" })], { stopReason: "toolUse" }),
+        fauxAssistantMessage("done"),
+      ]);
+      const factory = await createAgentSessionFactoryForRun(
+        pool,
+        registry,
+        {
+          model: faux.getModel(),
+          streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+          isBudgetRefusal: () => false,
+        },
+        run,
+      );
+      const resolved = await resolveModuleAgentToolsForRun(pool, registry, run.id, project.id);
+      const resolvedList = resolved.find((candidate) => candidate.name === "heartbeat.list");
+      if (!resolvedList) throw new Error("Resolved heartbeat tool missing");
+      const expectedList = await resolvedList.invoke({});
+      let sessionResult: unknown;
+      for await (const event of factory({ task: "list heartbeats" }).messages()) {
+        if (event.kind === "tool_result" && event.toolCallId === "list-session") sessionResult = event;
+      }
+      expect(sessionResult).toMatchObject({
+        name: "heartbeat_list",
+        isError: false,
+        result: { content: [{ type: "text", text: expectedList.result }] },
+      });
       // Historical system databases can be archived in storage, but the public API refuses it.
       const archived = await pool.query("UPDATE databases SET archived_at=now() WHERE id=$1", [one.id]);
       expect(archived.rowCount).toBe(1);

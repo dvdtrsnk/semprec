@@ -1,9 +1,19 @@
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import { getOrCreateDoc } from "../docs/docsStore.js";
+import { NotFoundError } from "../errors.js";
+import { JOURNAL_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { getSystemTimezone } from "../systemSettings.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { assertValidTimezone } from "../timezone.js";
 import type { ItemRow } from "../types.js";
-import { computeJournalPeriodKey, type JournalPeriodType } from "./journalPeriods.js";
+import {
+  computeJournalPeriodKey,
+  describeJournalPeriods,
+  parseJournalPeriodKey,
+  type JournalPeriodType,
+} from "./journalPeriods.js";
 
 export {
   computeJournalPeriodKey,
@@ -56,4 +66,20 @@ export async function getOrCreateJournalItem(
     },
     { allowedSystemKeys: ["name", "type", "period"] },
   );
+}
+
+/** Creates or reuses the period item and its page within the caller's transaction. */
+export async function ensureJournalPeriodDoc(
+  client: PoolClient,
+  type: JournalPeriodType,
+  period: string,
+): Promise<{ itemId: string; docId: string; period: string; range: { from: string; to: string } }> {
+  const timezone = await getSystemTimezone(client);
+  const parsed = parseJournalPeriodKey(type, period, timezone);
+  const journal = await getDatabaseByModuleId(client, JOURNAL_MODULE_ID);
+  if (!journal) throw new NotFoundError("Journal database not found");
+  const item = await getOrCreateJournalItem(client, journal.id, type, parsed.reference.toJSDate(), timezone);
+  const doc = await getOrCreateDoc(client, item.id, "page");
+  const bounds = describeJournalPeriods(parsed.reference.toJSDate(), timezone)[type];
+  return { itemId: item.id, docId: doc.id, period, range: { from: bounds.from, to: bounds.to } };
 }

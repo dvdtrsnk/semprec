@@ -1,6 +1,7 @@
 import type { ModuleCatalogs, ModuleDatabaseDescriptor } from "@semprec/module-registry";
 import { resolveProperty, type ManifestLocale } from "../manifest/catalogResolution.js";
-import { JOURNAL_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { normalizeSearchPhone } from "./phoneNormalization.js";
+import { FILES_MODULE_ID, JOURNAL_MODULE_ID, PEOPLE_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { ItemRow, PropertyRow } from "../types.js";
 
 export interface ItemSearchDocumentInput {
@@ -37,8 +38,19 @@ export function buildItemSearchDocument(input: ItemSearchDocumentInput): string 
   for (const property of input.properties) {
     if (fields !== undefined && !fields.includes(property.key)) continue;
     const value = input.item.properties[property.key];
+    if (input.databaseKey === PEOPLE_MODULE_ID && property.key === "phones" && typeof value === "string") {
+      parts.push(...value.split(/\r?\n/).map(normalizeSearchPhone));
+      continue;
+    }
     switch (property.type) {
       case "title":
+        if (typeof value === "string") {
+          parts.push(value);
+          if (input.databaseKey === FILES_MODULE_ID && property.key === "name") {
+            parts.push((value.match(/[\p{L}\p{N}]+/gu) ?? []).join(" "));
+          }
+        }
+        break;
       case "text":
       case "longText":
       case "url":

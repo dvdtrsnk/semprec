@@ -1,3 +1,4 @@
+export { enqueueMailSearchTextReindex } from "./mail/mailSearchTextReindexJob.js";
 import "./domainWriteHooks.js";
 
 export {
@@ -15,6 +16,7 @@ export { runMigrations } from "./db/migrate.js";
 export * from "./errors.js";
 export * from "./types.js";
 export { normalizeWallClockTime } from "./timezone.js";
+export { buildItemSearchQuery } from "./search/itemSearchQuery.js";
 export { indexItem } from "./search/itemSearchIndexer.js";
 export { enqueueItemSearchBackfill, type ItemSearchBackfillOptions } from "./search/itemSearchBackfill.js";
 export { enqueueMailGmailPseudoFolderCleanup } from "./mail/gmailPseudoFolderCleanupJob.js";
@@ -657,3 +659,7 @@ export {
 export { handleMailLinkPersonEmailsTask } from "./mail/linkPersonEmailsJob.js";
 
 export type { ConfirmationResult } from "./inbox/proposalActions.js";
+
+export { getSempThread, listSempThreadMessages } from "./sempThreads/sempThreadsStore.js";
+
+export { resolveModuleAgentToolsForRun } from "./agentTools/moduleAgentTools.js";

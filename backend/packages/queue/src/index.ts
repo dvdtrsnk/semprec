@@ -77,6 +77,7 @@ export const CORE_TASK_NAMES = {
   // Issue #26: periodic safety net for Emails items whose search index write was skipped
   // (a direct-DB write outside ingestEmailMessage's own standard path).
   MAIL_SEARCH_REINDEX_SWEEP: "mailSearchReindexSweep",
+  MAIL_SEARCH_TEXT_REINDEX: "mailSearchTextReindex",
   // Issue #93: backfills mail_message_meta (envelope/threadId/messageId) for legacy Emails
   // items that predate it.
   MAIL_LEGACY_EMAIL_MIGRATION: "mailLegacyEmailMigration",
@@ -149,6 +150,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: "api",
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: "api",
   [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: "api",
+  [CORE_TASK_NAMES.MAIL_SEARCH_TEXT_REINDEX]: "api",
   [CORE_TASK_NAMES.MAIL_LEGACY_EMAIL_MIGRATION]: "api",
   [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: "api",
   [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: "api",
@@ -208,6 +210,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: "tenant",
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: "system",
   [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: "system",
+  [CORE_TASK_NAMES.MAIL_SEARCH_TEXT_REINDEX]: "system",
   [CORE_TASK_NAMES.MAIL_LEGACY_EMAIL_MIGRATION]: "tenant",
   [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: "tenant",
   [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: "tenant",

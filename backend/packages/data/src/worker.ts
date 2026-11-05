@@ -15,6 +15,7 @@ import { handleJournalInboxRecomputeTask } from "./inbox/journalInboxCompute.js"
 import { handleMailGmailPseudoFolderCleanupTask } from "./mail/gmailPseudoFolderCleanupJob.js";
 import { handleMailMessagePreviewBackfillTask } from "./mail/mailMessagePreviewBackfillJob.js";
 import { handleMailThreadBackfillTask } from "./mail/mailThreadBackfillJob.js";
+import { handleMailSearchTextReindexTask } from "./mail/mailSearchTextReindexJob.js";
 import { handleItemSearchBackfillTask } from "./search/itemSearchBackfill.js";
 import { handleItemSearchPageTextTask } from "./search/pageTextJob.js";
 import { handlePropertyTypeMigrationTask } from "./migrationJob/propertyTypeMigration.js";
@@ -212,6 +213,9 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: async () => {
       await handleMailThreadBackfillTask(pool);
+    },
+    [CORE_TASK_NAMES.MAIL_SEARCH_TEXT_REINDEX]: async () => {
+      await handleMailSearchTextReindexTask(pool, mailBlobStorage, filesBlobStorage);
     },
     [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: async () => {
       await handleMailSearchReindexSweepTask(pool);

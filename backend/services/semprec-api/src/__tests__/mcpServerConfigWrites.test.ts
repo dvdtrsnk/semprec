@@ -1,3 +1,4 @@
+import { ModuleRegistry } from "@semprec/module-registry";
 import type { CollectionMetadataResolver } from "@semprec/data";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -114,7 +115,9 @@ describe("mcpServers connectionConfig on every write path (issue #1029)", () => 
       }),
     );
     baseUrl = await listen(server);
-    mcpServer = createServer(createMcpRequestListener(pool, gateway(), new Set(CAPABILITY_IDS)));
+    mcpServer = createServer(
+      await createMcpRequestListener(pool, gateway(), new Set(CAPABILITY_IDS), new ModuleRegistry(() => new Set())),
+    );
     mcpUrl = await listen(mcpServer);
   });
 

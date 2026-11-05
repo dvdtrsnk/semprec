@@ -68,6 +68,22 @@ const EXAMPLE_ID = "00000000-0000-0000-0000-000000000000";
 
 export const ROUTE_MATRIX: RouteMatrixEntry[] = [
   {
+    name: "semp thread detail",
+    method: "GET",
+    path: `/api/semp/threads/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "semp thread messages",
+    method: "GET",
+    path: `/api/semp/threads/${EXAMPLE_ID}/messages`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "server identity",
     method: "GET",
     path: "/api/server-info",
@@ -270,6 +286,22 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     name: "confirm proposal",
     method: "POST",
     path: `/api/proposals/${EXAMPLE_ID}/confirm`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "journal period ensure",
+    method: "PUT",
+    path: "/api/journal/periods/day/2026-10-16/doc",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "journal period read",
+    method: "GET",
+    path: "/api/journal/periods/day/2026-10-16",
     surface: "api",
     public: false,
     tenancy: "tenant",
@@ -759,6 +791,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
     tenancy: "admin",
     admin: true,
+  },
+  {
+    name: "voice (WS upgrade)",
+    method: "GET",
+    path: "/api/voice",
+    surface: "ws",
+    public: false,
+    tenancy: "tenant",
   },
   {
     name: "sync (WS upgrade)",

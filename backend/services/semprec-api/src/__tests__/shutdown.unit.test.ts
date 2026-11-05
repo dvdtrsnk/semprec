@@ -11,7 +11,13 @@ interface CapturedLine {
 }
 
 /** Fakes for every dependency `createGracefulShutdown` takes, each appending its step to one shared `calls` log. */
-function createFakes(options: { mailLiveSyncStop?: () => Promise<void>; listenerClose?: () => Promise<void> } = {}) {
+function createFakes(
+  options: {
+    mailLiveSyncStop?: () => Promise<void>;
+    listenerClose?: () => Promise<void>;
+    voiceClose?: () => Promise<void>;
+  } = {},
+) {
   const calls: string[] = [];
   const lines: CapturedLine[] = [];
   const server = {
@@ -35,6 +41,12 @@ function createFakes(options: { mailLiveSyncStop?: () => Promise<void>; listener
   const syncServer = {
     close: async () => {
       calls.push("syncServer.close");
+    },
+  };
+  const voiceServer = {
+    close: async () => {
+      calls.push("voiceServer.close");
+      await options.voiceClose?.();
     },
   };
   const mailLiveSync = {
@@ -64,7 +76,7 @@ function createFakes(options: { mailLiveSyncStop?: () => Promise<void>; listener
   return {
     calls,
     lines,
-    deps: { server, tenantDeactivationListener, syncServer, mailLiveSync, queueRuntime, pool, logger },
+    deps: { server, tenantDeactivationListener, syncServer, voiceServer, mailLiveSync, queueRuntime, pool, logger },
   };
 }
 
@@ -77,6 +89,7 @@ describe("semprec-api graceful shutdown stops the mail live-sync root (issue #65
     expect(calls).toEqual([
       "tenantDeactivationListener.close",
       "syncServer.close",
+      "voiceServer.close",
       "server.close",
       "drained",
       "mailLiveSync.stop",
@@ -84,6 +97,27 @@ describe("semprec-api graceful shutdown stops the mail live-sync root (issue #65
       "pool.end",
     ]);
     expect(lines.filter((line) => line.level === "error")).toEqual([]);
+  });
+
+  it("continues teardown after voice close fails and keeps shutdown idempotent", async () => {
+    const failure = new Error("voice close failure");
+    const { calls, lines, deps } = createFakes({
+      voiceClose: async () => {
+        throw failure;
+      },
+    });
+    const shutdown = createGracefulShutdown(deps);
+    const first = shutdown("SIGTERM");
+    expect(shutdown("SIGINT")).toBe(first);
+    await first;
+    expect(calls.filter((call) => call === "voiceServer.close")).toHaveLength(1);
+    expect(calls.indexOf("voiceServer.close")).toBeLessThan(calls.indexOf("server.close"));
+    expect(calls).toContain("pool.end");
+    expect(lines).toContainEqual({
+      level: "error",
+      obj: { err: failure, signal: "SIGTERM" },
+      msg: "voiceServer.close() failed",
+    });
   });
 
   it("logs a rejecting live-sync stop and still stops the queue runtime and ends the pool", async () => {
@@ -134,6 +168,7 @@ describe("semprec-api graceful shutdown closes the tenant deactivation listener 
     expect(calls).toEqual([
       "tenantDeactivationListener.close",
       "syncServer.close",
+      "voiceServer.close",
       "server.close",
       "drained",
       "mailLiveSync.stop",
@@ -162,6 +197,7 @@ describe("semprec-api graceful shutdown closes the tenant deactivation listener 
     expect(calls).toEqual([
       "tenantDeactivationListener.close",
       "syncServer.close",
+      "voiceServer.close",
       "server.close",
       "drained",
       "mailLiveSync.stop",

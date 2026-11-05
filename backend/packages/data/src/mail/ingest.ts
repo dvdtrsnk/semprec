@@ -5,7 +5,7 @@ import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { resolveThreadId } from "./threading.js";
-import { buildMailPreviewFromBody, htmlToPlainText } from "./mailPlainText.js";
+import { buildMailPreviewFromBody } from "./mailPlainText.js";
 import {
   getMailMessageMetaByMailboxAndMessageId,
   getMailMessageMetaByProviderMessageId,
@@ -17,6 +17,7 @@ import {
 import { ingestAttachments, type ClassifiedAttachment } from "./attachments.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import { reindexItemSearch } from "./search.js";
+import { buildMailSearchText } from "./mailSearchText.js";
 import { detectBulkMail, type BulkMailHeaders } from "./bulkMail.js";
 import { resolveDeliveredToAddress } from "./deliveredTo.js";
 import { messageFlagProperties } from "./messageFlags.js";
@@ -194,11 +195,17 @@ export async function ingestEmailMessage(
       // folded into the owning message's own search text rather than indexed as a separate
       // item — there is no per-attachment search surface in this issue's scope, only "search my
       // mail," which a PDF invoice's contents should still match.
-      const bodyForSearch = input.bodyText ?? (input.bodyHtml ? htmlToPlainText(input.bodyHtml) : "");
       await reindexItemSearch(client, {
         itemId,
         databaseId: input.emailsDatabaseId,
-        text: [input.subject ?? "", bodyForSearch, ...extractedTexts].join("\n\n"),
+        text: buildMailSearchText({
+          subject: input.subject,
+          senderName: input.envelope.from?.name,
+          senderAddress: input.envelope.from?.address,
+          bodyText: input.bodyText,
+          bodyHtml: input.bodyHtml,
+          extractedTexts,
+        }),
       });
 
       await client.query("RELEASE SAVEPOINT ingest_provider_msg_conflict");

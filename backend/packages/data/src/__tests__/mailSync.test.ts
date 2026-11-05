@@ -1397,7 +1397,9 @@ describe("full-text search over Emails (issue #26)", () => {
 
   it("indexes and finds a message by content", async () => {
     const emailsId = await databaseIdFor("emails");
-    const itemId = randomUUID();
+    const itemId = (
+      await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: emailsId, properties: {} }))
+    ).id;
     await withTransaction(pool, (client) =>
       reindexItemSearch(client, { itemId, databaseId: emailsId, text: "Invoice for consulting services" }),
     );
@@ -1415,8 +1417,12 @@ describe("full-text search over Emails (issue #26)", () => {
 
   it("ranks a more recently indexed match above an older one with identical text relevance", async () => {
     const emailsId = await databaseIdFor("emails");
-    const olderId = randomUUID();
-    const newerId = randomUUID();
+    const olderId = (
+      await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: emailsId, properties: {} }))
+    ).id;
+    const newerId = (
+      await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: emailsId, properties: {} }))
+    ).id;
     await withTransaction(pool, (client) =>
       reindexItemSearch(client, { itemId: olderId, databaseId: emailsId, text: "quarterly report" }),
     );

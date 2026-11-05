@@ -1,3 +1,4 @@
+import { ModuleRegistry } from "@semprec/module-registry";
 import type { CollectionMetadataResolver } from "@semprec/data";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -74,10 +75,11 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
     tenantB = await createTestTenant(adminPool);
     agentRunUrl = await listen(createAgentRunRequestListener(pool));
     mcpUrl = await listen(
-      createMcpRequestListener(
+      await createMcpRequestListener(
         pool,
         createGenericOperationGateway(pool, testMetadataResolver),
         new Set(CAPABILITY_IDS),
+        new ModuleRegistry(() => new Set()),
       ),
     );
   });

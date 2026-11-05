@@ -1,3 +1,4 @@
+import { ModuleRegistry } from "@semprec/module-registry";
 import type { CollectionMetadataResolver } from "@semprec/data";
 import { createServer, type Server } from "node:http";
 import { readFileSync } from "node:fs";
@@ -63,7 +64,9 @@ async function tenantZeroUserId(): Promise<string> {
 async function startServer(
   grantedCapabilities: ReadonlySet<CapabilityId>,
 ): Promise<{ server: Server; baseUrl: string }> {
-  const server = createServer(createMcpRequestListener(pool, gateway, grantedCapabilities));
+  const server = createServer(
+    await createMcpRequestListener(pool, gateway, grantedCapabilities, new ModuleRegistry(() => new Set())),
+  );
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("expected a bound TCP address");

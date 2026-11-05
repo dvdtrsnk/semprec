@@ -626,6 +626,11 @@ export class ModuleRegistry {
     }));
   }
 
+  async getActiveAgentToolNames(): Promise<string[]> {
+    const active = await this.getActiveModules();
+    return active.flatMap(({ manifest }) => manifest.agentTools.map((tool) => tool.name));
+  }
+
   async getAgentToolDefinitions(grantedCapabilities: ReadonlySet<string>): Promise<ModuleAgentToolDefinition[]> {
     const active = await this.getActiveModules();
     return active.flatMap(({ manifest, exports }) =>

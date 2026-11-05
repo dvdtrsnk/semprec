@@ -14,6 +14,8 @@ const backendRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), ".."
  * test below — the mapping cannot silently drift out of date the way a route-count check could.
  */
 const ROUTE_HANDLER_FILES: Record<string, string> = {
+  "semp thread detail": "services/semprec-api/src/sempThreadsHandler.ts",
+  "semp thread messages": "services/semprec-api/src/sempThreadsHandler.ts",
   "server identity": "services/semprec-api/src/serverInfoHandler.ts",
   "shallow health check": "services/semprec-api/src/healthzHandler.ts",
   login: "services/semprec-api/src/authHandler.ts",
@@ -42,6 +44,8 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "mcp tool registration reclassify": "services/semprec-api/src/mcpAgentPageHandler.ts",
   "confirm proposal": "packages/data/src/inbox/inboxRouteHandlers.ts",
   "inbox types": "packages/data/src/inbox/inboxRouteHandlers.ts",
+  "journal period read": "packages/data/src/journal/journalRouteHandlers.ts",
+  "journal period ensure": "packages/data/src/journal/journalRouteHandlers.ts",
   "create transcription": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
   "transcription rerun": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
   "transcript speakers": "packages/data/src/transcription/transcriptionRouteHandlers.ts",

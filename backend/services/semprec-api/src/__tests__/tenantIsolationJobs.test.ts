@@ -1061,6 +1061,18 @@ const cases: Record<string, TaskCase> = {
       });
     },
   },
+  [CORE_TASK_NAMES.MAIL_SEARCH_TEXT_REINDEX]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const { itemId } = await createEmail(tenant);
+      return marked([itemId], async () => {
+        expect(await rows(tenant, "SELECT 1 AS present FROM item_search_index WHERE item_id = $1", [itemId])).toEqual([
+          { present: 1 },
+        ]);
+      });
+    },
+  },
   [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: {
     tenancy: "system",
     touchesTenantTables: true,

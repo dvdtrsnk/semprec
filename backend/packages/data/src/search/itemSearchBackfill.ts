@@ -47,7 +47,8 @@ export async function handleItemSearchBackfillTask(pool: Pool, payload: unknown)
        ORDER BY i.id LIMIT $4`,
       [databases.map((db) => db.id), options.afterItemId ?? null, options.onlyMissing, CHUNK_SIZE],
     );
-    for (const row of rows) await indexItem(client, row.id, { onlyMissing: options.onlyMissing });
+    for (const row of rows)
+      await indexItem(client, row.id, { onlyMissing: options.onlyMissing, preserveBody: !options.onlyMissing });
     const last = rows.at(-1);
     if (rows.length === CHUNK_SIZE && last) {
       await enqueueItemSearchBackfill(client, { ...options, afterItemId: last.id });
@@ -56,9 +57,9 @@ export async function handleItemSearchBackfillTask(pool: Pool, payload: unknown)
 }
 
 /** Deploy calls this after queue schema grants, using the semprec_data pool so RLS applies. */
-export async function runItemSearchBackfillCutover(pool: Pool): Promise<void> {
+export async function runItemSearchBackfillCutover(pool: Pool, onlyMissing = true): Promise<void> {
   await assertRowSecurityActive(pool);
   await forEachMaintainedTenant(pool, async () => {
-    await withTransaction(pool, (client) => enqueueItemSearchBackfill(client, { onlyMissing: true }));
+    await withTransaction(pool, (client) => enqueueItemSearchBackfill(client, { onlyMissing }));
   });
 }

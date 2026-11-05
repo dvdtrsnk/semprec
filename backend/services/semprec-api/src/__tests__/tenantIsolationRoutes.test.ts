@@ -1,4 +1,5 @@
 import { createServer, type Server } from "node:http";
+import { WebSocket } from "ws";
 import { randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,8 +37,10 @@ import {
   createPendingApprovalRequest,
   createUser,
   getDatabaseByModuleId,
+  getOrCreateJournalItem,
   hashPassword,
   handleObservabilityCheckSystemTask,
+  handleAgentRunEventsRetentionTask,
   insertAgentRunEvent,
   listPushSubscriptionsForUser,
   loadFullModuleRegistry,
@@ -57,6 +60,7 @@ import {
 } from "@semprec/data";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, enqueueJob, runOnce, runWorker, type TaskList } from "@semprec/queue";
 import { createDispatcher } from "../app.js";
+import { createVoiceChannel, type VoiceIdentity } from "../voiceChannel.js";
 import { SESSION_COOKIE_NAME } from "../authHandler.js";
 import { ROUTE_MATRIX, ROUTE_TENANCIES, type RouteMatrixEntry } from "../routeMatrix.js";
 
@@ -144,6 +148,7 @@ interface TenantFixture {
   heartbeatId: string;
   notificationId: string;
   agentRunId: string;
+  sempThreadId: string;
   /** A bigint, so it is not in `ids`: as a substring it would match any digit. */
   agentRunEventId: string;
   approvalRequestId: string;
@@ -613,6 +618,14 @@ async function seedTenant(): Promise<TenantFixture> {
     };
   });
 
+  const sempThreadId = await inTenantTransaction(tenantId, async (client) => {
+    const { rows } = await client.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
+    const row = rows[0];
+    if (!row) throw new Error("Thread insert returned no row");
+    await client.query("INSERT INTO semp_messages (thread_id, role, text) VALUES ($1, 'user', 'isolation')", [row.id]);
+    return row.id;
+  });
+
   const pushDeviceToken = randomBytes(32).toString("hex");
   const pushSubscriptionId = readString(
     await sendOk(member, {
@@ -669,6 +682,7 @@ async function seedTenant(): Promise<TenantFixture> {
     scoped.mcpServerItemId,
     scoped.mcpToolRegistrationId,
     scoped.agentRunId,
+    sempThreadId,
     scoped.approvalRequestId,
     ...listedDatabaseIds,
   ];
@@ -696,6 +710,7 @@ async function seedTenant(): Promise<TenantFixture> {
     blobContentHash: blob.contentHash,
     projectItemId,
     ...scoped,
+    sempThreadId,
     transcriptItemId,
     proposalItemId,
     mailboxItemId,
@@ -1076,6 +1091,44 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: {},
       }));
     }),
+  "journal period ensure": async () => {
+    const request = { method: "PUT", path: "/api/journal/periods/day/2032-08-15/doc", body: {} };
+    const owner = await sendOk(a.member, request);
+    const [other, repeat] = await Promise.all([sendOk(b.member, request), sendOk(b.member, request)]);
+    expect(readString(other, "itemId")).toBe(readString(repeat, "itemId"));
+    expect(readString(other, "docId")).toBe(readString(repeat, "docId"));
+    expect(readString(other, "itemId")).not.toBe(readString(owner, "itemId"));
+    expect(readString(other, "docId")).not.toBe(readString(owner, "docId"));
+    const counts = await inTenantTransaction(b.tenantId, async (client) => {
+      const journal = await getDatabaseByModuleId(client, "journal");
+      if (!journal) throw new Error("Journal not seeded");
+      return client.query<{ items: number; docs: number }>(
+        `SELECT (SELECT count(*)::int FROM items WHERE database_id = $1 AND properties ->> 'type' = 'day' AND properties ->> 'period' = $2 AND deleted_at IS NULL) AS items,
+                (SELECT count(*)::int FROM docs WHERE item_id = $3) AS docs`,
+        [journal.id, "2032-08-15", readString(other, "itemId")],
+      );
+    });
+    expect(counts.rows).toEqual([{ items: 1, docs: 1 }]);
+    const invalid = await send(b.member, { method: "PUT", path: "/api/journal/periods/week/2027-W53/doc", body: {} });
+    expect(invalid.status).toBe(400);
+    expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
+  },
+  "journal period read": async () => {
+    const createPeriod = async (tenant: TenantFixture) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const journal = await getDatabaseByModuleId(client, "journal");
+        if (!journal) throw new Error("Journal not seeded");
+        return getOrCreateJournalItem(client, journal.id, "day", new Date("2026-10-16T12:00:00Z"), "Europe/Prague");
+      });
+    const ownA = await createPeriod(a);
+    const ownB = await createPeriod(b);
+    const response = await sendOk(b.member, { method: "GET", path: "/api/journal/periods/day/2026-10-16" });
+    expect(readString(response, "item", "id")).toBe(ownB.id);
+    expect(response).not.toContain(ownA.id);
+    const invalid = await send(b.member, { method: "GET", path: "/api/journal/periods/week/2027-W53" });
+    expect(invalid.status).toBe(400);
+    expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
+  },
   "create transcription": () =>
     leavesAUnchanged(async () => {
       await expectForeignLikeRandom(b.member, [a.fileItemId], ([fileItemId]) => ({
@@ -1133,6 +1186,24 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         },
       }));
     }),
+  "semp thread detail": async () => {
+    const answer = await expectForeignLikeRandom(b.member, [a.sempThreadId], ([id]) => ({
+      method: "GET",
+      path: `/api/semp/threads/${id}`,
+    }));
+    expect(answer.status).toBe(404);
+    expect(readString(answer.text, "error", "code")).toBe("not_found");
+    await sendOk(b.member, { method: "GET", path: `/api/semp/threads/${b.sempThreadId}` });
+  },
+  "semp thread messages": async () => {
+    const answer = await expectForeignLikeRandom(b.member, [a.sempThreadId], ([id]) => ({
+      method: "GET",
+      path: `/api/semp/threads/${id}/messages`,
+    }));
+    expect(answer.status).toBe(404);
+    expect(readString(answer.text, "error", "code")).toBe("not_found");
+    await sendOk(b.member, { method: "GET", path: `/api/semp/threads/${b.sempThreadId}/messages` });
+  },
   "agent run detail": async () => {
     await expectForeignLikeRandom(b.member, [a.agentRunId], ([id]) => ({
       method: "GET",
@@ -2122,6 +2193,128 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     await adminPool?.end();
     if (originalScopeMode === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
     else process.env.SEMPREC_TENANT_SCOPE = originalScopeMode;
+  });
+
+  it("serves durable thread headers and complete cursor pages", async () => {
+    const fixture = await inTenantTransaction(a.tenantId, async (client) => {
+      const threads = await client.query<{ id: string; kind: string }>(
+        `INSERT INTO semp_threads (kind, subject_inbox_item_id, heartbeat_id, title)
+         VALUES ('chat', NULL, NULL, 'A chat'), ('item', $1, NULL, NULL), ('tick', NULL, $2, NULL)
+         RETURNING id, kind`,
+        [a.itemId, a.heartbeatId],
+      );
+      const chat = threads.rows.find((row) => row.kind === "chat");
+      if (!chat) throw new Error("Missing chat fixture");
+      const messages = await client.query<{ id: string }>(
+        `INSERT INTO semp_messages (thread_id, role, text, created_at)
+         SELECT $1, 'user', 'history', '2020-01-01T00:00:00.123456Z'::timestamptz
+         FROM generate_series(1, 5) RETURNING id`,
+        [chat.id],
+      );
+      return { threads: threads.rows, ids: messages.rows.map((row) => row.id), chatId: chat.id };
+    });
+    await runAsSystem("test:retention", () => handleAgentRunEventsRetentionTask(pool));
+    for (const thread of fixture.threads) {
+      const answer = await send(a.member, { method: "GET", path: `/api/semp/threads/${thread.id}` });
+      expect(answer.status).toBe(200);
+      const body: unknown = JSON.parse(answer.text);
+      expect(body).toMatchObject({
+        id: thread.id,
+        kind: thread.kind,
+        subject: thread.kind === "item" ? { inboxItemId: a.itemId, proposalId: null } : null,
+      });
+      expect(body).toHaveProperty("createdAt");
+      expect(body).toHaveProperty("lastActivityAt");
+      expect(body).not.toHaveProperty("heartbeat");
+    }
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const suffix = cursor === null ? "" : `&before=${encodeURIComponent(cursor)}`;
+      const answer = await send(a.member, {
+        method: "GET",
+        path: `/api/semp/threads/${fixture.chatId}/messages?limit=2${suffix}`,
+      });
+      expect(answer.status).toBe(200);
+      const body: unknown = JSON.parse(answer.text);
+      if (
+        !isRecord(body) ||
+        !Array.isArray(body.rows) ||
+        !(body.nextCursor === null || typeof body.nextCursor === "string")
+      )
+        throw new Error("Invalid message response");
+      for (const row of body.rows) {
+        if (!isRecord(row) || typeof row.id !== "string") throw new Error("Invalid message row");
+        expect(row).toMatchObject({
+          role: "user",
+          text: "history",
+          system: null,
+          context: [],
+          replyToMessageId: null,
+          agentRunId: null,
+          eventFromId: null,
+          status: null,
+        });
+        seen.push(row.id);
+      }
+      cursor = body.nextCursor;
+    } while (cursor !== null && seen.length <= 5);
+    expect(seen).toHaveLength(5);
+    expect(new Set(seen)).toEqual(new Set(fixture.ids));
+    for (const query of ["before=garbage", "limit=0", "limit=101", "limit=1.5"]) {
+      expect(
+        (await send(a.member, { method: "GET", path: `/api/semp/threads/${fixture.chatId}/messages?${query}` })).status,
+      ).toBe(400);
+    }
+  });
+
+  it("isolates voice identities and deactivation across tenants", async () => {
+    const identities: VoiceIdentity[] = [];
+    const voice = createVoiceChannel(pool, {
+      handler: {
+        onStart(identity, _frame, sender) {
+          identities.push(identity);
+          sender.sendControl({ type: "ready" });
+        },
+        onAudio() {},
+        onControl() {},
+        onClose() {},
+      },
+    });
+    const voiceHttp = createServer((_req, res) => res.writeHead(404).end());
+    voiceHttp.on("upgrade", (req, socket, head) => voice.handleUpgrade(req, socket, head));
+    await new Promise<void>((resolve) => voiceHttp.listen(0, "127.0.0.1", resolve));
+    const address = voiceHttp.address();
+    if (!address || typeof address === "string") throw new Error("Missing voice address");
+    const open = async (member: Member) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${address.port}/api/voice`, { headers: member.headers });
+      await new Promise<void>((resolve, reject) => {
+        ws.once("open", resolve);
+        ws.once("error", reject);
+      });
+      const ready = new Promise<void>((resolve) => ws.once("message", () => resolve()));
+      ws.send(JSON.stringify({ type: "start", language: "en" }));
+      await ready;
+      return ws;
+    };
+    try {
+      const first = await open(a.member),
+        second = await open(b.member);
+      expect(identities).toMatchObject([
+        { tenantId: a.tenantId, userId: a.member.userId },
+        { tenantId: b.tenantId, userId: b.member.userId },
+      ]);
+      const firstClosed = new Promise<number>((resolve) => first.once("close", resolve));
+      voice.closeTenant(a.tenantId);
+      expect(await firstClosed).toBe(4401);
+      expect(second.readyState).toBe(WebSocket.OPEN);
+      const secondClosed = new Promise<void>((resolve) => second.once("close", () => resolve()));
+      second.close();
+      await secondClosed;
+    } finally {
+      await voice.close();
+      await new Promise<void>((resolve) => voiceHttp.close(() => resolve()));
+    }
   });
 
   it("has exactly one case per surface: api entry", () => {

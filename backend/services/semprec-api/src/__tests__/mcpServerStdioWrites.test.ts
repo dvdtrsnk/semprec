@@ -1,3 +1,4 @@
+import { ModuleRegistry } from "@semprec/module-registry";
 import type { CollectionMetadataResolver } from "@semprec/data";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -131,7 +132,9 @@ describe("stdio MCP servers are confined to a human admin (issue #1030)", () => 
       }),
     );
     baseUrl = await listen(server);
-    mcpServer = createServer(createMcpRequestListener(pool, gateway(), new Set(CAPABILITY_IDS)));
+    mcpServer = createServer(
+      await createMcpRequestListener(pool, gateway(), new Set(CAPABILITY_IDS), new ModuleRegistry(() => new Set())),
+    );
     mcpUrl = await listen(mcpServer);
   });
 

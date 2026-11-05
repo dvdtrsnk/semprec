@@ -27,6 +27,7 @@ import {
 } from "./adapter/customRouteMount.js";
 import { createImapIdleLifecycleFactory, createMailLiveSyncLifecycleFactory } from "./mailLiveSyncLifecycles.js";
 import { readOAuthClient } from "./mailSyncAdapters.js";
+import { createVoiceChannel } from "./voiceChannel.js";
 import { createSyncUpgradeHandler } from "./syncHandler.js";
 import { createApiQueueRuntime } from "./queueRuntime.js";
 import { createGracefulShutdown, registerShutdownSignals } from "./shutdown.js";
@@ -177,6 +178,7 @@ const dispatch = await createDispatcher(pool, {
   customRouteDependencies,
 });
 const syncServer = await createSyncUpgradeHandler(pool);
+const voiceServer = createVoiceChannel(pool);
 
 // Issue #91: this process is one of the queue's two composition roots — the one that installs
 // `CORE_CRONTAB` and hosts every `queueAffinity: 'api'` task handler, over this same pool.
@@ -202,6 +204,7 @@ await mailLiveSync.start();
 // process at once, instead of on the next session check or discovery pass.
 const tenantDeactivationListener = await startTenantDeactivationListener(pool, async (tenantId) => {
   syncServer.closeTenant(tenantId);
+  voiceServer.closeTenant(tenantId);
   await mailLiveSync.stopTenant(tenantId);
 });
 
@@ -211,6 +214,7 @@ const shutdown = createGracefulShutdown({
   server,
   tenantDeactivationListener,
   syncServer,
+  voiceServer,
   queueRuntime,
   mailLiveSync,
   pool,
@@ -218,13 +222,17 @@ const shutdown = createGracefulShutdown({
 });
 registerShutdownSignals(shutdown);
 
-// `WS /api/sync` (issue #160) is the one WS upgrade route this service serves; anything else
+// The sync and voice handlers own the supported WS upgrade routes; anything else
 // requesting a protocol upgrade gets its socket destroyed rather than silently ignored.
 server.on("upgrade", (req, socket, head) => {
   withTraceContext({}, () => {
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
     if (pathname === "/api/sync") {
       syncServer.handleUpgrade(req, socket, head);
+      return;
+    }
+    if (pathname === "/api/voice") {
+      voiceServer.handleUpgrade(req, socket, head);
       return;
     }
     socket.destroy();
