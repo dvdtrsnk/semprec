@@ -140,15 +140,32 @@ describe("mail thread list", () => {
   it("filters inbox, flagged, folders, unread and mailbox in combination", async () => {
     await runInTenant(tenant, async () => {
       const f = await setup();
-      await f.ingest({ id: "<inbox@example.test>", flags: ["\\Flagged"] });
-      await f.ingest({ id: "<spam@example.test>", folder: f.folders.spam.id, flags: ["\\Flagged"] });
-      await f.ingest({ id: "<trash@example.test>", folder: f.folders.trash.id, flags: ["\\Flagged"] });
-      await f.ingest({ id: "<read@example.test>", mailbox: f.boxB.id, flags: ["\\Seen"] });
+      const inbox = await f.ingest({ id: "<inbox@example.test>", flags: ["\\Flagged"] });
+      const spam = await f.ingest({ id: "<spam@example.test>", folder: f.folders.spam.id, flags: ["\\Flagged"] });
+      const trash = await f.ingest({ id: "<trash@example.test>", folder: f.folders.trash.id, flags: ["\\Flagged"] });
+      const read = await f.ingest({ id: "<read@example.test>", mailbox: f.boxB.id, flags: ["\\Seen"] });
+      const threadId = async (itemId: string) => {
+        const result = await withTransaction(runtime, (client) =>
+          client.query<{ thread_id: string }>(
+            "SELECT thread_id FROM mail_message_meta WHERE tenant_id = app_tenant_default() AND item_id = $1",
+            [itemId],
+          ),
+        );
+        expect(result.rows).toHaveLength(1);
+        return result.rows[0]!.thread_id;
+      };
+      const [inboxId, spamId, trashId, readId] = await Promise.all(
+        [inbox, spam, trash, read].map(({ itemId }) => threadId(itemId)),
+      );
       const defaultRows = (await list()).body.threads;
-      expect(defaultRows).toHaveLength(2);
-      expect((await list("/api/mail/threads?box=flagged")).body.threads).toHaveLength(1);
-      expect((await list(`/api/mail/threads?folderId=${f.folders.spam.id}`)).body.threads).toHaveLength(1);
-      expect((await list(`/api/mail/threads?folderId=${f.folders.trash.id}`)).body.threads).toHaveLength(1);
+      expect(new Set(defaultRows.map((row) => row.threadId))).toEqual(new Set([inboxId, readId]));
+      expect((await list("/api/mail/threads?box=flagged")).body.threads.map((row) => row.threadId)).toEqual([inboxId]);
+      expect(
+        (await list(`/api/mail/threads?folderId=${f.folders.spam.id}`)).body.threads.map((row) => row.threadId),
+      ).toEqual([spamId]);
+      expect(
+        (await list(`/api/mail/threads?folderId=${f.folders.trash.id}`)).body.threads.map((row) => row.threadId),
+      ).toEqual([trashId]);
       expect((await list(`/api/mail/threads?unread=true&mailboxId=${f.boxB.id}`)).body.threads).toHaveLength(0);
       expect((await list(`/api/mail/threads?unread=true&mailboxId=${f.boxA.id}`)).body.threads).toHaveLength(1);
       await expect(list("/api/mail/threads?box=sempDrafts")).rejects.toMatchObject({
