@@ -189,6 +189,13 @@ describe("heartbeat enabled route", () => {
       expect(await enabled.json()).toEqual({ id: heartbeat.id, enabled: true, nextFireAt: "2031-01-01T00:00:00.000Z" });
       expect((await patch({ enabled: false, name: "unexpected" })).status).toBe(400);
       active.delete("fixtureRule");
+      const disabledWithoutProvider = await runInTenant(tenant, () =>
+        createSetHeartbeatEnabledRouteHandler(runtime)({ params: { id: heartbeat.id }, body: { enabled: false } }),
+      );
+      expect(disabledWithoutProvider).toEqual({
+        status: 200,
+        body: { id: heartbeat.id, enabled: false, nextFireAt: null },
+      });
       const disabled = await patch({ enabled: false });
       expect(disabled.status).toBe(200);
       expect(await disabled.json()).toEqual({ id: heartbeat.id, enabled: false, nextFireAt: null });

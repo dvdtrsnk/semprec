@@ -124,6 +124,7 @@ describe("derived value creation guard", () => {
         await expect(
           cp.createRelation({ relationPropertyId, callerItemId: ids[0]!, targetItemId }),
         ).rejects.toMatchObject({ status: 400, details: { field } });
+        expect((await cp.listItemRelations(ids[0]!))?.some((edge) => edge.targetItemId === targetItemId)).toBe(false);
         await expect(
           cp.createRelation({ relationPropertyId, callerItemId: ids[1]!, targetItemId }),
         ).resolves.toMatchObject({ relationDefinitionId: expect.any(String) });
