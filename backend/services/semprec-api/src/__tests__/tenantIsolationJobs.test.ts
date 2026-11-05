@@ -544,6 +544,27 @@ async function createExpiredTrash(tenant: Tenant): Promise<SeededWork> {
 let journalDaysSeeded = 0;
 
 const cases: Record<string, TaskCase> = {
+  // The production catalog has no configured link rules: this exercises registered refusal,
+  // not successful propagation (covered by the configured-rule data tests).
+  [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: {
+    tenancy: "tenant",
+    expectedError: /Value link rule is unavailable/,
+    async seed(tenant) {
+      return inTenant(tenant, async () => {
+        const areas = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
+        if (!areas) throw new Error("Areas database was not seeded");
+        const source = await chokePoint.createItem({ databaseId: areas.id, properties: { name: "Link source" } });
+        return { ruleKey: "unconfigured.fixture", sourceItemId: source.id, hop: 1 };
+      });
+    },
+    async expectDone(tenant, payload) {
+      expect(
+        await rows<{ name: string }>(tenant, "SELECT properties->>'name' AS name FROM items WHERE id = $1", [
+          requirePayloadString(payload, "sourceItemId"),
+        ]),
+      ).toEqual([{ name: "Link source" }]);
+    },
+  },
   [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: {
     tenancy: "tenant",
     async seed(tenant) {
@@ -1510,6 +1531,7 @@ describe("background task isolation across two tenants: api runtime (issue #1056
       async (name, c) => {
         const payload = await c.seed(tenantA);
         await discardQueuedJobs();
+        const beforeA = name === CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE ? await fingerprint(tenantA) : undefined;
         const beforeB = await fingerprint(tenantB);
         const beforeZero = await fingerprint(tenantZero);
         const notificationsBefore = await notifications(tenantA);
@@ -1524,6 +1546,7 @@ describe("background task isolation across two tenants: api runtime (issue #1056
           expect(outcome).toEqual({ attempts: null, lastError: null });
         }
         await c.expectDone(tenantA, payload);
+        if (beforeA) expect(await fingerprint(tenantA)).toEqual(beforeA);
         expect(await fingerprint(tenantB)).toEqual(beforeB);
         expect(await fingerprint(tenantZero)).toEqual(beforeZero);
         await expectNewNotificationsAddressedTo(tenantA, notificationsBefore);

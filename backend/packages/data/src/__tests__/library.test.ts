@@ -1361,6 +1361,12 @@ describe("library module (issue #25)", () => {
       throw new Error("source unavailable");
     };
     const payload = { itemId: item.id, databaseId: moviesId, config: { source: "tmdb", coverKey: "cover" } };
+    await inTenantZero(() => withTransaction(pool, (client) => enqueueLibraryMetadataProcessing(client, payload)));
+    expect(
+      await inTenantZero(() => withTransaction(pool, (client) => getItemAutomation(client, item.id))),
+    ).toMatchObject({
+      status: "pending",
+    });
 
     await expect(
       handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: "job-1" } }),
@@ -1794,6 +1800,18 @@ describe("library automation_error recipient in a tenant (issue #1018)", () => {
     const failingFetcher: LibraryMetadataFetcher = async () => {
       throw new Error("source unavailable");
     };
+    await runInTenant(tenantB, () =>
+      withTransaction(runtimePool, (client) =>
+        enqueueLibraryMetadataProcessing(client, {
+          itemId,
+          databaseId: moviesId,
+          config: { source: "tmdb", coverKey: "cover" },
+        }),
+      ),
+    );
+    expect(
+      await runInTenant(tenantB, () => withTransaction(runtimePool, (client) => getItemAutomation(client, itemId))),
+    ).toMatchObject({ status: "pending" });
 
     await expect(
       runInTenant(tenantB, () =>

@@ -17,7 +17,12 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { upsertProcessHeartbeat } from "../health/processHeartbeats.js";
-import { handleProcessLibraryMetadataTask, type LibraryMetadataFetcher } from "../library/libraryMetadataJob.js";
+import {
+  enqueueLibraryMetadataProcessing,
+  handleProcessLibraryMetadataTask,
+  type LibraryMetadataFetcher,
+} from "../library/libraryMetadataJob.js";
+import { getItemAutomation } from "../library/itemAutomationStore.js";
 import { handleObservabilityCheckSystemTask } from "../observability/observabilityCheckSystem.js";
 import { recordRestoreTestResult } from "../observability/restoreTestResult.js";
 import { createGuidanceProblemWriter } from "../semp/guidanceProblemWriter.js";
@@ -154,14 +159,15 @@ describe("semp problem producers (issue #1465)", () => {
     };
 
     async function failJob(databaseId: string, itemId: string, jobId: string) {
+      const payload = { itemId, databaseId, config: { source: "tmdb", coverKey: "cover" } };
+      await inTenantZero(() =>
+        withTenantTransaction(pool, getTenantZeroId(), async (client) => {
+          if (!(await getItemAutomation(client, itemId))) await enqueueLibraryMetadataProcessing(client, payload);
+        }),
+      );
       await expect(
-        handleProcessLibraryMetadataTask(
-          pool,
-          { itemId, databaseId, config: { source: "tmdb", coverKey: "cover" } },
-          failingFetcher,
-          { job: { id: jobId } },
-        ),
-      ).rejects.toThrow("source unavailable");
+        handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: jobId } }),
+      ).rejects.toThrow("Library metadata processing failed");
     }
 
     async function moviesDatabaseId(): Promise<string> {

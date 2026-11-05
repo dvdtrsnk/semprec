@@ -1006,10 +1006,13 @@ describe("transcription step 1 (prepare)", () => {
 
   it("writes nothing and discards its audio when the source's file is replaced while ffmpeg runs", async () => {
     const { files, file } = await createSourceFile("audio/mp4", audioFixture);
+    let provisionalDate: unknown;
     const replacement = await withTransaction(pool, (client) =>
       createBlob(client, { mimeType: "audio/mp4", byteSize: 1, storageKey: `source/${randomUUID()}` }),
     );
     const storage = storageWithMidNormalizationHook(async () => {
+      provisionalDate = await readTranscriptDate(await readSource(files.id, file.id));
+      expect(provisionalDate).toEqual(expect.any(String));
       await withTransaction(pool, (client) =>
         updateItemWithClient(client, {
           databaseId: files.id,
@@ -1025,7 +1028,7 @@ describe("transcription step 1 (prepare)", () => {
 
     const source = await readSource(files.id, file.id);
     expect(source?.computed).not.toHaveProperty("prepare");
-    expect(await readTranscriptDate(source)).toBeUndefined();
+    expect(await readTranscriptDate(source)).toEqual(provisionalDate);
     expect(await readNormalizedLeftovers()).toEqual({ blobRows: 0, storedFiles: [] });
   });
 
