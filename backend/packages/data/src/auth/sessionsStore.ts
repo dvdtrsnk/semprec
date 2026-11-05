@@ -187,3 +187,13 @@ export async function listSessionsForUser(client: Pool | PoolClient, userId: str
   );
   return rows.map(mapRow);
 }
+
+export async function listActiveSessionsForUser(client: Pool | PoolClient, userId: string): Promise<SessionRow[]> {
+  const { rows } = await client.query<SessionDbRow>(
+    `SELECT ${SELECT_COLUMNS} FROM sessions
+     WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()
+     ORDER BY last_seen_at DESC, id`,
+    [userId],
+  );
+  return rows.map(mapRow);
+}

@@ -24,6 +24,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "password-reset request": "services/semprec-api/src/authHandler.ts",
   "password-reset consume": "services/semprec-api/src/authHandler.ts",
   logout: "services/semprec-api/src/authHandler.ts",
+  "list sessions": "services/semprec-api/src/authHandler.ts",
   "revoke session": "services/semprec-api/src/authHandler.ts",
   "set self person": "services/semprec-api/src/authHandler.ts",
   "current session": "services/semprec-api/src/authHandler.ts",

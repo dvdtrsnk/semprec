@@ -475,6 +475,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "listAccounts",
   "listAdminRecipients",
   "listAgentRunEvents",
+  "listActiveSessionsForUser",
   "listAgentRunEventsAfter",
   "listAgentRunsByHeartbeat",
   "listApprovalRequestsQueue",

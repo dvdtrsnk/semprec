@@ -203,6 +203,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
   },
   { name: "logout", method: "POST", path: "/api/auth/logout", surface: "api", public: false, tenancy: "account" },
   {
+    name: "list sessions",
+    method: "GET",
+    path: "/api/auth/sessions",
+    surface: "api",
+    public: false,
+    tenancy: "account",
+  },
+  {
     name: "revoke session",
     method: "POST",
     path: `/api/auth/sessions/${EXAMPLE_ID}/revoke`,

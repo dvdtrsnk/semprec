@@ -935,6 +935,13 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expectNoneOf(answer.text, a.ids, "logout");
     await expectAAccountActive();
   },
+  "list sessions": async () => {
+    const own = await send(b.member, { method: "GET", path: "/api/auth/sessions" });
+    expect(own.status).toBe(200);
+    expect(own.text).toContain(b.member.sessionId);
+    expectNoneOf(own.text, [a.member.sessionId, a.secondSession.sessionId], "list sessions");
+    await expectAAccountActive();
+  },
   "revoke session": async () => {
     await expectForeignLikeRandom(b.member, [a.secondSession.sessionId], ([id]) => ({
       method: "POST",

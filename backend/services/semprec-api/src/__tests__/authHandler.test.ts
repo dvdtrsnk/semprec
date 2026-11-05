@@ -392,6 +392,74 @@ describe("createAuthRequestListener", () => {
     });
   });
 
+  describe("GET /api/auth/sessions", () => {
+    it("returns only active caller sessions with the exact public fields", async () => {
+      const user = await makeUser();
+      const other = await makeUser("other@example.com");
+      const signIn = async (email: string) => {
+        const response = await fetch(`${baseUrl}/api/auth/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password: PASSWORD, platform: "web" }),
+        });
+        expect(response.status).toBe(200);
+        return sessionCookieFrom(response);
+      };
+      const cookies = [];
+      for (let i = 0; i < 5; i++) cookies.push(await signIn(user.email));
+      await signIn(other.email);
+      const rows = await pool.query<{ id: string }>(
+        "SELECT id FROM sessions WHERE user_id = $1 ORDER BY created_at, id",
+        [user.id],
+      );
+      expect(rows.rows).toHaveLength(5);
+      const ids = rows.rows.map((row) => row.id);
+      await pool.query("UPDATE sessions SET last_seen_at = now() - interval '1 hour' WHERE id = $1", [ids[1]]);
+      await pool.query("UPDATE sessions SET last_seen_at = now() - interval '2 hours' WHERE id = $1", [ids[2]]);
+      await pool.query("UPDATE sessions SET revoked_at = now() WHERE id = $1", [ids[3]]);
+      await pool.query("UPDATE sessions SET expires_at = now() - interval '1 second' WHERE id = $1", [ids[4]]);
+      const response = await fetch(`${baseUrl}/api/auth/sessions`, {
+        headers: { Cookie: `${SESSION_COOKIE_NAME}=${cookies[0]}` },
+      });
+      expect(response.status).toBe(200);
+      const body: unknown = await response.json();
+      expect(body).toEqual({
+        sessions: [
+          expect.objectContaining({
+            id: ids[0],
+            current: true,
+            platform: "web",
+            deviceKind: null,
+            deviceName: null,
+            osVersion: null,
+            appVersion: null,
+          }),
+          expect.objectContaining({ id: ids[1], current: false }),
+          expect.objectContaining({ id: ids[2], current: false }),
+        ],
+      });
+      if (typeof body !== "object" || body === null || !("sessions" in body) || !Array.isArray(body.sessions))
+        throw new Error("Invalid sessions response");
+      const sessions: unknown[] = body.sessions;
+      for (const session of sessions) {
+        if (typeof session !== "object" || session === null || Array.isArray(session))
+          throw new Error("Invalid session");
+        expect(Object.keys(session).sort()).toEqual([
+          "appVersion",
+          "createdAt",
+          "current",
+          "deviceKind",
+          "deviceName",
+          "id",
+          "lastSeenAt",
+          "osVersion",
+          "platform",
+        ]);
+      }
+      expect((await fetch(`${baseUrl}/api/auth/sessions`)).status).toBe(401);
+    });
+  });
+
   describe("GET /api/auth/session", () => {
     it.each([
       ["ios", 90],

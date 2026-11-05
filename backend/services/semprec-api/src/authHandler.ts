@@ -11,6 +11,7 @@ import {
   logout,
   verifySessionToken,
   revokeUserSession,
+  listActiveSessionsForUser,
   requestPasswordReset,
   resetPassword,
   SESSION_MAX_LIFETIME_SECONDS,
@@ -351,6 +352,25 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
         const identity = await authenticateRequest(pool, req);
         await withTransaction(pool, (client) => logout(client, identity.session.id));
         sendJson(res, 200, { ok: true }, { "Set-Cookie": CLEAR_SESSION_COOKIE });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/auth/sessions") {
+        const identity = await authenticateRequest(pool, req);
+        const sessions = await withTransaction(pool, (client) => listActiveSessionsForUser(client, identity.user.id));
+        sendJson(res, 200, {
+          sessions: sessions.map((session) => ({
+            id: session.id,
+            current: session.id === identity.session.id,
+            platform: session.platform,
+            deviceKind: session.deviceKind,
+            deviceName: session.deviceName,
+            osVersion: session.osVersion,
+            appVersion: session.appVersion,
+            createdAt: session.createdAt,
+            lastSeenAt: session.lastSeenAt,
+          })),
+        });
         return;
       }
 
