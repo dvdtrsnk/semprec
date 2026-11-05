@@ -24,6 +24,7 @@ import { runTasksSchemaCutoverMigration } from "../tasks/tasksSchemaCutoverMigra
 import { runTasksSourceEventsCutoverMigration } from "../tasks/tasksSourceEventsCutoverMigration.js";
 import { runJournalProjectCutoverMigration } from "../journal/journalProjectCutoverMigration.js";
 import { runPeopleRelationshipOptionsCutoverMigration } from "../seed/peopleRelationshipOptionsCutoverMigration.js";
+import { runNewEmailSenderFilterCutoverMigration } from "../mail/newEmailSenderFilterCutoverMigration.js";
 
 /**
  * Runs the data-driven post-migration cutovers — the ones that read and write tenant rows — once
@@ -57,6 +58,7 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runProjectsPinnedOrderCutoverMigration(pool);
     await runPeoplePhonesCutoverMigration(pool);
     await runPeopleRelationshipOptionsCutoverMigration(pool);
+    await runNewEmailSenderFilterCutoverMigration(pool);
     await runTasksSchemaCutoverMigration(pool);
     await runTasksSourceEventsCutoverMigration(pool);
     await runJournalProjectCutoverMigration(pool);

@@ -15,6 +15,7 @@ import { withTransaction } from "../db/pool.js";
 import { tenantLane } from "../tenancy/tenantLane.js";
 import { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "../inbox/inboxTickKeys.js";
 import { parseItemRelationFilterConfig, passesItemRelationFilter } from "./itemRelationFilter.js";
+import { parseSenderKnownFilterConfig, passesSenderKnownFilter } from "./senderKnownFilter.js";
 
 const logger = createLogger("scheduler");
 
@@ -71,6 +72,7 @@ export type RunAgentFn = (input: {
   agentRunId: string;
   projectItemId: string;
   task: string;
+  itemId?: string;
 }) => Promise<{ result?: string } | void>;
 
 /**
@@ -101,8 +103,13 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
       const passes = await passesItemRelationFilter(pool, context.itemId, relationFilter);
       if (!passes) return;
     }
+    if (context.itemId) {
+      const senderFilter = parseSenderKnownFilterConfig(actionConfig.senderKnownFilter);
+      if (senderFilter && !(await passesSenderKnownFilter(pool, context.itemId, senderFilter))) return;
+    }
 
-    const task = typeof actionConfig.task === "string" ? actionConfig.task : "";
+    const baseTask = typeof actionConfig.task === "string" ? actionConfig.task : "";
+    const task = context.itemId ? `${baseTask}\nTriggering item id: ${context.itemId}` : baseTask;
     // Run start: the tick thread (one per heartbeat) is created on first use and the run is linked
     // to it in the same transaction; subscribers are told once that transaction commits.
     const { run, thread } = await withTransaction(pool, async (client) => {
@@ -146,7 +153,12 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
     await withTraceContext({ agentRunId: run.id }, async () => {
       let outcome: { result?: string } | void;
       try {
-        outcome = await runAgent({ agentRunId: run.id, projectItemId: context.projectItemId, task });
+        outcome = await runAgent({
+          agentRunId: run.id,
+          projectItemId: context.projectItemId,
+          task,
+          ...(context.itemId ? { itemId: context.itemId } : {}),
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const errorCode = agentRunErrorCodeOf(err);

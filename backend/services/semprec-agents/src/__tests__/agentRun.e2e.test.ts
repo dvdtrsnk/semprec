@@ -18,11 +18,14 @@ import {
   getTestPool,
   inTenantZero,
   resetDatabase,
+  upsertMailMessageMeta,
 } from "@semprec/data/testSupport";
 import {
   CORE_AGENT_RUN_ACTION_ID,
   createAgentRun,
   createChokePoint,
+  createHeartbeat,
+  createPersonEmailReindexAction,
   createCoreTaskList,
   createUser,
   decideAndEnqueueApprovalRequest,
@@ -1272,6 +1275,66 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
       [heartbeat.id],
     );
     expect(heartbeats[0]?.last_error).toBeNull();
+  });
+
+  it("passes the triggering item through the real queued action and session", async () => {
+    const seeded = await seededAgentHeartbeat();
+    const cp = createChokePoint(pool);
+    const setup = await inTenantZero(async () => {
+      const dbs = await cp.listDatabases();
+      const emails = dbs.find((db) => db.ownerModuleId === "emails");
+      const people = dbs.find((db) => db.ownerModuleId === "people");
+      if (!emails || !people) throw new Error("Missing email or people database");
+      const person = await cp.createItem({
+        databaseId: people.id,
+        properties: { name: "Sender", emails: "sender@example.test" },
+      });
+      await createPersonEmailReindexAction(pool)(
+        { peopleDatabaseId: people.id },
+        { heartbeatId: seeded.id, projectItemId: seeded.projectItemId, itemId: person.id },
+      );
+      const item = await cp.createItem({ databaseId: emails.id, properties: {} });
+      await withTransaction(pool, (client) =>
+        upsertMailMessageMeta(client, {
+          itemId: item.id,
+          mailboxItemId: null,
+          messageId: `<${randomUUID()}@example.test>`,
+          envelope: { from: { address: "sender@example.test" } },
+        }),
+      );
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(client, {
+          projectItemId: seeded.projectItemId,
+          name: "Item proof",
+          rule: { kind: "onItemEvent", databaseId: emails.id, event: "create" },
+          actionId: CORE_AGENT_RUN_ACTION_ID,
+          actionConfig: { task: "Inspect", senderKnownFilter: {} },
+          origin: "user",
+        }),
+      );
+      return { heartbeat, item };
+    });
+    let prompt = "";
+    faux.setResponses([
+      (context) => {
+        prompt = JSON.stringify(context.messages);
+        return fauxAssistantMessage("done");
+      },
+    ]);
+    await startRuntime();
+    await inTenantZero(() =>
+      enqueueJob(pool, AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT, {
+        heartbeatId: setup.heartbeat.id,
+        itemId: setup.item.id,
+      }),
+    );
+    await waitFor(async () => (await jobCount(AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT)) === 0);
+    const { rows } = await pool.query<{ task: string; status: string }>(
+      "SELECT task, status FROM agent_runs WHERE heartbeat_id = $1",
+      [setup.heartbeat.id],
+    );
+    expect(rows).toEqual([{ task: `Inspect\nTriggering item id: ${setup.item.id}`, status: "done" }]);
+    expect(prompt).toContain(`Triggering item id: ${setup.item.id}`);
   });
 
   /**

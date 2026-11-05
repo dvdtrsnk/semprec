@@ -48,6 +48,23 @@ describe("coreAgentRunAction", () => {
     await pool?.end();
   });
 
+  it("passes an item id into the persisted and dispatched task while leaving timed tasks unchanged", async () => {
+    const { heartbeatId, projectItemId } = await createTestHeartbeat();
+    const calls: Array<{ task: string; itemId?: string }> = [];
+    const handler = coreAgentRunAction(pool, async (input) => {
+      calls.push({ task: input.task, itemId: input.itemId });
+    });
+    const itemId = "00000000-0000-4000-8000-000000000123";
+    await handler({ task: "Review" }, { heartbeatId, projectItemId, itemId });
+    await handler({ task: "Timed" }, { heartbeatId, projectItemId });
+    expect(calls).toEqual([
+      { task: `Review\nTriggering item id: ${itemId}`, itemId },
+      { task: "Timed", itemId: undefined },
+    ]);
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeatId);
+    expect(runs.map((run) => run.task).sort()).toEqual([`Review\nTriggering item id: ${itemId}`, "Timed"].sort());
+  });
+
   async function getSemprecProjectId(): Promise<string> {
     const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'");
     const database = rows[0];
