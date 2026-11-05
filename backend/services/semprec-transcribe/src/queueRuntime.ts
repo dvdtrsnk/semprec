@@ -15,6 +15,8 @@ import {
   type BlobStorageWriter,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
+import type { AiGatewayClientPort } from "@semprec/shared";
+import type { AudioGatewayClient } from "./audioGatewayClient.js";
 import { createTranscriptionCreateTask, createTranscriptionTask } from "./transcriptionTask.js";
 
 export interface TranscribeQueueRuntime {
@@ -26,13 +28,14 @@ export async function createTranscribeQueueRuntime(
   pool: Pool,
   moduleRegistry: ModuleRegistry,
   blobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR")),
+  clients: { audio?: AudioGatewayClient; summary?: AiGatewayClientPort } = {},
 ): Promise<TranscribeQueueRuntime> {
   await ensureQueueSchema(pool);
   await grantQueueSchemaPrivileges(pool);
   const taskList: TaskList = {
     [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
       CORE_TASK_NAMES.TRANSCRIPTION_JOB,
-      createTranscriptionTask(pool, blobStorage),
+      createTranscriptionTask(pool, blobStorage, clients.audio, clients.summary),
     ),
   };
   const createTaskList: TaskList = {

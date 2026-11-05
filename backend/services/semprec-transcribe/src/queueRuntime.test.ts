@@ -90,7 +90,21 @@ describe("createTranscribeQueueRuntime", () => {
       });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      runtime = await createTranscribeQueueRuntime(pool, registry, blockedStorage);
+      runtime = await createTranscribeQueueRuntime(pool, registry, blockedStorage, {
+        audio: {
+          async diarize() {
+            throw new Error("Unexpected gateway call while storage is blocked");
+          },
+          async transcribe() {
+            throw new Error("Unexpected gateway call while storage is blocked");
+          },
+        },
+        summary: {
+          async complete() {
+            throw new Error("Unexpected gateway call while storage is blocked");
+          },
+        },
+      });
       await upload("first.mp3", "ID3 first recording");
       await Promise.race([
         occupied,

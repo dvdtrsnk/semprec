@@ -23,7 +23,7 @@ import {
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
-import { LocalFsBlobStorageWriter } from "../mail/blobStorage.js";
+import { LocalFsBlobStorageWriter, type BlobStorageWriter } from "../mail/blobStorage.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { ForbiddenError, ValidationError } from "../errors.js";
@@ -481,6 +481,79 @@ describe("library module (issue #25)", () => {
       expect(rows).toHaveLength(1);
       expect(await readFile(join(root, z.string().parse(rows[0]?.storage_key)))).toEqual(bytes);
       expect((await withTransaction(pool, (client) => getItemAutomation(client, item.id)))?.status).toBe("done");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps canonical deduplicated cover bytes and removes staged bytes on rollback", async () => {
+    const root = await mkdtemp(join(tmpdir(), "semprec-library-cover-dedup-"));
+    try {
+      const local = new LocalFsBlobStorageWriter(root);
+      const written: string[] = [];
+      const removed: string[] = [];
+      const storage: BlobStorageWriter = {
+        async writeStream(key, source, options) {
+          const result = await local.writeStream(key, source, options);
+          written.push(key);
+          return result;
+        },
+        async delete(key) {
+          removed.push(key);
+          await local.delete(key);
+        },
+        readStream: (key, range) => local.readStream(key, range),
+      };
+      const books = await getDatabaseIdByModule("books");
+      const items = await inTenantZero(() =>
+        Promise.all(
+          ["One", "Two", "Rollback"].map((name) => chokePoint.createItem({ databaseId: books, properties: { name } })),
+        ),
+      );
+      const bytes = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+      const fetcher: LibraryMetadataFetcher = async () => ({
+        status: "found",
+        source: "openLibrary",
+        cover: { mimeType: "image/jpeg", bytes },
+      });
+      for (const item of items) await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+      for (const item of items.slice(0, 2))
+        await inTenantZero(() =>
+          handleProcessLibraryMetadataTask(
+            pool,
+            { itemId: item.id, databaseId: books, config: { source: "openLibrary", coverKey: "cover" } },
+            fetcher,
+            undefined,
+            storage,
+          ),
+        );
+      const first = await chokePoint.getItem(books, items[0]!.id);
+      const second = await chokePoint.getItem(books, items[1]!.id);
+      const canonical = z.object({ blobId: z.uuid() }).parse(first?.properties.cover);
+      expect(second?.properties.cover).toEqual(canonical);
+      expect(written).toHaveLength(2);
+      expect(removed).toEqual([written[1]]);
+      expect(await readFile(join(root, written[0]!))).toEqual(bytes);
+      await expect(
+        inTenantZero(() =>
+          handleProcessLibraryMetadataTask(
+            pool,
+            { itemId: items[2]!.id, databaseId: books, config: { source: "openLibrary", coverKey: "missingProperty" } },
+            async () => ({ status: "found", cover: { mimeType: "image/jpeg", bytes: Buffer.from([1, 2, 3]) } }),
+            undefined,
+            storage,
+          ),
+        ),
+      ).rejects.toThrow("Library metadata processing failed");
+      expect(written).toHaveLength(3);
+      expect(removed).toEqual([written[1], written[2]]);
+      expect(await readFile(join(root, written[0]!))).toEqual(bytes);
+      expect((await chokePoint.getItem(books, items[2]!.id))?.properties).not.toHaveProperty("missingProperty");
+      const rows = await pool.query<{ storage_key: string }>(
+        "SELECT storage_key FROM blobs WHERE storage_key = ANY($1::text[])",
+        [written],
+      );
+      expect(rows.rows).toEqual([{ storage_key: written[0] }]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
