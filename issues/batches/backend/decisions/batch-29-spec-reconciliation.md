@@ -113,3 +113,14 @@ tenantId into payload only; Graphile keys remain global. The propagation owner
 therefore constructs valueLinksPropagate:tenantId:ruleKey:sourceItemId:hop from
 trusted tenant scope, never a payload tenant. Keep the prior hop budgets,
 replace behavior, lane and transaction rules. No queue framework change.
+
+## Automation batch-read boundary: gh1768
+
+The initial direct library import in chokePoint.ts violates the existing domain
+boundary. Apply the automation batch-read registry ADR: one typed callback in
+hooks.ts, composed through domainWriteHooks.ts with the existing store owner,
+called by the facade inside its existing transaction. The previous instruction
+to use the existing owner remains; it does not authorize importing it directly
+from chokePoint/. Keep exactly one query for a nonempty returned page, actual
+tenant controls and no absent-include work. No boundary/baseline change, generic
+projection framework, helper root export or duplicated SQL is authorized.
