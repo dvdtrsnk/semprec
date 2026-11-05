@@ -5,6 +5,7 @@ import {
   createChokePoint,
   ensureItemAutomation,
   markItemAutomationDone,
+  setItemAutomationLocked,
   createCollectionMetadataResolver,
   createViewTypeRegistry,
   loadFullModuleRegistry,
@@ -44,6 +45,7 @@ describe("derived item reads in the generic application service", () => {
       const noState = await cp.createItem({ databaseId: books.id, properties: { name: "Other" } });
       await withTransaction(runtime, (client) => ensureItemAutomation(client, book.id));
       const view = await cp.createView({ databaseId: books.id, type: "table", name: "Books" });
+      const emptyDatabase = await cp.createDatabase({ name: "Empty automation fixture" });
       const service = createGenericApplicationService(
         runtime,
         await createCollectionMetadataResolver(await loadFullModuleRegistry()),
@@ -76,6 +78,16 @@ describe("derived item reads in the generic application service", () => {
       };
       runtime.on("acquire", observe);
       try {
+        reads = 0;
+        await service.queryDatabase(actor, { databaseId: books.id, limit: 50 });
+        expect(reads).toBe(0);
+        const emptyPage = await service.queryDatabase(actor, {
+          databaseId: emptyDatabase.id,
+          include: ["automation"],
+          limit: 50,
+        });
+        expect(emptyPage.items).toEqual([]);
+        expect(reads).toBe(0);
         for (const query of [
           () => service.queryDatabase(actor, { databaseId: books.id, include: ["automation"], limit: 50 }),
           () => service.queryView(actor, { viewId: view.id, include: { automation: true }, limit: 50 }),
@@ -99,6 +111,11 @@ describe("derived item reads in the generic application service", () => {
             value: original,
           });
       }
+      await withTransaction(runtime, (client) => setItemAutomationLocked(client, book.id, true));
+      expect((await service.getItem(actor, { itemId: book.id, include: ["automation"] })).automation).toMatchObject({
+        status: "locked",
+        nextAttemptAt: null,
+      });
     });
   });
 

@@ -18,7 +18,7 @@ import { getValueLinksForItems } from "./valueLinkReads.js";
 import { listItemRelationsWithClient } from "./relationReads.js";
 import { withTransaction } from "../db/pool.js";
 import { getDerivedValuesForItems } from "../derived/derivedValueReads.js";
-import { readAutomationForItems } from "../library/itemAutomationStore.js";
+import { runAutomationBatchReader } from "./hooks.js";
 import type { ItemAutomationReadPort } from "@semprec/shared";
 import { getItemsByIds } from "./itemsStore.js";
 
@@ -52,7 +52,7 @@ export function createChokePoint(
         );
       },
       async readAutomationForItems(itemIds: string[]): ReturnType<ItemAutomationReadPort["readAutomationForItems"]> {
-        return withTransaction(pool, (client) => readAutomationForItems(client, itemIds));
+        return withTransaction(pool, (client) => runAutomationBatchReader(client, itemIds));
       },
       async getDerivedValuesForItems(itemIds: string[]) {
         return withTransaction(pool, async (client) =>

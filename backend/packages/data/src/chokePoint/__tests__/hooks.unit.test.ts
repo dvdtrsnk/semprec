@@ -1,11 +1,14 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { Client } from "pg";
+import { Client, type PoolClient } from "pg";
+import type { Item } from "@semprec/shared";
 import {
   clearHooksForTests,
   hasItemPreWriteTransform,
   registerItemPreWriteTransform,
   registerItemUpdateHook,
   registerRelationEdgeChangedHook,
+  registerAutomationBatchReader,
+  runAutomationBatchReader,
   runRelationEdgeChangedHooks,
   runItemPreWriteTransforms,
   runItemUpdateHooks,
@@ -21,6 +24,46 @@ const offlineClient = Object.assign(new Client(), {
     throw new Error("Offline fixture cannot query");
   }),
   release: vi.fn(),
+});
+
+describe("automation batch reader registry", () => {
+  beforeEach(() => clearHooksForTests());
+
+  it("rejects an unregistered reader and resets registration for tests", async () => {
+    expect(() => runAutomationBatchReader(offlineClient, ["item"])).toThrow(
+      "Automation batch reader is not registered",
+    );
+    const reader = vi.fn(async () => new Map<string, NonNullable<Item["automation"]>>());
+    registerAutomationBatchReader(reader);
+    await expect(runAutomationBatchReader(offlineClient, ["item"])).resolves.toEqual(new Map());
+    clearHooksForTests();
+    expect(() => runAutomationBatchReader(offlineClient, ["item"])).toThrow(
+      "Automation batch reader is not registered",
+    );
+  });
+
+  it("deduplicates the same owner and rejects a replacement", async () => {
+    const reader = vi.fn(async () => new Map<string, NonNullable<Item["automation"]>>());
+    registerAutomationBatchReader(reader);
+    registerAutomationBatchReader(reader);
+    expect(() => registerAutomationBatchReader(async () => new Map<string, NonNullable<Item["automation"]>>())).toThrow(
+      "Automation batch reader is already registered",
+    );
+    await runAutomationBatchReader(offlineClient, ["item"]);
+    expect(reader).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards the exact client and ids and preserves reader rejection", async () => {
+    const ids = ["one", "two"];
+    const failure = new Error("reader failed");
+    const reader = vi.fn(async (_client: PoolClient, _ids: string[]) => {
+      throw failure;
+    });
+    registerAutomationBatchReader(reader);
+    await expect(runAutomationBatchReader(offlineClient, ids)).rejects.toBe(failure);
+    expect(reader).toHaveBeenCalledWith(offlineClient, ids);
+    expect(reader.mock.calls[0]?.[1]).toBe(ids);
+  });
 });
 afterAll(() => {
   offlineClient.removeAllListeners();
