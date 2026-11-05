@@ -179,7 +179,10 @@ describe("item routes (issue #241)", () => {
         const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
         const openFile = await cp.createItem({ databaseId: db("files"), properties: { name: "Open file" } });
         const health = await cp.createItem({ databaseId: db("healthRecords"), properties: { name: "Health" } });
-        const openHealth = await cp.createItem({ databaseId: db("healthRecords"), properties: { name: "Open health" } });
+        const openHealth = await cp.createItem({
+          databaseId: db("healthRecords"),
+          properties: { name: "Open health" },
+        });
         const day = await withTransaction(runtime, (client) => ensureJournalPeriodDoc(client, "day", "2026-05-01"));
         const openDay = await withTransaction(runtime, (client) => ensureJournalPeriodDoc(client, "day", "2026-05-02"));
         const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
