@@ -93,9 +93,18 @@ reconcileGmailAccount testSupport can produce real mail; do not import private
 data paths or invent root exports merely for setup. Keep data-level owner tests.
 
 Authorize transcriptReadRoutes.test.ts separately for gh1576 detail/labels/
-automation/error/privacy and gh1640 openQuestions/revision/atomic confirmation.
+automation/error/privacy and gh1640 openQuestions and available HTTP confirm.
 Fake only external providers, not the dispatcher, confirm owner or worker.
 These permissions do not transfer between members.
+
+The earlier HTTP revision wording exceeded the available transport. gh1870 owns
+the absent revise route; HTTP revise remains DEFERRED / NOT RUN here. Prove
+revise role restrictions and atomic People confirmation through the real scoped
+data owner tests. Prove actual HTTP confirm on a production-created relation
+card, plus the available HTTP openQuestions read. Do not add a revise route,
+root/testSupport helper, private cross-package import, or synthetic HTTP revise.
+This corrects evidence placement only; the source Task/AC and gh1870 boundary
+are unchanged, and these separate controls are not an HTTP revise PASS.
 
 For gh1576, listTranscriptSpeakers may accept an optional already-read typed
 ItemRow from readTranscriptDetail, checking exact ID/canonical database/live
