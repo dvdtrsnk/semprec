@@ -2546,12 +2546,12 @@
       "sequence": 26,
       "status": "proposed",
       "title": "[backend-delivery 26/74] Implement data/tasks, application/projectAgentGuidance, data/guidanceDrift changes",
-      "bodyCharacters": 59946,
-      "specSha256": "5b7cb772c76164f482fba30718b3dd59a66f5a0816df1d8c7d6f605649315f58",
+      "bodyCharacters": 59813,
+      "specSha256": "8067a0b5dde8f653fa686ac4cd4fefce9d273afc037f6780c4fcf96936710fe9",
       "members": [
         {
           "id": "gh-1540",
-          "specSha256": "4e4885324968cec1fcdf7d4ebf7f49fe7c3c3afddac323552056f8abfb800f2e",
+          "specSha256": "dc319f1d67c256d49455a72552a6d2f92f93571afac85af22ea2aa0af7780693",
           "parent": "gh-1341",
           "dependencies": [
             "gh-1365",
@@ -2598,7 +2598,7 @@
         },
         {
           "id": "gh-1548",
-          "specSha256": "bc656e91f973a516d9b53f70b58da23399d426e6af5cd9f38feb1e38646b0bd3",
+          "specSha256": "d9f9dc343c58face95be1ae80205481f0463f1417dddcf241066e0b4699a61ad",
           "parent": "gh-1309",
           "dependencies": [
             "gh-1546"
