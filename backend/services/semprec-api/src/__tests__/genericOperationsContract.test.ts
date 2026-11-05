@@ -8,6 +8,7 @@ import {
   createRuntimeRolePool,
   createTestTenant,
   getTestPool,
+  getTenantZeroId,
   resetDatabase,
   tenantForNextTestUser,
   registerRelationEdgeChangedHook,
@@ -19,6 +20,8 @@ import {
 } from "@semprec/data/testSupport";
 import {
   createChokePoint,
+  createCoreTaskList,
+  createLibraryMetadataFetcher,
   createItemWithClient,
   createDocStore,
   createUser,
@@ -39,6 +42,7 @@ import {
   type ViewRow,
 } from "@semprec/data";
 import { GENERIC_OPERATION_NAMES, runAsSystem, runInTenant, type GenericOperationName } from "@semprec/shared";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
 import { createDispatcher } from "../app.js";
 
 const PASSWORD = "s3cret-password";
@@ -614,6 +618,39 @@ describe("generic operation REST contract (issue #219)", () => {
         ]),
       });
     }
+    const taskName = CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS;
+    await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) =>
+        enqueueJob(
+          client,
+          taskName,
+          { itemId: fx.itemA.id, databaseId: fx.database.id, config: { source: "openLibrary", coverKey: "cover" } },
+          { jobKey: `library-metadata:${fx.itemA.id}`, maxAttempts: 3 },
+        ),
+      ),
+    );
+    const task = createCoreTaskList(
+      pool,
+      new Map(),
+      createLibraryMetadataFetcher({
+        fetch: async () => new Response("secret-provider-response", { status: 503 }),
+      }),
+    )[taskName];
+    if (!task) throw new Error("Library task missing");
+    await runOnce({ pgPool: pool, taskList: { [taskName]: task } });
+    const failed = await fetch(`${baseUrl}/api/items/${fx.itemA.id}?include=automation`, { headers });
+    expect(failed.status).toBe(200);
+    const failedText = await failed.text();
+    expect(failedText).not.toContain("secret-provider-response");
+    const failedBody: unknown = JSON.parse(failedText);
+    expect(failedBody).toMatchObject({
+      automation: {
+        status: "error",
+        errorCode: "sourceUnavailable",
+        attempts: 1,
+        source: "googleBooks",
+      },
+    });
   });
 
   it("keeps automation includes tenant-scoped on the real REST runtime pool", async () => {
@@ -697,6 +734,45 @@ describe("generic operation REST contract (issue #219)", () => {
         });
         expect((await query(foreignPath!)).status).toBe(404);
       }
+      const taskName = CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS;
+      await runInTenant(tenants[0]!, () =>
+        withTransaction(runtime, (client) =>
+          enqueueJob(
+            client,
+            taskName,
+            { itemId: own.book.id, databaseId: own.books.id, config: { source: "openLibrary", coverKey: "cover" } },
+            { jobKey: `library-metadata:${own.book.id}`, maxAttempts: 3 },
+          ),
+        ),
+      );
+      const task = createCoreTaskList(
+        runtime,
+        new Map(),
+        createLibraryMetadataFetcher({
+          fetch: async (url) =>
+            new Response(JSON.stringify(url.includes("openlibrary.org") ? { docs: [] } : { items: [] })),
+        }),
+      )[taskName];
+      if (!task) throw new Error("Library task missing");
+      await runOnce({ pgPool: runtime, taskList: { [taskName]: task } });
+      const nextFire = await runInTenant(tenants[0]!, () =>
+        withTransaction(runtime, (client) =>
+          client.query<{ next_fire_at: Date }>(
+            "SELECT next_fire_at FROM project_heartbeats WHERE tenant_id = app_tenant_default() AND action_id = $1 AND action_config->>'databaseId' = $2",
+            ["core.libraryMetadataRetrySweep", own.books.id],
+          ),
+        ),
+      );
+      expect(nextFire.rows).toHaveLength(1);
+      const notFound = await fetch(`${base}/api/items/${own.book.id}?include=automation`, { headers });
+      expect(notFound.status).toBe(200);
+      expect(await notFound.json()).toMatchObject({
+        automation: {
+          status: "notFound",
+          source: "googleBooks",
+          nextAttemptAt: nextFire.rows[0]!.next_fire_at.toISOString(),
+        },
+      });
       expect(await runInTenant(tenants[1]!, () => cp.readAutomationForItems([foreign.book.id]))).toEqual(before);
     } catch (error) {
       failures.push(error);

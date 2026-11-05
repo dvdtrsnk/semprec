@@ -48,7 +48,7 @@ export function createLibraryMetadataTriggerAction(pool: Pool): ActionHandler {
 
 /**
  * Registered as a `dailyTime` heartbeat action for the same project: walks every
- * `item_automation` row left in 'error' for this project's library database and
+ * `item_automation` row left in 'error' or 'notFound' for this library database and
  * re-enqueues a fresh 3-attempt batch for each — the daily catch-up the issue's retry
  * policy names ("once a day until it either succeeds or is manually locked"). `jobKey`
  * dedup (see `libraryMetadataJobKey`) means a row whose retry job is already in flight is

@@ -121,7 +121,7 @@ export interface ProcessLibraryMetadataPayload {
 /**
  * The job body (registered in worker.ts as `CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS`).
  * `locked` is the one status the heartbeat may never touch — skipped outright, covering
- * both "never enqueued for a locked row" (the retry sweep only selects 'error' rows) and
+ * both "never enqueued for a locked row" (the retry sweep selects 'error' and 'notFound') and
  * "locked mid-flight" (a job already queued when the user locks it).
  *
  * On failure, `item_automation` records the error and this rethrows so graphile-worker's
