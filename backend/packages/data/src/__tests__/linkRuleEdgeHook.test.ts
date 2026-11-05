@@ -46,6 +46,12 @@ export const manifest: ModuleManifest = {
       target: { databaseKey: "transcripts", propertyKey: "name" },
       via: { databaseKey: "transcripts", relationKey: "event" },
     },
+    {
+      key: "fixtureSingle.fileProjects",
+      source: { databaseKey: "files", propertyKey: "projects" },
+      target: { databaseKey: "tasks", propertyKey: "project" },
+      via: { databaseKey: "tasks", relationKey: "files" },
+    },
     ...["areas", "projects", "tasks", "events", "people", "companies"].map((source, index) => ({
       key: `fixtureChain.hop${index + 1}`,
       source: { databaseKey: source, propertyKey: "name" },
@@ -336,6 +342,43 @@ describe("value link via-edge union", () => {
       await withTransaction(data, (client) => confirmProposalWithClient(client, config, cardId));
       expect((await links()).rows).toEqual([{ state: "on" }]);
       expect((await cp.getItem(transcripts, transcript.id))?.properties.name).toBe("Chosen event");
+    });
+  });
+
+  it("creates no single-value link when one source already supplies multiple values", async () => {
+    await runInTenant(tenant, async () => {
+      const cp = createChokePoint(data);
+      const dbs = await cp.listDatabases();
+      const id = (module: string) => {
+        const db = dbs.find((entry) => entry.ownerModuleId === module);
+        if (!db) throw new Error(`Missing ${module}`);
+        return db.id;
+      };
+      const projects = id("projects"),
+        files = id("files"),
+        tasks = id("tasks");
+      const fileProjects = (await cp.listProperties(files)).find((entry) => entry.key === "projects");
+      const attachments = (await cp.listProperties(tasks)).find((entry) => entry.key === "files");
+      const taskProject = (await cp.listProperties(tasks)).find((entry) => entry.key === "project");
+      if (!fileProjects || !attachments || !taskProject) throw new Error("Missing fixture relations");
+      const first = await cp.createItem({ databaseId: projects, properties: { name: "First" } });
+      const second = await cp.createItem({ databaseId: projects, properties: { name: "Second" } });
+      const file = await cp.createItem({ databaseId: files, properties: { name: "File" } });
+      const task = await cp.createItem({ databaseId: tasks, properties: { name: "Task" } });
+      for (const project of [first, second])
+        await cp.createRelation({
+          relationPropertyId: fileProjects.id,
+          callerItemId: file.id,
+          targetItemId: project.id,
+        });
+      await cp.createRelation({ relationPropertyId: attachments.id, callerItemId: task.id, targetItemId: file.id });
+      expect(
+        (await cp.listItemRelations(task.id))?.filter((edge) => edge.relationPropertyId === taskProject.id),
+      ).toEqual([]);
+      const rows = await withTransaction(data, (client) =>
+        client.query("SELECT id FROM value_links WHERE item_id = $1 AND property_key = 'project'", [task.id]),
+      );
+      expect(rows.rowCount).toBe(0);
     });
   });
 });
