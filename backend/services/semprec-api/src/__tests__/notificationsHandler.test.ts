@@ -157,7 +157,7 @@ describe("createNotificationsRequestListener", () => {
       const base = `http://127.0.0.1:${address.port}/api/notifications/resolved`;
       const request = (since: string, afterId?: string, headers = own.headers) => {
         const params = new URLSearchParams({ since, ...(afterId ? { afterId } : {}) });
-        return fetch(`${base}?${params}`, { headers });
+        return fetch(`${base}?${params.toString()}`, { headers });
       };
       const schema = z.object({
         resolved: z.array(z.object({ id: z.uuid(), resolvedAt: z.string() })),

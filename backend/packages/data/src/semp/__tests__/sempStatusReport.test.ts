@@ -52,8 +52,8 @@ describe("Semp status report", () => {
         }),
       ]),
     );
-    ownUser = users[0]!.id;
-    foreignUser = users[1]!.id;
+    ownUser = users[0].id;
+    foreignUser = users[1].id;
     for (const tenant of [own, foreign]) await runInTenant(tenant, () => seedSystem(data));
   });
   afterAll(async () => {
@@ -319,8 +319,14 @@ describe("Semp status report", () => {
     )
       throw new Error("Missing compiled report");
     const compiledReport = loaded.getSempStatusReport;
-    const en: unknown = await runInTenant(own, () => compiledReport(data));
-    const cs: unknown = await runInTenant(foreign, () => compiledReport(data));
+    const en: unknown = await runInTenant(own, () => {
+      const result: unknown = Reflect.apply(compiledReport, undefined, [data]);
+      return result;
+    });
+    const cs: unknown = await runInTenant(foreign, () => {
+      const result: unknown = Reflect.apply(compiledReport, undefined, [data]);
+      return result;
+    });
     expect(en).toMatchObject({ problems: [{ title: "Mailbox is not syncing" }] });
     expect(cs).toMatchObject({ problems: [{ title: "Schránka se nesynchronizuje" }] });
   });

@@ -85,6 +85,8 @@ describe("derived item reads in the generic application service", () => {
         let changed = false;
         const onAcquire = (client: PoolClient) => {
           if (originals.has(client)) return;
+          // The original is invoked with its client as receiver via Reflect.apply below.
+          // eslint-disable-next-line @typescript-eslint/unbound-method
           const original = client.query;
           originals.set(client, original);
           Object.defineProperty(client, "query", {
