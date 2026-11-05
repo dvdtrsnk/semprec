@@ -8,6 +8,7 @@ import { withFromInbox } from "../chokePoint/itemOriginReads.js";
 import * as blobsStore from "../blobs/blobsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { listErroredItemAutomationForDatabases } from "../library/itemAutomationStore.js";
+import { readRecordingRequest } from "./recordingIntake.js";
 import { enqueueTranscriptionJob, readTranscriptionSourceFileItemId } from "./transcriptionJob.js";
 
 export const FILES_TRANSCRIPTION_TRIGGER_ACTION_ID = "core.filesTranscriptionTrigger";
@@ -52,10 +53,12 @@ export function readBlobId(properties: Record<string, unknown>): string | undefi
 export function createFilesTranscriptionTriggerAction(pool: Pool): ActionHandler {
   return async (actionConfig: Record<string, unknown>, context: ActionContext) => {
     if (!context.itemId) return; // only meaningful for an onItemEvent fire
+    const itemId = context.itemId;
     const config = filesTranscriptionTriggerConfigSchema.parse(actionConfig);
     await withTransaction(pool, async (client) => {
-      const fileItem = await itemsStore.getItemById(client, config.filesDatabaseId, context.itemId as string);
-      if (!fileItem) return; // deleted before the heartbeat fired
+      const fileItem = await itemsStore.lockItemById(client, config.filesDatabaseId, itemId);
+      if (!fileItem) return;
+      if (await readRecordingRequest(client, fileItem.id)) return;
 
       const [stamped] = await withFromInbox(client, [fileItem]);
       if (stamped?.fromInbox) return; // filed from an Inbox attachment, not a standalone recording

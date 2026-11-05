@@ -1,7 +1,15 @@
 import { Pool, type PoolClient } from "pg";
 import type { Queryable } from "../db/pool.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
-import { requireSingleRow } from "../db/pool.js";
+import { markManagedTransactionRollbackOnly, requireManagedTransaction, requireSingleRow } from "../db/pool.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
+import { lockItemById } from "../chokePoint/itemsStore.js";
+import { transferMailThreadRelationsWithClient } from "../chokePoint/relationOps.js";
+import { SYSTEM_WRITER } from "../chokePoint/writerKind.js";
+import { createActionQueueAffinity } from "../scheduler/actions.js";
+import { THREADS_MODULE_ID } from "../seed/emailModuleKeys.js";
 
 export interface MailEnvelopeAddress {
   name?: string;
@@ -248,19 +256,39 @@ export function isProviderMessageIdConflict(err: unknown): boolean {
  * re-claim it.
  */
 export async function deleteMailMessageMetaByItemId(client: PoolClient, itemId: string): Promise<void> {
-  await lockMailThreadMutation(client);
-  const { rows } = await client.query<{ thread_id: string | null }>(
-    `DELETE FROM mail_message_meta WHERE item_id = $1 RETURNING thread_id`,
-    [itemId],
-  );
-  const threadId = rows[0]?.thread_id;
-  if (!threadId) return;
-  // The claim may have created its thread (mail/send.ts threads at claim time); drop it when the
-  // deleted row was its only message, so a failed send leaves no empty `mail_threads` row.
-  await client.query(
-    `DELETE FROM mail_threads t WHERE t.id = $1 AND NOT EXISTS (SELECT 1 FROM mail_message_meta m WHERE m.thread_id = t.id)`,
-    [threadId],
-  );
+  requireManagedTransaction(client);
+  try {
+    await lockMailThreadMutation(client);
+    const { rows } = await client.query<{ thread_id: string | null }>(
+      `DELETE FROM mail_message_meta WHERE item_id = $1 RETURNING thread_id`,
+      [itemId],
+    );
+    const threadId = rows[0]?.thread_id;
+    if (!threadId) return;
+    // The claim may have created its thread (mail/send.ts threads at claim time); drop it when the
+    // deleted row was its only message, so a failed send leaves no empty `mail_threads` row.
+    const thread = await client.query<{ item_id: string | null }>(
+      `SELECT item_id FROM mail_threads t WHERE t.id = $1 AND NOT EXISTS (SELECT 1 FROM mail_message_meta m WHERE m.thread_id = t.id) FOR UPDATE`,
+      [threadId],
+    );
+    if (!thread.rows[0]) return;
+    const database = await getDatabaseByModuleId(client, THREADS_MODULE_ID);
+    const threadItemId = thread.rows[0].item_id;
+    if (!database?.system || !threadItemId) throw new Error("Missing Threads binding during mail cleanup");
+    const existing = await lockItemById(client, database.id, threadItemId);
+    if (!existing) throw new Error("Missing Threads item during mail cleanup");
+    await itemDeleteWithClient(client, database.id, threadItemId, {
+      queueAffinity: createActionQueueAffinity(),
+      writer: SYSTEM_WRITER,
+    });
+    await client.query(
+      `DELETE FROM mail_threads t WHERE t.id = $1 AND NOT EXISTS (SELECT 1 FROM mail_message_meta m WHERE m.thread_id = t.id)`,
+      [threadId],
+    );
+  } catch (error) {
+    markManagedTransactionRollbackOnly(client, error);
+    throw error;
+  }
 }
 
 export interface MailThreadRow {
@@ -270,9 +298,19 @@ export interface MailThreadRow {
 
 export async function createMailThread(client: PoolClient, subjectHint?: string): Promise<MailThreadRow> {
   await lockMailThreadMutation(client);
+  const database = await getDatabaseByModuleId(client, THREADS_MODULE_ID);
+  if (!database) throw new Error("Threads database is missing");
+  const item = await createItemWithClient(
+    client,
+    {
+      databaseId: database.id,
+      properties: { name: subjectHint || "(no subject)" },
+    },
+    { allowedSystemKeys: ["name"] },
+  );
   const { rows } = await client.query<{ id: string; subject_hint: string | null }>(
-    `INSERT INTO mail_threads (subject_hint) VALUES ($1) RETURNING id, subject_hint`,
-    [subjectHint ?? null],
+    `INSERT INTO mail_threads (subject_hint, item_id) VALUES ($1, $2) RETURNING id, subject_hint`,
+    [subjectHint ?? null, item.id],
   );
   const thread = requireSingleRow(rows, "mail_threads row");
   return { id: thread.id, subjectHint: thread.subject_hint };
@@ -286,19 +324,43 @@ export async function createMailThread(client: PoolClient, subjectHint?: string)
  * every dummy-container merge (threading.ts's self-heal path). Merging a thread with itself does nothing.
  */
 export async function reassignThread(client: PoolClient, fromThreadId: string, toThreadId: string): Promise<void> {
-  await lockMailThreadMutation(client);
-  if (fromThreadId === toThreadId) return;
-  await client.query(`UPDATE mail_message_meta SET thread_id = $2 WHERE thread_id = $1`, [fromThreadId, toThreadId]);
-  await client.query(
-    `INSERT INTO mail_thread_aliases (from_thread_id, to_thread_id) VALUES ($1, $2)
+  requireManagedTransaction(client);
+  try {
+    await lockMailThreadMutation(client);
+    if (fromThreadId === toThreadId) return;
+    const database = await getDatabaseByModuleId(client, THREADS_MODULE_ID);
+    if (!database?.system) throw new Error("Threads database is missing");
+    const bindings = await client.query<{ id: string; item_id: string | null }>(
+      "SELECT id, item_id FROM mail_threads WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE",
+      [[fromThreadId, toThreadId]],
+    );
+    const loserId = bindings.rows.find((row) => row.id === fromThreadId)?.item_id;
+    const winnerId = bindings.rows.find((row) => row.id === toThreadId)?.item_id;
+    if (!loserId || !winnerId || loserId === winnerId) throw new Error("Invalid Threads merge binding");
+    for (const id of [loserId, winnerId].sort()) {
+      const item = await lockItemById(client, database.id, id);
+      if (!item || item.deletedAt) throw new Error("Threads merge item is missing or deleted");
+    }
+    await transferMailThreadRelationsWithClient(client, database.id, loserId, winnerId);
+    await itemDeleteWithClient(client, database.id, loserId, {
+      queueAffinity: createActionQueueAffinity(),
+      writer: SYSTEM_WRITER,
+    });
+    await client.query(`UPDATE mail_message_meta SET thread_id = $2 WHERE thread_id = $1`, [fromThreadId, toThreadId]);
+    await client.query(
+      `INSERT INTO mail_thread_aliases (from_thread_id, to_thread_id) VALUES ($1, $2)
      ON CONFLICT (tenant_id, from_thread_id) DO UPDATE SET to_thread_id = EXCLUDED.to_thread_id`,
-    [fromThreadId, toThreadId],
-  );
-  await client.query(`UPDATE mail_thread_aliases SET to_thread_id = $2 WHERE to_thread_id = $1`, [
-    fromThreadId,
-    toThreadId,
-  ]);
-  await client.query(`DELETE FROM mail_threads WHERE id = $1`, [fromThreadId]);
+      [fromThreadId, toThreadId],
+    );
+    await client.query(`UPDATE mail_thread_aliases SET to_thread_id = $2 WHERE to_thread_id = $1`, [
+      fromThreadId,
+      toThreadId,
+    ]);
+    await client.query(`DELETE FROM mail_threads WHERE id = $1`, [fromThreadId]);
+  } catch (error) {
+    markManagedTransactionRollbackOnly(client, error);
+    throw error;
+  }
 }
 
 /**

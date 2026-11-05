@@ -68,6 +68,30 @@ const EXAMPLE_ID = "00000000-0000-0000-0000-000000000000";
 
 export const ROUTE_MATRIX: RouteMatrixEntry[] = [
   {
+    name: "recording upload",
+    method: "POST",
+    path: "/api/recordings",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "mailbox list",
+    method: "GET",
+    path: "/api/mail/mailboxes",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "mailbox detail",
+    method: "GET",
+    path: `/api/mail/mailboxes/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "project guidance read",
     method: "GET",
     path: `/api/projects/${EXAMPLE_ID}/agent-guidance`,
@@ -358,6 +382,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     name: "transcription rerun",
     method: "POST",
     path: `/api/transcriptions/${EXAMPLE_ID}/rerun`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "transcript detail",
+    method: "GET",
+    path: `/api/transcripts/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
     tenancy: "tenant",

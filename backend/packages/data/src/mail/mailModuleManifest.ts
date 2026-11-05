@@ -1,8 +1,14 @@
+export { createMailboxListRouteHandler, createMailboxDetailRouteHandler } from "./mailboxRouteHandlers.js";
 export { createMailContactsRouteHandler } from "./mailContactsRoute.js";
 export { createMailThreadListRouteHandler } from "./mailThreadRoutes.js";
 import type { ModuleManifest } from "@semprec/module-registry";
 import { MAILBOX_CLIENT_VIEW_TYPE } from "../views/mailboxClientViewType.js";
-import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
+import {
+  EMAILS_MODULE_ID,
+  FOLDERS_MODULE_ID,
+  MAILBOXES_MODULE_ID,
+  THREADS_MODULE_ID,
+} from "../seed/emailModuleKeys.js";
 import { MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, MAIL_REINDEX_PERSON_EMAILS_ACTION_ID } from "./personLinkingActions.js";
 
 export { createNoopMailLiveSyncLifecycleFactory } from "./mailLiveSyncRoot.js";
@@ -38,6 +44,7 @@ export const manifest: ModuleManifest = {
   systemProject: true,
   databases: [
     { key: MAILBOXES_MODULE_ID, name: "Mailboxes" },
+    { key: THREADS_MODULE_ID, name: "Threads" },
     { key: FOLDERS_MODULE_ID, name: "Folders" },
     {
       key: EMAILS_MODULE_ID,
@@ -56,6 +63,20 @@ export const manifest: ModuleManifest = {
   workers: [{ name: "semprec-mailsync", handlerExport: "createNoopMailLiveSyncLifecycleFactory" }],
   migrations: ["0006_mail_sync.sql", "0007_mail_delivered_to_and_dsn.sql"],
   customRoutes: [
+    {
+      name: "mailboxList",
+      method: "GET",
+      path: "/api/mail/mailboxes",
+      handlerExport: "createMailboxListRouteHandler",
+      justification: "single-consumer-read",
+    },
+    {
+      name: "mailboxDetail",
+      method: "GET",
+      path: "/api/mail/mailboxes/:id",
+      handlerExport: "createMailboxDetailRouteHandler",
+      justification: "single-consumer-read",
+    },
     {
       name: "mailThreadList",
       method: "GET",

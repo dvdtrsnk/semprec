@@ -19,7 +19,11 @@ import {
   ForbiddenError,
   getDatabaseByModuleId,
   getItemById,
+  ingestUploadedFile,
+  ingestUploadedFileWithTransaction,
   LocalFsBlobStorageWriter,
+  readRecordingRequest,
+  recordRecordingIntake,
   seedSystem,
   TRANSCRIPTION_OWNER_PROCESS,
   setAgentRunEventHook,
@@ -149,7 +153,7 @@ class FakeAudioGatewayClient implements AudioGatewayClient {
 class FakeSummaryClient implements AiGatewayClientPort {
   calls: AiGatewayCompletionInput[] = [];
   failure: Error | null = null;
-  speakerMappings: Array<{ speaker: string; personId: string }> = [];
+  speakerMappings: Array<{ speaker: string; personId: string | null; reason: string }> = [];
 
   async complete(input: AiGatewayCompletionInput): Promise<AiGatewayCompletionResult> {
     this.calls.push(input);
@@ -477,7 +481,7 @@ describe("transcription step 1 (prepare)", () => {
     expect((await readSource(files.id, file.id))?.computed.prepare).toBeDefined();
   });
 
-  it("opens its read and write transactions with the isolation level on BEGIN and issues no SET TRANSACTION", async () => {
+  it("keeps the prepare read at repeatable read and guards the write at read committed without SET TRANSACTION", async () => {
     const { files, file } = await createSourceFile("audio/mp4", audioFixture);
     const statements: string[] = [];
     async function connectAndRecord(): Promise<PoolClient> {
@@ -511,11 +515,333 @@ describe("transcription step 1 (prepare)", () => {
       summaryClient,
     )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
-    expect(statements.filter((text) => text === "BEGIN ISOLATION LEVEL REPEATABLE READ").length).toBeGreaterThanOrEqual(
-      2,
-    );
+    const firstSnapshot = statements.indexOf("BEGIN ISOLATION LEVEL REPEATABLE READ");
+    const isolationGuard = statements.indexOf("SHOW transaction_isolation");
+    expect(firstSnapshot).toBeGreaterThanOrEqual(0);
+    expect(isolationGuard).toBeGreaterThan(firstSnapshot);
+    expect(statements.slice(firstSnapshot + 1, isolationGuard).lastIndexOf("BEGIN")).toBeGreaterThanOrEqual(0);
     expect(statements.filter((text) => /SET\s+TRANSACTION/i.test(text))).toEqual([]);
     expect((await readSource(files.id, file.id))?.computed.prepare).toBeDefined();
+  });
+
+  it("reads an intake committed while prepare waits for an unchanged Files row", async () => {
+    const { files, file } = await createSourceFile("audio/mp4", audioFixture);
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let releaseIntake!: () => void;
+    let signalIntake!: (state: { pid: number; file: ItemRow }) => void;
+    let signalPrepare!: (pid: number) => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseIntake = resolve;
+    });
+    const intakeReady = new Promise<{ pid: number; file: ItemRow }>((resolve) => {
+      signalIntake = resolve;
+    });
+    const prepareReady = new Promise<number>((resolve) => {
+      signalPrepare = resolve;
+    });
+    async function bounded<T>(promise: Promise<T>): Promise<T> {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("Prepare overlap barrier timed out")), 5000);
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+    let intake: Promise<void> | undefined;
+    let observedPrepare = false;
+    const workerPool = new Proxy(runtime, {
+      get(target, key, receiver) {
+        if (key !== "connect") {
+          const value: unknown = Reflect.get(target, key, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return async () => {
+          const client = await target.connect();
+          return new Proxy(client, {
+            get(connection, property, innerReceiver) {
+              if (property !== "query") {
+                const value: unknown = Reflect.get(connection, property, innerReceiver);
+                return typeof value === "function" ? value.bind(connection) : value;
+              }
+              return async (...args: unknown[]) => {
+                const result: unknown = await Reflect.apply(connection.query.bind(connection), undefined, args);
+                if (!observedPrepare && args[0] === "SHOW transaction_isolation") {
+                  observedPrepare = true;
+                  const pid = await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+                  if (!pid.rows[0]) throw new Error("Missing prepare backend PID");
+                  signalPrepare(pid.rows[0].pid);
+                }
+                return result;
+              };
+            },
+          });
+        };
+      },
+    });
+    const storage = storageWithMidNormalizationHook(async () => {
+      if (intake) return;
+      intake = runInTenant(getTenantZeroId(), () =>
+        withTransaction(runtime, async (client) => {
+          const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          const before = await getItemById(client, files.id, file.id);
+          await recordRecordingIntake(client, {
+            fileItemId: file.id,
+            eventId: null,
+            recordedAt: "2026-01-01T10:00:00Z",
+          });
+          const current = await getItemById(client, files.id, file.id);
+          if (!pid.rows[0] || !current || !before) throw new Error("Missing intake backend or Files row");
+          expect(current).toEqual(before);
+          signalIntake({ pid: pid.rows[0].pid, file: current });
+          await gate;
+        }),
+      );
+      await bounded(
+        Promise.race([
+          intakeReady,
+          intake.then(() => {
+            throw new Error("Intake exited early");
+          }),
+        ]),
+      );
+    });
+    let worker: Promise<void> | undefined;
+    const failures: unknown[] = [];
+    try {
+      const role = await runInTenant(getTenantZeroId(), () =>
+        withTransaction(runtime, (client) =>
+          client.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+            "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+          ),
+        ),
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      worker = runInTenant(getTenantZeroId(), () =>
+        createTranscriptionTask(
+          workerPool,
+          storage,
+          gatewayClient,
+          summaryClient,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT),
+      );
+      const state = await bounded(
+        Promise.race([
+          intakeReady,
+          worker.then(() => {
+            throw new Error("Worker exited early");
+          }),
+        ]),
+      );
+      const workerPid = await bounded(
+        Promise.race([
+          prepareReady,
+          worker.then(() => {
+            throw new Error("Worker exited early");
+          }),
+        ]),
+      );
+      expect(workerPid).not.toBe(state.pid);
+      const unchanged = await runInTenant(getTenantZeroId(), () =>
+        withTransaction(runtime, (client) => getItemById(client, files.id, file.id)),
+      );
+      expect(unchanged).toEqual(state.file);
+      let blocked = false;
+      for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+        const result = await pool.query<{ blocked: boolean }>(
+          "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+          [state.pid, workerPid],
+        );
+        blocked = result.rows[0]?.blocked === true;
+        if (!blocked) await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      }
+      expect(blocked).toBe(true);
+      releaseIntake();
+      if (!intake) throw new Error("Intake did not start");
+      await intake;
+      await worker;
+      const source = await readSource(files.id, file.id);
+      expect(source?.computed.prepare).toBeDefined();
+      expect(new Date(String(await readTranscriptDate(source))).toISOString()).toBe("2026-01-01T10:00:00.000Z");
+    } catch (error) {
+      failures.push(error);
+    }
+    releaseIntake();
+    for (const pending of [intake, worker])
+      if (pending) {
+        try {
+          await pending;
+        } catch (error) {
+          if (!failures.includes(error)) failures.push(error);
+        }
+      }
+    try {
+      await runtime.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Prepare overlap or cleanup failed");
+  });
+
+  it("rejects overlapping intake when prepare owns Files and keeps the committed prepare date", async () => {
+    const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
+    if (!files) throw new Error("Missing Files database");
+    const uploadInput = () => ({
+      filesDatabaseId: files.id,
+      filename: "recording.mp4",
+      contentType: "audio/mp4",
+      source: Readable.from(audioFixture),
+      storageKeyPrefix: "files",
+      maxBytes: 2_000_000,
+      storage: blobStorage,
+    });
+    const file = (await inTenantZero(() => ingestUploadedFile(pool, uploadInput()))).item;
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let releasePrepare!: () => void;
+    let prepareLocked!: (pid: number) => void;
+    const gate = new Promise<void>((resolve) => {
+      releasePrepare = resolve;
+    });
+    const locked = new Promise<number>((resolve) => {
+      prepareLocked = resolve;
+    });
+    let inPrepareWrite = false;
+    let held = false;
+    const workerPool = new Proxy(runtime, {
+      get(target, key, receiver) {
+        if (key !== "connect") {
+          const value: unknown = Reflect.get(target, key, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return async () => {
+          const client = await target.connect();
+          return new Proxy(client, {
+            get(connection, property, innerReceiver) {
+              if (property !== "query") {
+                const value: unknown = Reflect.get(connection, property, innerReceiver);
+                return typeof value === "function" ? value.bind(connection) : value;
+              }
+              return async (...args: unknown[]) => {
+                const sql = typeof args[0] === "string" ? args[0] : "";
+                const result: unknown = await Reflect.apply(connection.query.bind(connection), undefined, args);
+                if (sql === "SHOW transaction_isolation") inPrepareWrite = true;
+                if (
+                  inPrepareWrite &&
+                  !held &&
+                  sql.includes("FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE")
+                ) {
+                  held = true;
+                  const pid = await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+                  if (!pid.rows[0]) throw new Error("Missing prepare backend PID");
+                  prepareLocked(pid.rows[0].pid);
+                  await gate;
+                }
+                return result;
+              };
+            },
+          });
+        };
+      },
+    });
+    let worker: Promise<void> | undefined;
+    const failures: unknown[] = [];
+    try {
+      const role = await runInTenant(getTenantZeroId(), () =>
+        withTransaction(runtime, (client) =>
+          client.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+            "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+          ),
+        ),
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      worker = runInTenant(getTenantZeroId(), () =>
+        createTranscriptionTask(
+          workerPool,
+          blobStorage,
+          gatewayClient,
+          summaryClient,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT),
+      );
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let holderPid: number;
+      try {
+        holderPid = await Promise.race([
+          locked,
+          worker.then(() => {
+            throw new Error("Worker exited before prepare lock");
+          }),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("Prepare overlap barrier timed out")), 5000);
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+      await runInTenant(getTenantZeroId(), async () => {
+        const counts = () =>
+          withTransaction(runtime, (client) =>
+            client.query<{ files: string; blobs: string }>(
+              "SELECT (SELECT count(*)::text FROM items WHERE database_id = $1) AS files, (SELECT count(*)::text FROM blobs) AS blobs",
+              [files.id],
+            ),
+          );
+        const before = await counts();
+        await expect(
+          ingestUploadedFileWithTransaction(runtime, uploadInput(), async (client, result) => {
+            const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+            expect(pid.rows[0]?.pid).not.toBe(holderPid);
+            expect(result.item.id).toBe(file.id);
+            await recordRecordingIntake(client, {
+              fileItemId: file.id,
+              eventId: null,
+              recordedAt: "2026-01-01T10:00:00Z",
+            });
+          }),
+        ).rejects.toMatchObject({ status: 409, code: "recording_busy" });
+        expect((await counts()).rows).toEqual(before.rows);
+        expect(await withTransaction(runtime, (client) => readRecordingRequest(client, file.id))).toBeNull();
+      });
+      releasePrepare();
+      await worker;
+      const prepared = await readSource(files.id, file.id);
+      const date = await readTranscriptDate(prepared);
+      expect(prepared?.computed.prepare).toBeDefined();
+      await runInTenant(getTenantZeroId(), () =>
+        withTransaction(runtime, (client) =>
+          recordRecordingIntake(client, { fileItemId: file.id, eventId: null, recordedAt: "2026-01-01T10:00:00Z" }),
+        ),
+      );
+      await runInTenant(getTenantZeroId(), () =>
+        createTranscriptionTask(
+          workerPool,
+          blobStorage,
+          gatewayClient,
+          summaryClient,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT),
+      );
+      expect(await readTranscriptDate(await readSource(files.id, file.id))).toEqual(date);
+    } catch (error) {
+      failures.push(error);
+    }
+    releasePrepare();
+    if (worker)
+      try {
+        await worker;
+      } catch (error) {
+        if (!failures.includes(error)) failures.push(error);
+      }
+    try {
+      await runtime.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Prepare-first overlap or cleanup failed");
   });
 
   it("writes nothing and discards its audio when the source's file is replaced while ffmpeg runs", async () => {
@@ -1281,7 +1607,8 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     );
     const { rows: cards } = await pool.query<{ id: string; kind: string }>(
       `SELECT i.id, i.properties ->> 'kind' AS kind FROM items i JOIN databases d ON d.id = i.database_id
-       WHERE d.owner_module_id = 'processingProposals'`,
+       WHERE d.owner_module_id = 'processingProposals'
+         AND COALESCE(i.properties -> 'context' ->> 'role', '') <> 'speaker'`,
     );
     return { eventIds: edges.map((edge) => edge.other), cards };
   }
@@ -1401,10 +1728,12 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
   });
 
   it("creates one transcript card when no Event matches, and a rerun converges on it", async () => {
-    const { file } = await createSourceFile();
+    const { files, file } = await createSourceFile();
     const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
 
     await task({ fileItemId: file.id }, FIRST_ATTEMPT);
+    const source = await withTransaction(pool, (client) => getItemById(client, files.id, file.id));
+    expect(source?.computed.suggestSpeakers).toBeDefined();
     await task({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     const transcript = await readTranscript(file.id);
@@ -1414,6 +1743,10 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     expect(match.cards).toEqual([{ id: expect.any(String), kind: "transcript" }]);
     // No linked Event, so no participants to suggest speakers from: nothing is asked.
     expect(summaryClient.calls.map((call) => call.operation)).toEqual(["transcript_summary"]);
+    expect(await readSpeakerCards()).toEqual([
+      { proposal: null, status: "needsClarification" },
+      { proposal: null, status: "needsClarification" },
+    ]);
   });
 
   async function createParticipant(eventId: string, name: string): Promise<string> {
@@ -1441,7 +1774,8 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     const { rows } = await pool.query<{ proposal: unknown; status: string }>(
       `SELECT i.properties -> 'proposal' AS proposal, i.properties ->> 'status' AS status
        FROM items i JOIN databases d ON d.id = i.database_id
-       WHERE d.owner_module_id = 'processingProposals' AND i.properties ->> 'kind' = 'transcript'`,
+       WHERE d.owner_module_id = 'processingProposals' AND i.properties ->> 'kind' = 'transcript'
+         AND i.properties -> 'context' ->> 'role' = 'speaker'`,
     );
     return rows;
   }
@@ -1459,7 +1793,17 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     const eventId = await createEvent(FIXTURE_CREATION_TIME);
     const aliceId = await createParticipant(eventId, "Alice");
     await createParticipant(eventId, "Bob");
-    summaryClient.speakerMappings = [{ speaker: "SPEAKER_01", personId: aliceId }];
+    summaryClient.speakerMappings = [{ speaker: "SPEAKER_01", personId: aliceId, reason: "Named." }];
+    const privateText = "PRIVATE_SPEAKER_TEXT_1640 is a real transcript sentence";
+    gatewayClient.transcribeResult = () => ({
+      text: `${privateText} Hi there.`,
+      language: "en",
+      segments: [
+        { start: 0, end: 0.4, text: privateText },
+        { start: 0.6, end: 0.9, text: " Hi there." },
+      ],
+    });
+    observedLogs.chunks.length = 0;
     const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
 
     await task({ fileItemId: file.id }, FIRST_ATTEMPT);
@@ -1470,18 +1814,24 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     expect(suggestionCalls[0]).toMatchObject({ projectItemId: null });
     const content = suggestionCalls[0]?.messages[0]?.content ?? "";
     expect(content).toContain(`${aliceId}: Alice`);
+    expect(content).toContain(privateText);
     expect(content).toContain("SPEAKER_00\nSPEAKER_01");
-    expect(await readSpeakerCards()).toEqual([
-      {
-        proposal: {
-          entityKind: "relation",
-          target: aliceId,
-          properties: { propertyKey: "speakers", metadata: { speaker: "SPEAKER_01" } },
+    expect(await readSpeakerCards()).toEqual(
+      expect.arrayContaining([
+        {
+          proposal: {
+            entityKind: "relation",
+            target: aliceId,
+            properties: { propertyKey: "speakers", metadata: { speaker: "SPEAKER_01" } },
+          },
+          status: "proposed",
         },
-        status: "proposed",
-      },
-    ]);
+        { proposal: null, status: "needsClarification" },
+      ]),
+    );
+    expect(await readSpeakerCards()).toHaveLength(2);
     expect(await countSpeakerEdges()).toBe(0);
+    expect(observedLogs.chunks.join("")).not.toContain(privateText);
     const transcript = await readTranscript(file.id);
     expect(transcript.properties.status).toBe("done");
   });
@@ -1506,7 +1856,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       await assertTranscriptionsSettled(runtime, [first.file.id], firstJobs);
       const eventId = await createEvent(FIXTURE_CREATION_TIME);
       const aliceId = await createParticipant(eventId, "Alice");
-      summaryClient.speakerMappings = [{ speaker: "SPEAKER_01", personId: aliceId }];
+      summaryClient.speakerMappings = [{ speaker: "SPEAKER_01", personId: aliceId, reason: "Named." }];
       const second = await createSourceFile();
       await inTenantZero(() => enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: second.file.id }));
       const secondJobs = await ownedTranscriptionJobs([second.file.id]);
@@ -1524,15 +1874,18 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
           );
         }),
       );
-      expect(cards).toHaveLength(2);
+      expect(cards).toHaveLength(5);
       for (const card of cards) {
         expect(card.aiProposal).toEqual(card.proposal);
         expect(card.aiVersion).toBe(1);
       }
-      expect(cards.map((card) => z.object({ entityKind: z.string() }).parse(card.proposal).entityKind).sort()).toEqual([
-        "database",
-        "relation",
-      ]);
+      expect(cards.filter((card) => card.proposal === null)).toHaveLength(3);
+      expect(
+        cards
+          .filter((card) => card.proposal !== null)
+          .map((card) => z.object({ entityKind: z.string() }).parse(card.proposal).entityKind)
+          .sort(),
+      ).toEqual(["database", "relation"]);
     } catch (error) {
       failures.push(error);
     }
@@ -1549,7 +1902,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     const { file } = await createSourceFile();
     const eventId = await createEvent(FIXTURE_CREATION_TIME);
     const aliceId = await createParticipant(eventId, "Alice");
-    summaryClient.speakerMappings = [{ speaker: "SPEAKER_00", personId: aliceId }];
+    summaryClient.speakerMappings = [{ speaker: "SPEAKER_00", personId: aliceId, reason: "Named." }];
     const failing: AiGatewayClientPort = {
       complete: (input) =>
         input.operation === "transcript_speaker_suggestion"
@@ -1571,7 +1924,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     expect((await readTranscript(file.id)).properties.status).toBe("done");
-    expect(await readSpeakerCards()).toHaveLength(1);
+    expect(await readSpeakerCards()).toHaveLength(2);
   });
 
   it("publishes each output write and the done transition on the generic realtime channel", async () => {

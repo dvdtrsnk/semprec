@@ -1397,14 +1397,26 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
 
     tenantIt("an SMTP failure removes the claim and leaves no orphan thread, and a retry threads again", async () => {
       const draftId = await newDraft();
+      let threadItemId: string | undefined;
       const failing = recordingTransport({
         async send() {
+          const { rows } = await pool.query<{ item_id: string }>(
+            "SELECT t.item_id FROM mail_message_meta m JOIN mail_threads t ON t.tenant_id = m.tenant_id AND t.id = m.thread_id WHERE m.item_id = $1",
+            [draftId],
+          );
+          threadItemId = rows[0]?.item_id;
           throw new Error("SMTP server rejected the message");
         },
       });
       await expect(send(draftId, failing)).rejects.toThrow(/SMTP server rejected/);
       expect(await getMailMessageMetaByItemId(pool, draftId)).toBeNull();
       expect(await threadCount()).toBe(0);
+      if (!threadItemId) throw new Error("Missing claimed Threads item");
+      const deleted = await pool.query<{ deleted_at: Date | null }>("SELECT deleted_at FROM items WHERE id = $1", [
+        threadItemId,
+      ]);
+      expect(deleted.rows).toHaveLength(1);
+      expect(deleted.rows[0]?.deleted_at).toBeInstanceOf(Date);
 
       const result = await send(draftId, recordingTransport());
       const meta = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, result.messageId);
@@ -1414,6 +1426,8 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
 
     tenantIt("an SMTP failure on a reply keeps the shared thread", async () => {
       await ingestSynced("<orig@example.com>");
+      const before = await pool.query<{ item_id: string }>("SELECT item_id FROM mail_threads");
+      if (!before.rows[0]) throw new Error("Missing shared Threads item");
       const failing = recordingTransport({
         async send() {
           throw new Error("SMTP server rejected the message");
@@ -1421,6 +1435,10 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       });
       await expect(send(await newDraft(), failing, { inReplyTo: "<orig@example.com>" })).rejects.toThrow(/rejected/);
       expect(await threadCount()).toBe(1);
+      const retained = await pool.query<{ deleted_at: Date | null }>("SELECT deleted_at FROM items WHERE id = $1", [
+        before.rows[0].item_id,
+      ]);
+      expect(retained.rows).toEqual([{ deleted_at: null }]);
     });
 
     tenantIt("preserves the SMTP error and claim when compensating cleanup itself fails", async () => {

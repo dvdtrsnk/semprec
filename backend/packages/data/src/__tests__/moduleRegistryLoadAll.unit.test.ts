@@ -5,7 +5,12 @@ import { manifestPath } from "../testSupport/moduleManifestPath.js";
 import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
 import { BUILTIN_VIEW_TYPES } from "../chokePoint/viewTypeRegistry.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js";
-import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
+import {
+  EMAILS_MODULE_ID,
+  FOLDERS_MODULE_ID,
+  MAILBOXES_MODULE_ID,
+  THREADS_MODULE_ID,
+} from "../seed/emailModuleKeys.js";
 import {
   INBOX_ITEM_TYPES_MODULE_ID,
   INBOX_MODULE_ID,
@@ -100,6 +105,7 @@ describe("all module manifests loaded together (module-contract issue #115)", ()
         EMAILS_MODULE_ID,
         FOLDERS_MODULE_ID,
         MAILBOXES_MODULE_ID,
+        THREADS_MODULE_ID,
         INBOX_ITEM_TYPES_MODULE_ID,
         INBOX_MODULE_ID,
         PROCESSING_PROPOSALS_MODULE_ID,

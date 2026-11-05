@@ -32,6 +32,7 @@ import {
   matchTranscriptToEvent,
   proposeSpeakerMappings,
   readSpeakerSuggestionContext,
+  readRecordingRequest,
   readBlobId,
   recordItemAutomationFailure,
   startItemAutomationAttempt,
@@ -238,8 +239,8 @@ function readAsrCheckpoint(source: ItemRow): AsrCheckpoint {
 }
 
 /**
- * `withTransaction` at `repeatable read`, the isolation both transactions of
- * `docs/adr/2026-09-10-bracket-non-transactional-calls-with-staleness-checked-transactions.md` use.
+ * `withTransaction` at `repeatable read`, the default for bracketed transaction phases.
+ * The prepare write phase uses the narrower recording-specific READ COMMITTED exception.
  * The isolation level is set by `withTransaction`'s `isolation` option on the `BEGIN` itself.
  * Built on `withTransaction` rather than `createPoolClientTransactionRunner` because only the
  * former fires the `runAfterCommit` invalidations `updateItemWithClient` registers.
@@ -375,7 +376,12 @@ async function runPrepareStep(
     // when an audio track starts late or a video continues after the audio ends.
     const durationSeconds = await probeNormalizedDuration(blobStorage, normalized.storageKey);
 
-    await withRepeatableReadTransaction(pool, async (client) => {
+    // The recording prepare ADR requires a fresh statement snapshot after the item reservations.
+    await withTransaction(pool, async (client) => {
+      const isolation = await client.query<{ transaction_isolation: string }>("SHOW transaction_isolation");
+      if (isolation.rows[0]?.transaction_isolation !== "read committed") {
+        throw new Error("Recording prepare write requires READ COMMITTED isolation");
+      }
       await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
       // Locked, so the checks below still hold when this transaction's writes land.
       const source = requireSource(await lockItemById(client, filesDatabaseId, fileItemId), fileItemId);
@@ -384,6 +390,7 @@ async function runPrepareStep(
       if (readBlobId(source.properties) !== snapshot.sourceBlobId)
         throw new TranscriptionSourceChangedError(fileItemId);
 
+      const recording = await readRecordingRequest(client, fileItemId);
       const normalizedBlob = await createBlob(client, {
         mimeType: "audio/ogg",
         byteSize: normalized.byteSize,
@@ -405,7 +412,7 @@ async function runPrepareStep(
         {
           databaseId: transcripts.id,
           itemId: transcriptId,
-          propertiesPatch: { date: probe.creationTime ?? snapshot.uploadedAt },
+          propertiesPatch: { date: recording?.recordedAt ?? probe.creationTime ?? snapshot.uploadedAt },
         },
         { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
       );
@@ -709,14 +716,11 @@ async function runMatchStep({
 }
 
 /**
- * Step 7 (`suggestSpeakers`, issue #185): when the transcript is linked to an Event with named
- * participants and has unmapped speaker keys, calls `gateway.complete()` once to suggest which
- * participant each key is, and turns the suggestions into `kind = 'transcript'` cards
- * (`proposeSpeakerMappings`) — it never writes a mapping; only a human's `confirm` does.
- * Bracketed like step 5, so no transaction stays open across the gateway call, and checkpointed
- * with the cards in one transaction, so a retried run never pays for the call twice. When there is
- * nothing to ask (no Event yet, no participants) nothing is paid for and nothing is checkpointed,
- * so a later run of the pipeline for the same file can still ask.
+ * Step 7 (`suggestSpeakers`): proposes a card for each unmapped speaker. When candidates exist,
+ * one gateway call suggests mappings; otherwise cards need clarification without a call. The
+ * gateway call runs outside the transactions, and cards and checkpoint commit together. A replay
+ * after that commit makes no second call; a crash before commit can repeat the call. A user must
+ * confirm a card before a mapping is written.
  */
 async function runSuggestSpeakersStep(
   { pool, filesDatabaseId, fileItemId, transcriptId }: TranscriptionStepContext,
@@ -734,8 +738,11 @@ async function runSuggestSpeakersStep(
   });
   if (!snapshot) return;
 
-  const result = await completionClient.complete(buildSpeakerSuggestionRequest(snapshot.segments, snapshot.context));
-  const suggestions = parseSpeakerSuggestionContent(result.content);
+  const suggestions = snapshot.context.candidates.length
+    ? parseSpeakerSuggestionContent(
+        (await completionClient.complete(buildSpeakerSuggestionRequest(snapshot.segments, snapshot.context))).content,
+      )
+    : [];
 
   await withTransaction(pool, async (client) => {
     await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });

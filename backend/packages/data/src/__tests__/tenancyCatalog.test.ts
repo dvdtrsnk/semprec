@@ -36,6 +36,7 @@ const TENANT_TABLES = [
   "task_recurrence",
   "project_kept_dates",
   "item_automation",
+  "recording_requests",
   "item_search_index",
   "blobs",
   "docs",
@@ -205,6 +206,18 @@ const NEW_UNIQUE_INDEXES: { name: string; table: string; columns: string[]; pred
     predicate: "system",
   },
   { name: "idempotency_keys_pkey", table: "idempotency_keys", columns: ["tenant_id", "key"], predicate: null },
+  {
+    name: "recording_requests_pkey",
+    table: "recording_requests",
+    columns: ["tenant_id", "file_item_id"],
+    predicate: null,
+  },
+  {
+    name: "mail_threads_tenant_item_id_idx",
+    table: "mail_threads",
+    columns: ["tenant_id", "item_id"],
+    predicate: "item_id IS NOT NULL",
+  },
   {
     name: "person_email_index_pkey",
     table: "person_email_index",
@@ -609,7 +622,7 @@ describe("tenancy classification catalog", () => {
       // pg_get_expr parenthesizes a compound predicate but not a bare column, so compare without parentheses.
       expect(row?.predicate?.replaceAll(/[()]/g, "") ?? null, `${expected.name} predicate`).toBe(expected.predicate);
     }
-    expect(NEW_UNIQUE_INDEXES).toHaveLength(22);
+    expect(NEW_UNIQUE_INDEXES).toHaveLength(24);
   });
 
   /** Issue #1065: the contract step dropped every legacy global key and the dormant resource_grants table. */

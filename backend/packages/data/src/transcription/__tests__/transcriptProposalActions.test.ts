@@ -6,7 +6,8 @@ import { getTestPool, getTenantZeroId, resetDatabase, withTenantTransaction } fr
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
-import { createItemWithClient } from "../../chokePoint/itemWrites.js";
+import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
+import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { writeComputed } from "../../chokePoint/itemsStore.js";
 import { createRelationWithClient } from "../../chokePoint/relationOps.js";
 import { insertValueLink, listValueLinksByItemIds } from "../../chokePoint/valueLinksStore.js";
@@ -244,7 +245,10 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
           callerItemId: transcriptId,
           targetItemId: eventId,
         });
-        await proposeSpeakerMappings(client, { transcriptId, suggestions: [{ speaker: "SPEAKER_01", personId }] });
+        await proposeSpeakerMappings(client, {
+          transcriptId,
+          suggestions: [{ speaker: "SPEAKER_01", personId, reason: "Recognized from the discussion" }],
+        });
         await insertValueLink(client, { itemId: transcriptId, propertyKey: "speakers", ruleKey: "test", sources: [] });
       });
       const cards = await pool.query<{ id: string }>(
@@ -306,6 +310,105 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
       } finally {
         setInvalidationHook(() => {});
       }
+    });
+
+    it("keeps a clarification card's speaker role and creates its Person and edge atomically", async () => {
+      const transcriptId = await createTranscript("Unidentified speaker");
+      const peopleId = await databaseIdFor("people");
+      await withTransaction(pool, async (client) => {
+        await writeComputed(client, transcriptsId, transcriptId, "segments", [
+          { speaker: "SPEAKER_01", text: "A real recorded sentence", startsAt: 0, endsAt: 2 },
+        ]);
+        await proposeSpeakerMappings(client, { transcriptId, suggestions: [] });
+      });
+      const cards = await pool.query<{ id: string }>(
+        "SELECT id FROM items WHERE database_id = $1 AND properties ->> 'kind' = 'transcript'",
+        [proposalsId],
+      );
+      if (cards.rows.length !== 1 || !cards.rows[0]) throw new Error("Missing clarification card");
+      const cardId = cards.rows[0].id;
+      expect(await cardProperties(cardId)).toMatchObject({ status: "needsClarification", proposal: null });
+      await expect(revise(cardId, createEvent())).rejects.toMatchObject({
+        code: "validation_failed",
+        details: { field: "entityKind" },
+      });
+      await revise(cardId, { entityKind: "database", target: peopleId, properties: { name: "New Person" } });
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          {
+            databaseId: proposalsId,
+            itemId: cardId,
+            propertiesPatch: { proposal: createEvent() },
+          },
+          { allowedSystemKeys: ["proposal"] },
+        ),
+      );
+      await expect(confirm(cardId)).rejects.toMatchObject({
+        code: "validation_failed",
+        details: { field: "entityKind" },
+      });
+      await revise(cardId, { entityKind: "database", target: peopleId, properties: { name: "New Person" } });
+      const before = await pool.query<{ id: string }>(
+        "SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL",
+        [peopleId],
+      );
+      const failure = new Error("rollback new person confirmation");
+      await expect(
+        withTransaction(pool, async (client) => {
+          await confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId);
+          throw failure;
+        }),
+      ).rejects.toBe(failure);
+      expect(
+        (
+          await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL", [
+            peopleId,
+          ])
+        ).rows,
+      ).toEqual(before.rows);
+      expect(
+        (
+          await pool.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM item_relations r JOIN items p ON p.database_id = $1 AND p.id IN (r.item_a, r.item_b) WHERE $2 IN (r.item_a, r.item_b)",
+            [peopleId, transcriptId],
+          )
+        ).rows[0]?.count,
+      ).toBe("0");
+      expect((await cardProperties(cardId)).status).toBe("proposed");
+      const confirmed = await confirm(cardId);
+      const personId = confirmed.properties.resultItemId;
+      if (typeof personId !== "string") throw new Error("Missing created person");
+      const edges = await pool.query<{ metadata: unknown }>(
+        "SELECT metadata FROM item_relations WHERE $1 IN (item_a, item_b) AND $2 IN (item_a, item_b)",
+        [transcriptId, personId],
+      );
+      expect(edges.rows).toEqual([{ metadata: { speaker: "SPEAKER_01" } }]);
+      expect((await cardProperties(cardId)).status).toBe("confirmed");
+    });
+
+    it("confirms an Event, its project, and transcript edge together, and rolls back an invalid project", async () => {
+      const { transcriptId, cardId } = await createTranscriptCard();
+      const projectsId = await databaseIdFor("projects");
+      const staleProjectId = await createItem(projectsId, "Deleted project");
+      const eventsBefore = await eventIds();
+      await revise(cardId, { ...createEvent(), relations: { project: [staleProjectId] } });
+      await createChokePoint(pool).softDeleteItem(projectsId, staleProjectId);
+      await expect(confirm(cardId)).rejects.toThrow();
+      expect(await eventIds()).toEqual(eventsBefore);
+      expect(await transcriptEventEdges()).toEqual([]);
+      expect((await cardProperties(cardId)).status).toBe("proposed");
+      const projectId = await createItem(projectsId, "Project");
+      await revise(cardId, { ...createEvent(), relations: { project: [projectId] } });
+      const confirmed = await confirm(cardId);
+      const eventId = confirmed.properties.resultItemId;
+      if (typeof eventId !== "string") throw new Error("Missing confirmed Event");
+      expect(await transcriptEventEdges()).toEqual([{ transcriptId, eventId }]);
+      const projectEdges = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM item_relations WHERE $1 IN (item_a, item_b) AND $2 IN (item_a, item_b)",
+        [eventId, projectId],
+      );
+      expect(projectEdges.rows[0]?.count).toBe("1");
     });
 
     it("creates the Event and the Transcription<->Event edge for a create-Event card", async () => {

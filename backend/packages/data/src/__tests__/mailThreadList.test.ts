@@ -255,7 +255,11 @@ describe("mail thread list", () => {
     await runInTenant(tenant, async () => {
       const f = await setup();
       await f.ingest({ id: "<sent@example.test>", from: "me@example.test", folder: f.folders.sent.id });
-      expect((await list()).body.threads[0]).toMatchObject({ messageCount: 1, unread: false });
+      expect((await list()).body.threads).toHaveLength(0);
+      expect((await list(`/api/mail/threads?folderId=${f.folders.sent.id}`)).body.threads[0]).toMatchObject({
+        messageCount: 1,
+        unread: false,
+      });
     });
   });
   it("distinguishes own, sent-folder, read and unread incoming messages", async () => {
@@ -272,6 +276,10 @@ describe("mail thread list", () => {
       );
       const threads = z.array(z.object({ item_id: z.uuid(), thread_id: z.uuid() })).parse(raw.rows);
       const rows = (await list()).body.threads;
+      const sentRows = (await list(`/api/mail/threads?folderId=${f.folders.sent.id}`)).body.threads;
+      expect(
+        rows.find((row) => row.threadId === threads.find((entry) => entry.item_id === sentFolder.itemId)?.thread_id),
+      ).toBeUndefined();
       for (const [itemId, expected] of [
         [own.itemId, false],
         [sentFolder.itemId, false],
@@ -280,7 +288,9 @@ describe("mail thread list", () => {
       ] as const) {
         const threadId = threads.find((row) => row.item_id === itemId)?.thread_id;
         expect(threadId).toBeDefined();
-        expect(rows.find((row) => row.threadId === threadId)?.unread).toBe(expected);
+        expect((itemId === sentFolder.itemId ? sentRows : rows).find((row) => row.threadId === threadId)?.unread).toBe(
+          expected,
+        );
       }
     });
   });

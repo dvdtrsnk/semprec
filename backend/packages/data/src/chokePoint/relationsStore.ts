@@ -344,3 +344,62 @@ export function otherSide(relation: ItemRelationRow, itemId: string): string {
   if (relation.itemB === itemId) return relation.itemA;
   throw new ValidationError(`Item ${itemId} is not part of relation ${relation.id}`);
 }
+
+/** Internal primitives for the mail-thread structural handoff. */
+export async function lockThreadMergeEdges(client: PoolClient, itemId: string): Promise<ItemRelationRow[]> {
+  const { rows } = await client.query<Record<string, unknown>>(
+    `SELECT id, relation_definition_id, item_a, item_b, metadata FROM item_relations
+     WHERE tenant_id = app_tenant_default() AND (item_a = $1 OR item_b = $1)
+     ORDER BY relation_definition_id, item_a, item_b FOR UPDATE`,
+    [itemId],
+  );
+  return z
+    .array(
+      z.object({
+        id: z.uuid(),
+        relation_definition_id: z.uuid(),
+        item_a: z.uuid(),
+        item_b: z.uuid(),
+        metadata: z.record(z.string(), z.unknown()),
+      }),
+    )
+    .parse(rows)
+    .map(mapItemRelationRow);
+}
+
+export async function insertThreadMergeEdgeIfAbsent(
+  client: PoolClient,
+  input: CreateItemRelationInput,
+): Promise<ItemRelationRow | null> {
+  const definition = await getRelationDefinition(client, input.relationDefinitionId);
+  if (!definition) throw new NotFoundError("Relation definition not found");
+  try {
+    const { rows } = await client.query<Record<string, unknown>>(
+      `INSERT INTO item_relations (relation_definition_id, item_a, item_b, metadata)
+       VALUES ($1, $2, $3, $4::jsonb) ON CONFLICT (relation_definition_id, item_a, item_b) DO NOTHING
+       RETURNING id, relation_definition_id, item_a, item_b, metadata`,
+      [input.relationDefinitionId, input.itemA, input.itemB, JSON.stringify(input.metadata ?? {})],
+    );
+    if (!rows[0]) return null;
+    return mapItemRelationRow(
+      z
+        .object({
+          id: z.uuid(),
+          relation_definition_id: z.uuid(),
+          item_a: z.uuid(),
+          item_b: z.uuid(),
+          metadata: z.record(z.string(), z.unknown()),
+        })
+        .parse(rows[0]),
+    );
+  } catch (error) {
+    if (isCardinalityViolation(error))
+      throw new CardinalityViolationError("Relation cardinality violation", {
+        relationDefinitionId: definition.id,
+        cardinality: definition.cardinality,
+        itemA: input.itemA,
+        itemB: input.itemB,
+      });
+    throw error;
+  }
+}

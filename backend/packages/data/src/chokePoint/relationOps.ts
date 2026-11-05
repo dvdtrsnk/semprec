@@ -13,10 +13,17 @@
 // - docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
 // - docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
 import type { PoolClient } from "pg";
-import { requireManagedTransaction, runAfterCommitKeyed, withTransaction } from "../db/pool.js";
+import { currentTenantScope } from "@semprec/shared";
+import {
+  markManagedTransactionRollbackOnly,
+  requireManagedTransaction,
+  runAfterCommitKeyed,
+  withTransaction,
+} from "../db/pool.js";
 import { notifyInvalidation, type InvalidationEvent } from "../realtimeHook.js";
 import { CardinalityViolationError, NotFoundError, ValidationError } from "../errors.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { THREADS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import * as databasesStore from "./databasesStore.js";
 import type { ItemRelationRow } from "../types.js";
 import { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
@@ -441,6 +448,136 @@ export async function updateRelationWithClient(
 }
 
 export type DeleteRelationInput = Omit<CreateRelationInput, "metadata">;
+
+/** Transfer only existing edges from one canonical Threads item to another in the caller's managed transaction. */
+export async function transferMailThreadRelationsWithClient(
+  client: PoolClient,
+  databaseId: string,
+  loserId: string,
+  winnerId: string,
+): Promise<void> {
+  requireManagedTransaction(client);
+  try {
+    const scope = currentTenantScope();
+    const state = await client.query<{ isolation: string; tenant: string | null }>(
+      "SELECT current_setting('transaction_isolation') AS isolation, app_current_tenant()::text AS tenant",
+    );
+    if (
+      scope?.kind !== "tenant" ||
+      state.rows[0]?.isolation !== "read committed" ||
+      state.rows[0]?.tenant !== scope.tenantId
+    )
+      throw new Error("Threads transfer requires a READ COMMITTED tenant transaction");
+    const database = await databasesStore.getDatabaseByModuleId(client, THREADS_MODULE_ID);
+    if (!database?.system || database.id !== databaseId || loserId === winnerId)
+      throw new Error("Invalid Threads merge identity");
+    for (const id of [loserId, winnerId].sort()) {
+      const item = await itemsStore.lockItemById(client, databaseId, id);
+      if (!item || item.deletedAt) throw new NotFoundError("Thread item not found");
+    }
+    const discovered = await relationsStore.listAllRelationsForItem(client, loserId);
+    const definitions = [...new Set(discovered.map((edge) => edge.relationDefinitionId))].sort();
+    for (const id of definitions)
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", [id]);
+    const edges = await relationsStore.lockThreadMergeEdges(client, loserId);
+    for (const edge of edges) {
+      const definition = await relationsStore.getRelationDefinition(client, edge.relationDefinitionId);
+      if (!definition || !definitions.includes(definition.id))
+        throw new Error("Thread relation definition changed during merge");
+      const context = await loadRelationEdgeContext(client, definition.propertyIdA);
+      await assertRelationDatabasesNotArchived(client, context);
+      if (context.reldef.id !== definition.id) throw new Error("Thread relation schema mismatch");
+      const oldInput = {
+        relationPropertyId: definition.propertyIdA,
+        callerItemId: edge.itemA,
+        targetItemId: edge.itemB,
+      };
+      const newA = edge.itemA === loserId ? winnerId : edge.itemA;
+      const newB = edge.itemB === loserId ? winnerId : edge.itemB;
+      const newInput = { relationPropertyId: definition.propertyIdA, callerItemId: newA, targetItemId: newB };
+      for (const [id, db] of [
+        [edge.itemA, context.property.databaseId],
+        [edge.itemB, context.targetDatabaseId],
+      ] as const) {
+        if (!(await itemsStore.getItemById(client, db, id)))
+          throw new NotFoundError("Thread relation endpoint not found");
+      }
+      const threadProperty =
+        context.property.databaseId === databaseId
+          ? context.property
+          : definition.propertyIdB
+            ? await propertiesStore.getProperty(client, definition.propertyIdB)
+            : null;
+      const winnerEdges = await relationsStore.listRelationsForItem(client, definition.id, winnerId);
+      const duplicate = winnerEdges.some((existing) => existing.itemA === newA && existing.itemB === newB);
+      const winnerTakesPrecedence =
+        threadProperty?.databaseId === databaseId &&
+        (threadProperty.key === "project" || threadProperty.key === "company") &&
+        winnerEdges.length > 0;
+      await runRelationEdgeDeleteHooks({ client, edgeContext: context, ...oldInput, writer: SYSTEM_WRITER });
+      const removed = await relationsStore.deleteItemRelation(client, definition.id, edge.itemA, edge.itemB);
+      if (!removed || removed.id !== edge.id) throw new Error("Thread relation changed during merge");
+      await breakValueLinksForRelationEdge(client, {
+        reldef: definition,
+        itemA: edge.itemA,
+        itemB: edge.itemB,
+        writerKind: SYSTEM_WRITER.writerKind,
+      });
+      await enqueueRollupRecomputeForEdge(client, {
+        relationDefinitionId: definition.id,
+        itemA: edge.itemA,
+        itemB: edge.itemB,
+      });
+      await runRelationEdgeChangedHooks({
+        client,
+        op: "delete",
+        relationDefinitionId: definition.id,
+        propertyId: context.property.id,
+        itemA: edge.itemA,
+        itemB: edge.itemB,
+        metadata: edge.metadata,
+        writer: SYSTEM_WRITER,
+      });
+      await announceRelation(client, context, oldInput, "delete");
+      if (duplicate || winnerTakesPrecedence) continue;
+      await runRelationEdgeWriteHooks({
+        client,
+        edgeContext: context,
+        ...newInput,
+        metadata: edge.metadata,
+        writer: SYSTEM_WRITER,
+      });
+      const inserted = await relationsStore.insertThreadMergeEdgeIfAbsent(client, {
+        relationDefinitionId: definition.id,
+        itemA: newA,
+        itemB: newB,
+        metadata: edge.metadata,
+      });
+      if (!inserted) continue;
+      await breakValueLinksForRelationEdge(client, {
+        reldef: definition,
+        itemA: newA,
+        itemB: newB,
+        writerKind: SYSTEM_WRITER.writerKind,
+      });
+      await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: definition.id, itemA: newA, itemB: newB });
+      await runRelationEdgeChangedHooks({
+        client,
+        op: "create",
+        relationDefinitionId: definition.id,
+        propertyId: context.property.id,
+        itemA: newA,
+        itemB: newB,
+        metadata: inserted.metadata,
+        writer: SYSTEM_WRITER,
+      });
+      await announceRelation(client, context, newInput, "put");
+    }
+  } catch (error) {
+    markManagedTransactionRollbackOnly(client, error);
+    throw error;
+  }
+}
 
 export interface SetRelationInput {
   relationPropertyId: string;

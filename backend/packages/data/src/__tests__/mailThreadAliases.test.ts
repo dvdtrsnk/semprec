@@ -7,7 +7,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
+import "../domainWriteHooks.js";
 import { withTransaction } from "../db/pool.js";
+import { seedSystem } from "../seed/seedSystem.js";
 import { createMailThread, reassignThread, resolveMergedThreadId } from "../mail/mailMessageMetaStore.js";
 import {
   createRuntimeRolePool,
@@ -60,6 +62,7 @@ describe("mail thread aliases", () => {
     await resetDatabase(adminPool);
     tenantA = getTenantZeroId();
     tenantB = await createTestTenant(adminPool);
+    for (const tenant of [tenantA, tenantB]) await runInTenant(tenant, () => seedSystem(pool));
   });
 
   it("resolves a chain of merges to the final thread in one query each", async () => {

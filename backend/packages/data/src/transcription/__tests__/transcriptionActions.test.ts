@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
@@ -11,6 +12,7 @@ import { createBlob } from "../../blobs/blobsStore.js";
 import { EMAILS_RELATION_CONTEXT } from "../../mail/emailsRelationContext.js";
 import { createFilesTranscriptionTriggerAction } from "../transcriptionActions.js";
 import { transcriptionJobKey } from "../transcriptionJob.js";
+import { recordRecordingIntake } from "../recordingIntake.js";
 
 let pool: Pool;
 
@@ -83,6 +85,30 @@ describe("Files transcription trigger (issue #180)", () => {
     await handler(actionConfig(), { heartbeatId: "hb", projectItemId: "proj", itemId: fileItemId });
 
     expect(await jobExists(transcriptionJobKey(fileItemId))).toBe(true);
+  });
+
+  it("does not replace a recording intake job when the Files heartbeat runs late", async () => {
+    const fileItemId = await createFileItem("audio/mpeg");
+    await runInTenant(getTenantZeroId(), async () => {
+      await withTransaction(pool, (client) =>
+        recordRecordingIntake(client, { fileItemId, eventId: null, recordedAt: null }),
+      );
+      const before = await pool.query<{ id: string; attempts: number }>(
+        "SELECT id::text, attempts FROM graphile_worker.jobs WHERE key = $1",
+        [transcriptionJobKey(fileItemId)],
+      );
+      expect(before.rows).toHaveLength(1);
+      await createFilesTranscriptionTriggerAction(pool)(actionConfig(), {
+        heartbeatId: "hb",
+        projectItemId: "proj",
+        itemId: fileItemId,
+      });
+      const after = await pool.query<{ id: string; attempts: number }>(
+        "SELECT id::text, attempts FROM graphile_worker.jobs WHERE key = $1",
+        [transcriptionJobKey(fileItemId)],
+      );
+      expect(after.rows).toEqual(before.rows);
+    });
   });
 
   it("enqueues the job with at most three attempts (issue #248)", async () => {

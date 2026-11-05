@@ -15,6 +15,7 @@ import { withTransaction } from "../db/pool.js";
 import { mutateDocWithClient } from "../docs/docPersistence.js";
 import { deleteDocByItemId, getOrCreateDoc } from "../docs/docsStore.js";
 import { createMailThread } from "../mail/mailMessageMetaStore.js";
+import { seedSystem } from "../seed/seedSystem.js";
 import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
 import { writeNotification } from "../notifications/notify.js";
 import { upsertWebPushSubscription } from "../push/pushSubscriptionsStore.js";
@@ -370,6 +371,7 @@ describe("tenant-consistent composite foreign keys (issue #1066)", () => {
     await resetDatabase(adminPool);
     tenantA = await createTestTenant(adminPool);
     tenantB = await createTestTenant(adminPool);
+    for (const tenant of [tenantA, tenantB]) await runInTenant(tenant, () => seedSystem(pool));
     parentsA = await seedParents(tenantA);
     parentsB = await seedParents(tenantB);
   });

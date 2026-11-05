@@ -335,7 +335,10 @@ function aStateReads(): Request[] {
     { method: "GET", path: "/api/approval-requests" },
     { method: "GET", path: `/api/agent-runs/${a.agentRunId}` },
     { method: "GET", path: `/api/projects/${a.projectItemId}/mcp-grants` },
+    { method: "GET", path: `/api/mail/mailboxes` },
+    { method: "GET", path: `/api/mail/mailboxes/${a.mailboxItemId}` },
     { method: "GET", path: `/api/transcripts/${a.transcriptItemId}/speakers` },
+    { method: "GET", path: `/api/transcripts/${a.transcriptItemId}` },
     { method: "GET", path: "/api/account/exports" },
   ];
 }
@@ -1233,6 +1236,18 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(answer.headers["cache-control"]).toBe("no-store");
     expect(answer.text).not.toContain(first);
   },
+  "mailbox list": async () => {
+    await expectExcludesA(b.member, { method: "GET", path: "/api/mail/mailboxes" }, [b.mailboxItemId]);
+  },
+  "mailbox detail": async () => {
+    const own = await send(b.member, { method: "GET", path: `/api/mail/mailboxes/${b.mailboxItemId}` });
+    expect(own.status).toBe(200);
+    const answer = await expectForeignLikeRandom(b.member, [a.mailboxItemId], ([id]) => ({
+      method: "GET",
+      path: `/api/mail/mailboxes/${id}`,
+    }));
+    expect(answer.status).toBe(404);
+  },
   "mailbox removal impact": async () => {
     const own = await send(b.member, {
       method: "GET",
@@ -1309,6 +1324,12 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: {},
       }));
     }),
+  "transcript detail": async () => {
+    await expectForeignLikeRandom(b.member, [a.transcriptItemId], ([id]) => ({
+      method: "GET",
+      path: `/api/transcripts/${id}`,
+    }));
+  },
   "transcript speakers": async () => {
     await expectForeignLikeRandom(b.member, [a.transcriptItemId], ([id]) => ({
       method: "GET",
@@ -1729,6 +1750,20 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: { at: new Date(Date.now() - 60 * 1000).toISOString() },
       }));
     }),
+  "recording upload": () =>
+    leavesAUnchanged(async () => {
+      const upload = (content: string): Request => ({
+        method: "POST",
+        path: "/api/recordings",
+        body: content,
+        headers: { "Content-Type": "audio/mpeg", "X-Filename": "recording.mp3" },
+      });
+      const foreign = await send(b.member, upload(a.fileContent));
+      expectNoneOf(foreign.text, a.ids, "recording upload of A's bytes");
+      const random = await expectExcludesA(b.member, upload(`ID3 recording ${randomUUID()}`));
+      expect(foreign.status).toBe(random.status);
+      expect(random.status).toBe(201);
+    }),
   "upload file": () =>
     leavesAUnchanged(async () => {
       // The bodies differ by the created ids, so the statuses are compared: B uploading bytes A
@@ -1904,6 +1939,7 @@ function ownerProbes(): OwnerProbe[] {
     return (values: readonly string[]): Request => ({ method, path: path(values), body });
   };
   return [
+    { label: "mailbox detail", ids: [a.mailboxItemId], build: get(([id]) => `/api/mail/mailboxes/${id}`), status: 200 },
     {
       label: "mailbox removal impact",
       ids: [a.mailboxItemId],
@@ -2000,6 +2036,11 @@ function ownerProbes(): OwnerProbe[] {
       build: get(([id]) => `/api/projects/${id}/mcp-grants`),
       status: 200,
       contains: [a.mcpToolRegistrationId, '"granted":true'],
+    },
+    {
+      label: "transcript detail",
+      ids: [a.transcriptItemId],
+      build: get(([id]) => `/api/transcripts/${id}`),
     },
     {
       label: "transcript speakers",
