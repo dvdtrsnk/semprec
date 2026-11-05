@@ -16,6 +16,7 @@ import {
   seedSystem,
   withTransaction,
   createUser,
+  getHeartbeat,
   hasWaitingHeartbeatFireJob,
   hashPassword,
   login,
@@ -114,6 +115,7 @@ describe("heartbeat enabled route", () => {
         status: 403,
         code: "owner_violation",
       });
+      expect(await getHeartbeat(runtime, system.id)).toEqual(system);
     });
   });
 
