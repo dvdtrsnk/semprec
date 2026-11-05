@@ -1,3 +1,4 @@
+import { runThreadsDatabaseCutoverMigration } from "../mail/threadsDatabaseCutoverMigration.js";
 import { runProjectsPinnedOrderCutoverMigration } from "../seed/projectsPinnedOrderCutoverMigration.js";
 import { runAreasPropertiesCutoverMigration } from "../seed/areasPropertiesCutoverMigration.js";
 import { runLibraryBooksYearIsbnCutoverMigration } from "../library/libraryBooksYearIsbnCutoverMigration.js";
@@ -38,6 +39,7 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
   await assertRowSecurityActive(pool);
   await forEachMaintainedTenant(pool, async () => {
     await runMailDatabaseKeysCutoverMigration(pool);
+    await runThreadsDatabaseCutoverMigration(pool);
     await runPropertyDefaultsCutoverMigration(pool);
     await runTranscriptsCatalogCutoverMigration(pool);
     await runTranscriptDurationBackfillCutoverMigration(pool);

@@ -18,7 +18,8 @@ import {
   MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
 } from "../mail/personLinkingActions.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
-import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID } from "./emailModuleKeys.js";
+import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID, THREADS_MODULE_ID } from "./emailModuleKeys.js";
+import { COMPANIES_MODULE_ID } from "./tenDatabaseKeys.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
 
 // Issue #145: every shipped catalog option `s` becomes `{ key: s }` — see seedTenDatabases.ts's
@@ -61,6 +62,36 @@ async function createProps(client: PoolClient, databaseId: string, specs: PropSp
       config: spec.config,
     });
   }
+}
+
+export async function createThreadsDatabase(
+  client: PoolClient,
+  ownerProjectItemId: string,
+  projectsDatabaseId: string,
+  companiesDatabaseId: string,
+  computedKeyRegistry?: ComputedKeyRegistry,
+): Promise<DatabaseRow> {
+  const threads = await createDb(client, "Threads", THREADS_MODULE_ID, ownerProjectItemId);
+  await createProps(client, threads.id, [{ key: "name", name: "Name", type: "title", owner: "system" }]);
+  for (const target of [
+    { key: "project", name: "Project", id: projectsDatabaseId },
+    { key: "company", name: "Company", id: companiesDatabaseId },
+  ]) {
+    await createRelationPropertyWithClient(
+      client,
+      {
+        sourceDatabaseId: threads.id,
+        key: target.key,
+        name: target.name,
+        targetDatabaseId: target.id,
+        cardinality: "many_to_many",
+        owner: "user",
+      },
+      undefined,
+      computedKeyRegistry,
+    );
+  }
+  return threads;
 }
 
 export interface EmailModuleResult {
@@ -116,6 +147,15 @@ export async function seedEmailModuleInTransaction(
     },
   });
 
+  const companies = await databasesStore.getDatabaseByModuleId(client, COMPANIES_MODULE_ID);
+  if (!companies) throw new Error("Companies database is missing");
+  const threads = await createThreadsDatabase(
+    client,
+    emailProject.id,
+    projectsDatabaseId,
+    companies.id,
+    computedKeyRegistry,
+  );
   const mailboxes = await createDb(client, "Mailboxes", MAILBOXES_MODULE_ID, emailProject.id);
   await createProps(client, mailboxes.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
@@ -293,9 +333,10 @@ export async function seedEmailModuleInTransaction(
     viewTypeRegistry,
   );
 
-  await client.query(`UPDATE databases SET schema_locked = true WHERE id = ANY($1::uuid[])`, [
-    [mailboxes.id, folders.id, emails.id],
+  const lockedDatabases = await client.query(`UPDATE databases SET schema_locked = true WHERE id = ANY($1::uuid[])`, [
+    [mailboxes.id, folders.id, emails.id, threads.id],
   ]);
+  if (lockedDatabases.rowCount !== 4) throw new Error("Expected four mail databases to be locked");
 
   // People.emails (issue #26 is its sole owner) — direct store call against the raw client,
   // the same "code-level migration with direct DB access" exception seedSystem.ts documents

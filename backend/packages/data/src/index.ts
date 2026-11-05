@@ -414,7 +414,7 @@ export {
   type CreateBlobInput,
 } from "./blobs/blobsStore.js";
 export type { IngestUploadedFileInput, IngestUploadedFileResult } from "./blobs/fileUploadStore.js";
-export { ingestUploadedFile, ingestUploadedBlob } from "./blobs/fileUploadStore.js";
+export { ingestUploadedFile, ingestUploadedFileWithTransaction, ingestUploadedBlob } from "./blobs/fileUploadStore.js";
 export { sweepUnreferencedBlobs, handleBlobsUnreferencedSweepTask } from "./blobs/unreferencedBlobSweep.js";
 export { openBlobFromRoots, primaryRootForBlob } from "./blobs/openBlobFromRoots.js";
 export type { BlobRootName, OpenBlobFromRootsInput } from "./blobs/openBlobFromRoots.js";
@@ -677,3 +677,9 @@ export type { ConfirmationResult } from "./inbox/proposalActions.js";
 export { getSempThread, listSempThreadMessages } from "./sempThreads/sempThreadsStore.js";
 
 export { resolveModuleAgentToolsForRun } from "./agentTools/moduleAgentTools.js";
+
+export { createMailboxListRouteHandler, createMailboxDetailRouteHandler } from "./mail/mailboxRouteHandlers.js";
+
+export { THREADS_MODULE_ID } from "./seed/emailModuleKeys.js";
+export { runThreadsDatabaseCutoverMigration } from "./mail/threadsDatabaseCutoverMigration.js";
+export { readRecordingRequest, recordRecordingIntake } from "./transcription/recordingIntake.js";

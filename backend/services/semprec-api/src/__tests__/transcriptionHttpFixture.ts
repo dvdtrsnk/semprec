@@ -70,6 +70,7 @@ async function runProducer(
   runtimeUrl: string,
   observation?: GuardObservation,
   control?: GuardControl,
+  recordLifecycle = false,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolveResult, reject) => {
     const scripts: Record<GuardControl, string> = {
@@ -84,6 +85,7 @@ async function runProducer(
       resolver: `import { register } from 'node:module'; import { pathToFileURL } from 'node:url'; register(pathToFileURL(${JSON.stringify(resolver)})); await import('@semprec/data/private')`,
     };
     const args = control ? ["--input-type=module", "-e", scripts[control]] : [producer];
+    const spawnRequestedAt = new Date().toISOString();
     const child = spawn(process.execPath, args, {
       cwd: backend,
       env: {
@@ -175,6 +177,15 @@ async function runProducer(
       clearTimeout(timer);
       if (emergencyTimer) clearTimeout(emergencyTimer);
       if (observation) observation.closed = true;
+      if (recordLifecycle) {
+        try {
+          process.stdout.write(
+            `${JSON.stringify({ fixture: "recording-transcription-producer", pid: child.pid ?? null, derivedPgid: child.pid ?? null, spawnRequestedAt, executable: process.execPath, argv: child.spawnargs, exitCode: code, signal })}\n`,
+          );
+        } catch (error) {
+          reportingFailures.push(error);
+        }
+      }
       void (async () => {
         if (control === "hang" && observation?.descendantPid) {
           const descendantPid = observation.descendantPid;
@@ -228,7 +239,10 @@ async function runProducer(
         }
         if (failure) return reject(primaryError(failure));
         if (code !== 0)
-          return reject(new Error(`Transcription fixture failed: ${code ?? signal}\n${stdout}\n${stderr}`));
+          return reject(
+            primaryError(new Error(`Transcription fixture failed: ${code ?? signal}\n${stdout}\n${stderr}`)),
+          );
+        if (reportingFailures.length) return reject(new AggregateError(reportingFailures, "Fixture reporting failed"));
         resolveResult({ stdout, stderr });
       })();
     });
@@ -249,6 +263,7 @@ async function runFixture(
   adminPool: Pool,
   control?: GuardControl,
   observation?: GuardObservation,
+  recordLifecycle = false,
 ) {
   const rolePool = await createRuntimeRolePool(adminPool, "semprec_data");
   let temporary: string | undefined;
@@ -300,6 +315,7 @@ async function runFixture(
       runtimeUrl,
       observation,
       control,
+      recordLifecycle,
     );
     const frames = child.stdout.split("\n").filter((line) => line.startsWith("BATCH09_FRAME "));
     if (frames.length !== 1) throw new Error("Expected exactly one transcription fixture frame");
@@ -320,6 +336,10 @@ async function runFixture(
   try {
     if (temporary) fs.rmSync(temporary, { recursive: true, force: true });
     if (observation) observation.temporaryRemoved = temporary !== undefined && !existsSync(temporary);
+    if (recordLifecycle)
+      process.stdout.write(
+        `${JSON.stringify({ fixture: "recording-transcription-temporary", path: temporary ?? null, removed: temporary !== undefined && !existsSync(temporary) })}\n`,
+      );
   } catch (error) {
     cleanupFailures.push(error);
   }
@@ -349,8 +369,8 @@ async function runFixture(
   return output;
 }
 
-export function runTranscriptionFixture(input: FixtureInput, adminPool: Pool) {
-  return runFixture(input, adminPool);
+export function runTranscriptionFixture(input: FixtureInput, adminPool: Pool, recordLifecycle = false) {
+  return runFixture(input, adminPool, undefined, undefined, recordLifecycle);
 }
 
 /** Exercise the same overflow failure with the producer's lack of a test observation. */

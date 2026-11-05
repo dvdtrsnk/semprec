@@ -25,7 +25,8 @@ import { executeProposalSteps } from "./proposalSteps.js";
 import { effectiveStepRelations } from "./proposalStepGraph.js";
 import { enqueueJournalInboxRecomputeForProposal } from "./journalInboxCompute.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
-import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { EVENTS_MODULE_ID, PEOPLE_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { transcriptSpeakerCardContextSchema } from "../transcription/transcriptSpeakerCardContext.js";
 import { TRANSCRIPT_SPEAKERS_PROPERTY_KEY } from "../transcription/transcriptionSpeakerEdges.js";
 import { storeCredential, type CredentialType } from "../credentials/externalCredentialsStore.js";
 import { ChokePointError, ConflictError, NotFoundError, ValidationError } from "../errors.js";
@@ -100,6 +101,7 @@ interface TranscriptCardEdge {
   role: TranscriptCardRole;
   transcriptId: string;
   relationPropertyId: string;
+  speaker?: string;
 }
 
 /**
@@ -253,10 +255,11 @@ async function resolveItemOriginSource(
 /**
  * Validates an envelope against the card it is for (issue #184), on top of the envelope's own
  * shape (`assertValidProposalEnvelope`). A `'relation'` envelope needs a source item to link from,
- * which only a `kind = 'transcript'` card has. A transcript card accepts exactly three shapes:
+ * which only a `kind = 'transcript'` card has. A transcript card can:
  * create a new Event (`'database'` targeting Events), link its transcript to an existing Event
  * (`'relation'` through the Transcripts `event` property), or map one of its speaker keys to a
- * person (`'relation'` through `speakers`, issue #185) — and never switches between an Event shape
+ * person (`'relation'` through `speakers`, issue #185), or create a person for a speaker card —
+ * and never switches between an Event shape
  * and a speaker mapping (`transcriptCardRole`). A link is checked against the relation's
  * integrity, ownership and edge-metadata rules now, with the same canonical errors the write
  * itself would raise. Returns the edge confirm must write for a transcript card (`null` for any
@@ -279,13 +282,28 @@ async function assertValidEnvelopeForCard(
     return { transcriptCardEdge: null, targetDatabase };
   }
 
-  const role = transcriptCardRole(envelope);
   const current = parseStoredProposalEnvelope(proposal.properties.proposal, proposal.id);
   if (current && "unknownKind" in current) throw unsupportedEntityKindError(current.entityKind);
-  if (current && transcriptCardRole(current) !== role) {
+  const rawContext = proposal.properties.context;
+  const contextRole = z.object({ role: z.literal("speaker") }).safeParse(rawContext).success;
+  const speakerContext = contextRole ? transcriptSpeakerCardContextSchema.parse(rawContext) : null;
+  const priorRole = speakerContext ? "speaker" : current ? transcriptCardRole(current) : null;
+  const isPeopleCreation = envelope.entityKind === "database" && targetDatabase?.ownerModuleId === PEOPLE_MODULE_ID;
+  const role: TranscriptCardRole =
+    isPeopleCreation && (priorRole === "speaker" || speakerContext) ? "speaker" : transcriptCardRole(envelope);
+  if (priorRole && priorRole !== role) {
     throw new ValidationError("A transcript proposal cannot switch between an Event and a speaker mapping", {
       field: "entityKind",
     });
+  }
+  if (isPeopleCreation && role === "speaker") {
+    if (!speakerContext) throw new ValidationError("Speaker context is required", { field: "context" });
+    const person = z
+      .object({ name: z.string(), relationship: z.string().optional() })
+      .strict()
+      .safeParse(envelope.properties);
+    if (!person.success || envelope.relations !== undefined || envelope.operations !== undefined)
+      throw new ValidationError("Invalid speaker person proposal", { field: "properties" });
   }
 
   const transcriptId = await requireSourceTranscriptId(client, config, proposal);
@@ -297,9 +315,12 @@ async function assertValidEnvelopeForCard(
   );
   switch (envelope.entityKind) {
     case "database": {
-      const eventsDatabaseId = await requireDatabaseIdByModuleId(client, EVENTS_MODULE_ID);
-      if (envelope.target !== eventsDatabaseId) {
-        throw new ValidationError("A transcript proposal can only create an Event", { field: "target" });
+      const expectedDatabaseId = await requireDatabaseIdByModuleId(
+        client,
+        role === "speaker" ? PEOPLE_MODULE_ID : EVENTS_MODULE_ID,
+      );
+      if (envelope.target !== expectedDatabaseId) {
+        throw new ValidationError("Invalid transcript proposal target", { field: "target" });
       }
       break;
     }
@@ -316,6 +337,13 @@ async function assertValidEnvelopeForCard(
         targetItemId: envelope.target,
         metadata: relationEnvelopeMetadata(envelope),
       });
+      if (
+        role === "speaker" &&
+        speakerContext &&
+        relationEnvelopeMetadata(envelope)?.speaker !== speakerContext.speaker
+      ) {
+        throw new ValidationError("Speaker proposal must keep its original speaker", { field: "properties" });
+      }
       break;
     case "pageContent":
       throw new ValidationError("A transcript proposal cannot append page content", { field: "entityKind" });
@@ -324,7 +352,15 @@ async function assertValidEnvelopeForCard(
       throw new Error(`Unhandled proposal entityKind: ${String(exhaustive)}`);
     }
   }
-  return { transcriptCardEdge: { role, transcriptId, relationPropertyId }, targetDatabase };
+  return {
+    transcriptCardEdge: {
+      role,
+      transcriptId,
+      relationPropertyId,
+      ...(role === "speaker" && speakerContext ? { speaker: speakerContext.speaker } : {}),
+    },
+    targetDatabase,
+  };
 }
 
 /**
@@ -449,6 +485,7 @@ export async function confirmProposalWithClient(
           relationPropertyId: transcriptCardEdge.relationPropertyId,
           callerItemId: transcriptCardEdge.transcriptId,
           targetItemId: created.id,
+          ...(transcriptCardEdge.role === "speaker" ? { metadata: { speaker: transcriptCardEdge.speaker } } : {}),
         },
         undefined,
         CONFIRMING_USER_WRITER,

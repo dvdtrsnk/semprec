@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
-import type { Pool } from "pg";
-import { runAfterCommit, withTransaction } from "../db/pool.js";
+import type { Pool, PoolClient } from "pg";
+import { markManagedTransactionRollbackOnly, runAfterCommit, withTransaction } from "../db/pool.js";
 import { safeStorageFilename } from "../mail/attachments.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
@@ -74,6 +74,15 @@ export async function ingestUploadedFile(
   pool: Pool,
   input: IngestUploadedFileInput,
 ): Promise<IngestUploadedFileResult> {
+  const { result } = await ingestUploadedFileWithTransaction(pool, input, () => Promise.resolve(undefined));
+  return result;
+}
+
+export async function ingestUploadedFileWithTransaction<T>(
+  pool: Pool,
+  input: IngestUploadedFileInput,
+  afterFile: (client: PoolClient, result: IngestUploadedFileResult) => Promise<T>,
+): Promise<{ result: IngestUploadedFileResult; value: T }> {
   // Resolved before streaming, so a missing tenant fails before any byte is written.
   const storageKey = await tenantBlobStorageKey(
     pool,
@@ -124,17 +133,23 @@ export async function ingestUploadedFile(
       }
       await recordDetectedBlobMimeType(client, blob.id, detected?.mimeType ?? UNKNOWN_CONTENT_MIME);
       const existing = await findFileItemByBlobId(client, input.filesDatabaseId, blob.id);
-      if (existing) return { item: existing, blob, created: false };
-
-      const item = await createItemWithClient(client, {
-        databaseId: input.filesDatabaseId,
-        properties: {
-          name: input.filename,
-          file: { blobId: blob.id },
-          ...(detected ? { type: detected.type } : {}),
-        },
-      });
-      return { item, blob, created: true };
+      const item =
+        existing ??
+        (await createItemWithClient(client, {
+          databaseId: input.filesDatabaseId,
+          properties: {
+            name: input.filename,
+            file: { blobId: blob.id },
+            ...(detected ? { type: detected.type } : {}),
+          },
+        }));
+      const result = { item, blob, created: existing === null };
+      try {
+        return { result, value: await afterFile(client, result) };
+      } catch (error) {
+        markManagedTransactionRollbackOnly(client, error);
+        throw error;
+      }
     });
   } catch (err) {
     // A rolled-back transaction kept nothing, so the bytes streamed above are always garbage on

@@ -14,7 +14,6 @@
   "property.mailboxes.syncStatus.option.never": "Never",
   "property.mailboxes.syncStatus.option.needsReauthorization": "Needs reauthorization",
   "property.mailboxes.folders.name": "Folders",
-
   "database.folders.name": "Folders",
   "property.folders.name.name": "Name",
   "property.folders.behavior.name": "Behavior",
@@ -32,7 +31,6 @@
   "property.folders.providerId.name": "Provider ID",
   "property.folders.mailbox.name": "Mailbox",
   "property.folders.emails.name": "Emails",
-
   "database.emails.name": "Emails",
   "database.emails.searchPlaceholder": "Search emails",
   "property.emails.name.name": "Subject",
@@ -46,6 +44,9 @@
   "property.emails.attachments.name": "Attachments",
   "property.emails.senderPeople.name": "Sender",
   "property.emails.recipientsPeople.name": "Recipients",
-
-  "viewType.mailbox-client.name": "Mailbox"
+  "viewType.mailbox-client.name": "Mailbox",
+  "database.threads.name": "Threads",
+  "property.threads.name.name": "Name",
+  "property.threads.project.name": "Project",
+  "property.threads.company.name": "Company"
 }

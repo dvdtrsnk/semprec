@@ -1,6 +1,5 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
 import { withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
@@ -15,7 +14,7 @@ import {
   readTranscriptionSourceFileItemId,
 } from "./transcriptionJob.js";
 import { listTranscriptSpeakers } from "./transcriptionSpeakerEdges.js";
-import { toManifestLocale } from "../manifest/catalogResolution.js";
+import { labelTranscriptSpeakers, readTranscriptDetail } from "./transcriptDetail.js";
 
 /**
  * Duck-typed the same way `inboxRouteHandlers.ts` is: matches `semprec-api`'s
@@ -156,27 +155,6 @@ interface SpeakersRouteRequestContext {
   identity: { user: { locale: string } };
 }
 
-let speakerCatalogsPromise: Promise<ModuleCatalogs> | undefined;
-
-/**
- * Lazily loaded once per process — `transcription/i18n/{cs,en}.json` never changes at runtime. A
- * failed load is not cached, so the next request retries instead of failing until restart.
- */
-function getSpeakerCatalogs(): Promise<ModuleCatalogs> {
-  speakerCatalogsPromise ??= loadModuleCatalogs(import.meta.url).catch((error: unknown) => {
-    speakerCatalogsPromise = undefined;
-    throw error;
-  });
-  return speakerCatalogsPromise;
-}
-
-/** One speaker key as a client shows it: the mapped person's name, or the localized "Speaker N". */
-interface SpeakerEnvelope {
-  speaker: string;
-  label: string;
-  personId: string | null;
-}
-
 /**
  * `GET /api/transcripts/:id/speakers` (issue #185): the transcript's speaker keys in order of first
  * appearance, each with the display label a client renders it under — the mapped person's name, or
@@ -191,20 +169,21 @@ export function createTranscriptSpeakersRouteHandler(pool: Pool) {
     if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
     const speakers = await withTransaction(pool, (client) => listTranscriptSpeakers(client, parsedId.data));
 
-    const catalogs = await getSpeakerCatalogs();
-    const unmappedTemplate = resolveCatalogLabel(
-      null,
-      catalogs[toManifestLocale(ctx.identity.user.locale)],
-      catalogs.en,
-      "transcript.speaker.unmappedLabel",
-    );
-    const body: { speakers: SpeakerEnvelope[] } = {
-      speakers: speakers.map((entry) => ({
-        speaker: entry.speaker,
-        label: entry.person?.name ?? unmappedTemplate.replace("{ordinal}", String(entry.ordinal)),
-        personId: entry.person?.id ?? null,
-      })),
-    };
+    const labeled = await labelTranscriptSpeakers(speakers, ctx.identity.user.locale);
+    const body = { speakers: labeled.map(({ speaker, label, personId }) => ({ speaker, label, personId })) };
     return { status: 200, body };
+  };
+}
+
+export function createTranscriptDetailRouteHandler(pool: Pool) {
+  return async (ctx: SpeakersRouteRequestContext): Promise<CustomRouteResult> => {
+    const parsedId = transcriptIdSchema.safeParse(ctx.params.id);
+    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+    return {
+      status: 200,
+      body: await withTransaction(pool, (client) =>
+        readTranscriptDetail(client, parsedId.data, ctx.identity.user.locale),
+      ),
+    };
   };
 }

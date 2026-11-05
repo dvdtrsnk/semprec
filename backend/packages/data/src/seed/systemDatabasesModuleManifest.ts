@@ -31,6 +31,7 @@ export {
   createCreateTranscriptionRouteHandler,
   createRerunTranscriptionRouteHandler,
   createTranscriptSpeakersRouteHandler,
+  createTranscriptDetailRouteHandler,
 } from "../transcription/transcriptionRouteHandlers.js";
 
 /**
@@ -248,6 +249,13 @@ export const manifest: ModuleManifest = {
       // The `locked` check and the enqueue must commit together (issue #186: a locked row is never
       // rerun), and the route writes no item, so the generic item-write endpoint can't express it.
       justification: "transactional-semantics",
+    },
+    {
+      name: "getTranscript",
+      method: "GET",
+      path: "/api/transcripts/:id",
+      handlerExport: "createTranscriptDetailRouteHandler",
+      justification: "single-consumer-read",
     },
     {
       name: "listTranscriptSpeakers",

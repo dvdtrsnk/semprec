@@ -1,3 +1,4 @@
+import { createRecordingsRequestListener } from "./recordingsHandler.js";
 import { createCollectionMetadataResolver } from "@semprec/data";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
@@ -137,6 +138,10 @@ export async function createDispatcher(
     storage: options.blobStorage,
     maxFileSizeBytes: options.maxFileSizeBytes,
   });
+  const recordingsListener = createRecordingsRequestListener(pool, {
+    storage: options.blobStorage,
+    maxFileSizeBytes: options.maxFileSizeBytes,
+  });
   const blobUploadListener = createBlobUploadRequestListener(pool, {
     storage: options.blobStorage,
     maxFileSizeBytes: options.maxFileSizeBytes,
@@ -207,6 +212,10 @@ export async function createDispatcher(
     }
     if (pathname === "/api/invitations/accept") {
       void invitationListener(req, res);
+      return;
+    }
+    if (pathname === "/api/recordings" && req.method === "POST") {
+      recordingsListener(req, res);
       return;
     }
     if (pathname === "/api/files" && req.method === "POST") {

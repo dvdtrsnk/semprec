@@ -1,3 +1,5 @@
 {
-  "transcript.speaker.unmappedLabel": "Speaker {ordinal}"
+  "transcript.speaker.unmappedLabel": "Speaker {ordinal}",
+  "transcript.speaker.noCandidatesReason": "No matching people are available.",
+  "transcript.speaker.uncertainReason": "The speaker could not be identified confidently."
 }

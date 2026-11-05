@@ -17,6 +17,8 @@ import type { ActionQueueAffinity } from "../scheduler/actions.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import { assertDatabaseNotArchived } from "./databaseGuards.js";
 import { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
+import { FILES_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { deleteRecordingRequestForFile } from "../transcription/recordingIntake.js";
 import { TRANSCRIPTION_PREPARE_COMPUTED_KEY } from "../transcription/transcriptionComputedKeys.js";
 import * as blobsStore from "../blobs/blobsStore.js";
 import * as docsStore from "../docs/docsStore.js";
@@ -229,6 +231,9 @@ export async function deleteItemDependents(client: PoolClient, row: ItemRow): Pr
   await taskRecurrenceStore.deleteTaskRecurrence(client, row.id);
   await deleteKeptDate(client, row.id);
   await itemAutomationStore.deleteItemAutomation(client, row.id);
+  const database = await databasesStore.getDatabase(client, row.databaseId);
+  if (database?.system && database.ownerModuleId === FILES_MODULE_ID)
+    await deleteRecordingRequestForFile(client, row.id);
   await itemOriginsStore.deleteItemOrigin(client, row.id);
   await client.query("DELETE FROM item_search_index WHERE item_id = $1", [row.id]);
 

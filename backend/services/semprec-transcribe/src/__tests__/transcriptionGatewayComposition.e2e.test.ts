@@ -470,20 +470,56 @@ describe("transcription gateway and realtime composition", () => {
           ),
         ),
       );
-      expect(workerEdges.rows).toHaveLength(1);
-      const workerEdge = workerEdges.rows[0];
-      if (!workerEdge) throw new Error("Missing worker-created transcript relation");
-      expect(workerEdge.target_id).toBe(transcriptId);
-      expect(workerEdge.property_key).toBe("sourceTranscript");
+      expect(workerEdges.rows).toHaveLength(2);
+      expect(new Set(workerEdges.rows.map((edge) => edge.source_id)).size).toBe(2);
+      const cards = await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          const proposals = await getDatabaseByModuleId(client, "processingProposals");
+          const events = await getDatabaseByModuleId(client, "events");
+          if (!proposals || !events) throw new Error("Missing proposal or Events database");
+          const cardSchema = z.discriminatedUnion("status", [
+            z.object({
+              kind: z.literal("transcript"),
+              status: z.literal("proposed"),
+              proposal: z.object({
+                entityKind: z.literal("database"),
+                target: z.uuid(),
+                properties: z.record(z.string(), z.unknown()),
+              }),
+            }),
+            z.object({
+              kind: z.literal("transcript"),
+              status: z.literal("needsClarification"),
+              proposal: z.null(),
+              context: z.object({ role: z.literal("speaker"), speaker: z.literal("SPEAKER_00") }),
+            }),
+          ]);
+          const parsed = [];
+          for (const edge of workerEdges.rows) {
+            expect(edge.source_database_id).toBe(proposals.id);
+            expect(edge.target_id).toBe(transcriptId);
+            expect(edge.property_key).toBe("sourceTranscript");
+            const card = await getItemById(client, proposals.id, edge.source_id);
+            if (!card) throw new Error("Missing worker-created transcript card");
+            parsed.push(cardSchema.parse(card.properties));
+          }
+          return { parsed, events };
+        }),
+      );
+      expect(cards.parsed.map((card) => card.status).sort()).toEqual(["needsClarification", "proposed"]);
+      const eventCard = cards.parsed.find((card) => card.status === "proposed");
+      expect(eventCard?.proposal.target).toBe(cards.events.id);
       await vi.waitFor(() => {
-        expect(frames).toContainEqual({
-          type: "invalidate",
-          scope: "relation",
-          databaseId: workerEdge.source_database_id,
-          itemId: workerEdge.source_id,
-          propertyKey: "sourceTranscript",
-          op: "put",
-        });
+        for (const edge of workerEdges.rows) {
+          expect(frames).toContainEqual({
+            type: "invalidate",
+            scope: "relation",
+            databaseId: edge.source_database_id,
+            itemId: edge.source_id,
+            propertyKey: "sourceTranscript",
+            op: "put",
+          });
+        }
         expect(frames).toContainEqual({
           type: "invalidate",
           scope: "relation",

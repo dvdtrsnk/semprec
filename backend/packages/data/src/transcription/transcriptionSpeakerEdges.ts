@@ -138,11 +138,20 @@ export interface TranscriptSpeaker {
  * only read: who spoke is composed here, at read time, from the edges. An edge to a person who has
  * since been deleted leaves its key unmapped.
  */
-export async function listTranscriptSpeakers(client: PoolClient, transcriptId: string): Promise<TranscriptSpeaker[]> {
+export async function listTranscriptSpeakers(
+  client: PoolClient,
+  transcriptId: string,
+  captured?: ItemRow,
+): Promise<TranscriptSpeaker[]> {
   const transcripts = await databasesStore.getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
   if (!transcripts) throw new NotFoundError(`Database for module '${TRANSCRIPTS_MODULE_ID}' not found`);
-  const transcript = await itemsStore.getItemById(client, transcripts.id, transcriptId);
-  if (!transcript || transcript.deletedAt) {
+  const transcript = captured ?? (await itemsStore.getItemById(client, transcripts.id, transcriptId));
+  if (
+    !transcript ||
+    transcript.id !== transcriptId ||
+    transcript.databaseId !== transcripts.id ||
+    transcript.deletedAt
+  ) {
     throw new NotFoundError(`Transcripts item '${transcriptId}' not found`, { resource: "item", itemId: transcriptId });
   }
 

@@ -84,6 +84,7 @@ export interface ParsedMailSearchQuery {
   after?: string;
   read?: boolean;
   flagged?: boolean;
+  contradictory?: boolean;
 }
 
 const OPERATOR_PATTERN = /\b(from|has|before|after|is):(\S+)/gi;
@@ -97,12 +98,16 @@ const OPERATOR_PATTERN = /\b(from|has|before|after|is):(\S+)/gi;
  * leaving the token in free text, the same as any other unrecognized operator, rather than
  * silently discarding it as if it were a no-op filter.
  */
-function applyIsOperator(parsed: ParsedMailSearchQuery, value: string): boolean {
+function applyIsOperator(parsed: ParsedMailSearchQuery, value: string, allowContradictions: boolean): boolean {
   switch (value.toLowerCase()) {
     case "read":
     case "unread": {
       const next = value.toLowerCase() === "read";
       if (parsed.read !== undefined && parsed.read !== next) {
+        if (allowContradictions) {
+          parsed.contradictory = true;
+          return true;
+        }
         throw new ValidationError("Contradictory is:read/is:unread search operators", {
           field: "is:read",
           conflict: ["read", "unread"],
@@ -115,6 +120,10 @@ function applyIsOperator(parsed: ParsedMailSearchQuery, value: string): boolean 
     case "unflagged": {
       const next = value.toLowerCase() === "flagged";
       if (parsed.flagged !== undefined && parsed.flagged !== next) {
+        if (allowContradictions) {
+          parsed.contradictory = true;
+          return true;
+        }
         throw new ValidationError("Contradictory is:flagged/is:unflagged search operators", {
           field: "is:flagged",
           conflict: ["flagged", "unflagged"],
@@ -128,7 +137,7 @@ function applyIsOperator(parsed: ParsedMailSearchQuery, value: string): boolean 
   }
 }
 
-export function parseMailSearchQuery(query: string): ParsedMailSearchQuery {
+export function parseMailSearchQuery(query: string, allowContradictions = false): ParsedMailSearchQuery {
   const parsed: ParsedMailSearchQuery = { freeText: "" };
   const freeText = query
     .replace(OPERATOR_PATTERN, (_match, operator: string, value: string) => {
@@ -146,7 +155,7 @@ export function parseMailSearchQuery(query: string): ParsedMailSearchQuery {
           parsed.after = value;
           return "";
         case "is":
-          return applyIsOperator(parsed, value) ? "" : _match;
+          return applyIsOperator(parsed, value, allowContradictions) ? "" : _match;
         default:
           return _match;
       }

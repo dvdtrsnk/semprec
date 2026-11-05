@@ -28,6 +28,7 @@ import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.
 import { FILES_MODULE_ID, TASKS_MODULE_ID, PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
 import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHook.js";
 import { prepareTaskProposal, taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
+import { threadValueEdgeDeleteHook, threadValueEdgeWriteHook } from "./mail/threadValueEdges.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
 import { itemSearchCreateHook, itemSearchUpdateHook } from "./search/itemSearchIndexer.js";
 import {
@@ -61,6 +62,8 @@ registerItemUpdateHook(mailMessageFlagsItemUpdateHook);
 registerItemUpdateHook(taskRecurrenceItemUpdateHook);
 registerItemUpdateHook(itemSearchUpdateHook);
 registerRelationEdgeWriteHook(transcriptSpeakerEdgeWriteHook);
+registerRelationEdgeWriteHook(threadValueEdgeWriteHook);
+registerRelationEdgeDeleteHook(threadValueEdgeDeleteHook);
 registerItemCreateHook(libraryRatingItemCreateHook);
 registerItemUpdateHook(libraryRatingItemUpdateHook);
 registerRelationEdgeWriteHook(libraryWatchedWithEdgeWriteHook);

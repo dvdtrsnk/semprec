@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
+import { parseMailSearchQuery } from "./search.js";
 import { listMailThreads } from "./mailThreadListQuery.js";
 
 const cursorSchema = z.object({ at: z.iso.datetime({ precision: 6 }), id: z.uuid() }).strict();
@@ -31,7 +32,45 @@ export function createMailThreadListRouteHandler(pool: Pool) {
       if (!parsed.success) throw new ValidationError("Invalid cursor", { field: "cursor" });
       cursor = parsed.data;
     }
-    const rows = await withTransaction(pool, (client) => listMailThreads(client, limit, cursor));
+    const box = url.searchParams.get("box") ?? "inbox";
+    if (box !== "inbox" && box !== "flagged") throw new ValidationError("Invalid box", { field: "box" });
+    const uuidParam = (field: string) => {
+      const value = url.searchParams.get(field);
+      if (value !== null && !z.uuid().safeParse(value).success)
+        throw new ValidationError(`Invalid ${field}`, { field });
+      return value;
+    };
+    const folderId = uuidParam("folderId");
+    const mailboxId = uuidParam("mailboxId");
+    const projectId = uuidParam("projectId");
+    const areaId = uuidParam("areaId");
+    const personId = uuidParam("personId");
+    const rawUnread = url.searchParams.get("unread");
+    if (rawUnread !== null && rawUnread !== "true" && rawUnread !== "false")
+      throw new ValidationError("Invalid unread", { field: "unread" });
+    const q = (url.searchParams.get("q") ?? "").trim();
+    if (q.length > 1000) throw new ValidationError("Invalid q", { field: "q" });
+    const search = q ? parseMailSearchQuery(q, true) : undefined;
+    for (const date of [search?.before, search?.after]) {
+      if (
+        date !== undefined &&
+        !z.iso.date().safeParse(date).success &&
+        !z.iso.datetime({ offset: true }).safeParse(date).success
+      )
+        throw new ValidationError("Invalid search date", { field: "q" });
+    }
+    const rows = await withTransaction(pool, (client) =>
+      listMailThreads(client, limit, cursor, {
+        box,
+        folderId,
+        mailboxId,
+        projectId,
+        areaId,
+        personId,
+        unread: rawUnread === "true",
+        search,
+      }),
+    );
     const hasMore = rows.length > limit;
     const threads = rows.slice(0, limit);
     const last = threads.at(-1);

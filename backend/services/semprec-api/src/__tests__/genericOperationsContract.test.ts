@@ -12,10 +12,14 @@ import {
   tenantForNextTestUser,
   registerRelationEdgeChangedHook,
   clearHooksForTests,
+  ensureMailAccountSyncState,
+  reconcileGmailAccount,
+  type GmailMailClient,
   type RelationEdgeChangedHookContext,
 } from "@semprec/data/testSupport";
 import {
   createChokePoint,
+  createItemWithClient,
   createDocStore,
   createUser,
   createViewTypeRegistry,
@@ -24,6 +28,7 @@ import {
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
+  resolveMailModuleIds,
   seedSystem,
   withTransaction,
   type ChokePoint,
@@ -569,6 +574,187 @@ describe("generic operation REST contract (issue #219)", () => {
       const legacy: unknown = await response.json();
       expect(JSON.stringify(legacy)).not.toContain('"relations"');
     }
+  });
+
+  it("enforces Threads.project cardinality through authenticated generic relation.put", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let runtimeServer: Server | undefined;
+    const failures: unknown[] = [];
+    try {
+      const role = await runAsSystem("test:verify-threads-runtime-role", () =>
+        runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const ownTenant = await createTestTenant(pool);
+      const foreignTenant = await createTestTenant(pool);
+      const passwordHash = await hashPassword(PASSWORD);
+      const users = await runAsSystem("test:create-threads-users", () =>
+        Promise.all(
+          [ownTenant, foreignTenant].map((tenantId) =>
+            createUser(pool, { tenantId, email: `${randomUUID()}@example.test`, passwordHash }),
+          ),
+        ),
+      );
+      const cp = createChokePoint(runtime);
+      const fixture = (tenantId: string) =>
+        runInTenant(tenantId, async () => {
+          await seedSystem(runtime, createViewTypeRegistry());
+          const ids = await withTransaction(runtime, (client) => resolveMailModuleIds(client));
+          const databases = await cp.listDatabases();
+          const threads = databases.find((database) => database.ownerModuleId === "threads");
+          const projects = databases.find((database) => database.ownerModuleId === "projects");
+          if (!threads || !projects) throw new Error("Missing Threads or Projects database");
+          const first = await cp.createItem({ databaseId: projects.id, properties: { name: "First" } });
+          const second = await cp.createItem({ databaseId: projects.id, properties: { name: "Second" } });
+          const emailProperties = await cp.listProperties(ids.emailsDatabaseId);
+          const folderProperties = await cp.listProperties(ids.foldersDatabaseId);
+          const propertyId = (properties: PropertyRow[], key: string) => {
+            const property = properties.find((entry) => entry.key === key);
+            if (!property) throw new Error(`Missing ${key} property`);
+            return property.id;
+          };
+          const gmail: GmailMailClient = {
+            getCurrentHistoryId: async () => "1",
+            listHistorySince: async () => ({
+              invalidated: false,
+              newHistoryId: "2",
+              changedMessageIds: [],
+              removedMessageIds: [],
+            }),
+            listAllMessageIds: async () => ["message"],
+            listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
+            fetchMessage: async () => ({
+              id: "message",
+              threadId: "thread",
+              labelIds: ["INBOX"],
+              message: {
+                messageId: `<${tenantId}@example.test>`,
+                subject: "Thread",
+                envelope: { from: { address: "sender@example.test" } },
+                attachments: [],
+              },
+            }),
+            modifyMessageLabels: async () => undefined,
+          };
+          const threadItemId = await withTransaction(runtime, async (client) => {
+            const mailbox = await createItemWithClient(client, {
+              databaseId: ids.mailboxesDatabaseId,
+              properties: { name: "Mailbox", provider: "gmail" },
+            });
+            await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
+            await reconcileGmailAccount(client, gmail, {
+              mailboxItemId: mailbox.id,
+              emailsDatabaseId: ids.emailsDatabaseId,
+              filesDatabaseId: ids.filesDatabaseId,
+              foldersDatabaseId: ids.foldersDatabaseId,
+              folderRelationPropertyId: propertyId(emailProperties, "folder"),
+              attachmentsRelationPropertyId: propertyId(emailProperties, "attachments"),
+              mailboxFolderRelationPropertyId: propertyId(folderProperties, "mailbox"),
+              storage: new LocalFsBlobStorageWriter(tmpBlobDir),
+              storageKeyPrefix: "threads-contract",
+            });
+            const rows = await client.query<{ item_id: string }>(
+              "SELECT item_id FROM mail_threads WHERE tenant_id = app_tenant_default() AND item_id IS NOT NULL",
+            );
+            if (rows.rows.length !== 1 || !rows.rows[0]) throw new Error("Expected canonical thread item");
+            return rows.rows[0].item_id;
+          });
+          return { threadItemId, first: first.id, second: second.id };
+        });
+      const own = await fixture(ownTenant);
+      const foreign = await fixture(foreignTenant);
+      const tokens = await Promise.all(
+        users.map((user) => login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" })),
+      );
+      const ownToken = tokens[0]?.token;
+      const foreignToken = tokens[1]?.token;
+      if (!ownToken || !foreignToken) throw new Error("Missing test sessions");
+      const dispatch = await createDispatcher(runtime, {
+        passwordResetMailer: noopMailer,
+        appBaseUrl: "http://localhost",
+        setupToken: "unused-setup-token",
+        moduleRegistry,
+        blobStorage: new LocalFsBlobStorageWriter(tmpBlobDir),
+        maxFileSizeBytes: 10 * 1024 * 1024,
+      });
+      runtimeServer = createServer(dispatch);
+      const ownedServer = runtimeServer;
+      await new Promise<void>((resolve, reject) => {
+        ownedServer.once("error", reject);
+        ownedServer.listen(0, "127.0.0.1", () => {
+          ownedServer.off("error", reject);
+          resolve();
+        });
+      });
+      const address = ownedServer.address();
+      if (!address || typeof address === "string") throw new Error("Missing REST runtime address");
+      const put = (token: string | null, threadId: string, projectId: string) =>
+        fetch(`http://127.0.0.1:${address.port}/api/items/${threadId}/relations/project/${projectId}`, {
+          method: "PUT",
+          headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), "Content-Type": "application/json" },
+          body: "{}",
+        });
+      expect((await put(null, own.threadItemId, own.first)).status).toBe(401);
+      const first = await put(ownToken, own.threadItemId, own.first);
+      expect(first.status).toBe(200);
+      const firstBody: unknown = await first.json();
+      expect(firstBody).toMatchObject({ itemA: own.threadItemId, itemB: own.first });
+      const second = await put(ownToken, own.threadItemId, own.second);
+      expect(second.status).toBe(400);
+      expect(await second.json()).toMatchObject({
+        error: { code: "validation_failed", details: { field: "project" } },
+      });
+      const edges = (tenantId: string, itemId: string) =>
+        runInTenant(tenantId, () =>
+          withTransaction(runtime, (client) =>
+            client.query<{ item_a: string; item_b: string }>(
+              "SELECT item_a, item_b FROM item_relations WHERE tenant_id = app_tenant_default() AND (item_a = $1 OR item_b = $1) ORDER BY item_a, item_b",
+              [itemId],
+            ),
+          ),
+        );
+      const ownBefore = (await edges(ownTenant, own.threadItemId)).rows;
+      const foreignBefore = (await edges(foreignTenant, foreign.threadItemId)).rows;
+      expect(ownBefore).toEqual([{ item_a: own.threadItemId, item_b: own.first }]);
+      expect(foreignBefore).toEqual([]);
+      const missing = randomUUID();
+      const denied = await put(foreignToken, own.threadItemId, foreign.first);
+      const absent = await put(foreignToken, missing, foreign.first);
+      expect(denied.status).toBe(404);
+      expect(absent.status).toBe(404);
+      const deniedBody = await denied.text();
+      const absentBody = await absent.text();
+      expect(deniedBody.replaceAll(own.threadItemId, "<item>")).toBe(absentBody.replaceAll(missing, "<item>"));
+      const foreignTarget = await put(ownToken, own.threadItemId, foreign.first);
+      const missingTarget = randomUUID();
+      const randomTarget = await put(ownToken, own.threadItemId, missingTarget);
+      expect(foreignTarget.status).toBe(randomTarget.status);
+      expect(foreignTarget.status).toBeGreaterThanOrEqual(400);
+      expect((await foreignTarget.text()).replaceAll(foreign.first, "<target>")).toBe(
+        (await randomTarget.text()).replaceAll(missingTarget, "<target>"),
+      );
+      expect((await edges(ownTenant, own.threadItemId)).rows).toEqual(ownBefore);
+      expect((await edges(foreignTenant, foreign.threadItemId)).rows).toEqual(foreignBefore);
+    } catch (error) {
+      failures.push(error);
+    }
+    if (runtimeServer?.listening) {
+      try {
+        const ownedServer = runtimeServer;
+        await new Promise<void>((resolve, reject) => ownedServer.close((error) => (error ? reject(error) : resolve())));
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    try {
+      await runtime.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Threads generic relation fixture failed");
   });
 
   it("expands a tenant's real person, project and area through authenticated REST under RLS", async () => {
