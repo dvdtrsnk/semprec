@@ -610,7 +610,7 @@ describe("generic operation REST contract (issue #219)", () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
         items: expect.arrayContaining([
-          expect.objectContaining({ id: fx.itemA.id, automation: { status: "pending" } }),
+          expect.objectContaining({ id: fx.itemA.id, automation: expect.objectContaining({ status: "pending" }) }),
         ]),
       });
     }

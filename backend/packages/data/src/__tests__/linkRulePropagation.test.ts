@@ -18,7 +18,8 @@ const ruleKey = "fixtureValid.areaNameToProjectName";
 
 describe("link rule propagation", () => {
   beforeAll(async () => {
-    const registry = new ModuleRegistry(() => new Set(["fixtureLinkRuleValid"]));
+    const registry = new ModuleRegistry(() => new Set(["fixtureLinkRuleValid", "systemDatabases"]));
+    await registry.loadModule(new URL("../seed/systemDatabasesModuleManifest.js", import.meta.url).href);
     await registry.loadModule(new URL("./fixtures/linkRuleValidModule.js", import.meta.url).href);
     registry.validateLinkRules();
     vi.spyOn(registryLoader, "loadFullModuleRegistry").mockResolvedValue(registry);
@@ -39,8 +40,8 @@ describe("link rule propagation", () => {
   afterAll(async () => {
     setInvalidationHook(() => {});
     vi.restoreAllMocks();
-    await data.end();
-    await admin.end();
+    await data?.end();
+    await admin?.end();
   });
 
   it("keeps an existing own value when a via edge is created", async () => {

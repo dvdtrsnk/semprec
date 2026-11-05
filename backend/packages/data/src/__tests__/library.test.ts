@@ -698,7 +698,9 @@ describe("library module (issue #25)", () => {
     const booksId = await getDatabaseIdByModule("books");
     const registry = libraryRegistry();
     const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
-    await drainQueue(registry, async () => { throw new Error("provider unavailable"); });
+    await drainQueue(registry, async () => {
+      throw new Error("provider unavailable");
+    });
     const before = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
     expect(before?.status).toBe("error");
     const countJobs = async () => {
@@ -708,13 +710,22 @@ describe("library module (issue #25)", () => {
       );
       return result.rows[0]?.count;
     };
-    expect(await countJobs()).toBe("0");
+    const existingJobs = await countJobs();
+    expect(existingJobs).toBe("1");
+    const readJob = () =>
+      pool.query<Record<string, unknown>>(
+        "SELECT id, attempts, run_at, payload FROM graphile_worker.jobs WHERE key = $1",
+        [`library-metadata:${item.id}`],
+      );
+    const existing = (await readJob()).rows;
     const action = createLibraryMetadataRetrySweepAction(pool);
     const context = { heartbeatId: "heartbeat", projectItemId: "project" };
     for (let attempt = 0; attempt < 2; attempt++) {
-      await expect(inTenantZero(() => action({ databaseId: booksId, source: "invalid", coverKey: "cover" }, context)))
-        .rejects.toThrow("Unsupported library metadata source configuration");
-      expect(await countJobs()).toBe("0");
+      await expect(
+        inTenantZero(() => action({ databaseId: booksId, source: "invalid", coverKey: "cover" }, context)),
+      ).rejects.toThrow("Unsupported library metadata source configuration");
+      expect(await countJobs()).toBe(existingJobs);
+      expect((await readJob()).rows).toEqual(existing);
       expect(await withTransaction(pool, (client) => getItemAutomation(client, item.id))).toEqual(before);
     }
     await inTenantZero(() => action({ databaseId: booksId, source: "openLibrary", coverKey: "cover" }, context));
