@@ -49,6 +49,7 @@ import {
   listAgentRunsByHeartbeat,
   LocalFsBlobStorageWriter,
   provisionTenant,
+  raiseProblem,
   recordTokenGatewayCall,
   reserveGatewayCall,
   resolveMailModuleIds,
@@ -1108,7 +1109,25 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     await expectExcludesA(b.member, { method: "GET", path: "/api/schema" });
   },
   "semp status": async () => {
-    await expectExcludesA(b.member, { method: "GET", path: "/api/semp-status" });
+    const ids: string[] = [];
+    for (const fixture of [a, b]) {
+      const result = await runInTenant(fixture.tenantId, () =>
+        withTransaction(pool, (client) =>
+          raiseProblem(client, {
+            userId: fixture.member.userId,
+            category: "agents",
+            kind: "agentHeartbeat",
+            severity: "warning",
+            sourceTable: "project_heartbeats",
+            sourceId: fixture.heartbeatId,
+            dedupeKey: `agents:heartbeat:${fixture.heartbeatId}`,
+          }),
+        ),
+      );
+      ids.push(result.problemId);
+    }
+    const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/semp-status" }, [ids[1]!]);
+    expect(answer.text).not.toContain(ids[0]);
   },
   "ai usage report": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/ai-usage?from=2026-01-01&to=2026-12-31" });

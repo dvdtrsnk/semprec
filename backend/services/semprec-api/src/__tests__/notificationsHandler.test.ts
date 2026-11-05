@@ -191,6 +191,14 @@ describe("createNotificationsRequestListener", () => {
       });
       const other = schema.parse(await (await request("2000-01-01T00:00:00Z", undefined, foreign.headers)).json());
       expect(other.resolved.map((row) => row.id)).toEqual(otherIds);
+      for (const id of [otherIds[0]!, randomUUID()]) {
+        const cursorResponse = await request(exactTime, id);
+        expect(cursorResponse.status).toBe(200);
+        expect(cursorResponse.headers.get("cache-control")).toBe("no-store");
+        const page = schema.parse(await cursorResponse.json());
+        expect(page.resolved.map((row) => row.id)).toEqual(expected.filter((ownId) => ownId > id).slice(0, 500));
+        expect(page.resolved.map((row) => row.id)).not.toContain(otherIds[0]);
+      }
       const unauthorized = await fetch(base);
       expect(unauthorized.status).toBe(401);
       expect(unauthorized.headers.get("cache-control")).toBe("no-store");

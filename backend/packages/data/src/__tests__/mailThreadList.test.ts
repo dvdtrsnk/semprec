@@ -6,6 +6,7 @@ import { Readable } from "node:stream";
 import type { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { withTransaction } from "../db/pool.js";
@@ -254,6 +255,32 @@ describe("mail thread list", () => {
       const f = await setup();
       await f.ingest({ id: "<sent@example.test>", from: "me@example.test", folder: f.folders.sent.id });
       expect((await list()).body.threads[0]).toMatchObject({ messageCount: 1, unread: false });
+    });
+  });
+  it("distinguishes own, sent-folder, read and unread incoming messages", async () => {
+    await runInTenant(tenant, async () => {
+      const f = await setup();
+      const own = await f.ingest({ id: "<own-inbox@example.test>", from: "me@example.test" });
+      const sentFolder = await f.ingest({ id: "<foreign-sent@example.test>", folder: f.folders.sent.id });
+      const read = await f.ingest({ id: "<read@example.test>", flags: ["\\Seen"] });
+      const unread = await f.ingest({ id: "<unread@example.test>" });
+      const ids = [own.itemId, sentFolder.itemId, read.itemId, unread.itemId];
+      const raw = await runtime.query<Record<string, unknown>>(
+        "SELECT item_id, thread_id FROM mail_message_meta WHERE tenant_id = app_tenant_default() AND item_id = ANY($1::uuid[])",
+        [ids],
+      );
+      const threads = z.array(z.object({ item_id: z.uuid(), thread_id: z.uuid() })).parse(raw.rows);
+      const rows = (await list()).body.threads;
+      for (const [itemId, expected] of [
+        [own.itemId, false],
+        [sentFolder.itemId, false],
+        [read.itemId, false],
+        [unread.itemId, true],
+      ] as const) {
+        const threadId = threads.find((row) => row.item_id === itemId)?.thread_id;
+        expect(threadId).toBeDefined();
+        expect(rows.find((row) => row.threadId === threadId)?.unread).toBe(expected);
+      }
     });
   });
   it("paginates equal timestamps and does not expose another tenant", async () => {
