@@ -78,6 +78,7 @@ describe("notificationsStore (issue #152)", () => {
     const tenant = tenantOfUser.get(user)!;
     const foreignTenant = tenantOfUser.get(foreignUser)!;
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const failures: unknown[] = [];
     try {
       const role = await pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'semprec_data'",
@@ -127,9 +128,17 @@ describe("notificationsStore (issue #152)", () => {
         );
         expect(await listResolvedNotificationIds(client, user, before.rows[0]!.value, 1)).toEqual([first[0]]);
       });
+    } catch (error) {
+      failures.push(error);
     } finally {
-      await runtime.end();
+      try {
+        await runtime.end();
+      } catch (error) {
+        failures.push(error);
+      }
     }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Resolved notification test and cleanup failed");
   });
 
   describe("listUnreadNotificationsForUser", () => {
