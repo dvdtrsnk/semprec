@@ -146,6 +146,7 @@ interface TenantFixture {
   fileItemId: string;
   /** The uploaded file's bytes, unique to this tenant. */
   fileContent: string;
+  recordingContent: string;
   blobId: string;
   /** The blob's content hash, the value its ETag is derived from. */
   blobContentHash: string;
@@ -557,6 +558,13 @@ async function seedTenant(): Promise<TenantFixture> {
     return { id: row.id, contentHash: row.content_hash };
   });
   const blobId = blob.id;
+  const recordingContent = `ID3 recording of ${randomUUID()}`;
+  await sendOk(member, {
+    method: "POST",
+    path: "/api/files",
+    body: recordingContent,
+    headers: { "Content-Type": "audio/mpeg", "X-Filename": "recording-probe.mp3" },
+  });
   await sendOk(member, { method: "POST", path: "/api/transcriptions", body: { fileItemId } });
   const transcriptItemId = await runInTenant(tenantId, () => createTestModuleItem(pool, "transcripts"));
   const proposalItemId = await runInTenant(tenantId, () => createTestModuleItem(pool, "processingProposals"));
@@ -714,6 +722,7 @@ async function seedTenant(): Promise<TenantFixture> {
     trashedItemId: trashedItem.id,
     fileItemId,
     fileContent,
+    recordingContent,
     blobId,
     blobContentHash: blob.contentHash,
     projectItemId,
@@ -1758,7 +1767,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: content,
         headers: { "Content-Type": "audio/mpeg", "X-Filename": "recording.mp3" },
       });
-      const foreign = await send(b.member, upload(a.fileContent));
+      const foreign = await send(b.member, upload(a.recordingContent));
       expectNoneOf(foreign.text, a.ids, "recording upload of A's bytes");
       const random = await expectExcludesA(b.member, upload(`ID3 recording ${randomUUID()}`));
       expect(foreign.status).toBe(random.status);
