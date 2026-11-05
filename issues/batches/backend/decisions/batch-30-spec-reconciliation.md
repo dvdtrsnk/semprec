@@ -56,9 +56,9 @@ filtering out new entries or weakening safety scanners.
 
 Gh1583 may export only its requested active-session reader. Gh1584 may extend
 the actual schema and generic-property HTTP harnesses for color behavior.
-Gh1586 keeps completion inside the existing Projects preparation/transaction
-transform, deferring only implicit time-dependent proposal values and retaining
-ordinary owner refusal/preconditions/replay. Its HTTP/MCP cases prove the same
+Gh1586 keeps completion inside the existing Projects transaction transform,
+omitting its implicit system-derived completedAt from client-free preparation
+and retaining ordinary owner refusal/preconditions/replay. Its HTTP/MCP cases prove the same
 response and localized property projection. Gh1997 uses the actual deletion
 and query transports to verify the system-area marker without changing its
 existing deletion protection or introducing statistic behavior.
@@ -94,3 +94,26 @@ input, full equality check, preserved option metadata, added-key write controls
 and repeated-run idempotence. The test that invokes only the original People
 option-extension owner keeps its existing order-preservation expectation. No
 production behavior or source Task/acceptance criterion changes in this delta.
+
+## Gh1586 system-derived completion and exact process owner
+
+The initial instruction to defer system-owned completedAt was incorrect. Apply
+[[2026-11-05-task-proposal-preparation-defers-implicit-completion-day]] and
+[[2026-10-31-confirmed-proposal-update-preconditions]]: deferredKeys represents
+user-owned implicit allocation; system-derived keys do not enter user before/after
+preconditions. Projects preparation omits its implicit clock-dependent completion
+value. Its real transform computes that value within the existing managed write.
+Do not extend itemWrites.ts or weaken its deferred-key/caller-owner checks.
+Existing pinnedOrder/date user-key preparation and stale-before checks remain.
+
+The exact registered transform module is projects, not systemDatabases. Under
+[[2026-10-29-item-pre-write-transforms-per-module-registry]], a non-null system
+ownerProcess on a transform-added key must equal that module id. Pin the
+completedAt owner constant and property to projects in fresh seed and the
+authorized cutover. Do not add a parent-module bypass, change transform registry
+semantics or repair unrelated fields. No committed completedAt implementation
+exists at this decision; in-progress uncommitted declarations must follow the
+corrected source. Test actual proposal formation/confirmation without predicted
+completedAt, direct caller refusal, ordinary user-key preconditions and retained
+Tasks behavior. Existing ADR bodies, source AC and the six aggregate AC stay
+unchanged. This decision applies their existing rules, not a new architecture.
