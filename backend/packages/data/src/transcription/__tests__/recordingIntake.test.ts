@@ -189,8 +189,15 @@ describe("recording intake", () => {
         ),
       );
     const readFast = (fileId: string) =>
-      admin.query<{ id: string; key: string | null; attempts: number; locked_at: Date | null }>(
-        "SELECT id::text, key, attempts, locked_at FROM graphile_worker.jobs WHERE task_identifier = $1 AND (key = $2 OR key IS NULL) ORDER BY id",
+      admin.query<{
+        id: string;
+        key: string | null;
+        attempts: number;
+        locked_at: Date | null;
+        run_at: Date;
+        revision: number;
+      }>(
+        "SELECT id::text, key, attempts, locked_at, run_at, revision FROM graphile_worker.jobs WHERE task_identifier = $1 AND (key = $2 OR key IS NULL) ORDER BY id",
         [CORE_TASK_NAMES.TRANSCRIPTION_CREATE, `transcription-create:${fileId}`],
       );
     const queued = await upload("ID3 queued fast job");

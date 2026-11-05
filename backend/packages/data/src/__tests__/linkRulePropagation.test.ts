@@ -347,6 +347,11 @@ describe("link rule propagation", () => {
     expect(
       (await runInTenant(tenant, () => fixture.cp.getItem(fixture.projects.id, fixture.target.id)))?.properties.name,
     ).toBe("Changed");
+    const remaining = await admin.query<{ id: string }>(
+      "SELECT id::text FROM graphile_worker.jobs WHERE id = $1 OR key = $2",
+      [initial.rows[0]!.id, key],
+    );
+    expect(remaining.rows).toEqual([]);
   });
 
   it("does not create a link during relation admission or mutate a foreign tenant", async () => {
