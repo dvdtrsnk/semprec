@@ -240,6 +240,20 @@ describe("POST /api/recordings through the dispatcher", () => {
         { key: keys[0], task_identifier: "transcriptionCreate", queue_name: `transcription-create:${tenantA}` },
         { key: keys[1], task_identifier: "transcriptionJob", queue_name: `transcription:${tenantA}` },
       ]);
+      const readState = () =>
+        runInTenant(tenantA, () =>
+          withTransaction(runtime, (client) =>
+            client.query<{ id: string; key: string; attempts: number; run_at: Date }>(
+              "SELECT id::text, key, attempts, run_at FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key",
+              [keys],
+            ),
+          ),
+        );
+      const beforeDuplicate = (await readState()).rows;
+      const duplicate = await upload(authA, "accepted recording");
+      expect(duplicate.status).toBe(200);
+      expect(responseSchema.parse(await duplicate.json()).fileItemId).toBe(uploaded.fileItemId);
+      expect((await readState()).rows).toEqual(beforeDuplicate);
       const argsSchema = z.tuple([
         z.string(),
         z.string(),

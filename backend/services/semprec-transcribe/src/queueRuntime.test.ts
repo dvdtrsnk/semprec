@@ -216,4 +216,78 @@ describe("createTranscribeQueueRuntime", () => {
       /missing handler\(s\) for: transcribeFixture.doThing/,
     );
   });
+
+  it.each([false, true])("preserves second-start failure when first-runner cleanup fails: %s", async (cleanupFails) => {
+    const registry = new ModuleRegistry(() => new Set());
+    const startup = new Error("second worker failed to start");
+    const cleanup = new Error("first worker failed to stop");
+    let starts = 0;
+    let stops = 0;
+    let thrown: unknown;
+    try {
+      await createTranscribeQueueRuntime(pool, registry, undefined, {
+        startWorker: async (options) => {
+          starts++;
+          expect(options.concurrency).toBe(1);
+          if (starts === 2) throw startup;
+          return {
+            async stop() {
+              stops++;
+              if (cleanupFails) throw cleanup;
+            },
+          };
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(starts).toBe(2);
+    expect(stops).toBe(1);
+    if (!cleanupFails) expect(thrown).toBe(startup);
+    else {
+      expect(thrown).toBeInstanceOf(AggregateError);
+      if (!(thrown instanceof AggregateError)) throw new Error("Missing aggregate failure");
+      expect(thrown.errors).toEqual([startup, cleanup]);
+      expect(thrown.cause).toBe(startup);
+    }
+  });
+
+  it.each([[], [0], [1], [0, 1]])("stops both worker handles once and preserves failures: %s", async (failedStops) => {
+    const registry = new ModuleRegistry(() => new Set());
+    const errors = [new Error("pipeline stop failed"), new Error("create stop failed")];
+    const calls: number[] = [];
+    let starts = 0;
+    const result = await createTranscribeQueueRuntime(pool, registry, undefined, {
+      startWorker: async () => {
+        const index = starts++;
+        return {
+          async stop() {
+            calls.push(index);
+            if (failedStops.includes(index)) {
+              const error = errors[index];
+              if (!error) throw new Error("Missing stop failure fixture");
+              throw error;
+            }
+          },
+        };
+      },
+    });
+    const first = result.stop();
+    expect(result.stop()).toBe(first);
+    if (failedStops.length === 0) await expect(first).resolves.toBeUndefined();
+    else {
+      let thrown: unknown;
+      try {
+        await first;
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(AggregateError);
+      if (!(thrown instanceof AggregateError)) throw new Error("Missing aggregate stop failure");
+      expect(thrown.errors).toEqual(failedStops.map((index) => errors[index]));
+      expect(thrown.cause).toBe(errors[failedStops[0]!]);
+    }
+    expect(starts).toBe(2);
+    expect(calls).toEqual([0, 1]);
+  });
 });

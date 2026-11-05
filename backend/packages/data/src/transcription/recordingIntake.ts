@@ -17,6 +17,7 @@ import { TRANSCRIPTION_CREATE_COMPUTED_KEY } from "./transcriptionComputedKeys.j
 import {
   enqueueTranscriptionCreate,
   enqueueTranscriptionJob,
+  findTranscriptionCreateJobId,
   findTranscriptionJobId,
   readTranscriptionSourceFileItemId,
   TRANSCRIPTION_OWNER_PROCESS,
@@ -143,7 +144,8 @@ export async function recordRecordingIntake(
       );
     }
     if (!transcriptId) {
-      await enqueueTranscriptionCreate(client, { fileItemId: file.id });
+      if (!(await findTranscriptionCreateJobId(client, file.id)))
+        await enqueueTranscriptionCreate(client, { fileItemId: file.id });
       if (!(await findTranscriptionJobId(client, file.id)))
         await enqueueTranscriptionJob(client, { fileItemId: file.id });
     }

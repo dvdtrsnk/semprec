@@ -89,6 +89,14 @@ export async function findTranscriptionJobId(client: PoolClient, fileItemId: str
   return rows[0]?.id ?? null;
 }
 
+export async function findTranscriptionCreateJobId(client: PoolClient, fileItemId: string): Promise<string | null> {
+  const { rows } = await client.query<{ id: string }>(
+    `SELECT id::text AS id FROM graphile_worker.jobs WHERE key = $1`,
+    [`transcription-create:${fileItemId}`],
+  );
+  return rows[0]?.id ?? null;
+}
+
 /**
  * Issue #180's Task explicitly excludes the actual transcription pipeline ("no special upload
  * endpoint or paid pipeline yet") — this handler only proves the job is well-formed and

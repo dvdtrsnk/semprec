@@ -23,12 +23,14 @@ export interface TranscribeQueueRuntime {
   stop(): Promise<void>;
 }
 
+type WorkerStarter = (options: Parameters<typeof runWorker>[0]) => Promise<{ stop(): Promise<void> }>;
+
 /** The sole graphile-worker registration site for `transcriptionJob`. `blobStorage` defaults to the same local-filesystem backend semprec-api writes Files blobs to, configured via `FILES_STORAGE_DIR`. */
 export async function createTranscribeQueueRuntime(
   pool: Pool,
   moduleRegistry: ModuleRegistry,
   blobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR")),
-  clients: { audio?: AudioGatewayClient; summary?: AiGatewayClientPort } = {},
+  clients: { audio?: AudioGatewayClient; summary?: AiGatewayClientPort; startWorker?: WorkerStarter } = {},
 ): Promise<TranscribeQueueRuntime> {
   await ensureQueueSchema(pool);
   await grantQueueSchemaPrivileges(pool);
@@ -48,16 +50,17 @@ export async function createTranscribeQueueRuntime(
   assertTaskListMatchesAffinity({ ...taskList, ...createTaskList }, affinitySets.transcribe, "transcribe");
   assertTaskListMatchesAffinity(taskList, new Set([CORE_TASK_NAMES.TRANSCRIPTION_JOB]), "transcribe");
   assertTaskListMatchesAffinity(createTaskList, new Set([CORE_TASK_NAMES.TRANSCRIPTION_CREATE]), "transcribe");
-  const runner = await runWorker({
+  const startWorker = clients.startWorker ?? runWorker;
+  const runner = await startWorker({
     pgPool: pool,
     taskList,
     noHandleSignals: true,
     // One ffmpeg/ASR pipeline per host: the TRANSCRIPTION_JOB handler is CPU- and disk-bound.
     concurrency: 1,
   });
-  let createRunner: Awaited<ReturnType<typeof runWorker>>;
+  let createRunner: Awaited<ReturnType<WorkerStarter>>;
   try {
-    createRunner = await runWorker({ pgPool: pool, taskList: createTaskList, noHandleSignals: true, concurrency: 1 });
+    createRunner = await startWorker({ pgPool: pool, taskList: createTaskList, noHandleSignals: true, concurrency: 1 });
   } catch (error) {
     let stopFailure: { error: unknown } | undefined;
     try {
