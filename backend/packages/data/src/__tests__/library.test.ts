@@ -8,6 +8,7 @@ import { z } from "zod";
 import { CORE_TASK_NAMES, enqueueJob, runOnce, runWorker } from "@semprec/queue";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createLibraryMetadataFetcher } from "../library/libraryMetadataFetcher.js";
+import { downloadLibraryCover } from "../library/openLibraryFetcher.js";
 import { runLibraryHeartbeatConfigCutoverMigration } from "../library/libraryHeartbeatConfigCutoverMigration.js";
 import { runLibraryBooksYearIsbnCutoverMigration } from "../library/libraryBooksYearIsbnCutoverMigration.js";
 import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
@@ -20,6 +21,7 @@ import {
   inTenantZero,
   getTestPool,
   resetDatabase,
+  stubDnsLookup,
 } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
@@ -58,6 +60,24 @@ import { LIBRARY_GRID_VIEW_TYPE, registerLibraryGridViewType } from "../views/li
 
 let pool: Pool;
 let chokePoint: ChokePoint;
+
+const coverTransport = vi.hoisted(() => ({ active: false, urls: [] as string[] }));
+vi.mock("undici", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("undici")>();
+  return {
+    ...actual,
+    async fetch(...args: Parameters<typeof actual.fetch>) {
+      const url = new URL(args[0].toString());
+      if (coverTransport.active && ["covers.openlibrary.org", "image.tmdb.org"].includes(url.hostname)) {
+        coverTransport.urls.push(url.toString());
+        return new actual.Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), {
+          headers: { "content-type": "image/jpeg" },
+        });
+      }
+      return actual.fetch(...args);
+    },
+  };
+});
 
 function libraryRegistry() {
   const registry = createActionRegistry();
@@ -539,6 +559,135 @@ describe("library module (issue #25)", () => {
       expect((await withTransaction(pool, (client) => getItemAutomation(client, item.id)))?.status).toBe("done");
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("applies book and movie provider fixtures through the job and real cover owner", async () => {
+    const root = await mkdtemp(join(tmpdir(), "semprec-library-provider-covers-"));
+    const storage = new LocalFsBlobStorageWriter(root);
+    const failures: unknown[] = [];
+    try {
+      const books = await getDatabaseIdByModule("books");
+      const movies = await getDatabaseIdByModule("movies");
+      const book = await inTenantZero(() =>
+        chokePoint.createItem({ databaseId: books, properties: { name: "Hovory k sobě" } }),
+      );
+      const movie = await inTenantZero(() =>
+        chokePoint.createItem({ databaseId: movies, properties: { name: "Duna: Část druhá" } }),
+      );
+      for (const item of [book, movie]) await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+      const fetcher = createLibraryMetadataFetcher({
+        tmdbToken: "fixture-token",
+        fetch: async (url) => {
+          if (url.startsWith("https://openlibrary.org/"))
+            return new Response(
+              JSON.stringify({
+                docs: [
+                  {
+                    title: "Hovory k sobě",
+                    author_name: ["Marcus Aurelius"],
+                    first_publish_year: 180,
+                    isbn: ["9780000000000"],
+                    cover_i: 123,
+                  },
+                ],
+              }),
+            );
+          if (url.includes("/search/multi"))
+            return new Response(
+              JSON.stringify({
+                results: [
+                  {
+                    id: 1,
+                    media_type: "movie",
+                    title: "Duna: Část druhá",
+                    release_date: "2024-02-28",
+                    poster_path: "/fixture.jpg",
+                  },
+                ],
+              }),
+            );
+          if (url.endsWith("/movie/1")) return new Response(JSON.stringify({ vote_average: 7.9, vote_count: 30 }));
+          throw new Error("Unexpected provider fixture URL");
+        },
+      });
+      coverTransport.urls.length = 0;
+      coverTransport.active = true;
+      await inTenantZero(() =>
+        handleProcessLibraryMetadataTask(
+          pool,
+          {
+            itemId: book.id,
+            databaseId: books,
+            config: { source: "openLibrary", coverKey: "cover", authorKey: "author", yearKey: "year", isbnKey: "isbn" },
+          },
+          fetcher,
+          undefined,
+          storage,
+        ),
+      );
+      await inTenantZero(() =>
+        handleProcessLibraryMetadataTask(
+          pool,
+          {
+            itemId: movie.id,
+            databaseId: movies,
+            config: {
+              source: "tmdb",
+              coverKey: "cover",
+              yearKey: "year",
+              typeKey: "type",
+              secondaryRatingKey: "secondaryRating",
+              sourceUrlKey: "sourceUrl",
+            },
+          },
+          fetcher,
+          undefined,
+          storage,
+        ),
+      );
+      expect(coverTransport.urls).toEqual([
+        "https://covers.openlibrary.org/b/id/123-L.jpg",
+        "https://image.tmdb.org/t/p/w500/fixture.jpg",
+      ]);
+      const storedBook = await chokePoint.getItem(books, book.id);
+      const storedMovie = await chokePoint.getItem(movies, movie.id);
+      expect(storedBook?.properties).toMatchObject({ author: "Marcus Aurelius", year: 180, isbn: "9780000000000" });
+      expect(storedMovie?.properties).toMatchObject({
+        year: 2024,
+        type: "movie",
+        secondaryRating: 79,
+        sourceUrl: "https://www.themoviedb.org/movie/1",
+      });
+      for (const item of [storedBook, storedMovie]) {
+        const reference = z.object({ blobId: z.uuid() }).parse(item?.properties.cover);
+        const row = await pool.query<{ storage_key: string }>("SELECT storage_key FROM blobs WHERE id = $1", [
+          reference.blobId,
+        ]);
+        expect(row.rows).toHaveLength(1);
+        expect(await readFile(join(root, row.rows[0]!.storage_key))).toEqual(Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+      }
+    } catch (error) {
+      failures.push(error);
+    }
+    coverTransport.active = false;
+    coverTransport.urls.length = 0;
+    try {
+      await rm(root, { recursive: true, force: true });
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Provider cover test and cleanup failed");
+  });
+
+  it.each(["169.254.169.254", "10.0.0.1"])("refuses a cover hostname resolving to %s", async (address) => {
+    const dns = stubDnsLookup({ "private-cover.invalid": [address] });
+    try {
+      expect(await downloadLibraryCover("https://private-cover.invalid/cover.jpg")).toBeUndefined();
+      expect(dns.calls).toContain("private-cover.invalid");
+    } finally {
+      dns.restore();
     }
   });
 
