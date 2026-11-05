@@ -238,3 +238,16 @@ Preserve exact equality, existing entries, keyed-database and system/schema-lock
 assertions. No production catalog change, wildcard, reduced assertion or other
 smoke fixture repair. This closes the obsolete test expectation found by the
 actual full integration; original integration054 remains FAIL on its SHA.
+
+## Transcription composition card identities
+
+For gh1640 only, authorize the existing transcriptionGatewayComposition.e2e.test.ts
+to reconcile its obsolete single sourceTranscript-edge expectation with the new
+mandatory speaker clarification card. Assert exactly two distinct canonical
+Processing proposals sources for this fixture: the proposed Events database
+envelope and the envelope-less needsClarification SPEAKER_00 card with validated
+speaker context. Inspect actual typed row payloads; do not filter away extra
+edges or merely loosen the count. Preserve worker/gateway/finalization/tenant
+and realtime checks, and assert each source card receives its own relation
+invalidation while retaining the existing inverse-transcript invalidation.
+No production, provider, fixture-output, timeout or lifecycle change is granted.
