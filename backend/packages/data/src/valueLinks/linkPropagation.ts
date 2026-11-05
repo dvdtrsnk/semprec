@@ -173,8 +173,6 @@ export async function handleLinkPropagation(pool: Pool, raw: unknown): Promise<v
     const page = await withTransaction(pool, async (client) => {
       const resolved = await resolveLinkRule(client, rule);
       if (!resolved) return { last: null, count: 0 };
-      const source = await getItemById(client, resolved.sourceDatabase.id, payload.sourceItemId);
-      if (!source || source.deletedAt) return { last: null, count: 0 };
       const links = await pageValueLinksForSource(client, {
         ruleKey: rule.key,
         sourceItemId: payload.sourceItemId,
