@@ -5,7 +5,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
@@ -196,6 +196,76 @@ describe("POST /api/recordings through the dispatcher", () => {
     const conflict = await upload(authA, "one recording", { "X-Event-Id": secondEvent });
     expect(conflict.status).toBe(409);
     expect(await conflict.json()).toMatchObject({ error: { code: "recording_linked_elsewhere" } });
+  });
+
+  it("enqueues both tenant-scoped transcription lanes for an accepted recording and none for a refused upload", async () => {
+    const observed: unknown[] = [];
+    const originals = new Map<PoolClient, PropertyDescriptor | undefined>();
+    const onAcquire = (client: PoolClient) => {
+      if (originals.has(client)) return;
+      const descriptor = Object.getOwnPropertyDescriptor(client, "query");
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      const query = client.query;
+      originals.set(client, descriptor);
+      Object.defineProperty(client, "query", {
+        configurable: true,
+        writable: true,
+        value: (...args: unknown[]) => {
+          if (typeof args[0] === "string" && args[0].includes("graphile_worker.add_job")) observed.push(args[1]);
+          return Reflect.apply(query, client, args);
+        },
+      });
+    };
+    runtime.on("acquire", onAcquire);
+    try {
+      const foreignEvent = await event(tenantA, "Foreign event");
+      const beforeRefusal = observed.length;
+      const refused = await upload(authB, "refused recording", { "X-Event-Id": foreignEvent });
+      expect(refused.status).toBe(404);
+      expect(observed).toHaveLength(beforeRefusal);
+
+      const response = await upload(authA, "accepted recording");
+      expect(response.status).toBe(201);
+      const uploaded = responseSchema.parse(await response.json());
+      const keys = [`transcription-create:${uploaded.fileItemId}`, `transcription-job:${uploaded.fileItemId}`];
+      const jobs = await runInTenant(tenantA, () =>
+        withTransaction(runtime, (client) =>
+          client.query<{ key: string; task_identifier: string; queue_name: string | null }>(
+            "SELECT key, task_identifier, queue_name FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key",
+            [keys],
+          ),
+        ),
+      );
+      expect(jobs.rows).toEqual([
+        { key: keys[0], task_identifier: "transcriptionCreate", queue_name: `transcription-create:${tenantA}` },
+        { key: keys[1], task_identifier: "transcriptionJob", queue_name: `transcription:${tenantA}` },
+      ]);
+      const argsSchema = z.tuple([
+        z.string(),
+        z.string(),
+        z.string().nullable(),
+        z.unknown(),
+        z.number(),
+        z.string(),
+        z.string(),
+      ]);
+      const calls = observed
+        .map((entry) => argsSchema.safeParse(entry))
+        .filter((entry) => entry.success)
+        .map((entry) => entry.data);
+      const enqueueCalls = calls.filter((args) => keys.includes(args[5]));
+      expect(enqueueCalls).toHaveLength(2);
+      for (const args of enqueueCalls) {
+        const envelope: unknown = JSON.parse(args[1]);
+        expect(envelope).toMatchObject({ tenantId: tenantA, payload: { fileItemId: uploaded.fileItemId } });
+      }
+    } finally {
+      runtime.off("acquire", onAcquire);
+      for (const [client, descriptor] of originals) {
+        if (descriptor) Object.defineProperty(client, "query", descriptor);
+        else Reflect.deleteProperty(client, "query");
+      }
+    }
   });
 
   it("treats a trashed event as absent and rejects invalid headers", async () => {
