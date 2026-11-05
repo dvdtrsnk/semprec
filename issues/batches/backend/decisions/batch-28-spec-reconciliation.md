@@ -152,3 +152,49 @@ durable model-response protocol or hidden stronger guarantee. This boundary is
 explicit in the revised source AC and remains an evidence limit, not a fake
 universal PASS. Read-only issue inspection is allowed during metadata holds;
 the prohibition concerns writes/staging/mutations, not local issue show.
+
+## Prepare snapshot and competing Threads writers
+
+The original recording ADR's visibility sentence was too strong with a
+REPEATABLE READ write transaction. A Files row lock acquired after a wait does
+not refresh that transaction's snapshot when intake inserted only a request.
+Apply the separate accepted
+2026-11-05-recording-prepare-write-rechecks-use-read-committed ADR: only the final
+prepare write/recheck uses the existing default READ COMMITTED managed owner,
+with an effective-isolation guard and unchanged item/automation/source/checkpoint
+revalidation. Keep the first read phase REPEATABLE READ and every other worker
+step unchanged. No Files timestamp touch, shared transaction API change, global
+GUC, automatic retry or new production test hook. The old ADR body remains
+historical; the new exception, source Context and actual execution evidence are
+authoritative for this composition. Update only the existing prepare isolation
+regression in transcriptionTask.test.ts to distinguish real read-RR/write-RC
+transactions and preserve the no-SET-TRANSACTION guard. Real forced intake-first
+and prepare-first cases must demonstrate the promised request/date visibility,
+NOWAIT rollback and committed-checkpoint behavior, not merely count BEGIN text.
+
+The original structural merge's discovered definition list cannot reserve an
+unknown future insert. Apply the separate accepted
+2026-11-05-thread-relation-writers-reserve-thread-endpoints ADR. Extend only
+existing mail/threadValueEdges.ts and domainWriteHooks.ts so all supported
+mutations incident on canonical Threads reserve the Threads endpoint, including
+opposite-side and newly introduced definitions. Use existing write and delete
+registries/modes; fresh locked liveness is mandatory for creation/replacement,
+while removal keeps missing/trashed cleanup semantics. The merge's READ COMMITTED
+post-item-lock discovery then sees a preceding participating insert; a later
+writer must refuse a now-trashed loser rather than trust its old unlocked read.
+Do not change generic API shapes or add a database trigger, global lock, timeout,
+new admission API or retry. Privileged raw SQL/schema writers are not covered by
+this hook claim. Existing-definition reservations remain useful for transfer and
+cardinality, not a proof against unseen definitions. Force both actual writer/
+merge orders and the new-definition case through the scoped runtime mail tests.
+
+Gh1640 immutable speaker role belongs to proposal validation/confirmation and
+openQuestions context, not a new presentation-kind promise. The existing gh1425
+Task explicitly prioritizes needsClarification as clarify and transcript database
+non-Events as clarify/page. Backend searches found no current caller of the pure
+classifier beyond its own tests; this is static scope evidence, not a universal
+dynamic-consumer proof. Leave inboxCardKind.ts and its unit harness unchanged.
+Do not claim canonical speaker kind for the new People/context-only shapes.
+Prove role-swap refusal, People/speaker atomic confirmation and openQuestions
+through the already scoped actual owners. This preserves the existing canonical
+status/fallback contract and adds no new frontend or stored classification.
