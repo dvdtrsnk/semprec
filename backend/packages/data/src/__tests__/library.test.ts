@@ -625,7 +625,6 @@ describe("library module (issue #25)", () => {
         PoolClient,
         { query: PropertyDescriptor | undefined; release: PropertyDescriptor | undefined }
       >();
-      const committedClients = new WeakSet<PoolClient>();
       let injected = false;
       const onAcquire = (client: PoolClient) => {
         if (!originals.has(client)) {
@@ -642,29 +641,29 @@ describe("library module (issue #25)", () => {
               if (args[0] !== "COMMIT" || injected) return result;
               if (!(result instanceof Promise)) throw new Error("Expected asynchronous commit");
               return result.then((value: unknown) => {
-                committedClients.add(client);
                 if (failurePoint === "commit" && !injected) {
                   injected = true;
                   throw new Error("commit acknowledgement failed");
+                }
+                if (failurePoint === "release" && !injected) {
+                  // The pool assigns release after its acquire event, so observe it here.
+                  // eslint-disable-next-line @typescript-eslint/unbound-method
+                  const release = client.release;
+                  Object.defineProperty(client, "release", {
+                    configurable: true,
+                    writable: true,
+                    value: (...releaseArgs: unknown[]) => {
+                      Reflect.apply(release, client, releaseArgs);
+                      injected = true;
+                      throw new Error("client release failed");
+                    },
+                  });
                 }
                 return value;
               });
             },
           });
         }
-        // eslint-disable-next-line @typescript-eslint/unbound-method
-        const release = client.release;
-        Object.defineProperty(client, "release", {
-          configurable: true,
-          writable: true,
-          value: (...args: unknown[]) => {
-            Reflect.apply(release, client, args);
-            if (committedClients.has(client) && failurePoint === "release" && !injected) {
-              injected = true;
-              throw new Error("client release failed");
-            }
-          },
-        });
       };
       try {
         const booksId = await getDatabaseIdByModule("books");

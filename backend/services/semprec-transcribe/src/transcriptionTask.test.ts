@@ -1225,14 +1225,16 @@ describe("transcription steps 2 and 3 (diarize, ASR)", () => {
       ),
     );
     expect(fixture.rowCount).toBe(1);
+    gatewayClient.transcribeResult = () => ({ text: "fixture", language: "en", segments: [] });
     const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
     await inTenantZero(() => task({ fileItemId: file.id }, FIRST_ATTEMPT));
     expect(gatewayClient.diarizeCalls[0]?.numSpeakers).toEqual(expected);
     expect(gatewayClient.transcribeCalls[0]?.language).toBe("cs");
-    await inflateDurationAndResetLaterSteps(file.id, 1);
+    await inflateDurationAndResetLaterSteps(file.id, 25 * 60);
     await inTenantZero(() => task({ fileItemId: file.id }, FIRST_ATTEMPT));
     expect(gatewayClient.diarizeCalls[1]?.numSpeakers).toEqual(expected);
     expect(gatewayClient.transcribeCalls[1]?.language).toBe("cs");
+    expect(gatewayClient.transcribeCalls[2]?.language).toBe("en");
     expect((await readSource(files.id, file.id))?.computed.diarize).toBeDefined();
   });
 
