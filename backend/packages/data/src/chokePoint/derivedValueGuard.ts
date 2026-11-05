@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { z } from "zod";
 import { GUARDED_DERIVED_VALUE_SOURCES } from "../derived/derivedValueSources.js";
 import { ValidationError } from "../errors.js";
 import type { PropertyRow } from "../types.js";
@@ -56,7 +57,7 @@ export async function assertNotDerivedValueWrite(
   for (const side of guarded) {
     const project = side.projectContext;
     const callerIsA = project.reldef.propertyIdA === project.property.id;
-    const { rows } = await client.query<{ present: boolean }>(
+    const { rows } = await client.query<Record<string, unknown>>(
       `SELECT EXISTS (
         SELECT 1 FROM item_relations r JOIN items i ON i.id = ${callerIsA ? "r.item_b" : "r.item_a"}
           AND i.database_id = $3 AND i.tenant_id = r.tenant_id
@@ -65,6 +66,7 @@ export async function assertNotDerivedValueWrite(
       ) AS present`,
       [project.reldef.id, side.itemId, project.targetDatabaseId],
     );
-    if (rows[0]?.present) throw new ValidationError("Value is derived from the item's project", { field: side.field });
+    if (z.object({ present: z.boolean() }).parse(rows[0]).present)
+      throw new ValidationError("Value is derived from the item's project", { field: side.field });
   }
 }

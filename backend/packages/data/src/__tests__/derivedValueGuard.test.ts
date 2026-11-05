@@ -6,10 +6,12 @@ import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { assertRelationCreatableWithClient, createRelationWithClient } from "../chokePoint/relationOps.js";
 import { getRelationDefinitionByPropertyId, tryLockRelationDefinition } from "../chokePoint/relationsStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import { ensureJournalPeriodDoc } from "../journal/journalStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 let admin: Pool;
@@ -399,6 +401,114 @@ describe("derived value creation guard", () => {
       const edges = await cp.listItemRelations(file.id);
       expect(edges?.some((edge) => edge.targetItemId === area.id)).toBe(true);
       expect(edges?.some((edge) => edge.targetItemId === project.id)).toBe(true);
+    });
+  });
+  it("orders actual project trash and restore against guarded creation", async () => {
+    await runInTenant(tenant, async () => {
+      const { cp, db, property } = await fixture();
+      const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
+      const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
+      const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
+      const projectProperty = await property("files", "projects");
+      const areaProperty = await property("files", "area");
+      await cp.createRelation({ relationPropertyId: projectProperty, callerItemId: file.id, targetItemId: project.id });
+      let releaseTrash!: () => void;
+      let trashReady!: (pid: number) => void;
+      const trashGate = new Promise<void>((resolve) => {
+        releaseTrash = resolve;
+      });
+      const trashEntered = new Promise<number>((resolve) => {
+        trashReady = resolve;
+      });
+      const trash = withTransaction(data, async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+        expect(
+          await itemDeleteWithClient(client, db("projects"), project.id, {
+            queueAffinity: createActionQueueAffinity(),
+          }),
+        ).toBeDefined();
+        trashReady(pid);
+        await trashGate;
+      });
+      try {
+        expect(
+          await Promise.race([
+            trashEntered,
+            trash.then(() => {
+              throw new Error("Trash ended before barrier");
+            }),
+          ]),
+        ).toBeGreaterThan(0);
+        await expect(
+          cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
+        ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
+      } finally {
+        releaseTrash();
+        await trash;
+      }
+      let releaseManual!: () => void;
+      let manualReady!: (pid: number) => void;
+      const manualGate = new Promise<void>((resolve) => {
+        releaseManual = resolve;
+      });
+      const manualEntered = new Promise<number>((resolve) => {
+        manualReady = resolve;
+      });
+      const manual = withTransaction(data, async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+        await createRelationWithClient(client, {
+          relationPropertyId: areaProperty,
+          callerItemId: file.id,
+          targetItemId: area.id,
+        });
+        manualReady(pid);
+        await manualGate;
+      });
+      let restore: Promise<unknown> | undefined;
+      try {
+        const holderPid = await Promise.race([
+          manualEntered,
+          manual.then(() => {
+            throw new Error("Manual ended before barrier");
+          }),
+        ]);
+        let restoredPid!: (pid: number) => void;
+        let rejectRestorePid!: (error: unknown) => void;
+        const restoreEntered = new Promise<number>((resolve, reject) => {
+          restoredPid = resolve;
+          rejectRestorePid = reject;
+        });
+        data.once("acquire", (client: import("pg").PoolClient) => {
+          void client
+            .query<{ pid: number }>("SELECT pg_backend_pid() AS pid")
+            .then((result) => restoredPid(result.rows[0]!.pid), rejectRestorePid);
+        });
+        restore = cp.restoreItem(db("projects"), project.id);
+        const waiterPid = await Promise.race([
+          restoreEntered,
+          restore.then(() => {
+            throw new Error("Restore ended before barrier");
+          }),
+        ]);
+        let blocked = false;
+        for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+          const result = await data.query<{ blocked: boolean }>(
+            "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+            [holderPid, waiterPid],
+          );
+          blocked = result.rows[0]?.blocked === true;
+          if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(blocked).toBe(true);
+      } finally {
+        releaseManual();
+        await manual;
+        if (restore) await restore;
+      }
+      expect((await cp.listItemRelations(file.id))?.some((edge) => edge.targetItemId === area.id)).toBe(true);
+      await expect(
+        cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
+      ).rejects.toMatchObject({ status: 400, details: { field: "area" } });
     });
   });
 });

@@ -37,7 +37,8 @@ WITH schema_ids AS (
   FROM items i CROSS JOIN LATERAL regexp_split_to_table(
     CASE WHEN jsonb_typeof(i.properties->'addresses') = 'string' THEN i.properties->>'addresses' ELSE '' END,
     E'[,\\n\\r]+') a(address)
-  WHERE i.tenant_id = app_tenant_default() AND i.database_id = (SELECT mailboxes FROM schema_ids) AND i.deleted_at IS NULL
+  WHERE i.tenant_id = app_tenant_default() AND i.database_id = (SELECT mailboxes FROM schema_ids)
+    AND i.deleted_at IS NULL AND btrim(a.address) <> ''
 ), copies AS (
   SELECT m.thread_id, m.item_id, m.message_id, m.mailbox_item_id, m.envelope, m.preview_text,
     COALESCE(NULLIF(i.properties->>'date', '')::timestamptz, m.ingested_at, i.updated_at) AS activity,

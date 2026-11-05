@@ -96,6 +96,7 @@ describe("mail thread list", () => {
       date?: Date;
       body?: string;
       attachment?: boolean;
+      flags?: string[];
     }) =>
       withTransaction(runtime, (client) =>
         ingestEmailMessage(client, {
@@ -117,6 +118,7 @@ describe("mail thread list", () => {
             to: [{ name: "Me", address: "me@example.test" }],
           },
           bodyText: input.body ?? "preview",
+          flags: input.flags,
           attachments: input.attachment
             ? [
                 {
@@ -152,6 +154,7 @@ describe("mail thread list", () => {
         folder: f.folders.sent.id,
         date: dates[1],
         attachment: true,
+        flags: ["\\Flagged"],
       });
       await f.ingest({
         id: "<three@example.test>",
@@ -181,6 +184,7 @@ describe("mail thread list", () => {
         preview: "Latest preview",
         hasAttachment: true,
         unread: true,
+        flagged: true,
         lastSender: { address: "sender@example.test", personId: person.id },
         senderPerson: { id: person.id, name: "Sender", relationship: "colleague" },
         mailboxes: expect.arrayContaining([
@@ -192,6 +196,10 @@ describe("mail thread list", () => {
         hasSempDraft: false,
       });
       expect(row.mailboxes).toHaveLength(2);
+      expect(row.participants).toEqual([
+        { name: "Sender", address: "sender@example.test" },
+        { name: "Me", address: "me@example.test" },
+      ]);
       await f.ingest({
         id: "<provider-draft@example.test>",
         refs: ["<one@example.test>"],
@@ -215,6 +223,13 @@ describe("mail thread list", () => {
         }),
       );
       expect((await list()).body.threads[0]).toEqual(row);
+    });
+  });
+  it("does not count an own sent-only message as unread", async () => {
+    await runInTenant(tenant, async () => {
+      const f = await setup();
+      await f.ingest({ id: "<sent@example.test>", from: "me@example.test", folder: f.folders.sent.id });
+      expect((await list()).body.threads[0]).toMatchObject({ messageCount: 1, unread: false });
     });
   });
   it("paginates equal timestamps and does not expose another tenant", async () => {
