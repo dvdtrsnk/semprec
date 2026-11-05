@@ -13,3 +13,11 @@ export const DERIVED_VALUE_SOURCES = [
   { databaseKey: HEALTH_RECORDS_MODULE_ID, projectPropertyKey: "projects" },
   { databaseKey: JOURNAL_MODULE_ID, projectPropertyKey: "project" },
 ] as const;
+
+export const GUARDED_DERIVED_VALUE_SOURCES = [
+  { databaseKey: FILES_MODULE_ID, propertyKey: "area", projectPropertyKey: "projects" },
+  { databaseKey: HEALTH_RECORDS_MODULE_ID, propertyKey: "area", projectPropertyKey: "projects" },
+  { databaseKey: EVENTS_MODULE_ID, propertyKey: "area", projectPropertyKey: "project" },
+  { databaseKey: EVENTS_MODULE_ID, propertyKey: "company", projectPropertyKey: "project" },
+  { databaseKey: JOURNAL_MODULE_ID, propertyKey: "area", projectPropertyKey: "project" },
+] as const;

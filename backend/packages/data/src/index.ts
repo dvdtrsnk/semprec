@@ -12,6 +12,7 @@ export {
 } from "./db/pool.js";
 export { readItemPatchChangeMetadata } from "./chokePoint/itemPatchChangeMetadata.js";
 export { assertRuntimeRole, RuntimeRoleAssertionError } from "./db/runtimeRoleAssertion.js";
+export { assertNotDerivedValueWrite } from "./chokePoint/derivedValueGuard.js";
 export { runMigrations } from "./db/migrate.js";
 export * from "./errors.js";
 export * from "./types.js";

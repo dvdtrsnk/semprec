@@ -38,6 +38,7 @@ import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
 
 import { breakValueLinksForRelationEdge, VALUE_LINKS_OWNER_PROCESS } from "./valueLinkWrites.js";
 import { withValueLinkRelationAdmission } from "./valueLinkRelationAdmission.js";
+import { assertNotDerivedValueWrite } from "./derivedValueGuard.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -150,6 +151,12 @@ async function loadCreatableRelationEdgeContext(
   if (mutation && isProtectedRelation(edgeContext, context)) requireManagedTransaction(client);
   await assertRelationValueLinkHandoff(client, edgeContext.property, context, input.callerItemId);
   await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
+  await assertNotDerivedValueWrite(client, {
+    edgeContext,
+    callerItemId: input.callerItemId,
+    targetItemId: input.targetItemId,
+    mutation,
+  });
   return edgeContext;
 }
 
@@ -482,6 +489,9 @@ export async function setRelationWithClient(
       writer,
     });
     return existing;
+  }
+  if (existing && oldTarget !== null && input.targetItemId !== null) {
+    await loadCreatableRelationEdgeContext(client, { ...input, targetItemId: input.targetItemId }, undefined, true);
   }
   if (existing && oldTarget !== null) {
     await deleteRelationWithClient(client, { ...input, targetItemId: oldTarget }, undefined, writer, actingUserId);

@@ -204,6 +204,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "assertAggregationCompatibleWithType",
   "assertAnotherActiveAdminRemains",
   "assertGatewayTenantActive",
+  "assertNotDerivedValueWrite",
   "assertRelationDeletable",
   "assertRuntimeRole",
   "assertSourceRetypeAllowed",
