@@ -1217,6 +1217,33 @@ describe("library module (issue #25)", () => {
     });
   });
 
+  it("keeps a queued 503 response private in its automation row and actual worker log", async () => {
+    const databaseId = await getDatabaseIdByModule("books");
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Book" } }));
+    const responseSecret = "private-503-response-secret";
+    const fetcher = vi.fn(async () => new Response(responseSecret, { status: 503 }));
+    const errorLog = vi.spyOn(console, "error");
+    let captured: string;
+    try {
+      await drainQueue(libraryRegistry(), createLibraryMetadataFetcher({ fetch: fetcher }));
+      captured = inspect(errorLog.mock.calls, { depth: 8 });
+    } finally {
+      errorLog.mockRestore();
+    }
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(captured).toContain("Library metadata processing failed");
+    expect(captured).not.toContain(responseSecret);
+    const automation = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    expect(automation).toMatchObject({
+      status: "error",
+      errorCode: "sourceUnavailable",
+      source: "googleBooks",
+      attempts: 1,
+      error: "Library metadata processing failed",
+    });
+    expect(JSON.stringify(automation)).not.toContain(responseSecret);
+  });
+
   it("a failed fetch records the error and increments attempts, leaving the row in 'error'", async () => {
     const moviesId = await getDatabaseIdByModule("movies");
     const registry = libraryRegistry();
