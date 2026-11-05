@@ -156,6 +156,15 @@ describe("derived item reads in the generic application service", () => {
       const linksOnly = await observe(() => read("item", ["links"]));
       expect(linksOnly.reads).toBe(0);
       expect(linksOnly.result).not.toHaveProperty("derived");
+      const supplied = await cp.getDerivedValuesForItems([file.id]);
+      expect(supplied.get(file.id)?.area?.values[0]?.id).toBe(area.id);
+      const disabled = await observe(() => cp.getValueLinksForItems([file.id], false, supplied));
+      expect(disabled.reads).toBe(0);
+      expect(disabled.result.get(file.id)).toBeUndefined();
+      const emptyProjection = await cp.getDerivedValuesForItems([]);
+      const preloadedEmpty = await observe(() => cp.getValueLinksForItems([file.id], true, emptyProjection));
+      expect(preloadedEmpty.reads).toBe(0);
+      expect(preloadedEmpty.result.get(file.id)).toBeUndefined();
     });
   });
   it("requires both flags for derived links and independently opts into derived values", async () => {
