@@ -5,7 +5,6 @@ import {
   createChokePoint,
   ensureItemAutomation,
   markItemAutomationDone,
-  setItemAutomationLocked,
   createCollectionMetadataResolver,
   createViewTypeRegistry,
   loadFullModuleRegistry,
@@ -111,7 +110,13 @@ describe("derived item reads in the generic application service", () => {
             value: original,
           });
       }
-      await withTransaction(runtime, (client) => setItemAutomationLocked(client, book.id, true));
+      const locked = await withTransaction(runtime, (client) =>
+        client.query(
+          "UPDATE item_automation SET status = 'locked' WHERE tenant_id = app_tenant_default() AND item_id = $1",
+          [book.id],
+        ),
+      );
+      expect(locked.rowCount).toBe(1);
       expect((await service.getItem(actor, { itemId: book.id, include: ["automation"] })).automation).toMatchObject({
         status: "locked",
         nextAttemptAt: null,
