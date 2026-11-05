@@ -1,6 +1,6 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { assertRelationCreatableWithClient, createRelationWithClient } from "../chokePoint/relationOps.js";
@@ -33,6 +33,27 @@ async function waitForBarrier<T>(signal: Promise<T>, actor: Promise<unknown>): P
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+async function withReleasedGate(
+  run: () => Promise<void>,
+  release: () => void,
+  actors: () => Promise<unknown>[],
+): Promise<void> {
+  const failures: unknown[] = [];
+  try {
+    await run();
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    release();
+  } catch (error) {
+    failures.push(error);
+  }
+  const outcomes = await Promise.allSettled(actors());
+  for (const outcome of outcomes) if (outcome.status === "rejected") failures.push(outcome.reason);
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "Relation test and settlement failed");
 }
 describe("derived value creation guard", () => {
   beforeAll(async () => {
@@ -208,19 +229,20 @@ describe("derived value creation guard", () => {
         },
         { isolation: "repeatable_read" },
       );
-      try {
-        await waitForBarrier(entered, assertion);
-        await withTransaction(data, async (client) => {
-          for (const id of [companyProperty, projectProperty]) {
-            const definition = await getRelationDefinitionByPropertyId(client, id);
-            if (!definition) throw new Error("Missing relation definition");
-            expect(await tryLockRelationDefinition(client, definition.id)).toBe(true);
-          }
-        });
-      } finally {
-        release();
-        await assertion;
-      }
+      await withReleasedGate(
+        async () => {
+          await waitForBarrier(entered, assertion);
+          await withTransaction(data, async (client) => {
+            for (const id of [companyProperty, projectProperty]) {
+              const definition = await getRelationDefinitionByPropertyId(client, id);
+              if (!definition) throw new Error("Missing relation definition");
+              expect(await tryLockRelationDefinition(client, definition.id)).toBe(true);
+            }
+          });
+        },
+        release,
+        () => [assertion],
+      );
       expect(await cp.listItemRelations(event.id)).toEqual(before);
     });
   });
@@ -311,41 +333,45 @@ describe("derived value creation guard", () => {
         ready(pid.rows[0]!.pid);
         await barrier;
       });
-      try {
-        expect(await waitForBarrier(entered, holder)).toBeGreaterThan(0);
-        await expect(
-          cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
-        ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
-        await expect(
-          cp.createRelation({
-            relationPropertyId: unrelatedProperty,
-            callerItemId: unrelatedEvent.id,
-            targetItemId: unrelatedCompany.id,
-          }),
-        ).resolves.toBeDefined();
-        let priorId = "";
-        await expect(
-          withTransaction(data, async (client) => {
-            priorId = (
-              await createItemWithClient(client, { databaseId: db("files"), properties: { name: "Rollback on busy" } })
-            ).id;
-            try {
-              await createRelationWithClient(client, {
-                relationPropertyId: areaProperty,
-                callerItemId: file.id,
-                targetItemId: area.id,
-              });
-            } catch (error) {
-              expect(error).toMatchObject({ details: { reason: "resource_busy" } });
-            }
-          }),
-        ).rejects.toMatchObject({ details: { reason: "resource_busy" } });
-        expect(priorId).not.toBe("");
-        expect(await cp.findItem(priorId)).toBeNull();
-      } finally {
-        release();
-        await holder;
-      }
+      await withReleasedGate(
+        async () => {
+          expect(await waitForBarrier(entered, holder)).toBeGreaterThan(0);
+          await expect(
+            cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
+          ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
+          await expect(
+            cp.createRelation({
+              relationPropertyId: unrelatedProperty,
+              callerItemId: unrelatedEvent.id,
+              targetItemId: unrelatedCompany.id,
+            }),
+          ).resolves.toBeDefined();
+          let priorId = "";
+          await expect(
+            withTransaction(data, async (client) => {
+              priorId = (
+                await createItemWithClient(client, {
+                  databaseId: db("files"),
+                  properties: { name: "Rollback on busy" },
+                })
+              ).id;
+              try {
+                await createRelationWithClient(client, {
+                  relationPropertyId: areaProperty,
+                  callerItemId: file.id,
+                  targetItemId: area.id,
+                });
+              } catch (error) {
+                expect(error).toMatchObject({ details: { reason: "resource_busy" } });
+              }
+            }),
+          ).rejects.toMatchObject({ details: { reason: "resource_busy" } });
+          expect(priorId).not.toBe("");
+          expect(await cp.findItem(priorId)).toBeNull();
+        },
+        release,
+        () => [holder],
+      );
       await expect(
         cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
       ).rejects.toMatchObject({ status: 400, details: { field: "area" } });
@@ -382,33 +408,33 @@ describe("derived value creation guard", () => {
         await barrier;
       });
       let waiter: Promise<unknown> | undefined;
-      try {
-        const holderPid = await waitForBarrier(entered, holder);
-        waiter = withTransaction(data, async (client) => {
-          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
-          waiterReady(pid);
-          await createRelationWithClient(client, {
-            relationPropertyId: inverse,
-            callerItemId: project.id,
-            targetItemId: file.id,
+      await withReleasedGate(
+        async () => {
+          const holderPid = await waitForBarrier(entered, holder);
+          waiter = withTransaction(data, async (client) => {
+            const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+            waiterReady(pid);
+            await createRelationWithClient(client, {
+              relationPropertyId: inverse,
+              callerItemId: project.id,
+              targetItemId: file.id,
+            });
           });
-        });
-        const waiterPid = await waitForBarrier(waiterEntered, waiter);
-        let blocked = false;
-        for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
-          const result = await data.query<{ blocked: boolean }>(
-            "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
-            [holderPid, waiterPid],
-          );
-          blocked = result.rows[0]?.blocked === true;
-          if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
-        }
-        expect(blocked).toBe(true);
-      } finally {
-        release();
-        await holder;
-        if (waiter) await waiter;
-      }
+          const waiterPid = await waitForBarrier(waiterEntered, waiter);
+          let blocked = false;
+          for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+            const result = await data.query<{ blocked: boolean }>(
+              "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+              [holderPid, waiterPid],
+            );
+            blocked = result.rows[0]?.blocked === true;
+            if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          expect(blocked).toBe(true);
+        },
+        release,
+        () => [holder, ...(waiter ? [waiter] : [])],
+      );
       const edges = await cp.listItemRelations(file.id);
       expect(edges?.some((edge) => edge.targetItemId === area.id)).toBe(true);
       expect(edges?.some((edge) => edge.targetItemId === project.id)).toBe(true);
@@ -448,15 +474,20 @@ describe("derived value creation guard", () => {
         },
         (error: unknown) => error,
       );
-      try {
-        expect(await waitForBarrier(entered, settled)).toBeGreaterThan(0);
-        await expect(
-          cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
-        ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
-      } finally {
-        release();
-        expect(await settled).toBe(rollback);
-      }
+      await withReleasedGate(
+        async () => {
+          expect(await waitForBarrier(entered, settled)).toBeGreaterThan(0);
+          await expect(
+            cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
+          ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
+        },
+        release,
+        () => [
+          settled.then((result) => {
+            expect(result).toBe(rollback);
+          }),
+        ],
+      );
       await expect(
         cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
       ).resolves.toBeDefined();
@@ -490,15 +521,16 @@ describe("derived value creation guard", () => {
         trashReady(pid);
         await trashGate;
       });
-      try {
-        expect(await waitForBarrier(trashEntered, trash)).toBeGreaterThan(0);
-        await expect(
-          cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
-        ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
-      } finally {
-        releaseTrash();
-        await trash;
-      }
+      await withReleasedGate(
+        async () => {
+          expect(await waitForBarrier(trashEntered, trash)).toBeGreaterThan(0);
+          await expect(
+            cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
+          ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
+        },
+        releaseTrash,
+        () => [trash],
+      );
       let releaseManual!: () => void;
       let manualReady!: (pid: number) => void;
       const manualGate = new Promise<void>((resolve) => {
@@ -518,36 +550,41 @@ describe("derived value creation guard", () => {
         await manualGate;
       });
       let restore: Promise<unknown> | undefined;
-      try {
-        const holderPid = await waitForBarrier(manualEntered, manual);
-        let restoredPid!: (pid: number) => void;
-        let rejectRestorePid!: (error: unknown) => void;
-        const restoreEntered = new Promise<number>((resolve, reject) => {
-          restoredPid = resolve;
-          rejectRestorePid = reject;
-        });
-        data.once("acquire", (client: import("pg").PoolClient) => {
-          void client
-            .query<{ pid: number }>("SELECT pg_backend_pid() AS pid")
-            .then((result) => restoredPid(result.rows[0]!.pid), rejectRestorePid);
-        });
-        restore = cp.restoreItem(db("projects"), project.id);
-        const waiterPid = await waitForBarrier(restoreEntered, restore);
-        let blocked = false;
-        for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
-          const result = await data.query<{ blocked: boolean }>(
-            "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
-            [holderPid, waiterPid],
-          );
-          blocked = result.rows[0]?.blocked === true;
-          if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
-        }
-        expect(blocked).toBe(true);
-      } finally {
-        releaseManual();
-        await manual;
-        if (restore) await restore;
-      }
+      let observeRestore: ((client: PoolClient) => void) | undefined;
+      await withReleasedGate(
+        async () => {
+          const holderPid = await waitForBarrier(manualEntered, manual);
+          let restoredPid!: (pid: number) => void;
+          let rejectRestorePid!: (error: unknown) => void;
+          const restoreEntered = new Promise<number>((resolve, reject) => {
+            restoredPid = resolve;
+            rejectRestorePid = reject;
+          });
+          observeRestore = (client: PoolClient) => {
+            void client
+              .query<{ pid: number }>("SELECT pg_backend_pid() AS pid")
+              .then((result) => restoredPid(result.rows[0]!.pid), rejectRestorePid);
+          };
+          data.once("acquire", observeRestore);
+          restore = cp.restoreItem(db("projects"), project.id);
+          const waiterPid = await waitForBarrier(restoreEntered, restore);
+          let blocked = false;
+          for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+            const result = await data.query<{ blocked: boolean }>(
+              "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+              [holderPid, waiterPid],
+            );
+            blocked = result.rows[0]?.blocked === true;
+            if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          expect(blocked).toBe(true);
+        },
+        () => {
+          if (observeRestore) data.off("acquire", observeRestore);
+          releaseManual();
+        },
+        () => [manual, ...(restore ? [restore] : [])],
+      );
       expect((await cp.listItemRelations(file.id))?.some((edge) => edge.targetItemId === area.id)).toBe(true);
       await expect(
         cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
