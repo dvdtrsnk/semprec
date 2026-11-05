@@ -61,6 +61,60 @@ describe("recording intake", () => {
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Fixture cleanup failed");
   });
+  it("reads validated recording choices only in the owning tenant", async () => {
+    const fileId = await runInTenant(tenant, async () => {
+      const files = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "files"));
+      if (!files) throw new Error("Files database missing");
+      const uploaded = await ingestUploadedFileWithTransaction(
+        runtime,
+        {
+          filesDatabaseId: files.id,
+          filename: "sample.mp3",
+          contentType: "audio/mpeg",
+          source: Readable.from(["ID3 reader fixture"]),
+          storageKeyPrefix: "files",
+          maxBytes: 1024,
+          storage: new LocalFsBlobStorageWriter(root),
+        },
+        (client, result) =>
+          recordRecordingIntake(client, { fileItemId: result.item.id, eventId: null, recordedAt: null }),
+      );
+      // Future intake fields have no production writer yet; this scoped fixture creates that stored shape.
+      const updated = await runtime.query(
+        "UPDATE recording_requests SET language = $2, num_speakers_exact = $3, project_item_id = $4 WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
+        [uploaded.result.item.id, "cs", 2, "bdb16414-01ad-4ac4-8453-25e4ba9c86d5"],
+      );
+      expect(updated.rowCount).toBe(1);
+      expect(await withTransaction(runtime, (client) => readRecordingRequest(client, uploaded.result.item.id))).toEqual(
+        {
+          eventId: null,
+          recordedAt: null,
+          language: "cs",
+          numSpeakersExact: 2,
+          numSpeakersMin: null,
+          projectItemId: "bdb16414-01ad-4ac4-8453-25e4ba9c86d5",
+        },
+      );
+      return uploaded.result.item.id;
+    });
+    await runInTenant(foreign, async () => {
+      expect(await withTransaction(runtime, (client) => readRecordingRequest(client, fileId))).toBeNull();
+      expect(
+        await withTransaction(runtime, (client) =>
+          readRecordingRequest(client, "b23fa8f2-e184-4315-89ab-fc45b2b1b56b"),
+        ),
+      ).toBeNull();
+    });
+    await runInTenant(tenant, async () => {
+      const updated = await runtime.query(
+        "UPDATE recording_requests SET num_speakers_min = 3 WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
+        [fileId],
+      );
+      expect(updated.rowCount).toBe(1);
+      await expect(withTransaction(runtime, (client) => readRecordingRequest(client, fileId))).rejects.toThrow();
+    });
+  });
+
   it("deduplicates filing and retains its first time and event", async () => {
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(runtime);
@@ -95,6 +149,10 @@ describe("recording intake", () => {
       expect(await withTransaction(runtime, (client) => readRecordingRequest(client, first.result.item.id))).toEqual({
         eventId: event.id,
         recordedAt: "2026-01-01T10:00:00.000000Z",
+        language: null,
+        numSpeakersExact: null,
+        numSpeakersMin: null,
+        projectItemId: null,
       });
       expect(await withTransaction(runtime, (client) => findTranscriptionJobId(client, first.result.item.id))).toBe(
         job,
@@ -174,6 +232,10 @@ describe("recording intake", () => {
       expect(await withTransaction(runtime, (client) => readRecordingRequest(client, first.result.item.id))).toEqual({
         eventId: firstEvent.id,
         recordedAt: null,
+        language: null,
+        numSpeakersExact: null,
+        numSpeakersMin: null,
+        projectItemId: null,
       });
       await expect(upload(secondEvent.id, null)).rejects.toMatchObject({
         status: 409,

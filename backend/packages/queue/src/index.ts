@@ -102,6 +102,7 @@ export const CORE_TASK_NAMES = {
   // trigger) or an explicit `POST /api/transcriptions` request. Its actual processing (the
   // paid transcription pipeline) is out of this issue's scope — see transcriptionJob.ts.
   TRANSCRIPTION_JOB: "transcriptionJob",
+  TRANSCRIPTION_CREATE: "transcriptionCreate",
   // Issue #643: the hourly sweep that closes every MCP-triggered run whose run-credential expired.
   MCP_RUN_CREDENTIAL_EXPIRY_SWEEP: "mcpRunCredentialExpirySweep",
   // Issue #1483: the sweep that deletes expired and used mailbox OAuth states.
@@ -159,6 +160,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: "api",
   [CORE_TASK_NAMES.TRASH_PURGE]: "api",
   [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: "transcribe",
+  [CORE_TASK_NAMES.TRANSCRIPTION_CREATE]: "transcribe",
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "api",
   [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "api",
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "api",
@@ -219,6 +221,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: "system",
   [CORE_TASK_NAMES.TRASH_PURGE]: "system",
   [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: "tenant",
+  [CORE_TASK_NAMES.TRANSCRIPTION_CREATE]: "tenant",
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "system",
   [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "system",
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "system",

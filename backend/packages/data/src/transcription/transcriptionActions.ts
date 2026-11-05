@@ -9,7 +9,11 @@ import * as blobsStore from "../blobs/blobsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { listErroredItemAutomationForDatabases } from "../library/itemAutomationStore.js";
 import { readRecordingRequest } from "./recordingIntake.js";
-import { enqueueTranscriptionJob, readTranscriptionSourceFileItemId } from "./transcriptionJob.js";
+import {
+  enqueueTranscriptionCreate,
+  enqueueTranscriptionJob,
+  readTranscriptionSourceFileItemId,
+} from "./transcriptionJob.js";
 
 export const FILES_TRANSCRIPTION_TRIGGER_ACTION_ID = "core.filesTranscriptionTrigger";
 export const TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID = "core.transcriptionRequeueSweep";
@@ -81,6 +85,7 @@ export function createFilesTranscriptionTriggerAction(pool: Pool): ActionHandler
         if (attachmentEdges.length > 0) return; // an Emails attachment, not a standalone recording
       }
 
+      await enqueueTranscriptionCreate(client, { fileItemId: fileItem.id });
       await enqueueTranscriptionJob(client, { fileItemId: fileItem.id });
     });
   };

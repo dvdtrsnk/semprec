@@ -74,6 +74,7 @@ interface AudioRequestBody {
   mimeType: string;
   audioSeconds: number;
   language?: string;
+  numSpeakers?: { exact: number } | { min: number };
 }
 
 /** Canonical padded standard base64, as produced by `Buffer#toString("base64")`. */
@@ -96,7 +97,7 @@ function isBase64(value: string): boolean {
   return true;
 }
 
-function validateBody(raw: unknown): AudioRequestBody {
+function validateBody(raw: unknown, diarization = false): AudioRequestBody {
   if (typeof raw !== "object" || raw === null) throw new ValidationError("Request body must be a JSON object");
   const body = raw as Record<string, unknown>;
 
@@ -116,6 +117,23 @@ function validateBody(raw: unknown): AudioRequestBody {
     throw new ValidationError("'language' must be a string when present", { field: "language" });
   }
 
+  let numSpeakers: AudioRequestBody["numSpeakers"];
+  if (diarization && body.numSpeakers !== undefined) {
+    const value = body.numSpeakers;
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new ValidationError("'numSpeakers' must contain exactly one positive integer", { field: "numSpeakers" });
+    }
+    const keys = Object.keys(value);
+    if (keys.length !== 1 || (keys[0] !== "exact" && keys[0] !== "min")) {
+      throw new ValidationError("'numSpeakers' must contain exactly one positive integer", { field: "numSpeakers" });
+    }
+    const number = keys[0] === "exact" && "exact" in value ? value.exact : "min" in value ? value.min : undefined;
+    if (typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0) {
+      throw new ValidationError("'numSpeakers' must contain exactly one positive integer", { field: "numSpeakers" });
+    }
+    numSpeakers = keys[0] === "exact" ? { exact: number } : { min: number };
+  }
+
   // Buffer.from(..., "base64") never throws — it silently drops invalid characters — so the
   // format is checked up front instead of forwarding garbled bytes to the provider.
   if (!isBase64(body.audioBase64)) {
@@ -128,6 +146,7 @@ function validateBody(raw: unknown): AudioRequestBody {
     mimeType: body.mimeType,
     audioSeconds: body.audioSeconds,
     language: body.language,
+    numSpeakers,
   };
 }
 
@@ -154,7 +173,7 @@ export function abortOnDisconnect(res: ServerResponse): AbortSignal {
  */
 export function createAudioRequestListener(pool: Pool, options: AudioHandlerOptions) {
   async function handleDiarize(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const body = validateBody(await readJsonBody(req));
+    const body = validateBody(await readJsonBody(req), true);
     // The audio length is known up front, so the reserved estimate is the exact price.
     const costUsd = (body.audioSeconds / 3600) * options.pyannotePricePerAudioHour;
     const signal = abortOnDisconnect(res);
@@ -173,6 +192,7 @@ export function createAudioRequestListener(pool: Pool, options: AudioHandlerOpti
             audio: body.audio,
             filename: body.filename,
             mimeType: body.mimeType,
+            numSpeakers: body.numSpeakers,
             signal,
           });
           return { turns, audioSeconds: body.audioSeconds, costUsd };

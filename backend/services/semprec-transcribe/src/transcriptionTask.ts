@@ -18,6 +18,7 @@ import {
   TRANSCRIPTION_OWNER_PROCESS,
   transcriptionSourceLink,
   createItemWithClient,
+  createRelationWithClient,
   createBlob,
   getBlob,
   enqueueTranscriptionJob,
@@ -28,6 +29,7 @@ import {
   getDatabaseByModuleId,
   lockItemAutomation,
   lockItemById,
+  listPropertiesByDatabase,
   markItemAutomationDone,
   matchTranscriptToEvent,
   proposeSpeakerMappings,
@@ -294,6 +296,10 @@ async function runCreateStep({
       const prior = await findIdempotentReplay(client, transcripts.id, `transcription:${fileItemId}`);
       return prior?.id ?? null;
     }
+    const recording = await readRecordingRequest(client, fileItemId);
+    const blobId = readBlobId(source.properties);
+    const sourceBlob = blobId ? await getBlob(client, blobId) : null;
+    const provisionalDate = recording?.recordedAt ?? sourceBlob?.createdAt;
     const transcript = await createItemWithClient(
       client,
       {
@@ -303,12 +309,29 @@ async function runCreateStep({
           name: sourceName(source.properties),
           status: "processing",
           link: transcriptionSourceLink(fileItemId),
+          ...(provisionalDate ? { date: provisionalDate } : {}),
         },
       },
-      { allowedSystemKeys: ["status", "link"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+      { allowedSystemKeys: ["status", "link", "date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
     );
     const lockedTranscript = await lockTranscriptionItem(client, transcripts.id, transcript.id);
     if (!lockedTranscript || lockedTranscript.deletedAt) return transcript.id;
+    if (recording?.projectItemId) {
+      const projects = await getDatabaseByModuleId(client, "projects");
+      if (!projects) throw new Error("Projects database not found");
+      const project = await lockItemById(client, projects.id, recording.projectItemId);
+      if (project && !project.deletedAt) {
+        const property = (await listPropertiesByDatabase(client, transcripts.id)).find(
+          (entry) => entry.key === "project",
+        );
+        if (!property) throw new Error("Transcript project relation not found");
+        await createRelationWithClient(client, {
+          relationPropertyId: property.id,
+          callerItemId: transcript.id,
+          targetItemId: project.id,
+        });
+      }
+    }
     await ensureItemAutomation(client, transcript.id);
     await writeComputed(client, filesDatabaseId, fileItemId, TRANSCRIPTION_CREATE_COMPUTED_KEY, transcript.id);
     return transcript.id;
@@ -454,12 +477,22 @@ async function runDiarizeStep(
     await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
     const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
     if (Object.hasOwn(source.computed, TRANSCRIPTION_DIARIZE_COMPUTED_KEY)) return null;
-    return requirePrepareCheckpoint(source, fileItemId);
+    return {
+      prepare: requirePrepareCheckpoint(source, fileItemId),
+      recording: await readRecordingRequest(client, fileItemId),
+    };
   });
   if (!prepare) return;
+  const recording = prepare.recording;
+  const numSpeakers =
+    recording?.numSpeakersExact != null
+      ? { exact: recording.numSpeakersExact }
+      : recording?.numSpeakersMin != null
+        ? { min: recording.numSpeakersMin }
+        : undefined;
 
-  const blob = await withTransaction(pool, (client) => getBlob(client, prepare.normalizedBlobId));
-  if (!blob) throw new NotFoundError(`Blob '${prepare.normalizedBlobId}' not found`, { resource: "blob" });
+  const blob = await withTransaction(pool, (client) => getBlob(client, prepare.prepare.normalizedBlobId));
+  if (!blob) throw new NotFoundError(`Blob '${prepare.prepare.normalizedBlobId}' not found`, { resource: "blob" });
 
   const tempPath = await downloadToTempFile(blobStorage, blob.storageKey);
   let turns;
@@ -469,7 +502,8 @@ async function runDiarizeStep(
       audio,
       filename: "recording.opus",
       mimeType: blob.mimeType,
-      audioSeconds: prepare.durationSeconds,
+      audioSeconds: prepare.prepare.durationSeconds,
+      numSpeakers,
     });
   } finally {
     await removeTempFile(tempPath);
@@ -499,9 +533,12 @@ async function runAsrStep(
   const prepare = await withTransaction(pool, async (client) => {
     await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
     const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
-    return requirePrepareCheckpoint(source, fileItemId);
+    return {
+      prepare: requirePrepareCheckpoint(source, fileItemId),
+      recording: await readRecordingRequest(client, fileItemId),
+    };
   });
-  const boundaries = computeAsrChunkBoundaries(prepare.durationSeconds);
+  const boundaries = computeAsrChunkBoundaries(prepare.prepare.durationSeconds);
   if (boundaries.length === 0) return;
 
   const alreadyDone = await withTransaction(pool, async (client) => {
@@ -511,8 +548,8 @@ async function runAsrStep(
   });
   if (alreadyDone) return;
 
-  const blob = await withTransaction(pool, (client) => getBlob(client, prepare.normalizedBlobId));
-  if (!blob) throw new NotFoundError(`Blob '${prepare.normalizedBlobId}' not found`, { resource: "blob" });
+  const blob = await withTransaction(pool, (client) => getBlob(client, prepare.prepare.normalizedBlobId));
+  if (!blob) throw new NotFoundError(`Blob '${prepare.prepare.normalizedBlobId}' not found`, { resource: "blob" });
 
   const tempPath = await downloadToTempFile(blobStorage, blob.storageKey);
   try {
@@ -537,7 +574,7 @@ async function runAsrStep(
         filename: `chunk-${index}.opus`,
         mimeType: "audio/ogg",
         audioSeconds: boundary.end - boundary.start,
-        language: index === 0 ? undefined : (language ?? undefined),
+        language: index === 0 ? (prepare.recording?.language ?? undefined) : (language ?? undefined),
       });
       if (index === 0) language = result.language;
 
@@ -958,6 +995,16 @@ class TranscriptionQueueError extends Error {
     this.name = "TranscriptionQueueError";
     this.code = code;
   }
+}
+
+/** Creates the transcript checkpoint without entering the media pipeline. */
+export function createTranscriptionCreateTask(pool: Pool) {
+  return async (payload: unknown): Promise<void> => {
+    const { fileItemId } = transcriptionJobPayloadSchema.parse(payload);
+    const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, FILES_MODULE_ID));
+    if (!files) throw new NotFoundError("Files database not found");
+    await runCreateStep({ pool, filesDatabaseId: files.id, fileItemId });
+  };
 }
 
 /**

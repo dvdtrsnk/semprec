@@ -58,6 +58,23 @@ export async function enqueueTranscriptionJob(client: PoolClient, input: Enqueue
   );
 }
 
+/** Enqueues the fast create step independently of the long transcription lane. */
+export async function enqueueTranscriptionCreate(
+  client: PoolClient,
+  input: EnqueueTranscriptionJobInput,
+): Promise<void> {
+  await enqueueJob(
+    client,
+    CORE_TASK_NAMES.TRANSCRIPTION_CREATE,
+    { fileItemId: input.fileItemId },
+    {
+      jobKey: `transcription-create:${input.fileItemId}`,
+      maxAttempts: 3,
+      queueName: tenantLane("transcription-create"),
+    },
+  );
+}
+
 /**
  * Whether a `transcriptionJob` is already queued for this file (`POST /api/transcriptions`'s
  * `transcription_exists` 409 check) — graphile-worker deletes a job row on success, so this only

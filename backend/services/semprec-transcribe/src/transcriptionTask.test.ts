@@ -9,6 +9,7 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import {
   createBlob,
+  createActionQueueAffinity,
   createChokePoint,
   createItemWithClient,
   createRerunTranscriptionRouteHandler,
@@ -21,6 +22,7 @@ import {
   getItemById,
   ingestUploadedFile,
   ingestUploadedFileWithTransaction,
+  itemDeleteWithClient,
   LocalFsBlobStorageWriter,
   readRecordingRequest,
   recordRecordingIntake,
@@ -53,7 +55,11 @@ import { wireRealtimeHooks } from "@semprec/realtime";
 import type { AiGatewayClientPort, AiGatewayCompletionInput, AiGatewayCompletionResult } from "@semprec/shared";
 import { CORE_TASK_NAMES, enqueueJob, registerTask, runOnce } from "@semprec/queue";
 import { AiGatewayFailedError } from "@semprec/shared";
-import { classifyTranscriptionFailure, createTranscriptionTask } from "./transcriptionTask.js";
+import {
+  classifyTranscriptionFailure,
+  createTranscriptionCreateTask,
+  createTranscriptionTask,
+} from "./transcriptionTask.js";
 import { AudioGatewayBudgetExceededError, AudioGatewayCallError } from "./audioGatewayClient.js";
 import { MediaToolError, probeMedia } from "./mediaNormalization.js";
 import type {
@@ -258,6 +264,133 @@ describe("transcription step 0", () => {
       [rows[0]?.id],
     );
     expect(automationRows).toEqual([{ status: "pending" }]);
+  });
+
+  it("gives the fast transcript the existing upload timestamp", async () => {
+    const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
+    const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
+    if (!files || !transcripts) throw new Error("Transcription databases were not seeded");
+    const storageKey = `source/${randomUUID()}.m4a`;
+    await blobStorage.writeStream(storageKey, Readable.from(audioFixture));
+    const blob = await withTransaction(pool, (client) =>
+      createBlob(client, {
+        mimeType: "audio/mp4",
+        byteSize: audioFixture.byteLength,
+        storageKey,
+      }),
+    );
+    const file = await withTransaction(pool, (client) =>
+      createItemWithClient(client, {
+        databaseId: files.id,
+        properties: { name: "Fast recording", file: { blobId: blob.id } },
+      }),
+    );
+    await inTenantZero(() => createTranscriptionCreateTask(pool)({ fileItemId: file.id }));
+    const source = await withTransaction(pool, (client) => getItemById(client, files.id, file.id));
+    const id = z.uuid().parse(source?.computed.create);
+    const transcript = await withTransaction(pool, (client) => getItemById(client, transcripts.id, id));
+    expect(transcript?.properties.date).toBe(blob.createdAt);
+  });
+
+  it("uses the recorded timestamp on a fast-created transcript", async () => {
+    const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
+    const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
+    if (!files || !transcripts) throw new Error("Transcription databases were not seeded");
+    const storageKey = `source/${randomUUID()}.m4a`;
+    await blobStorage.writeStream(storageKey, Readable.from(audioFixture));
+    const blob = await withTransaction(pool, (client) =>
+      createBlob(client, {
+        mimeType: "audio/mp4",
+        byteSize: audioFixture.byteLength,
+        storageKey,
+      }),
+    );
+    const file = await withTransaction(pool, (client) =>
+      createItemWithClient(client, {
+        databaseId: files.id,
+        properties: { name: "Fast recording", file: { blobId: blob.id } },
+      }),
+    );
+    const recordedAt = "2026-01-05T09:00:00.000Z";
+    await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        recordRecordingIntake(client, {
+          fileItemId: file.id,
+          eventId: null,
+          recordedAt,
+        }),
+      ),
+    );
+    await inTenantZero(() => createTranscriptionCreateTask(pool)({ fileItemId: file.id }));
+    const source = await withTransaction(pool, (client) => getItemById(client, files.id, file.id));
+    const id = z.uuid().parse(source?.computed.create);
+    const transcript = await withTransaction(pool, (client) => getItemById(client, transcripts.id, id));
+    expect(new Date(z.string().parse(transcript?.properties.date)).toISOString()).toBe(recordedAt);
+  });
+
+  it.each([false, true])("copies only a live requested project to a fast transcript (trashed: %s)", async (trashed) => {
+    const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
+    const projects = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
+    if (!files || !projects) throw new Error("Recording databases were not seeded");
+    const [file, project] = await withTransaction(pool, async (client) => [
+      await createItemWithClient(client, { databaseId: files.id, properties: { name: "Recording" } }),
+      await createItemWithClient(client, { databaseId: projects.id, properties: { name: "Chosen project" } }),
+    ]);
+    await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        recordRecordingIntake(client, { fileItemId: file.id, eventId: null, recordedAt: null }),
+      ),
+    );
+    const updated = await pool.query(
+      "UPDATE recording_requests SET project_item_id = $2 WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
+      [file.id, project.id],
+    );
+    expect(updated.rowCount).toBe(1);
+    if (trashed)
+      await withTransaction(pool, (client) =>
+        itemDeleteWithClient(client, projects.id, project.id, { queueAffinity: createActionQueueAffinity() }),
+      );
+    const task = createTranscriptionCreateTask(pool);
+    await inTenantZero(async () => {
+      await task({ fileItemId: file.id });
+      await task({ fileItemId: file.id });
+    });
+    const source = await withTransaction(pool, (client) => getItemById(client, files.id, file.id));
+    const transcriptId = z.uuid().parse(source?.computed.create);
+    const edges = await pool.query<{ item_a: string; item_b: string }>(
+      `SELECT r.item_a, r.item_b FROM item_relations r
+       JOIN relation_definitions d ON d.id = r.relation_definition_id
+       JOIN properties p ON p.id = d.property_id_b
+       WHERE p.key = 'project' AND r.item_b = $1`,
+      [transcriptId],
+    );
+    expect(edges.rows).toEqual(trashed ? [] : [{ item_a: project.id, item_b: transcriptId }]);
+    const links = await pool.query("SELECT id FROM value_links WHERE item_id = $1 AND property_key = 'project'", [
+      transcriptId,
+    ]);
+    expect(links.rowCount).toBe(0);
+  });
+
+  it("converges concurrent fast creates on the same checkpoint and transcript", async () => {
+    const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
+    const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
+    if (!files || !transcripts) throw new Error("Transcription databases were not seeded");
+    const file = await withTransaction(pool, (client) =>
+      createItemWithClient(client, {
+        databaseId: files.id,
+        properties: { name: "Fast recording" },
+      }),
+    );
+    const task = createTranscriptionCreateTask(pool);
+    await inTenantZero(() => Promise.all([task({ fileItemId: file.id }), task({ fileItemId: file.id })]));
+    const source = await withTransaction(pool, (client) => getItemById(client, files.id, file.id));
+    const { rows } = await pool.query<{ id: string; properties: Record<string, unknown> }>(
+      "SELECT id, properties FROM items WHERE database_id = $1",
+      [transcripts.id],
+    );
+    expect(rows).toHaveLength(1);
+    expect(source?.computed.create).toBe(rows[0]?.id);
+    expect(rows[0]?.properties).toMatchObject({ name: "Fast recording", status: "processing" });
   });
 
   it("rejects writing the transcripts 'status'/'link' system properties under the wrong systemOwnerProcess", async () => {
@@ -1068,6 +1201,40 @@ describe("transcription steps 2 and 3 (diarize, ASR)", () => {
       [fileId, durationSeconds],
     );
   }
+
+  it.each([
+    [{ exact: 2 }, 2, null],
+    [{ min: 3 }, null, 3],
+    [undefined, null, null],
+  ])("reads recording choices for diarization and first ASR chunk: %s", async (expected, exact, minimum) => {
+    const { files, file } = await createSourceFile(audioFixture);
+    await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        recordRecordingIntake(client, {
+          fileItemId: file.id,
+          eventId: null,
+          recordedAt: null,
+        }),
+      ),
+    );
+    // The future confirmation writer is not in this batch; populate its bounded stored shape.
+    const fixture = await inTenantZero(() =>
+      pool.query(
+        "UPDATE recording_requests SET language = $2, num_speakers_exact = $3, num_speakers_min = $4 WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
+        [file.id, "cs", exact, minimum],
+      ),
+    );
+    expect(fixture.rowCount).toBe(1);
+    const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+    await inTenantZero(() => task({ fileItemId: file.id }, FIRST_ATTEMPT));
+    expect(gatewayClient.diarizeCalls[0]?.numSpeakers).toEqual(expected);
+    expect(gatewayClient.transcribeCalls[0]?.language).toBe("cs");
+    await inflateDurationAndResetLaterSteps(file.id, 1);
+    await inTenantZero(() => task({ fileItemId: file.id }, FIRST_ATTEMPT));
+    expect(gatewayClient.diarizeCalls[1]?.numSpeakers).toEqual(expected);
+    expect(gatewayClient.transcribeCalls[1]?.language).toBe("cs");
+    expect((await readSource(files.id, file.id))?.computed.diarize).toBeDefined();
+  });
 
   it("diarizes the whole recording exactly once, checkpoints its turns, and also runs ASR", async () => {
     const { files, file } = await createSourceFile(audioFixture);
