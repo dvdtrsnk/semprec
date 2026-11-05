@@ -94,3 +94,22 @@ A repaired config may resume normal retry. Scheduler diagnostics retain their
 own policy; no new durable outcome, schema, code literal, queue framework or
 missing-token reclassification is authorized. Existing fake-fetcher tests must
 use a real supported configured source; injection remains the provider seam.
+
+## Supported-source fixture compatibility: gh1708
+
+Authorize only the three existing library fixture source values test -> tmdb in
+sempProblemsProducers.test.ts failJob and tenantIsolationJobs.test.ts retry sweep
+and library task payload. The former retains its injected failing fetcher and
+SEMP deduplication/count assertions. The latter retains its task composition,
+empty-database sweep and tenant effect assertions; do not add a live fetcher.
+This keeps those existing branches reachable after the supported-source entry
+guard. It grants no assertion, outcome, transport, provider or production change.
+Fold execution into the next relevant coherent group; no extra standalone retry.
+
+## Trusted tenant propagation job keys: gh1593
+
+Apply the narrow trusted-tenant job-key ADR. The existing queue envelope stamps
+tenantId into payload only; Graphile keys remain global. The propagation owner
+therefore constructs valueLinksPropagate:tenantId:ruleKey:sourceItemId:hop from
+trusted tenant scope, never a payload tenant. Keep the prior hop budgets,
+replace behavior, lane and transaction rules. No queue framework change.
