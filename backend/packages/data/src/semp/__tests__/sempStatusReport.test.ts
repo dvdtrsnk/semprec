@@ -120,22 +120,28 @@ describe("Semp status report", () => {
       ["processStale", "agents"],
       ["transcriptionFailed", "transcription"],
     ] as const;
+    const sourceIds = new Map<string, Map<string, string>>();
     for (const [tenant, userId] of [
       [own, ownUser],
       [foreign, foreignUser],
     ] as const) {
       await runInTenant(tenant, () =>
         withTransaction(data, async (client) => {
-          for (const [kind, category] of cases)
+          const byKind = new Map<string, string>();
+          sourceIds.set(tenant, byKind);
+          for (const [kind, category] of cases) {
+            const sourceId = randomUUID();
+            byKind.set(kind, sourceId);
             await raiseProblem(client, {
               userId,
               category,
               kind,
               severity: "warning",
               sourceTable: "items",
-              sourceId: randomUUID(),
+              sourceId,
               dedupeKey: `fixture:${kind}`,
             });
+          }
         }),
       );
     }
@@ -150,6 +156,20 @@ describe("Semp status report", () => {
       expect(cs.problems.map((p) => p.title)).toContain(resolveCatalogLabel(undefined, catalogs.cs, catalogs.en, key));
       expect(JSON.stringify(en)).not.toContain(`status.${kind}.`);
       expect(JSON.stringify(cs)).not.toContain(`status.${kind}.`);
+      const english = en.problems.find((problem) => problem.source.id === sourceIds.get(own)?.get(kind));
+      const czech = cs.problems.find((problem) => problem.source.id === sourceIds.get(foreign)?.get(kind));
+      if (!english || !czech) throw new Error(`Missing localized ${kind} problem`);
+      expect(english.title).toBe(resolveCatalogLabel(undefined, catalogs.en, catalogs.en, key));
+      expect(czech.title).toBe(resolveCatalogLabel(undefined, catalogs.cs, catalogs.en, key));
+      const textKey = `status.${kind}.${kind === "reply" ? "textUnnamed" : "text"}`;
+      const shortKey = `status.${kind}.shortText`;
+      const englishPrefix = resolveCatalogLabel(undefined, catalogs.en, catalogs.en, textKey).split("{")[0]!.trim();
+      const czechPrefix = resolveCatalogLabel(undefined, catalogs.cs, catalogs.en, textKey).split("{")[0]!.trim();
+      expect(english.text.startsWith(englishPrefix)).toBe(true);
+      expect(czech.text.startsWith(czechPrefix)).toBe(true);
+      expect(english.shortText).toBe(resolveCatalogLabel(undefined, catalogs.en, catalogs.en, shortKey));
+      expect(czech.shortText).toBe(resolveCatalogLabel(undefined, catalogs.cs, catalogs.en, shortKey));
+      expect(czech.shortText).not.toBe(english.shortText);
     }
   });
   it("keeps the number of report statements constant as problems grow", async () => {
