@@ -861,7 +861,9 @@ describe("library module (issue #25)", () => {
       const books = await getDatabaseIdByModule("books");
       const items = await inTenantZero(() =>
         Promise.all(
-          ["One", "Two", "Rollback"].map((name) => chokePoint.createItem({ databaseId: books, properties: { name } })),
+          ["One", "Two", "Rollback", "Locked during fetch"].map((name) =>
+            chokePoint.createItem({ databaseId: books, properties: { name } }),
+          ),
         ),
       );
       const bytes = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
@@ -903,6 +905,23 @@ describe("library module (issue #25)", () => {
       expect(removed).toEqual([written[1], written[2]]);
       expect(await readFile(join(root, written[0]!))).toEqual(bytes);
       expect((await chokePoint.getItem(books, items[2]!.id))?.properties).not.toHaveProperty("missingProperty");
+      await inTenantZero(() =>
+        handleProcessLibraryMetadataTask(
+          pool,
+          { itemId: items[3]!.id, databaseId: books, config: { source: "openLibrary", coverKey: "cover" } },
+          async () => {
+            await withTransaction(pool, (client) => setItemAutomationLocked(client, items[3]!.id, true));
+            return { status: "found", cover: { mimeType: "image/jpeg", bytes } };
+          },
+          undefined,
+          storage,
+        ),
+      );
+      expect(written).toHaveLength(4);
+      expect(removed).toEqual([written[1], written[2], written[3]]);
+      expect((await chokePoint.getItem(books, items[3]!.id))?.properties.cover).toBeUndefined();
+      expect((await withTransaction(pool, (client) => getItemAutomation(client, items[3]!.id)))?.status).toBe("locked");
+      expect(await readFile(join(root, written[0]!))).toEqual(bytes);
       const rows = await pool.query<{ storage_key: string }>(
         "SELECT storage_key FROM blobs WHERE storage_key = ANY($1::text[])",
         [written],
