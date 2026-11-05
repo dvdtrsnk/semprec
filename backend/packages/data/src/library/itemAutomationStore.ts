@@ -2,7 +2,7 @@ import type { PoolClient } from "pg";
 import { NotFoundError } from "../errors.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 
-export const ITEM_AUTOMATION_STATUSES = ["pending", "done", "error", "locked"] as const;
+export const ITEM_AUTOMATION_STATUSES = ["pending", "done", "error", "locked", "notFound"] as const;
 export type ItemAutomationStatus = (typeof ITEM_AUTOMATION_STATUSES)[number];
 
 /** Stable, localizable reason an automation failed; the diagnostic `error` text is never returned to clients. */
@@ -12,6 +12,9 @@ export const ITEM_AUTOMATION_ERROR_CODES = [
   "providerFailed",
   "unknown",
   "deleted",
+  "sourceUnavailable",
+  "rateLimited",
+  "invalidResponse",
 ] as const;
 export type ItemAutomationErrorCode = (typeof ITEM_AUTOMATION_ERROR_CODES)[number];
 

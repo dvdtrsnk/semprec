@@ -228,8 +228,8 @@ export async function handleProcessLibraryMetadataTask(
       }
       await markItemAutomationDone(client, payload.itemId);
     });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+  } catch {
+    const message = "Library metadata processing failed";
     // Issue #149: notification lands in the same transaction as the error record, so a
     // replayed job (same job id, same `transitionInstance`) never duplicates it.
     await withTransaction(pool, async (client) => {
@@ -256,6 +256,6 @@ export async function handleProcessLibraryMetadataTask(
         });
       }
     });
-    throw err;
+    throw new Error(message);
   }
 }

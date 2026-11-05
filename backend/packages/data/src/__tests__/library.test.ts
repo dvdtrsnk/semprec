@@ -233,6 +233,7 @@ describe("library module (issue #25)", () => {
       chokePoint.createItem({ databaseId, properties: { name: "Entered", author: "User" } }),
     );
     const locked = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Locked" } }));
+    const lockedBefore = (await chokePoint.getItem(databaseId, locked.id))?.properties;
     for (const item of [empty, entered, locked])
       await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
     await withTransaction(pool, (client) => setItemAutomationLocked(client, locked.id, true));
@@ -252,7 +253,7 @@ describe("library module (issue #25)", () => {
       author: "User",
       year: 2020,
     });
-    expect((await chokePoint.getItem(databaseId, locked.id))?.properties).not.toHaveProperty("author");
+    expect((await chokePoint.getItem(databaseId, locked.id))?.properties).toEqual(lockedBefore);
   });
 
   it("preserves an author entered while the metadata fetch is in flight", async () => {
@@ -270,6 +271,25 @@ describe("library module (issue #25)", () => {
       ),
     );
     expect((await chokePoint.getItem(databaseId, item.id))?.properties.author).toBe("User");
+  });
+
+  it("does not apply a result when automation is locked during the fetch", async () => {
+    const databaseId = await getDatabaseIdByModule("books");
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Book" } }));
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+    const before = (await chokePoint.getItem(databaseId, item.id))?.properties;
+    await inTenantZero(() =>
+      handleProcessLibraryMetadataTask(
+        pool,
+        { itemId: item.id, databaseId, config: { source: "openLibrary", coverKey: "cover", authorKey: "author" } },
+        async () => {
+          await withTransaction(pool, (client) => setItemAutomationLocked(client, item.id, true));
+          return { author: "Fetched" };
+        },
+      ),
+    );
+    expect((await chokePoint.getItem(databaseId, item.id))?.properties).toEqual(before);
+    expect((await withTransaction(pool, (client) => getItemAutomation(client, item.id)))?.status).toBe("locked");
   });
 
   it("skips an invalid movie type while applying other metadata", async () => {
@@ -401,14 +421,15 @@ describe("library module (issue #25)", () => {
     );
 
     const failingFetcher: LibraryMetadataFetcher = async () => {
-      throw new Error("source unavailable");
+      throw new Error("private-provider-secret https://secret.invalid");
     };
     await drainQueue(registry, failingFetcher);
 
     const automation = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
     expect(automation?.status).toBe("error");
-    expect(automation?.error).toBe("source unavailable");
+    expect(automation?.error).toBe("Library metadata processing failed");
     expect(automation?.attempts).toBe(1);
+    expect(JSON.stringify(automation)).not.toContain("private-provider-secret");
   });
 
   it("writes an automation_error notification on failure, deduped by job id but not across distinct failing jobs (issue #149)", async () => {
@@ -431,7 +452,7 @@ describe("library module (issue #25)", () => {
 
     await expect(
       handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: "job-1" } }),
-    ).rejects.toThrow("source unavailable");
+    ).rejects.toThrow("Library metadata processing failed");
 
     const { rows: afterFirst } = await pool.query(
       `SELECT user_id, kind, title, link_href, source_table, source_id, transition_instance FROM notifications WHERE source_id = $1`,
@@ -451,14 +472,14 @@ describe("library module (issue #25)", () => {
     // Redelivery of the same job must not duplicate the notification.
     await expect(
       handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: "job-1" } }),
-    ).rejects.toThrow("source unavailable");
+    ).rejects.toThrow("Library metadata processing failed");
     const { rows: afterReplay } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [item.id]);
     expect(afterReplay).toHaveLength(1);
 
     // A later, independent failure (a new job) is a different transition and does insert.
     await expect(
       handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: "job-2" } }),
-    ).rejects.toThrow("source unavailable");
+    ).rejects.toThrow("Library metadata processing failed");
     const { rows: afterNewTransition } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [
       item.id,
     ]);
@@ -479,7 +500,7 @@ describe("library module (issue #25)", () => {
 
     await expect(
       handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: "job-1" } }),
-    ).rejects.toThrow("source unavailable");
+    ).rejects.toThrow("Library metadata processing failed");
 
     const { rows } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [item.id]);
     expect(rows).toHaveLength(0);
@@ -763,7 +784,7 @@ describe("library automation_error recipient in a tenant (issue #1018)", () => {
           { job: { id: "job-b" } },
         ),
       ),
-    ).rejects.toThrow("source unavailable");
+    ).rejects.toThrow("Library metadata processing failed");
 
     const { rows } = await pool.query<{ user_id: string; kind: string; tenant_id: string }>(
       `SELECT user_id, kind, tenant_id FROM notifications WHERE source_id = $1`,
