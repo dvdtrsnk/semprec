@@ -237,3 +237,52 @@ changed. No additional test path is needed beyond current gh1624 Touches.
 Bundle confirmed repairs, coherent targeted validation and exact changed/
 unchanged carry, then the one remaining focused R2 in the same reviewer context.
 No third review or final verify is authorized by this refreeze.
+
+## Verify8b89 compatibility repair scope
+
+The actual unchanged verify on 8b893c59 remains FAIL in integration: nine failed
+tests plus a suite setup failure, 7033 passed and five skipped. Earlier phases
+passed; E2E remains NOT RUN. No inherited exception or successful verify is
+claimed. R1/R2 are exhausted; the parent disposes subsequent finite deltas.
+
+For gh1624, authorize the existing transcribe tenantIsolationJobs.test.ts to
+register the real transcriptionCreate handler and add its typed case under the
+actual transcribe affinity. Preserve existing pipeline case and tenant/refusal/
+non-effect assertions. In the already scoped transcriptionTask.test.ts,
+source replacement during prepare must preserve the captured provisional date
+written by create; retain no prepare checkpoint, no normalized artifacts and
+all source-replacement checks. Do not remove the provisional date in production
+or accept an arbitrary timestamp instead of equality to its prior value.
+
+For gh1593, authorize the existing API tenantIsolationJobs.test.ts only for the
+missing valueLinksPropagate catalog case, using the actual registered handler
+and correct tenant envelope. Do not mock the task or change affinity/catalog
+exhaustiveness. If the active production rule catalog is empty, an honestly
+labelled unknown-rule no-op case establishes registration/settlement only;
+retain the separate real propagation/isolation proofs from the data harness.
+It does not establish positive value propagation by itself, and grants no new
+production rule, registry override, package helper or private import.
+
+For gh1708, allow sempProblemsProducers.test.ts failJob to admit each fixture
+through the real enqueueLibraryMetadataProcessing owner before processing and
+expect the fixed safe failure. Preserve fetcher, problem count/dedup and tenant
+assertions. The already scoped library.test.ts notification fixtures likewise
+admit through that owner, assert pending and retain all notification recipient/
+redelivery checks. The owner creates item_automation; direct processing without
+that prerequisite is not a substitute for an admitted queued job. This is a
+fixture correction, not a claim notification behavior is proven: if an actually
+admitted job still fails these checks, return the production defect to parent.
+No production notification or job-admission change is authorized here.
+
+Duplicate gh1708 Touches entries were consolidated with the same union of Task
+outcome, producer/sweep config guard and Task/config test scope. Original source
+Task/AC and all six aggregate AC stay unchanged. Do not expose raw provider
+errors to satisfy old test messages or weaken failure/privacy assertions.
+
+Prepare one coherent test-only checkpoint, scoped lint/format and affected data/
+API/transcribe type checks. Return exact diff and source/ledger attribution for
+parent pinning before another runtime run. Do not rerun verify or integration,
+launch E2E, change MCP environment/auth/transport/timeouts or alter CLI cleanup.
+The MCP parser failure and mail DROP timeout remain unexplained. A later bounded
+unchanged-file diagnostic needs a separate candidate-pinned parent plan; a later
+success cannot explain the original failure or prove its individual DROP.
