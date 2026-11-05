@@ -57,6 +57,8 @@ describe("derived values through project relations", () => {
       const areas = await database("areas");
       const projects = await database("projects");
       const files = await database("files");
+      const tasks = await database("tasks");
+      const events = await database("events");
       const work = await cp.createItem({
         databaseId: areas,
         properties: { name: "Work", color: "#5856D6", icon: "briefcase" },
@@ -65,11 +67,16 @@ describe("derived values through project relations", () => {
       const first = await cp.createItem({ databaseId: projects, properties: { name: "Web" } });
       const second = await cp.createItem({ databaseId: projects, properties: { name: "iOS" } });
       const file = await cp.createItem({ databaseId: files, properties: { name: "Brief" } });
+      const task = await cp.createItem({ databaseId: tasks, properties: { name: "Task" } });
+      const event = await cp.createItem({ databaseId: events, properties: { name: "Event" } });
       await link(files, "area", file.id, home.id);
       await link(projects, "area", first.id, work.id);
       await link(projects, "area", second.id, work.id);
       await link(files, "projects", file.id, first.id);
       await link(files, "projects", file.id, second.id);
+      await link(tasks, "project", task.id, second.id);
+      await link(events, "project", event.id, second.id);
+      const beforeVersions = [file.updatedAt, task.updatedAt, event.updatedAt];
       const read = async () => (await cp.getDerivedValuesForItems([file.id])).get(file.id);
       expect((await read())?.area).toEqual({
         values: [{ id: work.id, title: "Work", color: "#5856D6", icon: "briefcase" }],
@@ -95,6 +102,13 @@ describe("derived values through project relations", () => {
       if (!property) throw new Error("Missing area relation");
       await cp.setRelation({ relationPropertyId: property.id, callerItemId: second.id, targetItemId: home.id });
       expect((await read())?.area?.values.map((value) => value.id)).toEqual([home.id, work.id]);
+      const changed = await cp.getDerivedValuesForItems([task.id, event.id, file.id]);
+      expect(changed.get(task.id)?.area?.values.map((value) => value.id)).toEqual([home.id]);
+      expect(changed.get(event.id)?.area?.values.map((value) => value.id)).toEqual([home.id]);
+      expect(changed.get(file.id)?.area?.values.map((value) => value.id)).toEqual([home.id, work.id]);
+      expect(
+        (await Promise.all([file.id, task.id, event.id].map((id) => cp.findItem(id)))).map((item) => item?.updatedAt),
+      ).toEqual(beforeVersions);
       await cp.softDeleteItem(projects, first.id);
       expect((await read())?.area?.values.map((value) => value.id)).toEqual([home.id]);
     });

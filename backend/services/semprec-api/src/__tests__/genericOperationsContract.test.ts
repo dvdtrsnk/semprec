@@ -610,6 +610,7 @@ describe("generic operation REST contract (issue #219)", () => {
             properties: { name: "Second project" },
           });
           const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Area" } });
+          const otherArea = await cp.createItem({ databaseId: areas.id, properties: { name: "Other area" } });
           const company = await cp.createItem({ databaseId: companies.id, properties: { name: "Company" } });
           const file = await cp.createItem({ databaseId: files.id, properties: { name: "File" } });
           async function link(databaseId: string, callerItemId: string, key: string, targetItemId: string) {
@@ -623,7 +624,7 @@ describe("generic operation REST contract (issue #219)", () => {
           await link(projects.id, secondProject.id, "area", area.id);
           await link(files.id, file.id, "projects", project.id);
           await link(files.id, file.id, "projects", secondProject.id);
-          return { person, project, secondProject, area, company, file };
+          return { person, project, secondProject, area, otherArea, company, file, projectsDatabaseId: projects.id };
         });
       }
       const own = await fixture(ownTenant);
@@ -698,6 +699,27 @@ describe("generic operation REST contract (issue #219)", () => {
         else if (hasLinks) expect(body).toMatchObject({ links: {} });
         else expect(body).not.toHaveProperty("links");
       }
+      await runInTenant(ownTenant, async () => {
+        const property = (await cp.listProperties(own.projectsDatabaseId)).find((entry) => entry.key === "area");
+        if (!property) throw new Error("Missing project area relation");
+        await cp.setRelation({
+          relationPropertyId: property.id,
+          callerItemId: own.secondProject.id,
+          targetItemId: own.otherArea.id,
+        });
+      });
+      const changed = await fetch(`http://127.0.0.1:${port}/api/items/${own.file.id}?include=derived`, {
+        headers: { Authorization: `Bearer ${firstToken}` },
+      });
+      expect(changed.status).toBe(200);
+      expect(await changed.json()).toMatchObject({
+        derived: {
+          area: {
+            values: [{ id: own.area.id }, { id: own.otherArea.id }],
+            projectIds: [own.project.id, own.secondProject.id].sort(),
+          },
+        },
+      });
       const foreignFile = await fetch(`http://127.0.0.1:${port}/api/items/${foreign.file.id}?include=derived`, {
         headers: { Authorization: `Bearer ${firstToken}` },
       });
