@@ -31,13 +31,13 @@ export async function enqueueLinkPropagation(
   sourceItemId: string,
   hop: number,
 ): Promise<void> {
+  const scope = currentTenantScope();
+  if (scope?.kind !== "tenant") throw new TenantScopeMissingError("Value link propagation requires a tenant scope");
   if (hop > 5) {
     logger.warn({ ruleKey, hop }, "Value link propagation hop dropped");
     return;
   }
   const payload = payloadSchema.parse({ ruleKey, sourceItemId, hop });
-  const scope = currentTenantScope();
-  if (scope?.kind !== "tenant") throw new TenantScopeMissingError("Value link propagation requires a tenant scope");
   await enqueueJob(client, CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE, payload, {
     jobKey: `valueLinksPropagate:${scope.tenantId}:${ruleKey}:${sourceItemId}:${hop}`,
     queueName: tenantLane("value-links"),

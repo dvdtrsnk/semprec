@@ -328,8 +328,12 @@ describe("link rule propagation", () => {
     const client = await data.connect();
     try {
       await expect(enqueueLinkPropagation(client, ruleKey, source, 1)).rejects.toThrow("requires a tenant scope");
+      await expect(enqueueLinkPropagation(client, ruleKey, source, 6)).rejects.toThrow("requires a tenant scope");
       await expect(
         runAsSystem("test:reject-system-propagation", () => enqueueLinkPropagation(client, ruleKey, source, 1)),
+      ).rejects.toThrow("requires a tenant scope");
+      await expect(
+        runAsSystem("test:reject-system-propagation", () => enqueueLinkPropagation(client, ruleKey, source, 6)),
       ).rejects.toThrow("requires a tenant scope");
     } finally {
       client.release();
