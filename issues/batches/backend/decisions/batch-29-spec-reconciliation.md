@@ -165,3 +165,75 @@ the current value as own, as the separate existing decision requires. No new
 lock, owner, protocol or production path is granted. Keep earlier contradictory
 tests/results as history and map sufficient existing empty/remaining-union
 controls to the corrected specification without an automatic repeat campaign.
+
+## Complete R1 grouped disposition
+
+R1 report SHA256 60776c6f048df057fbaa3ef5b89ec479b1bf033e7d22701dceb06b8229f1248d
+and reviewed ledger SHA256 5211d1ffbc6ace15a176b59bdde6f3978e160c2a46c2d38b19b4eca6a60da5f7
+remain immutable. Full read window ended before this decision. Repair the two
+Google Books defects, required propagation schedules, normalized tenant HTTP
+oracle controls, inaccurate ledger carry/locators and stale comment in their
+already approved owners. Corrected ledgers must distinguish body-only identity,
+fixture changes, earlier snapshots and actual later execution. No final gate
+or whole-criterion PASS follows from those repairs.
+
+### Gh1706 documented year search
+
+The official TMDB OpenAPI lists no year query parameter for multi. It documents
+primary_release_year for movie and first_air_date_year for TV; TV's broader year
+parameter also searches episode dates and is not selected here. Sources:
+https://developer.themoviedb.org/reference/search-multi.md,
+https://developer.themoviedb.org/reference/search-movie.md,
+https://developer.themoviedb.org/reference/search-tv.md.
+The parent inspected these docs, not the provider API; undocumented multi-year
+behavior is unproved.
+
+Without a supplied year, retain one bounded multi-search page and skip people.
+With a year, request one bounded page from each documented movie and TV search,
+using name plus primary_release_year or first_air_date_year respectively.
+Merge their checked movie/TV results and use the existing deterministic title/
+year ranking, followed by details for the winner and at most three alternatives.
+Do not append the year to the title, send an undocumented multi filter, crawl
+all pages or silently fall back to an unrestricted search. A required endpoint
+error or malformed body keeps the existing fixed outcome mapping rather than
+becoming a successful partial candidate set. Preserve token header/privacy,
+HTTP/storage bounds, safe cover download and missing-token behavior. Fixtures
+must assert exact request names/years, no-year multi, both media shapes, merge,
+wrong-year distractors, empty and failed/malformed endpoint results. This changes
+only gh1706 Task1's impossible literal multi-year contract, not its AC or scope.
+
+### Gh1624 observed fast-job preservation
+
+Apply the new recording-intake fast-job ADR in the existing enqueue/intake and
+recordingIntake.test.ts owners. The earlier no-replace rule extends to the fast
+key specifically in recording intake under the same Files reservation. Preserve
+observed queued/running identity, attempts and payload; inspect missing keys
+independently. Do not globally change replace semantics for requeue/rerun or
+non-recording callers. Existing shape/owner/foreign/random reader controls remain
+in scope. Task3 wording was compressed without changing create/checkpoint,
+provisional-date, canonical first-storage/dedup caveat, later refinement or sole
+writer semantics. The prior accepted ADR body remains untouched.
+
+### Gh1624 worker lifecycle fault seam
+
+Authorize a narrowly typed local worker-start dependency in the existing
+queueRuntime.ts composition options, defaulting to the actual runWorker. Its
+input is the existing worker options; its return contract exposes only the
+stop promise owned by this runtime. Do not require an unchecked cast to a full
+Graphile Runner, export a package helper, alter the queue framework, task lists,
+concurrency or serve defaults. This is an explicit exception to the prior
+no-runner-replacement test direction for lifecycle fault controls only.
+
+In queueRuntime.test.ts the starter may reject second startup or return typed
+stop handles that reject, to prove exact cleanup/error branches. Assert primary
+error identity after successful cleanup, AggregateError ordering and cause when
+cleanup also fails, both stop attempts and preserved failures, and repeated stop
+calling each handle once. Keep such injected lifecycle controls separate from
+actual-worker evidence. The successful concurrency/fast-create scenario must
+still use both real workers, actual task owners and bounded gateway fakes.
+No timeout, auth, environment, process-kill policy or production lifecycle is
+changed. No additional test path is needed beyond current gh1624 Touches.
+
+Bundle confirmed repairs, coherent targeted validation and exact changed/
+unchanged carry, then the one remaining focused R2 in the same reviewer context.
+No third review or final verify is authorized by this refreeze.

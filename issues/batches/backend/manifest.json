@@ -2815,8 +2815,8 @@
       "sequence": 29,
       "status": "proposed",
       "title": "[backend-delivery 29/74] Implement data/library, semprec-transcribe, queue changes",
-      "bodyCharacters": 59969,
-      "specSha256": "a797853d36efca21839e343a601e9d8cb7526f05c9c530acc7e41b353e2e26c8",
+      "bodyCharacters": 59946,
+      "specSha256": "8c05ed462123affaa5ab796c738cbe973ea856b7173ad445dcde59d8c1f0ad0a",
       "members": [
         {
           "id": "gh-1575",
@@ -2838,7 +2838,7 @@
         },
         {
           "id": "gh-1706",
-          "specSha256": "5587cb57adee79796b95ab1078aa4d8ef02b400489e65bbb1c1bb34f04dd3cc3",
+          "specSha256": "30367c775978b33280e1f82a6935798bef4e70334d3999e8caa35b5bcb9fc2e6",
           "parent": "gh-1299",
           "dependencies": [
             "gh-1655"
@@ -2876,7 +2876,7 @@
         },
         {
           "id": "gh-1624",
-          "specSha256": "0a43b825911f06b14c7fff55d704a29519cf3882c86827607b659fddf1e1487e",
+          "specSha256": "33e3270fba63b5824f2e06db37c766643f83c0bd33d182d66accb00c8bd21c36",
           "parent": "gh-1319",
           "dependencies": [
             "gh-1574",
