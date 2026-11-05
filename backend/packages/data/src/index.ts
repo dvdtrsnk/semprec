@@ -28,6 +28,8 @@ export type { Actor } from "./chokePoint/authorization.js";
 export { VALUE_LINKS_OWNER_PROCESS } from "./chokePoint/valueLinkWrites.js";
 export { insertValueLink, type InsertValueLinkInput } from "./chokePoint/valueLinksStore.js";
 export type { ItemValueLinks, ValueLinkEntry, ValueLinkSource } from "./chokePoint/valueLinkReads.js";
+export { DERIVED_VALUE_SOURCES } from "./derived/derivedValueSources.js";
+export { getDerivedValuesForItems } from "./derived/derivedValueReads.js";
 export {
   createItemWithClient,
   updateItemWithClient,
@@ -71,6 +73,7 @@ export { writeComputed } from "./chokePoint/itemsStore.js";
 export type { CreateViewInput, PatchViewInput } from "./chokePoint/viewsStore.js";
 export * from "./chokePoint/viewTypeRegistry.js";
 export { manifest as schemaCoreModuleManifest } from "./chokePoint/schemaCoreModuleManifest.js";
+export { createSetHeartbeatEnabledRouteHandler } from "./scheduler/setHeartbeatEnabledRoute.js";
 
 export * from "./views/filterTree.js";
 export { compileFilterNode } from "./views/filterCompiler.js";

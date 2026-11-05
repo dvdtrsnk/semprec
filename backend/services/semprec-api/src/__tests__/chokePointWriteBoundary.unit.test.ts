@@ -41,6 +41,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "get notification preferences": "packages/data/src/notifications/notificationPreferencesRoutes.ts",
   "patch notification preferences": "packages/data/src/notifications/notificationPreferencesRoutes.ts",
   "trigger heartbeat": "packages/data/src/scheduler/triggerHeartbeatRoute.ts",
+  "set heartbeat enabled": "packages/data/src/scheduler/setHeartbeatEnabledRoute.ts",
   "project mcp grants": "services/semprec-api/src/mcpAgentPageHandler.ts",
   "project mcp grant toggle": "services/semprec-api/src/mcpAgentPageHandler.ts",
   "mcp tool registration reclassify": "services/semprec-api/src/mcpAgentPageHandler.ts",

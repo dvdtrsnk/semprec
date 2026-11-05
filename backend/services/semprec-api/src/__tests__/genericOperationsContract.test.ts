@@ -602,10 +602,12 @@ describe("generic operation REST contract (issue #219)", () => {
           const projects = find("projects");
           const areas = find("areas");
           const companies = find("companies");
+          const files = find("files");
           const person = await cp.createItem({ databaseId: people.id, properties: { name: "Person" } });
           const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Project" } });
           const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Area" } });
           const company = await cp.createItem({ databaseId: companies.id, properties: { name: "Company" } });
+          const file = await cp.createItem({ databaseId: files.id, properties: { name: "File" } });
           async function link(databaseId: string, callerItemId: string, key: string, targetItemId: string) {
             const property = (await cp.listProperties(databaseId)).find((entry) => entry.key === key);
             if (!property) throw new Error("Missing fixture relation");
@@ -614,7 +616,8 @@ describe("generic operation REST contract (issue #219)", () => {
           await link(people.id, person.id, "projects", project.id);
           await link(people.id, person.id, "companies", company.id);
           await link(projects.id, project.id, "area", area.id);
-          return { person, project, area, company };
+          await link(files.id, file.id, "projects", project.id);
+          return { person, project, area, company, file };
         });
       }
       const own = await fixture(ownTenant);
@@ -653,6 +656,31 @@ describe("generic operation REST contract (issue #219)", () => {
       const firstToken = tokens[0]?.token;
       const secondToken = tokens[1]?.token;
       if (!firstToken || !secondToken) throw new Error("Missing test sessions");
+      for (const [query, hasLinks, hasDerived] of [
+        ["", false, false],
+        ["?include=links", true, false],
+        ["?include=derived", false, true],
+        ["?include=path,links,derived", true, true],
+      ] as const) {
+        const response = await fetch(`http://127.0.0.1:${port}/api/items/${own.file.id}${query}`, {
+          headers: { Authorization: `Bearer ${firstToken}` },
+        });
+        expect(response.status).toBe(200);
+        const body: unknown = await response.json();
+        if (hasDerived) expect(body).toMatchObject({ derived: { area: { values: [{ id: own.area.id }] } } });
+        else expect(body).not.toHaveProperty("derived");
+        if (hasLinks && hasDerived) expect(body).toMatchObject({ links: { area: { valueKind: "derived" } } });
+        else if (hasLinks) expect(body).toMatchObject({ links: {} });
+        else expect(body).not.toHaveProperty("links");
+      }
+      const foreignFile = await fetch(`http://127.0.0.1:${port}/api/items/${foreign.file.id}?include=derived`, {
+        headers: { Authorization: `Bearer ${firstToken}` },
+      });
+      const randomFile = await fetch(`http://127.0.0.1:${port}/api/items/${randomUUID()}?include=derived`, {
+        headers: { Authorization: `Bearer ${firstToken}` },
+      });
+      expect(foreignFile.status).toBe(404);
+      expect(randomFile.status).toBe(404);
       for (const [token, expected] of [
         [firstToken, own],
         [secondToken, foreign],

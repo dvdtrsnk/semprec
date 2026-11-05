@@ -1,4 +1,4 @@
-import type { ExpandedRelationTarget } from "@semprec/shared";
+import type { ExpandedRelationTarget, Item } from "@semprec/shared";
 import type { Pool } from "pg";
 import { loadBlobMetadataForItems, withTransaction } from "@semprec/data";
 import type { ItemBlobMetadata, ItemRow, ItemValueLinks } from "@semprec/data";
@@ -11,6 +11,7 @@ import type { ItemBlobMetadata, ItemRow, ItemValueLinks } from "@semprec/data";
  * counter.
  */
 export interface ItemEnvelope {
+  derived?: Item["derived"];
   relations?: Record<string, ExpandedRelationTarget[]>;
   relationsTruncated?: string[];
   id: string;
@@ -33,6 +34,7 @@ export interface ItemEnvelope {
 /** The one place an `ItemRow` (the choke-point's internal row shape) is projected onto the public envelope. */
 export function toItemEnvelope(
   item: ItemRow & {
+    derived?: Item["derived"];
     links?: ItemValueLinks;
     relations?: Record<string, ExpandedRelationTarget[]>;
     relationsTruncated?: string[];
@@ -50,6 +52,7 @@ export function toItemEnvelope(
     deletedAt: item.deletedAt,
     ...(item.fromInbox === undefined ? {} : { fromInbox: item.fromInbox }),
     ...(item.links === undefined ? {} : { links: item.links }),
+    ...(item.derived === undefined ? {} : { derived: item.derived }),
   };
 }
 
@@ -60,7 +63,7 @@ export function toItemEnvelope(
  */
 export async function toItemEnvelopes(
   pool: Pool,
-  items: readonly (ItemRow & { links?: ItemValueLinks })[],
+  items: readonly (ItemRow & { links?: ItemValueLinks; derived?: Item["derived"] })[],
 ): Promise<ItemEnvelope[]> {
   const envelopes = items.map(toItemEnvelope);
   const metadata = await withTransaction(pool, (client) => loadBlobMetadataForItems(client, envelopes));
@@ -74,6 +77,7 @@ export async function toItemEnvelopes(
 export async function toItemEnvelopeWithBlobs(
   pool: Pool,
   item: ItemRow & {
+    derived?: Item["derived"];
     links?: ItemValueLinks;
     relations?: Record<string, ExpandedRelationTarget[]>;
     relationsTruncated?: string[];

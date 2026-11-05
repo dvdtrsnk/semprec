@@ -267,6 +267,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "set heartbeat enabled",
+    method: "PATCH",
+    path: `/api/heartbeats/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "schema projection",
     method: "GET",
     path: "/api/schema",

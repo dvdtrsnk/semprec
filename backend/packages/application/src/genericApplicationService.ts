@@ -81,9 +81,17 @@ export function createGenericApplicationService(
 
   /** Legacy `include: ["links"]` or `{ links: true }`: attaches each item's links (an empty object when it has none) in one batched read; without it the items come back untouched. */
   async function withLinks<T extends Item>(items: T[], include: ItemReadInclude): Promise<T[]> {
-    if (!(Array.isArray(include) ? include.includes("links") : include?.links === true)) return items;
-    const linksByItem = await chokePoint.getValueLinksForItems(items.map((item) => item.id));
-    return items.map((item) => ({ ...item, links: linksByItem.get(item.id) ?? {} }));
+    const links = Array.isArray(include) ? include.includes("links") : include?.links === true;
+    const derived = Array.isArray(include) ? include.includes("derived") : include?.derived === true;
+    if (!links && !derived) return items;
+    const ids = items.map((item) => item.id);
+    const linksByItem = links ? await chokePoint.getValueLinksForItems(ids, derived) : undefined;
+    const valuesByItem = derived ? await chokePoint.getDerivedValuesForItems(ids) : undefined;
+    return items.map((item) => ({
+      ...item,
+      ...(linksByItem ? { links: linksByItem.get(item.id) ?? {} } : {}),
+      ...(valuesByItem ? { derived: valuesByItem.get(item.id) ?? {} } : {}),
+    }));
   }
 
   function expansion(include: ItemReadInclude) {

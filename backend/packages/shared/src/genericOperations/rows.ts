@@ -88,7 +88,7 @@ export type ItemLinkSource =
 
 /** Mirrors `packages/data`'s `ValueLinkEntry`: one property's link on an item (issue #1403). */
 export interface ItemLink {
-  valueKind: "inherited" | "inheritedBroken";
+  valueKind: "inherited" | "inheritedBroken" | "derived";
   sources: ItemLinkSource[];
   brokenBy: "user" | "agent" | null;
   brokenAt: string | null;
@@ -109,6 +109,14 @@ export interface ExpandedRelationTarget extends ReducedRelationTarget {
 }
 
 export interface Item {
+  derived?: {
+    area?: {
+      values: Array<{ id: string; title: string; color?: string | null; icon?: string | null }>;
+      via: "project";
+      projectIds: string[];
+    };
+    company?: { values: Array<{ id: string; title: string }>; via: "project"; projectIds: string[] };
+  };
   id: string;
   databaseId: string;
   properties: Record<string, unknown>;

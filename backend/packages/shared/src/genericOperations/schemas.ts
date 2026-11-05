@@ -238,8 +238,14 @@ export const RelationIncludeSchema = z
   .refine((relations) => Object.keys(relations).length <= 5, "At most five relation keys are allowed");
 const includeField = z
   .union([
-    z.object({ links: z.boolean().optional(), relations: RelationIncludeSchema.optional() }).strict(),
-    z.array(z.enum(["links"])).max(1),
+    z
+      .object({
+        links: z.boolean().optional(),
+        derived: z.boolean().optional(),
+        relations: RelationIncludeSchema.optional(),
+      })
+      .strict(),
+    z.array(z.enum(["links", "derived"])).max(2),
   ])
   .optional();
 export type ItemReadInclude = z.infer<typeof includeField>;
