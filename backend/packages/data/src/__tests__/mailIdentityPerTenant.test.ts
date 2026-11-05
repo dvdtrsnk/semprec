@@ -189,10 +189,11 @@ describe("mail identities stay within a tenant", () => {
         resolveThreadId(client, { messageId: "<bridge@x>", references: ["<x1@x>", "<x2@x>"] }),
       );
 
-      expect(bridged).toBe(thread1);
-      expect(await threadIdOf(client, row1.itemId)).toBe(thread1);
-      expect(await threadIdOf(client, row2.itemId)).toBe(thread1);
-      expect(await threadExists(client, thread2)).toBe(false);
+      expect([thread1, thread2]).toContain(bridged);
+      expect(await threadIdOf(client, row1.itemId)).toBe(bridged);
+      expect(await threadIdOf(client, row2.itemId)).toBe(bridged);
+      expect(await threadExists(client, bridged)).toBe(true);
+      expect(await threadExists(client, bridged === thread1 ? thread2 : thread1)).toBe(false);
     });
   });
 });

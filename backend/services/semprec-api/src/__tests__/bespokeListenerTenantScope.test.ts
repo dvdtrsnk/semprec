@@ -144,7 +144,8 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
 
   async function send(route: RouteMatrixEntry, token?: string): Promise<Response> {
     const spec = requestSpecFor(route);
-    return fetch(`${baseUrl}${route.path}`, {
+    const path = route.path === "/api/notifications/resolved" ? `${route.path}?since=2020-01-01T00:00:00Z` : route.path;
+    return fetch(`${baseUrl}${path}`, {
       method: route.method,
       headers: { ...spec.headers, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: spec.body,
@@ -152,7 +153,7 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
   }
 
   it("covers every tenant-scoped listener route of the matrix", () => {
-    expect(tenantRoutes).toHaveLength(14);
+    expect(tenantRoutes).toHaveLength(15);
   });
 
   describe.each(tenantRoutes)("$name ($method $path)", (route) => {
