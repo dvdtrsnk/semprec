@@ -110,7 +110,7 @@ describe("mail thread list", () => {
           folderItemId: input.folder ?? folders.inbox.id,
           messageId: input.id,
           references: input.refs ?? [],
-          subject: "Re: Nabídka na web",
+          subject: "Re: Website proposal",
           date: input.date,
           envelope: {
             from: {
@@ -205,6 +205,7 @@ describe("mail thread list", () => {
       expect(before.body.threads).toHaveLength(1);
       const row = before.body.threads[0]!;
       expect(row).toMatchObject({
+        subject: "Re: Website proposal",
         messageCount: 4,
         preview: "Latest preview",
         hasAttachment: true,
