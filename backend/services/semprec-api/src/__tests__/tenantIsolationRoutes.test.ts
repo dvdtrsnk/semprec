@@ -1099,11 +1099,12 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }),
   "set heartbeat enabled": () =>
     leavesAUnchanged(async () => {
-      await expectForeignLikeRandom(b.member, [a.heartbeatId], ([id]) => ({
+      const answer = await expectForeignLikeRandom(b.member, [a.heartbeatId], ([id]) => ({
         method: "PATCH",
         path: entryPath("set heartbeat enabled", id!),
         body: { enabled: false },
       }));
+      expect(answer.status).toBe(404);
     }),
   "schema projection": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/schema" });
