@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { createServer } from "node:http";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -14,6 +14,7 @@ import {
   createSetHeartbeatEnabledRouteHandler,
   createViewTypeRegistry,
   seedSystem,
+  sweepDueHeartbeats,
   withTransaction,
   createUser,
   getHeartbeat,
@@ -116,6 +117,42 @@ describe("heartbeat enabled route", () => {
         code: "owner_violation",
       });
       expect(await getHeartbeat(runtime, system.id)).toEqual(system);
+    });
+  });
+
+  it("does not queue missed interval fires after re-enabling", async () => {
+    await runInTenant(tenant, async () => {
+      await seedSystem(runtime, createViewTypeRegistry());
+      const cp = createChokePoint(runtime);
+      const db = (await cp.listDatabases()).find((entry) => entry.ownerModuleId === "projects");
+      if (!db) throw new Error("Missing projects database");
+      const project = await cp.createItem({ databaseId: db.id, properties: { name: "Project" } });
+      // Simulate an old schedule without changing the database clock or waiting for an interval.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const heartbeat = await (async () => {
+        try {
+          vi.setSystemTime(new Date("2020-01-01T00:00:00.000Z"));
+          return await withTransaction(runtime, (client) =>
+            createHeartbeat(client, {
+              projectItemId: project.id,
+              name: "Past schedule",
+              rule: { kind: "interval", minutes: 5 },
+              actionId: "noop",
+              origin: "user",
+            }),
+          );
+        } finally {
+          vi.useRealTimers();
+        }
+      })();
+      expect(heartbeat.nextFireAt).toBe("2020-01-01T00:05:00.000Z");
+      const handler = createSetHeartbeatEnabledRouteHandler(runtime, { heartbeatRuleKinds: async () => new Map() });
+      await handler({ params: { id: heartbeat.id }, body: { enabled: false } });
+      const enabled = await handler({ params: { id: heartbeat.id }, body: { enabled: true } });
+      expect(Date.parse(enabled.body.nextFireAt ?? "")).toBeGreaterThan(Date.now());
+      const sweep = await withTransaction(runtime, (client) => sweepDueHeartbeats(client));
+      expect(sweep.fired.map((item) => item.id)).not.toContain(heartbeat.id);
+      expect(await hasWaitingHeartbeatFireJob(runtime, heartbeat.id)).toBe(false);
     });
   });
 
