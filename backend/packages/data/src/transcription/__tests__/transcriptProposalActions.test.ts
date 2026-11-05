@@ -17,6 +17,7 @@ import { confirmProposalWithClient, reviseProposalWithClient } from "../../inbox
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcriptionJob.js";
 import { matchTranscriptToEvent } from "../transcriptEventMatch.js";
 import { proposeSpeakerMappings } from "../transcriptSpeakerSuggestion.js";
+import { setSelfPersonId } from "../../selfPerson.js";
 
 let pool: Pool;
 
@@ -315,7 +316,9 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
     it("keeps a clarification card's speaker role and creates its Person and edge atomically", async () => {
       const transcriptId = await createTranscript("Unidentified speaker");
       const peopleId = await databaseIdFor("people");
+      const alternativeId = await createItem(peopleId, "Alternative Person");
       await withTransaction(pool, async (client) => {
+        await setSelfPersonId(client, alternativeId);
         await writeComputed(client, transcriptsId, transcriptId, "segments", [
           { speaker: "SPEAKER_01", text: "A real recorded sentence", startsAt: 0, endsAt: 2 },
         ]);
@@ -327,10 +330,23 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
       );
       if (cards.rows.length !== 1 || !cards.rows[0]) throw new Error("Missing clarification card");
       const cardId = cards.rows[0].id;
-      expect(await cardProperties(cardId)).toMatchObject({ status: "needsClarification", proposal: null });
+      expect(await cardProperties(cardId)).toMatchObject({
+        status: "needsClarification",
+        proposal: null,
+        context: { alternatives: expect.arrayContaining([expect.objectContaining({ personId: alternativeId })]) },
+      });
       await expect(revise(cardId, createEvent())).rejects.toMatchObject({
         code: "validation_failed",
         details: { field: "entityKind" },
+      });
+      await revise(cardId, {
+        entityKind: "relation",
+        target: alternativeId,
+        properties: { propertyKey: "speakers", metadata: { speaker: "SPEAKER_01" } },
+      });
+      expect(await cardProperties(cardId)).toMatchObject({
+        status: "proposed",
+        proposal: { entityKind: "relation", target: alternativeId },
       });
       await revise(cardId, { entityKind: "database", target: peopleId, properties: { name: "New Person" } });
       await withTransaction(pool, (client) =>
