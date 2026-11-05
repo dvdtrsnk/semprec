@@ -24,6 +24,7 @@ import {
   stubDnsLookup,
 } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { LocalFsBlobStorageWriter, type BlobStorageWriter } from "../mail/blobStorage.js";
@@ -339,6 +340,39 @@ describe("library module (issue #25)", () => {
     const result = await chokePoint.getItem(databaseId, item.id);
     expect(result?.properties.year).toBe(2021);
     expect(result?.properties.type).toBeUndefined();
+  });
+
+  it("preserves a user's movie year and type while applying source metadata", async () => {
+    const databaseId = await getDatabaseIdByModule("movies");
+    const item = await inTenantZero(() =>
+      chokePoint.createItem({
+        databaseId,
+        properties: { name: "Film", year: 1999, type: "series" },
+      }),
+    );
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+    await inTenantZero(() =>
+      handleProcessLibraryMetadataTask(
+        pool,
+        {
+          itemId: item.id,
+          databaseId,
+          config: {
+            source: "tmdb",
+            coverKey: "cover",
+            typeKey: "type",
+            yearKey: "year",
+            secondaryRatingKey: "secondaryRating",
+          },
+        },
+        async () => ({ status: "found", source: "tmdb", type: "movie", year: 2024, secondaryRating: 79 }),
+      ),
+    );
+    expect((await chokePoint.getItem(databaseId, item.id))?.properties).toMatchObject({
+      year: 1999,
+      type: "series",
+      secondaryRating: 79,
+    });
   });
 
   it("upgrades both heartbeat configs and leaves the second run unchanged", async () => {
@@ -682,10 +716,101 @@ describe("library module (issue #25)", () => {
   });
 
   it.each(["169.254.169.254", "10.0.0.1"])("refuses a cover hostname resolving to %s", async (address) => {
-    const dns = stubDnsLookup({ "private-cover.invalid": [address] });
+    const dns = stubDnsLookup({ "private-cover.invalid": [address], "image.tmdb.org": [address] });
     try {
       expect(await downloadLibraryCover("https://private-cover.invalid/cover.jpg")).toBeUndefined();
       expect(dns.calls).toContain("private-cover.invalid");
+      const books = await getDatabaseIdByModule("books");
+      const book = await inTenantZero(() => chokePoint.createItem({ databaseId: books, properties: { name: "Book" } }));
+      await withTransaction(pool, (client) => ensureItemAutomation(client, book.id));
+      const before = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM blobs");
+      const fetcher = createLibraryMetadataFetcher({
+        fetch: async (url) =>
+          new Response(
+            JSON.stringify(
+              url.startsWith("https://openlibrary.org/")
+                ? { docs: [] }
+                : {
+                    items: [
+                      {
+                        volumeInfo: {
+                          title: "Book",
+                          authors: ["Fixture Author"],
+                          imageLinks: { thumbnail: "https://private-cover.invalid/cover.jpg" },
+                        },
+                      },
+                    ],
+                  },
+            ),
+          ),
+      });
+      await inTenantZero(() =>
+        handleProcessLibraryMetadataTask(
+          pool,
+          {
+            itemId: book.id,
+            databaseId: books,
+            config: { source: "openLibrary", coverKey: "cover", authorKey: "author" },
+          },
+          fetcher,
+        ),
+      );
+      const result = await chokePoint.getItem(books, book.id);
+      expect(result?.properties.author).toBe("Fixture Author");
+      expect(result?.properties.cover).toBeUndefined();
+      expect(dns.calls.filter((host) => host === "private-cover.invalid")).toHaveLength(2);
+      const after = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM blobs");
+      expect(after.rows).toEqual(before.rows);
+      const movies = await getDatabaseIdByModule("movies");
+      const movie = await inTenantZero(() =>
+        chokePoint.createItem({ databaseId: movies, properties: { name: "Film" } }),
+      );
+      await withTransaction(pool, (client) => ensureItemAutomation(client, movie.id));
+      const movieFetcher = createLibraryMetadataFetcher({
+        tmdbToken: "fixture-token",
+        fetch: async (url) =>
+          new Response(
+            JSON.stringify(
+              url.includes("/search/multi")
+                ? {
+                    results: [
+                      {
+                        id: 1,
+                        media_type: "movie",
+                        title: "Film",
+                        release_date: "2024-01-01",
+                        poster_path: "/fixture.jpg",
+                      },
+                    ],
+                  }
+                : { vote_average: 7.9, vote_count: 10 },
+            ),
+          ),
+      });
+      await inTenantZero(() =>
+        handleProcessLibraryMetadataTask(
+          pool,
+          {
+            itemId: movie.id,
+            databaseId: movies,
+            config: {
+              source: "tmdb",
+              coverKey: "cover",
+              yearKey: "year",
+              typeKey: "type",
+              secondaryRatingKey: "secondaryRating",
+            },
+          },
+          movieFetcher,
+        ),
+      );
+      const movieResult = await chokePoint.getItem(movies, movie.id);
+      expect(movieResult?.properties).toMatchObject({ year: 2024, type: "movie", secondaryRating: 79 });
+      expect(movieResult?.properties.cover).toBeUndefined();
+      expect(dns.calls).toContain("image.tmdb.org");
+      expect((await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM blobs")).rows).toEqual(
+        before.rows,
+      );
     } finally {
       dns.restore();
     }
@@ -907,6 +1032,61 @@ describe("library module (issue #25)", () => {
     } finally {
       setInvalidationHook(() => {});
     }
+  });
+
+  it("keeps found status when a removed cover is not returned on a later run", async () => {
+    const root = await mkdtemp(join(tmpdir(), "semprec-library-removed-cover-"));
+    const failures: unknown[] = [];
+    try {
+      const storage = new LocalFsBlobStorageWriter(root);
+      const databaseId = await getDatabaseIdByModule("books");
+      const item = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Book" } }));
+      await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+      const payload = { itemId: item.id, databaseId, config: { source: "openLibrary", coverKey: "cover" } };
+      await inTenantZero(() =>
+        handleProcessLibraryMetadataTask(
+          pool,
+          payload,
+          async () => ({
+            status: "found",
+            source: "openLibrary",
+            cover: { mimeType: "image/jpeg", bytes: Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]) },
+          }),
+          undefined,
+          storage,
+        ),
+      );
+      expect((await chokePoint.getItem(databaseId, item.id))?.properties.cover).toBeDefined();
+      await inTenantZero(() =>
+        withTransaction(pool, (client) =>
+          updateItemWithClient(
+            client,
+            { databaseId, itemId: item.id, propertiesPatch: { cover: null } },
+            { allowedSystemKeys: ["cover"] },
+          ),
+        ),
+      );
+      await inTenantZero(() =>
+        handleProcessLibraryMetadataTask(
+          pool,
+          payload,
+          async () => ({ status: "found", source: "openLibrary" }),
+          undefined,
+          storage,
+        ),
+      );
+      expect((await withTransaction(pool, (client) => getItemAutomation(client, item.id)))?.status).toBe("done");
+      expect((await chokePoint.getItem(databaseId, item.id))?.properties.cover).toBeNull();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await rm(root, { recursive: true, force: true });
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Removed cover test and cleanup failed");
   });
 
   it("records a safe provider outcome and increments its attempt", async () => {
