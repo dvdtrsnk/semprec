@@ -1356,6 +1356,39 @@ describe("library module (issue #25)", () => {
     expect(recovered?.attempts).toBe(1); // unchanged by the successful retry, only failures increment it
   });
 
+  it("retries a not-found title through the actual daily heartbeat", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const registry = libraryRegistry();
+    const item = await inTenantZero(() =>
+      chokePoint.createItem({ databaseId: booksId, properties: { name: "Missing" } }),
+    );
+    await drainQueue(registry, async () => ({ status: "notFound", source: "openLibrary" }));
+    expect(await withTransaction(pool, (client) => getItemAutomation(client, item.id))).toMatchObject({
+      status: "notFound",
+      source: "openLibrary",
+    });
+    const heartbeat = await pool.query<{ id: string }>(
+      "SELECT id FROM project_heartbeats WHERE action_id = $1 AND action_config->>'databaseId' = $2",
+      [LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID, booksId],
+    );
+    expect(heartbeat.rows).toHaveLength(1);
+    const updated = await pool.query(
+      "UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1",
+      [heartbeat.rows[0]!.id],
+    );
+    expect(updated.rowCount).toBe(1);
+    await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
+    const retried: string[] = [];
+    const found: LibraryMetadataFetcher = async (row) => {
+      retried.push(row.id);
+      return { status: "found", source: "openLibrary" };
+    };
+    await drainQueue(registry, found);
+    await drainQueue(registry, found);
+    expect(retried).toContain(item.id);
+    expect((await withTransaction(pool, (client) => getItemAutomation(client, item.id)))?.status).toBe("done");
+  });
+
   it("selects error and notFound for retry but leaves done and locked alone", async () => {
     const booksId = await getDatabaseIdByModule("books");
     const items = await inTenantZero(() =>
