@@ -26,6 +26,7 @@ import {
   TRANSCRIPTS_MODULE_ID,
   type TenDatabaseModuleId,
 } from "./tenDatabaseKeys.js";
+import { ensureUnplannedArea } from "./seedUnplannedArea.js";
 import { PROJECTS_OWNER_PROCESS } from "../projects/projectWriteTransform.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 
@@ -112,11 +113,14 @@ export async function seedTenDatabasesInTransaction(
   await createProps(client, areas.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "active", name: "Active", type: "checkbox", owner: "user", config: { default: true } },
+    { key: "systemActive", name: null, type: "checkbox", owner: "user", locked: true },
     { key: "note", name: "Note", type: "text", owner: "user" },
     { key: "icon", name: null, type: "text", owner: "user" },
     { key: "color", name: null, type: "color", owner: "user" },
     { key: "position", name: null, type: "number", owner: "user" },
   ]);
+
+  await ensureUnplannedArea(client, areas.id);
 
   const projects = await createDb(client, PROJECTS_MODULE_ID);
   await createProps(client, projects.id, [

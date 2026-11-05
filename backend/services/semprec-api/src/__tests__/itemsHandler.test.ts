@@ -629,6 +629,25 @@ describe("item routes (issue #241)", () => {
     expect(await response.json()).toMatchObject({ properties: { phones: "777 123 456" } });
   });
 
+  it("refuses deletion of the unplanned system area through REST", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = await authHeader();
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
+      if (!database) throw new Error("Areas missing");
+      const list = await chokePoint.listItems(database.id);
+      const item = list.items.find((row) => row.properties.systemActive === true);
+      if (!item) throw new Error("System area missing");
+      return { database, item };
+    });
+    const response = await fetch(`${baseUrl}/api/items/${fixture.item.id}`, { method: "DELETE", headers });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { details: { field: "systemActive" } } });
+    expect(
+      await runInTenant(getTenantZeroId(), () => chokePoint.getItem(fixture.database.id, fixture.item.id)),
+    ).toEqual(fixture.item);
+  });
+
   it("returns project completion dates and refuses direct writes through REST", async () => {
     await seedSystem(pool, createViewTypeRegistry());
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };

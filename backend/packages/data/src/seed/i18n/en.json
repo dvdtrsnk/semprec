@@ -5,6 +5,8 @@
   "property.areas.events.name": "Events",
   "property.events.area.name": "Area",
   "property.areas.name.name": "Name",
+  "seed.areas.unplanned.name": "(unplanned)",
+  "property.areas.systemActive.name": "System active",
   "property.areas.active.name": "Active",
   "property.areas.note.name": "Note",
   "property.areas.icon.name": "Icon",
