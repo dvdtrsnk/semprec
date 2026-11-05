@@ -2,7 +2,14 @@ import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+  runTenantCutoverMigrations,
+  tenantForNextTestUser,
+} from "@semprec/data/testSupport";
 import {
   createChokePoint,
   createUser,
@@ -18,6 +25,8 @@ import {
   withTransaction,
 } from "@semprec/data";
 import { createSchemaRequestListener } from "../schemaHandler.js";
+import { runAsSystem, runInTenant } from "@semprec/shared";
+import { z } from "zod";
 
 const PASSWORD = "s3cret-password";
 
@@ -74,6 +83,153 @@ describe("createSchemaRequestListener (issue #147)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("serves localized Tasks schema on fresh and registered cutover tenants through runtime HTTP", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let serverRuntime: Server | undefined;
+    const failures: unknown[] = [];
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      serverRuntime = createServer(createSchemaRequestListener(runtime, moduleRegistry));
+      await new Promise<void>((resolve) => serverRuntime?.listen(0, "127.0.0.1", resolve));
+      const address = serverRuntime.address();
+      if (!address || typeof address === "string") throw new Error("Expected runtime server");
+      const base = `http://127.0.0.1:${address.port}`;
+      const tenants: { id: string; headers: { Authorization: string }; locale: string }[] = [];
+      for (const locale of ["cs", "en"]) {
+        const id = await createTestTenant(pool);
+        const email = `${randomUUID()}@example.com`;
+        await createUser(pool, { tenantId: id, email, passwordHash: await hashPassword(PASSWORD), locale });
+        const { token } = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+        await runInTenant(id, () => seedSystem(runtime, createViewTypeRegistry()));
+        tenants.push({ id, headers: { Authorization: `Bearer ${token}` }, locale });
+      }
+      const responseSchema = z.object({
+        databases: z.array(
+          z.object({
+            key: z.string().nullable(),
+            properties: z.array(z.object({ key: z.string(), name: z.string() })),
+          }),
+        ),
+      });
+      const read = async (headers: { Authorization: string }) => {
+        const response = await fetch(`${base}/api/schema`, { headers });
+        expect(response.status).toBe(200);
+        return responseSchema.parse(await response.json());
+      };
+      const keys = [
+        "flagged",
+        "description",
+        "since",
+        "sinceTime",
+        "completedOn",
+        "completedAt",
+        "hiddenUntil",
+        "effectiveDate",
+        "seriesId",
+        "occurrenceDate",
+        "recurrence",
+        "people",
+        "files",
+        "hostEvents",
+        "completedInEvent",
+      ];
+      const fresh = new Map<string, ReturnType<typeof responseSchema.parse>>();
+      for (const tenant of tenants) {
+        const schema = await read(tenant.headers);
+        fresh.set(tenant.id, schema);
+        const tasks = schema.databases.find((db) => db.key === "tasks");
+        for (const key of keys) {
+          const name = tasks?.properties.find((property) => property.key === key)?.name;
+          expect(name).toBeTruthy();
+          expect(name).not.toBe(key);
+        }
+        for (const [module, propertyKeys] of [
+          ["people", ["tasks"]],
+          ["files", ["tasks"]],
+          ["events", ["hostedTasks", "completedTasks"]],
+        ] as const) {
+          const database = schema.databases.find((candidate) => candidate.key === module);
+          for (const key of propertyKeys) {
+            const name = database?.properties.find((property) => property.key === key)?.name;
+            expect(name).toBeTruthy();
+            expect(name).not.toBe(key);
+          }
+        }
+        expect(tasks?.properties.find((property) => property.key === "sourceEvents")?.name).toBe(
+          tenant.locale === "cs" ? "Zdrojové události" : "Source events",
+        );
+        expect(
+          schema.databases.find((db) => db.key === "journal")?.properties.find((property) => property.key === "project")
+            ?.name,
+        ).toBe(tenant.locale === "cs" ? "Projekt" : "Project");
+        expect(tasks?.properties.find((property) => property.key === "flagged")?.name).toBe(
+          tenant.locale === "cs" ? "Označeno" : "Flagged",
+        );
+        await runInTenant(tenant.id, async () => {
+          // Synthetic historical catalog: locked built-in properties have no public removal path.
+          const removed = await runtime.query(
+            `DELETE FROM properties p USING databases d WHERE p.database_id = d.id AND ((d.owner_module_id = 'tasks' AND p.key = ANY($1::text[])) OR (d.owner_module_id = ANY($2::text[]) AND p.key = ANY($3::text[])))`,
+            [keys, ["people", "files", "events"], ["tasks", "hostedTasks", "completedTasks"]],
+          );
+          expect(removed.rowCount).toBe(19);
+          const inverse = await runtime.query<{ id: string }>(
+            "SELECT p.id FROM properties p JOIN databases d ON d.id = p.database_id WHERE d.owner_module_id = 'tasks' AND p.key = 'sourceEvents'",
+          );
+          if (!inverse.rows[0]) throw new Error("Missing sourceEvents");
+          expect(
+            (
+              await runtime.query("UPDATE relation_definitions SET property_id_b = NULL WHERE property_id_b = $1", [
+                inverse.rows[0].id,
+              ])
+            ).rowCount,
+          ).toBe(1);
+          expect((await runtime.query("DELETE FROM properties WHERE id = $1", [inverse.rows[0].id])).rowCount).toBe(1);
+          expect(
+            (
+              await runtime.query(
+                "DELETE FROM properties p USING databases d WHERE p.database_id = d.id AND d.owner_module_id = 'journal' AND p.key = 'project'",
+              )
+            ).rowCount,
+          ).toBe(1);
+        });
+      }
+      await runAsSystem("test:tasks-schema-cutover", () => runTenantCutoverMigrations(runtime));
+      for (const tenant of tenants) {
+        const after = await read(tenant.headers);
+        for (const module of ["tasks", "people", "files", "events", "journal"]) {
+          const projectNames = (value: typeof after) =>
+            value.databases
+              .find((db) => db.key === module)
+              ?.properties.map(({ key, name }) => ({ key, name }))
+              .sort((a, b) => a.key.localeCompare(b.key));
+          const before = fresh.get(tenant.id);
+          if (!before) throw new Error("Missing fresh schema");
+          expect(projectNames(after)).toEqual(projectNames(before));
+        }
+      }
+    } catch (error) {
+      failures.push(error);
+    }
+    if (serverRuntime)
+      try {
+        await new Promise<void>((resolve, reject) =>
+          serverRuntime?.close((error) => (error ? reject(error) : resolve())),
+        );
+      } catch (error) {
+        failures.push(error);
+      }
+    try {
+      await runtime.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Schema HTTP test and settlement failed");
   });
 
   it("does not expose a kept project deadline in the schema", async () => {

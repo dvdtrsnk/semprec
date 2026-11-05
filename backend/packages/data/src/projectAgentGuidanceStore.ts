@@ -12,6 +12,7 @@ import { getDatabaseByModuleId } from "./chokePoint/databasesStore.js";
 import { getItemById } from "./chokePoint/itemsStore.js";
 import { getTenantUserId, getUserById } from "./auth/usersStore.js";
 import { PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
+import { projectAgentGuidanceVersionStore } from "./projectAgentGuidanceVersionStore.js";
 
 type ProjectAgentGuidanceRow = {
   project_item_id: string;
@@ -29,8 +30,29 @@ function mapRow(row: ProjectAgentGuidanceRow): ProjectAgentGuidance {
   };
 }
 
+async function lockGuidance(tx: PoolClient, projectItemId: string): Promise<ProjectAgentGuidanceRow | null> {
+  await projectAgentGuidanceVersionStore.lock(tx, projectItemId);
+  const { rows } = await tx.query<ProjectAgentGuidanceRow>(
+    `SELECT project_item_id, owner_user_id, markdown, updated_at
+     FROM project_agent_guidance WHERE project_item_id = $1 FOR UPDATE`,
+    [projectItemId],
+  );
+  return rows[0] ?? null;
+}
+
 /** Concrete `PoolClient` implementation of `@semprec/shared`'s `ProjectAgentGuidanceStore`. */
 export const projectAgentGuidanceStore: ProjectAgentGuidanceStore<PoolClient> = {
+  async loadForUpdate(tx, projectItemId) {
+    const row = await lockGuidance(tx, projectItemId);
+    return row ? mapRow(row) : null;
+  },
+  async delete(tx, projectItemId) {
+    const current = await lockGuidance(tx, projectItemId);
+    if (!current) throw new NotFoundError(`Project agent guidance for project ${projectItemId} not found`);
+    await projectAgentGuidanceVersionStore.remember(tx, projectItemId, current.updated_at);
+    const result = await tx.query("DELETE FROM project_agent_guidance WHERE project_item_id = $1", [projectItemId]);
+    if (result.rowCount !== 1) throw new NotFoundError(`Project agent guidance for project ${projectItemId} not found`);
+  },
   async load(tx, projectItemId) {
     const { rows } = await tx.query<ProjectAgentGuidanceRow>(
       `SELECT project_item_id, owner_user_id, markdown, updated_at
@@ -44,29 +66,33 @@ export const projectAgentGuidanceStore: ProjectAgentGuidanceStore<PoolClient> = 
     // `owner_user_id` is deliberately absent from `DO UPDATE`: only `transfer` may change the
     // owner of an existing row, so a direct `upsert` call can never bypass that authorization
     // path even though it still accepts `ownerUserId` to seed the very first insert.
+    const current = await lockGuidance(tx, row.projectItemId);
+    const version = await projectAgentGuidanceVersionStore.next(tx, row.projectItemId, current?.updated_at ?? null);
     const { rows } = await tx.query<ProjectAgentGuidanceRow>(
       `INSERT INTO project_agent_guidance (project_item_id, owner_user_id, markdown, updated_at)
-       VALUES ($1, $2, $3, now())
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (project_item_id)
-       DO UPDATE SET markdown = EXCLUDED.markdown, updated_at = now()
+       DO UPDATE SET markdown = EXCLUDED.markdown, updated_at = EXCLUDED.updated_at
        RETURNING project_item_id, owner_user_id, markdown, updated_at`,
-      [row.projectItemId, row.ownerUserId, row.markdown],
+      [row.projectItemId, row.ownerUserId, row.markdown, version],
     );
     return mapRow(requireSingleRow(rows, "project_agent_guidance upsert"));
   },
 
   async transfer(tx, projectItemId, newOwnerUserId) {
-    const { rows } = await tx.query<ProjectAgentGuidanceRow>(
-      `UPDATE project_agent_guidance SET owner_user_id = $2, updated_at = now()
+    const current = await lockGuidance(tx, projectItemId);
+    if (!current) throw new NotFoundError(`Project agent guidance for project ${projectItemId} not found`);
+    const version = await projectAgentGuidanceVersionStore.next(tx, projectItemId, current.updated_at);
+    const result = await tx.query<ProjectAgentGuidanceRow>(
+      `UPDATE project_agent_guidance SET owner_user_id = $2, updated_at = $3
        WHERE project_item_id = $1
        RETURNING project_item_id, owner_user_id, markdown, updated_at`,
-      [projectItemId, newOwnerUserId],
+      [projectItemId, newOwnerUserId, version],
     );
-    const row = rows[0];
-    if (!row) {
+    if (result.rowCount === 0) {
       throw new NotFoundError(`Project agent guidance for project ${projectItemId} not found`);
     }
-    return mapRow(row);
+    return mapRow(requireSingleRow(result.rows, "project_agent_guidance transfer"));
   },
 };
 

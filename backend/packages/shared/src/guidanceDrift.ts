@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { canonicalizeJson } from "./canonicalJson.js";
 
+export const BEHAVIOR_DRIFT_MIN_RUNS = 3;
+export const BEHAVIOR_DRIFT_WINDOW_DAYS = 14;
+export const BEHAVIOR_DRIFT_INPUT_BYTES = 1024 * 1024;
+
 export type GuidanceDriftSeverity = "blocking" | "warning";
 
 export type GuidanceDriftKind = "permission" | "behavior";
@@ -24,13 +28,37 @@ export type GuidanceDriftSubject = GuidanceDriftPermissionSubject | GuidanceDrif
  * One AI-gateway-reported contradiction between project guidance and the mechanically enforced permission manifest.
  * `subject` is `null` only for a payload stored before subjects existed.
  */
-export interface GuidanceDriftContradiction {
+export interface GuidanceDriftPermissionContradiction {
   kind: "permission";
   subject: GuidanceDriftPermissionSubject | null;
   claim: string;
   guidanceExcerpt: string;
   manifestFacts: string[];
   severity: GuidanceDriftSeverity;
+}
+
+export interface GuidanceDriftBehaviorContradiction {
+  kind: "behavior";
+  subject: GuidanceDriftSubject;
+  claim: string;
+  evidence: { runIds: string[]; count: number };
+  suggestedAllowedLine: string;
+  suggestedNotAllowedLine: string;
+  severity: "warning";
+}
+
+export type GuidanceDriftContradiction = GuidanceDriftPermissionContradiction | GuidanceDriftBehaviorContradiction;
+
+export interface ProjectToolCallGroup {
+  subject: GuidanceDriftSubject;
+  databaseName: string | null;
+  runIds: string[];
+  count: number;
+  toolName?: string;
+}
+
+export interface ProjectToolCallUsageStore<Tx> {
+  listProjectToolCallGroups(tx: Tx, projectItemId: string, since: Date): Promise<ProjectToolCallGroup[]>;
 }
 
 export type GuidanceDriftFindingStatus = "active" | "resolved";
@@ -156,6 +184,50 @@ export function validateGuidanceDriftContradiction(entry: unknown, context: stri
   }
   const { claim, guidanceExcerpt, manifestFacts, severity, kind, subject } = entry as Record<string, unknown>;
 
+  if (kind === "behavior") {
+    const { evidence, suggestedAllowedLine, suggestedNotAllowedLine } = entry as Record<string, unknown>;
+    if (
+      !isNonEmptyString(claim) ||
+      !isNonEmptyString(suggestedAllowedLine) ||
+      !isNonEmptyString(suggestedNotAllowedLine) ||
+      severity !== "warning"
+    ) {
+      throw new Error(`${context}: invalid behavior finding`);
+    }
+    if (
+      typeof evidence !== "object" ||
+      evidence === null ||
+      !("runIds" in evidence) ||
+      !("count" in evidence) ||
+      !Array.isArray(evidence.runIds) ||
+      !evidence.runIds.every(isNonEmptyString) ||
+      evidence.runIds.length === 0 ||
+      new Set(evidence.runIds).size !== evidence.runIds.length ||
+      typeof evidence.count !== "number" ||
+      !Number.isSafeInteger(evidence.count) ||
+      evidence.count < 3 ||
+      evidence.runIds.length > 20 ||
+      evidence.runIds.length > evidence.count
+    ) {
+      throw new Error(`${context}: invalid behavior evidence`);
+    }
+    if (typeof subject !== "object" || subject === null) throw new Error(`${context}: invalid behavior subject`);
+    const candidate = subject as Record<string, unknown>;
+    const parsedSubject =
+      "operation" in candidate
+        ? validatePermissionSubject(subject, context)
+        : validateBehaviorSubject(subject, context);
+    return {
+      kind,
+      subject: parsedSubject,
+      claim,
+      evidence: { runIds: evidence.runIds, count: evidence.count },
+      suggestedAllowedLine,
+      suggestedNotAllowedLine,
+      severity,
+    };
+  }
+
   // A payload stored before `kind`/`subject` existed has neither: it reads as a permission finding
   // without a subject.
   if (kind !== undefined && kind !== "permission") {
@@ -187,6 +259,14 @@ export function validateGuidanceDriftContradiction(entry: unknown, context: stri
     manifestFacts: facts,
     severity,
   };
+}
+
+function validateBehaviorSubject(subject: unknown, context: string): GuidanceDriftBehaviorSubject {
+  if (typeof subject !== "object" || subject === null) throw new Error(`${context}: invalid behavior subject`);
+  const { mcpTool, databaseId } = subject as Record<string, unknown>;
+  if (!isNonEmptyString(mcpTool) || (databaseId !== null && !isNonEmptyString(databaseId)))
+    throw new Error(`${context}: invalid behavior subject`);
+  return { mcpTool, databaseId };
 }
 
 function validatePermissionSubject(subject: unknown, context: string): GuidanceDriftPermissionSubject {

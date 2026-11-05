@@ -27,8 +27,8 @@ describe("systemDatabases reference i18n catalog (issue #236)", () => {
     const catalogs = await registry.getCatalogs("systemDatabases");
     expect(catalogs?.en["database.tasks.name"]).toBe("Tasks");
     expect(catalogs?.cs["database.tasks.name"]).toBe("Úkoly");
-    expect(catalogs?.en["property.tasks.status.option.notDone"]).toBe("Not done");
-    expect(catalogs?.cs["property.tasks.status.option.notDone"]).toBe("Nesplněno");
+    expect(catalogs?.en["property.tasks.status.option.notDone"]).toBe("Open");
+    expect(catalogs?.cs["property.tasks.status.option.notDone"]).toBe("Otevřeno");
 
     expect(catalogs?.en["database.areas.name"]).toBe("Areas");
     expect(catalogs?.cs["database.areas.name"]).toBe("Oblasti");

@@ -199,7 +199,7 @@ describe("POST /internal/complete", () => {
     expect(provider.calls).toHaveLength(0);
   });
 
-  describe.each(["inbox_proposal", "inbox_attachment_extraction"])("%s", (operation) => {
+  describe.each(["inbox_proposal", "inbox_attachment_extraction", "agent_behavior_drift"])("%s", (operation) => {
     it.each([
       ["missing", undefined],
       ["null", null],

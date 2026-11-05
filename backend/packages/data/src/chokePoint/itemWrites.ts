@@ -335,30 +335,26 @@ export async function createItemReportingReplay(
   const database = await databasesStore.getDatabase(client, input.databaseId);
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
   const writer = options.writer ?? SYSTEM_WRITER;
-  // The owning module's pre-write transforms (e.g. Tasks' derived `time`) run before the insert, so the
-  // row and its create hooks store what they return. An idempotency replay returns early below and
-  // discards this result; the transforms must therefore be deterministic.
   let itemProperties = input.properties ?? {};
   const moduleId = database.ownerModuleId;
-  if (moduleId !== null && hasItemPreWriteTransform(moduleId)) {
-    itemProperties = await applyItemPreWriteTransforms(
-      moduleId,
-      {
-        client,
-        database,
-        stored: null,
-        patch: itemProperties,
-        humanWriterUserId: options.humanWriterUserId,
-        writer,
-      },
-      properties,
-    );
-  }
-
   const { item, created } = await itemsStore.insertItemWithReplay(
     client,
     { databaseId: input.databaseId, properties: itemProperties, idempotencyKey: input.idempotencyKey },
     async () => {
+      if (moduleId !== null && hasItemPreWriteTransform(moduleId)) {
+        itemProperties = await applyItemPreWriteTransforms(
+          moduleId,
+          {
+            client,
+            database,
+            stored: null,
+            patch: itemProperties,
+            humanWriterUserId: options.humanWriterUserId,
+            writer,
+          },
+          properties,
+        );
+      }
       itemProperties = { ...itemProperties };
       let today: string | undefined;
       for (const property of properties) {

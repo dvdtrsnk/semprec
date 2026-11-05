@@ -136,6 +136,278 @@ describe("item routes (issue #241)", () => {
     await pool?.end();
   });
 
+  it("enforces Tasks completion and both protected relation pairs through authenticated runtime HTTP", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let runtimeServer: Server | undefined;
+    const failures: unknown[] = [];
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const dispatch = await createDispatcher(runtime, {
+        passwordResetMailer: noopMailer,
+        appBaseUrl: "http://localhost",
+        setupToken: "unused-setup-token",
+        moduleRegistry,
+        blobStorage: new LocalFsBlobStorageWriter(tmpBlobDir),
+        maxFileSizeBytes: 10 * 1024 * 1024,
+      });
+      runtimeServer = createServer(dispatch);
+      await new Promise<void>((resolve) => runtimeServer?.listen(0, "127.0.0.1", resolve));
+      const address = runtimeServer.address();
+      if (!address || typeof address === "string") throw new Error("Expected runtime server");
+      const base = `http://127.0.0.1:${address.port}`;
+      const fixture = await runInTenant(getTenantZeroId(), async () => {
+        const cp = createChokePoint(runtime);
+        const ids = await withTransaction(runtime, async (client) => {
+          const taskDb = await getDatabaseByModuleId(client, "tasks");
+          const eventDb = await getDatabaseByModuleId(client, "events");
+          const peopleDb = await getDatabaseByModuleId(client, "people");
+          if (!taskDb || !eventDb || !peopleDb) throw new Error("Missing system database");
+          return { tasks: taskDb.id, events: eventDb.id, people: peopleDb.id };
+        });
+        const task = await cp.createItem({ databaseId: ids.tasks, properties: { name: "Task", date: "2099-10-22" } });
+        const event = await cp.createItem({ databaseId: ids.events, properties: { name: "Event" } });
+        const inverseTask = await cp.createItem({ databaseId: ids.tasks, properties: { name: "Inverse Task" } });
+        const inverseEvent = await cp.createItem({ databaseId: ids.events, properties: { name: "Inverse Event" } });
+        const person = await cp.createItem({ databaseId: ids.people, properties: { name: "Person" } });
+        return { task, event, inverseTask, inverseEvent, person };
+      });
+      const beforeEdges = await runInTenant(getTenantZeroId(), () =>
+        runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM item_relations"),
+      );
+      const foreignRelationHeaders = await authHeader();
+      for (const [source, key, target] of [
+        [fixture.task.id, "hostEvents", fixture.event.id],
+        [fixture.event.id, "hostedTasks", fixture.task.id],
+        [fixture.task.id, "completedInEvent", fixture.event.id],
+        [fixture.event.id, "completedTasks", fixture.task.id],
+      ] as const) {
+        for (const method of ["PUT", "DELETE"] as const) {
+          const response = await fetch(`${base}/api/items/${source}/relations/${key}/${target}`, { method, headers });
+          expect(response.status).toBe(403);
+          expect(await response.json()).toMatchObject({ error: { code: "owner_violation" } });
+          const randomSource = randomUUID();
+          const foreign = await fetch(`${base}/api/items/${source}/relations/${key}/${target}`, {
+            method,
+            headers: foreignRelationHeaders,
+          });
+          const random = await fetch(`${base}/api/items/${randomSource}/relations/${key}/${target}`, {
+            method,
+            headers: foreignRelationHeaders,
+          });
+          expect(foreign.status).toBe(404);
+          expect(random.status).toBe(404);
+          expect((await foreign.text()).replaceAll(source, "<id>")).toEqual(
+            (await random.text()).replaceAll(randomSource, "<id>"),
+          );
+        }
+      }
+      expect(
+        (
+          await runInTenant(getTenantZeroId(), () =>
+            runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM item_relations"),
+          )
+        ).rows,
+      ).toEqual(beforeEdges.rows);
+      for (const [source, key, target] of [
+        [fixture.event.id, "actionItems", fixture.task.id],
+        [fixture.inverseTask.id, "sourceEvents", fixture.inverseEvent.id],
+      ] as const) {
+        const randomSource = randomUUID();
+        const foreign = await fetch(`${base}/api/items/${source}/relations/${key}/${target}`, {
+          method: "PUT",
+          headers: foreignRelationHeaders,
+        });
+        const random = await fetch(`${base}/api/items/${randomSource}/relations/${key}/${target}`, {
+          method: "PUT",
+          headers: foreignRelationHeaders,
+        });
+        expect(foreign.status).toBe(404);
+        expect(random.status).toBe(404);
+        expect((await foreign.text()).replaceAll(source, "<id>")).toEqual(
+          (await random.text()).replaceAll(randomSource, "<id>"),
+        );
+      }
+      expect(
+        (
+          await runInTenant(getTenantZeroId(), () =>
+            runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM item_relations"),
+          )
+        ).rows,
+      ).toEqual(beforeEdges.rows);
+      for (const [source, key, target, inverseKey] of [
+        [fixture.event.id, "actionItems", fixture.task.id, "sourceEvents"],
+        [fixture.inverseTask.id, "sourceEvents", fixture.inverseEvent.id, "actionItems"],
+      ] as const) {
+        expect(
+          (await fetch(`${base}/api/items/${source}/relations/${key}/${target}`, { method: "PUT", headers })).status,
+        ).toBe(200);
+        for (const [id, propertyKey, targetItemId] of [
+          [source, key, target],
+          [target, inverseKey, source],
+        ] as const) {
+          const response = await fetch(`${base}/api/items/${id}/relations?propertyKey=${propertyKey}`, { headers });
+          expect(response.status).toBe(200);
+          const body = z
+            .object({ relations: z.array(z.object({ propertyKey: z.string(), targetItemId: z.string() })) })
+            .parse(await response.json());
+          expect(body.relations).toEqual([{ propertyKey, targetItemId }]);
+        }
+      }
+      expect(
+        (
+          await fetch(`${base}/api/items/${fixture.task.id}/relations/people/${fixture.person.id}`, {
+            method: "PUT",
+            headers,
+          })
+        ).status,
+      ).toBe(200);
+      const itemUrl = `${base}/api/items/${fixture.task.id}`;
+      const itemSchema = z.object({ updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) });
+      const before = itemSchema.parse(await (await fetch(itemUrl, { headers })).json());
+      const foreignHeaders = { ...(await authHeader()), "Content-Type": "application/json" };
+      const foreign = await fetch(itemUrl, {
+        method: "PATCH",
+        headers: foreignHeaders,
+        body: JSON.stringify({ properties: { status: "done" }, ifVersion: before.updatedAt }),
+      });
+      const randomId = randomUUID();
+      const random = await fetch(`${base}/api/items/${randomId}`, {
+        method: "PATCH",
+        headers: foreignHeaders,
+        body: JSON.stringify({ properties: { status: "done" }, ifVersion: before.updatedAt }),
+      });
+      expect(foreign.status).toBe(404);
+      expect(random.status).toBe(404);
+      expect((await foreign.text()).replaceAll(fixture.task.id, "<id>")).toEqual(
+        (await random.text()).replaceAll(randomId, "<id>"),
+      );
+      const refused = await fetch(itemUrl, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({
+          properties: { status: "done", completedOn: "2999-01-01" },
+          ifVersion: before.updatedAt,
+        }),
+      });
+      expect(refused.status).toBe(400);
+      expect(await refused.json()).toMatchObject({
+        error: { code: "validation_failed", details: { field: "completedOn" } },
+      });
+      expect(itemSchema.parse(await (await fetch(itemUrl, { headers })).json())).toEqual(before);
+      const done = await fetch(itemUrl, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties: { status: "done" }, ifVersion: before.updatedAt }),
+      });
+      expect(done.status).toBe(200);
+      const completed = itemSchema.parse(await done.json());
+      expect(completed.properties).toMatchObject({
+        status: "done",
+        date: "2099-10-22",
+        completedOn: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+        completedAt: expect.any(String),
+      });
+      const rollover = await runInTenant(getTenantZeroId(), async () => {
+        const cp = createChokePoint(runtime);
+        const task = await cp.createItem({
+          databaseId: fixture.task.databaseId,
+          properties: { name: "Moved", date: "2000-01-01", timeFrom: "10:00", timeTo: "11:00" },
+        });
+        const view = await cp.createView({
+          databaseId: fixture.task.databaseId,
+          type: "table",
+          name: "Tasks",
+          config: {},
+        });
+        return { task, view };
+      });
+      const movedResponse = await fetch(`${base}/api/items/${rollover.task.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties: { date: "2000-01-02" }, ifVersion: rollover.task.updatedAt }),
+      });
+      expect(movedResponse.status).toBe(200);
+      const moved = itemSchema.parse(await movedResponse.json());
+      const expected = { since: "2000-01-01", sinceTime: { from: "10:00", to: "11:00" } };
+      expect(moved.properties).toMatchObject(expected);
+      expect(
+        itemSchema.parse(await (await fetch(`${base}/api/items/${rollover.task.id}`, { headers })).json()).properties,
+      ).toMatchObject(expected);
+      const missingItem = randomUUID();
+      const foreignGet = await fetch(`${base}/api/items/${rollover.task.id}`, { headers: foreignHeaders });
+      const randomGet = await fetch(`${base}/api/items/${missingItem}`, { headers: foreignHeaders });
+      expect(foreignGet.status).toBe(404);
+      expect(randomGet.status).toBe(404);
+      expect((await foreignGet.text()).replaceAll(rollover.task.id, "<id>")).toEqual(
+        (await randomGet.text()).replaceAll(missingItem, "<id>"),
+      );
+      const viewResponse = await fetch(`${base}/api/views/${rollover.view.id}/query`, {
+        method: "POST",
+        headers,
+        body: "{}",
+      });
+      expect(viewResponse.status).toBe(200);
+      const viewBody = z
+        .object({ items: z.array(z.object({ id: z.string(), properties: z.record(z.string(), z.unknown()) })) })
+        .parse(await viewResponse.json());
+      expect(viewBody.items.find((item) => item.id === rollover.task.id)?.properties).toMatchObject(expected);
+      const missingView = randomUUID();
+      const foreignView = await fetch(`${base}/api/views/${rollover.view.id}/query`, {
+        method: "POST",
+        headers: foreignHeaders,
+        body: "{}",
+      });
+      const randomView = await fetch(`${base}/api/views/${missingView}/query`, {
+        method: "POST",
+        headers: foreignHeaders,
+        body: "{}",
+      });
+      expect(foreignView.status).toBe(404);
+      expect(randomView.status).toBe(404);
+      expect((await foreignView.text()).replaceAll(rollover.view.id, "<id>")).toEqual(
+        (await randomView.text()).replaceAll(missingView, "<id>"),
+      );
+      for (const properties of [
+        { since: "1999-01-01" },
+        { sinceTime: { from: "08:00", to: null } },
+        { completedAt: "2020-01-01T00:00:00Z" },
+      ]) {
+        const response = await fetch(`${base}/api/items/${rollover.task.id}`, {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({ properties, ifVersion: moved.updatedAt }),
+        });
+        expect(response.status).toBe(403);
+        expect(await response.json()).toMatchObject({ error: { code: "owner_violation" } });
+      }
+      expect(
+        itemSchema.parse(await (await fetch(`${base}/api/items/${rollover.task.id}`, { headers })).json()),
+      ).toEqual(moved);
+    } catch (error) {
+      failures.push(error);
+    }
+    if (runtimeServer)
+      try {
+        await new Promise<void>((resolve, reject) =>
+          runtimeServer?.close((error) => (error ? reject(error) : resolve())),
+        );
+      } catch (error) {
+        failures.push(error);
+      }
+    try {
+      await runtime.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "REST test and settlement failed");
+  });
+
   it("validates Areas icon and color through authenticated PATCH", async () => {
     await seedSystem(pool, createViewTypeRegistry());
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };

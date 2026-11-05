@@ -422,6 +422,14 @@ export type { BlobStorageWriter, WriteStreamOptions } from "./mail/blobStorage.j
 export { LocalFsBlobStorageWriter, MaxBytesExceededError, resolveBlobStorageDir } from "./mail/blobStorage.js";
 
 export * from "./tasks/taskRecurrenceRule.js";
+export { taskDisplayDay } from "./tasks/taskDisplayDay.js";
+export { taskSinceRule } from "./tasks/taskSinceRule.js";
+export { projectToolCallUsageStore } from "./guidanceDrift/projectToolCallUsageStore.js";
+export { loadGuidanceSections, saveGuidanceSections } from "./projectAgentGuidance/projectAgentGuidanceSections.js";
+export {
+  createProjectAgentGuidanceReadRouteHandler,
+  createProjectAgentGuidanceSaveRouteHandler,
+} from "./projectAgentGuidance/projectAgentGuidanceRouteHandlers.js";
 export { computeNextDueDate } from "./tasks/nextDueDate.js";
 export * from "./tasks/taskRecurrenceStore.js";
 export { advanceTaskRecurrence, type AdvanceTaskRecurrenceInput } from "./tasks/advanceTaskRecurrence.js";

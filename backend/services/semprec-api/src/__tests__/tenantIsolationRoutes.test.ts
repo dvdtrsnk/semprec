@@ -795,6 +795,34 @@ async function createInviteAsAdmin(): Promise<string> {
 }
 
 const ROUTE_CASES: Record<string, RouteCase> = {
+  "project guidance read": async () => {
+    const own = await sendOk(b.member, { method: "GET", path: `/api/projects/${b.projectItemId}/agent-guidance` });
+    expect(own).toContain('"sections"');
+    const result = await expectForeignLikeRandom(b.member, [a.projectItemId], ([id]) => ({
+      method: "GET",
+      path: `/api/projects/${id}/agent-guidance`,
+    }));
+    expect(result.status).toBe(404);
+  },
+  "project guidance save": () =>
+    leavesAUnchanged(async () => {
+      const body = {
+        sections: { purpose: "Isolation", allowed: "", notAllowed: "", generalInstructions: "" },
+        expectedUpdatedAt: null,
+      };
+      const own = await sendOk(b.member, {
+        method: "PUT",
+        path: `/api/projects/${b.projectItemId}/agent-guidance`,
+        body,
+      });
+      expect(own).toContain("Isolation");
+      const result = await expectForeignLikeRandom(b.member, [a.projectItemId], ([id]) => ({
+        method: "PUT",
+        path: `/api/projects/${id}/agent-guidance`,
+        body,
+      }));
+      expect(result.status).toBe(404);
+    }),
   "server identity": async () => {
     const answer = await send(null, { method: "GET", path: "/api/server-info" });
     expect(answer.status).toBe(200);

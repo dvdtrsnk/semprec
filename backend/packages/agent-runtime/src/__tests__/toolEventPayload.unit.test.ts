@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GENERIC_OPERATION_NAMES } from "@semprec/shared";
+import { GENERIC_OPERATION_NAMES, parseToolEventPayload as sharedParser } from "@semprec/shared";
 import { parseToolEventPayload } from "../toolEventPayload.js";
 
 const use = { toolCallId: "call-1", name: "item_patch", arguments: { itemId: "item-1" } };
@@ -7,6 +7,9 @@ const result = { toolCallId: "call-1", name: "item_patch", result: { content: []
 const mcp = { toolRegistrationId: "reg-1", serverItemId: "server-1", serverName: "Server", toolName: "search" };
 
 describe("parseToolEventPayload", () => {
+  it("uses the same shared parser through the runtime compatibility export", () => {
+    expect(parseToolEventPayload).toBe(sharedParser);
+  });
   it.each(GENERIC_OPERATION_NAMES)("accepts the canonical operation %s", (operation) => {
     expect(parseToolEventPayload("tool_use", { ...use, operation })).toEqual({ ...use, operation });
   });

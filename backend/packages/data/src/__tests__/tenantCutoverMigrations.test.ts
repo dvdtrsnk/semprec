@@ -537,6 +537,7 @@ describe("property defaults tenant cutover", () => {
         { key: "notDone" },
         { key: "done" },
         { key: "wontDo" },
+        { key: "missed" },
       ]);
     }
     const before = await snapshot();

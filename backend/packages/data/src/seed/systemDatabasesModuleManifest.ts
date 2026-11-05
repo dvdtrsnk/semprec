@@ -22,6 +22,10 @@ export {
   createJournalPeriodEnsureRouteHandler,
 } from "../journal/journalRouteHandlers.js";
 export { backfillTaskTimeProperties } from "../tasks/deriveTaskTime.js";
+export {
+  createProjectAgentGuidanceReadRouteHandler,
+  createProjectAgentGuidanceSaveRouteHandler,
+} from "../projectAgentGuidance/projectAgentGuidanceRouteHandlers.js";
 
 export {
   createCreateTranscriptionRouteHandler,
@@ -100,7 +104,7 @@ export const manifest: ModuleManifest = {
     {
       key: TASKS_MODULE_ID,
       name: "Tasks",
-      searchFields: ["name", "status", "project"],
+      searchFields: ["name", "status", "project", "description"],
       icon: "checkmark-circle",
       color: "#34C759",
       overviewOrder: null,
@@ -199,6 +203,20 @@ export const manifest: ModuleManifest = {
     },
   ],
   customRoutes: [
+    {
+      name: "readProjectAgentGuidance",
+      method: "GET",
+      path: "/api/projects/:id/agent-guidance",
+      handlerExport: "createProjectAgentGuidanceReadRouteHandler",
+      justification: "single-consumer-read",
+    },
+    {
+      name: "saveProjectAgentGuidance",
+      method: "PUT",
+      path: "/api/projects/:id/agent-guidance",
+      handlerExport: "createProjectAgentGuidanceSaveRouteHandler",
+      justification: "transactional-semantics",
+    },
     {
       name: "ensureJournalPeriodDoc",
       method: "PUT",

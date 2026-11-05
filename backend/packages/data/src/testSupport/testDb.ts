@@ -21,6 +21,7 @@ export {
   withTenantTransaction,
 } from "./tenantFixtures.js";
 export { createTestModuleItem, createTestProjectItem } from "./projectFixtures.js";
+export { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 export { stubDnsLookup, type DnsLookupStub } from "./dnsLookupStub.js";
 export { writePageTextBlocks } from "./pageFixtures.js";
 // Test-only: lets a composition-root test outside this package observe the write hook contexts

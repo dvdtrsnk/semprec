@@ -8,6 +8,7 @@ import {
 import { requireSingleRow } from "../db/pool.js";
 import { guidanceDriftHeartbeatStore } from "../guidanceDrift/guidanceDriftHeartbeatStore.js";
 import { logger } from "../tenancy/logger.js";
+import { projectAgentGuidanceVersionStore } from "../projectAgentGuidanceVersionStore.js";
 
 /** The legacy labels of the `agents` property text, each with the section it fills (issue #1449). */
 const LEGACY_MARKERS: ReadonlyArray<{ label: string; key: ProjectAgentGuidanceSectionKey }> = [
@@ -75,13 +76,22 @@ export async function seedProjectAgentGuidanceFromLegacyText(
   }
 
   // The owner is set only on the first insert: `owner_user_id` never changes through this path (only `transfer` may).
+  await projectAgentGuidanceVersionStore.lock(client, input.projectItemId);
+  const existing = await client.query<{ project_item_id: string }>(
+    "SELECT project_item_id FROM project_agent_guidance WHERE project_item_id = $1 FOR UPDATE",
+    [input.projectItemId],
+  );
+  if (existing.rows.length) return false;
+  const version = await projectAgentGuidanceVersionStore.propose(client, input.projectItemId, null);
   const inserted = await client.query(
     `INSERT INTO project_agent_guidance (project_item_id, owner_user_id, markdown, updated_at)
-     VALUES ($1, $2, $3, now())
+     VALUES ($1, $2, $3, $4)
      ON CONFLICT (project_item_id) DO NOTHING`,
-    [input.projectItemId, input.ownerUserId, markdown],
+    [input.projectItemId, input.ownerUserId, markdown, version],
   );
   if ((inserted.rowCount ?? 0) === 0) return false;
+
+  await projectAgentGuidanceVersionStore.record(client, input.projectItemId, version);
 
   await guidanceDriftHeartbeatStore.upsertDriftHeartbeat(client, input.projectItemId);
   return true;
