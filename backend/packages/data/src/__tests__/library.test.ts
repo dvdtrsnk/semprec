@@ -71,7 +71,8 @@ vi.mock("undici", async (importOriginal) => {
   return {
     ...actual,
     async fetch(...args: Parameters<typeof actual.fetch>) {
-      const url = new URL(args[0].toString());
+      const input = args[0];
+      const url = typeof input === "string" ? new URL(input) : input instanceof URL ? input : new URL(input.url);
       if (coverTransport.active && ["covers.openlibrary.org", "image.tmdb.org"].includes(url.hostname)) {
         coverTransport.urls.push(url.toString());
         return new actual.Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), {

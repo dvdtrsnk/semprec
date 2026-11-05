@@ -176,8 +176,14 @@ export async function handleProcessLibraryMetadataTask(
   let failureCode: ItemAutomationErrorCode = "sourceUnavailable";
   const configuredSource = z.enum(["openLibrary", "googleBooks", "tmdb"]).safeParse(payload.config.source);
   let failureSource: LibraryAutomationSource | null = configuredSource.success ? configuredSource.data : null;
+  let result: LibraryMetadataFetchResult;
   try {
-    const result = await fetcher(item, payload.config);
+    result = await fetcher(item, payload.config);
+  } catch (error) {
+    if (error instanceof LibraryMetadataConfigurationError) throw error;
+    result = { status: "error", errorCode: "sourceUnavailable" };
+  }
+  try {
     failureSource = result.source ?? failureSource;
     if (result.status === "error") {
       failureCode = result.errorCode ?? "sourceUnavailable";
@@ -296,12 +302,11 @@ export async function handleProcessLibraryMetadataTask(
       );
       callbackFinished = true;
     });
-  } catch (error) {
+  } catch {
     if (committed) {
       logger.error("Library metadata committed but transaction release failed");
       return;
     }
-    if (error instanceof LibraryMetadataConfigurationError) throw error;
     const message = "Library metadata processing failed";
     // Issue #149: notification lands in the same transaction as the error record, so a
     // replayed job (same job id, same `transitionInstance`) never duplicates it.
