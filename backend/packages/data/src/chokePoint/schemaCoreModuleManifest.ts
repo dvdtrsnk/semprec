@@ -22,6 +22,7 @@ export {
 } from "../push/pushRouteHandlers.js";
 export { createAiUsageRouteHandler, createAiUsageSummaryRouteHandler } from "../aiGateway/aiUsageRouteHandler.js";
 export { createSystemHealthRouteHandler } from "../observability/systemHealthRouteHandler.js";
+export { createSempStatusRouteHandler } from "../semp/sempStatusRouteHandler.js";
 export {
   createGetNotificationPreferencesRouteHandler,
   createPatchNotificationPreferencesRouteHandler,
@@ -84,6 +85,13 @@ export const manifest: ModuleManifest = {
   ],
   migrations: ["0001_core_schema.sql"],
   customRoutes: [
+    {
+      name: "sempStatus",
+      method: "GET",
+      path: "/api/semp-status",
+      handlerExport: "createSempStatusRouteHandler",
+      justification: "single-consumer-read",
+    },
     {
       name: "setHeartbeatEnabled",
       method: "PATCH",

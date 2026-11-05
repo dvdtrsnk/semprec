@@ -284,6 +284,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "createProjectAgentGuidanceSaveRouteHandler",
   "createRelationWithClient",
   "createRerunTranscriptionRouteHandler",
+  "createSempStatusRouteHandler",
   "createSemprecTickAction",
   "createSession",
   "createSetHeartbeatEnabledRouteHandler",

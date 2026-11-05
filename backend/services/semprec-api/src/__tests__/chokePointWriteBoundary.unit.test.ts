@@ -57,6 +57,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "ai usage report": "packages/data/src/aiGateway/aiUsageRouteHandler.ts",
   "ai usage summary": "packages/data/src/aiGateway/aiUsageRouteHandler.ts",
   "system health report": "packages/data/src/observability/systemHealthRouteHandler.ts",
+  "semp status": "packages/data/src/semp/sempStatusRouteHandler.ts",
   "request account export": "services/semprec-api/src/accountHandler.ts",
   "list account exports": "services/semprec-api/src/accountHandler.ts",
   "download account export": "services/semprec-api/src/accountHandler.ts",

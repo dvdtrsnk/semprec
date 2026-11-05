@@ -74,6 +74,7 @@ export type { CreateViewInput, PatchViewInput } from "./chokePoint/viewsStore.js
 export * from "./chokePoint/viewTypeRegistry.js";
 export { manifest as schemaCoreModuleManifest } from "./chokePoint/schemaCoreModuleManifest.js";
 export { createSetHeartbeatEnabledRouteHandler } from "./scheduler/setHeartbeatEnabledRoute.js";
+export { createSempStatusRouteHandler } from "./semp/sempStatusRouteHandler.js";
 
 export * from "./views/filterTree.js";
 export { compileFilterNode } from "./views/filterCompiler.js";

@@ -1069,6 +1069,9 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   "schema projection": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/schema" });
   },
+  "semp status": async () => {
+    await expectExcludesA(b.member, { method: "GET", path: "/api/semp-status" });
+  },
   "ai usage report": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/ai-usage?from=2026-01-01&to=2026-12-31" });
   },

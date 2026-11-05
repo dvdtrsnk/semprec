@@ -275,6 +275,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "semp status",
+    method: "GET",
+    path: "/api/semp-status",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "schema projection",
     method: "GET",
     path: "/api/schema",
