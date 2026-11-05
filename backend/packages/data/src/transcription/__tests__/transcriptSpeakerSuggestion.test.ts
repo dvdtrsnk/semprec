@@ -321,7 +321,8 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       { speaker: "SPEAKER_00", text: "One two three four five six seven", startsAt: 7, endsAt: 8 },
       { speaker: "SPEAKER_00", text: "One two three four five six seven eight", startsAt: 8, endsAt: 9 },
       { speaker: "SPEAKER_00", text: "One two three four five six seven eight nine", startsAt: 9, endsAt: 10 },
-      { speaker: "SPEAKER_01", text: "One eligible quote has exactly six words", startsAt: 10, endsAt: 11 },
+      { speaker: "SPEAKER_00", text: "We discussed this proposal with the team ".repeat(6), startsAt: 10, endsAt: 11 },
+      { speaker: "SPEAKER_01", text: "One eligible quote has exactly six words", startsAt: 11, endsAt: 12 },
     ];
     await withTransaction(pool, (client) => writeComputed(client, transcriptsId, transcriptId, "segments", segments));
     const result = await context();
@@ -331,12 +332,12 @@ describe("Speaker mapping suggestions (issue #185)", () => {
         ordinal: 1,
         firstStartsAt: 0,
         quotes: [
-          { segmentIndex: 7, text: segments[7]!.text },
           { segmentIndex: 8, text: segments[8]!.text },
           { segmentIndex: 9, text: segments[9]!.text },
+          { segmentIndex: 10, text: segments[10]!.text.slice(0, 140) },
         ],
       },
-      { speaker: "SPEAKER_01", ordinal: 2, firstStartsAt: 1, quotes: [{ segmentIndex: 10, text: segments[10]!.text }] },
+      { speaker: "SPEAKER_01", ordinal: 2, firstStartsAt: 1, quotes: [{ segmentIndex: 11, text: segments[11]!.text }] },
       { speaker: "SPEAKER_02", ordinal: 3, firstStartsAt: 3, quotes: [] },
     ]);
   });

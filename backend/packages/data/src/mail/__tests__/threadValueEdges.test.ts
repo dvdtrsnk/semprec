@@ -810,8 +810,10 @@ describe("Threads single-value edges", () => {
           }
           release();
           const writerError = await writerOutcome;
-          if (mutation === "rollback") expect(writerError).toBe(rollback);
-          else if (writerError) failures.push(writerError);
+          if (mutation === "rollback") {
+            if (writerError !== rollback)
+              failures.push(new Error("Mutation did not fail with the expected rollback", { cause: writerError }));
+          } else if (writerError) failures.push(writerError);
           if (merging) {
             const mergeError = await merging;
             if (mergeError) failures.push(mergeError);
