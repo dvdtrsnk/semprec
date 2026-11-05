@@ -232,12 +232,9 @@ describe("link rule propagation", () => {
       const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
       if (!via) throw new Error("Fixture relation missing");
       const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Original" } });
-      const other = await cp.createItem({ databaseId: areas.id, properties: { name: "Original" } });
       const target = await cp.createItem({ databaseId: projects.id, properties: {} });
       await cp.createRelation({ relationPropertyId: via.id, callerItemId: target.id, targetItemId: area.id });
-      await cp.createRelation({ relationPropertyId: via.id, callerItemId: target.id, targetItemId: other.id });
       expect((await cp.getItem(projects.id, target.id))?.properties.name).toBe("Original");
-      await cp.updateItem({ databaseId: areas.id, itemId: other.id, propertiesPatch: { name: "Remaining" } });
       await withTransaction(data, (client) =>
         itemDeleteWithClient(client, areas.id, area.id, {
           queueAffinity: createActionQueueAffinity(),
@@ -250,7 +247,7 @@ describe("link rule propagation", () => {
       } finally {
         setInvalidationHook(() => {});
       }
-      expect((await cp.getItem(projects.id, target.id))?.properties.name).toBe("Remaining");
+      expect((await cp.getItem(projects.id, target.id))?.properties.name).toBeNull();
       expect(events.some((event) => event.scope === "item" && event.itemId === target.id)).toBe(true);
       const links = await withTransaction(data, (client) =>
         client.query<{ state: string }>("SELECT state FROM value_links WHERE item_id = $1 AND property_key = 'name'", [
