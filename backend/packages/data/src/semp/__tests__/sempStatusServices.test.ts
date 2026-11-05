@@ -69,6 +69,27 @@ describe("Semp status services", () => {
     const first = await mailbox(own, "Personal", "gmail");
     const second = await mailbox(own, "Work", "outlook");
     const foreign = await mailbox(other, "Foreign", "gmail");
+    const foreignUser = await runAsSystem("create foreign service user", () =>
+      createUser(admin, {
+        tenantId: other,
+        email: `${randomUUID()}@example.test`,
+        passwordHash: "unused",
+        locale: "en",
+      }),
+    );
+    const foreignProblem = await runInTenant(other, () =>
+      withTransaction(data, (client) =>
+        raiseProblem(client, {
+          userId: foreignUser.id,
+          category: "agents",
+          kind: "agentHeartbeat",
+          severity: "warning",
+          sourceTable: "items",
+          sourceId: foreign.id,
+          dedupeKey: `agents:foreign:${foreign.id}`,
+        }),
+      ),
+    );
     const since = new Date("2026-01-02T03:04:05Z");
     await runInTenant(own, () =>
       withTransaction(data, (client) =>
@@ -111,6 +132,7 @@ describe("Semp status services", () => {
     });
     expect(report.services.some((service) => service.key.startsWith("calendar"))).toBe(false);
     expect(JSON.stringify(report)).not.toContain(foreign.id);
+    expect(JSON.stringify(report)).not.toContain(foreignProblem.problemId);
   });
   it("exposes the latest restore outcome without operator failure detail", async () => {
     await runAsSystem("record restore tests", async () => {
