@@ -458,7 +458,7 @@ async function createRetrySweepHeartbeat(tenant: Tenant): Promise<string> {
         name: `Isolation ${randomUUID()}`,
         rule: { kind: "dailyTime", at: "09:00" },
         actionId: LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID,
-        actionConfig: { databaseId: database.id, source: "test", coverKey: "cover" },
+        actionConfig: { databaseId: database.id, source: "tmdb", coverKey: "cover" },
       }),
     );
   });
@@ -677,7 +677,7 @@ const cases: Record<string, TaskCase> = {
     tenancy: "tenant",
     async seed(tenant) {
       const { databaseId, itemId } = await createItemWithAutomation(tenant);
-      return { itemId, databaseId, config: { source: "test", coverKey: "cover" } };
+      return { itemId, databaseId, config: { source: "tmdb", coverKey: "cover" } };
     },
     async expectDone(tenant, payload) {
       expect(

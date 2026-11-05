@@ -17,6 +17,11 @@ import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsA
 import { raiseProblem } from "../semp/sempProblemsStore.js";
 import { createDatabase } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import {
+  ensureItemAutomation,
+  markItemAutomationError,
+  markItemAutomationNotFound,
+} from "../library/itemAutomationStore.js";
 import { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
 
 /**
@@ -1448,3 +1453,131 @@ it("upgrades populated heartbeats and runs through origin and retry migrations",
     });
   if (failure) throw failure.error;
 }, 120_000);
+
+it.skipIf(!process.env.BATCH29_BRIDGE_READER)(
+  "preserves older automation rows and reads W outcomes with the captured bridge reader",
+  async () => {
+    const url = process.env.TEST_DATABASE_URL;
+    const readerPath = process.env.BATCH29_BRIDGE_READER;
+    if (!url || !readerPath || !path.isAbsolute(readerPath))
+      throw new Error("Missing test database URL or absolute bridge reader path");
+    const { pathToFileURL } = await import("node:url");
+    const loaded: unknown = await import(/* @vite-ignore */ pathToFileURL(readerPath).href);
+    if (
+      typeof loaded !== "object" ||
+      loaded === null ||
+      !("getItemAutomation" in loaded) ||
+      typeof loaded.getItemAutomation !== "function"
+    ) {
+      throw new Error("Bridge reader export missing");
+    }
+    const name = `batch29_bridge_${randomUUID().replaceAll("-", "")}`;
+    const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+    const dir = await mkdtemp(path.join(tmpdir(), "semprec-bridge-migrations-"));
+    const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+    const migration = "0138_item_automation_not_found_and_source.sql";
+    let scratch: Pool | undefined;
+    let created = false;
+    let failure: { error: unknown } | undefined;
+    try {
+      await admin.query(`CREATE DATABASE "${name}"`);
+      created = true;
+      const scratchUrl = new URL(url);
+      scratchUrl.pathname = `/${name}`;
+      scratch = new Pool({
+        connectionString: scratchUrl.toString(),
+        connectionTimeoutMillis: 5000,
+        statement_timeout: 30000,
+      });
+      for (const file of (await readdir(migrations))
+        .filter((entry) => entry.endsWith(".sql") && entry < migration)
+        .sort()) {
+        await copyFile(path.join(migrations, file), path.join(dir, file));
+      }
+      await runMigrations(scratch, dir);
+      const tenants = await scratch.query<{ id: string }>("SELECT id FROM tenants");
+      const tenantId = tenants.rows[0]?.id;
+      if (!tenantId || tenants.rows.length !== 1) throw new Error("Expected tenant");
+      const oldId = randomUUID();
+      await scratch.query(
+        "INSERT INTO item_automation (tenant_id, item_id, status, error_code) VALUES ($1, $2, 'error', 'unknown')",
+        [tenantId, oldId],
+      );
+      const before = await scratch.query<{ row: unknown }>(
+        "SELECT to_jsonb(a) AS row FROM item_automation a WHERE item_id = $1",
+        [oldId],
+      );
+      await copyFile(path.join(migrations, migration), path.join(dir, migration));
+      await runMigrations(scratch, dir);
+      const after = await scratch.query<{ row: unknown }>(
+        "SELECT to_jsonb(a) - 'source' AS row FROM item_automation a WHERE item_id = $1",
+        [oldId],
+      );
+      expect(after.rows).toEqual(before.rows);
+      const cases = [
+        { status: "notFound", code: null },
+        { status: "error", code: "sourceUnavailable" },
+        { status: "error", code: "rateLimited" },
+        { status: "error", code: "invalidResponse" },
+      ] as const;
+      const ids: string[] = [];
+      for (const entry of cases) {
+        const id = randomUUID();
+        ids.push(id);
+        const pool = scratch;
+        await runInTenant(tenantId, () =>
+          withTransaction(pool, async (client) => {
+            await ensureItemAutomation(client, id);
+            if (entry.status === "notFound") await markItemAutomationNotFound(client, id, "openLibrary");
+            else
+              await markItemAutomationError(
+                client,
+                id,
+                "Library metadata processing failed",
+                entry.code,
+                "openLibrary",
+              );
+          }),
+        );
+      }
+      const client = await scratch.connect();
+      try {
+        for (const [index, id] of [oldId, ...ids].entries()) {
+          const value: unknown = await Reflect.apply(loaded.getItemAutomation, undefined, [client, id]);
+          const expected =
+            index === 0
+              ? { status: "error", errorCode: "unknown" }
+              : { status: cases[index - 1]?.status, errorCode: cases[index - 1]?.code };
+          expect(value).toMatchObject({ itemId: id, ...expected });
+        }
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      failure = { error };
+    }
+    const cleanupErrors: unknown[] = [];
+    for (const cleanup of [
+      async () => scratch?.end(),
+      async () => {
+        if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      },
+      async () => admin.end(),
+      async () => rm(dir, { recursive: true, force: true }),
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+        "Bridge fixture cleanup failed",
+        { cause: failure?.error },
+      );
+    if (failure) throw failure.error;
+  },
+  120_000,
+);

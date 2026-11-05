@@ -1,7 +1,14 @@
 import { z } from "zod";
+import { isBaselineOutboundUrl } from "../net/storedOutboundUrl.js";
 import type { ItemRow } from "../types.js";
 import type { LibraryMetadataFetchResult } from "./libraryMetadataJob.js";
-import { fetchLibraryJson, rankLibraryMatch, type LibraryHttpFetch } from "./openLibraryFetcher.js";
+import {
+  downloadLibraryCover,
+  fetchLibraryJson,
+  rankLibraryMatch,
+  type LibraryCoverDownload,
+  type LibraryHttpFetch,
+} from "./openLibraryFetcher.js";
 
 const responseSchema = z.object({
   items: z
@@ -19,7 +26,11 @@ const responseSchema = z.object({
     .optional(),
 });
 
-export async function fetchGoogleBooks(item: ItemRow, fetcher: LibraryHttpFetch): Promise<LibraryMetadataFetchResult> {
+export async function fetchGoogleBooks(
+  item: ItemRow,
+  fetcher: LibraryHttpFetch,
+  coverDownload: LibraryCoverDownload = downloadLibraryCover,
+): Promise<LibraryMetadataFetchResult> {
   if (typeof item.properties.name !== "string" || item.properties.name.trim() === "")
     return { status: "notFound", source: "googleBooks" };
   const url = new URL("https://www.googleapis.com/books/v1/volumes");
@@ -39,7 +50,13 @@ export async function fetchGoogleBooks(item: ItemRow, fetcher: LibraryHttpFetch)
       author: info.authors?.[0],
       year: year ? Number(year) : undefined,
       isbn: info.industryIdentifiers?.find((entry) => entry.type === "ISBN_13" || entry.type === "ISBN_10")?.identifier,
-      coverUrl: info.imageLinks?.thumbnail,
+      coverUrl:
+        info.imageLinks?.thumbnail &&
+        isBaselineOutboundUrl(info.imageLinks.thumbnail) &&
+        new URL(info.imageLinks.thumbnail).search === "" &&
+        new URL(info.imageLinks.thumbnail).hash === ""
+          ? info.imageLinks.thumbnail
+          : undefined,
     };
   });
   docs.sort(
@@ -53,6 +70,7 @@ export async function fetchGoogleBooks(item: ItemRow, fetcher: LibraryHttpFetch)
     author: best.author,
     year: best.year,
     isbn: best.isbn,
-    candidates: docs.slice(1, 4),
+    cover: best.coverUrl ? await coverDownload(best.coverUrl) : undefined,
+    candidates: docs.slice(1, 4).map(({ title, author, year, coverUrl }) => ({ title, author, year, coverUrl })),
   };
 }

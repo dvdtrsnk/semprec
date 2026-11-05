@@ -1,8 +1,12 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { runOnce } from "@semprec/queue";
 import { runAsSystem, runInTenant } from "@semprec/shared";
+import { createLibraryMetadataFetcher } from "../library/libraryMetadataFetcher.js";
 import { runLibraryHeartbeatConfigCutoverMigration } from "../library/libraryHeartbeatConfigCutoverMigration.js";
 import { runLibraryBooksYearIsbnCutoverMigration } from "../library/libraryBooksYearIsbnCutoverMigration.js";
 import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
@@ -18,6 +22,8 @@ import {
 } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
+import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
+import { LocalFsBlobStorageWriter } from "../mail/blobStorage.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { ForbiddenError, ValidationError } from "../errors.js";
@@ -347,6 +353,57 @@ describe("library module (issue #25)", () => {
     expect(await read()).toEqual(first);
   });
 
+  it("rejects unsupported source before fetching, creating automation or enqueueing", async () => {
+    const databaseId = await getDatabaseIdByModule("books");
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Book" } }));
+    const config = { databaseId, source: "unsupported-private-value", coverKey: "cover" };
+    const context = { heartbeatId: "heartbeat", projectItemId: "project", itemId: item.id };
+    const error = "Unsupported library metadata source configuration";
+    const fetcher = createLibraryMetadataFetcher({
+      fetch: async () => {
+        throw new Error("Unexpected fetch");
+      },
+    });
+    await expect(fetcher(item, config)).rejects.toThrow(error);
+    await expect(
+      inTenantZero(() =>
+        withTransaction(pool, (client) =>
+          enqueueLibraryMetadataProcessing(client, { itemId: item.id, databaseId, config }),
+        ),
+      ),
+    ).rejects.toThrow(error);
+    await expect(createLibraryMetadataTriggerAction(pool)(config, context)).rejects.toThrow(error);
+    await expect(createLibraryMetadataRetrySweepAction(pool)(config, context)).rejects.toThrow(error);
+    expect(await withTransaction(pool, (client) => getItemAutomation(client, item.id))).toBeNull();
+    const { rows } = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE key = $1",
+      [`library-metadata:${item.id}`],
+    );
+    expect(rows[0]?.count).toBe("0");
+  });
+
+  it("rejects a legacy invalid queued job without altering its existing automation", async () => {
+    const databaseId = await getDatabaseIdByModule("books");
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Book" } }));
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+    const before = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    let invoked = false;
+    await expect(
+      inTenantZero(() =>
+        handleProcessLibraryMetadataTask(
+          pool,
+          { itemId: item.id, databaseId, config: { source: "bad", coverKey: "cover" } },
+          async () => {
+            invoked = true;
+            return {};
+          },
+        ),
+      ),
+    ).rejects.toThrow("Unsupported library metadata source configuration");
+    expect(invoked).toBe(false);
+    expect(await withTransaction(pool, (client) => getItemAutomation(client, item.id))).toEqual(before);
+  });
+
   it("runtime-validates every library-grid contract field", () => {
     const registry = createViewTypeRegistry();
     const definition = registry.get(LIBRARY_GRID_VIEW_TYPE);
@@ -387,30 +444,105 @@ describe("library module (issue #25)", () => {
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
 
-  it("creating a library item drives processLibraryMetadata end to end, storing a real blob as the cover", async () => {
-    const booksId = await getDatabaseIdByModule("books");
-    const registry = libraryRegistry();
-    const item = await inTenantZero(() =>
-      chokePoint.createItem({
-        databaseId: booksId,
-        properties: { name: "Dune", author: "Frank Herbert" },
-      }),
-    );
+  it("creating a library item drives metadata and stores actual cover bytes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "semprec-library-cover-"));
+    try {
+      const storage = new LocalFsBlobStorageWriter(root);
+      const booksId = await getDatabaseIdByModule("books");
+      const registry = libraryRegistry();
+      const item = await inTenantZero(() =>
+        chokePoint.createItem({
+          databaseId: booksId,
+          properties: { name: "Dune", author: "Frank Herbert" },
+        }),
+      );
+      const bytes = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+      const fetcher: LibraryMetadataFetcher = async () => ({ cover: { mimeType: "image/jpeg", bytes } });
+      await runOnce({
+        pgPool: pool,
+        taskList: createCoreTaskList(
+          pool,
+          registry,
+          fetcher,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          storage,
+        ),
+      });
+      const updated = await chokePoint.getItem(booksId, item.id);
+      const reference = z.object({ blobId: z.uuid() }).parse(updated?.properties.cover);
+      const { rows } = await pool.query<{ storage_key: string }>("SELECT storage_key FROM blobs WHERE id = $1", [
+        reference.blobId,
+      ]);
+      expect(rows).toHaveLength(1);
+      expect(await readFile(join(root, z.string().parse(rows[0]?.storage_key)))).toEqual(bytes);
+      expect((await withTransaction(pool, (client) => getItemAutomation(client, item.id)))?.status).toBe("done");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
-    // `runOnce` drains cascading enqueues within one call: the choke-point's onItemEvent
-    // trigger -> heartbeatFireCore -> our trigger action (seeds item_automation, enqueues the
-    // real job) -> processLibraryMetadata itself, using an injected fetcher (the real
-    // metadata source is out of this issue's scope).
-    const fetcher: LibraryMetadataFetcher = async () => ({
-      cover: { mimeType: "image/jpeg", byteSize: 12345, storageKey: "covers/dune.jpg" },
+  it("records found and not-found outcomes and invalidates status-only changes", async () => {
+    const databaseId = await getDatabaseIdByModule("books");
+    const found = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Found" } }));
+    const missing = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Missing" } }));
+    for (const item of [found, missing]) await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      const config = { source: "openLibrary", coverKey: "cover" };
+      await inTenantZero(() =>
+        handleProcessLibraryMetadataTask(pool, { itemId: found.id, databaseId, config }, async () => ({
+          status: "found",
+          source: "openLibrary",
+        })),
+      );
+      await inTenantZero(() =>
+        handleProcessLibraryMetadataTask(pool, { itemId: missing.id, databaseId, config }, async () => ({
+          status: "notFound",
+          source: "openLibrary",
+        })),
+      );
+      expect(await withTransaction(pool, (client) => getItemAutomation(client, found.id))).toMatchObject({
+        status: "done",
+        source: "openLibrary",
+      });
+      expect(await withTransaction(pool, (client) => getItemAutomation(client, missing.id))).toMatchObject({
+        status: "notFound",
+        source: "openLibrary",
+      });
+      expect(events.filter((event) => event.scope === "item").map((event) => event.itemId)).toEqual([
+        found.id,
+        missing.id,
+      ]);
+    } finally {
+      setInvalidationHook(() => {});
+    }
+  });
+
+  it("records a safe provider outcome and increments its attempt", async () => {
+    const databaseId = await getDatabaseIdByModule("books");
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Book" } }));
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+    await expect(
+      inTenantZero(() =>
+        handleProcessLibraryMetadataTask(
+          pool,
+          { itemId: item.id, databaseId, config: { source: "openLibrary", coverKey: "cover" } },
+          async () => ({ status: "error", errorCode: "sourceUnavailable", source: "openLibrary" }),
+        ),
+      ),
+    ).rejects.toThrow("Library metadata processing failed");
+    expect(await withTransaction(pool, (client) => getItemAutomation(client, item.id))).toMatchObject({
+      status: "error",
+      errorCode: "sourceUnavailable",
+      source: "openLibrary",
+      attempts: 1,
     });
-    await drainQueue(registry, fetcher);
-
-    const updated = await chokePoint.getItem(booksId, item.id);
-    expect(updated?.properties.cover).toMatchObject({ blobId: expect.any(String) });
-
-    const done = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
-    expect(done?.status).toBe("done");
   });
 
   it("a failed fetch records the error and increments attempts, leaving the row in 'error'", async () => {
@@ -448,7 +580,7 @@ describe("library module (issue #25)", () => {
     const failingFetcher: LibraryMetadataFetcher = async () => {
       throw new Error("source unavailable");
     };
-    const payload = { itemId: item.id, databaseId: moviesId, config: { source: "test", coverKey: "cover" } };
+    const payload = { itemId: item.id, databaseId: moviesId, config: { source: "tmdb", coverKey: "cover" } };
 
     await expect(
       handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: "job-1" } }),
@@ -496,7 +628,7 @@ describe("library module (issue #25)", () => {
     const failingFetcher: LibraryMetadataFetcher = async () => {
       throw new Error("source unavailable");
     };
-    const payload = { itemId: item.id, databaseId: moviesId, config: { source: "test", coverKey: "cover" } };
+    const payload = { itemId: item.id, databaseId: moviesId, config: { source: "tmdb", coverKey: "cover" } };
 
     await expect(
       handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: "job-1" } }),
@@ -560,6 +692,35 @@ describe("library module (issue #25)", () => {
     const recovered = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
     expect(recovered?.status).toBe("done");
     expect(recovered?.attempts).toBe(1); // unchanged by the successful retry, only failures increment it
+  });
+
+  it("does not enqueue repeated unsupported sweeps and resumes after configuration repair", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const registry = libraryRegistry();
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
+    await drainQueue(registry, async () => { throw new Error("provider unavailable"); });
+    const before = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    expect(before?.status).toBe("error");
+    const countJobs = async () => {
+      const result = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE key = $1",
+        [`library-metadata:${item.id}`],
+      );
+      return result.rows[0]?.count;
+    };
+    expect(await countJobs()).toBe("0");
+    const action = createLibraryMetadataRetrySweepAction(pool);
+    const context = { heartbeatId: "heartbeat", projectItemId: "project" };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(inTenantZero(() => action({ databaseId: booksId, source: "invalid", coverKey: "cover" }, context)))
+        .rejects.toThrow("Unsupported library metadata source configuration");
+      expect(await countJobs()).toBe("0");
+      expect(await withTransaction(pool, (client) => getItemAutomation(client, item.id))).toEqual(before);
+    }
+    await inTenantZero(() => action({ databaseId: booksId, source: "openLibrary", coverKey: "cover" }, context));
+    expect(await countJobs()).toBe("1");
+    await drainQueue(registry, async () => ({ status: "notFound", source: "openLibrary" }));
+    expect((await withTransaction(pool, (client) => getItemAutomation(client, item.id)))?.status).toBe("notFound");
   });
 
   it("stores a per-relation rating on the Movies -> People edge, not on either item", async () => {
@@ -779,7 +940,7 @@ describe("library automation_error recipient in a tenant (issue #1018)", () => {
       runInTenant(tenantB, () =>
         handleProcessLibraryMetadataTask(
           runtimePool,
-          { itemId, databaseId: moviesId, config: { source: "test", coverKey: "cover" } },
+          { itemId, databaseId: moviesId, config: { source: "tmdb", coverKey: "cover" } },
           failingFetcher,
           { job: { id: "job-b" } },
         ),

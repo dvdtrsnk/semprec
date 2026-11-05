@@ -2,14 +2,19 @@ import type { Pool, PoolClient } from "pg";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import { withTransaction } from "../db/pool.js";
+import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { BOOKS_LIBRARY_CONTRACT, MOVIES_LIBRARY_CONTRACT } from "./libraryModuleContract.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js";
-import { createBlob, type CreateBlobInput } from "../blobs/blobsStore.js";
+import { findOrCreateBlob, lockBlobById } from "../blobs/blobsStore.js";
+import { LocalFsBlobStorageWriter, resolveBlobStorageDir, type BlobStorageWriter } from "../mail/blobStorage.js";
+import { disposeLibraryCover, prepareLibraryCover, type DownloadedLibraryCover } from "./libraryCoverStorage.js";
+import { logger } from "../logger.js";
+import { assertSupportedLibraryMetadataSource } from "./libraryMetadataConfig.js";
+import { notifyInvalidation } from "../realtimeHook.js";
 import { getTenantUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
 import {
@@ -18,6 +23,9 @@ import {
   lockItemAutomation,
   markItemAutomationDone,
   markItemAutomationError,
+  markItemAutomationNotFound,
+  type ItemAutomationErrorCode,
+  type LibraryAutomationSource,
 } from "./itemAutomationStore.js";
 import { raiseProblem } from "../semp/sempProblemsStore.js";
 import { automationProblemKey } from "../semp/sourceProblemKeys.js";
@@ -49,7 +57,7 @@ export interface LibraryMetadataFetchResult {
   errorCode?: "sourceUnavailable" | "rateLimited" | "invalidResponse";
   source?: "openLibrary" | "googleBooks" | "tmdb";
   candidates?: Array<{ title: string; author?: string; year?: number; coverUrl?: string }>;
-  cover?: CreateBlobInput;
+  cover?: DownloadedLibraryCover;
   secondaryRating?: number;
   sourceUrl?: string;
   author?: string;
@@ -91,6 +99,7 @@ export async function enqueueLibraryMetadataProcessing(
   client: PoolClient,
   input: EnqueueLibraryMetadataInput,
 ): Promise<void> {
+  assertSupportedLibraryMetadataSource(input.config.source);
   await ensureItemAutomation(client, input.itemId);
   await enqueueJob(
     client,
@@ -131,7 +140,9 @@ export async function handleProcessLibraryMetadataTask(
   payload: ProcessLibraryMetadataPayload,
   fetcher: LibraryMetadataFetcher,
   helpers: ProcessLibraryMetadataHelpers = { job: { id: randomUUID() } },
+  coverStorage?: BlobStorageWriter,
 ): Promise<void> {
+  assertSupportedLibraryMetadataSource(payload.config.source);
   const readClient = await pool.connect();
   let automation;
   let item: ItemRow | null;
@@ -153,20 +164,60 @@ export async function handleProcessLibraryMetadataTask(
     return;
   }
 
+  let prepared: Awaited<ReturnType<typeof prepareLibraryCover>> | undefined;
+  let storage: BlobStorageWriter | undefined;
+  let callbackFinished = false;
+  let committed = false;
+  let retained = false;
+  let candidateRetained = false;
+  let failureCode: ItemAutomationErrorCode = "sourceUnavailable";
+  const configuredSource = z.enum(["openLibrary", "googleBooks", "tmdb"]).safeParse(payload.config.source);
+  let failureSource: LibraryAutomationSource | null = configuredSource.success ? configuredSource.data : null;
   try {
     const result = await fetcher(item, payload.config);
+    failureSource = result.source ?? failureSource;
+    if (result.status === "error") {
+      failureCode = result.errorCode ?? "sourceUnavailable";
+      throw new Error("Library metadata processing failed");
+    }
+    if (result.cover && result.status !== "notFound") {
+      storage = coverStorage ?? new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR"));
+      prepared = await prepareLibraryCover(pool, storage, result.cover);
+    }
     await withTransaction(pool, async (client) => {
+      runAfterCommit(client, () => {
+        committed = true;
+        retained = candidateRetained;
+      });
       // Re-checked under `FOR UPDATE` inside this same transaction: the plain read above
       // only decided whether it was worth calling `fetcher` at all — a user could still lock
       // the row while that fetch was in flight. Without this, the property write below would
       // land on a since-locked item even though `markItemAutomationDone` (guarded by
       // `WHERE status != 'locked'`) would then silently no-op.
       const current = await lockItemAutomation(client, payload.itemId);
-      if (current?.status === "locked") return;
+      if (!current || current.status === "locked") {
+        callbackFinished = true;
+        return;
+      }
 
       const stored = await itemsStore.lockItemById(client, payload.databaseId, payload.itemId);
       if (!stored || stored.deletedAt) {
         await markItemAutomationDone(client, payload.itemId);
+        callbackFinished = true;
+        return;
+      }
+      if (result.status === "notFound") {
+        await markItemAutomationNotFound(client, payload.itemId, result.source ?? null);
+        runAfterCommit(client, () =>
+          notifyInvalidation({
+            scope: "item",
+            databaseId: stored.databaseId,
+            itemId: stored.id,
+            op: "update",
+            updatedAt: stored.updatedAt,
+          }),
+        );
+        callbackFinished = true;
         return;
       }
       const database = await databasesStore.getDatabase(client, payload.databaseId);
@@ -205,8 +256,10 @@ export async function handleProcessLibraryMetadataTask(
       }
       const allowedSystemKeys: string[] = [];
 
-      if (result.cover) {
-        const blob = await createBlob(client, result.cover);
+      if (prepared) {
+        const blob = await findOrCreateBlob(client, prepared);
+        if (!(await lockBlobById(client, blob.id))) throw new Error("Library cover blob disappeared");
+        candidateRetained = blob.storageKey === prepared.storageKey;
         patch[payload.config.coverKey] = { blobId: blob.id };
         allowedSystemKeys.push(payload.config.coverKey);
       }
@@ -219,21 +272,50 @@ export async function handleProcessLibraryMetadataTask(
         allowedSystemKeys.push(payload.config.sourceUrlKey);
       }
 
+      let updatedAt = stored.updatedAt;
       if (Object.keys(patch).length > 0) {
-        await updateItemWithClient(
+        const updated = await updateItemWithClient(
           client,
           { databaseId: payload.databaseId, itemId: payload.itemId, propertiesPatch: patch },
           { allowedSystemKeys },
         );
+        updatedAt = updated.updatedAt;
       }
-      await markItemAutomationDone(client, payload.itemId);
+      await markItemAutomationDone(client, payload.itemId, result.source ?? null);
+      runAfterCommit(client, () =>
+        notifyInvalidation({
+          scope: "item",
+          databaseId: stored.databaseId,
+          itemId: stored.id,
+          op: "update",
+          updatedAt,
+        }),
+      );
+      callbackFinished = true;
     });
   } catch {
+    if (committed) {
+      logger.error("Library metadata committed but transaction release failed");
+      return;
+    }
     const message = "Library metadata processing failed";
     // Issue #149: notification lands in the same transaction as the error record, so a
     // replayed job (same job id, same `transitionInstance`) never duplicates it.
     await withTransaction(pool, async (client) => {
-      await markItemAutomationError(client, payload.itemId, message);
+      const automation = await lockItemAutomation(client, payload.itemId);
+      if (!automation || automation.status === "locked") return;
+      const stored = await itemsStore.lockItemById(client, payload.databaseId, payload.itemId);
+      if (!stored || stored.deletedAt) return;
+      await markItemAutomationError(client, payload.itemId, message, failureCode, failureSource);
+      runAfterCommit(client, () =>
+        notifyInvalidation({
+          scope: "item",
+          databaseId: stored.databaseId,
+          itemId: stored.id,
+          op: "update",
+          updatedAt: stored.updatedAt,
+        }),
+      );
       const userId = await getTenantUserId(client);
       if (userId) {
         await writeNotification(client, {
@@ -257,5 +339,13 @@ export async function handleProcessLibraryMetadataTask(
       }
     });
     throw new Error(message);
+  } finally {
+    if (storage && prepared && (!callbackFinished || (committed && !retained))) {
+      try {
+        await disposeLibraryCover(storage, prepared.storageKey);
+      } catch {
+        logger.error("Failed to remove staged library cover bytes");
+      }
+    }
   }
 }

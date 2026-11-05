@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ItemRow } from "../types.js";
-import { fetchOpenLibrary, type LibraryHttpFetch } from "../library/openLibraryFetcher.js";
+import { downloadLibraryCover, fetchOpenLibrary, type LibraryHttpFetch } from "../library/openLibraryFetcher.js";
+import { createLibraryMetadataFetcher } from "../library/libraryMetadataFetcher.js";
 import { fetchGoogleBooks } from "../library/googleBooksFetcher.js";
 
 const item: ItemRow = {
@@ -56,6 +57,39 @@ describe("library book source responses", () => {
       errorCode: "sourceUnavailable",
     });
     expect(await fetchOpenLibrary(item, fixture({}, 429))).toMatchObject({ status: "error", errorCode: "rateLimited" });
+  });
+
+  it("rejects non-JSON and an oversized response", async () => {
+    const nonJson: LibraryHttpFetch = async () => new Response("not json");
+    const oversized: LibraryHttpFetch = async () => new Response("x".repeat(1024 * 1024 + 1));
+    expect(await fetchOpenLibrary(item, nonJson)).toMatchObject({ status: "error", errorCode: "invalidResponse" });
+    expect(await fetchOpenLibrary(item, oversized)).toMatchObject({ status: "error", errorCode: "invalidResponse" });
+  });
+
+  it.each([
+    "https://169.254.169.254/latest",
+    "https://10.0.0.1/cover.jpg",
+    "https://user:secret@example.com/cover.jpg",
+  ])("refuses a non-public or credential-bearing cover URL", async (url) => {
+    expect(await downloadLibraryCover(url)).toBeUndefined();
+  });
+
+  it("falls back to Google Books when Open Library has no match", async () => {
+    const requests: string[] = [];
+    const fetcher: LibraryHttpFetch = async (url) => {
+      requests.push(url);
+      return url.startsWith("https://openlibrary.org/")
+        ? new Response(JSON.stringify({ docs: [] }))
+        : new Response(
+            JSON.stringify({ items: [{ volumeInfo: { title: "Hovory k sobě", authors: ["Marcus Aurelius"] } }] }),
+          );
+    };
+    const result = await createLibraryMetadataFetcher({ fetch: fetcher })(item, {
+      source: "openLibrary",
+      coverKey: "cover",
+    });
+    expect(result).toMatchObject({ status: "found", source: "googleBooks", author: "Marcus Aurelius" });
+    expect(requests).toHaveLength(2);
   });
 
   it("reads a Google Books match and its source", async () => {

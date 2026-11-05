@@ -190,6 +190,7 @@ export function createCoreTaskList(
         },
         libraryMetadataFetcher,
         { job: { id: helpers.job.id } },
+        filesBlobStorage,
       );
     },
     [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: async () => {

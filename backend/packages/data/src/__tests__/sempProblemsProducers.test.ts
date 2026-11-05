@@ -157,7 +157,7 @@ describe("semp problem producers (issue #1465)", () => {
       await expect(
         handleProcessLibraryMetadataTask(
           pool,
-          { itemId, databaseId, config: { source: "test", coverKey: "cover" } },
+          { itemId, databaseId, config: { source: "tmdb", coverKey: "cover" } },
           failingFetcher,
           { job: { id: jobId } },
         ),

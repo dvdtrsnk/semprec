@@ -1,4 +1,8 @@
 import { z } from "zod";
+import { createOutboundHttp } from "../net/outboundAddressPolicy.js";
+import { logger } from "../logger.js";
+import { isBaselineOutboundUrl } from "../net/storedOutboundUrl.js";
+import { MAX_LIBRARY_COVER_BYTES, type DownloadedLibraryCover } from "./libraryCoverStorage.js";
 import type { ItemRow } from "../types.js";
 import type { LibraryMetadataFetchResult } from "./libraryMetadataJob.js";
 
@@ -58,8 +62,55 @@ export async function fetchLibraryJson(
   }
 }
 
+export type LibraryCoverDownload = (url: string) => Promise<DownloadedLibraryCover | undefined>;
+
+/** Fetches provider-supplied image URLs through the connect-time address policy. */
+export async function downloadLibraryCover(url: string): Promise<DownloadedLibraryCover | undefined> {
+  if (!isBaselineOutboundUrl(url)) return undefined;
+  const outbound = createOutboundHttp();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await outbound.fetch(url, { signal: controller.signal });
+    const mimeType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+    if (!response.ok || !mimeType?.startsWith("image/")) {
+      await response.body?.cancel();
+      return undefined;
+    }
+    const reader = response.body?.getReader();
+    if (!reader) return undefined;
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    try {
+      for (;;) {
+        const part = await reader.read();
+        if (part.done) break;
+        length += part.value.byteLength;
+        if (length > MAX_LIBRARY_COVER_BYTES) {
+          await reader.cancel();
+          return undefined;
+        }
+        chunks.push(part.value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    if (length === 0) return undefined;
+    return { bytes: Buffer.concat(chunks), mimeType };
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+    try {
+      await outbound.close();
+    } catch {
+      logger.error("Failed to close library cover HTTP client");
+    }
+  }
+}
+
 export function rankLibraryMatch(item: ItemRow, title: string, author?: string, year?: number): number {
-  const normalize = (value: string) => value.trim().toLocaleLowerCase();
+  const normalize = (value: string) => value.trim().toLowerCase();
   let score = typeof item.properties.name === "string" && normalize(item.properties.name) === normalize(title) ? 4 : 0;
   if (typeof item.properties.author === "string" && author && normalize(item.properties.author) === normalize(author))
     score += 2;
@@ -67,7 +118,11 @@ export function rankLibraryMatch(item: ItemRow, title: string, author?: string, 
   return score;
 }
 
-export async function fetchOpenLibrary(item: ItemRow, fetcher: LibraryHttpFetch): Promise<LibraryMetadataFetchResult> {
+export async function fetchOpenLibrary(
+  item: ItemRow,
+  fetcher: LibraryHttpFetch,
+  coverDownload: LibraryCoverDownload = downloadLibraryCover,
+): Promise<LibraryMetadataFetchResult> {
   if (typeof item.properties.name !== "string" || item.properties.name.trim() === "")
     return { status: "notFound", source: "openLibrary" };
   const url = new URL("https://openlibrary.org/search.json");
@@ -97,6 +152,7 @@ export async function fetchOpenLibrary(item: ItemRow, fetcher: LibraryHttpFetch)
     author: best.author,
     year: best.year,
     isbn: best.isbn,
-    candidates: docs.slice(1, 4),
+    cover: best.coverUrl ? await coverDownload(best.coverUrl) : undefined,
+    candidates: docs.slice(1, 4).map(({ title, author, year, coverUrl }) => ({ title, author, year, coverUrl })),
   };
 }
