@@ -1,6 +1,6 @@
 import { ModuleRegistry } from "@semprec/module-registry";
 import type { CollectionMetadataResolver } from "@semprec/data";
-import { createItemWithClient, getDatabaseByModuleId } from "@semprec/data";
+import { createItemWithClient, getDatabaseByModuleId, getSystemTimezone, today } from "@semprec/data";
 import { createServer, type Server } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -464,6 +464,34 @@ describe("generic operation MCP contract (issue #220)", () => {
       icon: "briefcase",
       color: "#5856D6",
     });
+  });
+
+  it("returns project completion in the MCP patch response and refuses direct writes", async () => {
+    const databaseId = await projectsDatabaseId();
+    const item = await chokePoint.createItem({ databaseId, properties: { name: "Project", status: "inProgress" } });
+    const day = today(await withTransaction(pool, getSystemTimezone));
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const headers = await authHeader();
+    const result = await rpc(baseUrl, headers, "semprec.item.patch", {
+      itemId: item.id,
+      properties: { status: "done" },
+      ifVersion: item.updatedAt,
+    });
+    expect(result.error).toBeUndefined();
+    const text = result.result?.content[0]?.text;
+    if (!text) throw new Error("Missing MCP patch result");
+    const resultBody: unknown = JSON.parse(text);
+    expect(resultBody).toMatchObject({ properties: { status: "done", completedAt: day } });
+    const current = await chokePoint.getItem(databaseId, item.id);
+    if (!current) throw new Error("Missing project");
+    const refused = await rpc(baseUrl, headers, "semprec.item.patch", {
+      itemId: item.id,
+      properties: { completedAt: "2000-01-01" },
+      ifVersion: current.updatedAt,
+    });
+    expect(refused.error).toBeDefined();
+    expect((await chokePoint.getItem(databaseId, item.id))?.properties.completedAt).toBe(day);
   });
 
   it("keeps and restores project deadlines through MCP", async () => {

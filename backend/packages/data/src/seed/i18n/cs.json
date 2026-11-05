@@ -24,6 +24,7 @@
   "property.projects.status.option.done": "Hotovo",
   "property.projects.status.option.archived": "Archivováno",
   "property.projects.status.option.longTerm": "Dlouhodobé",
+  "property.projects.completedAt.name": "Dokončeno",
   "property.projects.date.name": "Termín",
   "property.projects.color.name": "Barva",
   "property.projects.agents.name": "AGENT.md",

@@ -3,6 +3,8 @@ import {
   createBlob,
   createItemWithClient,
   getDatabaseByModuleId,
+  getSystemTimezone,
+  today,
   insertInboxAttachments,
   listInboxAttachments,
 } from "@semprec/data";
@@ -625,6 +627,41 @@ describe("item routes (issue #241)", () => {
     const response = await fetch(`${baseUrl}/api/items/${item.id}`, { headers });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ properties: { phones: "777 123 456" } });
+  });
+
+  it("returns project completion dates and refuses direct writes through REST", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const fixture = await runInTenant(getTenantZeroId(), async () => {
+      const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
+      if (!database) throw new Error("Projects missing");
+      const item = await chokePoint.createItem({
+        databaseId: database.id,
+        properties: { name: "Project", status: "inProgress" },
+      });
+      const day = today(await withTransaction(pool, getSystemTimezone));
+      return { database, item, day };
+    });
+    const patch = async (properties: Record<string, unknown>) => {
+      const current = await runInTenant(getTenantZeroId(), () =>
+        chokePoint.getItem(fixture.database.id, fixture.item.id),
+      );
+      if (!current) throw new Error("Project missing");
+      return fetch(`${baseUrl}/api/items/${current.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties, ifVersion: current.updatedAt }),
+      });
+    };
+    const done = await patch({ status: "done" });
+    expect(done.status).toBe(200);
+    expect(await done.json()).toMatchObject({ properties: { status: "done", completedAt: fixture.day } });
+    const refused = await patch({ completedAt: "2000-01-01" });
+    expect(refused.status).toBe(403);
+    expect(
+      (await runInTenant(getTenantZeroId(), () => chokePoint.getItem(fixture.database.id, fixture.item.id)))?.properties
+        .completedAt,
+    ).toBe(fixture.day);
   });
 
   it("hides a kept project deadline in REST reads and the search index", async () => {

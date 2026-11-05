@@ -2040,6 +2040,8 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const order = initial.item.properties.pinnedOrder;
       if (typeof order !== "number") throw new Error("Missing project pin order");
       expect(initial.prepared.patch).toMatchObject({ status: "done", pinned: false, pinnedOrder: null });
+      expect(initial.prepared.patch).not.toHaveProperty("completedAt");
+      expect(initial.prepared.deferredKeys).not.toContain("completedAt");
       const card = await cardWithSteps("projects", [
         {
           ref: "project",
@@ -2510,6 +2512,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       await confirm(complete);
       const [updated] = await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [project]));
       expect(updated?.properties).toMatchObject({ status: "done", pinned: false, pinnedOrder: null });
+      expect(updated?.properties.completedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     });
 
     it("retains a declared pin-order precondition when a concurrent pin removes the deferred allocation", async () => {

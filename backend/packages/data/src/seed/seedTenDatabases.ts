@@ -26,6 +26,7 @@ import {
   TRANSCRIPTS_MODULE_ID,
   type TenDatabaseModuleId,
 } from "./tenDatabaseKeys.js";
+import { PROJECTS_OWNER_PROCESS } from "../projects/projectWriteTransform.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 
 export type TenDatabases = Record<TenDatabaseModuleId, DatabaseRow>;
@@ -138,6 +139,7 @@ export async function seedTenDatabasesInTransaction(
       },
     },
     { key: "date", name: "Date", type: "date", owner: "user" },
+    { key: "completedAt", name: null, type: "date", owner: "system", ownerProcess: PROJECTS_OWNER_PROCESS },
     { key: "color", name: "Color", type: "color", owner: "user" },
     // A 4-section equivalent of an AGENT.md; `sections` names the fixed structure a client
     // renders as separate fields within this one longText value, not four separate columns.

@@ -24,6 +24,7 @@
   "property.projects.status.option.done": "Done",
   "property.projects.status.option.archived": "Archived",
   "property.projects.status.option.longTerm": "Long-term",
+  "property.projects.completedAt.name": "Completed at",
   "property.projects.date.name": "Deadline",
   "property.projects.color.name": "Color",
   "property.projects.agents.name": "AGENT.md",

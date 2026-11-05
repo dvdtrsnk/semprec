@@ -1,5 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import {
@@ -19,12 +21,14 @@ import {
   getSystemSettingsItemId,
   getDatabaseByModuleId,
   loadFullModuleRegistry,
+  LocalFsBlobStorageWriter,
   login,
   seedSystem,
   today,
   withTransaction,
 } from "@semprec/data";
 import { createSchemaRequestListener } from "../schemaHandler.js";
+import { createDispatcher } from "../app.js";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { z } from "zod";
 
@@ -296,6 +300,35 @@ describe("createSchemaRequestListener (issue #147)", () => {
     expect(properties?.find((entry) => entry.id === legacy.id)?.options).toEqual([
       expect.not.objectContaining({ color: expect.anything() }),
     ]);
+  });
+
+  it("returns the Czech Projects completion property through the properties route", async () => {
+    const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
+    if (!database) throw new Error("Projects missing");
+    const server = createServer(
+      await createDispatcher(pool, {
+        moduleRegistry,
+        passwordResetMailer: { async sendPasswordResetEmail() {} },
+        appBaseUrl: "http://localhost",
+        setupToken: "unused-setup-token",
+        blobStorage: new LocalFsBlobStorageWriter(join(tmpdir(), `semprec-schema-${randomUUID()}`)),
+        maxFileSizeBytes: 1048576,
+      }),
+    );
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing server address");
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/databases/${database.id}/properties`, {
+        headers: await authHeader("cs"),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        properties: expect.arrayContaining([expect.objectContaining({ key: "completedAt", name: "Dokončeno" })]),
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("projects stored defaults including the unresolved today token", async () => {

@@ -1,3 +1,4 @@
+import { runProjectsCompletedAtCutoverMigration } from "../seed/projectsCompletedAtCutoverMigration.js";
 import { runSelectOptionColorsCutoverMigration } from "../seed/selectOptionColorsCutoverMigration.js";
 import { runSelectOptionOrderCutoverMigration } from "../seed/selectOptionOrderCutoverMigration.js";
 import { runThreadsDatabaseCutoverMigration } from "../mail/threadsDatabaseCutoverMigration.js";
@@ -66,6 +67,7 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     await runPeopleRelationshipOptionsCutoverMigration(pool);
     await runSelectOptionOrderCutoverMigration(pool);
     await runSelectOptionColorsCutoverMigration(pool);
+    await runProjectsCompletedAtCutoverMigration(pool);
     await runNewEmailSenderFilterCutoverMigration(pool);
     await runTasksSchemaCutoverMigration(pool);
     await runTasksSourceEventsCutoverMigration(pool);

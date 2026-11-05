@@ -2,7 +2,12 @@ import { requireSingleRow } from "../db/pool.js";
 import type { ItemRow } from "../types.js";
 import type { ItemPreWritePreparation, ItemPreWriteTransform } from "../chokePoint/hooks.js";
 import { ValidationError } from "../errors.js";
+import { today } from "../calendarTime.js";
+import { getSystemTimezone } from "../systemSettings.js";
+import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { deleteKeptDate, getKeptDate, upsertKeptDate } from "./projectKeptDateStore.js";
+
+export const PROJECTS_OWNER_PROCESS = PROJECTS_MODULE_ID;
 
 /** Prepares terminal status, deadline and pinned-order changes without allocating or writing. */
 export const prepareProjectWrite: ItemPreWritePreparation = async ({ stored, patch: original }) => {
@@ -35,6 +40,10 @@ export const projectWriteTransform: ItemPreWriteTransform = async (context) => {
   let patch = prepared.patch;
   const stored = context.stored;
   const status = Object.hasOwn(context.patch, "status") ? context.patch.status : stored?.properties.status;
+  const wasTerminal = stored?.properties.status === "done" || stored?.properties.status === "archived";
+  const terminal = status === "done" || status === "archived";
+  if (terminal && !wasTerminal) patch = { ...patch, completedAt: today(await getSystemTimezone(context.client)) };
+  if (wasTerminal && (status === "inProgress" || status === "longTerm")) patch = { ...patch, completedAt: null };
   if (
     stored &&
     status === "longTerm" &&
