@@ -124,3 +124,14 @@ to use the existing owner remains; it does not authorize importing it directly
 from chokePoint/. Keep exactly one query for a nonempty returned page, actual
 tenant controls and no absent-include work. No boundary/baseline change, generic
 projection framework, helper root export or duplicated SQL is authorized.
+
+## Automation client receipt: gh1768
+
+Authorize tenantIsolationRealtime.test.ts only for actual found/notFound
+status-only library jobs reaching the owning authenticated realtime socket
+through the production post-commit invalidation publisher; retain foreign-tenant
+absence with the existing ordered sentinel and rollback-no-delivery controls.
+Use existing runtime-role and socket composition, bounded injected provider
+fixtures and actual library task owner. A hook observation alone remains partial
+for client receipt. No production transport, provider, timeout or authentication
+change is authorized. Fold this evidence into a coherent targeted group.
