@@ -347,6 +347,13 @@ describe("link rule propagation", () => {
     expect(
       (await runInTenant(tenant, () => fixture.cp.getItem(fixture.projects.id, fixture.target.id)))?.properties.name,
     ).toBe("Changed");
+    const successor = await admin.query<{ id: string }>("SELECT id::text FROM graphile_worker.jobs WHERE key = $1", [
+      key,
+    ]);
+    expect(successor.rows).toHaveLength(1);
+    const nextHandler = createCoreTaskList(data, createActionRegistry())[CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE];
+    if (!nextHandler) throw new Error("Propagation handler missing");
+    await runOnce({ pgPool: data, taskList: { [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: nextHandler } });
     const remaining = await admin.query<{ id: string }>(
       "SELECT id::text FROM graphile_worker.jobs WHERE id = $1 OR key = $2",
       [initial.rows[0]!.id, key],
