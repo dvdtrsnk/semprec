@@ -24,6 +24,7 @@ import {
   createLibraryMetadataFetcher,
   createItemWithClient,
   createDocStore,
+  getDatabaseByModuleId,
   createUser,
   createViewTypeRegistry,
   ensureItemAutomation,
@@ -520,6 +521,29 @@ describe("generic operation REST contract (issue #219)", () => {
   afterAll(async () => {
     clearHooksForTests();
     await pool?.end();
+  });
+
+  it("filters the system area from database.query and refuses its deletion", async () => {
+    const areas = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
+    if (!areas) throw new Error("Areas missing");
+    const list = await chokePoint.listItems(areas.id);
+    const system = list.items.find((item) => item.properties.systemActive === true);
+    if (!system) throw new Error("System area missing");
+    const user = await chokePoint.createItem({ databaseId: areas.id, properties: { name: "User area" } });
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const deletion = await fetch(`${baseUrl}/api/items/${system.id}`, { method: "DELETE", headers });
+    expect(deletion.status).toBe(403);
+    expect(await deletion.json()).toMatchObject({ error: { details: { field: "systemActive" } } });
+    const query = await fetch(`${baseUrl}/api/databases/${areas.id}/query`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ filter: { type: "is_empty", property: "systemActive" } }),
+    });
+    expect(query.status).toBe(200);
+    const result: unknown = await query.json();
+    expect(result).toMatchObject({ items: [expect.objectContaining({ id: user.id })] });
+    expect(JSON.stringify(result)).not.toContain(system.id);
+    expect(await chokePoint.getItem(areas.id, system.id)).toEqual(system);
   });
 
   it("reports a changed edge for REST relation deletion", async () => {

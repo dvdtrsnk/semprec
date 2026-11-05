@@ -466,6 +466,34 @@ describe("generic operation MCP contract (issue #220)", () => {
     });
   });
 
+  it("refuses deletion of the system area and filters it from MCP queries", async () => {
+    const areas = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
+    if (!areas) throw new Error("Areas missing");
+    const list = await chokePoint.listItems(areas.id);
+    const system = list.items.find((item) => item.properties.systemActive === true);
+    if (!system) throw new Error("System area missing");
+    const user = await chokePoint.createItem({ databaseId: areas.id, properties: { name: "User area" } });
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const headers = await authHeader();
+    const deleted = await rpc(baseUrl, headers, "semprec.item.delete", { itemId: system.id });
+    expect(deleted.error).toMatchObject({
+      code: -32000,
+      data: { code: "forbidden", details: { field: "systemActive" } },
+    });
+    expect(await chokePoint.getItem(areas.id, system.id)).toEqual(system);
+    const queried = await rpc(baseUrl, headers, "semprec.database.query", {
+      databaseId: areas.id,
+      filter: { type: "is_empty", property: "systemActive" },
+    });
+    expect(queried.error).toBeUndefined();
+    const text = queried.result?.content[0]?.text;
+    if (!text) throw new Error("Missing query result");
+    const body: unknown = JSON.parse(text);
+    expect(body).toMatchObject({ items: [expect.objectContaining({ id: user.id })] });
+    expect(text).not.toContain(system.id);
+  });
+
   it("returns project completion in the MCP patch response and refuses direct writes", async () => {
     const databaseId = await projectsDatabaseId();
     const item = await chokePoint.createItem({ databaseId, properties: { name: "Project", status: "inProgress" } });

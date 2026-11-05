@@ -307,6 +307,71 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     expect(result.error).toBeFalsy();
   });
 
+  it("refuses deletion of the system area and filters it through actual agent tools", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let failure: { error: unknown } | undefined;
+    let cleanupFailure: { error: unknown } | undefined;
+    try {
+      const tenant = await createTestTenant(pool);
+      const user = await runAsSystem("test:system-area-agent", () =>
+        createPersistedUser(pool, {
+          tenantId: tenant,
+          email: `${randomUUID()}@example.test`,
+          passwordHash: "unused-test-hash",
+        }),
+      );
+      await runInTenant(tenant, async () => {
+        await seedSystem(runtime, createViewTypeRegistry());
+        const cp = createChokePoint(runtime);
+        const areas = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "areas"));
+        const projects = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
+        if (!areas || !projects) throw new Error("System databases missing");
+        const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Agent" } });
+        const run = await createAgentRun(runtime, {
+          projectItemId: project.id,
+          userId: user.id,
+          triggeredBy: "user",
+          task: "query Areas",
+        });
+        const system = (await cp.listItems(areas.id)).items.find((item) => item.properties.systemActive === true);
+        if (!system) throw new Error("System area missing");
+        const userArea = await cp.createItem({ databaseId: areas.id, properties: { name: "User area" } });
+        const tools = createGenericOperationAgentTools(runtime, moduleRegistry, testMetadataResolver);
+        const query = await tools["database.query"](run.id, {
+          databaseId: areas.id,
+          filter: { type: "is_empty", property: "systemActive" },
+        });
+        expect(query.error).toBe(false);
+        const result: unknown = JSON.parse(query.result);
+        expect(result).toMatchObject({ items: [expect.objectContaining({ id: userArea.id })] });
+        expect(query.result).not.toContain(system.id);
+        const refused = await tools["item.delete"](run.id, { itemId: system.id });
+        expect(refused.error).toBe(true);
+        expect(refused.result).toMatch(/^forbidden:.*system-active/);
+        expect(refused.approvalRequestId).toBeUndefined();
+        expect(await cp.getItem(areas.id, system.id)).toEqual(system);
+        const approvals = await runtime.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM approval_requests WHERE agent_run_id = $1",
+          [run.id],
+        );
+        expect(approvals.rows[0]?.count).toBe(0);
+      });
+    } catch (error) {
+      failure = { error };
+    } finally {
+      try {
+        await runtime.end();
+      } catch (error) {
+        cleanupFailure = { error };
+      }
+    }
+    if (failure) {
+      if (cleanupFailure) console.error("System area agent fixture cleanup also failed");
+      throw failure.error;
+    }
+    if (cleanupFailure) throw cleanupFailure.error;
+  });
+
   it("validates Areas item.patch through the AgentTool under tenant RLS", async () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     let failure: { error: unknown } | undefined;
