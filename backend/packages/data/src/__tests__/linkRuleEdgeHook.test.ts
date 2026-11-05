@@ -3,10 +3,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import type { Pool } from "pg";
 import { ModuleRegistry, type ModuleManifest } from "@semprec/module-registry";
 import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runOnce } from "@semprec/queue";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import * as registryLoader from "../manifest/fullModuleRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import { createActionRegistry } from "../scheduler/actions.js";
+import { createCoreTaskList } from "../worker.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 export const manifest: ModuleManifest = {
@@ -25,6 +28,18 @@ export const manifest: ModuleManifest = {
       target: { databaseKey: "files", propertyKey: "companies" },
       via: { databaseKey: "files", relationKey: "projects" },
     },
+    ...["areas", "projects", "tasks", "events", "people", "companies"].map((source, index) => ({
+      key: `fixtureChain.hop${index + 1}`,
+      source: { databaseKey: source, propertyKey: "name" },
+      target: {
+        databaseKey: ["projects", "tasks", "events", "people", "companies", "files"][index]!,
+        propertyKey: "name",
+      },
+      via: {
+        databaseKey: ["projects", "tasks", "events", "people", "companies", "files"][index]!,
+        relationKey: "fixtureParent",
+      },
+    })),
   ],
 };
 
@@ -119,6 +134,48 @@ describe("value link via-edge union", () => {
       await detach(secondProject.id);
       expect(await targets()).toEqual([secondCompany.id]);
       expect((await links()).rowCount).toBe(0);
+    });
+  });
+
+  it("replays the registered worker through five hops and stops before a sixth", async () => {
+    await runInTenant(tenant, async () => {
+      const cp = createChokePoint(data);
+      const dbs = await cp.listDatabases();
+      const ids = ["areas", "projects", "tasks", "events", "people", "companies", "files"].map((module) => {
+        const db = dbs.find((entry) => entry.ownerModuleId === module);
+        if (!db) throw new Error(`Missing ${module}`);
+        return db.id;
+      });
+      const items = [];
+      for (const [index, databaseId] of ids.entries())
+        items.push(await cp.createItem({ databaseId, properties: index === 0 ? { name: "Chain source" } : {} }));
+      const parents: string[] = [];
+      for (let index = 1; index < ids.length; index++) {
+        const relation = await cp.createRelationProperty({
+          sourceDatabaseId: ids[index]!,
+          key: "fixtureParent",
+          name: "Fixture parent",
+          targetDatabaseId: ids[index - 1]!,
+        });
+        parents.push(relation.property.id);
+      }
+      for (let index = 6; index >= 2; index--)
+        await cp.createRelation({
+          relationPropertyId: parents[index - 1]!,
+          callerItemId: items[index]!.id,
+          targetItemId: items[index - 1]!.id,
+        });
+      const tasks = createCoreTaskList(data, createActionRegistry());
+      await runOnce({ pgPool: data, taskList: tasks });
+      await cp.createRelation({
+        relationPropertyId: parents[0]!,
+        callerItemId: items[1]!.id,
+        targetItemId: items[0]!.id,
+      });
+      await runOnce({ pgPool: data, taskList: tasks });
+      for (let index = 1; index <= 5; index++)
+        expect((await cp.getItem(ids[index]!, items[index]!.id))?.properties.name).toBe("Chain source");
+      expect((await cp.getItem(ids[6]!, items[6]!.id))?.properties.name).toBeUndefined();
     });
   });
 });

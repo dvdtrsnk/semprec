@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -170,6 +170,62 @@ describe("link rule propagation", () => {
         client.query("SELECT id FROM value_links WHERE item_id = $1", [other.project.id]),
       );
       expect(links.rowCount).toBe(0);
+    });
+  });
+
+  it("commits separate keyset pages for more than one hundred linked targets", async () => {
+    await runInTenant(tenant, async () => {
+      const cp = createChokePoint(data);
+      const dbs = await cp.listDatabases();
+      const areas = dbs.find((db) => db.ownerModuleId === "areas");
+      const projects = dbs.find((db) => db.ownerModuleId === "projects");
+      if (!areas || !projects) throw new Error("Fixture databases missing");
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
+      if (!via) throw new Error("Fixture via relation missing");
+      const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Initial" } });
+      const targets = [];
+      for (let index = 0; index < 101; index++) {
+        const target = await cp.createItem({ databaseId: projects.id, properties: {} });
+        await cp.createRelation({ relationPropertyId: via.id, callerItemId: target.id, targetItemId: area.id });
+        targets.push(target.id);
+      }
+      await cp.updateItem({ databaseId: areas.id, itemId: area.id, propertiesPatch: { name: "Changed" } });
+      let commits = 0;
+      const originals = new Map<PoolClient, PoolClient["query"]>();
+      const onAcquire = (client: PoolClient) => {
+        if (originals.has(client)) return;
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        const original = client.query;
+        originals.set(client, original);
+        Object.defineProperty(client, "query", {
+          configurable: true,
+          writable: true,
+          value: (...args: unknown[]) => {
+            if (args[0] === "COMMIT") commits++;
+            return Reflect.apply(original, client, args);
+          },
+        });
+      };
+      data.on("acquire", onAcquire);
+      try {
+        await handleLinkPropagation(data, { ruleKey, sourceItemId: area.id, hop: 1 });
+      } finally {
+        data.off("acquire", onAcquire);
+        for (const [client, original] of originals)
+          Object.defineProperty(client, "query", {
+            configurable: true,
+            writable: true,
+            value: original,
+          });
+      }
+      expect(commits).toBe(2);
+      const result = await withTransaction(data, (client) =>
+        client.query<{ count: string }>(
+          "SELECT count(*)::text AS count FROM items WHERE database_id = $1 AND id = ANY($2::uuid[]) AND properties->>'name' = 'Changed'",
+          [projects.id, targets],
+        ),
+      );
+      expect(result.rows).toEqual([{ count: "101" }]);
     });
   });
 });
