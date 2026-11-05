@@ -73,7 +73,10 @@ vi.mock("undici", async (importOriginal) => {
     async fetch(...args: Parameters<typeof actual.fetch>) {
       const input = args[0];
       const url = typeof input === "string" ? new URL(input) : input instanceof URL ? input : new URL(input.url);
-      if (coverTransport.active && ["covers.openlibrary.org", "image.tmdb.org"].includes(url.hostname)) {
+      if (
+        coverTransport.active &&
+        ["covers.openlibrary.org", "image.tmdb.org", "google-cover.invalid"].includes(url.hostname)
+      ) {
         coverTransport.urls.push(url.toString());
         return new actual.Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), {
           headers: { "content-type": "image/jpeg" },
@@ -620,6 +623,71 @@ describe("library module (issue #25)", () => {
     }
   });
 
+  it("downloads a Google fallback cover with a query without exposing that URL", async () => {
+    const root = await mkdtemp(join(tmpdir(), "semprec-google-cover-"));
+    const failures: unknown[] = [];
+    try {
+      const books = await getDatabaseIdByModule("books");
+      const book = await inTenantZero(() => chokePoint.createItem({ databaseId: books, properties: { name: "Book" } }));
+      await withTransaction(pool, (client) => ensureItemAutomation(client, book.id));
+      const coverUrl = "https://google-cover.invalid/image?id=fixture-secret";
+      const fetcher = createLibraryMetadataFetcher({
+        fetch: async (url) =>
+          new Response(
+            JSON.stringify(
+              url.startsWith("https://openlibrary.org/")
+                ? { docs: [] }
+                : {
+                    kind: "books#volumes",
+                    totalItems: 2,
+                    items: [
+                      { volumeInfo: { title: "Book", imageLinks: { thumbnail: coverUrl } } },
+                      { volumeInfo: { title: "Other", imageLinks: { thumbnail: coverUrl } } },
+                    ],
+                  },
+            ),
+          ),
+      });
+      coverTransport.urls.length = 0;
+      coverTransport.active = true;
+      const stored = await chokePoint.getItem(books, book.id);
+      if (!stored) throw new Error("Missing book fixture");
+      const result = await fetcher(stored, { source: "openLibrary", coverKey: "cover" });
+      expect(result.status).toBe("found");
+      expect(result.source).toBe("googleBooks");
+      expect(result.cover?.bytes).toEqual(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]));
+      expect(JSON.stringify(result)).not.toContain("fixture-secret");
+      await inTenantZero(() =>
+        handleProcessLibraryMetadataTask(
+          pool,
+          { itemId: book.id, databaseId: books, config: { source: "openLibrary", coverKey: "cover" } },
+          fetcher,
+          undefined,
+          new LocalFsBlobStorageWriter(root),
+        ),
+      );
+      expect(coverTransport.urls).toEqual([coverUrl, coverUrl]);
+      const after = await chokePoint.getItem(books, book.id);
+      const reference = z.object({ blobId: z.uuid() }).parse(after?.properties.cover);
+      const rows = await pool.query<{ storage_key: string }>("SELECT storage_key FROM blobs WHERE id = $1", [
+        reference.blobId,
+      ]);
+      expect(rows.rows).toHaveLength(1);
+      expect(await readFile(join(root, rows.rows[0]!.storage_key))).toEqual(Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+    } catch (error) {
+      failures.push(error);
+    }
+    coverTransport.active = false;
+    coverTransport.urls.length = 0;
+    try {
+      await rm(root, { recursive: true, force: true });
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Google cover test and cleanup failed");
+  });
+
   it("applies book and movie provider fixtures through the job and real cover owner", async () => {
     const root = await mkdtemp(join(tmpdir(), "semprec-library-provider-covers-"));
     const storage = new LocalFsBlobStorageWriter(root);
@@ -755,6 +823,8 @@ describe("library module (issue #25)", () => {
               url.startsWith("https://openlibrary.org/")
                 ? { docs: [] }
                 : {
+                    kind: "books#volumes",
+                    totalItems: 1,
                     items: [
                       {
                         volumeInfo: {

@@ -107,7 +107,11 @@ describe("library book source responses", () => {
       return url.startsWith("https://openlibrary.org/")
         ? new Response(JSON.stringify({ docs: [] }))
         : new Response(
-            JSON.stringify({ items: [{ volumeInfo: { title: "Hovory k sobě", authors: ["Marcus Aurelius"] } }] }),
+            JSON.stringify({
+              kind: "books#volumes",
+              totalItems: 1,
+              items: [{ volumeInfo: { title: "Hovory k sobě", authors: ["Marcus Aurelius"] } }],
+            }),
           );
     };
     const result = await createLibraryMetadataFetcher({ fetch: fetcher })(item, {
@@ -123,6 +127,8 @@ describe("library book source responses", () => {
       await fetchGoogleBooks(
         item,
         fixture({
+          kind: "books#volumes",
+          totalItems: 1,
           items: [
             {
               volumeInfo: {
@@ -142,5 +148,19 @@ describe("library book source responses", () => {
       year: 180,
       isbn: "9780000000000",
     });
+  });
+
+  it("distinguishes a valid empty Google response from malformed successful bodies", async () => {
+    expect(await fetchGoogleBooks(item, fixture({ kind: "books#volumes", totalItems: 0 }))).toMatchObject({
+      status: "notFound",
+      source: "googleBooks",
+    });
+    for (const body of [{}, { error: "provider failure" }, { kind: "books#volumes", totalItems: "0" }]) {
+      expect(await fetchGoogleBooks(item, fixture(body))).toMatchObject({
+        status: "error",
+        errorCode: "invalidResponse",
+        source: "googleBooks",
+      });
+    }
   });
 });

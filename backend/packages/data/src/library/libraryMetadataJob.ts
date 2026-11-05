@@ -70,10 +70,8 @@ export interface LibraryMetadataFetchResult {
 }
 
 /**
- * Pluggable, same injection shape as `RunAgentFn`/`coreAgentRunAction` (scheduler/actions.ts):
- * actually calling an external metadata source (TMDb/OMDB/...) is out of this issue's scope,
- * so the default (see worker.ts) is a no-op that finds nothing — a legitimate, non-error
- * outcome for "no source wired up yet," not a failure to retry.
+ * The worker accepts an injected metadata fetcher. Its default is a no-op; the API queue
+ * composition supplies the configured library metadata dispatcher.
  */
 export type LibraryMetadataFetcher = (
   item: ItemRow,

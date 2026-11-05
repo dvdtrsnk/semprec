@@ -34,6 +34,7 @@ describe("TMDB response mapping", () => {
           }),
         ),
       )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ results: [] })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ vote_average: 7.9, vote_count: 30 })));
     expect(await fetchTmdb(item, fetcher, "test-token")).toMatchObject({
       status: "found",
@@ -44,10 +45,17 @@ describe("TMDB response mapping", () => {
       sourceUrl: "https://www.themoviedb.org/movie/1",
     });
     expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ headers: { authorization: "Bearer test-token" } });
+    expect(fetcher.mock.calls[0]?.[0]).toContain(
+      "/search/movie?query=Duna%3A+%C4%8C%C3%A1st+druh%C3%A1&primary_release_year=2024",
+    );
+    expect(fetcher.mock.calls[1]?.[0]).toContain(
+      "/search/tv?query=Duna%3A+%C4%8C%C3%A1st+druh%C3%A1&first_air_date_year=2024",
+    );
   });
   it("maps series and omits rating when no votes exist", async () => {
     const fetcher = vi
       .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ results: [] })))
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
@@ -77,6 +85,53 @@ describe("TMDB response mapping", () => {
     expect(
       await fetchTmdb(item, vi.fn().mockResolvedValue(new Response(null, { status: 429 })), "test-token"),
     ).toMatchObject({ status: "error", errorCode: "rateLimited" });
+  });
+
+  it("uses multi-search without a year and merges year-filtered movie and TV pages when present", async () => {
+    const withoutYear: ItemRow = { ...item, properties: { name: "Duna: Část druhá" } };
+    const multi = vi.fn(async (_url: string) => new Response(JSON.stringify({ results: [] })));
+    expect(await fetchTmdb(withoutYear, multi, "test-token")).toMatchObject({ status: "notFound" });
+    expect(multi).toHaveBeenCalledOnce();
+    expect(multi.mock.calls[0]?.[0]).toContain("/search/multi?");
+
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ results: [{ id: 1, title: "Duna: Část druhá", release_date: "2021-01-01" }] })),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ results: [{ id: 2, name: "Duna: Část druhá", first_air_date: "2024-01-01" }] })),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ vote_average: 8, vote_count: 10 })));
+    const result = await fetchTmdb(item, fetcher, "test-token");
+    expect(result).toMatchObject({
+      status: "found",
+      type: "series",
+      year: 2024,
+      sourceUrl: "https://www.themoviedb.org/tv/2",
+    });
+    expect(result.candidates).toEqual([expect.objectContaining({ title: "Duna: Část druhá", year: 2021 })]);
+    expect(fetcher.mock.calls[2]?.[0]).toBe("https://api.themoviedb.org/3/tv/2");
+  });
+
+  it("does not use partial results when a required year-search endpoint fails or is malformed", async () => {
+    const valid = () =>
+      new Response(JSON.stringify({ results: [{ id: 1, title: "Duna", release_date: "2024-01-01" }] }));
+    for (const failed of [new Response(null, { status: 429 }), new Response(JSON.stringify({ results: "invalid" }))]) {
+      const fetcher = vi.fn().mockResolvedValueOnce(valid()).mockResolvedValueOnce(failed);
+      const result = await fetchTmdb(item, fetcher, "test-token");
+      expect(result).toMatchObject({
+        status: "error",
+        errorCode: failed.status === 429 ? "rateLimited" : "invalidResponse",
+      });
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    }
+    const empty = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ results: [] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ results: [] })));
+    expect(await fetchTmdb(item, empty, "test-token")).toMatchObject({ status: "notFound" });
+    expect(empty).toHaveBeenCalledTimes(2);
   });
 
   it("keeps the TMDB token out of a real queued 401 outcome and worker logs", async () => {

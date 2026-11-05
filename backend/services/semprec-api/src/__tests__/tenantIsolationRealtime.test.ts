@@ -1212,7 +1212,9 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
             providerCalls++;
             return new Response(
               JSON.stringify(
-                url.includes("openlibrary.org") ? { docs: found ? [{ title: "Found" }] : [] } : { items: [] },
+                url.includes("openlibrary.org")
+                  ? { docs: found ? [{ title: "Found" }] : [] }
+                  : { kind: "books#volumes", totalItems: 0 },
               ),
             );
           },

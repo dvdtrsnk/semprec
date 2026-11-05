@@ -730,22 +730,47 @@ describe("generic operation REST contract (issue #219)", () => {
       const ownItem = await fetch(`${base}/api/items/${own.book.id}?include=automation`, { headers });
       expect(ownItem.status).toBe(200);
       expect(await ownItem.json()).toMatchObject({ automation: { status: "pending" } });
-      for (const itemId of [foreign.book.id, randomUUID()])
-        expect((await fetch(`${base}/api/items/${itemId}?include=automation`, { headers })).status).toBe(404);
-      for (const [ownPath, foreignPath] of [
-        [`/api/databases/${own.books.id}/query`, `/api/databases/${foreign.books.id}/query`],
-        [`/api/views/${own.view.id}/query`, `/api/views/${foreign.view.id}/query`],
-      ]) {
-        const query = (path: string) =>
-          fetch(`${base}${path}`, { method: "POST", headers, body: JSON.stringify({ include: ["automation"] }) });
-        const positive = await query(ownPath!);
+      const compareRefusals = async (
+        foreignResponse: Response,
+        randomResponse: Response,
+        foreignId: string,
+        randomId: string,
+      ) => {
+        expect(foreignResponse.status).toBe(404);
+        expect(randomResponse.status).toBe(foreignResponse.status);
+        for (const header of ["content-type", "cache-control", "vary"]) {
+          expect(foreignResponse.headers.get(header)).toBe(randomResponse.headers.get(header));
+        }
+        const foreignBody = (await foreignResponse.text()).replaceAll(foreignId, "<id>");
+        const randomBody = (await randomResponse.text()).replaceAll(randomId, "<id>");
+        expect(foreignBody).toBe(randomBody);
+      };
+      const randomItem = randomUUID();
+      await compareRefusals(
+        await fetch(`${base}/api/items/${foreign.book.id}?include=automation`, { headers }),
+        await fetch(`${base}/api/items/${randomItem}?include=automation`, { headers }),
+        foreign.book.id,
+        randomItem,
+      );
+      for (const [kind, ownId, foreignId] of [
+        ["databases", own.books.id, foreign.books.id],
+        ["views", own.view.id, foreign.view.id],
+      ] as const) {
+        const query = (id: string) =>
+          fetch(`${base}/api/${kind}/${id}/query`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ include: ["automation"] }),
+          });
+        const positive = await query(ownId);
         expect(positive.status).toBe(200);
         expect(await positive.json()).toMatchObject({
           items: expect.arrayContaining([
             expect.objectContaining({ id: own.book.id, automation: expect.objectContaining({ status: "pending" }) }),
           ]),
         });
-        expect((await query(foreignPath!)).status).toBe(404);
+        const randomId = randomUUID();
+        await compareRefusals(await query(foreignId), await query(randomId), foreignId, randomId);
       }
       const taskName = CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS;
       await runInTenant(tenants[0]!, () =>
@@ -763,7 +788,9 @@ describe("generic operation REST contract (issue #219)", () => {
         new Map(),
         createLibraryMetadataFetcher({
           fetch: async (url) =>
-            new Response(JSON.stringify(url.includes("openlibrary.org") ? { docs: [] } : { items: [] })),
+            new Response(
+              JSON.stringify(url.includes("openlibrary.org") ? { docs: [] } : { kind: "books#volumes", totalItems: 0 }),
+            ),
         }),
       )[taskName];
       if (!task) throw new Error("Library task missing");

@@ -11,6 +11,8 @@ import {
 } from "./openLibraryFetcher.js";
 
 const responseSchema = z.object({
+  kind: z.literal("books#volumes"),
+  totalItems: z.number().int().nonnegative(),
   items: z
     .array(
       z.object({
@@ -45,18 +47,16 @@ export async function fetchGoogleBooks(
   if (!parsed.success) return { status: "error", errorCode: "invalidResponse", source: "googleBooks" };
   const docs = (parsed.data.items ?? []).map(({ volumeInfo: info }) => {
     const year = /^\d{4}/.exec(info.publishedDate ?? "")?.[0];
+    const thumbnail = info.imageLinks?.thumbnail;
+    const downloadUrl = thumbnail && isBaselineOutboundUrl(thumbnail) ? thumbnail : undefined;
     return {
       title: info.title,
       author: info.authors?.[0],
       year: year ? Number(year) : undefined,
       isbn: info.industryIdentifiers?.find((entry) => entry.type === "ISBN_13" || entry.type === "ISBN_10")?.identifier,
+      downloadUrl,
       coverUrl:
-        info.imageLinks?.thumbnail &&
-        isBaselineOutboundUrl(info.imageLinks.thumbnail) &&
-        new URL(info.imageLinks.thumbnail).search === "" &&
-        new URL(info.imageLinks.thumbnail).hash === ""
-          ? info.imageLinks.thumbnail
-          : undefined,
+        downloadUrl && new URL(downloadUrl).search === "" && new URL(downloadUrl).hash === "" ? downloadUrl : undefined,
     };
   });
   docs.sort(
@@ -70,7 +70,7 @@ export async function fetchGoogleBooks(
     author: best.author,
     year: best.year,
     isbn: best.isbn,
-    cover: best.coverUrl ? await coverDownload(best.coverUrl) : undefined,
+    cover: best.downloadUrl ? await coverDownload(best.downloadUrl) : undefined,
     candidates: docs.slice(1, 4).map(({ title, author, year, coverUrl }) => ({ title, author, year, coverUrl })),
   };
 }
