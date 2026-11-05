@@ -142,9 +142,9 @@ describe("derived value creation guard", () => {
       const { cp, db, property } = await fixture();
       const event = await cp.createItem({ databaseId: db("events"), properties: { name: "Event" } });
       const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
-      const first = await cp.createItem({ databaseId: db("companies"), properties: { name: "First" } });
-      const second = await cp.createItem({ databaseId: db("companies"), properties: { name: "Second" } });
-      const relationPropertyId = await property("events", "company");
+      const first = await cp.createItem({ databaseId: db("areas"), properties: { name: "First" } });
+      const second = await cp.createItem({ databaseId: db("areas"), properties: { name: "Second" } });
+      const relationPropertyId = await property("events", "area");
       await cp.setRelation({ relationPropertyId, callerItemId: event.id, targetItemId: first.id });
       await cp.createRelation({
         relationPropertyId: await property("events", "project"),
@@ -153,7 +153,7 @@ describe("derived value creation guard", () => {
       });
       await expect(
         cp.setRelation({ relationPropertyId, callerItemId: event.id, targetItemId: second.id }),
-      ).rejects.toMatchObject({ status: 400, details: { field: "company" } });
+      ).rejects.toMatchObject({ status: 400, details: { field: "area" } });
       expect((await cp.listItemRelations(event.id))?.some((edge) => edge.targetItemId === first.id)).toBe(true);
       await expect(
         cp.setRelation({ relationPropertyId, callerItemId: event.id, targetItemId: first.id }),
@@ -233,6 +233,25 @@ describe("derived value creation guard", () => {
         await expect(
           cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
         ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
+        let priorId = "";
+        await expect(
+          withTransaction(data, async (client) => {
+            priorId = (
+              await createItemWithClient(client, { databaseId: db("files"), properties: { name: "Rollback on busy" } })
+            ).id;
+            try {
+              await createRelationWithClient(client, {
+                relationPropertyId: areaProperty,
+                callerItemId: file.id,
+                targetItemId: area.id,
+              });
+            } catch (error) {
+              expect(error).toMatchObject({ details: { reason: "resource_busy" } });
+            }
+          }),
+        ).rejects.toMatchObject({ details: { reason: "resource_busy" } });
+        expect(priorId).not.toBe("");
+        expect(await cp.findItem(priorId)).toBeNull();
       } finally {
         release();
         await holder;
@@ -240,6 +259,79 @@ describe("derived value creation guard", () => {
       await expect(
         cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
       ).rejects.toMatchObject({ status: 400, details: { field: "area" } });
+    });
+  });
+  it("orders an inverse project insertion after a reserved manual edge", async () => {
+    await runInTenant(tenant, async () => {
+      const { cp, db, property } = await fixture();
+      const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
+      const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
+      const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
+      const manual = await property("files", "area");
+      const inverse = await property("projects", "files");
+      let release!: () => void;
+      let ready!: (pid: number) => void;
+      let waiterReady!: (pid: number) => void;
+      const barrier = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const entered = new Promise<number>((resolve) => {
+        ready = resolve;
+      });
+      const waiterEntered = new Promise<number>((resolve) => {
+        waiterReady = resolve;
+      });
+      const holder = withTransaction(data, async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+        await createRelationWithClient(client, {
+          relationPropertyId: manual,
+          callerItemId: file.id,
+          targetItemId: area.id,
+        });
+        ready(pid);
+        await barrier;
+      });
+      let waiter: Promise<unknown> | undefined;
+      try {
+        const holderPid = await Promise.race([
+          entered,
+          holder.then(() => {
+            throw new Error("Holder ended before its barrier");
+          }),
+        ]);
+        waiter = withTransaction(data, async (client) => {
+          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+          waiterReady(pid);
+          await createRelationWithClient(client, {
+            relationPropertyId: inverse,
+            callerItemId: project.id,
+            targetItemId: file.id,
+          });
+        });
+        const waiterPid = await Promise.race([
+          waiterEntered,
+          waiter.then(() => {
+            throw new Error("Waiter ended before its barrier");
+          }),
+        ]);
+        let blocked = false;
+        for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+          const result = await data.query<{ blocked: boolean }>(
+            "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
+            [holderPid, waiterPid],
+          );
+          blocked = result.rows[0]?.blocked === true;
+          if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(blocked).toBe(true);
+      } finally {
+        release();
+        await holder;
+        if (waiter) await waiter;
+      }
+      const edges = await cp.listItemRelations(file.id);
+      expect(edges?.some((edge) => edge.targetItemId === area.id)).toBe(true);
+      expect(edges?.some((edge) => edge.targetItemId === project.id)).toBe(true);
     });
   });
 });
