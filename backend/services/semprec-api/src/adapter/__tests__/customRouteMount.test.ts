@@ -269,8 +269,9 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
     expect(() => requireCustomRouteDependency({}, "mailLiveSync")).toThrow(/"mailLiveSync"/);
   });
 
-  it("createDispatcher hands every custom route factory the container it was given", async () => {
+  it("createDispatcher copies the caller container and supplies its own registry provider", async () => {
     const moduleRegistry = await loadFullModuleRegistry();
+    const registryRules = vi.spyOn(moduleRegistry, "getHeartbeatRuleKindDefinitions");
     const seen: { pool?: Pool; dependencies?: CustomRouteDependencies } = {};
     const capturing: CustomRouteHandlerFactory = (factoryPool, dependencies) => {
       seen.pool = factoryPool;
@@ -280,7 +281,11 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
     vi.spyOn(moduleRegistry, "getCustomRouteDefinitions").mockResolvedValue([
       { ...REDIRECT_DEFINITION, handler: capturing },
     ]);
-    const container: CustomRouteDependencies = { oauth: { redirectBaseUrl: "https://app.example.test" } };
+    const callerProvider = vi.fn(async () => new Map());
+    const container: CustomRouteDependencies = {
+      oauth: { redirectBaseUrl: "https://app.example.test" },
+      heartbeatRuleKinds: callerProvider,
+    };
 
     await createDispatcher(pool, {
       passwordResetMailer: noopPasswordResetMailer,
@@ -293,7 +298,16 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
     });
 
     expect(seen.pool).toBe(pool);
-    expect(seen.dependencies).toBe(container);
+    expect(seen.dependencies).not.toBe(container);
+    expect(seen.dependencies?.oauth).toBe(container.oauth);
+    expect(seen.dependencies?.heartbeatRuleKinds).toEqual(expect.any(Function));
+    expect(container.oauth).toEqual({ redirectBaseUrl: "https://app.example.test" });
+    expect(Object.keys(container).sort()).toEqual(["heartbeatRuleKinds", "oauth"]);
+    expect(container.heartbeatRuleKinds).toBe(callerProvider);
+    expect(registryRules).not.toHaveBeenCalled();
+    await seen.dependencies?.heartbeatRuleKinds?.();
+    expect(registryRules).toHaveBeenCalledOnce();
+    expect(callerProvider).not.toHaveBeenCalled();
   });
 
   it("uses the injected mailbox control through the dispatcher and factory on a request", async () => {
@@ -325,8 +339,9 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
     expect(stopMailbox).not.toHaveBeenCalled();
   });
 
-  it("createDispatcher mounts with an empty container when the caller gives none", async () => {
+  it("createDispatcher supplies only its registry provider when the caller gives no container", async () => {
     const moduleRegistry = await loadFullModuleRegistry();
+    const registryRules = vi.spyOn(moduleRegistry, "getHeartbeatRuleKindDefinitions");
     const seen: { dependencies?: CustomRouteDependencies } = {};
     const capturing: CustomRouteHandlerFactory = (_factoryPool, dependencies) => {
       seen.dependencies = dependencies;
@@ -345,6 +360,10 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
       maxFileSizeBytes: 1024,
     });
 
-    expect(seen.dependencies).toEqual({});
+    expect(Object.keys(seen.dependencies ?? {})).toEqual(["heartbeatRuleKinds"]);
+    expect(seen.dependencies?.heartbeatRuleKinds).toEqual(expect.any(Function));
+    expect(registryRules).not.toHaveBeenCalled();
+    await seen.dependencies?.heartbeatRuleKinds?.();
+    expect(registryRules).toHaveBeenCalledOnce();
   });
 });

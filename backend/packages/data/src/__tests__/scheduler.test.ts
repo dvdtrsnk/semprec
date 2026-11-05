@@ -915,7 +915,7 @@ describe("scheduler", () => {
     const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
     expect(runs).toHaveLength(1);
     expect(runs[0]!.status).toBe("done");
-    expect(runs[0]!.result).toBe("handled: process the inbox");
+    expect(runs[0]!.result).toBe("handled: process the inbox\nTriggering item id: unused");
   });
 
   it("createHeartbeatFireCoreTask rejects a core.agentRun heartbeat with an affinity-mismatch error instead of running it", async () => {

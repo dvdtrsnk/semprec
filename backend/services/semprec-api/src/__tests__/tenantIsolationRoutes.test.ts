@@ -21,8 +21,10 @@ import {
   ensureMailAccountSyncState,
   getTenantZeroId,
   getTestPool,
+  reconcileGmailAccount,
   resetDatabase,
   storeCredential,
+  type GmailMailClient,
 } from "@semprec/data/testSupport";
 import {
   createActionRegistry,
@@ -47,8 +49,11 @@ import {
   listAgentRunsByHeartbeat,
   LocalFsBlobStorageWriter,
   provisionTenant,
+  raiseProblem,
   recordTokenGatewayCall,
   reserveGatewayCall,
+  resolveMailModuleIds,
+  resolveNotificationsBySource,
   settleAudioGatewayCall,
   setSempThreadInvalidationHook,
   revokeInvite,
@@ -1000,6 +1005,40 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   "unread notifications": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/notifications/unread" }, [b.notificationId]);
   },
+  "resolved notifications": async () => {
+    const ids: string[] = [];
+    for (const fixture of [a, b]) {
+      const id = await runInTenant(fixture.tenantId, () =>
+        withTransaction(pool, async (client) => {
+          const heartbeat = await createHeartbeat(client, {
+            projectItemId: fixture.projectItemId,
+            name: "Resolved",
+            rule: { kind: "interval", minutes: 5 },
+            actionId: "noop",
+          });
+          const sourceId = heartbeat.id;
+          const notification = await writeNotification(client, {
+            userId: fixture.member.userId,
+            kind: "heartbeat_error",
+            titleParams: { name: "Resolved" },
+            linkHref: null,
+            sourceTable: "project_heartbeats",
+            sourceId,
+            transitionInstance: randomUUID(),
+          });
+          await resolveNotificationsBySource(client, { sourceTable: "project_heartbeats", sourceId });
+          return notification;
+        }),
+      );
+      ids.push(id);
+    }
+    const answer = await expectExcludesA(
+      b.member,
+      { method: "GET", path: "/api/notifications/resolved?since=2020-01-01T00%3A00%3A00Z" },
+      [ids[1]!],
+    );
+    expect(answer.text).not.toContain(ids[0]);
+  },
   "visit notification": () =>
     leavesAUnchanged(async () => {
       await expectForeignLikeRandom(b.member, [a.notificationId], ([id]) => ({
@@ -1058,8 +1097,39 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: {},
       }));
     }),
+  "set heartbeat enabled": () =>
+    leavesAUnchanged(async () => {
+      const answer = await expectForeignLikeRandom(b.member, [a.heartbeatId], ([id]) => ({
+        method: "PATCH",
+        path: entryPath("set heartbeat enabled", id!),
+        body: { enabled: false },
+      }));
+      expect(answer.status).toBe(404);
+    }),
   "schema projection": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/schema" });
+  },
+  "semp status": async () => {
+    const ids: string[] = [];
+    for (const fixture of [a, b]) {
+      const result = await runInTenant(fixture.tenantId, () =>
+        withTransaction(pool, (client) =>
+          raiseProblem(client, {
+            userId: fixture.member.userId,
+            category: "agents",
+            kind: "agentHeartbeat",
+            severity: "warning",
+            sourceTable: "project_heartbeats",
+            sourceId: fixture.heartbeatId,
+            dedupeKey: `agents:heartbeat:${fixture.heartbeatId}`,
+          }),
+        ),
+      );
+      ids.push(result.problemId);
+    }
+    const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/semp-status" }, [ids[1]!]);
+    expect(answer.headers["cache-control"]).toBe("no-store");
+    expect(answer.text).not.toContain(ids[0]);
   },
   "ai usage report": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/ai-usage?from=2026-01-01&to=2026-12-31" });
@@ -1096,6 +1166,72 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/mail/contacts?q=contact" }, [own.id]);
     expect(answer.text).not.toContain(foreign.id);
     expect(answer.text).not.toContain("foreign-contact@example.com");
+  },
+  "mail threads": async () => {
+    const seed = (fixture: TenantFixture) =>
+      runInTenant(fixture.tenantId, () =>
+        withTransaction(pool, async (client) => {
+          const ids = await resolveMailModuleIds(client);
+          const cp = createChokePoint(pool);
+          const emailProperties = await cp.listProperties(ids.emailsDatabaseId);
+          const folderProperties = await cp.listProperties(ids.foldersDatabaseId);
+          const find = (properties: typeof emailProperties, key: string) => {
+            const property = properties.find((entry) => entry.key === key);
+            if (!property) throw new Error(`Missing ${key}`);
+            return property.id;
+          };
+          const mailbox = await createItemWithClient(client, {
+            databaseId: ids.mailboxesDatabaseId,
+            properties: { name: "Mailbox", provider: "gmail" },
+          });
+          await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
+          const gmail: GmailMailClient = {
+            getCurrentHistoryId: async () => "1",
+            listHistorySince: async () => ({
+              invalidated: false,
+              newHistoryId: "2",
+              changedMessageIds: [],
+              removedMessageIds: [],
+            }),
+            listAllMessageIds: async () => ["message"],
+            listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
+            fetchMessage: async () => ({
+              id: "message",
+              threadId: "thread",
+              labelIds: ["INBOX"],
+              message: {
+                messageId: `<${fixture.tenantId}@example.test>`,
+                subject: "Isolation",
+                envelope: { from: { address: "sender@example.test" } },
+                attachments: [],
+              },
+            }),
+            modifyMessageLabels: async () => undefined,
+          };
+          await reconcileGmailAccount(client, gmail, {
+            mailboxItemId: mailbox.id,
+            emailsDatabaseId: ids.emailsDatabaseId,
+            filesDatabaseId: ids.filesDatabaseId,
+            foldersDatabaseId: ids.foldersDatabaseId,
+            folderRelationPropertyId: find(emailProperties, "folder"),
+            attachmentsRelationPropertyId: find(emailProperties, "attachments"),
+            mailboxFolderRelationPropertyId: find(folderProperties, "mailbox"),
+            storage: filesStorage,
+            storageKeyPrefix: "thread-isolation",
+          });
+          const result = await client.query<{ thread_id: string }>(
+            "SELECT thread_id FROM mail_message_meta WHERE mailbox_item_id = $1",
+            [mailbox.id],
+          );
+          if (result.rows.length !== 1 || !result.rows[0]?.thread_id) throw new Error("Missing ingested thread");
+          return result.rows[0].thread_id;
+        }),
+      );
+    const first = await seed(a);
+    const second = await seed(b);
+    const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/mail/threads" }, [second]);
+    expect(answer.headers["cache-control"]).toBe("no-store");
+    expect(answer.text).not.toContain(first);
   },
   "mailbox removal impact": async () => {
     const own = await send(b.member, {

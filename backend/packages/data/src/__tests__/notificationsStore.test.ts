@@ -22,6 +22,7 @@ import {
   visitNotification,
   markAllNotificationsRead,
   resolveNotificationsBySource,
+  listResolvedNotificationIds,
   getNotificationById,
 } from "../notifications/notificationsStore.js";
 import { setNotificationReadStateHook, type NotificationReadStateEvent } from "../realtimeHook.js";
@@ -70,6 +71,94 @@ describe("notificationsStore (issue #152)", () => {
       }),
     );
   }
+
+  it("drains tied resolved rows with full microsecond boundaries under the runtime tenant role", async () => {
+    const user = await createTestUser();
+    const foreignUser = await createTestUser();
+    const tenant = tenantOfUser.get(user)!;
+    const foreignTenant = tenantOfUser.get(foreignUser)!;
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const failures: unknown[] = [];
+    try {
+      const role = await pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'semprec_data'",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const seed = async (tenantId: string, userId: string, count: number) =>
+        withTenantTransaction(runtime, tenantId, async (client) => {
+          const run = await createAgentRun(client, {
+            triggeredBy: "user",
+            userId,
+            task: "Resolved notification fixture",
+          });
+          const ids: string[] = [];
+          for (let i = 0; i < count; i++)
+            ids.push(
+              await writeNotification(client, {
+                userId,
+                kind: "agent_run_error",
+                sourceTable: "agent_runs",
+                sourceId: run.id,
+                transitionInstance: `transition-${i}`,
+                linkHref: null,
+              }),
+            );
+          await resolveNotificationsBySource(client, { sourceTable: "agent_runs", sourceId: run.id });
+          // Synthetic timestamp fixture: the production resolver always uses the database clock.
+          const fixed = await client.query(
+            "UPDATE notifications SET resolved_at = $3::timestamptz WHERE tenant_id = app_tenant_default() AND user_id = $1 AND id = ANY($2::uuid[]) AND resolved_at IS NOT NULL",
+            [userId, ids, "2025-01-01T00:00:00.123456Z"],
+          );
+          expect(fixed.rowCount).toBe(count);
+          return ids.sort();
+        });
+      const expected = await seed(tenant, user, 503);
+      const foreign = await seed(foreignTenant, foreignUser, 1);
+      const unresolved = await withTenantTransaction(runtime, tenant, async (client) => {
+        const run = await createAgentRun(client, { triggeredBy: "user", userId: user, task: "Unresolved fixture" });
+        return writeNotification(client, {
+          userId: user,
+          kind: "agent_run_error",
+          sourceTable: "agent_runs",
+          sourceId: run.id,
+          transitionInstance: "unresolved",
+          linkHref: null,
+        });
+      });
+      await withTenantTransaction(runtime, tenant, async (client) => {
+        const first = await listResolvedNotificationIds(client, user, "2000-01-01T00:00:00Z", 900);
+        expect(first).toHaveLength(500);
+        const boundary = first.at(-1)!;
+        expect(boundary.resolvedAt).toBe("2025-01-01T00:00:00.123456Z");
+        const second = await listResolvedNotificationIds(client, user, boundary.resolvedAt, 500, boundary.id);
+        expect(second).toHaveLength(3);
+        expect([...first, ...second].map((row) => row.id)).toEqual(expected);
+        expect([...first, ...second].every((row) => row.resolvedAt === boundary.resolvedAt)).toBe(true);
+        expect(await listResolvedNotificationIds(client, user, boundary.resolvedAt, 500)).toEqual([]);
+        expect(await listResolvedNotificationIds(client, user, "2025-01-01T00:00:00.123000Z", 1)).toEqual([first[0]]);
+        expect(
+          await listResolvedNotificationIds(client, user, second.at(-1)!.resolvedAt, 500, second.at(-1)!.id),
+        ).toEqual([]);
+        expect([...first, ...second].map((row) => row.id)).not.toContain(foreign[0]);
+        expect([...first, ...second].map((row) => row.id)).not.toContain(unresolved);
+        const before = await client.query<{ value: string }>(
+          "SELECT to_char(($1::timestamptz - interval '1 microsecond') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS value",
+          [boundary.resolvedAt],
+        );
+        expect(await listResolvedNotificationIds(client, user, before.rows[0]!.value, 1)).toEqual([first[0]]);
+      });
+    } catch (error) {
+      failures.push(error);
+    } finally {
+      try {
+        await runtime.end();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Resolved notification test and cleanup failed");
+  });
 
   describe("listUnreadNotificationsForUser", () => {
     it("projects legacy and current mail stalls safely without rewriting stored payloads or other kinds", async () => {

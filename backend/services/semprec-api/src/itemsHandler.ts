@@ -114,10 +114,11 @@ export function createItemRoutes(
       path: "/api/items/:id",
       handler: async (ctx) => {
         const id = requireUuidParam(ctx.params, "id");
-        // `include` is a comma-separated list (`path,links`); tokens this route does not know are ignored, as before.
+        // `include` is a comma-separated list; tokens this route does not know are ignored, as before.
         const includes = (requestUrl(ctx.req.url).searchParams.get("include") ?? "").split(",");
         const includePath = includes.includes("path");
         const includeLinks = includes.includes("links");
+        const includeDerived = includes.includes("derived");
 
         const params = requestUrl(ctx.req.url).searchParams;
         let relations: Record<string, string[]> | undefined;
@@ -141,19 +142,24 @@ export function createItemRoutes(
           const path = await chokePoint.getItemPath(id, relations === undefined ? undefined : { relations, resolver });
           const last = path.at(-1);
           if (!last) throw new NotFoundError(`Item ${id} not found`);
-          const links = includeLinks ? ((await chokePoint.getValueLinksForItems([id])).get(id) ?? {}) : undefined;
+          const projection = includeDerived ? await chokePoint.getDerivedValuesForItems([id]) : undefined;
+          const links = includeLinks
+            ? ((await chokePoint.getValueLinksForItems([id], includeDerived, projection)).get(id) ?? {})
+            : undefined;
+          const derived = projection !== undefined ? (projection.get(id) ?? {}) : undefined;
           return {
             status: 200,
             body: {
               ...toItemDetailEnvelope(last, path),
               ...(await toItemEnvelopeWithBlobs(pool, last)),
               ...(links === undefined ? {} : { links }),
+              ...(derived === undefined ? {} : { derived }),
             },
           };
         }
         const item = await dispatchGenericOperation(service, "item.get", restActor(ctx.identity.user.id), {
           itemId: id,
-          include: { links: includeLinks, ...(relations === undefined ? {} : { relations }) },
+          include: { links: includeLinks, derived: includeDerived, ...(relations === undefined ? {} : { relations }) },
         });
         const envelope = await toItemEnvelopeWithBlobs(pool, item);
         return { status: 200, body: envelope };

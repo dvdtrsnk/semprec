@@ -22,11 +22,13 @@ export {
 } from "../push/pushRouteHandlers.js";
 export { createAiUsageRouteHandler, createAiUsageSummaryRouteHandler } from "../aiGateway/aiUsageRouteHandler.js";
 export { createSystemHealthRouteHandler } from "../observability/systemHealthRouteHandler.js";
+export { createSempStatusRouteHandler } from "../semp/sempStatusRouteHandler.js";
 export {
   createGetNotificationPreferencesRouteHandler,
   createPatchNotificationPreferencesRouteHandler,
 } from "../notifications/notificationPreferencesRoutes.js";
 export { createTriggerHeartbeatRouteHandler } from "../scheduler/triggerHeartbeatRoute.js";
+export { createSetHeartbeatEnabledRouteHandler } from "../scheduler/setHeartbeatEnabledRoute.js";
 
 /**
  * Retrofit manifest (module-contract issue #226) for the schema/data core: the choke point
@@ -83,6 +85,20 @@ export const manifest: ModuleManifest = {
   ],
   migrations: ["0001_core_schema.sql"],
   customRoutes: [
+    {
+      name: "sempStatus",
+      method: "GET",
+      path: "/api/semp-status",
+      handlerExport: "createSempStatusRouteHandler",
+      justification: "single-consumer-read",
+    },
+    {
+      name: "setHeartbeatEnabled",
+      method: "PATCH",
+      path: "/api/heartbeats/:id",
+      handlerExport: "createSetHeartbeatEnabledRouteHandler",
+      justification: "transactional-semantics",
+    },
     {
       name: "registerPushSubscription",
       method: "POST",

@@ -200,7 +200,17 @@ export async function seedTenDatabasesInTransaction(
       name: "Relationship",
       type: "select",
       owner: "user",
-      config: selectConfig(["parent", "therapist", "closeFriend", "girlfriend", "client", "neighbor"]),
+      config: selectConfig([
+        "parent",
+        "therapist",
+        "closeFriend",
+        "girlfriend",
+        "client",
+        "neighbor",
+        "colleague",
+        "craftsman",
+        "doctor",
+      ]),
     },
     // Canonical values stay plain English camelCase per the canonical-keys skill; the
     // mock's emoji (📞/✉️) is presentational and belongs to the not-yet-built i18n/UI layer.

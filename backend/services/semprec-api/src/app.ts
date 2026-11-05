@@ -83,11 +83,18 @@ export async function createDispatcher(
   options: AppOptions,
 ): Promise<(req: IncomingMessage, res: ServerResponse) => void> {
   const customRouteDefinitions = await options.moduleRegistry.getCustomRouteDefinitions();
-  const dispatchCustomRoute = mountCustomRoutes(
-    pool,
-    customRouteDefinitions,
-    options.customRouteDependencies ?? createCustomRouteDependencies(),
-  );
+  const dispatchCustomRoute = mountCustomRoutes(pool, customRouteDefinitions, {
+    ...(options.customRouteDependencies ?? createCustomRouteDependencies()),
+    heartbeatRuleKinds: async () => {
+      const definitions = await options.moduleRegistry.getHeartbeatRuleKindDefinitions();
+      return new Map(
+        definitions.map((definition) => [
+          definition.kind,
+          { schema: definition.schema, nextFireAt: definition.nextFireAt },
+        ]),
+      );
+    },
+  });
   // The sole neutral `GenericApplicationPort` implementation (issue #219): one instance per
   // injected `Pool`, threaded into every generic resource route family below so there is no
   // second write path — a route never constructs its own `createChokePoint(pool)`.

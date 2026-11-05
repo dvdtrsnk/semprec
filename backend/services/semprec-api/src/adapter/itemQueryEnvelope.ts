@@ -1,10 +1,11 @@
 import type { Pool } from "pg";
 import type { ItemRow, ItemValueLinks } from "@semprec/data";
+import type { Item } from "@semprec/shared";
 import { toItemEnvelopes, type ItemEnvelope } from "./itemEnvelope.js";
 
 /** A query page whose items carry `links` only when the request asked for `include=links` (issue #1403). */
 interface ItemQueryResult {
-  items: (ItemRow & { links?: ItemValueLinks })[];
+  items: (ItemRow & { links?: ItemValueLinks; derived?: Item["derived"] })[];
   nextCursor: string | null;
   totalCount?: number;
 }

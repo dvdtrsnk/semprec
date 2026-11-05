@@ -30,6 +30,7 @@ import {
   createDocStore,
   createUser,
   createViewTypeRegistry,
+  ensureJournalPeriodDoc,
   hashPassword,
   insertValueLink,
   loadFullModuleRegistry,
@@ -134,6 +135,164 @@ describe("item routes (issue #241)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("enforces derived relation admission through runtime HTTP", async () => {
+    await seedSystem(pool, createViewTypeRegistry());
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const foreignHeaders = { ...(await authHeader()), "Content-Type": "application/json" };
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let runtimeServer: Server | undefined;
+    const failures: unknown[] = [];
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const dispatch = await createDispatcher(runtime, {
+        passwordResetMailer: noopMailer,
+        appBaseUrl: "http://localhost",
+        setupToken: "unused-setup-token",
+        moduleRegistry,
+        blobStorage: new LocalFsBlobStorageWriter(tmpBlobDir),
+        maxFileSizeBytes: 10 * 1024 * 1024,
+      });
+      runtimeServer = createServer(dispatch);
+      const ownedServer = runtimeServer;
+      await new Promise<void>((resolve, reject) => {
+        ownedServer.once("error", reject);
+        ownedServer.listen(0, "127.0.0.1", resolve);
+      });
+      const address = runtimeServer.address();
+      if (!address || typeof address === "string") throw new Error("Expected runtime server");
+      const base = `http://127.0.0.1:${address.port}`;
+      const fixture = await runInTenant(getTenantZeroId(), async () => {
+        const cp = createChokePoint(runtime);
+        const databases = await cp.listDatabases();
+        const db = (key: string) => {
+          const match = databases.find((entry) => entry.ownerModuleId === key);
+          if (!match) throw new Error(`Missing ${key}`);
+          return match.id;
+        };
+        const event = await cp.createItem({ databaseId: db("events"), properties: { name: "Event" } });
+        const open = await cp.createItem({ databaseId: db("events"), properties: { name: "Open" } });
+        const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
+        const openFile = await cp.createItem({ databaseId: db("files"), properties: { name: "Open file" } });
+        const health = await cp.createItem({ databaseId: db("healthRecords"), properties: { name: "Health" } });
+        const openHealth = await cp.createItem({
+          databaseId: db("healthRecords"),
+          properties: { name: "Open health" },
+        });
+        const day = await withTransaction(runtime, (client) => ensureJournalPeriodDoc(client, "day", "2026-05-01"));
+        const openDay = await withTransaction(runtime, (client) => ensureJournalPeriodDoc(client, "day", "2026-05-02"));
+        const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
+        const company = await cp.createItem({ databaseId: db("companies"), properties: { name: "Company" } });
+        const first = await cp.createItem({ databaseId: db("areas"), properties: { name: "First" } });
+        const second = await cp.createItem({ databaseId: db("areas"), properties: { name: "Second" } });
+        const area = (await cp.listProperties(db("events"))).find((p) => p.key === "area");
+        const projectProperty = (await cp.listProperties(db("events"))).find((p) => p.key === "project");
+        const fileProjects = (await cp.listProperties(db("files"))).find((p) => p.key === "projects");
+        const healthProjects = (await cp.listProperties(db("healthRecords"))).find((p) => p.key === "projects");
+        const journalProject = (await cp.listProperties(db("journal"))).find((p) => p.key === "project");
+        if (!area || !projectProperty || !fileProjects || !healthProjects || !journalProject)
+          throw new Error("Missing guarded relations");
+        await cp.setRelation({ relationPropertyId: area.id, callerItemId: event.id, targetItemId: first.id });
+        await cp.createRelation({
+          relationPropertyId: projectProperty.id,
+          callerItemId: event.id,
+          targetItemId: project.id,
+        });
+        await cp.createRelation({
+          relationPropertyId: fileProjects.id,
+          callerItemId: file.id,
+          targetItemId: project.id,
+        });
+        await cp.createRelation({
+          relationPropertyId: healthProjects.id,
+          callerItemId: health.id,
+          targetItemId: project.id,
+        });
+        await cp.createRelation({
+          relationPropertyId: journalProject.id,
+          callerItemId: day.itemId,
+          targetItemId: project.id,
+        });
+        return { event, open, file, openFile, health, openHealth, day, openDay, company, first, second };
+      });
+      const put = (source: string, target: string, requestHeaders = headers) =>
+        fetch(`${base}/api/items/${source}/relations/area/${target}`, { method: "PUT", headers: requestHeaders });
+      expect((await put(fixture.open.id, fixture.second.id)).status).toBe(200);
+      expect((await put(fixture.openFile.id, fixture.second.id)).status).toBe(200);
+      const deniedFile = await put(fixture.file.id, fixture.second.id);
+      expect(deniedFile.status).toBe(400);
+      expect(await deniedFile.json()).toMatchObject({ error: { details: { field: "area" } } });
+      expect((await put(fixture.openHealth.id, fixture.second.id)).status).toBe(200);
+      const deniedHealth = await put(fixture.health.id, fixture.second.id);
+      expect(deniedHealth.status).toBe(400);
+      expect(await deniedHealth.json()).toMatchObject({ error: { details: { field: "area" } } });
+      expect((await put(fixture.openDay.itemId, fixture.second.id)).status).toBe(200);
+      const deniedDay = await put(fixture.day.itemId, fixture.second.id);
+      expect(deniedDay.status).toBe(400);
+      expect(await deniedDay.json()).toMatchObject({ error: { details: { field: "area" } } });
+      const putCompany = (source: string, key: string, target: string) =>
+        fetch(`${base}/api/items/${source}/relations/${key}/${target}`, { method: "PUT", headers });
+      expect((await putCompany(fixture.open.id, "company", fixture.company.id)).status).toBe(200);
+      const deniedCompany = await putCompany(fixture.event.id, "company", fixture.company.id);
+      expect(deniedCompany.status).toBe(400);
+      expect(await deniedCompany.json()).toMatchObject({ error: { details: { field: "company" } } });
+      const deniedInverse = await putCompany(fixture.company.id, "meetings", fixture.event.id);
+      expect(deniedInverse.status).toBe(400);
+      expect(await deniedInverse.json()).toMatchObject({ error: { details: { field: "company" } } });
+      const denied = await put(fixture.event.id, fixture.second.id);
+      expect(denied.status).toBe(400);
+      expect(await denied.json()).toMatchObject({ error: { details: { field: "area" } } });
+      const set = await fetch(`${base}/api/items/${fixture.event.id}/relations/area`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ targetItemId: fixture.second.id }),
+      });
+      expect(set.status).toBe(400);
+      expect(await set.json()).toMatchObject({ error: { details: { field: "area" } } });
+      const foreign = await put(fixture.event.id, fixture.second.id, foreignHeaders);
+      const randomId = randomUUID();
+      const random = await put(randomId, fixture.second.id, foreignHeaders);
+      expect(foreign.status).toBe(404);
+      expect(random.status).toBe(404);
+      expect((await foreign.text()).replaceAll(fixture.event.id, "<id>")).toEqual(
+        (await random.text()).replaceAll(randomId, "<id>"),
+      );
+      const edges = await runInTenant(getTenantZeroId(), () =>
+        createChokePoint(runtime).listItemRelations(fixture.event.id),
+      );
+      expect(edges?.some((edge) => edge.targetItemId === fixture.first.id)).toBe(true);
+      expect(edges?.some((edge) => edge.targetItemId === fixture.second.id)).toBe(false);
+      const fileEdges = await runInTenant(getTenantZeroId(), () =>
+        createChokePoint(runtime).listItemRelations(fixture.file.id),
+      );
+      expect(fileEdges?.some((edge) => edge.targetItemId === fixture.second.id)).toBe(false);
+      const healthEdges = await runInTenant(getTenantZeroId(), () =>
+        createChokePoint(runtime).listItemRelations(fixture.health.id),
+      );
+      expect(healthEdges?.some((edge) => edge.targetItemId === fixture.second.id)).toBe(false);
+    } catch (error) {
+      failures.push(error);
+    } finally {
+      try {
+        if (runtimeServer)
+          await new Promise<void>((resolve, reject) =>
+            runtimeServer?.close((error) => (error ? reject(error) : resolve())),
+          );
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await runtime.end();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "REST test and settlement failed");
   });
 
   it("enforces Tasks completion and both protected relation pairs through authenticated runtime HTTP", async () => {

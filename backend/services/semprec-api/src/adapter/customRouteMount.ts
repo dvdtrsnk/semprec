@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
-import type { MailSendAdapterFactory, MailServerSettingsInput } from "@semprec/data";
+import type { HeartbeatRuleKindRegistry, MailSendAdapterFactory, MailServerSettingsInput } from "@semprec/data";
 import type { ModuleCustomRouteDefinition } from "@semprec/module-registry";
 import { mountRoutes, type RouteDefinition } from "./routeTable.js";
 import type { AdapterHandler } from "./adapterRoute.js";
@@ -40,6 +40,7 @@ export interface MailLiveSyncControl {
  * that it is absent.
  */
 export interface CustomRouteDependencies {
+  heartbeatRuleKinds?: () => Promise<HeartbeatRuleKindRegistry>;
   oauth?: CustomRouteOAuthConfig;
   mailServerClients?: MailServerClients;
   mailLiveSync?: MailLiveSyncControl;

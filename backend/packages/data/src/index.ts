@@ -12,6 +12,7 @@ export {
 } from "./db/pool.js";
 export { readItemPatchChangeMetadata } from "./chokePoint/itemPatchChangeMetadata.js";
 export { assertRuntimeRole, RuntimeRoleAssertionError } from "./db/runtimeRoleAssertion.js";
+export { assertNotDerivedValueWrite } from "./chokePoint/derivedValueGuard.js";
 export { runMigrations } from "./db/migrate.js";
 export * from "./errors.js";
 export * from "./types.js";
@@ -28,6 +29,8 @@ export type { Actor } from "./chokePoint/authorization.js";
 export { VALUE_LINKS_OWNER_PROCESS } from "./chokePoint/valueLinkWrites.js";
 export { insertValueLink, type InsertValueLinkInput } from "./chokePoint/valueLinksStore.js";
 export type { ItemValueLinks, ValueLinkEntry, ValueLinkSource } from "./chokePoint/valueLinkReads.js";
+export { DERIVED_VALUE_SOURCES } from "./derived/derivedValueSources.js";
+export { getDerivedValuesForItems } from "./derived/derivedValueReads.js";
 export {
   createItemWithClient,
   updateItemWithClient,
@@ -71,6 +74,8 @@ export { writeComputed } from "./chokePoint/itemsStore.js";
 export type { CreateViewInput, PatchViewInput } from "./chokePoint/viewsStore.js";
 export * from "./chokePoint/viewTypeRegistry.js";
 export { manifest as schemaCoreModuleManifest } from "./chokePoint/schemaCoreModuleManifest.js";
+export { createSetHeartbeatEnabledRouteHandler } from "./scheduler/setHeartbeatEnabledRoute.js";
+export { createSempStatusRouteHandler } from "./semp/sempStatusRouteHandler.js";
 
 export * from "./views/filterTree.js";
 export { compileFilterNode } from "./views/filterCompiler.js";
@@ -656,6 +661,7 @@ export { registerItemReadProjection, projectItemForRead, type ItemReadProjection
 export { filterRecognitionCandidates, RECOGNITION_TARGETS } from "./inbox/inboxRecognition.js";
 
 export { createMailContactsRouteHandler } from "./mail/mailContactsRoute.js";
+export { createMailThreadListRouteHandler } from "./mail/mailThreadRoutes.js";
 
 export { getSelfPersonId, setSelfPersonId } from "./selfPerson.js";
 export {

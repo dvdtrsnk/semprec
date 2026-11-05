@@ -346,6 +346,7 @@ export async function seedEmailModuleInTransaction(
     actionId: CORE_AGENT_RUN_ACTION_ID,
     actionConfig: {
       task: "A new message arrived in the Inbox.",
+      senderKnownFilter: {},
       itemRelationFilter: {
         relationPropertyId: folderRelation.property.id,
         property: "specialPurpose",

@@ -82,6 +82,29 @@ const NOTIFICATION_COLUMNS =
  */
 const MAX_UNREAD_NOTIFICATIONS_PER_QUERY = 500;
 
+export async function listResolvedNotificationIds(
+  client: PoolClient,
+  userId: string,
+  since: string,
+  limit: number,
+  afterId?: string,
+): Promise<Array<{ id: string; resolvedAt: string }>> {
+  if (!Number.isInteger(limit) || limit < 1) throw new Error("Invalid resolved notification limit");
+  const { rows } = await client.query<Record<string, unknown>>(
+    `SELECT id, to_char(resolved_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS resolved_at
+     FROM notifications
+     WHERE tenant_id = app_tenant_default() AND user_id = $1 AND resolved_at IS NOT NULL
+       AND (($3::uuid IS NULL AND resolved_at > $2::timestamptz)
+         OR ($3::uuid IS NOT NULL AND (resolved_at, id) > ($2::timestamptz, $3::uuid)))
+     ORDER BY resolved_at ASC, id ASC LIMIT $4`,
+    [userId, since, afterId ?? null, Math.min(limit, 500)],
+  );
+  return rows.map((row) => {
+    const parsed = z.object({ id: z.uuid(), resolved_at: z.string() }).parse(row);
+    return { id: parsed.id, resolvedAt: parsed.resolved_at };
+  });
+}
+
 /** Reload for the `notificationFanout` job (issue #151) — the writer's transaction has already committed by the time the job runs. */
 export async function getNotificationById(client: Pool | PoolClient, id: string): Promise<NotificationRow | null> {
   const { rows } = await client.query<NotificationDbRow>(

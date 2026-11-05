@@ -5,13 +5,14 @@ import type { PoolClient } from "pg";
 import * as databasesStore from "./databasesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import * as valueLinksStore from "./valueLinksStore.js";
+import { getDerivedValuesForItems, type DerivedValues } from "../derived/derivedValueReads.js";
 
 export type ValueLinkSource =
   | { kind: "item"; itemId: string; databaseKey: string | null; title: string; propertyKey: string }
   | { kind: "senderDomain"; domain: string; propertyKey: string };
 
 export interface ValueLinkEntry {
-  valueKind: "inherited" | "inheritedBroken";
+  valueKind: "inherited" | "inheritedBroken" | "derived";
   sources: ValueLinkSource[];
   brokenBy: "user" | "agent" | null;
   brokenAt: string | null;
@@ -30,10 +31,12 @@ export type ItemValueLinks = Record<string, ValueLinkEntry>;
 export async function getValueLinksForItems(
   client: PoolClient,
   itemIds: string[],
+  includeDerived = false,
+  preloadedDerived?: ReadonlyMap<string, DerivedValues>,
 ): Promise<Map<string, ItemValueLinks>> {
   const links = await valueLinksStore.listValueLinksByItemIds(client, itemIds);
   const result = new Map<string, ItemValueLinks>();
-  if (links.length === 0) return result;
+  if (links.length === 0 && !includeDerived) return result;
 
   const sourceRows = await valueLinksStore.listValueLinkSourcesByLinkIds(
     client,
@@ -93,5 +96,52 @@ export async function getValueLinksForItems(
   }
   // `Object.fromEntries` defines own properties, so a property key such as `__proto__` stays data.
   for (const [itemId, entries] of entriesByItem) result.set(itemId, Object.fromEntries(entries));
+  if (includeDerived) {
+    const derived =
+      preloadedDerived ?? (await getDerivedValuesForItems(client, await itemsStore.getItemsByIds(client, itemIds)));
+    const projectIds = [
+      ...new Set(
+        [...derived.values()].flatMap((value) => [
+          ...(value.area?.projectIds ?? []),
+          ...(value.company?.projectIds ?? []),
+        ]),
+      ),
+    ];
+    const projects = await itemsStore.getItemsByIds(client, projectIds);
+    const labels = await databasesStore.listDatabaseLabelsByIds(client, [
+      ...new Set(projects.map((p) => p.databaseId)),
+    ]);
+    const labelById = new Map(labels.map((label) => [label.id, label]));
+    const projectById = new Map(projects.map((project) => [project.id, project]));
+    for (const [itemId, values] of derived) {
+      const itemLinks = result.get(itemId) ?? {};
+      for (const key of ["area", "company"] as const) {
+        const value = values[key];
+        if (!value) continue;
+        const sources: ValueLinkSource[] = value.projectIds.flatMap((id) => {
+          const project = projectById.get(id);
+          if (!project) return [];
+          const label = labelById.get(project.databaseId);
+          const title = project.properties[label?.titlePropertyKey ?? ""];
+          return [
+            {
+              kind: "item",
+              itemId: id,
+              databaseKey: "projects",
+              title: typeof title === "string" ? title : "",
+              propertyKey: key,
+            },
+          ];
+        });
+        Object.defineProperty(itemLinks, key, {
+          value: { valueKind: "derived", sources, brokenBy: null, brokenAt: null },
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+      }
+      result.set(itemId, itemLinks);
+    }
+  }
   return result;
 }
