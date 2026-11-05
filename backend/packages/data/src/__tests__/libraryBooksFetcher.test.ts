@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ItemRow } from "../types.js";
 import { downloadLibraryCover, fetchOpenLibrary, type LibraryHttpFetch } from "../library/openLibraryFetcher.js";
 import { createLibraryMetadataFetcher } from "../library/libraryMetadataFetcher.js";
@@ -64,6 +64,32 @@ describe("library book source responses", () => {
     const oversized: LibraryHttpFetch = async () => new Response("x".repeat(1024 * 1024 + 1));
     expect(await fetchOpenLibrary(item, nonJson)).toMatchObject({ status: "error", errorCode: "invalidResponse" });
     expect(await fetchOpenLibrary(item, oversized)).toMatchObject({ status: "error", errorCode: "invalidResponse" });
+  });
+
+  it("returns an empty result for a disabled source without a provider request", async () => {
+    const fetcher = vi.fn(async () => new Response("unexpected", { status: 500 }));
+    const result = await createLibraryMetadataFetcher({ fetch: fetcher })(item, {
+      source: "none",
+      coverKey: "cover",
+    });
+    expect(result).toEqual({});
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("aborts an unresponsive provider at the configured deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher: LibraryHttpFetch = async (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          if (!init?.signal) throw new Error("Missing provider signal");
+          init.signal.addEventListener("abort", () => reject(new Error("fixture aborted")), { once: true });
+        });
+      const pending = fetchOpenLibrary(item, fetcher);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await pending).toMatchObject({ status: "error", errorCode: "sourceUnavailable" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([
