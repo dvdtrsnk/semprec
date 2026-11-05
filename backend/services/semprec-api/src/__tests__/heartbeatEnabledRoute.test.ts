@@ -116,7 +116,7 @@ describe("heartbeat enabled route", () => {
         status: 403,
         code: "owner_violation",
       });
-      expect(await getHeartbeat(runtime, system.id)).toEqual(system);
+      expect(await withTransaction(runtime, (client) => getHeartbeat(client, system.id))).toEqual(system);
     });
   });
 
@@ -248,7 +248,9 @@ describe("heartbeat enabled route", () => {
       const systemResponse = await patch({ enabled: false }, systemHeartbeat.id);
       expect(systemResponse.status).toBe(403);
       expect(await systemResponse.json()).toMatchObject({ error: { code: "owner_violation" } });
-      expect(await runInTenant(tenant, () => getHeartbeat(runtime, systemHeartbeat.id))).toEqual(systemHeartbeat);
+      expect(
+        await runInTenant(tenant, () => withTransaction(runtime, (client) => getHeartbeat(client, systemHeartbeat.id))),
+      ).toEqual(systemHeartbeat);
       active.delete("fixtureRule");
       const disabledWithoutProvider = await runInTenant(tenant, () =>
         createSetHeartbeatEnabledRouteHandler(runtime)({ params: { id: heartbeat.id }, body: { enabled: false } }),

@@ -371,8 +371,10 @@ describe("mail thread list", () => {
       const seen: Array<{ threadId: string; lastMessageAt: string }> = [];
       let cursor: string | null = null;
       for (let pageNumber = 0; pageNumber < 4; pageNumber++) {
-        const path = `/api/mail/threads?limit=1${cursor ? `&cursor=${cursor}` : ""}`;
-        const page = (await list(path)).body;
+        const path: string = `/api/mail/threads?limit=1${cursor ? `&cursor=${cursor}` : ""}`;
+        const page: { threads: Array<{ threadId: string; lastMessageAt: string }>; nextCursor: string | null } = (
+          await list(path)
+        ).body;
         seen.push(...page.threads);
         cursor = page.nextCursor;
         if (!cursor) break;

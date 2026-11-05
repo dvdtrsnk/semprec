@@ -72,8 +72,8 @@ describe("derived item reads in the generic application service", () => {
         if (mode === "item") return service.getItem(actor, { itemId: file.id, include });
         const page =
           mode === "database"
-            ? await service.queryDatabase(actor, { databaseId: db("files"), include })
-            : await service.queryView(actor, { viewId: view.id, include });
+            ? await service.queryDatabase(actor, { databaseId: db("files"), include, limit: 50 })
+            : await service.queryView(actor, { viewId: view.id, include, limit: 50 });
         const row = page.items.find((entry) => entry.id === file.id);
         if (!row) throw new Error("Missing file from query");
         return row;
@@ -208,8 +208,8 @@ describe("derived item reads in the generic application service", () => {
         [["links", "derived"], true, true],
       ] satisfies Array<[ItemReadInclude, boolean, boolean]>) {
         for (const page of [
-          await service.queryDatabase(actor, { databaseId: files.id, include }),
-          await service.queryView(actor, { viewId: view.id, include }),
+          await service.queryDatabase(actor, { databaseId: files.id, include, limit: 50 }),
+          await service.queryView(actor, { viewId: view.id, include, limit: 50 }),
         ]) {
           const row = page.items.find((entry) => entry.id === file.id);
           if (!row) throw new Error("Missing file from query");
