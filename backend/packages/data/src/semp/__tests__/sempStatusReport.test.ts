@@ -286,8 +286,9 @@ describe("Semp status report", () => {
       typeof loaded.getSempStatusReport !== "function"
     )
       throw new Error("Missing compiled report");
-    const en: unknown = await runInTenant(own, () => loaded.getSempStatusReport(data));
-    const cs: unknown = await runInTenant(foreign, () => loaded.getSempStatusReport(data));
+    const compiledReport = loaded.getSempStatusReport;
+    const en: unknown = await runInTenant(own, () => compiledReport(data));
+    const cs: unknown = await runInTenant(foreign, () => compiledReport(data));
     expect(en).toMatchObject({ problems: [{ title: "Mailbox is not syncing" }] });
     expect(cs).toMatchObject({ problems: [{ title: "Schránka se nesynchronizuje" }] });
   });
