@@ -107,6 +107,13 @@ describe("derived value creation guard", () => {
         targetItemId: project.id,
       });
       expect((await cp.listItemRelations(file.id))?.some((edge) => edge.targetItemId === area.id)).toBe(true);
+      const updated = await cp.updateRelation({
+        relationPropertyId: areaProperty,
+        callerItemId: file.id,
+        targetItemId: area.id,
+        metadata: { note: "retained" },
+      });
+      expect(updated.metadata).toEqual({ note: "retained" });
       await cp.deleteRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id });
       expect((await cp.listItemRelations(file.id))?.some((edge) => edge.targetItemId === area.id)).toBe(false);
       await cp.softDeleteItem(db("projects"), project.id);
@@ -270,8 +277,11 @@ describe("derived value creation guard", () => {
       const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
       const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
       const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
+      const unrelatedEvent = await cp.createItem({ databaseId: db("events"), properties: { name: "Unrelated" } });
+      const unrelatedCompany = await cp.createItem({ databaseId: db("companies"), properties: { name: "Company" } });
       const projectProperty = await property("files", "projects");
       const areaProperty = await property("files", "area");
+      const unrelatedProperty = await property("events", "company");
       let release!: () => void;
       let ready!: (pid: number) => void;
       const barrier = new Promise<void>((resolve) => {
@@ -302,6 +312,13 @@ describe("derived value creation guard", () => {
         await expect(
           cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
         ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
+        await expect(
+          cp.createRelation({
+            relationPropertyId: unrelatedProperty,
+            callerItemId: unrelatedEvent.id,
+            targetItemId: unrelatedCompany.id,
+          }),
+        ).resolves.toBeDefined();
         let priorId = "";
         await expect(
           withTransaction(data, async (client) => {
@@ -401,6 +418,62 @@ describe("derived value creation guard", () => {
       const edges = await cp.listItemRelations(file.id);
       expect(edges?.some((edge) => edge.targetItemId === area.id)).toBe(true);
       expect(edges?.some((edge) => edge.targetItemId === project.id)).toBe(true);
+    });
+  });
+  it("releases the project definition after rollback", async () => {
+    await runInTenant(tenant, async () => {
+      const { cp, db, property } = await fixture();
+      const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
+      const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
+      const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
+      const projectProperty = await property("files", "projects");
+      const areaProperty = await property("files", "area");
+      let release!: () => void;
+      let ready!: (pid: number) => void;
+      const barrier = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const entered = new Promise<number>((resolve) => {
+        ready = resolve;
+      });
+      const rollback = new Error("intentional rollback");
+      const holder = withTransaction(data, async (client) => {
+        const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+        await createRelationWithClient(client, {
+          relationPropertyId: projectProperty,
+          callerItemId: file.id,
+          targetItemId: project.id,
+        });
+        ready(pid);
+        await barrier;
+        throw rollback;
+      });
+      const settled = holder.then(
+        () => {
+          throw new Error("Expected rollback");
+        },
+        (error: unknown) => error,
+      );
+      try {
+        expect(
+          await Promise.race([
+            entered,
+            settled.then(() => {
+              throw new Error("Holder ended before barrier");
+            }),
+          ]),
+        ).toBeGreaterThan(0);
+        await expect(
+          cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
+        ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
+      } finally {
+        release();
+        expect(await settled).toBe(rollback);
+      }
+      await expect(
+        cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
+      ).resolves.toBeDefined();
+      expect((await cp.listItemRelations(file.id))?.some((edge) => edge.targetItemId === project.id)).toBe(false);
     });
   });
   it("orders actual project trash and restore against guarded creation", async () => {

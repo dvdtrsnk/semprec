@@ -140,6 +140,12 @@ describe("derived values through project relations", () => {
       expect(values.get(day.itemId)?.area?.values[0]?.id).toBe(area.id);
       expect(values.get(event.id)?.company?.values).toEqual([{ id: company.id, title: "Novak" }]);
       expect(values.has(empty.itemId)).toBe(false);
+      await cp.softDeleteItem(areas, area.id);
+      await cp.softDeleteItem(companies, company.id);
+      const afterTrash = await cp.getDerivedValuesForItems([task.id, day.itemId, event.id]);
+      expect(afterTrash.has(task.id)).toBe(false);
+      expect(afterTrash.has(day.itemId)).toBe(false);
+      expect(afterTrash.has(event.id)).toBe(false);
     });
   });
 
