@@ -45,6 +45,10 @@ export const libraryMetadataJobConfigSchema = z.object({
 export type LibraryMetadataJobConfig = z.infer<typeof libraryMetadataJobConfigSchema>;
 
 export interface LibraryMetadataFetchResult {
+  status?: "found" | "notFound" | "error";
+  errorCode?: "sourceUnavailable" | "rateLimited" | "invalidResponse";
+  source?: "openLibrary" | "googleBooks" | "tmdb";
+  candidates?: Array<{ title: string; author?: string; year?: number; coverUrl?: string }>;
   cover?: CreateBlobInput;
   secondaryRating?: number;
   sourceUrl?: string;

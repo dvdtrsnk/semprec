@@ -1,0 +1,86 @@
+import { describe, expect, it } from "vitest";
+import type { ItemRow } from "../types.js";
+import { fetchOpenLibrary, type LibraryHttpFetch } from "../library/openLibraryFetcher.js";
+import { fetchGoogleBooks } from "../library/googleBooksFetcher.js";
+
+const item: ItemRow = {
+  id: "item",
+  databaseId: "books",
+  properties: { name: "Hovory k sobě", author: "Marcus Aurelius", year: 180 },
+  computed: {},
+  updatedAt: "2026-01-01T00:00:00.000Z",
+  deletedAt: null,
+};
+
+function fixture(value: unknown, status = 200): LibraryHttpFetch {
+  return async () => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
+}
+
+describe("library book source responses", () => {
+  it("chooses the exact title and author, returns metadata and at most three alternatives", async () => {
+    const result = await fetchOpenLibrary(
+      item,
+      fixture({
+        docs: [
+          { title: "Other", author_name: ["Someone"] },
+          {
+            title: "Hovory k sobě",
+            author_name: ["Marcus Aurelius"],
+            first_publish_year: 180,
+            isbn: ["9780000000000"],
+          },
+          { title: "Other 2" },
+          { title: "Other 3" },
+          { title: "Other 4" },
+        ],
+      }),
+    );
+    expect(result).toMatchObject({
+      status: "found",
+      source: "openLibrary",
+      author: "Marcus Aurelius",
+      year: 180,
+      isbn: "9780000000000",
+    });
+    expect(result.candidates).toHaveLength(3);
+  });
+
+  it("maps no results, malformed data, unavailable and rate limited responses", async () => {
+    expect(await fetchOpenLibrary(item, fixture({ docs: [] }))).toMatchObject({ status: "notFound" });
+    expect(await fetchOpenLibrary(item, fixture({ docs: "invalid" }))).toMatchObject({
+      status: "error",
+      errorCode: "invalidResponse",
+    });
+    expect(await fetchOpenLibrary(item, fixture({}, 503))).toMatchObject({
+      status: "error",
+      errorCode: "sourceUnavailable",
+    });
+    expect(await fetchOpenLibrary(item, fixture({}, 429))).toMatchObject({ status: "error", errorCode: "rateLimited" });
+  });
+
+  it("reads a Google Books match and its source", async () => {
+    expect(
+      await fetchGoogleBooks(
+        item,
+        fixture({
+          items: [
+            {
+              volumeInfo: {
+                title: "Hovory k sobě",
+                authors: ["Marcus Aurelius"],
+                publishedDate: "0180",
+                industryIdentifiers: [{ type: "ISBN_13", identifier: "9780000000000" }],
+              },
+            },
+          ],
+        }),
+      ),
+    ).toMatchObject({
+      status: "found",
+      source: "googleBooks",
+      author: "Marcus Aurelius",
+      year: 180,
+      isbn: "9780000000000",
+    });
+  });
+});
