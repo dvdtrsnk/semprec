@@ -99,10 +99,11 @@ export async function markItemAutomationDone(
   itemId: string,
   source: LibraryAutomationSource | null = null,
 ): Promise<void> {
-  await client.query(
+  const result = await client.query(
     `UPDATE item_automation SET status = 'done', error = NULL, error_code = NULL, source = $2 WHERE item_id = $1 AND status != 'locked'`,
     [itemId, source],
   );
+  if (result.rowCount === null || result.rowCount > 1) throw new Error("Unexpected automation completion count");
 }
 
 /** `attempts` is a cumulative counter across the whole history (including across daily retry batches), not reset per batch. */
@@ -113,10 +114,11 @@ export async function markItemAutomationError(
   errorCode: ItemAutomationErrorCode | null = null,
   source: LibraryAutomationSource | null = null,
 ): Promise<void> {
-  await client.query(
+  const result = await client.query(
     `UPDATE item_automation SET status = 'error', error = $2, error_code = $3, source = $4, attempts = attempts + 1, last_attempt_at = now() WHERE item_id = $1 AND status != 'locked'`,
     [itemId, error, errorCode, source],
   );
+  if (result.rowCount === null || result.rowCount > 1) throw new Error("Unexpected automation failure count");
 }
 
 export async function markItemAutomationNotFound(
@@ -124,10 +126,11 @@ export async function markItemAutomationNotFound(
   itemId: string,
   source: LibraryAutomationSource | null,
 ): Promise<void> {
-  await client.query(
+  const result = await client.query(
     `UPDATE item_automation SET status = 'notFound', error = NULL, error_code = NULL, source = $2 WHERE item_id = $1 AND status != 'locked'`,
     [itemId, source],
   );
+  if (result.rowCount === null || result.rowCount > 1) throw new Error("Unexpected automation not-found count");
 }
 
 /**

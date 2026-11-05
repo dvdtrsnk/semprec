@@ -16,7 +16,7 @@ export async function runLibraryHeartbeatConfigCutoverMigration(pool: Pool): Pro
     ] as const) {
       const database = await getDatabaseByModuleId(client, moduleId);
       if (!database) continue;
-      await client.query(
+      const result = await client.query(
         `UPDATE project_heartbeats SET action_config = action_config || $3::jsonb
          WHERE action_id = ANY($1::text[]) AND action_config->>'databaseId' = $2
            AND action_config->>'source' = 'none'`,
@@ -26,6 +26,7 @@ export async function runLibraryHeartbeatConfigCutoverMigration(pool: Pool): Pro
           JSON.stringify(changes),
         ],
       );
+      if (result.rowCount === null) throw new Error("Could not count library heartbeat updates");
     }
   });
 }
