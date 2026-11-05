@@ -16,6 +16,7 @@ import {
   seedSystem,
   withTransaction,
   createUser,
+  hasWaitingHeartbeatFireJob,
   hashPassword,
   login,
   LocalFsBlobStorageWriter,
@@ -78,9 +79,14 @@ describe("heartbeat enabled route", () => {
       const handlerWithRules = createSetHeartbeatEnabledRouteHandler(runtime, {
         heartbeatRuleKinds: async () => new Map(),
       });
+      const beforeEnable = Date.now();
       const enabled = await handlerWithRules({ params: { id: heartbeat.id }, body: { enabled: true } });
+      const afterEnable = Date.now();
       expect(enabled.body.enabled).toBe(true);
-      expect(Date.parse(enabled.body.nextFireAt ?? "")).toBeGreaterThan(Date.now());
+      const nextFireAt = Date.parse(enabled.body.nextFireAt ?? "");
+      expect(nextFireAt).toBeGreaterThanOrEqual(beforeEnable + 5 * 60_000);
+      expect(nextFireAt).toBeLessThanOrEqual(afterEnable + 5 * 60_000);
+      expect(await hasWaitingHeartbeatFireJob(runtime, heartbeat.id)).toBe(false);
       const event = await withTransaction(runtime, (client) =>
         createHeartbeat(client, {
           projectItemId: project.id,
