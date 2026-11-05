@@ -162,6 +162,6 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     await registry.loadModule(INBOX_PATH);
 
     expect(registry.listModuleIds().sort()).toEqual(["inboxPipeline", "library", "mailSync"]);
-    expect((await registry.getDatabases()).length).toBe(8);
+    expect((await registry.getDatabases()).length).toBe(9);
   });
 });
