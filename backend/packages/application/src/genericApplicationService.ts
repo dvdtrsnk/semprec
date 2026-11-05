@@ -83,14 +83,17 @@ export function createGenericApplicationService(
   async function withLinks<T extends Item>(items: T[], include: ItemReadInclude): Promise<T[]> {
     const links = Array.isArray(include) ? include.includes("links") : include?.links === true;
     const derived = Array.isArray(include) ? include.includes("derived") : include?.derived === true;
-    if (!links && !derived) return items;
+    const automation = Array.isArray(include) ? include.includes("automation") : include?.automation === true;
+    if (!links && !derived && !automation) return items;
     const ids = items.map((item) => item.id);
     const valuesByItem = derived ? await chokePoint.getDerivedValuesForItems(ids) : undefined;
     const linksByItem = links ? await chokePoint.getValueLinksForItems(ids, derived, valuesByItem) : undefined;
+    const automationByItem = automation ? await chokePoint.readAutomationForItems(ids) : undefined;
     return items.map((item) => ({
       ...item,
       ...(linksByItem !== undefined ? { links: linksByItem.get(item.id) ?? {} } : {}),
       ...(valuesByItem !== undefined ? { derived: valuesByItem.get(item.id) ?? {} } : {}),
+      ...(automationByItem?.has(item.id) ? { automation: automationByItem.get(item.id) } : {}),
     }));
   }
 

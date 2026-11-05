@@ -13,8 +13,11 @@ import {
   decideAndEnqueueApprovalRequest,
   getNotificationById,
   createChokePoint,
+  createCoreTaskList,
+  createLibraryMetadataFetcher,
   createDocStore,
   deleteRelationWithClient,
+  ensureItemAutomation,
   createUser,
   hashPassword,
   insertAndNotifyAgentRunEvent,
@@ -55,6 +58,7 @@ import {
   type SyncServer,
 } from "@semprec/realtime";
 import { runAsSystem, runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
 import { createDispatcher } from "../app.js";
 import * as adapterRouteModule from "../adapter/adapterRoute.js";
 import * as itemRoutesModule from "../itemsHandler.js";
@@ -1156,6 +1160,123 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
       [],
       [],
     ]);
+  });
+
+  it("delivers status-only library outcomes to the owning sockets and suppresses rolled-back outcomes", async () => {
+    const workerPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const originals = new Map<PoolClient, PropertyDescriptor | undefined>();
+    let rejectCommits = false;
+    let rejectedCommits = 0;
+    const onAcquire = (client: PoolClient) => {
+      if (originals.has(client)) return;
+      const descriptor = Object.getOwnPropertyDescriptor(client, "query");
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      const query = client.query;
+      originals.set(client, descriptor);
+      Object.defineProperty(client, "query", {
+        configurable: true,
+        writable: true,
+        value: (...args: unknown[]) => {
+          if (rejectCommits && args[0] === "COMMIT") {
+            rejectedCommits++;
+            return Promise.reject(new Error("fixture commit refusal"));
+          }
+          return Reflect.apply(query, client, args);
+        },
+      });
+    };
+    const failures: unknown[] = [];
+    try {
+      const items = await runInTenant(tenantA.tenantId, async () => {
+        await chokePoint.createProperty({ databaseId: tenantA.databaseId, key: "name", name: "Name", type: "text" });
+        const result = [];
+        for (const name of ["Found", "Missing", "Rollback"]) {
+          const item = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: { name } });
+          await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+          result.push(item);
+        }
+        return result;
+      });
+      const initial = await publishSentinel(tenantA.tenantId);
+      await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(initial))));
+      await expectNothingReceived(b1, tenantB.tenantId);
+
+      const taskName = CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS;
+      let providerCalls = 0;
+      let found = true;
+      const task = createCoreTaskList(
+        workerPool,
+        new Map(),
+        createLibraryMetadataFetcher({
+          fetch: async (url) => {
+            providerCalls++;
+            return new Response(
+              JSON.stringify(
+                url.includes("openlibrary.org")
+                  ? { docs: found ? [{ title: "Found" }] : [] }
+                  : { kind: "books#volumes", totalItems: 0 },
+              ),
+            );
+          },
+        }),
+      )[taskName];
+      if (!task) throw new Error("Library task missing");
+      const enqueue = (itemId: string) =>
+        runInTenant(tenantA.tenantId, () =>
+          withTransaction(pool, (client) =>
+            enqueueJob(
+              client,
+              taskName,
+              { itemId, databaseId: tenantA.databaseId, config: { source: "openLibrary", coverKey: "cover" } },
+              { jobKey: `library-metadata:${itemId}`, maxAttempts: 3 },
+            ),
+          ),
+        );
+      for (const [index, status] of ["found", "notFound"].entries()) {
+        const item = items[index];
+        if (!item) throw new Error("Library fixture missing");
+        found = status === "found";
+        await enqueue(item.id);
+        await runOnce({ pgPool: pool, taskList: { [taskName]: task } });
+        await expectInvalidationInA({ scope: "item", itemId: item.id, databaseId: tenantA.databaseId, op: "update" });
+        const after = await runInTenant(tenantA.tenantId, () => chokePoint.getItem(tenantA.databaseId, item.id));
+        expect(after?.properties).toEqual(item.properties);
+        const automation = await runInTenant(tenantA.tenantId, () => chokePoint.readAutomationForItems([item.id]));
+        expect(automation.get(item.id)?.status).toBe(status);
+      }
+      expect(providerCalls).toBe(3);
+
+      const rollback = items[2];
+      if (!rollback) throw new Error("Rollback fixture missing");
+      found = true;
+      await enqueue(rollback.id);
+      workerPool.on("acquire", onAcquire);
+      rejectCommits = true;
+      await runOnce({ pgPool: pool, taskList: { [taskName]: task } });
+      rejectCommits = false;
+      expect(rejectedCommits).toBe(2);
+      const after = await runInTenant(tenantA.tenantId, () => chokePoint.readAutomationForItems([rollback.id]));
+      expect(after.get(rollback.id)?.status).toBe("pending");
+      const sentinel = await publishSentinel(tenantA.tenantId);
+      expect(await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(sentinel))))).toEqual([[], []]);
+      await expectNothingReceived(b1, tenantB.tenantId);
+    } catch (error) {
+      failures.push(error);
+    } finally {
+      rejectCommits = false;
+      workerPool.off("acquire", onAcquire);
+      for (const [client, descriptor] of originals) {
+        if (descriptor) Object.defineProperty(client, "query", descriptor);
+        else Reflect.deleteProperty(client, "query");
+      }
+      try {
+        await workerPool.end();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Library realtime test and cleanup failed");
   });
 
   it("joins actual concurrent logins after an early failure and retains a later failure", async () => {

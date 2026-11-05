@@ -12,6 +12,7 @@ import type { ItemBlobMetadata, ItemRow, ItemValueLinks } from "@semprec/data";
  */
 export interface ItemEnvelope {
   derived?: Item["derived"];
+  automation?: Item["automation"];
   relations?: Record<string, ExpandedRelationTarget[]>;
   relationsTruncated?: string[];
   id: string;
@@ -35,6 +36,7 @@ export interface ItemEnvelope {
 export function toItemEnvelope(
   item: ItemRow & {
     derived?: Item["derived"];
+    automation?: Item["automation"];
     links?: ItemValueLinks;
     relations?: Record<string, ExpandedRelationTarget[]>;
     relationsTruncated?: string[];
@@ -53,6 +55,7 @@ export function toItemEnvelope(
     ...(item.fromInbox === undefined ? {} : { fromInbox: item.fromInbox }),
     ...(item.links === undefined ? {} : { links: item.links }),
     ...(item.derived === undefined ? {} : { derived: item.derived }),
+    ...(item.automation === undefined ? {} : { automation: item.automation }),
   };
 }
 
@@ -63,7 +66,7 @@ export function toItemEnvelope(
  */
 export async function toItemEnvelopes(
   pool: Pool,
-  items: readonly (ItemRow & { links?: ItemValueLinks; derived?: Item["derived"] })[],
+  items: readonly (ItemRow & { links?: ItemValueLinks; derived?: Item["derived"]; automation?: Item["automation"] })[],
 ): Promise<ItemEnvelope[]> {
   const envelopes = items.map(toItemEnvelope);
   const metadata = await withTransaction(pool, (client) => loadBlobMetadataForItems(client, envelopes));
@@ -78,6 +81,7 @@ export async function toItemEnvelopeWithBlobs(
   pool: Pool,
   item: ItemRow & {
     derived?: Item["derived"];
+    automation?: Item["automation"];
     links?: ItemValueLinks;
     relations?: Record<string, ExpandedRelationTarget[]>;
     relationsTruncated?: string[];

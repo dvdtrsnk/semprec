@@ -683,3 +683,5 @@ export { createMailboxListRouteHandler, createMailboxDetailRouteHandler } from "
 export { THREADS_MODULE_ID } from "./seed/emailModuleKeys.js";
 export { runThreadsDatabaseCutoverMigration } from "./mail/threadsDatabaseCutoverMigration.js";
 export { readRecordingRequest, recordRecordingIntake } from "./transcription/recordingIntake.js";
+
+export { createLibraryMetadataFetcher } from "./library/libraryMetadataFetcher.js";

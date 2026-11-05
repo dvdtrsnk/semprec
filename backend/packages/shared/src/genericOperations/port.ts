@@ -59,6 +59,11 @@ type AssertSameKeys<T, U> = [T] extends [U] ? ([U] extends [T] ? true : never) :
 const _assertOutputByOperationExhaustive: AssertSameKeys<keyof OutputByOperation, GenericOperationName> = true;
 void _assertOutputByOperationExhaustive;
 
+/** Batched automation projection used by the application read facade. */
+export interface ItemAutomationReadPort {
+  readAutomationForItems(itemIds: string[]): Promise<Map<string, NonNullable<Item["automation"]>>>;
+}
+
 /**
  * The one transport-independent port every generic-operation binding calls through (issue
  * #252). `packages/application` provides the sole neutral implementation (#219); the REST,

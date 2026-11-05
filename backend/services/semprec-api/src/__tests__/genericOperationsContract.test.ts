@@ -8,6 +8,7 @@ import {
   createRuntimeRolePool,
   createTestTenant,
   getTestPool,
+  getTenantZeroId,
   resetDatabase,
   tenantForNextTestUser,
   registerRelationEdgeChangedHook,
@@ -19,10 +20,13 @@ import {
 } from "@semprec/data/testSupport";
 import {
   createChokePoint,
+  createCoreTaskList,
+  createLibraryMetadataFetcher,
   createItemWithClient,
   createDocStore,
   createUser,
   createViewTypeRegistry,
+  ensureItemAutomation,
   hashPassword,
   insertValueLink,
   loadFullModuleRegistry,
@@ -38,6 +42,7 @@ import {
   type ViewRow,
 } from "@semprec/data";
 import { GENERIC_OPERATION_NAMES, runAsSystem, runInTenant, type GenericOperationName } from "@semprec/shared";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
 import { createDispatcher } from "../app.js";
 
 const PASSWORD = "s3cret-password";
@@ -574,6 +579,259 @@ describe("generic operation REST contract (issue #219)", () => {
       const legacy: unknown = await response.json();
       expect(JSON.stringify(legacy)).not.toContain('"relations"');
     }
+  });
+
+  it("exposes automation only when requested on the three generic reads", async () => {
+    const fx = await buildFixtures();
+    await withTransaction(pool, (client) => ensureItemAutomation(client, fx.itemA.id));
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const bare = await fetch(`${baseUrl}/api/items/${fx.itemA.id}`, { headers });
+    const explicitOff = await fetch(`${baseUrl}/api/items/${fx.itemA.id}?include=`, { headers });
+    expect(bare.status).toBe(200);
+    expect(await bare.text()).toBe(await explicitOff.text());
+    const item = await fetch(`${baseUrl}/api/items/${fx.itemA.id}?include=automation`, { headers });
+    expect(item.status).toBe(200);
+    expect(await item.json()).toMatchObject({
+      id: fx.itemA.id,
+      automation: {
+        status: "pending",
+        attempts: 0,
+        lastAttemptAt: null,
+        nextAttemptAt: null,
+        source: null,
+        errorCode: null,
+      },
+    });
+    const missing = await fetch(`${baseUrl}/api/items/${fx.itemB.id}?include=automation`, { headers });
+    expect(missing.status).toBe(200);
+    expect(await missing.json()).not.toHaveProperty("automation");
+    for (const path of [`/api/databases/${fx.database.id}/query`, `/api/views/${fx.curatedView.id}/query`]) {
+      const response = await fetch(`${baseUrl}${path}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ include: ["automation"] }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        items: expect.arrayContaining([
+          expect.objectContaining({ id: fx.itemA.id, automation: expect.objectContaining({ status: "pending" }) }),
+        ]),
+      });
+    }
+    const taskName = CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS;
+    await runInTenant(getTenantZeroId(), async () => {
+      await chokePoint.createProperty({ databaseId: fx.database.id, key: "name", name: "Name", type: "text" });
+      await chokePoint.updateItem({
+        databaseId: fx.database.id,
+        itemId: fx.itemA.id,
+        propertiesPatch: { name: "Arrival" },
+      });
+    });
+    await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) =>
+        enqueueJob(
+          client,
+          taskName,
+          { itemId: fx.itemA.id, databaseId: fx.database.id, config: { source: "openLibrary", coverKey: "cover" } },
+          { jobKey: `library-metadata:${fx.itemA.id}`, maxAttempts: 3 },
+        ),
+      ),
+    );
+    let providerCalls = 0;
+    const task = createCoreTaskList(
+      pool,
+      new Map(),
+      createLibraryMetadataFetcher({
+        fetch: async () => {
+          providerCalls++;
+          return new Response("secret-provider-response", { status: 503 });
+        },
+      }),
+    )[taskName];
+    if (!task) throw new Error("Library task missing");
+    await runOnce({ pgPool: pool, taskList: { [taskName]: task } });
+    expect(providerCalls).toBe(2);
+    const failed = await fetch(`${baseUrl}/api/items/${fx.itemA.id}?include=automation`, { headers });
+    expect(failed.status).toBe(200);
+    const failedText = await failed.text();
+    expect(failedText).not.toContain("secret-provider-response");
+    const failedBody: unknown = JSON.parse(failedText);
+    expect(failedBody).toMatchObject({
+      automation: {
+        status: "error",
+        errorCode: "sourceUnavailable",
+        attempts: 1,
+        source: "googleBooks",
+      },
+    });
+  });
+
+  it("keeps automation includes tenant-scoped on the real REST runtime pool", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let ownedServer: Server | undefined;
+    const failures: unknown[] = [];
+    try {
+      const role = await runAsSystem("test:automation-runtime-role", () =>
+        runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        ),
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      const tenants = [await createTestTenant(pool), await createTestTenant(pool)];
+      const passwordHash = await hashPassword(PASSWORD);
+      const users = await runAsSystem("test:automation-users", () =>
+        Promise.all(
+          tenants.map((tenantId) =>
+            createUser(pool, { tenantId, email: `${randomUUID()}@example.test`, passwordHash }),
+          ),
+        ),
+      );
+      const cp = createChokePoint(runtime);
+      const fixture = (tenantId: string) =>
+        runInTenant(tenantId, async () => {
+          await seedSystem(runtime, createViewTypeRegistry());
+          const books = (await cp.listDatabases()).find((db) => db.ownerModuleId === "books");
+          if (!books) throw new Error("Books missing");
+          const book = await cp.createItem({ databaseId: books.id, properties: { name: "Book" } });
+          await withTransaction(runtime, (client) => ensureItemAutomation(client, book.id));
+          const view = await cp.createView({ databaseId: books.id, type: "table", name: "Books" });
+          return { book, books, view };
+        });
+      const own = await fixture(tenants[0]!);
+      const foreign = await fixture(tenants[1]!);
+      const session = await login(pool, {
+        email: users[0]!.email,
+        password: PASSWORD,
+        platform: "ios",
+        ip: "127.0.0.1",
+      });
+      const dispatch = await createDispatcher(runtime, {
+        passwordResetMailer: noopMailer,
+        appBaseUrl: "http://localhost",
+        setupToken: "unused-setup-token",
+        moduleRegistry,
+        blobStorage: new LocalFsBlobStorageWriter(tmpBlobDir),
+        maxFileSizeBytes: 10 * 1024 * 1024,
+      });
+      ownedServer = createServer(dispatch);
+      const server = ownedServer;
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => {
+          server.off("error", reject);
+          resolve();
+        });
+      });
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing REST address");
+      const headers = { Authorization: `Bearer ${session.token}`, "Content-Type": "application/json" };
+      const base = `http://127.0.0.1:${address.port}`;
+      const before = await runInTenant(tenants[1]!, () => cp.readAutomationForItems([foreign.book.id]));
+      const ownItem = await fetch(`${base}/api/items/${own.book.id}?include=automation`, { headers });
+      expect(ownItem.status).toBe(200);
+      expect(await ownItem.json()).toMatchObject({ automation: { status: "pending" } });
+      const compareRefusals = async (
+        foreignResponse: Response,
+        randomResponse: Response,
+        foreignId: string,
+        randomId: string,
+      ) => {
+        expect(foreignResponse.status).toBe(404);
+        expect(randomResponse.status).toBe(foreignResponse.status);
+        for (const header of ["content-type", "cache-control", "vary"]) {
+          expect(foreignResponse.headers.get(header)).toBe(randomResponse.headers.get(header));
+        }
+        const foreignBody = (await foreignResponse.text()).replaceAll(foreignId, "<id>");
+        const randomBody = (await randomResponse.text()).replaceAll(randomId, "<id>");
+        expect(foreignBody).toBe(randomBody);
+      };
+      const randomItem = randomUUID();
+      await compareRefusals(
+        await fetch(`${base}/api/items/${foreign.book.id}?include=automation`, { headers }),
+        await fetch(`${base}/api/items/${randomItem}?include=automation`, { headers }),
+        foreign.book.id,
+        randomItem,
+      );
+      for (const [kind, ownId, foreignId] of [
+        ["databases", own.books.id, foreign.books.id],
+        ["views", own.view.id, foreign.view.id],
+      ] as const) {
+        const query = (id: string) =>
+          fetch(`${base}/api/${kind}/${id}/query`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ include: ["automation"] }),
+          });
+        const positive = await query(ownId);
+        expect(positive.status).toBe(200);
+        expect(await positive.json()).toMatchObject({
+          items: expect.arrayContaining([
+            expect.objectContaining({ id: own.book.id, automation: expect.objectContaining({ status: "pending" }) }),
+          ]),
+        });
+        const randomId = randomUUID();
+        await compareRefusals(await query(foreignId), await query(randomId), foreignId, randomId);
+      }
+      const taskName = CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS;
+      await runInTenant(tenants[0]!, () =>
+        withTransaction(runtime, (client) =>
+          enqueueJob(
+            client,
+            taskName,
+            { itemId: own.book.id, databaseId: own.books.id, config: { source: "openLibrary", coverKey: "cover" } },
+            { jobKey: `library-metadata:${own.book.id}`, maxAttempts: 3 },
+          ),
+        ),
+      );
+      const task = createCoreTaskList(
+        runtime,
+        new Map(),
+        createLibraryMetadataFetcher({
+          fetch: async (url) =>
+            new Response(
+              JSON.stringify(url.includes("openlibrary.org") ? { docs: [] } : { kind: "books#volumes", totalItems: 0 }),
+            ),
+        }),
+      )[taskName];
+      if (!task) throw new Error("Library task missing");
+      await runOnce({ pgPool: runtime, taskList: { [taskName]: task } });
+      const nextFire = await runInTenant(tenants[0]!, () =>
+        withTransaction(runtime, (client) =>
+          client.query<{ next_fire_at: Date }>(
+            "SELECT next_fire_at FROM project_heartbeats WHERE tenant_id = app_tenant_default() AND action_id = $1 AND action_config->>'databaseId' = $2",
+            ["core.libraryMetadataRetrySweep", own.books.id],
+          ),
+        ),
+      );
+      expect(nextFire.rows).toHaveLength(1);
+      const notFound = await fetch(`${base}/api/items/${own.book.id}?include=automation`, { headers });
+      expect(notFound.status).toBe(200);
+      expect(await notFound.json()).toMatchObject({
+        automation: {
+          status: "notFound",
+          source: "googleBooks",
+          nextAttemptAt: nextFire.rows[0]!.next_fire_at.toISOString(),
+        },
+      });
+      expect(await runInTenant(tenants[1]!, () => cp.readAutomationForItems([foreign.book.id]))).toEqual(before);
+    } catch (error) {
+      failures.push(error);
+    }
+    if (ownedServer) {
+      const server = ownedServer;
+      try {
+        await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    try {
+      await runtime.end();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Automation REST test and cleanup failed");
   });
 
   it("enforces Threads.project cardinality through authenticated generic relation.put", async () => {

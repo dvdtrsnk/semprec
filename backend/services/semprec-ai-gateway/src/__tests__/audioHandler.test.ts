@@ -211,6 +211,25 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
     await pool?.end();
   });
 
+  it.each([{ exact: 2 }, { min: 3 }, undefined])("passes speaker choice %s to the provider", async (numSpeakers) => {
+    startServer(diarizationProvider, transcriptionProvider);
+    await listen();
+    const response = await post("/internal/diarize", { ...VALID_DIARIZE_BODY, numSpeakers });
+    expect(response.status).toBe(200);
+    expect(diarizationProvider.calls[0]?.numSpeakers).toEqual(numSpeakers);
+  });
+
+  it.each([{ exact: 0 }, { min: -1 }, { exact: 1.5 }, { exact: 2, min: 3 }, {}, "2"])(
+    "rejects invalid speaker choice %s",
+    async (numSpeakers) => {
+      startServer(diarizationProvider, transcriptionProvider);
+      await listen();
+      const response = await post("/internal/diarize", { ...VALID_DIARIZE_BODY, numSpeakers });
+      expect(response.status).toBe(400);
+      expect(diarizationProvider.calls).toHaveLength(0);
+    },
+  );
+
   it("rejects a missing bearer token with 401 and never calls the provider", async () => {
     startServer(diarizationProvider, transcriptionProvider);
     await listen();

@@ -4,6 +4,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Transform, type Readable } from "node:stream";
+import { logger } from "./logger.js";
 
 /**
  * Where an attachment's bytes actually land — swappable so a later ops issue can supply a
@@ -114,7 +115,14 @@ export class LocalFsBlobStorageWriter implements BlobStorageWriter {
       // whatever it had already flushed to disk is still there — issue #158's "abort and clean
       // partial state on overflow" requires a failed/aborted write to leave nothing behind, not
       // just stop growing.
-      await this.delete(storageKey);
+      try {
+        await this.delete(storageKey);
+      } catch (cleanupError) {
+        logger.error(
+          { errorCategory: cleanupError instanceof Error ? "error" : "non_error" },
+          "Failed to remove partial blob bytes",
+        );
+      }
       throw err;
     }
     return { byteSize, contentHash: hash.digest("hex") };

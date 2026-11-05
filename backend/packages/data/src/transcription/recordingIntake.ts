@@ -15,22 +15,44 @@ import { ChokePointError, NotFoundError } from "../errors.js";
 import { EVENTS_MODULE_ID, FILES_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { TRANSCRIPTION_CREATE_COMPUTED_KEY } from "./transcriptionComputedKeys.js";
 import {
+  enqueueTranscriptionCreate,
   enqueueTranscriptionJob,
+  findTranscriptionCreateJobId,
   findTranscriptionJobId,
   readTranscriptionSourceFileItemId,
   TRANSCRIPTION_OWNER_PROCESS,
 } from "./transcriptionJob.js";
 
-const requestRow = z.object({ event_item_id: z.uuid().nullable(), recorded_at: z.string().nullable() });
+const requestRow = z
+  .object({
+    event_item_id: z.uuid().nullable(),
+    recorded_at: z.string().nullable(),
+    language: z
+      .string()
+      .regex(/^[a-z]{2}$/)
+      .nullable(),
+    num_speakers_exact: z.number().int().positive().nullable(),
+    num_speakers_min: z.number().int().positive().nullable(),
+    project_item_id: z.uuid().nullable(),
+  })
+  .refine((row) => row.num_speakers_exact === null || row.num_speakers_min === null);
 export async function readRecordingRequest(client: PoolClient, fileItemId: string) {
   const result = await client.query<Record<string, unknown>>(
-    `SELECT event_item_id, to_char(recorded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS recorded_at
+    `SELECT event_item_id, to_char(recorded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS recorded_at,
+            language, num_speakers_exact, num_speakers_min, project_item_id
      FROM recording_requests WHERE tenant_id = app_tenant_default() AND file_item_id = $1`,
     [fileItemId],
   );
   if (!result.rows[0]) return null;
   const row = requestRow.parse(result.rows[0]);
-  return { eventId: row.event_item_id, recordedAt: row.recorded_at };
+  return {
+    eventId: row.event_item_id,
+    recordedAt: row.recorded_at,
+    language: row.language,
+    numSpeakersExact: row.num_speakers_exact,
+    numSpeakersMin: row.num_speakers_min,
+    projectItemId: row.project_item_id,
+  };
 }
 
 function recordingBusy() {
@@ -121,8 +143,12 @@ export async function recordRecordingIntake(
         { ownerProcess: TRANSCRIPTION_OWNER_PROCESS },
       );
     }
-    if (!transcriptId && !(await findTranscriptionJobId(client, file.id)))
-      await enqueueTranscriptionJob(client, { fileItemId: file.id });
+    if (!transcriptId) {
+      if (!(await findTranscriptionCreateJobId(client, file.id)))
+        await enqueueTranscriptionCreate(client, { fileItemId: file.id });
+      if (!(await findTranscriptionJobId(client, file.id)))
+        await enqueueTranscriptionJob(client, { fileItemId: file.id });
+    }
     const association = existingEventId ?? request.eventId ?? requested;
     return {
       transcriptId,

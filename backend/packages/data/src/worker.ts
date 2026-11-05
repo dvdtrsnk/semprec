@@ -21,6 +21,7 @@ import { handleItemSearchPageTextTask } from "./search/pageTextJob.js";
 import { handlePropertyTypeMigrationTask } from "./migrationJob/propertyTypeMigration.js";
 import { handleDocCompactionSweepTask } from "./docs/docPersistence.js";
 import { handleDocHistoryCleanupTask } from "./docs/docHistory.js";
+import { handleLinkPropagation } from "./valueLinks/linkPropagation.js";
 import type { ActionRegistry } from "./scheduler/actions.js";
 import type { PropertyType } from "./types.js";
 import { PROPERTY_TYPES } from "./types.js";
@@ -136,6 +137,7 @@ export function createCoreTaskList(
   },
 ): TaskList {
   const handlers: TaskList = {
+    [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: async (payload) => handleLinkPropagation(pool, payload),
     [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]: async (payload) => {
       await handleMailLinkPersonEmailsTask(pool, payload);
     },
@@ -190,6 +192,7 @@ export function createCoreTaskList(
         },
         libraryMetadataFetcher,
         { job: { id: helpers.job.id } },
+        filesBlobStorage,
       );
     },
     [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: async () => {

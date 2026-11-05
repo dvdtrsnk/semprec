@@ -6,6 +6,7 @@ export interface DiarizationTurn {
 }
 
 export interface DiarizationRequest {
+  numSpeakers?: { exact: number } | { min: number };
   audio: Uint8Array;
   filename: string;
   mimeType: string;

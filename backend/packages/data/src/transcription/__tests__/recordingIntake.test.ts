@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { runAsSystem, runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, registerTask, runOnce } from "@semprec/queue";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
@@ -61,6 +62,60 @@ describe("recording intake", () => {
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Fixture cleanup failed");
   });
+  it("reads validated recording choices only in the owning tenant", async () => {
+    const fileId = await runInTenant(tenant, async () => {
+      const files = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "files"));
+      if (!files) throw new Error("Files database missing");
+      const uploaded = await ingestUploadedFileWithTransaction(
+        runtime,
+        {
+          filesDatabaseId: files.id,
+          filename: "sample.mp3",
+          contentType: "audio/mpeg",
+          source: Readable.from(["ID3 reader fixture"]),
+          storageKeyPrefix: "files",
+          maxBytes: 1024,
+          storage: new LocalFsBlobStorageWriter(root),
+        },
+        (client, result) =>
+          recordRecordingIntake(client, { fileItemId: result.item.id, eventId: null, recordedAt: null }),
+      );
+      // Future intake fields have no production writer yet; this scoped fixture creates that stored shape.
+      const updated = await runtime.query(
+        "UPDATE recording_requests SET language = $2, num_speakers_exact = $3, project_item_id = $4 WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
+        [uploaded.result.item.id, "cs", 2, "bdb16414-01ad-4ac4-8453-25e4ba9c86d5"],
+      );
+      expect(updated.rowCount).toBe(1);
+      expect(await withTransaction(runtime, (client) => readRecordingRequest(client, uploaded.result.item.id))).toEqual(
+        {
+          eventId: null,
+          recordedAt: null,
+          language: "cs",
+          numSpeakersExact: 2,
+          numSpeakersMin: null,
+          projectItemId: "bdb16414-01ad-4ac4-8453-25e4ba9c86d5",
+        },
+      );
+      return uploaded.result.item.id;
+    });
+    await runInTenant(foreign, async () => {
+      expect(await withTransaction(runtime, (client) => readRecordingRequest(client, fileId))).toBeNull();
+      expect(
+        await withTransaction(runtime, (client) =>
+          readRecordingRequest(client, "b23fa8f2-e184-4315-89ab-fc45b2b1b56b"),
+        ),
+      ).toBeNull();
+    });
+    await runInTenant(tenant, async () => {
+      const updated = await runtime.query(
+        "UPDATE recording_requests SET num_speakers_min = 3 WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
+        [fileId],
+      );
+      expect(updated.rowCount).toBe(1);
+      await expect(withTransaction(runtime, (client) => readRecordingRequest(client, fileId))).rejects.toThrow();
+    });
+  });
+
   it("deduplicates filing and retains its first time and event", async () => {
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(runtime);
@@ -95,6 +150,10 @@ describe("recording intake", () => {
       expect(await withTransaction(runtime, (client) => readRecordingRequest(client, first.result.item.id))).toEqual({
         eventId: event.id,
         recordedAt: "2026-01-01T10:00:00.000000Z",
+        language: null,
+        numSpeakersExact: null,
+        numSpeakersMin: null,
+        projectItemId: null,
       });
       expect(await withTransaction(runtime, (client) => findTranscriptionJobId(client, first.result.item.id))).toBe(
         job,
@@ -104,6 +163,120 @@ describe("recording intake", () => {
         await withTransaction(runtime, (client) => readRecordingRequest(client, first.result.item.id)),
       ).toMatchObject({ eventId: event.id });
     });
+  });
+
+  it("preserves queued and running fast-create jobs across duplicate intake", async () => {
+    const cp = createChokePoint(runtime);
+    const files = await runInTenant(tenant, async () =>
+      (await cp.listDatabases()).find((db) => db.ownerModuleId === "files"),
+    );
+    if (!files) throw new Error("Files database missing");
+    const upload = (content: string) =>
+      runInTenant(tenant, () =>
+        ingestUploadedFileWithTransaction(
+          runtime,
+          {
+            filesDatabaseId: files.id,
+            filename: "recording.mp3",
+            contentType: "audio/mpeg",
+            source: Readable.from([content]),
+            storageKeyPrefix: "files",
+            maxBytes: 1024,
+            storage: new LocalFsBlobStorageWriter(root),
+          },
+          (client, result) =>
+            recordRecordingIntake(client, { fileItemId: result.item.id, eventId: null, recordedAt: null }),
+        ),
+      );
+    const readFast = (fileId: string) =>
+      admin.query<{
+        id: string;
+        key: string | null;
+        attempts: number;
+        locked_at: Date | null;
+        run_at: Date;
+        revision: number;
+      }>(
+        "SELECT id::text, key, attempts, locked_at, run_at, revision FROM graphile_worker.jobs WHERE task_identifier = $1 AND (key = $2 OR key IS NULL) ORDER BY id",
+        [CORE_TASK_NAMES.TRANSCRIPTION_CREATE, `transcription-create:${fileId}`],
+      );
+    const queued = await upload("ID3 queued fast job");
+    const taskName = CORE_TASK_NAMES.TRANSCRIPTION_CREATE;
+    await runOnce({
+      pgPool: runtime,
+      taskList: {
+        [taskName]: registerTask(taskName, async () => {
+          throw new Error("fixture fast failure");
+        }),
+      },
+    });
+    const before = (await readFast(queued.result.item.id)).rows;
+    expect(before).toHaveLength(1);
+    expect(before[0]?.attempts).toBe(1);
+    expect(before[0]?.locked_at).toBeNull();
+    await upload("ID3 queued fast job");
+    expect((await readFast(queued.result.item.id)).rows).toEqual(before);
+    const mainKey = `transcription-job:${queued.result.item.id}`;
+    const fastKey = `transcription-create:${queued.result.item.id}`;
+    await admin.query("SELECT graphile_worker.remove_job($1)", [mainKey]);
+    await upload("ID3 queued fast job");
+    expect((await readFast(queued.result.item.id)).rows).toEqual(before);
+    const main = await admin.query<{ id: string }>("SELECT id::text FROM graphile_worker.jobs WHERE key = $1", [
+      mainKey,
+    ]);
+    expect(main.rows).toHaveLength(1);
+    await admin.query("SELECT graphile_worker.remove_job($1)", [fastKey]);
+    await upload("ID3 queued fast job");
+    const restored = (await readFast(queued.result.item.id)).rows;
+    expect(restored).toHaveLength(1);
+    expect(restored[0]?.id).not.toBe(before[0]?.id);
+    expect(
+      (await admin.query<{ id: string }>("SELECT id::text FROM graphile_worker.jobs WHERE key = $1", [mainKey])).rows,
+    ).toEqual(main.rows);
+    await admin.query("SELECT graphile_worker.remove_job($1)", [fastKey]);
+
+    const running = await upload("ID3 running fast job");
+    let started!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const worker = runOnce({
+      pgPool: runtime,
+      taskList: {
+        [taskName]: registerTask(taskName, async () => {
+          started();
+          await gate;
+        }),
+      },
+    });
+    const failures: unknown[] = [];
+    try {
+      await Promise.race([
+        entered,
+        worker.then(() => {
+          throw new Error("Worker exited before the running-job barrier");
+        }),
+      ]);
+      const held = (await readFast(running.result.item.id)).rows;
+      expect(held).toHaveLength(1);
+      expect(held[0]?.locked_at).not.toBeNull();
+      await upload("ID3 running fast job");
+      expect((await readFast(running.result.item.id)).rows).toEqual(held);
+    } catch (error) {
+      failures.push(error);
+    }
+    release();
+    try {
+      await worker;
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Fast-job test and worker cleanup failed");
   });
   it("does not expose a foreign request or accept a foreign file", async () => {
     const foreignId = await runInTenant(foreign, async () => {
@@ -174,6 +347,10 @@ describe("recording intake", () => {
       expect(await withTransaction(runtime, (client) => readRecordingRequest(client, first.result.item.id))).toEqual({
         eventId: firstEvent.id,
         recordedAt: null,
+        language: null,
+        numSpeakersExact: null,
+        numSpeakersMin: null,
+        projectItemId: null,
       });
       await expect(upload(secondEvent.id, null)).rejects.toMatchObject({
         status: 409,

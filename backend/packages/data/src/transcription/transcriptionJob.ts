@@ -58,6 +58,23 @@ export async function enqueueTranscriptionJob(client: PoolClient, input: Enqueue
   );
 }
 
+/** Enqueues the fast create step independently of the long transcription lane. */
+export async function enqueueTranscriptionCreate(
+  client: PoolClient,
+  input: EnqueueTranscriptionJobInput,
+): Promise<void> {
+  await enqueueJob(
+    client,
+    CORE_TASK_NAMES.TRANSCRIPTION_CREATE,
+    { fileItemId: input.fileItemId },
+    {
+      jobKey: `transcription-create:${input.fileItemId}`,
+      maxAttempts: 3,
+      queueName: tenantLane("transcription-create"),
+    },
+  );
+}
+
 /**
  * Whether a `transcriptionJob` is already queued for this file (`POST /api/transcriptions`'s
  * `transcription_exists` 409 check) — graphile-worker deletes a job row on success, so this only
@@ -68,6 +85,14 @@ export async function findTranscriptionJobId(client: PoolClient, fileItemId: str
   const { rows } = await client.query<{ id: string }>(
     `SELECT id::text AS id FROM graphile_worker.jobs WHERE key = $1`,
     [transcriptionJobKey(fileItemId)],
+  );
+  return rows[0]?.id ?? null;
+}
+
+export async function findTranscriptionCreateJobId(client: PoolClient, fileItemId: string): Promise<string | null> {
+  const { rows } = await client.query<{ id: string }>(
+    `SELECT id::text AS id FROM graphile_worker.jobs WHERE key = $1`,
+    [`transcription-create:${fileItemId}`],
   );
   return rows[0]?.id ?? null;
 }

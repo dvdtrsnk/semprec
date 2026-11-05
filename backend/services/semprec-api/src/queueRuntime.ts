@@ -3,6 +3,7 @@ import { replayApprovedGenericOperation } from "@semprec/application";
 import { ensureQueueSchema, grantQueueSchemaPrivileges, runWorker } from "@semprec/queue";
 import {
   CORE_CRONTAB,
+  createLibraryMetadataFetcher,
   assertTaskListMatchesAffinity,
   createApiCoreTaskList,
   mergeModuleTaskListForAffinity,
@@ -38,8 +39,7 @@ export interface ApiQueueRuntime {
  * database the mail module is not seeded in, and a tenant without those databases fails only the
  * job that needs them, naming the missing module ids and the seed CLI. Gmail, Graph and IMAP mail
  * accounts sync through the transports `createMailSyncAdapters` builds (#1505, #1508, #1510).
- * The remaining adapters (an external
- * library-metadata fetcher, mail blob storage, a legacy raw-MIME fetcher, push senders) still stay on
+ * The remaining adapters (mail blob storage, a legacy raw-MIME fetcher, push senders) stay on
  * `createApiCoreTaskList`'s own defaults here — wiring one in is each adapter's own composition-root
  * concern once it exists.
  */
@@ -58,7 +58,7 @@ export async function createApiQueueRuntime(
   const coreTaskList = createApiCoreTaskList(
     pool,
     actionRegistry,
-    undefined, // libraryMetadataFetcher
+    createLibraryMetadataFetcher({ tmdbToken: process.env.TMDB_READ_TOKEN }),
     createMailSyncAdapters({ pool, env: process.env }), // mailSyncAdapters: Gmail, Graph and IMAP
     undefined, // mailBlobStorage
     undefined, // legacyRawMimeFetcher

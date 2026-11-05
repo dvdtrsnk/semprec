@@ -6,6 +6,7 @@
 // Constrained by: docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
 // and, for the pre-write transform registry, docs/adr/2026-10-29-item-pre-write-transforms-per-module-registry.md
 import type { PoolClient } from "pg";
+import type { Item } from "@semprec/shared";
 import type { DatabaseRow, ItemRow } from "../types.js";
 import type { RelationEdgeContext } from "./relationEdgeContext.js";
 import type { WriterIdentity } from "./writerKind.js";
@@ -255,6 +256,27 @@ export function clearHooksForTests(): void {
   itemReadProjections.clear();
   itemPreWriteTransforms.clear();
   itemPreWritePreparations.clear();
+  automationBatchReader = undefined;
+}
+
+type AutomationBatchReader = (
+  client: PoolClient,
+  itemIds: string[],
+) => Promise<Map<string, NonNullable<Item["automation"]>>>;
+let automationBatchReader: AutomationBatchReader | undefined;
+
+export function registerAutomationBatchReader(reader: AutomationBatchReader): void {
+  if (automationBatchReader && automationBatchReader !== reader)
+    throw new Error("Automation batch reader is already registered");
+  automationBatchReader = reader;
+}
+
+export function runAutomationBatchReader(
+  client: PoolClient,
+  itemIds: string[],
+): Promise<Map<string, NonNullable<Item["automation"]>>> {
+  if (!automationBatchReader) throw new Error("Automation batch reader is not registered");
+  return automationBatchReader(client, itemIds);
 }
 
 export interface ItemReadProjection {

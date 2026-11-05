@@ -3,6 +3,8 @@ import type { Pool, PoolClient } from "pg";
 import { runInTenant, type ItemReadInclude } from "@semprec/shared";
 import {
   createChokePoint,
+  ensureItemAutomation,
+  markItemAutomationDone,
   createCollectionMetadataResolver,
   createViewTypeRegistry,
   loadFullModuleRegistry,
@@ -32,6 +34,96 @@ describe("derived item reads in the generic application service", () => {
     await runtime.end();
     await admin.end();
   });
+  it("attaches automation only when requested across item, database and view reads", async () => {
+    await runInTenant(tenant, async () => {
+      await seedSystem(runtime, createViewTypeRegistry());
+      const cp = createChokePoint(runtime);
+      const books = (await cp.listDatabases()).find((db) => db.ownerModuleId === "books");
+      if (!books) throw new Error("Books missing");
+      const book = await cp.createItem({ databaseId: books.id, properties: { name: "Book" } });
+      const noState = await cp.createItem({ databaseId: books.id, properties: { name: "Other" } });
+      await withTransaction(runtime, (client) => ensureItemAutomation(client, book.id));
+      const view = await cp.createView({ databaseId: books.id, type: "table", name: "Books" });
+      const emptyDatabase = await cp.createDatabase({ name: "Empty automation fixture" });
+      const service = createGenericApplicationService(
+        runtime,
+        await createCollectionMetadataResolver(await loadFullModuleRegistry()),
+      );
+      const actor = { userId: "00000000-0000-4000-8000-000000000001" };
+      const plain = await service.getItem(actor, { itemId: book.id });
+      const pending = await service.getItem(actor, { itemId: book.id, include: ["automation"] });
+      expect(pending.automation).toMatchObject({ status: "pending", attempts: 0 });
+      const { automation: _omitted, ...withoutAutomation } = pending;
+      expect(withoutAutomation).toEqual(plain);
+      expect(await service.getItem(actor, { itemId: noState.id, include: ["automation"] })).not.toHaveProperty(
+        "automation",
+      );
+      await withTransaction(runtime, (client) => markItemAutomationDone(client, book.id, "openLibrary"));
+      const originals = new Map<PoolClient, PoolClient["query"]>();
+      let reads = 0;
+      const observe = (client: PoolClient) => {
+        if (originals.has(client)) return;
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        const original = client.query;
+        originals.set(client, original);
+        Object.defineProperty(client, "query", {
+          configurable: true,
+          writable: true,
+          value: (...args: unknown[]) => {
+            if (typeof args[0] === "string" && args[0].includes("FROM item_automation ia")) reads++;
+            return Reflect.apply(original, client, args);
+          },
+        });
+      };
+      runtime.on("acquire", observe);
+      try {
+        reads = 0;
+        await service.queryDatabase(actor, { databaseId: books.id, limit: 50 });
+        expect(reads).toBe(0);
+        const emptyPage = await service.queryDatabase(actor, {
+          databaseId: emptyDatabase.id,
+          include: ["automation"],
+          limit: 50,
+        });
+        expect(emptyPage.items).toEqual([]);
+        expect(reads).toBe(0);
+        for (const query of [
+          () => service.queryDatabase(actor, { databaseId: books.id, include: ["automation"], limit: 50 }),
+          () => service.queryView(actor, { viewId: view.id, include: { automation: true }, limit: 50 }),
+        ]) {
+          reads = 0;
+          const page = await query();
+          expect(reads).toBe(1);
+          expect(page.items.find((row) => row.id === book.id)?.automation).toMatchObject({
+            status: "found",
+            source: "openLibrary",
+            nextAttemptAt: null,
+          });
+          expect(page.items.find((row) => row.id === noState.id)).not.toHaveProperty("automation");
+        }
+      } finally {
+        runtime.off("acquire", observe);
+        for (const [client, original] of originals)
+          Object.defineProperty(client, "query", {
+            configurable: true,
+            writable: true,
+            value: original,
+          });
+      }
+      const locked = await withTransaction(runtime, (client) =>
+        client.query(
+          "UPDATE item_automation SET status = 'locked' WHERE tenant_id = app_tenant_default() AND item_id = $1",
+          [book.id],
+        ),
+      );
+      expect(locked.rowCount).toBe(1);
+      expect((await service.getItem(actor, { itemId: book.id, include: ["automation"] })).automation).toMatchObject({
+        status: "locked",
+        nextAttemptAt: null,
+      });
+    });
+  });
+
   it("uses one derived projection for item and query responses despite a real edge change", async () => {
     await runInTenant(tenant, async () => {
       await seedSystem(runtime, createViewTypeRegistry());

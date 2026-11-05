@@ -191,3 +191,71 @@ export async function lockOnValueLink(
   );
   return rows.length > 0;
 }
+
+/** Locks a specific link, including a broken one, for a change to its sources. */
+export async function lockValueLink(
+  client: PoolClient,
+  itemId: string,
+  propertyKey: string,
+): Promise<ValueLinkRow | null> {
+  const { rows } = await client.query<ValueLinkDbRow>(
+    `SELECT ${LINK_COLUMNS} FROM value_links WHERE tenant_id = app_tenant_default() AND item_id = $1 AND property_key = $2 FOR UPDATE`,
+    [itemId, propertyKey],
+  );
+  return rows[0] ? mapValueLinkRow(rows[0]) : null;
+}
+
+/** Pages active links whose source and rule match, ordered by stable link id. */
+export async function pageValueLinksForSource(
+  client: PoolClient,
+  input: { ruleKey: string; sourceItemId: string; afterId: string | null; limit: number },
+): Promise<ValueLinkRow[]> {
+  const { rows } = await client.query<ValueLinkDbRow>(
+    `SELECT l.id, l.item_id, l.property_key, l.rule_key, l.state, l.broken_by, l.broken_at
+     FROM value_links l
+     WHERE l.tenant_id = app_tenant_default() AND l.rule_key = $1 AND l.state = 'on' AND ($3::uuid IS NULL OR l.id > $3)
+       AND EXISTS (SELECT 1 FROM value_link_sources s WHERE s.tenant_id = app_tenant_default() AND s.link_id = l.id AND s.source_kind = 'item' AND s.source_item_id = $2)
+     ORDER BY l.id LIMIT $4`,
+    [input.ruleKey, input.sourceItemId, input.afterId, input.limit],
+  );
+  return rows.map(mapValueLinkRow);
+}
+
+/** Adds one item source, idempotently, to a caller-locked link. */
+export async function addValueLinkItemSource(
+  client: PoolClient,
+  linkId: string,
+  sourceItemId: string,
+  sourcePropertyKey: string,
+): Promise<boolean> {
+  const result = await client.query(
+    `INSERT INTO value_link_sources (link_id, source_kind, source_item_id, source_property_key)
+     VALUES ($1, 'item', $2, $3) ON CONFLICT (tenant_id, link_id, source_item_id, source_property_key)
+     WHERE source_kind = 'item' DO NOTHING`,
+    [linkId, sourceItemId, sourcePropertyKey],
+  );
+  return result.rowCount === 1;
+}
+
+/** Removes an item source from a caller-locked link and reports whether it existed. */
+export async function removeValueLinkItemSource(
+  client: PoolClient,
+  linkId: string,
+  sourceItemId: string,
+  sourcePropertyKey: string,
+): Promise<boolean> {
+  const result = await client.query(
+    `DELETE FROM value_link_sources WHERE tenant_id = app_tenant_default() AND link_id = $1 AND source_kind = 'item' AND source_item_id = $2 AND source_property_key = $3`,
+    [linkId, sourceItemId, sourcePropertyKey],
+  );
+  return result.rowCount === 1;
+}
+
+/** Deletes a caller-locked link after its last source is removed. */
+export async function deleteEmptyValueLink(client: PoolClient, linkId: string): Promise<boolean> {
+  const result = await client.query(
+    `DELETE FROM value_links l WHERE l.tenant_id = app_tenant_default() AND l.id = $1 AND NOT EXISTS (SELECT 1 FROM value_link_sources s WHERE s.tenant_id = app_tenant_default() AND s.link_id = l.id)`,
+    [linkId],
+  );
+  return result.rowCount === 1;
+}

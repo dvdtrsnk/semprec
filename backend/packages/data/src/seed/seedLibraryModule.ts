@@ -65,7 +65,10 @@ async function createProps(client: PoolClient, databaseId: string, specs: PropSp
 function metadataActionConfig(databaseId: string, contract: LibraryModuleContract): Record<string, unknown> {
   return {
     databaseId,
-    source: "none", // no external metadata source is wired up yet — see libraryMetadataJob.ts's noop fetcher.
+    source: contract === BOOKS_LIBRARY_CONTRACT ? "openLibrary" : "tmdb",
+    ...(contract === BOOKS_LIBRARY_CONTRACT
+      ? { authorKey: "author", yearKey: "year", isbnKey: "isbn" }
+      : { yearKey: "year", typeKey: "type" }),
     coverKey: contract.coverKey,
     secondaryRatingKey: contract.secondaryRatingKey,
     sourceUrlKey: contract.sourceUrlKey,
