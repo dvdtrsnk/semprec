@@ -268,7 +268,7 @@ describe("link rule propagation", () => {
       const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
       if (!via) throw new Error("Fixture via relation missing");
       const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Initial" } });
-      const targets = [];
+      const targets: string[] = [];
       for (let index = 0; index < 101; index++) {
         const target = await cp.createItem({ databaseId: projects.id, properties: {} });
         await cp.createRelation({ relationPropertyId: via.id, callerItemId: target.id, targetItemId: area.id });
