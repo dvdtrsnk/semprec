@@ -619,6 +619,14 @@ describe("generic operation REST contract (issue #219)", () => {
       });
     }
     const taskName = CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS;
+    await runInTenant(getTenantZeroId(), async () => {
+      await chokePoint.createProperty({ databaseId: fx.database.id, key: "name", name: "Name", type: "text" });
+      await chokePoint.updateItem({
+        databaseId: fx.database.id,
+        itemId: fx.itemA.id,
+        propertiesPatch: { name: "Arrival" },
+      });
+    });
     await runInTenant(getTenantZeroId(), () =>
       withTransaction(pool, (client) =>
         enqueueJob(
@@ -629,15 +637,20 @@ describe("generic operation REST contract (issue #219)", () => {
         ),
       ),
     );
+    let providerCalls = 0;
     const task = createCoreTaskList(
       pool,
       new Map(),
       createLibraryMetadataFetcher({
-        fetch: async () => new Response("secret-provider-response", { status: 503 }),
+        fetch: async () => {
+          providerCalls++;
+          return new Response("secret-provider-response", { status: 503 });
+        },
       }),
     )[taskName];
     if (!task) throw new Error("Library task missing");
     await runOnce({ pgPool: pool, taskList: { [taskName]: task } });
+    expect(providerCalls).toBe(2);
     const failed = await fetch(`${baseUrl}/api/items/${fx.itemA.id}?include=automation`, { headers });
     expect(failed.status).toBe(200);
     const failedText = await failed.text();
