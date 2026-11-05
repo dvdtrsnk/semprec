@@ -625,40 +625,41 @@ describe("library module (issue #25)", () => {
         PoolClient,
         { query: PropertyDescriptor | undefined; release: PropertyDescriptor | undefined }
       >();
+      const committedClients = new WeakSet<PoolClient>();
       let injected = false;
       const onAcquire = (client: PoolClient) => {
-        if (originals.has(client)) return;
-        const queryDescriptor = Object.getOwnPropertyDescriptor(client, "query");
-        const releaseDescriptor = Object.getOwnPropertyDescriptor(client, "release");
-        // eslint-disable-next-line @typescript-eslint/unbound-method
-        const query = client.query;
+        if (!originals.has(client)) {
+          const queryDescriptor = Object.getOwnPropertyDescriptor(client, "query");
+          const releaseDescriptor = Object.getOwnPropertyDescriptor(client, "release");
+          // eslint-disable-next-line @typescript-eslint/unbound-method
+          const query = client.query;
+          originals.set(client, { query: queryDescriptor, release: releaseDescriptor });
+          Object.defineProperty(client, "query", {
+            configurable: true,
+            writable: true,
+            value: (...args: unknown[]) => {
+              const result: unknown = Reflect.apply(query, client, args);
+              if (args[0] !== "COMMIT" || injected) return result;
+              if (!(result instanceof Promise)) throw new Error("Expected asynchronous commit");
+              return result.then((value: unknown) => {
+                committedClients.add(client);
+                if (failurePoint === "commit" && !injected) {
+                  injected = true;
+                  throw new Error("commit acknowledgement failed");
+                }
+                return value;
+              });
+            },
+          });
+        }
         // eslint-disable-next-line @typescript-eslint/unbound-method
         const release = client.release;
-        originals.set(client, { query: queryDescriptor, release: releaseDescriptor });
-        let committed = false;
-        Object.defineProperty(client, "query", {
-          configurable: true,
-          writable: true,
-          value: (...args: unknown[]) => {
-            const result: unknown = Reflect.apply(query, client, args);
-            if (args[0] !== "COMMIT" || injected) return result;
-            if (!(result instanceof Promise)) throw new Error("Expected asynchronous commit");
-            return result.then((value: unknown) => {
-              committed = true;
-              if (failurePoint === "commit" && !injected) {
-                injected = true;
-                throw new Error("commit acknowledgement failed");
-              }
-              return value;
-            });
-          },
-        });
         Object.defineProperty(client, "release", {
           configurable: true,
           writable: true,
           value: (...args: unknown[]) => {
             Reflect.apply(release, client, args);
-            if (committed && failurePoint === "release" && !injected) {
+            if (committedClients.has(client) && failurePoint === "release" && !injected) {
               injected = true;
               throw new Error("client release failed");
             }
