@@ -96,6 +96,8 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   "relation.delete": destructive("core.item.write", false),
   "relation.list": nonDestructive("core.item.read", "read"),
   // Restorable by another restore to an earlier instant, so `reversible` (issue #1617).
+  "link.unlink": nonDestructive("core.item.write", "write"),
+  "link.relink": nonDestructive("core.item.write", "write"),
   "page.restoreVersion": destructive("core.item.write", true),
 };
 

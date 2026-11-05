@@ -466,6 +466,17 @@ export function createGenericApplicationService(
       return relations;
     },
 
+    async unlinkValue(actor, input) {
+      return chokePoint.unlinkValue(
+        input,
+        writerIdentityOf(actor).writerKind === "user" ? "user" : "agent",
+        actor.userId,
+      );
+    },
+    async relinkValue(actor, input) {
+      return chokePoint.relinkValue(input, actor.userId);
+    },
+
     // ---- pages ----
     /** The docs module refuses an unknown or non-page item (404), a future `at` (400) and an `at` outside the retained window (410). */
     async restorePageVersion(_actor, input) {

@@ -102,6 +102,8 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "delete item": "services/semprec-api/src/itemsHandler.ts",
   "restore item": "services/semprec-api/src/itemsHandler.ts",
   "query database": "services/semprec-api/src/itemsHandler.ts",
+  "unlink value": "services/semprec-api/src/itemsHandler.ts",
+  "relink value": "services/semprec-api/src/itemsHandler.ts",
   "set relation": "services/semprec-api/src/itemsHandler.ts",
   "create/replace relation": "services/semprec-api/src/itemsHandler.ts",
   "delete relation": "services/semprec-api/src/itemsHandler.ts",

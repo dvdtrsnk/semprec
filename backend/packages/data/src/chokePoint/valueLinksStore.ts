@@ -3,7 +3,7 @@
 // user's own. Both tables are tenant tables: every statement here runs under the caller's tenant
 // scope and never names `tenant_id`, so the column default stamps it and RLS filters it.
 import type { PoolClient } from "pg";
-import { requireSingleRow } from "../db/pool.js";
+import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 import { assertKnownValue, assertShape } from "../dbRowValidation.js";
 
 const LINK_STATES = ["on", "broken"] as const;
@@ -203,6 +203,16 @@ export async function lockValueLink(
     [itemId, propertyKey],
   );
   return rows[0] ? mapValueLinkRow(rows[0]) : null;
+}
+
+/** Reactivates the caller-locked link in the caller's transaction. */
+export async function reactivateValueLink(client: PoolClient, linkId: string): Promise<void> {
+  const result = await client.query(
+    `UPDATE value_links SET state = 'on', broken_by = NULL, broken_at = NULL, updated_at = now()
+     WHERE tenant_id = app_tenant_default() AND id = $1`,
+    [linkId],
+  );
+  requireAffectedRows(result, "value link reactivation");
 }
 
 /** Pages active links whose source and rule match, ordered by stable link id. */

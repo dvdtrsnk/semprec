@@ -39,6 +39,8 @@ export const GENERIC_OPERATION_NAMES = [
   "relation.delete",
   "relation.list",
   "page.restoreVersion",
+  "link.unlink",
+  "link.relink",
 ] as const;
 
 export type GenericOperationName = (typeof GENERIC_OPERATION_NAMES)[number];

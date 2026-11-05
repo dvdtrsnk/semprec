@@ -364,6 +364,9 @@ export const RelationListInputSchema = z
   .strict();
 export type RelationListInput = z.infer<typeof RelationListInputSchema>;
 
+export const ValueLinkInputSchema = z.object({ itemId: z.string(), propertyKey: z.string() }).strict();
+export type ValueLinkInput = z.infer<typeof ValueLinkInputSchema>;
+
 /** Restores the page of `itemId` to its state at `at` (issue #1617); a future or unretained `at` is refused by the operation, not by this schema. */
 export const PageRestoreVersionInputSchema = z
   .object({
@@ -407,6 +410,8 @@ export interface InputByOperation {
   "relation.delete": RelationDeleteInput;
   "relation.list": RelationListInput;
   "page.restoreVersion": PageRestoreVersionInput;
+  "link.unlink": ValueLinkInput;
+  "link.relink": ValueLinkInput;
 }
 
 /** Fails to compile if `InputByOperation`'s keys and `GenericOperationName`'s literals ever diverge in either direction. */

@@ -27,6 +27,7 @@ import {
   RelationListInputSchema,
   RelationPutInputSchema,
   RelationSetInputSchema,
+  ValueLinkInputSchema,
   ViewCreateInputSchema,
   ViewDeleteInputSchema,
   ViewGetInputSchema,
@@ -63,6 +64,8 @@ export type GenericOperationBindings = {
  * against its target type in both directions.
  */
 export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
+  "link.unlink": { input: ValueLinkInputSchema, invoke: (service, actor, input) => service.unlinkValue(actor, input) },
+  "link.relink": { input: ValueLinkInputSchema, invoke: (service, actor, input) => service.relinkValue(actor, input) },
   "database.list": {
     input: DatabaseListInputSchema,
     invoke: (service, actor, input) => service.listDatabases(actor, input),

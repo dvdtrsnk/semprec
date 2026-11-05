@@ -357,6 +357,35 @@ const CASES: Record<GenericOperationName, Case> = {
     }),
   },
   "relation.list": { tool: (fx) => ({ name: "semprec.relation.list", arguments: { itemId: fx.itemA.id } }) },
+  "link.unlink": {
+    tool: (fx) => ({ name: "semprec.link.unlink", arguments: { itemId: fx.itemA.id, propertyKey: "title" } }),
+    prepare: async (fx) => {
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: fx.itemA.id,
+          propertyKey: "title",
+          ruleKey: "test",
+          sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+        }),
+      );
+    },
+  },
+  "link.relink": {
+    tool: (fx) => ({ name: "semprec.link.relink", arguments: { itemId: fx.itemA.id, propertyKey: "title" } }),
+    prepare: async (fx) => {
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: fx.itemA.id,
+          propertyKey: "title",
+          ruleKey: "test",
+          state: "broken",
+          brokenBy: "user",
+          brokenAt: new Date(),
+          sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+        }),
+      );
+    },
+  },
   "page.restoreVersion": {
     // The block's update is dated an hour back, so the instant (half an hour back) sits inside the history `prepare` opens.
     tool: (fx) => ({

@@ -5,6 +5,7 @@ import type {
   Database,
   Item,
   ItemPage,
+  ItemLink,
   Page,
   PageRestoreOutput,
   Property,
@@ -53,6 +54,8 @@ export interface OutputByOperation {
   "relation.delete": RelationEdge;
   "relation.list": RelationListEntry[];
   "page.restoreVersion": PageRestoreOutput;
+  "link.unlink": { itemId: string; propertyKey: string } & ItemLink;
+  "link.relink": { itemId: string; propertyKey: string } & ItemLink;
 }
 
 type AssertSameKeys<T, U> = [T] extends [U] ? ([U] extends [T] ? true : never) : never;
@@ -195,6 +198,14 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["relation.list"],
   ): Promise<OutputByOperation["relation.list"]>;
+  unlinkValue(
+    actor: AuthenticatedActor,
+    input: InputByOperation["link.unlink"],
+  ): Promise<OutputByOperation["link.unlink"]>;
+  relinkValue(
+    actor: AuthenticatedActor,
+    input: InputByOperation["link.relink"],
+  ): Promise<OutputByOperation["link.relink"]>;
   restorePageVersion(
     actor: AuthenticatedActor,
     input: InputByOperation["page.restoreVersion"],

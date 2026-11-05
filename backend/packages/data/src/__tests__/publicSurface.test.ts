@@ -298,6 +298,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "createTaskRecurrence",
   "createTranscriptionRequeueSweepAction",
   "createUser",
+  "createValueLinkOps",
   "createViewTypeRegistry",
   "databaseArchiveWithClient",
   "dayBounds",

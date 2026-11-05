@@ -233,6 +233,34 @@ export function createItemRoutes(
       },
     },
     {
+      method: "POST",
+      path: "/api/items/:id/links/:propertyKey/unlink",
+      handler: async (ctx) => {
+        const input = {
+          itemId: requireUuidParam(ctx.params, "id"),
+          propertyKey: requireStringParam(ctx.params, "propertyKey"),
+        };
+        return {
+          status: 200,
+          body: await dispatchGenericOperation(service, "link.unlink", restActor(ctx.identity.user.id), input),
+        };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/items/:id/links/:propertyKey/relink",
+      handler: async (ctx) => {
+        const input = {
+          itemId: requireUuidParam(ctx.params, "id"),
+          propertyKey: requireStringParam(ctx.params, "propertyKey"),
+        };
+        return {
+          status: 200,
+          body: await dispatchGenericOperation(service, "link.relink", restActor(ctx.identity.user.id), input),
+        };
+      },
+    },
+    {
       method: "GET",
       path: "/api/items/:id/relations",
       handler: async (ctx) => {

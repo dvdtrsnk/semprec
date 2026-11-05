@@ -451,6 +451,36 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     const body = (await res.json()) as { relations: { targetItemId: string }[] };
     expect(body.relations.map((relation) => relation.targetItemId)).toEqual([fx.targetItem.id]);
   },
+  "link.unlink": async (fx, headers, baseUrl) => {
+    await withTransaction(pool, (client) =>
+      insertValueLink(client, {
+        itemId: fx.itemA.id,
+        propertyKey: "title",
+        ruleKey: "test",
+        sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+      }),
+    );
+    const res = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/links/title/unlink`, { method: "POST", headers });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user" });
+  },
+  "link.relink": async (fx, headers, baseUrl) => {
+    await withTransaction(pool, (client) =>
+      insertValueLink(client, {
+        itemId: fx.itemA.id,
+        propertyKey: "title",
+        ruleKey: "test",
+        state: "broken",
+        brokenBy: "user",
+        brokenAt: new Date(),
+        sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+      }),
+    );
+    const res = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/links/title/relink`, { method: "POST", headers });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ valueKind: "inherited" });
+    expect((await chokePoint.getItem(fx.database.id, fx.itemA.id))?.properties.title).toBe(fx.itemB.properties.title);
+  },
   "page.restoreVersion": async (fx, headers, baseUrl) => {
     // A page whose history opens an hour ago, restored to half an hour ago: the one block it had is still there.
     await createDocStore(pool).putBlock(

@@ -12,6 +12,7 @@ import {
 } from "@semprec/data/testSupport";
 import {
   createAgentRun,
+  insertValueLink,
   createUser as createPersistedUser,
   createChokePoint,
   createDocStore,
@@ -229,6 +230,35 @@ const CASES: Record<GenericOperationName, Case> = {
     }),
   },
   "relation.list": { args: (fx) => ({ itemId: fx.itemA.id }) },
+  "link.unlink": {
+    args: (fx) => ({ itemId: fx.itemA.id, propertyKey: "title" }),
+    prepare: async (fx) => {
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: fx.itemA.id,
+          propertyKey: "title",
+          ruleKey: "test",
+          sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+        }),
+      );
+    },
+  },
+  "link.relink": {
+    args: (fx) => ({ itemId: fx.itemA.id, propertyKey: "title" }),
+    prepare: async (fx) => {
+      await withTransaction(pool, (client) =>
+        insertValueLink(client, {
+          itemId: fx.itemA.id,
+          propertyKey: "title",
+          ruleKey: "test",
+          state: "broken",
+          brokenBy: "user",
+          brokenAt: new Date(),
+          sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+        }),
+      );
+    },
+  },
   "page.restoreVersion": {
     // The instant sits inside the history `prepare` opens, so only the approval gate stands between the call and the restore.
     args: (fx) => ({ itemId: fx.itemA.id, at: new Date(Date.now() - 30 * 60 * 1000).toISOString() }),

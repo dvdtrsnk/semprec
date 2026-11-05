@@ -1740,6 +1740,18 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: { targetItemId: b.targetItemId },
       }));
     }),
+  "unlink value": async () => {
+    await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "POST",
+      path: `/api/items/${id}/links/exampleKey/unlink`,
+    }));
+  },
+  "relink value": async () => {
+    await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
+      method: "POST",
+      path: `/api/items/${id}/links/exampleKey/relink`,
+    }));
+  },
   "delete relation": () =>
     leavesAUnchanged(async () => {
       await relationCases("DELETE", undefined);
