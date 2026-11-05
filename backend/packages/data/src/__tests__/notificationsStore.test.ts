@@ -108,6 +108,17 @@ describe("notificationsStore (issue #152)", () => {
         });
       const expected = await seed(tenant, user, 503);
       const foreign = await seed(foreignTenant, foreignUser, 1);
+      const unresolved = await withTenantTransaction(runtime, tenant, async (client) => {
+        const run = await createAgentRun(client, { triggeredBy: "user", userId: user, task: "Unresolved fixture" });
+        return writeNotification(client, {
+          userId: user,
+          kind: "agent_run_error",
+          sourceTable: "agent_runs",
+          sourceId: run.id,
+          transitionInstance: "unresolved",
+          linkHref: null,
+        });
+      });
       await withTenantTransaction(runtime, tenant, async (client) => {
         const first = await listResolvedNotificationIds(client, user, "2000-01-01T00:00:00Z", 900);
         expect(first).toHaveLength(500);
@@ -122,6 +133,7 @@ describe("notificationsStore (issue #152)", () => {
           await listResolvedNotificationIds(client, user, second.at(-1)!.resolvedAt, 500, second.at(-1)!.id),
         ).toEqual([]);
         expect([...first, ...second].map((row) => row.id)).not.toContain(foreign[0]);
+        expect([...first, ...second].map((row) => row.id)).not.toContain(unresolved);
         const before = await client.query<{ value: string }>(
           "SELECT to_char(($1::timestamptz - interval '1 microsecond') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS value",
           [boundary.resolvedAt],
