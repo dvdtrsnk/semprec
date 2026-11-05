@@ -2623,8 +2623,8 @@
       "sequence": 27,
       "status": "proposed",
       "title": "[backend-delivery 27/74] Implement data/chokePoint, data/derived, data/mail changes",
-      "bodyCharacters": 59979,
-      "specSha256": "384432f98ddff774105aeed4c3a88bd3f5b98818a14fd7bd5ea4d8d4cae8bdb1",
+      "bodyCharacters": 59960,
+      "specSha256": "4c6b543efc7e4217c6669d6d62bdaacaff544b9f677033963438f60892996ceb",
       "members": [
         {
           "id": "gh-1549",
@@ -2708,7 +2708,7 @@
         },
         {
           "id": "gh-1567",
-          "specSha256": "3fa44ddc3ffc9e08c00fa90d925e9da56922f40789b1734cc88f471788daba0e",
+          "specSha256": "fc4391b7e765dab90ba58a3ad08f0d881394d7cab72dfb9666bc5a7cfbe6fb0b",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1384",
