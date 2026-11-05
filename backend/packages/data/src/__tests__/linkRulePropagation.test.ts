@@ -17,6 +17,7 @@ import { createCoreTaskList } from "../worker.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { enqueueLinkPropagation, handleLinkPropagation } from "../valueLinks/linkPropagation.js";
 import { lockItemById } from "../chokePoint/itemsStore.js";
+import { lockValueLink } from "../chokePoint/valueLinksStore.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 
 let admin: Pool;
@@ -255,6 +256,100 @@ describe("link rule propagation", () => {
     }
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "User-break race or participant failed");
+    await runInTenant(tenant, async () => {
+      expect((await fixture.cp.getItem(fixture.projects.id, fixture.target.id))?.properties.name).toBe("User choice");
+      const links = await withTransaction(data, (client) =>
+        client.query<{ state: string }>("SELECT state FROM value_links WHERE item_id = $1 AND property_key = 'name'", [
+          fixture.target.id,
+        ]),
+      );
+      expect(links.rows).toEqual([{ state: "broken" }]);
+    });
+  });
+
+  it("lets a waiting user break win after an inherited write commits", async () => {
+    const fixture = await runInTenant(tenant, async () => {
+      const cp = createChokePoint(data);
+      const dbs = await cp.listDatabases();
+      const areas = dbs.find((db) => db.ownerModuleId === "areas");
+      const projects = dbs.find((db) => db.ownerModuleId === "projects");
+      if (!areas || !projects) throw new Error("Fixture databases missing");
+      const source = await cp.createItem({ databaseId: areas.id, properties: { name: "Source" } });
+      const target = await cp.createItem({ databaseId: projects.id, properties: {} });
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
+      if (!via) throw new Error("Fixture relation missing");
+      await cp.createRelation({ relationPropertyId: via.id, callerItemId: target.id, targetItemId: source.id });
+      await cp.updateItem({ databaseId: areas.id, itemId: source.id, propertiesPatch: { name: "New source" } });
+      return { cp, projects, source, target };
+    });
+    let release!: () => void;
+    let signal!: (pid: number) => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const locked = new Promise<number>((resolve) => {
+      signal = resolve;
+    });
+    const holder = runInTenant(tenant, () =>
+      withTransaction(data, async (client) => {
+        const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+        if (!pid.rows[0] || !(await lockValueLink(client, fixture.target.id, "name")))
+          throw new Error("Fixture link missing");
+        signal(pid.rows[0].pid);
+        await gate;
+      }),
+    );
+    let propagation: Promise<void> | undefined;
+    let user: Promise<unknown> | undefined;
+    const failures: unknown[] = [];
+    try {
+      const holderPid = await Promise.race([
+        locked,
+        holder.then(() => {
+          throw new Error("Link holder exited before barrier");
+        }),
+      ]);
+      propagation = runInTenant(tenant, () =>
+        handleLinkPropagation(data, { ruleKey, sourceItemId: fixture.source.id, hop: 1 }),
+      );
+      let propagationPid = 0;
+      await vi.waitFor(async () => {
+        const waiting = await admin.query<{ pid: number }>(
+          "SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND $1::int = ANY(pg_blocking_pids(pid))",
+          [holderPid],
+        );
+        expect(waiting.rows).toHaveLength(1);
+        propagationPid = waiting.rows[0]!.pid;
+      });
+      user = runInTenant(tenant, () =>
+        fixture.cp.updateItem(
+          { databaseId: fixture.projects.id, itemId: fixture.target.id, propertiesPatch: { name: "User choice" } },
+          undefined,
+          undefined,
+          { writerKind: "user" },
+        ),
+      );
+      await vi.waitFor(async () => {
+        const waiting = await admin.query<{ blocked: boolean }>(
+          "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND $1::int = ANY(pg_blocking_pids(pid))) AS blocked",
+          [propagationPid],
+        );
+        expect(waiting.rows[0]?.blocked).toBe(true);
+      });
+    } catch (error) {
+      failures.push(error);
+    }
+    release();
+    for (const work of [holder, propagation, user]) {
+      if (!work) continue;
+      try {
+        await work;
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Inherited/user race or participant failed");
     await runInTenant(tenant, async () => {
       expect((await fixture.cp.getItem(fixture.projects.id, fixture.target.id))?.properties.name).toBe("User choice");
       const links = await withTransaction(data, (client) =>
