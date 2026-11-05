@@ -74,7 +74,7 @@ export async function downloadLibraryCover(url: string): Promise<DownloadedLibra
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
   try {
-    const response = await outbound.fetch(url, { signal: controller.signal });
+    const response = await outbound.fetch(url, { signal: controller.signal, redirect: "error" });
     const mimeType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
     if (!response.ok || !mimeType?.startsWith("image/")) {
       await response.body?.cancel();

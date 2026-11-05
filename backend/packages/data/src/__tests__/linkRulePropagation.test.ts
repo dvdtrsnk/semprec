@@ -1,9 +1,11 @@
 import "../domainWriteHooks.js";
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
+import { assertRelationCreatableWithClient } from "../chokePoint/relationOps.js";
 import { withTransaction } from "../db/pool.js";
 import * as registryLoader from "../manifest/fullModuleRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -119,6 +121,55 @@ describe("link rule propagation", () => {
         client.query("SELECT id FROM value_links WHERE item_id = $1 AND property_key = 'name'", [project.id]),
       );
       expect(remaining.rowCount).toBe(0);
+    });
+  });
+
+  it("does not create a link during relation admission or mutate a foreign tenant", async () => {
+    const foreign = await createTestTenant(admin);
+    await runInTenant(foreign, () => seedSystem(data));
+    const make = (tenantId: string) =>
+      runInTenant(tenantId, async () => {
+        const cp = createChokePoint(data);
+        const databases = await cp.listDatabases();
+        const areas = databases.find((db) => db.ownerModuleId === "areas");
+        const projects = databases.find((db) => db.ownerModuleId === "projects");
+        if (!areas || !projects) throw new Error("Fixture databases missing");
+        const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Source" } });
+        const project = await cp.createItem({ databaseId: projects.id, properties: {} });
+        const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
+        if (!via) throw new Error("Fixture via relation missing");
+        return { cp, areas, projects, area, project, via };
+      });
+    const own = await make(tenant);
+    const other = await make(foreign);
+    await runInTenant(tenant, async () => {
+      await withTransaction(data, (client) =>
+        assertRelationCreatableWithClient(client, {
+          relationPropertyId: own.via.id,
+          callerItemId: own.project.id,
+          targetItemId: own.area.id,
+        }),
+      );
+      const links = await withTransaction(data, (client) =>
+        client.query("SELECT id FROM value_links WHERE item_id = $1", [own.project.id]),
+      );
+      expect(links.rowCount).toBe(0);
+      await own.cp.createRelation({
+        relationPropertyId: own.via.id,
+        callerItemId: own.project.id,
+        targetItemId: own.area.id,
+      });
+      await handleLinkPropagation(data, { ruleKey, sourceItemId: other.area.id, hop: 1 });
+      await handleLinkPropagation(data, { ruleKey, sourceItemId: randomUUID(), hop: 1 });
+      expect((await own.cp.getItem(own.projects.id, own.project.id))?.properties.name).toBe("Source");
+      expect(await own.cp.getItem(other.projects.id, other.project.id)).toBeNull();
+    });
+    await runInTenant(foreign, async () => {
+      expect((await other.cp.getItem(other.projects.id, other.project.id))?.properties.name).toBeUndefined();
+      const links = await withTransaction(data, (client) =>
+        client.query("SELECT id FROM value_links WHERE item_id = $1", [other.project.id]),
+      );
+      expect(links.rowCount).toBe(0);
     });
   });
 });

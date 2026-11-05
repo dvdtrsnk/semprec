@@ -713,10 +713,9 @@ describe("library module (issue #25)", () => {
     const existingJobs = await countJobs();
     expect(existingJobs).toBe("1");
     const readJob = () =>
-      pool.query<Record<string, unknown>>(
-        "SELECT id, attempts, run_at, payload FROM graphile_worker.jobs WHERE key = $1",
-        [`library-metadata:${item.id}`],
-      );
+      pool.query<Record<string, unknown>>("SELECT id, attempts, run_at FROM graphile_worker.jobs WHERE key = $1", [
+        `library-metadata:${item.id}`,
+      ]);
     const existing = (await readJob()).rows;
     const action = createLibraryMetadataRetrySweepAction(pool);
     const context = { heartbeatId: "heartbeat", projectItemId: "project" };
