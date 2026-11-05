@@ -22,7 +22,10 @@ import {
   registerItemUpdateHook,
   registerRelationEdgeWriteHook,
   registerRelationEdgeDeleteHook,
+  registerRelationEdgeChangedHook,
 } from "./chokePoint/hooks.js";
+import { linkRuleItemHook } from "./valueLinks/linkRuleItemHook.js";
+import { linkRuleEdgeHook } from "./valueLinks/linkRuleEdgeHook.js";
 import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "./mcp/mcpServerWriteHook.js";
 import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.js";
 import { FILES_MODULE_ID, TASKS_MODULE_ID, PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
@@ -93,3 +96,6 @@ registerItemUpdateHook(mailboxConnectionLimitUpdateHook);
 
 registerItemCreateHook(areaItemCreateHook);
 registerItemUpdateHook(areaItemUpdateHook);
+
+registerItemUpdateHook(linkRuleItemHook);
+registerRelationEdgeChangedHook(linkRuleEdgeHook);
