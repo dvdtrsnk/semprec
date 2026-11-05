@@ -330,6 +330,12 @@ async function assertValidEnvelopeForCard(
           { field: "properties" },
         );
       }
+      await assertRelationCreatableWithClient(client, {
+        relationPropertyId,
+        callerItemId: transcriptId,
+        targetItemId: envelope.target,
+        metadata: relationEnvelopeMetadata(envelope),
+      });
       if (
         role === "speaker" &&
         speakerContext &&
@@ -337,12 +343,6 @@ async function assertValidEnvelopeForCard(
       ) {
         throw new ValidationError("Speaker proposal must keep its original speaker", { field: "properties" });
       }
-      await assertRelationCreatableWithClient(client, {
-        relationPropertyId,
-        callerItemId: transcriptId,
-        targetItemId: envelope.target,
-        metadata: relationEnvelopeMetadata(envelope),
-      });
       break;
     case "pageContent":
       throw new ValidationError("A transcript proposal cannot append page content", { field: "entityKind" });

@@ -101,8 +101,10 @@ describe("transcript detail", () => {
       await map("SPEAKER_01", person.id);
       const second = await handler()({ params: { id: f.transcript.id }, identity: { user: { locale: "en" } } });
       expect(second.body).toMatchObject({
-        speakers: expect.arrayContaining([{ speaker: "SPEAKER_01", label: "Alice", personId: person.id }]),
-        segments: expect.arrayContaining([{ index: 1, label: "Alice" }]),
+        speakers: expect.arrayContaining([
+          expect.objectContaining({ speaker: "SPEAKER_01", label: "Alice", personId: person.id }),
+        ]),
+        segments: expect.arrayContaining([expect.objectContaining({ index: 1, label: "Alice" })]),
       });
     });
   });

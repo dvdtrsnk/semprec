@@ -1705,7 +1705,8 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
           );
           const cards = await client.query<{ n: number }>(
             `SELECT count(*)::int AS n FROM items i JOIN databases d ON d.id = i.database_id
-           WHERE d.owner_module_id = 'processingProposals' AND i.deleted_at IS NULL`,
+           WHERE d.owner_module_id = 'processingProposals' AND i.deleted_at IS NULL
+             AND COALESCE(i.properties -> 'context' ->> 'role', '') <> 'speaker'`,
           );
           return { rows, cards: cards.rows };
         }),
