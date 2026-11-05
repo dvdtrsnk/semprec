@@ -661,6 +661,7 @@ export { registerItemReadProjection, projectItemForRead, type ItemReadProjection
 export { filterRecognitionCandidates, RECOGNITION_TARGETS } from "./inbox/inboxRecognition.js";
 
 export { createMailContactsRouteHandler } from "./mail/mailContactsRoute.js";
+export { createMailThreadListRouteHandler } from "./mail/mailThreadRoutes.js";
 
 export { getSelfPersonId, setSelfPersonId } from "./selfPerson.js";
 export {

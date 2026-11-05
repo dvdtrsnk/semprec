@@ -271,6 +271,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "createLibraryMetadataTriggerAction",
   "createLinkEmailToPeopleAction",
   "createMailContactsRouteHandler",
+  "createMailThreadListRouteHandler",
   "createMailLiveSyncRoot",
   "createMailTransportFactory",
   "createModuleRegistryDriftCheckAction",
