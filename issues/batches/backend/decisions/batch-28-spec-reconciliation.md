@@ -207,3 +207,14 @@ Do not claim canonical speaker kind for the new People/context-only shapes.
 Prove role-swap refusal, People/speaker atomic confirmation and openQuestions
 through the already scoped actual owners. This preserves the existing canonical
 status/fallback contract and adds no new frontend or stored classification.
+
+## Threads generic relation transport evidence
+
+For gh1573 only, authorize the existing API-owned genericOperationsContract.test.ts
+for authenticated generic relation.put of Threads.project: store the first project,
+reject a different second project with validation_failed, and preserve the first
+edge. Use the real dispatcher, runtime business role, canonical seeded Threads
+creation and own positive plus foreign/random/no-effect controls. Keep the
+existing data-owner hook tests. This permission adds no endpoint, MCP evidence,
+helper export, production dependency or unrelated fixture repair. Neither the
+data-owner proof nor this REST proof establishes an unexecuted MCP path.
