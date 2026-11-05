@@ -304,7 +304,7 @@ describe("POST /api/recordings through the dispatcher", () => {
         { encoding: "buffer", maxBuffer: 2_000_000, timeout: 25_000, detached: true },
         (error, stdout, stderr) => {
           process.stdout.write(
-            `${JSON.stringify({ fixture: "recording-video", pid: child.pid, pgid: child.pid, spawnRequestedAt, executable: "ffmpeg", argv: child.spawnargs, exitCode: child.exitCode, signal: child.signalCode, stderr: stderr.toString("utf8") })}\n`,
+            `${JSON.stringify({ fixture: "recording-video", pid: child.pid, derivedPgid: child.pid, spawnRequestedAt, executable: "ffmpeg", argv: child.spawnargs, exitCode: child.exitCode, signal: child.signalCode, stderr: stderr.toString("utf8") })}\n`,
           );
           if (error) reject(error);
           else resolve(stdout);
