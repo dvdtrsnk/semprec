@@ -138,7 +138,7 @@ describe("value link via-edge union", () => {
   });
 
   it("replays the registered worker through five hops and stops before a sixth", async () => {
-    await runInTenant(tenant, async () => {
+    const fixture = await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
       const dbs = await cp.listDatabases();
       const ids = ["areas", "projects", "tasks", "events", "people", "companies", "files"].map((module) => {
@@ -164,13 +164,18 @@ describe("value link via-edge union", () => {
         });
       }
       for (let index = 6; index >= 2; index--) await cp.createRelation(edges[index - 1]!);
-      const tasks = createCoreTaskList(data, createActionRegistry());
-      await runOnce({ pgPool: data, taskList: tasks });
-      await cp.createRelation(edges[0]!);
-      await runOnce({ pgPool: data, taskList: tasks });
+      return { cp, ids, items, firstEdge: edges[0]! };
+    });
+    const tasks = createCoreTaskList(data, createActionRegistry());
+    await runOnce({ pgPool: data, taskList: tasks });
+    await runInTenant(tenant, () => fixture.cp.createRelation(fixture.firstEdge));
+    await runOnce({ pgPool: data, taskList: tasks });
+    await runInTenant(tenant, async () => {
       for (let index = 1; index <= 5; index++)
-        expect((await cp.getItem(ids[index]!, items[index]!.id))?.properties.name).toBe("Chain source");
-      expect((await cp.getItem(ids[6]!, items[6]!.id))?.properties.name).toBeUndefined();
+        expect((await fixture.cp.getItem(fixture.ids[index]!, fixture.items[index]!.id))?.properties.name).toBe(
+          "Chain source",
+        );
+      expect((await fixture.cp.getItem(fixture.ids[6]!, fixture.items[6]!.id))?.properties.name).toBeUndefined();
     });
   });
 });

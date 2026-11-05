@@ -173,6 +173,53 @@ describe("link rule propagation", () => {
     });
   });
 
+  it("updates live linked targets while leaving a user-broken link and value untouched", async () => {
+    await runInTenant(tenant, async () => {
+      const cp = createChokePoint(data);
+      const dbs = await cp.listDatabases();
+      const areas = dbs.find((db) => db.ownerModuleId === "areas");
+      const projects = dbs.find((db) => db.ownerModuleId === "projects");
+      if (!areas || !projects) throw new Error("Fixture databases missing");
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
+      if (!via) throw new Error("Fixture relation missing");
+      const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Initial" } });
+      const live = await cp.createItem({ databaseId: projects.id, properties: {} });
+      const broken = await cp.createItem({ databaseId: projects.id, properties: {} });
+      for (const item of [live, broken])
+        await cp.createRelation({ relationPropertyId: via.id, callerItemId: item.id, targetItemId: area.id });
+      await cp.updateItem(
+        { databaseId: projects.id, itemId: broken.id, propertiesPatch: { name: "Own choice" } },
+        undefined,
+        undefined,
+        { writerKind: "user" },
+      );
+      await cp.updateItem({ databaseId: areas.id, itemId: area.id, propertiesPatch: { name: "New source" } });
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await handleLinkPropagation(data, { ruleKey, sourceItemId: area.id, hop: 1 });
+      } finally {
+        setInvalidationHook(() => {});
+      }
+      expect((await cp.getItem(projects.id, live.id))?.properties.name).toBe("New source");
+      expect((await cp.getItem(projects.id, broken.id))?.properties.name).toBe("Own choice");
+      expect(events.some((event) => event.scope === "item" && event.itemId === live.id)).toBe(true);
+      expect(events.some((event) => event.scope === "item" && event.itemId === broken.id)).toBe(false);
+      const rows = await withTransaction(data, (client) =>
+        client.query<{ item_id: string; state: string }>(
+          "SELECT item_id, state FROM value_links WHERE item_id = ANY($1::uuid[]) ORDER BY item_id",
+          [[live.id, broken.id]],
+        ),
+      );
+      expect(rows.rows).toEqual(
+        [
+          { item_id: live.id, state: "on" },
+          { item_id: broken.id, state: "broken" },
+        ].sort((a, b) => a.item_id.localeCompare(b.item_id)),
+      );
+    });
+  });
+
   it("commits separate keyset pages for more than one hundred linked targets", async () => {
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
