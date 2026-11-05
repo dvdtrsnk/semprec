@@ -186,7 +186,9 @@ export function createPyannoteDiarizationProvider(apiKey: string): DiarizationPr
           headers: { ...headers, "content-type": "application/json" },
           body: JSON.stringify({
             url: mediaKey,
-            ...(request.numSpeakers && "exact" in request.numSpeakers ? { numSpeakers: request.numSpeakers.exact } : {}),
+            ...(request.numSpeakers && "exact" in request.numSpeakers
+              ? { numSpeakers: request.numSpeakers.exact }
+              : {}),
             ...(request.numSpeakers && "min" in request.numSpeakers ? { minSpeakers: request.numSpeakers.min } : {}),
           }),
           signal: requestSignal(request.signal),
