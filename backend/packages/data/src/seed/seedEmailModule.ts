@@ -333,9 +333,10 @@ export async function seedEmailModuleInTransaction(
     viewTypeRegistry,
   );
 
-  await client.query(`UPDATE databases SET schema_locked = true WHERE id = ANY($1::uuid[])`, [
+  const lockedDatabases = await client.query(`UPDATE databases SET schema_locked = true WHERE id = ANY($1::uuid[])`, [
     [mailboxes.id, folders.id, emails.id, threads.id],
   ]);
+  if (lockedDatabases.rowCount !== 4) throw new Error("Expected four mail databases to be locked");
 
   // People.emails (issue #26 is its sole owner) — direct store call against the raw client,
   // the same "code-level migration with direct DB access" exception seedSystem.ts documents
