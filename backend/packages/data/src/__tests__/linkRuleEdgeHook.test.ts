@@ -6,11 +6,12 @@ import { runAsSystem, runInTenant } from "@semprec/shared";
 import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { withTransaction } from "../db/pool.js";
 import { confirmProposalWithClient, reviseProposalWithClient } from "../inbox/proposalActions.js";
 import * as registryLoader from "../manifest/fullModuleRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { createActionRegistry } from "../scheduler/actions.js";
+import { createActionQueueAffinity, createActionRegistry } from "../scheduler/actions.js";
 import { createCoreTaskList } from "../worker.js";
 import { matchTranscriptToEvent } from "../transcription/transcriptEventMatch.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
@@ -158,6 +159,21 @@ describe("value link via-edge union", () => {
       await detach(secondProject.id);
       expect(await targets()).toEqual([secondCompany.id]);
       expect((await links()).rowCount).toBe(0);
+      const otherFile = await cp.createItem({ databaseId: files, properties: { name: "Other file" } });
+      for (const project of [firstProject, secondProject])
+        await cp.createRelation({ relationPropertyId: via, callerItemId: otherFile.id, targetItemId: project.id });
+      await withTransaction(data, (client) =>
+        itemDeleteWithClient(client, projects, firstProject.id, { queueAffinity: createActionQueueAffinity() }),
+      );
+      await handleLinkPropagation(data, {
+        ruleKey: "fixtureUnion.projectCompanies",
+        sourceItemId: firstProject.id,
+        hop: 1,
+      });
+      const remaining = (await cp.listItemRelations(otherFile.id))
+        ?.filter((edge) => edge.relationPropertyId === targetProperty)
+        .map((edge) => edge.targetItemId);
+      expect(remaining).toEqual([secondCompany.id]);
     });
   });
 
