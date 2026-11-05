@@ -203,6 +203,9 @@ describe("mail reads through the dispatcher", () => {
     const body = await list.text();
     expect(body).toContain(b.threadId);
     expect(body).not.toContain(a.threadId);
+    const contradictory = await get(authB, "/api/mail/threads?q=is%3Aunread%20is%3Aread");
+    expect(contradictory.status).toBe(200);
+    expect(await contradictory.json()).toEqual({ threads: [], nextCursor: null });
     const folderOwn = await get(authB, `/api/mail/threads?folderId=${b.folderId}`);
     expect(folderOwn.status).toBe(200);
     expect(await folderOwn.text()).toContain(b.threadId);
