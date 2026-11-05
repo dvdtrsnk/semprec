@@ -14,7 +14,7 @@ import { LocalFsBlobStorageWriter, resolveBlobStorageDir, type BlobStorageWriter
 import { disposeLibraryCover, prepareLibraryCover, type DownloadedLibraryCover } from "./libraryCoverStorage.js";
 import { createLogger } from "@semprec/shared";
 
-import { assertSupportedLibraryMetadataSource } from "./libraryMetadataConfig.js";
+import { assertSupportedLibraryMetadataSource, LibraryMetadataConfigurationError } from "./libraryMetadataConfig.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import { getTenantUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
@@ -296,11 +296,12 @@ export async function handleProcessLibraryMetadataTask(
       );
       callbackFinished = true;
     });
-  } catch {
+  } catch (error) {
     if (committed) {
       logger.error("Library metadata committed but transaction release failed");
       return;
     }
+    if (error instanceof LibraryMetadataConfigurationError) throw error;
     const message = "Library metadata processing failed";
     // Issue #149: notification lands in the same transaction as the error record, so a
     // replayed job (same job id, same `transitionInstance`) never duplicates it.

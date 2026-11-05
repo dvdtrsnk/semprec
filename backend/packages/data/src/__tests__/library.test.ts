@@ -9,6 +9,7 @@ import { z } from "zod";
 import { CORE_TASK_NAMES, enqueueJob, runOnce, runWorker } from "@semprec/queue";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createLibraryMetadataFetcher } from "../library/libraryMetadataFetcher.js";
+import { LibraryMetadataConfigurationError } from "../library/libraryMetadataConfig.js";
 import { downloadLibraryCover } from "../library/openLibraryFetcher.js";
 import { runLibraryHeartbeatConfigCutoverMigration } from "../library/libraryHeartbeatConfigCutoverMigration.js";
 import { runLibraryBooksYearIsbnCutoverMigration } from "../library/libraryBooksYearIsbnCutoverMigration.js";
@@ -460,6 +461,26 @@ describe("library module (issue #25)", () => {
       ),
     ).rejects.toThrow("Unsupported library metadata source configuration");
     expect(invoked).toBe(false);
+    expect(await withTransaction(pool, (client) => getItemAutomation(client, item.id))).toEqual(before);
+  });
+
+  it("preserves a recognized downstream configuration refusal without recording an outcome", async () => {
+    const databaseId = await getDatabaseIdByModule("books");
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Book" } }));
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+    const before = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    const failure = new LibraryMetadataConfigurationError();
+    await expect(
+      inTenantZero(() =>
+        handleProcessLibraryMetadataTask(
+          pool,
+          { itemId: item.id, databaseId, config: { source: "openLibrary", coverKey: "cover" } },
+          async () => {
+            throw failure;
+          },
+        ),
+      ),
+    ).rejects.toBe(failure);
     expect(await withTransaction(pool, (client) => getItemAutomation(client, item.id))).toEqual(before);
   });
 
