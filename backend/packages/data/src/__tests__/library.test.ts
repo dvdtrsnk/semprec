@@ -655,7 +655,7 @@ describe("library module (issue #25)", () => {
       const result = await fetcher(stored, { source: "openLibrary", coverKey: "cover" });
       expect(result.status).toBe("found");
       expect(result.source).toBe("googleBooks");
-      expect(result.cover?.bytes).toEqual(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]));
+      expect(result.cover?.bytes).toEqual(Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
       expect(JSON.stringify(result)).not.toContain("fixture-secret");
       await inTenantZero(() =>
         handleProcessLibraryMetadataTask(
