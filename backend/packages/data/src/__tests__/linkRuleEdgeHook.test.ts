@@ -5,11 +5,15 @@ import { ModuleRegistry, type ModuleManifest } from "@semprec/module-registry";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { withTransaction } from "../db/pool.js";
+import { confirmProposalWithClient, reviseProposalWithClient } from "../inbox/proposalActions.js";
 import * as registryLoader from "../manifest/fullModuleRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 import { createCoreTaskList } from "../worker.js";
+import { matchTranscriptToEvent } from "../transcription/transcriptEventMatch.js";
+import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 export const manifest: ModuleManifest = {
@@ -33,6 +37,12 @@ export const manifest: ModuleManifest = {
       source: { databaseKey: "tasks", propertyKey: "project" },
       target: { databaseKey: "events", propertyKey: "project" },
       via: { databaseKey: "events", relationKey: "actionItems" },
+    },
+    {
+      key: "fixtureProposal.eventName",
+      source: { databaseKey: "events", propertyKey: "name" },
+      target: { databaseKey: "transcripts", propertyKey: "name" },
+      via: { databaseKey: "transcripts", relationKey: "event" },
     },
     ...["areas", "projects", "tasks", "events", "people", "companies"].map((source, index) => ({
       key: `fixtureChain.hop${index + 1}`,
@@ -247,6 +257,61 @@ describe("value link via-edge union", () => {
       expect(row.rows).toEqual([{ state: "on" }]);
       await cp.deleteRelation(edge(firstTask.id));
       expect(await target()).toEqual([secondProject.id]);
+    });
+  });
+
+  it("does not create a link during real Inbox proposal revision but does on confirmation", async () => {
+    await runInTenant(tenant, async () => {
+      const cp = createChokePoint(data);
+      const dbs = await cp.listDatabases();
+      const id = (module: string) => {
+        const db = dbs.find((entry) => entry.ownerModuleId === module);
+        if (!db) throw new Error(`Missing ${module}`);
+        return db.id;
+      };
+      const transcripts = id("transcripts"),
+        events = id("events"),
+        proposals = id("processingProposals");
+      const transcript = await withTransaction(data, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: transcripts, properties: { date: "2024-03-01T12:00:00.000Z" } },
+          { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+        ),
+      );
+      await withTransaction(data, (client) =>
+        matchTranscriptToEvent(client, { transcriptId: transcript.id, durationSeconds: 3600 }),
+      );
+      const cards = await withTransaction(data, (client) =>
+        client.query<{ id: string }>(
+          "SELECT id FROM items WHERE database_id = $1 AND properties->>'kind' = 'transcript'",
+          [proposals],
+        ),
+      );
+      expect(cards.rows).toHaveLength(1);
+      const event = await cp.createItem({ databaseId: events, properties: { name: "Chosen event" } });
+      const config = { processingProposalsDatabaseId: proposals };
+      const cardId = cards.rows[0]!.id;
+      await withTransaction(data, (client) =>
+        reviseProposalWithClient(client, config, cardId, {
+          message: "Choose event",
+          entityKind: "relation",
+          target: event.id,
+          properties: { propertyKey: "event" },
+        }),
+      );
+      const links = () =>
+        withTransaction(data, (client) =>
+          client.query<{ state: string }>(
+            "SELECT state FROM value_links WHERE item_id = $1 AND property_key = 'name'",
+            [transcript.id],
+          ),
+        );
+      expect((await links()).rowCount).toBe(0);
+      expect((await cp.listItemRelations(transcript.id))?.some((edge) => edge.targetItemId === event.id)).toBe(false);
+      await withTransaction(data, (client) => confirmProposalWithClient(client, config, cardId));
+      expect((await links()).rows).toEqual([{ state: "on" }]);
+      expect((await cp.getItem(transcripts, transcript.id))?.properties.name).toBe("Chosen event");
     });
   });
 });
