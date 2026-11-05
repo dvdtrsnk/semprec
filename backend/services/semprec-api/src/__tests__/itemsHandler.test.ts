@@ -178,6 +178,8 @@ describe("item routes (issue #241)", () => {
         const open = await cp.createItem({ databaseId: db("events"), properties: { name: "Open" } });
         const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
         const openFile = await cp.createItem({ databaseId: db("files"), properties: { name: "Open file" } });
+        const health = await cp.createItem({ databaseId: db("healthRecords"), properties: { name: "Health" } });
+        const openHealth = await cp.createItem({ databaseId: db("healthRecords"), properties: { name: "Open health" } });
         const day = await withTransaction(runtime, (client) => ensureJournalPeriodDoc(client, "day", "2026-05-01"));
         const openDay = await withTransaction(runtime, (client) => ensureJournalPeriodDoc(client, "day", "2026-05-02"));
         const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
@@ -187,8 +189,10 @@ describe("item routes (issue #241)", () => {
         const area = (await cp.listProperties(db("events"))).find((p) => p.key === "area");
         const projectProperty = (await cp.listProperties(db("events"))).find((p) => p.key === "project");
         const fileProjects = (await cp.listProperties(db("files"))).find((p) => p.key === "projects");
+        const healthProjects = (await cp.listProperties(db("healthRecords"))).find((p) => p.key === "projects");
         const journalProject = (await cp.listProperties(db("journal"))).find((p) => p.key === "project");
-        if (!area || !projectProperty || !fileProjects || !journalProject) throw new Error("Missing guarded relations");
+        if (!area || !projectProperty || !fileProjects || !healthProjects || !journalProject)
+          throw new Error("Missing guarded relations");
         await cp.setRelation({ relationPropertyId: area.id, callerItemId: event.id, targetItemId: first.id });
         await cp.createRelation({
           relationPropertyId: projectProperty.id,
@@ -201,11 +205,16 @@ describe("item routes (issue #241)", () => {
           targetItemId: project.id,
         });
         await cp.createRelation({
+          relationPropertyId: healthProjects.id,
+          callerItemId: health.id,
+          targetItemId: project.id,
+        });
+        await cp.createRelation({
           relationPropertyId: journalProject.id,
           callerItemId: day.itemId,
           targetItemId: project.id,
         });
-        return { event, open, file, openFile, day, openDay, company, first, second };
+        return { event, open, file, openFile, health, openHealth, day, openDay, company, first, second };
       });
       const put = (source: string, target: string, requestHeaders = headers) =>
         fetch(`${base}/api/items/${source}/relations/area/${target}`, { method: "PUT", headers: requestHeaders });
@@ -214,6 +223,10 @@ describe("item routes (issue #241)", () => {
       const deniedFile = await put(fixture.file.id, fixture.second.id);
       expect(deniedFile.status).toBe(400);
       expect(await deniedFile.json()).toMatchObject({ error: { details: { field: "area" } } });
+      expect((await put(fixture.openHealth.id, fixture.second.id)).status).toBe(200);
+      const deniedHealth = await put(fixture.health.id, fixture.second.id);
+      expect(deniedHealth.status).toBe(400);
+      expect(await deniedHealth.json()).toMatchObject({ error: { details: { field: "area" } } });
       expect((await put(fixture.openDay.itemId, fixture.second.id)).status).toBe(200);
       const deniedDay = await put(fixture.day.itemId, fixture.second.id);
       expect(deniedDay.status).toBe(400);
@@ -254,6 +267,10 @@ describe("item routes (issue #241)", () => {
         createChokePoint(runtime).listItemRelations(fixture.file.id),
       );
       expect(fileEdges?.some((edge) => edge.targetItemId === fixture.second.id)).toBe(false);
+      const healthEdges = await runInTenant(getTenantZeroId(), () =>
+        createChokePoint(runtime).listItemRelations(fixture.health.id),
+      );
+      expect(healthEdges?.some((edge) => edge.targetItemId === fixture.second.id)).toBe(false);
     } catch (error) {
       failures.push(error);
     } finally {
