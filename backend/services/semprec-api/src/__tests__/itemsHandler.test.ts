@@ -179,6 +179,7 @@ describe("item routes (issue #241)", () => {
       const beforeEdges = await runInTenant(getTenantZeroId(), () =>
         runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM item_relations"),
       );
+      const foreignRelationHeaders = await authHeader();
       for (const [source, key, target] of [
         [fixture.task.id, "hostEvents", fixture.event.id],
         [fixture.event.id, "hostedTasks", fixture.task.id],
@@ -189,6 +190,20 @@ describe("item routes (issue #241)", () => {
           const response = await fetch(`${base}/api/items/${source}/relations/${key}/${target}`, { method, headers });
           expect(response.status).toBe(403);
           expect(await response.json()).toMatchObject({ error: { code: "owner_violation" } });
+          const randomSource = randomUUID();
+          const foreign = await fetch(`${base}/api/items/${source}/relations/${key}/${target}`, {
+            method,
+            headers: foreignRelationHeaders,
+          });
+          const random = await fetch(`${base}/api/items/${randomSource}/relations/${key}/${target}`, {
+            method,
+            headers: foreignRelationHeaders,
+          });
+          expect(foreign.status).toBe(404);
+          expect(random.status).toBe(404);
+          expect((await foreign.text()).replaceAll(source, "<id>")).toEqual(
+            (await random.text()).replaceAll(randomSource, "<id>"),
+          );
         }
       }
       expect(
@@ -198,7 +213,6 @@ describe("item routes (issue #241)", () => {
           )
         ).rows,
       ).toEqual(beforeEdges.rows);
-      const foreignRelationHeaders = await authHeader();
       for (const [source, key, target] of [
         [fixture.event.id, "actionItems", fixture.task.id],
         [fixture.inverseTask.id, "sourceEvents", fixture.inverseEvent.id],
