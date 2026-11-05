@@ -208,6 +208,15 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       expect(found?.candidates).toHaveLength(2);
     });
 
+    it("excludes participants of a trashed Event while keeping the tenant's own person", async () => {
+      await withTransaction(pool, (client) => setSelfPersonId(client, aliceId));
+      await linkEvent();
+      await chokePoint.softDeleteItem(eventsId, eventId);
+      expect((await context())?.candidates).toEqual([
+        { id: aliceId, name: "Alice", title: null, invitationStatus: null },
+      ]);
+    });
+
     it("uses only recognized invitation status metadata as an optional hint", async () => {
       await linkEvent();
       const relationPropertyId = await propertyIdFor(eventsId, "people");

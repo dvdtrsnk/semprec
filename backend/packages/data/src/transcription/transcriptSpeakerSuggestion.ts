@@ -86,7 +86,11 @@ export async function readSpeakerSuggestionContext(
   const mappedPersonIds = new Set(speakers.flatMap((entry) => (entry.person ? [entry.person.id] : [])));
   const eventRelationId = await requireRelationDefinitionId(client, transcriptsDatabaseId, "event");
   const [eventEdge] = await relationsStore.listRelationsForItem(client, eventRelationId, transcriptId);
-  const eventId = eventEdge ? relationsStore.otherSide(eventEdge, transcriptId) : null;
+  const linkedEventId = eventEdge ? relationsStore.otherSide(eventEdge, transcriptId) : null;
+  const event = linkedEventId
+    ? await itemsStore.getItemById(client, await requireDatabaseId(client, EVENTS_MODULE_ID), linkedEventId)
+    : null;
+  const eventId = event && !event.deletedAt ? event.id : null;
   const participantEdges =
     eventId === null
       ? []
