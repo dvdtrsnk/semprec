@@ -6,9 +6,11 @@ import { ModuleRegistry } from "@semprec/module-registry";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { assertRelationCreatableWithClient } from "../chokePoint/relationOps.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { withTransaction } from "../db/pool.js";
 import * as registryLoader from "../manifest/fullModuleRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { enqueueLinkPropagation, handleLinkPropagation } from "../valueLinks/linkPropagation.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
@@ -217,6 +219,42 @@ describe("link rule propagation", () => {
           { item_id: broken.id, state: "broken" },
         ].sort((a, b) => a.item_id.localeCompare(b.item_id)),
       );
+    });
+  });
+
+  it("does not write or invalidate a target when its queued source is trashed", async () => {
+    await runInTenant(tenant, async () => {
+      const cp = createChokePoint(data);
+      const dbs = await cp.listDatabases();
+      const areas = dbs.find((db) => db.ownerModuleId === "areas");
+      const projects = dbs.find((db) => db.ownerModuleId === "projects");
+      if (!areas || !projects) throw new Error("Fixture databases missing");
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
+      if (!via) throw new Error("Fixture relation missing");
+      const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Original" } });
+      const target = await cp.createItem({ databaseId: projects.id, properties: {} });
+      await cp.createRelation({ relationPropertyId: via.id, callerItemId: target.id, targetItemId: area.id });
+      expect((await cp.getItem(projects.id, target.id))?.properties.name).toBe("Original");
+      await withTransaction(data, (client) =>
+        itemDeleteWithClient(client, areas.id, area.id, {
+          queueAffinity: createActionQueueAffinity(),
+        }),
+      );
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await handleLinkPropagation(data, { ruleKey, sourceItemId: area.id, hop: 1 });
+      } finally {
+        setInvalidationHook(() => {});
+      }
+      expect((await cp.getItem(projects.id, target.id))?.properties.name).toBe("Original");
+      expect(events.some((event) => event.scope === "item" && event.itemId === target.id)).toBe(false);
+      const links = await withTransaction(data, (client) =>
+        client.query<{ state: string }>("SELECT state FROM value_links WHERE item_id = $1 AND property_key = 'name'", [
+          target.id,
+        ]),
+      );
+      expect(links.rows).toEqual([{ state: "on" }]);
     });
   });
 

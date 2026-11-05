@@ -14,6 +14,8 @@ import { createActionRegistry } from "../scheduler/actions.js";
 import { createCoreTaskList } from "../worker.js";
 import { matchTranscriptToEvent } from "../transcription/transcriptEventMatch.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
+import { handleLinkPropagation } from "../valueLinks/linkPropagation.js";
+import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 export const manifest: ModuleManifest = {
@@ -207,6 +209,28 @@ describe("value link via-edge union", () => {
         );
       expect((await fixture.cp.getItem(fixture.ids[6]!, fixture.items[6]!.id))?.properties.name).toBeUndefined();
     });
+    const invalidations: InvalidationEvent[] = [];
+    setInvalidationHook((event) => invalidations.push(event));
+    try {
+      await runInTenant(tenant, () =>
+        handleLinkPropagation(data, {
+          ruleKey: "fixtureChain.hop1",
+          sourceItemId: fixture.items[0]!.id,
+          hop: 1,
+        }),
+      );
+      expect(invalidations.filter((event) => event.scope === "item" && event.itemId === fixture.items[1]!.id)).toEqual(
+        [],
+      );
+      const key = `valueLinksPropagate:${tenant}:fixtureChain.hop2:${fixture.items[1]!.id}:2`;
+      const scheduled = await admin.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [
+        key,
+      ]);
+      expect(scheduled.rows).toEqual([{ key }]);
+      await drain();
+    } finally {
+      setInvalidationHook(() => {});
+    }
   });
 
   it("keeps the last single value when two source values conflict", async () => {
