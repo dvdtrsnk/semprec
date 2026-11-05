@@ -104,7 +104,7 @@ export const manifest: ModuleManifest = {
     {
       key: TASKS_MODULE_ID,
       name: "Tasks",
-      searchFields: ["name", "status", "project"],
+      searchFields: ["name", "status", "project", "description"],
       icon: "checkmark-circle",
       color: "#34C759",
       overviewOrder: null,

@@ -198,6 +198,53 @@ describe("item search create/update hooks", () => {
     });
   });
 
+  it("indexes Task descriptions on create and update without exposing foreign or missing items", async () => {
+    async function search(itemId: string, text: string): Promise<boolean> {
+      const query = buildItemSearchQuery(text, 2);
+      const result = await withTransaction(pool, (client) =>
+        client.query<{ matched: boolean }>(
+          `SELECT search_vector @@ ${query.sql} AS matched FROM item_search_index WHERE item_id = $1`,
+          [itemId, ...query.params],
+        ),
+      );
+      return result.rows[0]?.matched ?? false;
+    }
+    const role = await pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+      "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+    const other = await createTestTenant(admin);
+    const item = await runInTenant(tenant, async () => {
+      const databaseId = await db("tasks");
+      const created = await cp.createItem({ databaseId, properties: { name: "Task", description: "Copperbadger" } });
+      expect(await search(created.id, "Copperbadger")).toBe(true);
+      await cp.updateItem({ databaseId, itemId: created.id, propertiesPatch: { description: "Silverfalcon" } });
+      expect(await search(created.id, "Copperbadger")).toBe(false);
+      expect(await search(created.id, "Silverfalcon")).toBe(true);
+      return created;
+    });
+    await runInTenant(other, async () => {
+      const before = await rows();
+      expect(await search(item.id, "Silverfalcon")).toBe(false);
+      expect(await search(randomUUID(), "Silverfalcon")).toBe(false);
+      await expect(
+        cp.updateItem({ databaseId: item.databaseId, itemId: item.id, propertiesPatch: { description: "Intrusion" } }),
+      ).rejects.toThrow();
+      await expect(
+        cp.updateItem({
+          databaseId: item.databaseId,
+          itemId: randomUUID(),
+          propertiesPatch: { description: "Intrusion" },
+        }),
+      ).rejects.toThrow();
+      expect(await rows()).toEqual(before);
+    });
+    await runInTenant(tenant, async () => {
+      expect(await search(item.id, "Silverfalcon")).toBe(true);
+      expect(await search(item.id, "Intrusion")).toBe(false);
+    });
+  });
+
   it("rolls back a create when the index hook fails", async () => {
     await runInTenant(tenant, async () => {
       const before = await rows();
