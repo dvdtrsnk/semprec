@@ -148,3 +148,20 @@ producer or enqueue owner; no provider call or production scope is added.
 Consolidating the duplicate recordingIntake Touches entry preserves enqueue
 and typed reader permissions, event/time invariance and exact-shape/tenant
 controls. Source Task/AC and outer six criteria remain unchanged.
+
+## Missing or trashed propagation source: gh1593
+
+Task5 live-source recomputation governs existing queued propagation. Replace
+Task8’s contradictory no-write test wording with no contribution from a
+missing/trashed source. The handler must still find existing on links from the
+queued source identity and recompute each target from every live source under
+the existing reservations and owner. Remaining live values may replace the
+old value; an empty union uses the existing empty/null property or relation
+representation. Invalidate only a changed target and preserve on/broken state.
+A missing/trashed source is not a write-admission guard; never write that source.
+This does not add source-trash scheduling or cleanup of source/link rows, which
+remain gh1656. Deleting the last via edge still deletes the link and preserves
+the current value as own, as the separate existing decision requires. No new
+lock, owner, protocol or production path is granted. Keep earlier contradictory
+tests/results as history and map sufficient existing empty/remaining-union
+controls to the corrected specification without an automatic repeat campaign.
