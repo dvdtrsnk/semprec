@@ -2725,12 +2725,12 @@
       "sequence": 28,
       "status": "proposed",
       "title": "[backend-delivery 28/74] Implement data/mail, data/transcription, semprec-transcribe changes",
-      "bodyCharacters": 56838,
-      "specSha256": "3bde57b7337fb5e796e01a4df6c751efb5abd0d2e2680e8aa071d02fd9d73d27",
+      "bodyCharacters": 59792,
+      "specSha256": "9e8ecae0e9d13a2ce3fd31cef4c0312248ded62eb96feb837eb535405c5c58fb",
       "members": [
         {
           "id": "gh-1633",
-          "specSha256": "65c192e2caf8e8d49e0b6a7c6e894201d8923e2e91677429d23ad5b530ea7087",
+          "specSha256": "c08bb20a4004bcfec3654de39bd643fbd0fd12b832fbef66a44f95f21322db36",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1567"
@@ -2739,7 +2739,7 @@
         },
         {
           "id": "gh-1572",
-          "specSha256": "82a6156ef8c3c0bdabb546584b864c782d72cc0a6cac462f240840c46dd53e6f",
+          "specSha256": "8d39c1f9fee512bbcd5127b6e2fbeeb4686f763e8b522899e6cda7276f9a799e",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1497",
@@ -2749,7 +2749,7 @@
         },
         {
           "id": "gh-1573",
-          "specSha256": "7e11c0aa18507f1acbc24d571f3cc6b96c65058f4a7ea784d7e21fbe53998f82",
+          "specSha256": "e2e692e66eec997355c77ceb5d0f4c81d4d291bdd8a8b650340917857e6a3087",
           "parent": "gh-1343",
           "dependencies": [
             "gh-1493",
@@ -2761,7 +2761,7 @@
         },
         {
           "id": "gh-1638",
-          "specSha256": "9a54b0f2b8c0e112f656fabd46e251c4eca2b44aae80c3579c6e4b3b3c37ed18",
+          "specSha256": "58c567d592975665d5199b20baf912cc2d90b3a490e6a57699ac3da3b11f419f",
           "parent": "gh-1343",
           "dependencies": [
             "gh-1573",
@@ -2781,7 +2781,7 @@
         },
         {
           "id": "gh-1574",
-          "specSha256": "4184f576115b1750ce6778653f3e6fd40582f9a2a6475a0cb148023982b29a32",
+          "specSha256": "8c81a927eb6daecaf7906f5880596e4f57e53ec3f268f0f4ebcf9d494e1764aa",
           "parent": "gh-1319",
           "dependencies": [
             "gh-1572"
