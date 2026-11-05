@@ -1221,7 +1221,7 @@ describe("library module (issue #25)", () => {
     const databaseId = await getDatabaseIdByModule("books");
     const item = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Book" } }));
     const responseSecret = "private-503-response-secret";
-    const fetcher = vi.fn(async () => new Response(responseSecret, { status: 503 }));
+    const fetcher = vi.fn(async (_url: string) => new Response(responseSecret, { status: 503 }));
     const errorLog = vi.spyOn(console, "error");
     let captured: string;
     try {
@@ -1233,6 +1233,7 @@ describe("library module (issue #25)", () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(captured).toContain("Library metadata processing failed");
     expect(captured).not.toContain(responseSecret);
+    for (const [url] of fetcher.mock.calls) expect(captured).not.toContain(url);
     const automation = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
     expect(automation).toMatchObject({
       status: "error",
@@ -1242,6 +1243,7 @@ describe("library module (issue #25)", () => {
       error: "Library metadata processing failed",
     });
     expect(JSON.stringify(automation)).not.toContain(responseSecret);
+    for (const [url] of fetcher.mock.calls) expect(JSON.stringify(automation)).not.toContain(url);
   });
 
   it("a failed fetch records the error and increments attempts, leaving the row in 'error'", async () => {
