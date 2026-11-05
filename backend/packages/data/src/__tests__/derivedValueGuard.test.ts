@@ -18,6 +18,22 @@ let admin: Pool;
 let data: Pool;
 let tenant: string;
 let foreign: string;
+async function waitForBarrier<T>(signal: Promise<T>, actor: Promise<unknown>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      signal,
+      actor.then(() => {
+        throw new Error("Participant ended before barrier");
+      }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Barrier timed out")), 4000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 describe("derived value creation guard", () => {
   beforeAll(async () => {
     admin = getTestPool();
@@ -193,12 +209,7 @@ describe("derived value creation guard", () => {
         { isolation: "repeatable_read" },
       );
       try {
-        await Promise.race([
-          entered,
-          assertion.then(() => {
-            throw new Error("Assertion ended before its barrier");
-          }),
-        ]);
+        await waitForBarrier(entered, assertion);
         await withTransaction(data, async (client) => {
           for (const id of [companyProperty, projectProperty]) {
             const definition = await getRelationDefinitionByPropertyId(client, id);
@@ -301,14 +312,7 @@ describe("derived value creation guard", () => {
         await barrier;
       });
       try {
-        expect(
-          await Promise.race([
-            entered,
-            holder.then(() => {
-              throw new Error("Holder ended before its barrier");
-            }),
-          ]),
-        ).toBeGreaterThan(0);
+        expect(await waitForBarrier(entered, holder)).toBeGreaterThan(0);
         await expect(
           cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
         ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
@@ -379,12 +383,7 @@ describe("derived value creation guard", () => {
       });
       let waiter: Promise<unknown> | undefined;
       try {
-        const holderPid = await Promise.race([
-          entered,
-          holder.then(() => {
-            throw new Error("Holder ended before its barrier");
-          }),
-        ]);
+        const holderPid = await waitForBarrier(entered, holder);
         waiter = withTransaction(data, async (client) => {
           const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
           waiterReady(pid);
@@ -394,12 +393,7 @@ describe("derived value creation guard", () => {
             targetItemId: file.id,
           });
         });
-        const waiterPid = await Promise.race([
-          waiterEntered,
-          waiter.then(() => {
-            throw new Error("Waiter ended before its barrier");
-          }),
-        ]);
+        const waiterPid = await waitForBarrier(waiterEntered, waiter);
         let blocked = false;
         for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
           const result = await data.query<{ blocked: boolean }>(
@@ -455,14 +449,7 @@ describe("derived value creation guard", () => {
         (error: unknown) => error,
       );
       try {
-        expect(
-          await Promise.race([
-            entered,
-            settled.then(() => {
-              throw new Error("Holder ended before barrier");
-            }),
-          ]),
-        ).toBeGreaterThan(0);
+        expect(await waitForBarrier(entered, settled)).toBeGreaterThan(0);
         await expect(
           cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
         ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
@@ -504,14 +491,7 @@ describe("derived value creation guard", () => {
         await trashGate;
       });
       try {
-        expect(
-          await Promise.race([
-            trashEntered,
-            trash.then(() => {
-              throw new Error("Trash ended before barrier");
-            }),
-          ]),
-        ).toBeGreaterThan(0);
+        expect(await waitForBarrier(trashEntered, trash)).toBeGreaterThan(0);
         await expect(
           cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
         ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
@@ -539,12 +519,7 @@ describe("derived value creation guard", () => {
       });
       let restore: Promise<unknown> | undefined;
       try {
-        const holderPid = await Promise.race([
-          manualEntered,
-          manual.then(() => {
-            throw new Error("Manual ended before barrier");
-          }),
-        ]);
+        const holderPid = await waitForBarrier(manualEntered, manual);
         let restoredPid!: (pid: number) => void;
         let rejectRestorePid!: (error: unknown) => void;
         const restoreEntered = new Promise<number>((resolve, reject) => {
@@ -557,12 +532,7 @@ describe("derived value creation guard", () => {
             .then((result) => restoredPid(result.rows[0]!.pid), rejectRestorePid);
         });
         restore = cp.restoreItem(db("projects"), project.id);
-        const waiterPid = await Promise.race([
-          restoreEntered,
-          restore.then(() => {
-            throw new Error("Restore ended before barrier");
-          }),
-        ]);
+        const waiterPid = await waitForBarrier(restoreEntered, restore);
         let blocked = false;
         for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
           const result = await data.query<{ blocked: boolean }>(

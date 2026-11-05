@@ -352,12 +352,14 @@ describe("mail thread list", () => {
       });
       const seen: Array<{ threadId: string; lastMessageAt: string }> = [];
       let cursor: string | null = null;
-      do {
+      for (let pageNumber = 0; pageNumber < 4; pageNumber++) {
         const path = `/api/mail/threads?limit=1${cursor ? `&cursor=${cursor}` : ""}`;
         const page = (await list(path)).body;
         seen.push(...page.threads);
         cursor = page.nextCursor;
-      } while (cursor);
+        if (!cursor) break;
+      }
+      expect(cursor).toBeNull();
       expect(seen).toHaveLength(3);
       for (const row of expected)
         expect(seen).toContainEqual(expect.objectContaining({ threadId: row.thread_id, lastMessageAt: row.expected }));
