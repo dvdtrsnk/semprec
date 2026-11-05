@@ -20,10 +20,12 @@ import {
   createUser,
   createViewTypeRegistry,
   hashPassword,
+  insertValueLink,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
   seedSystem,
+  withTransaction,
   type ChokePoint,
   type ItemRow,
   type PasswordResetMailer,
@@ -624,6 +626,15 @@ describe("generic operation REST contract (issue #219)", () => {
           await link(projects.id, secondProject.id, "area", area.id);
           await link(files.id, file.id, "projects", project.id);
           await link(files.id, file.id, "projects", secondProject.id);
+          // Existing value links are created by their production store before propagation is delivered.
+          await withTransaction(runtime, (client) =>
+            insertValueLink(client, {
+              itemId: file.id,
+              propertyKey: "area",
+              ruleKey: "existingLink",
+              sources: [{ kind: "item", sourceItemId: project.id, sourcePropertyKey: "area" }],
+            }),
+          );
           return { person, project, secondProject, area, otherArea, company, file, projectsDatabaseId: projects.id };
         });
       }
@@ -696,7 +707,15 @@ describe("generic operation REST contract (issue #219)", () => {
               },
             },
           });
-        else if (hasLinks) expect(body).toMatchObject({ links: {} });
+        else if (hasLinks)
+          expect(body).toMatchObject({
+            links: {
+              area: {
+                valueKind: "inherited",
+                sources: [expect.objectContaining({ itemId: own.project.id, propertyKey: "area" })],
+              },
+            },
+          });
         else expect(body).not.toHaveProperty("links");
       }
       await runInTenant(ownTenant, async () => {
