@@ -28,6 +28,12 @@ export const manifest: ModuleManifest = {
       target: { databaseKey: "files", propertyKey: "companies" },
       via: { databaseKey: "files", relationKey: "projects" },
     },
+    {
+      key: "fixtureSingle.taskProject",
+      source: { databaseKey: "tasks", propertyKey: "project" },
+      target: { databaseKey: "events", propertyKey: "project" },
+      via: { databaseKey: "events", relationKey: "actionItems" },
+    },
     ...["areas", "projects", "tasks", "events", "people", "companies"].map((source, index) => ({
       key: `fixtureChain.hop${index + 1}`,
       source: { databaseKey: source, propertyKey: "name" },
@@ -190,6 +196,57 @@ describe("value link via-edge union", () => {
           "Chain source",
         );
       expect((await fixture.cp.getItem(fixture.ids[6]!, fixture.items[6]!.id))?.properties.name).toBeUndefined();
+    });
+  });
+
+  it("keeps the last single value when two source values conflict", async () => {
+    await runInTenant(tenant, async () => {
+      const cp = createChokePoint(data);
+      const databases = await cp.listDatabases();
+      const id = (module: string) => {
+        const db = databases.find((entry) => entry.ownerModuleId === module);
+        if (!db) throw new Error(`Missing ${module}`);
+        return db.id;
+      };
+      const projects = id("projects"),
+        tasks = id("tasks"),
+        events = id("events");
+      const property = async (db: string, key: string) => {
+        const found = (await cp.listProperties(db)).find((entry) => entry.key === key);
+        if (!found) throw new Error(`Missing ${key}`);
+        return found.id;
+      };
+      const taskProject = await property(tasks, "project");
+      const eventProject = await property(events, "project");
+      const via = await property(events, "actionItems");
+      const firstProject = await cp.createItem({ databaseId: projects, properties: { name: "First" } });
+      const secondProject = await cp.createItem({ databaseId: projects, properties: { name: "Second" } });
+      const firstTask = await cp.createItem({ databaseId: tasks, properties: { name: "One" } });
+      const secondTask = await cp.createItem({ databaseId: tasks, properties: { name: "Two" } });
+      const event = await cp.createItem({ databaseId: events, properties: { name: "Event" } });
+      for (const [task, project] of [
+        [firstTask, firstProject],
+        [secondTask, secondProject],
+      ] as const)
+        await cp.createRelation({ relationPropertyId: taskProject, callerItemId: task.id, targetItemId: project.id });
+      const edge = (taskId: string) => ({ relationPropertyId: via, callerItemId: event.id, targetItemId: taskId });
+      const target = async () =>
+        (await cp.listItemRelations(event.id))
+          ?.filter((entry) => entry.relationPropertyId === eventProject)
+          .map((entry) => entry.targetItemId);
+      await cp.createRelation(edge(firstTask.id));
+      expect(await target()).toEqual([firstProject.id]);
+      await cp.createRelation(edge(secondTask.id));
+      expect(await target()).toEqual([firstProject.id]);
+      const row = await withTransaction(data, (client) =>
+        client.query<{ state: string }>(
+          "SELECT state FROM value_links WHERE item_id = $1 AND property_key = 'project'",
+          [event.id],
+        ),
+      );
+      expect(row.rows).toEqual([{ state: "on" }]);
+      await cp.deleteRelation(edge(firstTask.id));
+      expect(await target()).toEqual([secondProject.id]);
     });
   });
 });
