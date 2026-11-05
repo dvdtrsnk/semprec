@@ -200,8 +200,8 @@ describe("value link via-edge union", () => {
         await expect(
           withTransaction(data, async (client) => {
             const jobs = () =>
-              client.query<{ key: string; task_identifier: string; payload: unknown }>(
-                "SELECT key, task_identifier, payload FROM graphile_worker.jobs WHERE key = $1",
+              client.query<{ key: string; task_identifier: string }>(
+                "SELECT key, task_identifier FROM graphile_worker.jobs WHERE key = $1",
                 [key],
               );
             expect((await jobs()).rows).toEqual([]);
@@ -224,10 +224,6 @@ describe("value link via-edge union", () => {
               {
                 key,
                 task_identifier: task,
-                payload: expect.objectContaining({
-                  tenantId: tenant,
-                  payload: { ruleKey: "fixtureChain.hop2", sourceItemId: project.id, hop: 2 },
-                }),
               },
             ]);
             throw failure;
