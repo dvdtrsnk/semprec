@@ -81,3 +81,16 @@ accounting wrapper. Pass validated numSpeakers through its existing invoke
 closure to the actual provider request; preserve accounting and do not invent
 a public request argument for a wrapper that has none. Prove both omission and
 exact/min mapping at the real client/handler/provider boundaries.
+
+## Unsupported source configuration: gh1655 and gh1708
+
+Follow the supported-live-source retry ADR. Use one pure internal
+libraryMetadataConfig.ts with a fixed typed configuration error and the actual
+configured-source set. Validate producer, sweep, entry and dispatcher before
+item/automation side effects; recognized invalid config is not a provider
+sourceUnavailable outcome. Existing bounded attempts for already queued legacy
+jobs remain, but unchanged invalid live config enqueues no next metadata batch.
+A repaired config may resume normal retry. Scheduler diagnostics retain their
+own policy; no new durable outcome, schema, code literal, queue framework or
+missing-token reclassification is authorized. Existing fake-fetcher tests must
+use a real supported configured source; injection remains the provider seam.
